@@ -1716,6 +1716,26 @@ in {
       cat /tmp/maint-validate.out
       assert_file_contains /tmp/maint-validate.out "All 3 entries found in caches" \
         "apr validate checks every published cache entry"
+      $APR --json validate --registry maint-reg --jobs 4 \
+        > /tmp/maint-validate.json 2>&1 || {
+        cat /tmp/maint-validate.json
+        fail "apr --json validate confirms generated cache contents"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        '.status == "ok"
+          and .fix == false
+          and .jobs == 4
+          and .caches == 1
+          and .checked == 3
+          and .found == 3
+          and .missing == 0
+          and .removed == 0
+          and .missing_entries == []' \
+        /tmp/maint-validate.json >/dev/null || {
+        cat /tmp/maint-validate.json
+        fail "apr --json validate reports generated cache contents"
+      }
+      pass "apr --json validate reports generated cache contents"
       $APR validate --registry maint-reg \
         --package maint-runner \
         --platform x86_64-linux \
@@ -1725,6 +1745,25 @@ in {
       }
       assert_file_contains /tmp/maint-validate-runner.out "All 1 entries found in caches" \
         "apr validate honors package and platform filters"
+      $APR --json validate --registry maint-reg \
+        --package maint-runner \
+        --platform x86_64-linux \
+        --jobs 2 > /tmp/maint-validate-runner.json 2>&1 || {
+        cat /tmp/maint-validate-runner.json
+        fail "apr --json validate filtered to one package succeeds"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        '.status == "ok"
+          and .package == "maint-runner"
+          and .platform == "x86_64-linux"
+          and .checked == 1
+          and .found == 1
+          and .missing == 0' \
+        /tmp/maint-validate-runner.json >/dev/null || {
+        cat /tmp/maint-validate-runner.json
+        fail "apr --json validate honors package and platform filters"
+      }
+      pass "apr --json validate honors package and platform filters"
       if $APR validate --registry maint-reg --jobs 0 \
         > /tmp/maint-validate-jobs-zero.out 2>&1; then
         cat /tmp/maint-validate-jobs-zero.out
@@ -1746,15 +1785,44 @@ in {
           "not found in any cache" \
           "apr validate reports the missing cache entry before fix"
       fi
-      $APR validate --registry maint-reg --package maint-curl --jobs 1 --fix \
-        > /tmp/maint-validate-fix-curl.out 2>&1 || {
-        cat /tmp/maint-validate-fix-curl.out
+      if $APR --json validate --registry maint-reg --package maint-curl --jobs 1 \
+        > /tmp/maint-validate-missing-curl.json 2>&1; then
+        cat /tmp/maint-validate-missing-curl.json
+        fail "apr --json validate should fail when a cache entry is missing"
+      else
+        ${pkgs.jq}/bin/jq -e --arg store "$CURL_STORE" \
+          '.error
+            | contains("0 found, 1 missing")
+            and contains("maint-curl")
+            and contains($store)' \
+          /tmp/maint-validate-missing-curl.json >/dev/null || {
+          cat /tmp/maint-validate-missing-curl.json
+          fail "apr --json validate reports the missing cache entry before fix"
+        }
+        pass "apr --json validate reports the missing cache entry before fix"
+      fi
+      $APR --json validate --registry maint-reg --package maint-curl --jobs 1 --fix \
+        > /tmp/maint-validate-fix-curl.json 2>&1 || {
+        cat /tmp/maint-validate-fix-curl.json
         fail "apr validate --fix prunes missing cache entry metadata"
       }
-      cat /tmp/maint-validate-fix-curl.out
-      assert_file_contains /tmp/maint-validate-fix-curl.out \
-        "Removed 1 missing cache entry" \
-        "apr validate --fix reports pruned missing entry"
+      ${pkgs.jq}/bin/jq -e --arg store "$CURL_STORE" \
+        '.status == "fixed"
+          and .package == "maint-curl"
+          and .fix == true
+          and .checked == 1
+          and .found == 0
+          and .missing == 1
+          and .removed == 1
+          and (.missing_entries | length == 1)
+          and .missing_entries[0].name == "maint-curl"
+          and .missing_entries[0].store_path == $store
+          and (.missing_entries[0].details | length > 0)' \
+        /tmp/maint-validate-fix-curl.json >/dev/null || {
+        cat /tmp/maint-validate-fix-curl.json
+        fail "apr --json validate --fix reports pruned missing entry"
+      }
+      pass "apr --json validate --fix reports pruned missing entry"
       assert_file_not_exists "$REG_DIR/packages/m/maint-curl.toml" \
         "apr validate --fix removes package with no cached versions"
       $APR packages --registry maint-reg \

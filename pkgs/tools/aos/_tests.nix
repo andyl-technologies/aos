@@ -710,14 +710,54 @@ in {
           grep -q "1 found, 1 missing" "$work/apr-validate-missing.out"
           test -f "$reg/packages/m/missingpkg.toml"
           assert_no_profile
+          if run_clean ${self}/bin/apr --json validate --registry host-reg --jobs 2 \
+            > "$work/apr-validate-missing.json" 2>&1; then
+            cat "$work/apr-validate-missing.json"
+            exit 1
+          fi
+          ${pkgs.jq}/bin/jq -e \
+            --arg store "/nix/store/$missing_hash-missingpkg-1.0.0" \
+            '.error
+              | contains("1 found, 1 missing")
+              and contains("missingpkg")
+              and contains($store)' \
+            "$work/apr-validate-missing.json" >/dev/null
+          test -f "$reg/packages/m/missingpkg.toml"
+          assert_no_profile
 
-          run_clean ${self}/bin/apr validate --registry host-reg --jobs 2 --fix > "$work/apr-validate-fix.out" 2>&1
-          grep -q "Removed 1 missing cache entry from registry metadata" "$work/apr-validate-fix.out"
+          run_clean ${self}/bin/apr --json validate --registry host-reg --jobs 2 --fix \
+            > "$work/apr-validate-fix.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg store "/nix/store/$missing_hash-missingpkg-1.0.0" \
+            '.status == "fixed"
+              and .fix == true
+              and .checked == 2
+              and .found == 1
+              and .missing == 1
+              and .removed == 1
+              and (.missing_entries | length == 1)
+              and .missing_entries[0].name == "missingpkg"
+              and .missing_entries[0].store_path == $store
+              and (.missing_entries[0].details | length > 0)' \
+            "$work/apr-validate-fix.json" >/dev/null
           test ! -e "$reg/packages/m/missingpkg.toml"
           assert_no_profile
 
           run_clean ${self}/bin/apr validate --registry host-reg --package hostpkg --jobs 2 > "$work/apr-validate-hostpkg.out" 2>&1
           grep -q "All 1 entries found in caches" "$work/apr-validate-hostpkg.out"
+          assert_no_profile
+          run_clean ${self}/bin/apr --json validate --registry host-reg --package hostpkg --jobs 2 \
+            > "$work/apr-validate-hostpkg.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.status == "ok"
+              and .package == "hostpkg"
+              and .fix == false
+              and .checked == 1
+              and .found == 1
+              and .missing == 0
+              and .removed == 0
+              and .missing_entries == []' \
+            "$work/apr-validate-hostpkg.json" >/dev/null
           assert_no_profile
 
           git -C "$reg" add -A
@@ -1059,6 +1099,89 @@ in {
           ${pkgs.jq}/bin/jq -e \
             'index("bin/host-install-tool") != null and index("share/host-install/payload.txt") != null' \
             "$work/apm-files-host-install-v2.json" >/dev/null
+
+          run_clean ${self}/bin/apm rollback --list > "$work/apm-rollback-list-host-install-v2.out" 2>&1
+          grep -q "gen-1: hostinstall 1.0.0" "$work/apm-rollback-list-host-install-v2.out"
+          grep -q "gen-2: hostinstall 2.0.0" "$work/apm-rollback-list-host-install-v2.out"
+          grep -q "gen-2: .*current" "$work/apm-rollback-list-host-install-v2.out"
+          run_clean ${self}/bin/apm --json rollback --list > "$work/apm-rollback-list-host-install-v2.json"
+          ${pkgs.jq}/bin/jq -e \
+            'length == 2
+              and any(.[]; .generation == 1
+                and .current == false
+                and (.roots | any(.registry == "host-install-client"
+                  and .package.name == "hostinstall"
+                  and .package.version == "1.0.0")))
+              and any(.[]; .generation == 2
+                and .current == true
+                and (.roots | any(.registry == "host-install-client"
+                  and .package.name == "hostinstall"
+                  and .package.version == "2.0.0")))' \
+            "$work/apm-rollback-list-host-install-v2.json" >/dev/null
+
+          run_clean ${self}/bin/apm rollback --dry-run > "$work/apm-rollback-host-install-dry-run.out" 2>&1
+          grep -q "Dry run" "$work/apm-rollback-host-install-dry-run.out"
+          "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-rollback-dry-run.out"
+          grep -q "host install package v2 executed" "$work/host-install-v2-after-rollback-dry-run.out"
+          assert_default_profile_absent
+
+          run_clean ${self}/bin/apm rollback > "$work/apm-rollback-host-install.out" 2>&1
+          grep -q "Rolling back from generation 2 to generation 1" "$work/apm-rollback-host-install.out"
+          grep -q "Rolled back to generation 1" "$work/apm-rollback-host-install.out"
+          "$profile/current/bin/host-install-tool" > "$work/host-install-v1-after-rollback.out"
+          grep -q "host install package executed" "$work/host-install-v1-after-rollback.out"
+          run_clean ${self}/bin/apm list --installed > "$work/apm-installed-host-install-rollback.out" 2>&1
+          grep -q "hostinstall/host-install-client" "$work/apm-installed-host-install-rollback.out"
+          grep -q "1.0.0" "$work/apm-installed-host-install-rollback.out"
+          grep -q "upgradable: 2.0.0" "$work/apm-installed-host-install-rollback.out"
+          run_clean ${self}/bin/apm --json verify hostinstall > "$work/apm-verify-host-install-rollback.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+            '.package == "hostinstall"
+              and .registry == "host-install-client"
+              and .version == "1.0.0"
+              and .store_path == $store
+              and .verified == true' \
+            "$work/apm-verify-host-install-rollback.json" >/dev/null
+          assert_default_profile_absent
+
+          run_clean ${self}/bin/apm upgrade hostinstall --yes \
+            > "$work/apm-upgrade-host-install-after-rollback.out" 2>&1
+          grep -q "Upgraded 1 package" "$work/apm-upgrade-host-install-after-rollback.out"
+          "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-rollback-upgrade.out"
+          grep -q "host install package v2 executed" "$work/host-install-v2-after-rollback-upgrade.out"
+          assert_default_profile_absent
+
+          run_clean ${self}/bin/apm hold hostinstall > "$work/apm-hold-host-install.out" 2>&1
+          grep -q "hostinstall set on hold" "$work/apm-hold-host-install.out"
+          run_clean ${self}/bin/apm --json held > "$work/apm-held-host-install.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+            'length == 1
+              and .[0].name == "hostinstall"
+              and .[0].version == "2.0.0"
+              and .[0].registry == "host-install-client"
+              and .[0].store_path == $store' \
+            "$work/apm-held-host-install.json" >/dev/null
+
+          run_clean ${self}/bin/apm reinstall hostinstall --yes \
+            > "$work/apm-reinstall-held-host-install.out" 2>&1
+          grep -q "Reinstalled 1 package" "$work/apm-reinstall-held-host-install.out"
+          "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-reinstall.out"
+          grep -q "host install package v2 executed" "$work/host-install-v2-after-reinstall.out"
+          run_clean ${self}/bin/apm --json held > "$work/apm-held-host-install-after-reinstall.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+            'length == 1
+              and .[0].name == "hostinstall"
+              and .[0].version == "2.0.0"
+              and .[0].registry == "host-install-client"
+              and .[0].store_path == $store' \
+            "$work/apm-held-host-install-after-reinstall.json" >/dev/null
+          assert_default_profile_absent
+
+          run_clean ${self}/bin/apm unhold hostinstall > "$work/apm-unhold-host-install.out" 2>&1
+          grep -q "hostinstall released from hold" "$work/apm-unhold-host-install.out"
+          run_clean ${self}/bin/apm --json held > "$work/apm-held-host-install-after-unhold.json"
+          ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apm-held-host-install-after-unhold.json" >/dev/null
+          assert_default_profile_absent
 
           run_clean ${self}/bin/apm remove hostinstall --yes \
             > "$work/apm-remove-host-install.out" 2>&1
