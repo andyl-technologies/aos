@@ -638,17 +638,23 @@ in {
             --no-commit > "$work/apr-publish-host-install.out" 2>&1
           run_clean ${self}/bin/apr cache generate \
             --registry host-install-reg \
-            --output "$work/install-static-cache/cache" \
+            --output "$work/install-static-cache-output/cache" \
             --cache-url "http://127.0.0.1:$install_cache_port/cache" \
+            --upload-url "file://$work/install-static-cache-upload/cache" \
             --priority 77 \
             --no-commit > "$work/apr-cache-host-install.out" 2>&1
-          test -f "$work/install-static-cache/cache/$install_hash.narinfo"
+          grep -q "Uploaded static cache files to file://$work/install-static-cache-upload/cache" \
+            "$work/apr-cache-host-install.out"
+          test -f "$work/install-static-cache-output/cache/$install_hash.narinfo"
+          test -f "$work/install-static-cache-upload/cache/nix-cache-info"
+          test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
+          find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
           git -C "$install_reg" add -A
           git -C "$install_reg" commit -m "release: hostinstall 1.0.0" \
             > "$work/git-commit-host-install.out" 2>&1
 
           PYTHONUNBUFFERED=1 ${pkgs.python3}/bin/python3 -m http.server "$install_cache_port" \
-            --bind 127.0.0.1 --directory "$work/install-static-cache" \
+            --bind 127.0.0.1 --directory "$work/install-static-cache-upload" \
             > "$work/install-cache-server.log" 2>&1 &
           install_cache_server_pid=$!
           ${pkgs.coreutils}/bin/sleep 1
@@ -705,11 +711,17 @@ in {
             --no-commit > "$work/apr-publish-host-install-v2.out" 2>&1
           run_clean ${self}/bin/apr cache generate \
             --registry host-install-reg \
-            --output "$work/install-static-cache/cache" \
+            --output "$work/install-static-cache-output/cache" \
             --cache-url "http://127.0.0.1:$install_cache_port/cache" \
+            --upload-url "file://$work/install-static-cache-upload/cache" \
             --priority 77 \
             --no-commit > "$work/apr-cache-host-install-v2.out" 2>&1
-          test -f "$work/install-static-cache/cache/$install_hash_v2.narinfo"
+          grep -q "Uploaded static cache files to file://$work/install-static-cache-upload/cache" \
+            "$work/apr-cache-host-install-v2.out"
+          test -f "$work/install-static-cache-output/cache/$install_hash_v2.narinfo"
+          test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
+          test -f "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
+          find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
           git -C "$install_reg" add -A
           git -C "$install_reg" commit -m "release: hostinstall 2.0.0" \
             > "$work/git-commit-host-install-v2.out" 2>&1
