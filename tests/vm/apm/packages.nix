@@ -2687,7 +2687,7 @@ in {
       auto_autoremove = true
       auto_gc = false
       APMCONF
-      $APM registry add file:///tmp/remove-origin.git \
+      $APM registry add --no-verify file:///tmp/remove-origin.git \
         --name remove-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/remove-multi-registry-add.out 2>&1 || {
         cat /tmp/remove-multi-registry-add.out
