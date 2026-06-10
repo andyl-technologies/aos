@@ -2733,6 +2733,12 @@ pub async fn run_branch(
     match command {
         BranchCommand::List { registry } => {
             let dir = registry_dir(config, registry.as_deref())?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "branches": git_branch_entries(&dir)?,
+                }));
+                return Ok(());
+            }
             let output = git(&dir, &["branch", "-a"])?;
             printer.plain(&output);
             Ok(())
@@ -2740,22 +2746,87 @@ pub async fn run_branch(
         BranchCommand::Create { name, registry } => {
             let dir = registry_dir(config, registry.as_deref())?;
             git(&dir, &["branch", name])?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "create",
+                    "branch": name,
+                    "current": current_git_branch(&dir)?,
+                    "branches": git_branch_entries(&dir)?,
+                }));
+                return Ok(());
+            }
             printer.success(&format!("Created branch '{name}'."));
             Ok(())
         }
         BranchCommand::Switch { name, registry } => {
             let dir = registry_dir(config, registry.as_deref())?;
             git(&dir, &["checkout", name])?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "switch",
+                    "branch": name,
+                    "current": current_git_branch(&dir)?,
+                    "branches": git_branch_entries(&dir)?,
+                }));
+                return Ok(());
+            }
             printer.success(&format!("Switched to branch '{name}'."));
             Ok(())
         }
         BranchCommand::Delete { name, registry } => {
             let dir = registry_dir(config, registry.as_deref())?;
             git(&dir, &["branch", "-d", name])?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "delete",
+                    "branch": name,
+                    "current": current_git_branch(&dir)?,
+                    "branches": git_branch_entries(&dir)?,
+                }));
+                return Ok(());
+            }
             printer.success(&format!("Deleted branch '{name}'."));
             Ok(())
         }
     }
+}
+
+fn current_git_branch(dir: &Path) -> Result<String> {
+    git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+}
+
+fn git_branch_entries(dir: &Path) -> Result<Vec<serde_json::Value>> {
+    let current = current_git_branch(dir)?;
+    let output = git_raw(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(refname:short)%00%(objectname)%00",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+    let text = String::from_utf8_lossy(&output);
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\0');
+            let refname = fields.next()?;
+            let short = fields.next()?;
+            let commit = fields.next()?;
+            if refname.is_empty() || short.is_empty() {
+                return None;
+            }
+            let remote = refname.starts_with("refs/remotes/");
+            Some(serde_json::json!({
+                "name": short,
+                "ref": refname,
+                "commit": commit,
+                "remote": remote,
+                "current": !remote && short == current,
+            }))
+        })
+        .collect())
 }
 
 /// Channel rollout subcommands.

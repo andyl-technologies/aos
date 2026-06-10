@@ -2781,6 +2781,39 @@ in {
       REG_DIR="$REG_STORAGE/test-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
+      $APR --json branch create json-branch --registry test-reg \
+        > /tmp/branch-json-create.json 2>&1 || {
+        cat /tmp/branch-json-create.json
+        fail "apr --json branch create succeeds"
+      }
+      ${pkgs.jq}/bin/jq -e --arg default "$DEFAULT_BRANCH" \
+        '.action == "create"
+          and .branch == "json-branch"
+          and .current == $default
+          and (.branches | any(.name == "json-branch" and .current == false and .remote == false))
+          and (.branches | any(.name == $default and .current == true and .remote == false))' \
+        /tmp/branch-json-create.json >/dev/null || {
+        cat /tmp/branch-json-create.json
+        fail "apr --json branch create reports created branch"
+      }
+      pass "apr --json branch create reports created branch"
+      $APR --json branch delete json-branch --registry test-reg \
+        > /tmp/branch-json-delete.json 2>&1 || {
+        cat /tmp/branch-json-delete.json
+        fail "apr --json branch delete succeeds"
+      }
+      ${pkgs.jq}/bin/jq -e --arg default "$DEFAULT_BRANCH" \
+        '.action == "delete"
+          and .branch == "json-branch"
+          and .current == $default
+          and (.branches | all(.name != "json-branch"))
+          and (.branches | any(.name == $default and .current == true and .remote == false))' \
+        /tmp/branch-json-delete.json >/dev/null || {
+        cat /tmp/branch-json-delete.json
+        fail "apr --json branch delete reports deleted branch"
+      }
+      pass "apr --json branch delete reports deleted branch"
+
       $APR branch create feature-1 --registry test-reg > /tmp/branch-create.out 2>&1 || {
         cat /tmp/branch-create.out
         fail "apr branch create succeeds"
@@ -2789,6 +2822,22 @@ in {
       assert_file_contains /tmp/branch-create.out "Created branch 'feature-1'" \
         "apr branch create reports feature branch"
 
+      $APR --json branch switch feature-1 --registry test-reg \
+        > /tmp/branch-switch-feature.json 2>&1 || {
+        cat /tmp/branch-switch-feature.json
+        fail "apr --json branch switch feature-1 succeeds"
+      }
+      ${pkgs.jq}/bin/jq -e --arg default "$DEFAULT_BRANCH" \
+        '.action == "switch"
+          and .branch == "feature-1"
+          and .current == "feature-1"
+          and (.branches | any(.name == "feature-1" and .current == true and .remote == false))
+          and (.branches | any(.name == $default and .current == false and .remote == false))' \
+        /tmp/branch-switch-feature.json >/dev/null || {
+        cat /tmp/branch-switch-feature.json
+        fail "apr --json branch switch reports feature branch as current"
+      }
+      pass "apr --json branch switch reports feature branch as current"
       $APR branch switch feature-1 --registry test-reg > /tmp/branch-switch-feature.out 2>&1 || {
         cat /tmp/branch-switch-feature.out
         fail "apr branch switch feature-1 succeeds"
@@ -2796,6 +2845,20 @@ in {
       cat /tmp/branch-switch-feature.out
       assert_file_contains /tmp/branch-switch-feature.out "Switched to branch 'feature-1'" \
         "apr branch switch reports feature branch"
+      $APR --json branch list --registry test-reg \
+        > /tmp/branch-list-feature-current.json 2>&1 || {
+        cat /tmp/branch-list-feature-current.json
+        fail "apr --json branch list succeeds on feature branch"
+      }
+      ${pkgs.jq}/bin/jq -e --arg default "$DEFAULT_BRANCH" \
+        '.branches
+          | (any(.name == "feature-1" and .current == true and .remote == false)
+            and any(.name == $default and .current == false and .remote == false))' \
+        /tmp/branch-list-feature-current.json >/dev/null || {
+        cat /tmp/branch-list-feature-current.json
+        fail "apr --json branch list reports feature branch as current"
+      }
+      pass "apr --json branch list reports feature branch as current"
 
       publish_feature_package
       commit_branch_changes "publish featurepkg 1.0.0 on feature branch"
@@ -2840,6 +2903,20 @@ in {
       cat /tmp/branch-switch-default.out
       assert_file_contains /tmp/branch-switch-default.out "Switched to branch '$DEFAULT_BRANCH'" \
         "apr branch switch reports default branch"
+      $APR --json branch list --registry test-reg \
+        > /tmp/branch-list-default-current.json 2>&1 || {
+        cat /tmp/branch-list-default-current.json
+        fail "apr --json branch list succeeds on default branch"
+      }
+      ${pkgs.jq}/bin/jq -e --arg default "$DEFAULT_BRANCH" \
+        '.branches
+          | (any(.name == $default and .current == true and .remote == false)
+            and any(.name == "feature-1" and .current == false and .remote == false))' \
+        /tmp/branch-list-default-current.json >/dev/null || {
+        cat /tmp/branch-list-default-current.json
+        fail "apr --json branch list reports default branch as current"
+      }
+      pass "apr --json branch list reports default branch as current"
 
       assert_file_not_exists "$REG_DIR/packages/f/featurepkg.toml" \
         "package not on default branch before merge"
@@ -2911,6 +2988,19 @@ in {
       }
       assert_file_contains /tmp/branch-list.out "feature-1" \
         "apr branch list shows feature branch"
+      $APR --json branch list --registry test-reg > /tmp/branch-list.json 2>&1 || {
+        cat /tmp/branch-list.json
+        fail "apr --json branch list succeeds"
+      }
+      ${pkgs.jq}/bin/jq -e --arg default "$DEFAULT_BRANCH" \
+        '.branches
+          | (any(.name == $default and .current == true and .remote == false)
+            and any(.name == "feature-1" and .current == false and .remote == false))' \
+        /tmp/branch-list.json >/dev/null || {
+        cat /tmp/branch-list.json
+        fail "apr --json branch list shows merged feature branch"
+      }
+      pass "apr --json branch list shows merged feature branch"
 
       $APR branch delete feature-1 --registry test-reg \
         > /tmp/branch-delete.out 2>&1 || {
@@ -2926,6 +3016,20 @@ in {
       }
       assert_file_not_contains /tmp/branch-list-after-delete.out "feature-1" \
         "apr branch list hides deleted feature branch"
+      $APR --json branch list --registry test-reg \
+        > /tmp/branch-list-after-delete.json 2>&1 || {
+        cat /tmp/branch-list-after-delete.json
+        fail "apr --json branch list succeeds after delete"
+      }
+      ${pkgs.jq}/bin/jq -e --arg default "$DEFAULT_BRANCH" \
+        '.branches
+          | (any(.name == $default and .current == true and .remote == false)
+            and all(.name != "feature-1"))' \
+        /tmp/branch-list-after-delete.json >/dev/null || {
+        cat /tmp/branch-list-after-delete.json
+        fail "apr --json branch list hides deleted feature branch"
+      }
+      pass "apr --json branch list hides deleted feature branch"
 
       echo "==> Test: APR merge --no-ff keeps an explicit maintainer merge commit"
 
@@ -3124,6 +3228,22 @@ in {
       cat /tmp/branch-initial-push.out
       assert_file_contains /tmp/branch-initial-push.out "Pushed." \
         "apr push reports initial default branch push"
+      $APR --json branch list --registry test-reg \
+        > /tmp/branch-list-after-push.json 2>&1 || {
+        cat /tmp/branch-list-after-push.json
+        fail "apr --json branch list succeeds after pushing default branch"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        --arg default "$DEFAULT_BRANCH" \
+        --arg remote "origin/$DEFAULT_BRANCH" \
+        '.branches
+          | (any(.name == $default and .current == true and .remote == false)
+            and any(.name == $remote and .current == false and .remote == true))' \
+        /tmp/branch-list-after-push.json >/dev/null || {
+        cat /tmp/branch-list-after-push.json
+        fail "apr --json branch list reports remote tracking branch"
+      }
+      pass "apr --json branch list reports remote tracking branch"
 
       COLLAB_DIR="$REG_STORAGE/collab-reg"
       git clone /tmp/branch-origin.git "$COLLAB_DIR" \

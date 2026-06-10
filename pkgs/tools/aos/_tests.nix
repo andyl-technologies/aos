@@ -436,10 +436,36 @@ in {
           git -C "$reg" add -A
           git -C "$reg" commit -m "release: hostpkg 1.0.0" > "$work/git-commit-package.out" 2>&1
 
+          run_clean ${self}/bin/apr --json branch create host-json-feature --registry host-reg \
+            > "$work/apr-branch-create-json.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "create"
+              and .branch == "host-json-feature"
+              and .current == "stable"
+              and (.branches | any(.name == "host-json-feature" and .current == false))
+              and (.branches | any(.name == "stable" and .current == true))' \
+            "$work/apr-branch-create-json.json" >/dev/null
+          run_clean ${self}/bin/apr --json branch delete host-json-feature --registry host-reg \
+            > "$work/apr-branch-delete-json.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "delete"
+              and .branch == "host-json-feature"
+              and .current == "stable"
+              and (.branches | all(.name != "host-json-feature"))
+              and (.branches | any(.name == "stable" and .current == true))' \
+            "$work/apr-branch-delete-json.json" >/dev/null
+
           run_clean ${self}/bin/apr branch create host-feature --registry host-reg > "$work/apr-branch-create.out" 2>&1
           grep -q "Created branch 'host-feature'" "$work/apr-branch-create.out"
           run_clean ${self}/bin/apr branch switch host-feature --registry host-reg > "$work/apr-branch-switch.out" 2>&1
           grep -q "Switched to branch 'host-feature'" "$work/apr-branch-switch.out"
+          run_clean ${self}/bin/apr --json branch list --registry host-reg \
+            > "$work/apr-branch-list-feature-current.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.branches
+              | (any(.name == "host-feature" and .current == true)
+                and any(.name == "stable" and .current == false))' \
+            "$work/apr-branch-list-feature-current.json" >/dev/null
           printf '%s\n' \
             '[package]' \
             'name = "hostpkg"' \
@@ -467,6 +493,13 @@ in {
           grep -q "Switched to branch 'stable'" "$work/apr-branch-switch-stable.out"
           run_clean ${self}/bin/apr branch list --registry host-reg > "$work/apr-branch-list.out" 2>&1
           grep -q "host-feature" "$work/apr-branch-list.out"
+          run_clean ${self}/bin/apr --json branch list --registry host-reg \
+            > "$work/apr-branch-list-stable-current.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.branches
+              | (any(.name == "stable" and .current == true)
+                and any(.name == "host-feature" and .current == false))' \
+            "$work/apr-branch-list-stable-current.json" >/dev/null
           run_clean ${self}/bin/apr merge host-feature --registry host-reg > "$work/apr-merge-feature.out" 2>&1
           grep -q "Merged 'host-feature'" "$work/apr-merge-feature.out"
           run_clean ${self}/bin/apr branch delete host-feature --registry host-reg > "$work/apr-branch-delete-feature.out" 2>&1
@@ -476,6 +509,13 @@ in {
             cat "$work/apr-branch-list-after-delete.out"
             exit 1
           fi
+          run_clean ${self}/bin/apr --json branch list --registry host-reg \
+            > "$work/apr-branch-list-after-delete.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.branches
+              | (any(.name == "stable" and .current == true)
+                and all(.name != "host-feature"))' \
+            "$work/apr-branch-list-after-delete.json" >/dev/null
 
           run_clean ${self}/bin/apr packages --registry host-reg > "$work/apr-packages.out" 2>&1
           grep -q "hostpkg 1.0.0" "$work/apr-packages.out"
