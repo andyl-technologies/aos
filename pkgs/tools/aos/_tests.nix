@@ -146,14 +146,15 @@ in {
           nix_conf="$work/nix-conf"
           cache_port="18137"
           install_cache_port="18138"
-          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$nix_conf"
+          mkdir -p "$home" "$config" "$data" "$cache" "$cache/nix" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$state_dir/log/nix" "$nix_conf"
           profile="$profile_root/per-user/unknown"
           default_profile="/var/lib/profiles/per-user/unknown"
           cache_server_pid=""
           install_cache_server_pid=""
-          cat > "$nix_conf/nix.conf" << 'NIXCONF'
+          cat > "$nix_conf/nix.conf" << NIXCONF
           experimental-features = nix-command
           sandbox = false
+          substituters =
           NIXCONF
 
           cleanup() {
@@ -222,6 +223,19 @@ in {
               NIX_STATE_DIR="$state_dir" \
               PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
               nix-store "$@"
+          }
+
+          nix_build() {
+            env \
+              HOME="$home" \
+              XDG_CACHE_HOME="$cache" \
+              NIX_REMOTE="" \
+              NIX_CONF_DIR="$nix_conf" \
+              NIX_STORE_DIR="$store_dir" \
+              NIX_STATE_DIR="$state_dir" \
+              NIX_LOG_DIR="$state_dir/log/nix" \
+              PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
+              nix-build "$@"
           }
 
           nix_store --init > "$work/nix-store-init.out" 2>&1
@@ -1095,19 +1109,110 @@ in {
           test -f "$upload_root/nar/$pkg_hash-hostpkg.nar"
           assert_no_profile
 
-          install_src="$work/host-install-src"
-          mkdir -p "$install_src/bin" "$install_src/share/host-install"
-          printf '%s\n' \
-            '#!${pkgs.bash}/bin/bash' \
-            'printf "host install package executed\n"' \
-            > "$install_src/bin/host-install-tool"
-          chmod +x "$install_src/bin/host-install-tool"
-          printf '%s\n' "host install payload" > "$install_src/share/host-install/payload.txt"
-          install_store=$(nix_store --add "$install_src")
+          cat > "$work/host-build-leaf.sh" << 'SCRIPT'
+          set -eu
+          @AOS_COREUTILS@/bin/mkdir -p "$out/bin" "$out/share/host-leaf"
+          {
+            printf '%s\n' '#!@AOS_BASH@/bin/bash'
+            printf '%s\n' 'printf "host leaf package executed\n"'
+          } > "$out/bin/host-leaf-tool"
+          @AOS_COREUTILS@/bin/chmod +x "$out/bin/host-leaf-tool"
+          printf '%s\n' "host leaf payload" > "$out/share/host-leaf/payload.txt"
+          SCRIPT
+          cat > "$work/host-build-app-v1.sh" << 'SCRIPT'
+          set -eu
+          leaf="$1"
+          @AOS_COREUTILS@/bin/mkdir -p "$out/bin" "$out/share/host-install"
+          {
+            printf '%s\n' '#!@AOS_BASH@/bin/bash'
+            printf '%s\n' "\"$leaf/bin/host-leaf-tool\""
+            printf '%s\n' 'printf "host install package executed\n"'
+          } > "$out/bin/host-install-tool"
+          @AOS_COREUTILS@/bin/chmod +x "$out/bin/host-install-tool"
+          printf '%s\n' "host install payload" > "$out/share/host-install/payload.txt"
+          SCRIPT
+          cat > "$work/host-build-app-v2.sh" << 'SCRIPT'
+          set -eu
+          leaf="$1"
+          @AOS_COREUTILS@/bin/mkdir -p "$out/bin" "$out/share/host-install"
+          {
+            printf '%s\n' '#!@AOS_BASH@/bin/bash'
+            printf '%s\n' "\"$leaf/bin/host-leaf-tool\""
+            printf '%s\n' 'printf "host install package v2 executed\n"'
+          } > "$out/bin/host-install-tool"
+          @AOS_COREUTILS@/bin/chmod +x "$out/bin/host-install-tool"
+          printf '%s\n' "host install payload v2" > "$out/share/host-install/payload.txt"
+          SCRIPT
+          substitute_fixture_paths() {
+            ${pkgs.python3}/bin/python3 - "$1" '${pkgs.bash}' '${pkgs.coreutils}' << 'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          path.write_text(
+              path.read_text()
+              .replace("@AOS_BASH@", sys.argv[2])
+              .replace("@AOS_COREUTILS@", sys.argv[3])
+          )
+          PY
+          }
+          substitute_fixture_paths "$work/host-build-leaf.sh"
+          substitute_fixture_paths "$work/host-build-app-v1.sh"
+          substitute_fixture_paths "$work/host-build-app-v2.sh"
+          cat > "$work/host-install-fixtures.nix" << 'NIX'
+          let
+            bash = "@AOS_BASH@/bin/bash";
+            system = "x86_64-linux";
+            leaf = derivation {
+              name = "hostleaf-1.0.0";
+              inherit system;
+              builder = bash;
+              args = [ ./host-build-leaf.sh ];
+            };
+            app = name: builderScript: derivation {
+              inherit name system;
+              builder = bash;
+              args = [
+                builderScript
+                leaf
+              ];
+              inherit leaf;
+            };
+          in {
+            inherit leaf;
+            appV1 = app "hostinstall-1.0.0" ./host-build-app-v1.sh;
+            appV2 = app "hostinstall-2.0.0" ./host-build-app-v2.sh;
+          }
+          NIX
+          substitute_fixture_paths "$work/host-install-fixtures.nix"
+
+          install_leaf_store=$(nix_build "$work/host-install-fixtures.nix" -A leaf --no-out-link)
+          install_leaf_hash=$(basename "$install_leaf_store" | cut -d- -f1)
+          install_store=$(nix_build "$work/host-install-fixtures.nix" -A appV1 --no-out-link)
           install_hash=$(basename "$install_store" | cut -d- -f1)
 
           run_clean ${self}/bin/apr create host-install-reg > "$work/apr-create-host-install.out" 2>&1
           install_reg="$data/apm/registries/host-install-reg"
+          run_clean ${self}/bin/apr --json publish "$install_leaf_store" \
+            --name hostleaf \
+            --version 1.0.0 \
+            --description "Host APM dependency fixture" \
+            --license MIT \
+            --maintainer host@example.invalid \
+            --registry host-install-reg \
+            --no-commit > "$work/apr-publish-host-leaf.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg store "$install_leaf_store" \
+            '.action == "publish"
+              and .registry == "host-install-reg"
+              and .package == "hostleaf"
+              and .version == "1.0.0"
+              and .platform == "x86_64-linux"
+              and .store_path == $store
+              and (.nar_hash | startswith("sha256-"))
+              and (.closure_size > 0)
+              and .committed == false' \
+            "$work/apr-publish-host-leaf.json" >/dev/null
           run_clean ${self}/bin/apr --json publish "$install_store" \
             --name hostinstall \
             --version 1.0.0 \
@@ -1138,6 +1243,7 @@ in {
               and .current == "stable"
               and (.head | length == 64)' \
             "$work/apr-publish-host-install.json" >/dev/null
+          grep -q "$install_leaf_hash" "$install_reg/closures/$install_hash"
           run_clean ${self}/bin/apr --json cache generate \
             --registry host-install-reg \
             --output "$work/install-static-cache-output/cache" \
@@ -1152,9 +1258,9 @@ in {
             '.action == "cache_generate"
               and .registry == "host-install-reg"
               and .output_dir == $output
-              and .paths >= 1
-              and .narinfos >= 1
-              and .nars >= 1
+              and .paths >= 2
+              and .narinfos >= 2
+              and .nars >= 2
               and .cache_url == $cache_url
               and .priority == 77
               and .upload_urls == [$upload_url]
@@ -1162,8 +1268,10 @@ in {
               and .cache_pointer_updated == true
               and .committed == false' \
             "$work/apr-cache-host-install.json" >/dev/null
+          test -f "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
           test -f "$work/install-static-cache-output/cache/$install_hash.narinfo"
           test -f "$work/install-static-cache-upload/cache/nix-cache-info"
+          test -f "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
           test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
           find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
           git -C "$install_reg" add -A
@@ -1186,16 +1294,23 @@ in {
 
           nix_store --delete --ignore-liveness "$install_store" \
             > "$work/nix-delete-host-install.out" 2>&1
+          nix_store --delete --ignore-liveness "$install_leaf_store" \
+            > "$work/nix-delete-host-leaf.out" 2>&1
           if nix_store --check-validity "$install_store" \
             > "$work/nix-valid-host-install-deleted.out" 2>&1; then
             cat "$work/nix-valid-host-install-deleted.out"
+            exit 1
+          fi
+          if nix_store --check-validity "$install_leaf_store" \
+            > "$work/nix-valid-host-leaf-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-leaf-deleted.out"
             exit 1
           fi
 
           run_clean ${self}/bin/apm --json install hostinstall \
             --registry host-install-client \
             --yes > "$work/apm-install-host-install.json"
-          ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
             '.action == "install"
               and .status == "installed"
               and .requested == ["hostinstall"]
@@ -1210,16 +1325,22 @@ in {
               and .roots[0].version == "1.0.0"
               and .roots[0].store_path == $store
               and .roots[0].explicit == true
-              and (.closure | length >= 1)
+              and (.closure | length >= 2)
               and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
-              and (.downloads.planned >= 1)
-              and (.downloads.downloaded >= 1)
-              and (.downloads.imported >= 1)' \
+              and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+              and (.downloads.planned >= 2)
+              and (.downloads.downloaded >= 2)
+              and (.downloads.imported >= 2)' \
             "$work/apm-install-host-install.json" >/dev/null
           nix_store --check-validity "$install_store" \
             > "$work/nix-valid-host-install-imported.out" 2>&1
+          nix_store --check-validity "$install_leaf_store" \
+            > "$work/nix-valid-host-leaf-imported.out" 2>&1
           "$profile/current/bin/host-install-tool" > "$work/host-install-run.out"
+          grep -q "host leaf package executed" "$work/host-install-run.out"
           grep -q "host install package executed" "$work/host-install-run.out"
+          "$profile/current/bin/host-leaf-tool" > "$work/host-leaf-run.out"
+          grep -q "host leaf package executed" "$work/host-leaf-run.out"
           assert_default_profile_absent
 
           run_clean ${self}/bin/apm verify hostinstall > "$work/apm-verify-host-install.out" 2>&1
@@ -1237,16 +1358,43 @@ in {
           assert_default_profile_absent
           run_clean ${self}/bin/apm files hostinstall > "$work/apm-files-host-install.out" 2>&1
           grep -q "bin/host-install-tool" "$work/apm-files-host-install.out"
+          run_clean ${self}/bin/apm --json files hostleaf > "$work/apm-files-host-leaf.json"
+          ${pkgs.jq}/bin/jq -e \
+            'index("bin/host-leaf-tool") != null and index("share/host-leaf/payload.txt") != null' \
+            "$work/apm-files-host-leaf.json" >/dev/null
+          run_clean ${self}/bin/apm --json depends hostinstall > "$work/apm-depends-host-install.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg app "$install_hash" \
+            --arg leaf "$install_leaf_hash" \
+            '.package == "hostinstall"
+              and .registry == "host-install-client"
+              and .installed == true
+              and .tree.name == "hostinstall"
+              and .tree.store_hash == $app
+              and (.tree.children | any(.name == "hostleaf"
+                and .version == "1.0.0"
+                and .store_hash == $leaf))
+              and .unique_store_paths >= 2' \
+            "$work/apm-depends-host-install.json" >/dev/null
+          run_clean ${self}/bin/apm --json rdepends hostleaf > "$work/apm-rdepends-host-leaf.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg leaf "$install_leaf_hash" \
+            '.package == "hostleaf"
+              and .target_versions == "1.0.0"
+              and (.target_hashes | index($leaf) != null)
+              and (.dependents | any(.name == "hostinstall" and .version == "1.0.0"))' \
+            "$work/apm-rdepends-host-leaf.json" >/dev/null
+          run_clean ${self}/bin/apm --json policy hostleaf > "$work/apm-policy-host-leaf.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.package == "hostleaf"
+              and .installed == "1.0.0"
+              and .candidate == "1.0.0"
+              and (.versions | any(.version == "1.0.0"
+                and .registry == "host-install-client"
+                and .installed == true))' \
+            "$work/apm-policy-host-leaf.json" >/dev/null
 
-          install_src_v2="$work/host-install-src-v2"
-          mkdir -p "$install_src_v2/bin" "$install_src_v2/share/host-install"
-          printf '%s\n' \
-            '#!${pkgs.bash}/bin/bash' \
-            'printf "host install package v2 executed\n"' \
-            > "$install_src_v2/bin/host-install-tool"
-          chmod +x "$install_src_v2/bin/host-install-tool"
-          printf '%s\n' "host install payload v2" > "$install_src_v2/share/host-install/payload.txt"
-          install_store_v2=$(nix_store --add "$install_src_v2")
+          install_store_v2=$(nix_build "$work/host-install-fixtures.nix" -A appV2 --no-out-link)
           install_hash_v2=$(basename "$install_store_v2" | cut -d- -f1)
           run_clean ${self}/bin/apr publish "$install_store_v2" \
             --name hostinstall \
@@ -1270,9 +1418,9 @@ in {
             '.action == "cache_generate"
               and .registry == "host-install-reg"
               and .output_dir == $output
-              and .paths >= 2
-              and .narinfos >= 2
-              and .nars >= 2
+              and .paths >= 3
+              and .narinfos >= 3
+              and .nars >= 3
               and .cache_url == $cache_url
               and .priority == 77
               and .upload_urls == [$upload_url]
@@ -1280,7 +1428,9 @@ in {
               and .cache_pointer_updated == false
               and .committed == false' \
             "$work/apr-cache-host-install-v2.json" >/dev/null
+          test -f "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
           test -f "$work/install-static-cache-output/cache/$install_hash_v2.narinfo"
+          test -f "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
           test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
           test -f "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
           find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
@@ -1289,23 +1439,38 @@ in {
             > "$work/git-commit-host-install-v2.out" 2>&1
 
           run_clean ${self}/bin/apm --json update --registry host-install-client \
-            > "$work/apm-update-host-install-v2.json"
+            > "$work/apm-update-host-install-v2.json" 2>&1 || {
+            cat "$work/apm-update-host-install-v2.json"
+            exit 1
+          }
           ${pkgs.jq}/bin/jq -e \
             '.registry == "host-install-client"
               and .updated == 1
               and (.registries | length == 1)
               and .registries[0].registry == "host-install-client"
               and .registries[0].status == "updated"
-              and .registries[0].packages == 1
-              and .registries[0].updated == 1
+              and .registries[0].packages == 2
+              and .registries[0].updated == 2
               and .registries[0].added == 0
               and .registries[0].removed == 0
               and (.registries[0].commit | length == 64)' \
-            "$work/apm-update-host-install-v2.json" >/dev/null
+            "$work/apm-update-host-install-v2.json" >/dev/null || {
+            cat "$work/apm-update-host-install-v2.json"
+            exit 1
+          }
           run_clean ${self}/bin/apm list --upgradable \
-            > "$work/apm-upgradable-host-install.out" 2>&1
-          grep -q "hostinstall/host-install-client" "$work/apm-upgradable-host-install.out"
-          grep -q "upgradable: 2.0.0" "$work/apm-upgradable-host-install.out"
+            > "$work/apm-upgradable-host-install.out" 2>&1 || {
+            cat "$work/apm-upgradable-host-install.out"
+            exit 1
+          }
+          grep -q "hostinstall/host-install-client" "$work/apm-upgradable-host-install.out" || {
+            cat "$work/apm-upgradable-host-install.out"
+            exit 1
+          }
+          grep -q "upgradable: 2.0.0" "$work/apm-upgradable-host-install.out" || {
+            cat "$work/apm-upgradable-host-install.out"
+            exit 1
+          }
 
           nix_store --delete --ignore-liveness "$install_store_v2" \
             > "$work/nix-delete-host-install-v2.out" 2>&1
@@ -1339,6 +1504,7 @@ in {
           nix_store --check-validity "$install_store_v2" \
             > "$work/nix-valid-host-install-v2-imported.out" 2>&1
           "$profile/current/bin/host-install-tool" > "$work/host-install-v2-run.out"
+          grep -q "host leaf package executed" "$work/host-install-v2-run.out"
           grep -q "host install package v2 executed" "$work/host-install-v2-run.out"
           assert_default_profile_absent
 
@@ -1577,9 +1743,37 @@ in {
             cat "$work/apm-installed-after-host-remove.out"
             exit 1
           fi
+          grep -q "hostleaf/host-install-client" "$work/apm-installed-after-host-remove.out"
           assert_default_profile_absent
 
-          test "$(profile_generation_count)" = "5"
+          run_clean ${self}/bin/apm --json autoremove --yes \
+            > "$work/apm-autoremove-host-leaf.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_leaf_store" \
+            '.action == "autoremove"
+              and .status == "removed"
+              and .requested == []
+              and .autoremove == true
+              and .dry_run == false
+              and .generation == 6
+              and .removed == 1
+              and .explicit_removed == 0
+              and .orphan_removed == 1
+              and .packages == []
+              and (.orphans | length == 1)
+              and .orphans[0].name == "hostleaf"
+              and .orphans[0].version == "1.0.0"
+              and .orphans[0].registry == "host-install-client"
+              and .orphans[0].store_path == $store
+              and .orphans[0].explicit == false' \
+            "$work/apm-autoremove-host-leaf.json" >/dev/null
+          run_clean ${self}/bin/apm list --installed > "$work/apm-installed-after-host-autoremove.out" 2>&1
+          if grep -q "hostleaf" "$work/apm-installed-after-host-autoremove.out"; then
+            cat "$work/apm-installed-after-host-autoremove.out"
+            exit 1
+          fi
+          assert_default_profile_absent
+
+          test "$(profile_generation_count)" = "6"
           run_clean ${self}/bin/apm --json clean --generations --keep 1 \
             > "$work/apm-clean-host-install-generations.json"
           ${pkgs.jq}/bin/jq -e \
@@ -1587,23 +1781,39 @@ in {
               and .mode == "generations"
               and .status == "cleaned"
               and .keep == 1
-              and .current_generation == 5
-              and .generations_before == [1, 2, 3, 4, 5]
-              and .generations_after == [5]
-              and .removed_generations == [1, 2, 3, 4]
-              and .removed == 4' \
+              and .current_generation == 6
+              and .generations_before == [1, 2, 3, 4, 5, 6]
+              and .generations_after == [6]
+              and .removed_generations == [1, 2, 3, 4, 5]
+              and .removed == 5' \
             "$work/apm-clean-host-install-generations.json" >/dev/null
           test "$(profile_generation_count)" = "1"
-          test -d "$profile/gen-5"
+          test -d "$profile/gen-6"
           test ! -e "$profile/gen-1"
           test ! -e "$profile/gen-2"
           test ! -e "$profile/gen-3"
           test ! -e "$profile/gen-4"
+          test ! -e "$profile/gen-5"
           assert_default_profile_absent
 
-          run_clean ${self}/bin/apm gc > "$work/apm-gc-host-install.out" 2>&1
-          grep -q "Running garbage collection" "$work/apm-gc-host-install.out"
-          grep -q "Garbage collection complete" "$work/apm-gc-host-install.out"
+          run_clean ${self}/bin/apm --json gc > "$work/apm-gc-host-install.json" 2>&1 || {
+            cat "$work/apm-gc-host-install.json"
+            exit 1
+          }
+          ${pkgs.jq}/bin/jq -e \
+            --arg store_dir "$store_dir" \
+            --arg state_dir "$state_dir" \
+            '.action == "gc"
+              and .status == "completed"
+              and .success == true
+              and .nix_store_dir == $store_dir
+              and .nix_state_dir == $state_dir
+              and (.stdout | type == "string")
+              and (.stderr | type == "string")' \
+            "$work/apm-gc-host-install.json" >/dev/null || {
+            cat "$work/apm-gc-host-install.json"
+            exit 1
+          }
           assert_default_profile_absent
 
           mkdir -p "$out"

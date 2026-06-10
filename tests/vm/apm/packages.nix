@@ -388,7 +388,12 @@
       pkgs.zstd
       sourcefulV1
     ];
-  gcAltDeps = fixtures.commonDeps ++ nixRuntimeDeps;
+  gcAltDeps =
+    fixtures.commonDeps
+    ++ nixRuntimeDeps
+    ++ [
+      pkgs.jq
+    ];
   realInstallDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -4513,13 +4518,24 @@ in {
 
       echo "==> Test: apm gc honors alternate Nix state DB"
 
-      $APM gc > /tmp/gc-alt.out 2>&1 || {
-        cat /tmp/gc-alt.out
+      $APM --json gc > /tmp/gc-alt.json 2>&1 || {
+        cat /tmp/gc-alt.json
         fail "apm gc succeeds using AOS_NIX_STATE_DIR"
       }
-      cat /tmp/gc-alt.out
-      assert_file_contains /tmp/gc-alt.out "Garbage collection complete" \
-        "apm gc runs through alternate Nix state"
+      ${pkgs.jq}/bin/jq -e \
+        --arg store "$AOS_NIX_STORE_DIR" \
+        --arg state "$AOS_NIX_STATE_DIR" \
+        '.action == "gc"
+          and .status == "completed"
+          and .success == true
+          and .nix_store_dir == $store
+          and .nix_state_dir == $state
+          and (.stdout | type == "string")
+          and (.stderr | type == "string")' \
+        /tmp/gc-alt.json >/dev/null || {
+        cat /tmp/gc-alt.json
+        fail "apm --json gc reports alternate Nix state"
+      }
 
       check_fail
     '';

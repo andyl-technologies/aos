@@ -1251,14 +1251,14 @@ pub async fn run(
             let outcome =
                 remove::run(&config, packages, auto_remove, dry_run, yes, printer).await?;
             if config.settings.auto_gc && auto_remove && !dry_run && outcome.orphan_count > 0 {
-                clean::run_gc(printer).await?;
+                clean::run_gc_after_mutation(printer).await?;
             }
             Ok(())
         }
         PackageCommand::Autoremove => {
             let outcome = remove::run_autoremove(&config, dry_run, yes, printer).await?;
             if config.settings.auto_gc && !dry_run && outcome.orphan_count > 0 {
-                clean::run_gc(printer).await?;
+                clean::run_gc_after_mutation(printer).await?;
             }
             Ok(())
         }
