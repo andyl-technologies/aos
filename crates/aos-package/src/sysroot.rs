@@ -20,8 +20,8 @@ use aos_systemd::{FailedUnitsReport, JobResult, SystemdClient};
 
 use crate::config::ApmConfig;
 use crate::download::{
-    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfos,
-    resolve_mirror,
+    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
+    fetch_narinfos, resolve_mirror,
 };
 use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
@@ -140,7 +140,7 @@ pub async fn install_system(
     let resolved: Vec<ResolvedDownload> = if requests.is_empty() {
         Vec::new()
     } else {
-        fetch_narinfos(
+        fetch_narinfo_closure(
             std::sync::Arc::clone(&engine),
             &requests,
             config.settings.parallel_downloads,

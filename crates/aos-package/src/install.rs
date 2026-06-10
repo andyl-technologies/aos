@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::download::{
-    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfos,
+    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     resolve_mirror,
 };
 use super::profile::Profile;
@@ -137,7 +137,7 @@ pub async fn run(
     let resolved: Vec<ResolvedDownload> = if requests.is_empty() {
         Vec::new()
     } else {
-        fetch_narinfos(
+        fetch_narinfo_closure(
             std::sync::Arc::clone(&engine),
             &requests,
             config.settings.parallel_downloads,

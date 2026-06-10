@@ -668,16 +668,16 @@ fn ensure_commit_identity(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create a git commit in the registry directory.
-///
-/// When `signing_key` is the path to an OpenSSH Ed25519 private key, the
-/// commit is SSH-signed (`gpg.format=ssh`), matching the tag-signing setup
-/// in [`sign_tag`]. Clients verify head-commit signatures during sync, so
-/// commits on registries with a non-empty trust roster should always be
-/// signed.
-fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
-    ensure_commit_identity(dir)?;
-    git(dir, &["add", "-A"])?;
+fn registry_relative_path(dir: &Path, path: &Path) -> Result<String> {
+    let rel = path
+        .strip_prefix(dir)
+        .with_context(|| format!("{} is not under {}", path.display(), dir.display()))?;
+    rel.to_str()
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow::anyhow!("registry path is not UTF-8: {}", path.display()))
+}
+
+fn commit_staged_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
     match signing_key {
         Some(key) => {
             let signing_key_config = format!("user.signingkey={key}");
@@ -700,6 +700,59 @@ fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Resu
         }
     }
     Ok(())
+}
+
+/// Create a git commit for a constrained set of registry paths.
+fn commit_registry_paths(
+    dir: &Path,
+    message: &str,
+    paths: &[PathBuf],
+    signing_key: Option<&str>,
+) -> Result<()> {
+    if paths.is_empty() {
+        bail!("no registry paths supplied for commit");
+    }
+
+    ensure_commit_identity(dir)?;
+
+    let relative_paths = paths
+        .iter()
+        .map(|path| registry_relative_path(dir, path))
+        .collect::<Result<Vec<_>>>()?;
+
+    let output = gitcmd::hermetic()
+        .arg("add")
+        .arg("-A")
+        .arg("--")
+        .args(&relative_paths)
+        .current_dir(dir)
+        .output()
+        .with_context(|| {
+            format!(
+                "running git add for {} constrained path(s) in {}",
+                relative_paths.len(),
+                dir.display()
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git add failed: {}", stderr.trim());
+    }
+
+    commit_staged_registry(dir, message, signing_key)
+}
+
+/// Create a git commit in the registry directory.
+///
+/// When `signing_key` is the path to an OpenSSH Ed25519 private key, the
+/// commit is SSH-signed (`gpg.format=ssh`), matching the tag-signing setup
+/// in [`sign_tag`]. Clients verify head-commit signatures during sync, so
+/// commits on registries with a non-empty trust roster should always be
+/// signed.
+fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
+    ensure_commit_identity(dir)?;
+    git(dir, &["add", "-A"])?;
+    commit_staged_registry(dir, message, signing_key)
 }
 
 /// Refresh the static dumb-HTTP object indexes after refs or commits change.
@@ -1016,7 +1069,12 @@ pub async fn publish(
     if !no_commit {
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
-        commit_registry(&dir, msg, signing_key.as_deref())?;
+        let staged_paths = [
+            toml_path,
+            dir.join("closures").join(extract_hash(&info.path)),
+            dir.join(".gitattributes"),
+        ];
+        commit_registry_paths(&dir, msg, &staged_paths, signing_key.as_deref())?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after publish")?;
         printer.success(&format!("Committed: {msg}"));
@@ -3635,6 +3693,7 @@ pub async fn release(
                 "Would publish {store_path} into release metadata for {version}."
             ));
         } else {
+            ensure_release_worktree_clean(&dir)?;
             let release_version = version.to_string();
             publish(
                 config,
