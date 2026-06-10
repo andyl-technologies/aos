@@ -1627,6 +1627,128 @@ in {
           git -C "$install_reg" add -A
           git -C "$install_reg" commit -m "release: hostinstall 2.0.0" \
             > "$work/git-commit-host-install-v2.out" 2>&1
+          run_clean ${self}/bin/apr --json release 2.0.0 \
+            --registry host-install-reg \
+            --key "$work/host-install-release-key" \
+            --cache-output "$work/install-release-cache-v2/cache" \
+            --cache-url "http://127.0.0.1:$install_cache_port/cache" \
+            --cache-priority 77 \
+            --upload-url "file://$work/install-static-cache-upload/cache" \
+            --channel stable \
+            --count 256 > "$work/apr-release-host-install-v2.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg cache "$work/install-release-cache-v2/cache" \
+            --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
+            --arg upload_url "file://$work/install-static-cache-upload/cache" \
+            '.action == "release"
+              and .status == "released"
+              and .registry == "host-install-reg"
+              and .version == "2.0.0"
+              and .dry_run == false
+              and .cache_output == $cache
+              and .cache_url == $cache_url
+              and .cache_priority == 77
+              and .cache_pointer_updated == false
+              and .upload_urls == [$upload_url]
+              and .channel.name == "stable"
+              and .channel.action == "advance"
+              and .channel.count == 256
+              and .channel.touched_partitions == 256
+              and (.cache.paths >= 4)
+              and (.cache.narinfos >= 4)
+              and (.cache.nars >= 4)
+              and .cache.output_dir == $cache
+              and (.full_pack | startswith("pack-") and endswith(".pack"))
+              and (.deltas | index("delta-1.0.0.pack.zst") != null)
+              and (.uploaded_files > 0)
+              and (.uploaded_bytes > 0)' \
+            "$work/apr-release-host-install-v2.json" >/dev/null
+          git -C "$install_reg" rev-parse --verify '2.0.0^{tag}' \
+            > "$work/apr-release-host-install-v2-tag.out"
+          test -f "$work/install-release-cache-v2/cache/$install_leaf_hash_v2.narinfo"
+          test -f "$work/install-release-cache-v2/cache/$install_hash_v2.narinfo"
+          test -f "$work/install-static-cache-upload/cache/releases/2/0/0/objects/info/packs"
+          test -f "$work/install-static-cache-upload/cache/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
+          grep -q "BEGIN SSH SIGNATURE" \
+            "$work/install-static-cache-upload/cache/channels/stable/00"
+
+          main_home="$home"
+          main_config="$config"
+          main_data="$data"
+          main_cache="$cache"
+          main_profile_root="$profile_root"
+          main_profile="$profile"
+          home="$work/channel-v2-home"
+          config="$work/channel-v2-config"
+          data="$work/channel-v2-share"
+          cache="$work/channel-v2-cache"
+          profile_root="$work/channel-v2-profiles"
+          profile="$profile_root/per-user/unknown"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+          run_clean ${self}/bin/apm registry add "http://127.0.0.1:$install_cache_port/cache" \
+            --name host-install-channel \
+            --channel stable \
+            --trust-key "$install_channel_trust_key" \
+            > "$work/apm-add-host-install-channel-v2.out" 2>&1
+          grep -q "Registry 'host-install-channel' added" \
+            "$work/apm-add-host-install-channel-v2.out"
+          channel_v2_config="$config/apm/registries.d/host-install-channel.toml"
+          grep -q 'channel = "stable"' "$channel_v2_config"
+          grep -q 'floor = "2.0.0"' "$channel_v2_config"
+          run_clean ${self}/bin/apm search hostinstall \
+            --registry host-install-channel \
+            > "$work/apm-search-host-install-channel-v2.out" 2>&1
+          grep -q "hostinstall/host-install-channel 2.0.0" \
+            "$work/apm-search-host-install-channel-v2.out"
+          nix_store --delete --ignore-liveness "$install_store_v2" \
+            > "$work/nix-delete-host-install-channel-v2.out" 2>&1
+          nix_store --delete --ignore-liveness "$install_leaf_store_v2" \
+            > "$work/nix-delete-host-leaf-channel-v2.out" 2>&1
+          if nix_store --check-validity "$install_store_v2" \
+            > "$work/nix-valid-host-install-channel-v2-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-install-channel-v2-deleted.out"
+            exit 1
+          fi
+          if nix_store --check-validity "$install_leaf_store_v2" \
+            > "$work/nix-valid-host-leaf-channel-v2-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-leaf-channel-v2-deleted.out"
+            exit 1
+          fi
+          run_clean ${self}/bin/apm --json install hostinstall \
+            --registry host-install-channel \
+            --yes > "$work/apm-install-host-install-channel-v2.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+            '.action == "install"
+              and .status == "installed"
+              and .requested == ["hostinstall"]
+              and .generation == 1
+              and (.roots | length == 1)
+              and .roots[0].name == "hostinstall"
+              and .roots[0].registry == "host-install-channel"
+              and .roots[0].version == "2.0.0"
+              and .roots[0].store_path == $store
+              and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+              and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+              and (.downloads.planned >= 2)
+              and (.downloads.downloaded >= 2)
+              and (.downloads.imported >= 2)' \
+            "$work/apm-install-host-install-channel-v2.json" >/dev/null
+          nix_store --check-validity "$install_store_v2" \
+            > "$work/nix-valid-host-install-channel-v2-imported.out" 2>&1
+          nix_store --check-validity "$install_leaf_store_v2" \
+            > "$work/nix-valid-host-leaf-channel-v2-imported.out" 2>&1
+          "$profile/current/bin/host-install-tool" \
+            > "$work/host-install-channel-v2-run.out"
+          grep -q "host leaf package v2 executed" "$work/host-install-channel-v2-run.out"
+          grep -q "host install package v2 executed" "$work/host-install-channel-v2-run.out"
+          assert_default_profile_absent
+          rm -rf "$profile_root"
+          home="$main_home"
+          config="$main_config"
+          data="$main_data"
+          cache="$main_cache"
+          profile_root="$main_profile_root"
+          profile="$main_profile"
 
           run_clean ${self}/bin/apm --json update --registry host-install-client \
             > "$work/apm-update-host-install-v2-before-push.json" 2>&1 || {
