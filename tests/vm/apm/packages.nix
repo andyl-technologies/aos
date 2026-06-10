@@ -2720,6 +2720,26 @@ in {
         fi
       }
 
+      assert_generation_exists() {
+        generation="$1"
+        label="$2"
+        if [ -d "$PROFILE/gen-$generation" ]; then
+          pass "$label"
+        else
+          fail "$label (missing $PROFILE/gen-$generation)"
+        fi
+      }
+
+      assert_generation_missing() {
+        generation="$1"
+        label="$2"
+        if [ ! -e "$PROFILE/gen-$generation" ]; then
+          pass "$label"
+        else
+          fail "$label ($PROFILE/gen-$generation should be pruned)"
+        fi
+      }
+
       assert_current_tool_version() {
         version="$1"
         "$PROFILE_BIN" > "/tmp/rollback-run-$version.out"
@@ -2995,6 +3015,40 @@ in {
         "plain rollback switches to generation 2"
       assert_current_generation 2 "rollback profile current is generation 2 after plain rollback"
       assert_current_tool_version 2.0.0
+
+      echo "==> Consumer: clean generations keeps rolled-back current generation"
+      $APM clean --generations --keep 1 > /tmp/rollback-clean-generations.out 2>&1 || {
+        cat /tmp/rollback-clean-generations.out
+        fail "apm clean --generations succeeds after rollback"
+      }
+      cat /tmp/rollback-clean-generations.out
+      assert_file_contains /tmp/rollback-clean-generations.out "Removed 1 old generation" \
+        "clean generations prunes only non-current old generation"
+      assert_generation_missing 1 "clean generations prunes generation 1"
+      assert_generation_exists 2 "clean generations keeps rolled-back current generation"
+      assert_generation_exists 3 "clean generations keeps latest generation"
+      assert_current_generation 2 "clean generations leaves generation 2 current"
+      assert_current_tool_version 2.0.0
+      $APM rollback --list > /tmp/rollback-list-after-clean.out 2>&1 || {
+        cat /tmp/rollback-list-after-clean.out
+        fail "apm rollback --list works after generation cleanup"
+      }
+      cat /tmp/rollback-list-after-clean.out
+      assert_file_not_contains /tmp/rollback-list-after-clean.out "gen-1:" \
+        "rollback list no longer shows pruned generation"
+      assert_file_contains /tmp/rollback-list-after-clean.out "gen-2: rollback-tool 2.0.0" \
+        "rollback list keeps current generation after cleanup"
+      assert_file_contains /tmp/rollback-list-after-clean.out "gen-3: rollback-tool 3.0.0" \
+        "rollback list keeps latest generation after cleanup"
+      assert_list_marks_current 2 /tmp/rollback-list-after-clean.out
+      $APM list --installed > /tmp/rollback-installed-after-clean.out 2>&1 || {
+        cat /tmp/rollback-installed-after-clean.out
+        fail "apm list --installed works after generation cleanup"
+      }
+      assert_file_contains /tmp/rollback-installed-after-clean.out "rollback-tool" \
+        "installed list names rollback-tool after generation cleanup"
+      assert_file_contains /tmp/rollback-installed-after-clean.out "2.0.0" \
+        "installed metadata follows rolled-back current generation after cleanup"
 
       if $APM rollback --generation 99 > /tmp/rollback-missing.out 2>&1; then
         cat /tmp/rollback-missing.out
