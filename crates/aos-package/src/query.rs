@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::meta::{list_meta, orphaned_by_registry};
 use super::registry::{Registry, RegistrySet, store_path_hash};
+use super::store;
 use super::sysroot_lock;
 use super::types::{InstalledMeta, PackageMeta};
 use aos_core::output::{OutputMode, Printer};
@@ -176,26 +177,45 @@ pub async fn show(
     printer: &Printer,
 ) -> Result<()> {
     let registries = load_registries(config)?;
+    let profile = Profile::open_readonly(config.scope);
+    let meta_list = list_meta(&profile)?;
 
-    let (reg, meta) = if let Some(filter) = registry_filter {
-        let reg = registries
-            .get_registry(filter)
-            .with_context(|| format!("registry '{filter}' not found"))?;
-        let meta = reg
-            .get(package)
-            .with_context(|| format!("package '{package}' not found in registry '{filter}'"))?;
-        (reg, meta)
+    if let Some(filter) = registry_filter {
+        if let Some(reg) = registries.get_registry(filter) {
+            if let Some(meta) = reg.get(package) {
+                return show_registry_package(config, reg, meta, &meta_list, printer);
+            }
+        }
+
+        if let Some(installed) = find_installed_package(&meta_list, package, Some(filter)) {
+            return show_installed_unavailable(installed, &meta_list, printer).await;
+        }
+
+        if registries.get_registry(filter).is_none() {
+            bail!("registry '{filter}' not found");
+        }
+        bail!("package '{package}' not found in registry '{filter}'");
+    }
+
+    if let Some((reg, meta)) = registries.resolve(package) {
+        show_registry_package(config, reg, meta, &meta_list, printer)
+    } else if let Some(installed) = find_installed_package(&meta_list, package, None) {
+        show_installed_unavailable(installed, &meta_list, printer).await
     } else {
-        registries
-            .resolve(package)
-            .with_context(|| format!("package '{package}' not found in any registry"))?
-    };
+        bail!("package '{package}' not found in any registry")
+    }
+}
 
+fn show_registry_package(
+    config: &ApmConfig,
+    reg: &Registry,
+    meta: &PackageMeta,
+    meta_list: &[InstalledMeta],
+    printer: &Printer,
+) -> Result<()> {
     let registry_name = reg.config.name.clone();
 
     // Check if installed.
-    let profile = Profile::open_readonly(config.scope);
-    let meta_list = list_meta(&profile)?;
     let pkg_hash = store_path_hash(&meta.store_path).to_string();
     let installed_meta = meta_list
         .iter()
@@ -280,6 +300,94 @@ pub async fn show(
     }
 
     Ok(())
+}
+
+async fn show_installed_unavailable(
+    installed: &InstalledMeta,
+    meta_list: &[InstalledMeta],
+    printer: &Printer,
+) -> Result<()> {
+    let apm = installed
+        .apm
+        .as_ref()
+        .context("installed metadata is missing APM package state")?;
+    let dep_names = installed_dependency_names(installed, meta_list).await?;
+
+    if printer.mode() == OutputMode::Json {
+        let json_obj = serde_json::json!({
+            "name": apm.name,
+            "version": apm.version,
+            "registry": apm.registry,
+            "description": "installed package unavailable in registry",
+            "homepage": null,
+            "license": null,
+            "platform": null,
+            "installed": true,
+            "unavailable": true,
+            "store_path": installed.store_path,
+            "nar_size": null,
+            "nar_size_human": null,
+            "dependencies": dep_names,
+            "source_drv": null,
+            "maintainer": null,
+        });
+        printer.json(&json_obj);
+    } else {
+        printer.kv("Package", &apm.name);
+        printer.kv("Version", &apm.version);
+        printer.kv("Registry", &apm.registry);
+        printer.kv("Status", "installed, unavailable in registry");
+        printer.kv("Description", "installed package unavailable in registry");
+        printer.kv("Installed", "yes");
+        printer.kv("Store path", &installed.store_path);
+        if dep_names.is_empty() {
+            printer.kv("Dependencies", "(none)");
+        } else {
+            printer.kv("Dependencies", &dep_names.join(", "));
+        }
+    }
+
+    Ok(())
+}
+
+async fn installed_dependency_names(
+    installed: &InstalledMeta,
+    meta_list: &[InstalledMeta],
+) -> Result<Vec<String>> {
+    let root_hash = store_path_hash(&installed.store_path);
+    let installed_by_hash: HashMap<String, String> = meta_list
+        .iter()
+        .filter_map(|meta| {
+            let apm = meta.apm.as_ref()?;
+            Some((
+                store_path_hash(&meta.store_path).to_string(),
+                apm.name.clone(),
+            ))
+        })
+        .collect();
+    let refs = store::direct_references(&installed.store_path).await?;
+    Ok(refs
+        .iter()
+        .map(|path| store_path_hash(path).to_string())
+        .filter(|hash| hash != root_hash)
+        .map(|hash| installed_by_hash.get(&hash).cloned().unwrap_or(hash))
+        .collect())
+}
+
+fn find_installed_package<'a>(
+    meta_list: &'a [InstalledMeta],
+    package: &str,
+    registry_filter: Option<&str>,
+) -> Option<&'a InstalledMeta> {
+    meta_list.iter().find(|meta| {
+        let Some(apm) = meta.apm.as_ref() else {
+            return false;
+        };
+        apm.name == package
+            && registry_filter
+                .map(|filter| apm.registry == filter)
+                .unwrap_or(true)
+    })
 }
 
 // ---------------------------------------------------------------------------
