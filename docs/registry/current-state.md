@@ -60,11 +60,20 @@ Implemented producer behavior:
   `refs/heads/stable`, writes the committed root `registry.toml`, writes a
   schema-1 `keys.toml` trust roster (optionally seeded by `--trust-key` and
   `--trust-key-id`), and refreshes static git indexes.
-- `apr keys list/add/retire` maintains the committed `keys.toml` trust roster.
-  `add` validates key ids and registry-bound `registry:Ed25519:<base64>` keys;
-  `retire` moves an active id to `[[revoked]]`, requires an active survivor
-  key, and records/derives the survivor `--vouched-by` id for the planned
-  retirement workflow. These commands commit and refresh static git indexes
+- `apr keys generate/list/add/retire` maintains the committed `keys.toml` trust
+  roster. `generate <id>` mints an Ed25519 keypair in-process (the hermetic
+  `sshkey` module, no `ssh-keygen`), writes the OpenSSH private key to
+  `apm/keys/<registry>-<id>.key` (mode `0600`, refusing to overwrite), records
+  its path in `[registry.signing_keys]`, prints the public key + fingerprint,
+  and with `--add` appends it to the roster. `add` validates key ids and
+  registry-bound `registry:Ed25519:<base64>` keys; `retire` moves an active id
+  to `[[revoked]]`, requires an active survivor key, records/derives the
+  survivor `--vouched-by` id, and **re-signs** the channel partition tags and
+  release tags whose only valid signer was the retired key using the vouching
+  key (`--no-resign` skips and lists the affected tags). Because they modify
+  `keys.toml`, `add` and `retire` require `--key`/`--key-id` and produce a
+  **signed** commit (an empty roster seeded by `apr create --trust-key` is the
+  only unsigned exception). These commands commit and refresh static git indexes
   unless `--no-commit` is passed.
 - `apr publish`, `apr unpublish`, and release signing commands update package
   metadata/tag state and then refresh the object-store view with
@@ -120,22 +129,42 @@ Implemented producer behavior:
 `registry::git::sync_git`:
 
 1. Normalize the origin URL.
-2. Preflight sha256-capable Git and, for plain `http(s)://`, the git-native
+2. **Assemble the trusted key set** for the registry: every key in
+   `trusted-keys.d` (`KeyStore::lookup_all`, with `# revoked:` exclusions
+   applied), falling back to the `[registry.signing] public_key` config anchor
+   **only when that set is empty**. Signing is enforced unless
+   `[registry.signing] required = false`; if it is enforced and the set is
+   empty, sync **fails closed** with an instruction to pin a key — there is no
+   silent trust-on-first-use.
+3. Preflight sha256-capable Git and, for plain `http(s)://`, the git-native
    dumb-HTTP origin shape.
-3. Ensure the local bare repo exists with sha256 object format.
-4. Fetch branch/tag refs with git.
-5. Resolve the target commit from the requested tracking mode.
-6. Verify trust:
-   - branch/tag/version/commit modes use the configured commit-signature path
-     when required;
-   - channel mode verifies the signed partition tag, signed semver tag, and
-     commit chain with name-binding.
-7. Enforce fast-forward from the last synced commit.
-8. Extract `packages/` and `closures/` to the remote metadata cache.
-9. Extract committed root `registry.toml`, `keys.toml`, and `.gitattributes`
-   so `[[caches]]` are available to NAR mirror resolution and trust-roster
-   helpers can read the authenticated tree after sync.
-10. Persist registry state.
+4. Ensure the local bare repo exists with sha256 object format.
+5. Fetch branch/tag refs with git.
+6. Resolve the target commit from the requested tracking mode.
+7. **Verify the new head commit** against the trusted set (any key in the set
+   satisfies the signature) before trusting any tree content.
+8. Enforce fast-forward from the last synced commit.
+9. **Load, validate, and pin the `keys.toml` roster** committed at the verified
+   head: write its active keys into the writable `trusted-keys.d`, drop pins no
+   longer active, and mask any revoked key still present in a read-only anchor
+   with a `# revoked:` line. A missing or empty roster under enforcement is a
+   hard error.
+10. Verify trust for the resolved target against the **post-pin** trusted set:
+    - branch/tag/version/commit modes verify the commit signature when required;
+    - channel mode verifies the signed partition tag, signed semver tag, and
+      commit chain with name-binding.
+11. Extract `packages/` and `closures/` to the remote metadata cache.
+12. Extract committed root `registry.toml`, `keys.toml`, and `.gitattributes`
+    so `[[caches]]` are available to NAR mirror resolution and trust-roster
+    helpers can read the authenticated tree after sync.
+13. Persist registry state.
+
+Continuity is enforced by steps 7–8 together: a roster change is accepted only
+when the introducing commit fast-forwards the prior head **and** is signed by a
+key the client already trusted, even if the new active set is disjoint from the
+old one. This makes multi-maintainer rotation and revocation reach machines
+in-band on their next sync. First contact is verified out of the box when the
+trust anchor is baked into the image (§6).
 
 Channel tracking resolves a deterministic persisted bucket through
 `/channels/<name>/<bucket>`, probes forward when needed, verifies that partition
@@ -181,20 +210,37 @@ is within `max_staleness_seconds`, and they do not refresh it.
 Implemented trust pieces:
 
 - `security.rs` parses `registry:Ed25519:<base64>` keys, stores trusted keys, and
-  verifies git signatures through SSH-format signing.
+  verifies git signatures against a **set** of trusted keys
+  (`verify_commit_signature`/`verify_tag_signature` take `trusted_keys: &[String]`
+  and write one allowed-signers line per key; an empty set is an error). A
+  signature is valid iff it matches **any** currently-trusted key, which is what
+  lets overlapping maintainer keys both verify.
+- The trusted-key store is a search path whose first directory is **writable**
+  (roster pins, `apr trust pin`) and the rest **read-only** (the image-baked
+  anchor). `KeyStore::lookup_all` returns every key with `# revoked:` exclusions
+  applied; a revoked key still present in a read-only anchor is masked by a
+  `# revoked:` line in the writable store. Both scopes are rooted at
+  `APM_SYSTEM_CONFIG_DIR` (default `/etc/apm`), so a non-empty absolute override
+  redirects `registries.d` and `trusted-keys.d` for development on non-AOS hosts.
+- Bootstrap trust is delivered **out-of-band**, never by silent TOFU: the
+  `aos.apm.registries` module (`modules/base/apm-registries.nix`) bakes
+  `/etc/apm/registries.d/<name>.toml` and `/etc/apm/trusted-keys.d/<name>.pub`
+  into the image; alternatively an operator runs `apr trust pin`, or sets
+  `[registry.signing] public_key` (consulted only when the store is empty).
+- `registry::keys` parses committed `keys.toml`, and `pin_rotated_keys` writes a
+  verified roster's active set into the writable store during sync (rotation
+  overlap, stale-pin removal, revocation masking).
 - `apr trust pin/list/remove` manages local `trusted-keys.d/<registry>.pub`
-  anchors. Re-running `pin` appends an overlap key for rotation; `pin --replace`
-  is the explicit out-of-band re-pin path for compromised-key recovery.
-- `registry::keys` parses committed `keys.toml`, supports rotation overlap,
-  active-key lookup, revocation gating, and tests the survivor-vouched revocation
-  rules.
-- `apr keys list/add/retire` is the producer-side command surface for committed
-  roster maintenance. Release/channel signing can select a committed active key
-  id via `--key-id`, with the local private key path stored outside the registry
-  in `[registry.signing_keys]`.
+  anchors. Re-running `pin` appends an overlap key; `pin --replace` is the
+  explicit out-of-band re-pin path for compromised-key recovery.
+- `apr keys generate/list/add/retire` is the producer-side roster surface (§3).
+  Roster-modifying commands sign their commits; retirement re-signs affected
+  tags. Release/channel signing can select a committed active key id via
+  `--key-id`, with the local private key path stored outside the registry in
+  `[registry.signing_keys]`.
 - `registry::verify` parses tag objects, enforces name-binding, verifies
-  `tag -> tag -> commit` release chains, and rejects non-semver release names
-  where semver is required.
+  `tag -> tag -> commit` release chains against the trusted set, and rejects
+  non-semver release names where semver is required.
 - `apr tag --key`, `apr sign <tag> --key`, and channel partition commands create
   signed tag objects rather than signing commits.
 

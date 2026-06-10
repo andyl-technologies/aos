@@ -66,6 +66,37 @@ pub fn load_keys_toml(root: &Path) -> Result<Option<KeysToml>> {
     Ok(Some(roster))
 }
 
+/// Load and validate `keys.toml` from a specific commit's tree.
+///
+/// Reads the file with `git show <commit>:keys.toml` so the roster comes
+/// from the *verified* commit, not from any working-tree extraction.
+/// Returns `Ok(None)` when the commit has no `keys.toml`.
+///
+/// # Errors
+///
+/// Returns an error if the git invocation fails for any reason other than
+/// the file being absent, or if the roster fails validation.
+pub fn load_keys_toml_at_commit(repo_dir: &Path, commit: &str) -> Result<Option<KeysToml>> {
+    let spec = format!("{commit}:keys.toml");
+    let output = crate::gitcmd::hermetic()
+        .args(["show", &spec])
+        .current_dir(repo_dir)
+        .output()
+        .with_context(|| format!("running git show {spec}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("does not exist") || stderr.contains("exists on disk, but not in") {
+            return Ok(None);
+        }
+        bail!("git show {spec} failed: {}", stderr.trim());
+    }
+    let content = String::from_utf8_lossy(&output.stdout);
+    let roster: KeysToml =
+        toml::from_str(&content).with_context(|| format!("parsing keys.toml at {commit}"))?;
+    validate_roster(&roster)?;
+    Ok(Some(roster))
+}
+
 /// Write `keys.toml` after validating every key entry.
 pub fn write_keys_toml(root: &Path, roster: &KeysToml) -> Result<()> {
     validate_roster(roster)?;
@@ -85,13 +116,28 @@ pub fn is_revoked(roster: &KeysToml, id: &str) -> bool {
     roster.revoked.iter().any(|entry| entry.id == id)
 }
 
-/// Pin every active roster key into the writable trusted-key store.
+/// Pin a verified roster's active key set into the writable trusted-key
+/// store.
 ///
-/// This is used during key rotation after the roster's containing commit has
-/// already been verified by a currently trusted key.
-pub fn pin_rotated_keys(store: &KeyStore, registry: &str, roster: &KeysToml) -> Result<usize> {
+/// This is the production path of in-band key rotation: after a roster
+/// change has been verified (signed by a currently trusted key, delivered
+/// as a fast-forward), the writable `trusted-keys.d` file is rewritten to
+/// exactly the roster's active set. Previously pinned keys absent from the
+/// roster are unpinned, and revoked keys still visible in read-only anchor
+/// directories are masked with `# revoked:` exclusion lines (see
+/// [`KeyStore::sync_registry_keys`]).
+///
+/// # Errors
+///
+/// Returns an error when the roster fails validation, an active key does
+/// not belong to `registry`, or the writable store cannot be rewritten.
+pub fn pin_rotated_keys(
+    store: &KeyStore,
+    registry: &str,
+    roster: &KeysToml,
+) -> Result<crate::security::KeySyncReport> {
     validate_roster(roster)?;
-    let mut pinned = 0;
+    let mut active = Vec::with_capacity(roster.active.len());
     for entry in &roster.active {
         let (entry_registry, algorithm, public_key) = parse_signing_key(&entry.key)
             .with_context(|| format!("invalid active key '{}'", entry.id))?;
@@ -103,16 +149,15 @@ pub fn pin_rotated_keys(store: &KeyStore, registry: &str, roster: &KeysToml) -> 
                 registry,
             );
         }
-        store.store(&TrustedKey {
+        active.push(TrustedKey {
             registry: entry_registry,
             algorithm,
             fingerprint: key_fingerprint(&public_key),
             public_key,
             source: KeySource::Tofu,
-        })?;
-        pinned += 1;
+        });
     }
-    Ok(pinned)
+    store.sync_registry_keys(registry, &active)
 }
 
 /// Return the revoked ids that are effective when vouched by `vouching_key_id`.
@@ -292,7 +337,10 @@ schema = 2
             ..KeysToml::default()
         };
 
-        assert_eq!(pin_rotated_keys(&store, "aos-core", &roster).unwrap(), 2);
+        let report = pin_rotated_keys(&store, "aos-core", &roster).unwrap();
+        assert_eq!(report.pinned, 2);
+        assert_eq!(report.unpinned, 0);
+        assert_eq!(report.masked, 0);
         let pinned = store.lookup_all("aos-core");
         assert_eq!(pinned.len(), 2);
         assert!(pinned.iter().any(|key| key.public_key == "YWJjZA=="));

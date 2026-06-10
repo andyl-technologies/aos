@@ -250,6 +250,9 @@
     url = "file:///var/lib/apm/registries/test"
     priority = 500
     enabled = true
+
+    [registry.signing]
+    required = false
     CFGEOF
 
         ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test

@@ -115,6 +115,7 @@ pub async fn run(
                 &tracking_mode,
                 &cache_dir,
                 &registries_dir,
+                &config.scope.trusted_keys_dirs(),
                 &mut current_state,
                 printer,
             )

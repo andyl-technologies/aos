@@ -361,231 +361,231 @@ in
       "--cxxopt=-Wno-error"
     ];
     preBazelBuild = ''
-          # Restore Cargo.Bazel.lock if saved in FOD
-          if [ -f "$TMPDIR/output/external/Cargo.Bazel.lock" ]; then
-            cp "$TMPDIR/output/external/Cargo.Bazel.lock" \
-              source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock 2>/dev/null || true
-          fi
+                # Restore Cargo.Bazel.lock if saved in FOD
+                if [ -f "$TMPDIR/output/external/Cargo.Bazel.lock" ]; then
+                  cp "$TMPDIR/output/external/Cargo.Bazel.lock" \
+                    source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock 2>/dev/null || true
+                fi
 
-          # Let the cc-wrapper provide glibc headers with -idirafter. Adding
-          # glibc as -isystem breaks libstdc++'s #include_next <stdlib.h>.
-          GLIBC=$(cat ${bootstrapTools}/nix-support/orig-libc)
-          INTERP=$(cat ${bootstrapTools}/nix-support/dynamic-linker)
-          # Fix library path and dynamic linker for linking
-          echo "build --linkopt=-L$GLIBC/lib" >> .bazelrc
-          echo "build --host_linkopt=-L$GLIBC/lib" >> .bazelrc
-          echo "build --linkopt=-Wl,-dynamic-linker,$INTERP" >> .bazelrc
-          echo "build --host_linkopt=-Wl,-dynamic-linker,$INTERP" >> .bazelrc
-          # Also set RPATH so linked binaries find glibc at runtime
-          echo "build --linkopt=-Wl,-rpath,$GLIBC/lib" >> .bazelrc
-          echo "build --host_linkopt=-Wl,-rpath,$GLIBC/lib" >> .bazelrc
+                # Let the cc-wrapper provide glibc headers with -idirafter. Adding
+                # glibc as -isystem breaks libstdc++'s #include_next <stdlib.h>.
+                GLIBC=$(cat ${bootstrapTools}/nix-support/orig-libc)
+                INTERP=$(cat ${bootstrapTools}/nix-support/dynamic-linker)
+                # Fix library path and dynamic linker for linking
+                echo "build --linkopt=-L$GLIBC/lib" >> .bazelrc
+                echo "build --host_linkopt=-L$GLIBC/lib" >> .bazelrc
+                echo "build --linkopt=-Wl,-dynamic-linker,$INTERP" >> .bazelrc
+                echo "build --host_linkopt=-Wl,-dynamic-linker,$INTERP" >> .bazelrc
+                # Also set RPATH so linked binaries find glibc at runtime
+                echo "build --linkopt=-Wl,-rpath,$GLIBC/lib" >> .bazelrc
+                echo "build --host_linkopt=-Wl,-rpath,$GLIBC/lib" >> .bazelrc
 
-          # Patch shebangs in repo overrides (external deps have #!/bin/bash etc.)
-          find "$TMPDIR/repo-overrides" -type f \( -name '*.sh' -o -name '*.py' -o -name '*.pl' \
-               -o -name 'configure' -o -name '*.bzl' -o -name 'BUILD' -o -name 'BUILD.*' \
-               -o -name '*.tpl' -o -name '*.txt' \) 2>/dev/null | \
-            while read f; do
-              sed -i \
-                -e "s|/usr/local/bin/bash|${bash}/bin/bash|g" \
-                -e "s|/usr/bin/bash|${bash}/bin/bash|g" \
-                -e "s|/bin/bash|${bash}/bin/bash|g" \
-                -e "s|/usr/bin/env python3|${python3}/bin/python3|g" \
-                -e "s|/usr/bin/env python|${python3}/bin/python3|g" \
-                -e "s|/usr/bin/env bash|${bash}/bin/bash|g" \
-                -e "s|/usr/bin/env perl|${perl}/bin/perl|g" \
-                -e "s|/usr/bin/env|${coreutils}/bin/env|g" \
-                -e "s|/usr/bin/perl|${perl}/bin/perl|g" \
-                "$f" 2>/dev/null || true
-            done
+                # Patch shebangs in repo overrides (external deps have #!/bin/bash etc.)
+                find "$TMPDIR/repo-overrides" -type f \( -name '*.sh' -o -name '*.py' -o -name '*.pl' \
+                     -o -name 'configure' -o -name '*.bzl' -o -name 'BUILD' -o -name 'BUILD.*' \
+                     -o -name '*.tpl' -o -name '*.txt' \) 2>/dev/null | \
+                  while read f; do
+                    sed -i \
+                      -e "s|/usr/local/bin/bash|${bash}/bin/bash|g" \
+                      -e "s|/usr/bin/bash|${bash}/bin/bash|g" \
+                      -e "s|/bin/bash|${bash}/bin/bash|g" \
+                      -e "s|/usr/bin/env python3|${python3}/bin/python3|g" \
+                      -e "s|/usr/bin/env python|${python3}/bin/python3|g" \
+                      -e "s|/usr/bin/env bash|${bash}/bin/bash|g" \
+                      -e "s|/usr/bin/env perl|${perl}/bin/perl|g" \
+                      -e "s|/usr/bin/env|${coreutils}/bin/env|g" \
+                      -e "s|/usr/bin/perl|${perl}/bin/perl|g" \
+                      "$f" 2>/dev/null || true
+                  done
 
-          # Patch #!/bin/sh shebangs (first line only to avoid false matches)
-          find "$TMPDIR/repo-overrides" -type f \( -name '*.sh' -o -name 'configure' \) 2>/dev/null | \
-            while read f; do
-              sed -i "1s|^#!/bin/sh|#!${bash}/bin/bash|" "$f" 2>/dev/null || true
-            done
+                # Patch #!/bin/sh shebangs (first line only to avoid false matches)
+                find "$TMPDIR/repo-overrides" -type f \( -name '*.sh' -o -name 'configure' \) 2>/dev/null | \
+                  while read f; do
+                    sed -i "1s|^#!/bin/sh|#!${bash}/bin/bash|" "$f" 2>/dev/null || true
+                  done
 
-          # Afero's generated Gazelle BUILD file is missing strict deps for
-          # util.go. Rehydrate the needed x/text packages from the cached Go
-          # module sources so the offline Bazel build can resolve them.
-          text_src=""
-          for candidate in "$TMPDIR/repo-overrides/bazel_gazelle_go_repository_cache/pkg/mod/golang.org/x/text@"*; do
-            if [ -d "$candidate/transform" ] && [ -d "$candidate/runes" ] && [ -d "$candidate/unicode/norm" ]; then
-              text_src="$candidate"
-              break
-            fi
-          done
-          if [ -n "$text_src" ]; then
-            text_repo="$TMPDIR/repo-overrides/org_golang_x_text"
-            mkdir -p "$text_repo"
-            cp -a "$text_src/." "$text_repo/"
-            chmod -R u+rwx "$text_repo"
-            touch "$text_repo/WORKSPACE"
-            cat > "$text_repo/BUILD.bazel" <<'X_TEXT_ROOT_BUILD'
-package(default_visibility = ["//visibility:public"])
-X_TEXT_ROOT_BUILD
-            cat > "$text_repo/transform/BUILD.bazel" <<'X_TEXT_TRANSFORM_BUILD'
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+                # Afero's generated Gazelle BUILD file is missing strict deps for
+                # util.go. Rehydrate the needed x/text packages from the cached Go
+                # module sources so the offline Bazel build can resolve them.
+                text_src=""
+                for candidate in "$TMPDIR/repo-overrides/bazel_gazelle_go_repository_cache/pkg/mod/golang.org/x/text@"*; do
+                  if [ -d "$candidate/transform" ] && [ -d "$candidate/runes" ] && [ -d "$candidate/unicode/norm" ]; then
+                    text_src="$candidate"
+                    break
+                  fi
+                done
+                if [ -n "$text_src" ]; then
+                  text_repo="$TMPDIR/repo-overrides/org_golang_x_text"
+                  mkdir -p "$text_repo"
+                  cp -a "$text_src/." "$text_repo/"
+                  chmod -R u+rwx "$text_repo"
+                  touch "$text_repo/WORKSPACE"
+                  cat > "$text_repo/BUILD.bazel" <<'X_TEXT_ROOT_BUILD'
+      package(default_visibility = ["//visibility:public"])
+      X_TEXT_ROOT_BUILD
+                  cat > "$text_repo/transform/BUILD.bazel" <<'X_TEXT_TRANSFORM_BUILD'
+      load("@io_bazel_rules_go//go:def.bzl", "go_library")
 
-go_library(
-    name = "go_default_library",
-    srcs = glob(["*.go"], exclude = ["*_test.go"]),
-    importpath = "golang.org/x/text/transform",
-    visibility = ["//visibility:public"],
-)
-X_TEXT_TRANSFORM_BUILD
-            cat > "$text_repo/runes/BUILD.bazel" <<'X_TEXT_RUNES_BUILD'
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+      go_library(
+          name = "go_default_library",
+          srcs = glob(["*.go"], exclude = ["*_test.go"]),
+          importpath = "golang.org/x/text/transform",
+          visibility = ["//visibility:public"],
+      )
+      X_TEXT_TRANSFORM_BUILD
+                  cat > "$text_repo/runes/BUILD.bazel" <<'X_TEXT_RUNES_BUILD'
+      load("@io_bazel_rules_go//go:def.bzl", "go_library")
 
-go_library(
-    name = "go_default_library",
-    srcs = glob(["*.go"], exclude = ["*_test.go"]),
-    importpath = "golang.org/x/text/runes",
-    visibility = ["//visibility:public"],
-    deps = ["@org_golang_x_text//transform:go_default_library"],
-)
-X_TEXT_RUNES_BUILD
-            cat > "$text_repo/unicode/norm/BUILD.bazel" <<'X_TEXT_NORM_BUILD'
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+      go_library(
+          name = "go_default_library",
+          srcs = glob(["*.go"], exclude = ["*_test.go"]),
+          importpath = "golang.org/x/text/runes",
+          visibility = ["//visibility:public"],
+          deps = ["@org_golang_x_text//transform:go_default_library"],
+      )
+      X_TEXT_RUNES_BUILD
+                  cat > "$text_repo/unicode/norm/BUILD.bazel" <<'X_TEXT_NORM_BUILD'
+      load("@io_bazel_rules_go//go:def.bzl", "go_library")
 
-go_library(
-    name = "go_default_library",
-    srcs = glob(["*.go"], exclude = ["*_test.go", "maketables.go"]),
-    importpath = "golang.org/x/text/unicode/norm",
-    visibility = ["//visibility:public"],
-    deps = ["@org_golang_x_text//transform:go_default_library"],
-)
-X_TEXT_NORM_BUILD
-            echo "common --override_repository=org_golang_x_text=$text_repo" >> .bazelrc
+      go_library(
+          name = "go_default_library",
+          srcs = glob(["*.go"], exclude = ["*_test.go", "maketables.go"]),
+          importpath = "golang.org/x/text/unicode/norm",
+          visibility = ["//visibility:public"],
+          deps = ["@org_golang_x_text//transform:go_default_library"],
+      )
+      X_TEXT_NORM_BUILD
+                  echo "common --override_repository=org_golang_x_text=$text_repo" >> .bazelrc
 
-            afero_build="$TMPDIR/repo-overrides/com_github_spf13_afero/BUILD.bazel"
-            if [ -f "$afero_build" ] && ! grep -q '@org_golang_x_text//runes' "$afero_build"; then
-              ${gawk}/bin/awk '
-                { print }
-                $0 ~ /"\/\/mem",/ {
-                  print "        \"@org_golang_x_text//runes:go_default_library\","
-                  print "        \"@org_golang_x_text//transform:go_default_library\","
-                  print "        \"@org_golang_x_text//unicode/norm:go_default_library\","
-                }
-              ' "$afero_build" > "$afero_build.tmp"
-              mv "$afero_build.tmp" "$afero_build"
-            fi
-          fi
+                  afero_build="$TMPDIR/repo-overrides/com_github_spf13_afero/BUILD.bazel"
+                  if [ -f "$afero_build" ] && ! grep -q '@org_golang_x_text//runes' "$afero_build"; then
+                    ${gawk}/bin/awk '
+                      { print }
+                      $0 ~ /"\/\/mem",/ {
+                        print "        \"@org_golang_x_text//runes:go_default_library\","
+                        print "        \"@org_golang_x_text//transform:go_default_library\","
+                        print "        \"@org_golang_x_text//unicode/norm:go_default_library\","
+                      }
+                    ' "$afero_build" > "$afero_build.tmp"
+                    mv "$afero_build.tmp" "$afero_build"
+                  fi
+                fi
 
-          # protoc-gen-star only uses golang.org/x/tools/imports for
-          # imports.Process("", in, nil). Provide a small local implementation
-          # rather than pulling in the full x/tools graph and its missing x/mod
-          # repository during Envoy's offline build.
-          tools_repo="$TMPDIR/repo-overrides/org_golang_x_tools"
-          mkdir -p "$tools_repo/imports"
-          touch "$tools_repo/WORKSPACE"
-          cat > "$tools_repo/BUILD.bazel" <<'X_TOOLS_ROOT_BUILD'
-package(default_visibility = ["//visibility:public"])
-X_TOOLS_ROOT_BUILD
-          cat > "$tools_repo/imports/BUILD.bazel" <<'X_TOOLS_IMPORTS_BUILD'
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+                # protoc-gen-star only uses golang.org/x/tools/imports for
+                # imports.Process("", in, nil). Provide a small local implementation
+                # rather than pulling in the full x/tools graph and its missing x/mod
+                # repository during Envoy's offline build.
+                tools_repo="$TMPDIR/repo-overrides/org_golang_x_tools"
+                mkdir -p "$tools_repo/imports"
+                touch "$tools_repo/WORKSPACE"
+                cat > "$tools_repo/BUILD.bazel" <<'X_TOOLS_ROOT_BUILD'
+      package(default_visibility = ["//visibility:public"])
+      X_TOOLS_ROOT_BUILD
+                cat > "$tools_repo/imports/BUILD.bazel" <<'X_TOOLS_IMPORTS_BUILD'
+      load("@io_bazel_rules_go//go:def.bzl", "go_library")
 
-go_library(
-    name = "imports",
-    srcs = ["imports.go"],
-    importpath = "golang.org/x/tools/imports",
-    visibility = ["//visibility:public"],
-)
+      go_library(
+          name = "imports",
+          srcs = ["imports.go"],
+          importpath = "golang.org/x/tools/imports",
+          visibility = ["//visibility:public"],
+      )
 
-alias(
-    name = "go_default_library",
-    actual = ":imports",
-    visibility = ["//visibility:public"],
-)
-X_TOOLS_IMPORTS_BUILD
-          cat > "$tools_repo/imports/imports.go" <<'X_TOOLS_IMPORTS_GO'
-package imports
+      alias(
+          name = "go_default_library",
+          actual = ":imports",
+          visibility = ["//visibility:public"],
+      )
+      X_TOOLS_IMPORTS_BUILD
+                cat > "$tools_repo/imports/imports.go" <<'X_TOOLS_IMPORTS_GO'
+      package imports
 
-import (
-	"go/format"
-	"os"
-	"strings"
-)
+      import (
+      	"go/format"
+      	"os"
+      	"strings"
+      )
 
-type Options struct {
-	Fragment   bool
-	AllErrors  bool
-	Comments   bool
-	TabIndent  bool
-	TabWidth   int
-	FormatOnly bool
-}
+      type Options struct {
+      	Fragment   bool
+      	AllErrors  bool
+      	Comments   bool
+      	TabIndent  bool
+      	TabWidth   int
+      	FormatOnly bool
+      }
 
-var Debug bool
-var LocalPrefix string
+      var Debug bool
+      var LocalPrefix string
 
-func Process(filename string, src []byte, opt *Options) ([]byte, error) {
-	if src == nil {
-		var err error
-		src, err = os.ReadFile(filename)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return format.Source(src)
-}
+      func Process(filename string, src []byte, opt *Options) ([]byte, error) {
+      	if src == nil {
+      		var err error
+      		src, err = os.ReadFile(filename)
+      		if err != nil {
+      			return nil, err
+      		}
+      	}
+      	return format.Source(src)
+      }
 
-func VendorlessPath(ipath string) string {
-	const marker = "/vendor/"
-	if i := strings.LastIndex(ipath, marker); i >= 0 {
-		return ipath[i+len(marker):]
-	}
-	return strings.TrimPrefix(ipath, "vendor/")
-}
-X_TOOLS_IMPORTS_GO
-          echo "common --override_repository=org_golang_x_tools=$tools_repo" >> .bazelrc
+      func VendorlessPath(ipath string) string {
+      	const marker = "/vendor/"
+      	if i := strings.LastIndex(ipath, marker); i >= 0 {
+      		return ipath[i+len(marker):]
+      	}
+      	return strings.TrimPrefix(ipath, "vendor/")
+      }
+      X_TOOLS_IMPORTS_GO
+                echo "common --override_repository=org_golang_x_tools=$tools_repo" >> .bazelrc
 
-          pgs_go_build="$TMPDIR/repo-overrides/com_github_lyft_protoc_gen_star_v2/lang/go/BUILD.bazel"
-          if [ -f "$pgs_go_build" ] && ! grep -q '@org_golang_x_tools//imports' "$pgs_go_build"; then
-            ${gawk}/bin/awk '
-              $0 ~ /deps = \["\/\/:protoc-gen-star"\],/ {
-                print "    deps = ["
-                print "        \"//:protoc-gen-star\","
-                print "        \"@org_golang_x_tools//imports:imports\","
-                print "    ],"
-                next
-              }
-              { print }
-              $0 ~ /"\/\/:protoc-gen-star",/ {
-                print "        \"@org_golang_x_tools//imports:imports\","
-              }
-            ' "$pgs_go_build" > "$pgs_go_build.tmp"
-            mv "$pgs_go_build.tmp" "$pgs_go_build"
-          fi
+                pgs_go_build="$TMPDIR/repo-overrides/com_github_lyft_protoc_gen_star_v2/lang/go/BUILD.bazel"
+                if [ -f "$pgs_go_build" ] && ! grep -q '@org_golang_x_tools//imports' "$pgs_go_build"; then
+                  ${gawk}/bin/awk '
+                    $0 ~ /deps = \["\/\/:protoc-gen-star"\],/ {
+                      print "    deps = ["
+                      print "        \"//:protoc-gen-star\","
+                      print "        \"@org_golang_x_tools//imports:imports\","
+                      print "    ],"
+                      next
+                    }
+                    { print }
+                    $0 ~ /"\/\/:protoc-gen-star",/ {
+                      print "        \"@org_golang_x_tools//imports:imports\","
+                    }
+                  ' "$pgs_go_build" > "$pgs_go_build.tmp"
+                  mv "$pgs_go_build.tmp" "$pgs_go_build"
+                fi
 
-          # Create fake-bin with tools that GCC/Go need to find
-          mkdir -p "$TMPDIR/fake-bin"
+                # Create fake-bin with tools that GCC/Go need to find
+                mkdir -p "$TMPDIR/fake-bin"
 
-          # GCC's collect2 needs to find the linker (ld.lld since we use -fuse-ld=lld).
-          # Go's builder-cc wrapper restricts PATH, so collect2 can't find it normally.
-          # Provide symlinks and tell GCC via -B and COMPILER_PATH.
-          ln -sf ${llvm}/bin/ld.lld "$TMPDIR/fake-bin/ld.lld"
-          ln -sf ${llvm}/bin/ld.lld "$TMPDIR/fake-bin/ld"
-          echo "build --linkopt=-B$TMPDIR/fake-bin" >> .bazelrc
-          echo "build --host_linkopt=-B$TMPDIR/fake-bin" >> .bazelrc
-          echo "build --action_env=COMPILER_PATH=$TMPDIR/fake-bin" >> .bazelrc
+                # GCC's collect2 needs to find the linker (ld.lld since we use -fuse-ld=lld).
+                # Go's builder-cc wrapper restricts PATH, so collect2 can't find it normally.
+                # Provide symlinks and tell GCC via -B and COMPILER_PATH.
+                ln -sf ${llvm}/bin/ld.lld "$TMPDIR/fake-bin/ld.lld"
+                ln -sf ${llvm}/bin/ld.lld "$TMPDIR/fake-bin/ld"
+                echo "build --linkopt=-B$TMPDIR/fake-bin" >> .bazelrc
+                echo "build --host_linkopt=-B$TMPDIR/fake-bin" >> .bazelrc
+                echo "build --action_env=COMPILER_PATH=$TMPDIR/fake-bin" >> .bazelrc
 
-          # Provide a fake git — bazel/get_workspace_status calls git for revision info
-          {
-            printf '%s\n' '#!${bash}/bin/bash'
-            printf '%s\n' '# Fake git for workspace status — return empty/dummy values'
-            printf '%s\n' 'case "$*" in'
-            printf '%s\n' '  *rev-parse*HEAD*) echo "0000000000000000000000000000000000000000" ;;'
-            printf '%s\n' '  *rev-parse*) echo "unknown" ;;'
-            printf '%s\n' '  *describe*) echo "v1.37.0" ;;'
-            printf '%s\n' '  *status*) echo "" ;;'
-            printf '%s\n' '  *diff*) exit 0 ;;'
-            printf '%s\n' '  *log*) echo "" ;;'
-            printf '%s\n' '  *) echo "" ;;'
-            printf '%s\n' 'esac'
-            printf '%s\n' 'exit 0'
-          } > "$TMPDIR/fake-bin/git"
-          chmod +x "$TMPDIR/fake-bin/git"
-          export PATH="$TMPDIR/fake-bin:$PATH"
+                # Provide a fake git — bazel/get_workspace_status calls git for revision info
+                {
+                  printf '%s\n' '#!${bash}/bin/bash'
+                  printf '%s\n' '# Fake git for workspace status — return empty/dummy values'
+                  printf '%s\n' 'case "$*" in'
+                  printf '%s\n' '  *rev-parse*HEAD*) echo "0000000000000000000000000000000000000000" ;;'
+                  printf '%s\n' '  *rev-parse*) echo "unknown" ;;'
+                  printf '%s\n' '  *describe*) echo "v1.37.0" ;;'
+                  printf '%s\n' '  *status*) echo "" ;;'
+                  printf '%s\n' '  *diff*) exit 0 ;;'
+                  printf '%s\n' '  *log*) echo "" ;;'
+                  printf '%s\n' '  *) echo "" ;;'
+                  printf '%s\n' 'esac'
+                  printf '%s\n' 'exit 0'
+                } > "$TMPDIR/fake-bin/git"
+                chmod +x "$TMPDIR/fake-bin/git"
+                export PATH="$TMPDIR/fake-bin:$PATH"
     '';
     installPhase = ''
       mkdir -p $out/bin

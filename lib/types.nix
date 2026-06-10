@@ -124,7 +124,7 @@
         allNames
       )
     else rhs;
-in {
+in rec {
   ## # Type construction helpers
   ##
   ## These are not types themselves; they help build custom types that
@@ -391,6 +391,27 @@ in {
       (i: resolveOne i (builtins.elemAt sorted i))
       (builtins.length sorted);
   };
+
+  ## A list of `elemType` that must contain at least one element after
+  ## merging. Delegates checking and merging to `listOf` and rejects an
+  ## empty result at evaluation time.
+  ## # Type
+  ## `type -> type`
+  nonEmptyListOf = elemType: let
+    base = listOf elemType;
+  in
+    base
+    // {
+      name = "nonEmptyListOf(${elemType.name})";
+      description = "non-empty ${base.description}";
+      check = v: base.check v && v != [];
+      merge = loc: defs: let
+        merged = base.merge loc defs;
+      in
+        if merged == []
+        then throw "The option '${showLoc loc}' must be a non-empty list, but is empty."
+        else merged;
+    };
 
   ## # Type
   ## `type -> type`

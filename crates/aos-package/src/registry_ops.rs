@@ -18,14 +18,19 @@ use serde_json::Value;
 use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
+use crate::gitcmd;
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::nixcache;
 use crate::registry::objectstore;
 use crate::registry::pack;
+use crate::registry::state;
 use crate::registry::static_upload;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
-use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
+use crate::security::{
+    KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key, verify_tag_signature,
+};
+use crate::sshkey;
 use crate::types::{CacheEntry, RegistryConfig, RegistryRootConfig};
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
@@ -94,8 +99,31 @@ fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<S
 }
 
 /// Run a git command in the registry directory, returning stdout.
+///
+/// Runs hermetically (see [`crate::gitcmd`]): host git configuration is
+/// hidden. Network transport commands must use [`git_transport`] instead.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git {} failed: {}", args.join(" "), stderr.trim());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Run a git network-transport command (push, pull) in the registry
+/// directory, returning stdout.
+///
+/// Unlike [`git`], the host configuration stays visible: credential
+/// helpers, proxies, and URL rewrites live there.
+fn git_transport(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = gitcmd::transport()
         .args(args)
         .current_dir(dir)
         .output()
@@ -111,7 +139,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
 
 /// Run a git command in the registry directory, returning raw stdout bytes.
 fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .args(args)
         .current_dir(dir)
         .output()
@@ -128,7 +156,7 @@ fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
 /// Run a git command that is allowed to fail, returning (success, stdout, stderr).
 #[allow(dead_code)]
 fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String, String)> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .args(args)
         .current_dir(dir)
         .output()
@@ -137,6 +165,124 @@ fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String, String)> {
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     Ok((output.status.success(), stdout, stderr))
+}
+
+/// A registry clone present in the scope's registry-storage directory but
+/// absent from the consumer configuration (`registries.d/`).
+///
+/// These are typically authoring clones made by `apr create`, which never
+/// writes a `registries.d` entry; without this struct `apr list` would not
+/// surface them at all.
+#[derive(Debug)]
+pub struct LocalRegistry {
+    /// Directory name, which doubles as the registry name.
+    pub name: String,
+    /// Absolute path to the clone.
+    pub path: PathBuf,
+    /// URL of the `origin` remote, when the clone is a git repository that
+    /// has one configured.
+    pub origin: Option<String>,
+    /// Number of package definition files under `packages/`.
+    pub packages: usize,
+}
+
+/// List registry clones under `registries_path` whose name is not in
+/// `configured`.
+///
+/// Returns entries sorted by name. Missing or unreadable directories yield an
+/// empty list: this feeds an informational `apr list` section, not an
+/// integrity check.
+pub fn local_registries(registries_path: &Path, configured: &[&str]) -> Vec<LocalRegistry> {
+    let Ok(entries) = std::fs::read_dir(registries_path) else {
+        return Vec::new();
+    };
+
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if configured.contains(&name.as_str()) {
+            continue;
+        }
+        let origin = git(&path, &["remote", "get-url", "origin"]).ok();
+        let packages = count_package_tomls(&path.join("packages"));
+        found.push(LocalRegistry {
+            name,
+            path,
+            origin,
+            packages,
+        });
+    }
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found
+}
+
+/// Count `.toml` files anywhere under `dir`.
+fn count_package_tomls(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut count = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            count += count_package_tomls(&path);
+        } else if path.extension().is_some_and(|ext| ext == "toml") {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Explain why deleting `dir` would lose work, if it would.
+///
+/// A directory under the registry-storage path is an authoring clone when it
+/// contains a `.git` entry — consumer-side syncs only materialise plain files
+/// there. Such a clone is precious when it holds uncommitted changes, has no
+/// remote at all (every commit exists only here), or has commits unreachable
+/// from any remote-tracking ref. Returns `Ok(None)` for consumer-extracted
+/// directories and fully pushed clones.
+///
+/// # Errors
+///
+/// Fails when the directory looks like a git repository but git cannot
+/// inspect it (e.g. a corrupted clone).
+pub fn authoring_clone_precious(dir: &Path) -> Result<Option<String>> {
+    if !dir.join(".git").exists() {
+        return Ok(None);
+    }
+
+    let status = git(dir, &["status", "--porcelain"])?;
+    if !status.is_empty() {
+        return Ok(Some("uncommitted changes".to_string()));
+    }
+
+    if git(dir, &["remote"])?.is_empty() {
+        return Ok(Some(
+            "commits that exist nowhere else (no remote is configured)".to_string(),
+        ));
+    }
+
+    let unpushed = git(
+        dir,
+        &["rev-list", "--count", "--branches", "--not", "--remotes"],
+    )?;
+    let unpushed: u64 = unpushed
+        .parse()
+        .with_context(|| format!("parsing unpushed commit count {unpushed:?}"))?;
+    if unpushed > 0 {
+        return Ok(Some(format!(
+            "{unpushed} commit{} not pushed to any remote",
+            if unpushed == 1 { "" } else { "s" },
+        )));
+    }
+
+    Ok(None)
 }
 
 /// Parse a Nix store path into (name, version).
@@ -451,9 +597,101 @@ fn extract_hash(store_path: &str) -> &str {
 }
 
 /// Create a git commit in the registry directory.
-fn commit_registry(dir: &Path, message: &str) -> Result<()> {
+///
+/// When `signing_key` is the path to an OpenSSH Ed25519 private key, the
+/// commit is SSH-signed (`gpg.format=ssh`), matching the tag-signing setup
+/// in [`sign_tag`]. Clients verify head-commit signatures during sync, so
+/// commits on registries with a non-empty trust roster should always be
+/// signed.
+/// Whether the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` environment variables fully
+/// specify a commit identity. They take precedence over any git config and
+/// are how hermetic environments (VM tests, build sandboxes) provide one.
+fn env_commit_identity() -> bool {
+    [
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+    ]
+    .iter()
+    .all(|var| std::env::var_os(var).is_some_and(|value| !value.is_empty()))
+}
+
+/// Read `key` from the host's global git config, failing when it is unset.
+///
+/// Registry commits record who published, so a missing identity is a setup
+/// error, not something to paper over with a placeholder.
+fn host_identity_value(key: &str) -> Result<String> {
+    gitcmd::host_config_value(key).ok_or_else(|| {
+        anyhow::anyhow!(
+            "registry commits record the maintainer's identity, but git {key} is not set.\n\
+             Set it with `git config --global {key} <value>`."
+        )
+    })
+}
+
+/// Check that a commit identity is available, without touching any repo.
+///
+/// Used by [`create`] to refuse before creating anything on disk.
+fn require_commit_identity() -> Result<()> {
+    if env_commit_identity() {
+        return Ok(());
+    }
+    for key in ["user.email", "user.name"] {
+        host_identity_value(key)?;
+    }
+    Ok(())
+}
+
+/// Ensure the maintainer's identity is available for commits in `dir`.
+///
+/// Registry git invocations are hermetic (see [`crate::gitcmd`]), so an
+/// identity living only in the maintainer's global config is invisible to
+/// them; capture it into the clone, preserving commit attribution.
+///
+/// # Errors
+///
+/// Fails when no identity is configured in the environment, the clone, or
+/// the host's global config.
+fn ensure_commit_identity(dir: &Path) -> Result<()> {
+    if env_commit_identity() {
+        return Ok(());
+    }
+
+    for key in ["user.email", "user.name"] {
+        if git(dir, &["config", key]).is_ok() {
+            continue;
+        }
+        let host = host_identity_value(key)?;
+        git(dir, &["config", key, &host])?;
+    }
+    Ok(())
+}
+
+fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
+    ensure_commit_identity(dir)?;
     git(dir, &["add", "-A"])?;
-    git(dir, &["commit", "-m", message])?;
+    match signing_key {
+        Some(key) => {
+            let signing_key_config = format!("user.signingkey={key}");
+            git(
+                dir,
+                &[
+                    "-c",
+                    "gpg.format=ssh",
+                    "-c",
+                    &signing_key_config,
+                    "commit",
+                    "-S",
+                    "-m",
+                    message,
+                ],
+            )?;
+        }
+        None => {
+            git(dir, &["commit", "-m", message])?;
+        }
+    }
     Ok(())
 }
 
@@ -562,12 +800,15 @@ fn initial_keys_roster(
 // ---------------------------------------------------------------------------
 
 /// `apr create <NAME>`
+#[allow(clippy::too_many_arguments)]
 pub async fn create(
     config: &ApmConfig,
     name: &str,
     remote: Option<&str>,
     trust_key: Option<&str>,
     trust_key_id: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     let dir = config.scope.registries_path().join(name);
@@ -576,6 +817,21 @@ pub async fn create(
         bail!("registry '{name}' already exists at {}", dir.display());
     }
 
+    // A registry seeded with a trust roster must start with a signed
+    // commit: clients verify head-commit signatures from first contact,
+    // and an unsigned root commit would never validate. Refuse before
+    // creating anything on disk.
+    if trust_key.is_some() && key.is_none() && key_id.is_none() {
+        bail!(
+            "--trust-key seeds a trust roster, so the initial commit must be signed: \
+             pass --key <path> (or --key-id <id>) with the maintainer's private key"
+        );
+    }
+
+    // The initial commit needs a maintainer identity; likewise refuse
+    // before creating anything on disk.
+    require_commit_identity()?;
+
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
     printer.info(&format!("Initializing registry '{name}'..."));
@@ -583,6 +839,8 @@ pub async fn create(
     git(&dir, &["init", "--object-format=sha256"])?;
     git(&dir, &["symbolic-ref", "HEAD", "refs/heads/stable"])?;
     objectstore::assert_sha256(&dir)?;
+
+    ensure_commit_identity(&dir)?;
 
     // Create initial directory structure.
     std::fs::create_dir_all(dir.join("packages"))?;
@@ -598,11 +856,19 @@ description = ""
     let roster = initial_keys_roster(name, trust_key, trust_key_id)?;
     keys::write_keys_toml(&dir, &roster)?;
 
+    let signing_key = if key.is_some() || key_id.is_some() {
+        Some(resolve_producer_signing_key(
+            config, &dir, name, key, key_id,
+        )?)
+    } else {
+        None
+    };
+
     // Initial commit.
-    git(&dir, &["add", "-A"])?;
-    git(
+    commit_registry(
         &dir,
-        &["commit", "-m", &format!("Initialize registry '{name}'")],
+        &format!("Initialize registry '{name}'"),
+        signing_key.as_deref(),
     )?;
     refresh_registry_object_store(&dir)
         .context("refreshing dumb-HTTP object store after registry creation")?;
@@ -640,6 +906,8 @@ pub async fn publish(
     image_formats: &[String],
     no_commit: bool,
     message: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
@@ -655,6 +923,13 @@ pub async fn publish(
             pkg = aos_core::invocation::package_manager_command(),
         );
     }
+    let signing_key = if key.is_some() || key_id.is_some() {
+        Some(resolve_producer_signing_key(
+            config, &dir, &name, key, key_id,
+        )?)
+    } else {
+        None
+    };
 
     // Validate image pairs.
     if image_paths.len() != image_formats.len() {
@@ -743,7 +1018,7 @@ pub async fn publish(
     if !no_commit {
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
-        commit_registry(&dir, msg)?;
+        commit_registry(&dir, msg, signing_key.as_deref())?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after publish")?;
         printer.success(&format!("Committed: {msg}"));
@@ -961,10 +1236,24 @@ pub async fn unpublish(
     platform: Option<&str>,
     no_commit: bool,
     message: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+    let signing_key = if key.is_some() || key_id.is_some() {
+        Some(resolve_producer_signing_key(
+            config,
+            &dir,
+            &registry_name,
+            key,
+            key_id,
+        )?)
+    } else {
+        None
+    };
     let letter = first_letter(package);
     let toml_path = dir
         .join("packages")
@@ -1058,7 +1347,7 @@ pub async fn unpublish(
     if !no_commit {
         let default_msg = format!("unpublish {package}");
         let msg = message.unwrap_or(&default_msg);
-        commit_registry(&dir, msg)?;
+        commit_registry(&dir, msg, signing_key.as_deref())?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after unpublish")?;
         printer.success(&format!("Committed: {msg}"));
@@ -2193,7 +2482,7 @@ pub async fn run_cache(
                 if nixcache::upsert_registry_cache(&dir, cache_url, *priority)? {
                     printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
                     if !*no_commit {
-                        commit_registry(&dir, "registry: update static cache pointer")?;
+                        commit_registry(&dir, "registry: update static cache pointer", None)?;
                         refresh_registry_object_store(&dir)
                             .context("refreshing dumb-HTTP object store after cache update")?;
                     }
@@ -2351,21 +2640,53 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             }
             Ok(())
         }
+        KeysCommand::Generate {
+            id,
+            add,
+            no_commit,
+            signing_key,
+            signing_key_id,
+            registry,
+        } => generate_roster_key(
+            config,
+            id,
+            *add,
+            *no_commit,
+            signing_key.as_deref(),
+            signing_key_id.as_deref(),
+            registry.as_deref(),
+            printer,
+        ),
         KeysCommand::Add {
             id,
             key,
             no_commit,
+            signing_key,
+            signing_key_id,
             registry,
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
             let mut roster = load_committed_roster(&dir)?;
+            let commit_key = if *no_commit {
+                None
+            } else {
+                resolve_roster_commit_key(
+                    config,
+                    &dir,
+                    &registry_name,
+                    &roster,
+                    signing_key.as_deref(),
+                    signing_key_id.as_deref(),
+                )?
+            };
             add_roster_key(&mut roster, &registry_name, id, key)?;
             persist_committed_roster(
                 &dir,
                 &roster,
                 *no_commit,
                 &format!("registry: add signing key {id}"),
+                commit_key.as_deref(),
             )?;
             printer.success(&format!(
                 "Added active signing key '{id}' to registry '{registry_name}'."
@@ -2377,24 +2698,256 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             reason,
             vouched_by,
             no_commit,
+            signing_key,
+            signing_key_id,
+            no_resign,
             registry,
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
             let mut roster = load_committed_roster(&dir)?;
+            let roster_before = roster.clone();
             let vouching_id = retire_roster_key(&mut roster, id, reason.as_deref(), vouched_by)?;
+            // The vouching survivor signs the retirement by default; the
+            // key resolution runs against the pre-retire roster, where the
+            // voucher is still active. Re-signing also needs this key, so
+            // resolution failures abort before anything is modified.
+            let signer = if *no_commit && *no_resign {
+                None
+            } else if signing_key.is_none() && signing_key_id.is_none() {
+                Some(resolve_producer_signing_key(
+                    config,
+                    &dir,
+                    &registry_name,
+                    None,
+                    Some(&vouching_id),
+                )?)
+            } else {
+                resolve_roster_commit_key(
+                    config,
+                    &dir,
+                    &registry_name,
+                    &roster_before,
+                    signing_key.as_deref(),
+                    signing_key_id.as_deref(),
+                )?
+            };
+            // Signatures by the retired key become invalid on clients, so
+            // every tag a client still resolves must be re-signed by a
+            // survivor. Plan against the post-retirement active set before
+            // mutating anything.
+            let survivors: Vec<String> = roster
+                .active
+                .iter()
+                .map(|entry| entry.key.clone())
+                .collect();
+            let plan = plan_retirement_resign(&dir, &survivors)?;
             persist_committed_roster(
                 &dir,
                 &roster,
                 *no_commit,
                 &format!("registry: retire signing key {id}"),
+                if *no_commit { None } else { signer.as_deref() },
             )?;
+            if *no_resign {
+                print_resign_plan(&plan, printer);
+            } else if let Some(vouch_key) = signer.as_deref() {
+                execute_retirement_resign(&dir, &plan, vouch_key, printer)?;
+            }
             printer.success(&format!(
                 "Retired signing key '{id}' from registry '{registry_name}' (vouched by '{vouching_id}')."
             ));
             Ok(())
         }
     }
+}
+
+/// Tags whose signatures must be refreshed after a key retirement.
+///
+/// `affected_partitions` carries the release each partition payload must
+/// be rewritten against, captured *before* release tags are force-retagged
+/// (re-signing changes the tag-object id, which would otherwise orphan the
+/// payload's reference).
+struct ResignPlan {
+    affected_releases: Vec<semver::Version>,
+    affected_partitions: Vec<(String, u8, semver::Version)>,
+}
+
+impl ResignPlan {
+    fn is_empty(&self) -> bool {
+        self.affected_releases.is_empty() && self.affected_partitions.is_empty()
+    }
+}
+
+/// Enumerate the tags clients resolve and check which no longer verify
+/// against the surviving active keys.
+///
+/// Covers every channel partition payload under `.git/channels/` and each
+/// release tag those partitions reference. A partition is also marked
+/// affected when its release tag must be re-signed: the new release tag
+/// object gets a different id, so the payload has to be regenerated even
+/// when its own signature is fine.
+fn plan_retirement_resign(dir: &Path, survivors: &[String]) -> Result<ResignPlan> {
+    let release_tags = semver_tag_object_map(dir)?;
+    let git_dir = objectstore::repo_git_dir(dir)?;
+    let channels_dir = git_dir.join("channels");
+
+    // (channel, bucket, version, payload signature fails against survivors)
+    let mut partitions: Vec<(String, u8, semver::Version, bool)> = Vec::new();
+    if channels_dir.exists() {
+        let mut channel_names: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&channels_dir)
+            .with_context(|| format!("reading {}", channels_dir.display()))?
+        {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                channel_names.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        channel_names.sort();
+        for channel_name in channel_names {
+            let channel_dir = channels_dir.join(&channel_name);
+            for bucket in 0..=u8::MAX {
+                let path = channel_dir.join(channel::bucket_hex(bucket));
+                if !path.exists() {
+                    continue;
+                }
+                let payload =
+                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+                let tag = parse_tag_object(&String::from_utf8_lossy(&payload))
+                    .with_context(|| format!("parsing channel partition {}", path.display()))?;
+                let version = release_tags.get(&tag.object).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "channel partition {} points at unknown release tag object {}",
+                        path.display(),
+                        tag.object,
+                    )
+                })?;
+                let oid = hash_tag_object(dir, &payload)?;
+                let verified = verify_tag_signature(dir, &oid, survivors)?;
+                partitions.push((channel_name.clone(), bucket, version.clone(), !verified));
+            }
+        }
+    }
+
+    let referenced: HashSet<semver::Version> = partitions
+        .iter()
+        .map(|(_, _, version, _)| version.clone())
+        .collect();
+    let mut affected_releases: Vec<semver::Version> = Vec::new();
+    for version in referenced {
+        if !verify_tag_signature(dir, &version.to_string(), survivors)? {
+            affected_releases.push(version);
+        }
+    }
+    affected_releases.sort();
+
+    let affected_partitions = partitions
+        .into_iter()
+        .filter(|(_, _, version, failing)| *failing || affected_releases.contains(version))
+        .map(|(channel, bucket, version, _)| (channel, bucket, version))
+        .collect();
+
+    Ok(ResignPlan {
+        affected_releases,
+        affected_partitions,
+    })
+}
+
+/// Re-sign every affected tag with the vouching survivor's private key.
+///
+/// Release tags are force-retagged against their original commit and
+/// message; affected channel partitions are regenerated against the new
+/// tag objects, and each touched channel's branch head and object store
+/// are refreshed.
+fn execute_retirement_resign(
+    dir: &Path,
+    plan: &ResignPlan,
+    vouch_key: &str,
+    printer: &Printer,
+) -> Result<()> {
+    if plan.is_empty() {
+        return Ok(());
+    }
+
+    for version in &plan.affected_releases {
+        let tag = version.to_string();
+        let commit = release_commit(dir, version)?;
+        let payload = git(dir, &["cat-file", "-p", &format!("{tag}^{{tag}}")])?;
+        let message = tag_message_without_signature(&payload);
+        sign_tag(dir, &tag, &commit, message.as_deref(), vouch_key, true)?;
+        printer.info(&format!("Re-signed release tag {tag}."));
+    }
+
+    let mut touched_channels: Vec<&str> = Vec::new();
+    for (channel_name, bucket, version) in &plan.affected_partitions {
+        write_channel_partition_tag(dir, channel_name, *bucket, version, vouch_key)?;
+        if !touched_channels.contains(&channel_name.as_str()) {
+            touched_channels.push(channel_name);
+        }
+    }
+    for channel_name in touched_channels {
+        let map = read_channel_partition_map(dir, channel_name)?;
+        update_channel_frontier(dir, channel_name, &map)?;
+        printer.info(&format!("Re-signed channel '{channel_name}' partitions."));
+    }
+
+    Ok(())
+}
+
+/// Print the re-sign plan for manual handling (`--no-resign`).
+fn print_resign_plan(plan: &ResignPlan, printer: &Printer) {
+    if plan.is_empty() {
+        printer.info("No tags need re-signing.");
+        return;
+    }
+    printer.warning("Skipped re-signing (--no-resign). Affected tags:");
+    for version in &plan.affected_releases {
+        printer.plain(&format!("  release tag {version}"));
+    }
+    for (channel, bucket, version) in &plan.affected_partitions {
+        printer.plain(&format!(
+            "  channel {channel} partition {} -> {version}",
+            channel::bucket_hex(*bucket),
+        ));
+    }
+}
+
+/// Extract a signed tag's original message, dropping the SSH signature
+/// block git appends to the payload.
+fn tag_message_without_signature(payload: &str) -> Option<String> {
+    let (_, body) = payload.split_once("\n\n")?;
+    let message = match body.find("-----BEGIN SSH SIGNATURE-----") {
+        Some(position) => &body[..position],
+        None => body,
+    };
+    Some(message.trim_end().to_string())
+}
+
+/// Write a tag object payload into the object database, returning its id.
+fn hash_tag_object(dir: &Path, payload: &[u8]) -> Result<String> {
+    use std::process::Stdio;
+    let mut child = gitcmd::hermetic()
+        .args(["hash-object", "-w", "-t", "tag", "--stdin"])
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawning git hash-object")?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        std::io::Write::write_all(stdin, payload).context("writing tag payload to hash-object")?;
+    }
+    let output = child
+        .wait_with_output()
+        .context("running git hash-object")?;
+    if !output.status.success() {
+        bail!(
+            "git hash-object failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn load_committed_roster(dir: &Path) -> Result<KeysToml> {
@@ -2404,19 +2957,171 @@ fn load_committed_roster(dir: &Path) -> Result<KeysToml> {
     Ok(keys::load_keys_toml(dir)?.unwrap_or_default())
 }
 
+/// `apr keys generate <id>`
+///
+/// Generates an OpenSSH Ed25519 maintainer keypair: the private key is
+/// written under the per-scope config directory (mode `0600`, never
+/// overwriting an existing file), its path is recorded in
+/// `[registry.signing_keys]` so `--key-id <id>` resolves, and the public
+/// half is printed in `registry:Ed25519:<base64>` form. With `--add` the
+/// public key is also appended to the committed `keys.toml` roster via a
+/// signed commit.
+#[allow(clippy::too_many_arguments)]
+fn generate_roster_key(
+    config: &ApmConfig,
+    id: &str,
+    add: bool,
+    no_commit: bool,
+    signing_key: Option<&str>,
+    signing_key_id: Option<&str>,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    validate_roster_key_id(id)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+
+    let keys_dir = config.scope.config_dir().join("keys");
+    {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&keys_dir)
+            .with_context(|| format!("creating key directory {}", keys_dir.display()))?;
+    }
+
+    let key_path = keys_dir.join(format!("{registry_name}-{id}.key"));
+    let keypair = sshkey::Ed25519Keypair::generate();
+    let pem = keypair.to_openssh_private_key(&format!("{registry_name}-{id}"));
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&key_path).with_context(|| {
+            format!(
+                "creating private key file {} (refusing to overwrite an existing key)",
+                key_path.display(),
+            )
+        })?;
+        std::io::Write::write_all(&mut file, pem.as_bytes())
+            .with_context(|| format!("writing {}", key_path.display()))?;
+    }
+
+    let trust_key = keypair.trust_key_line(&registry_name);
+    let key_path_str = key_path.display().to_string();
+
+    // Record the private key path so `--key-id <id>` resolves (§2.6).
+    let config_path = config
+        .scope
+        .config_dir()
+        .join("registries.d")
+        .join(format!("{registry_name}.toml"));
+    if config_path.exists() {
+        state::upsert_signing_key(&config_path, id, &key_path_str)?;
+        printer.kv("Config", &config_path.display().to_string());
+    } else {
+        printer.warning(&format!(
+            "registry '{registry_name}' has no config at {}; to use --key-id {id}, add:\n\
+             [registry.signing_keys]\n\"{id}\" = \"{key_path_str}\"",
+            config_path.display(),
+        ));
+    }
+
+    printer.kv("Key id", id);
+    printer.kv("Private key", &key_path_str);
+    printer.kv("Public key", &trust_key);
+    printer.kv(
+        "Fingerprint",
+        &key_fingerprint(&keypair.public_key_base64()),
+    );
+
+    if add {
+        let dir = config.scope.registries_path().join(&registry_name);
+        let mut roster = load_committed_roster(&dir)?;
+        if roster.active.is_empty() {
+            bail!(
+                "registry '{registry_name}' has an empty trust roster; seed the first key with \
+                 `apr create {registry_name} --trust-key {trust_key} --key {key_path_str}` instead \
+                 of --add"
+            );
+        }
+        let commit_key = if no_commit {
+            None
+        } else {
+            resolve_roster_commit_key(
+                config,
+                &dir,
+                &registry_name,
+                &roster,
+                signing_key,
+                signing_key_id,
+            )?
+        };
+        add_roster_key(&mut roster, &registry_name, id, &trust_key)?;
+        persist_committed_roster(
+            &dir,
+            &roster,
+            no_commit,
+            &format!("registry: add signing key {id}"),
+            commit_key.as_deref(),
+        )?;
+        printer.success(&format!(
+            "Added active signing key '{id}' to registry '{registry_name}'."
+        ));
+    }
+
+    Ok(())
+}
+
 fn persist_committed_roster(
     dir: &Path,
     roster: &KeysToml,
     no_commit: bool,
     message: &str,
+    signing_key: Option<&str>,
 ) -> Result<()> {
     keys::write_keys_toml(dir, roster)?;
     if !no_commit {
-        commit_registry(dir, message)?;
+        commit_registry(dir, message, signing_key)?;
         refresh_registry_object_store(dir)
             .context("refreshing dumb-HTTP object store after keys.toml update")?;
     }
     Ok(())
+}
+
+/// Resolve the signing key for a roster-changing commit.
+///
+/// Roster commits must be signed whenever the pre-change roster is
+/// non-empty: clients verify head-commit signatures against the keys they
+/// already trust, so an unsigned roster change would be rejected on sync.
+/// Only the bootstrap case (adding the first key to an empty roster, which
+/// no client can verify yet) may proceed unsigned without an explicit key.
+fn resolve_roster_commit_key(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    roster_before: &KeysToml,
+    key: Option<&str>,
+    key_id: Option<&str>,
+) -> Result<Option<String>> {
+    if key.is_some() || key_id.is_some() {
+        return resolve_producer_signing_key(config, dir, registry_name, key, key_id).map(Some);
+    }
+    if roster_before.active.is_empty() {
+        return Ok(None);
+    }
+    bail!(
+        "registry '{registry_name}' has a non-empty trust roster, so roster changes must be \
+         signed commits: pass --key <path> or --key-id <id> with an active maintainer key"
+    )
 }
 
 fn add_roster_key(roster: &mut KeysToml, registry_name: &str, id: &str, key: &str) -> Result<()> {
@@ -2751,7 +3456,7 @@ pub async fn push(
         args.push(b);
     }
 
-    let output = git(&dir, &args)?;
+    let output = git_transport(&dir, &args)?;
     if !output.is_empty() {
         printer.plain(&output);
     }
@@ -2774,7 +3479,7 @@ pub async fn pull(
         args.push("--rebase");
     }
 
-    let output = git(&dir, &args)?;
+    let output = git_transport(&dir, &args)?;
     printer.plain(&output);
 
     Ok(())
@@ -2932,6 +3637,8 @@ pub async fn release(
                 image_formats,
                 false,
                 message,
+                Some(&signing_key),
+                None,
                 Some(&registry_name),
                 printer,
             )
@@ -2981,7 +3688,11 @@ pub async fn release_registry_tree(
     if let Some(cache_url) = &options.cache_url {
         if nixcache::upsert_registry_cache(dir, cache_url, options.cache_priority)? {
             printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
-            commit_registry(dir, "registry: update static cache pointer")?;
+            commit_registry(
+                dir,
+                "registry: update static cache pointer",
+                Some(&options.signing_key),
+            )?;
         }
     }
 
@@ -3626,8 +4337,9 @@ fn sign_tag(
     force: bool,
 ) -> Result<()> {
     let message = message.unwrap_or("AOS registry release");
+    ensure_commit_identity(dir)?;
     let signing_key_config = format!("user.signingkey={signing_key}");
-    let mut command = Command::new("git");
+    let mut command = gitcmd::hermetic();
     command
         .arg("-c")
         .arg("gpg.format=ssh")
@@ -3687,8 +4399,8 @@ fn format_size(bytes: u64) -> String {
 mod tests {
     use super::*;
     use crate::security::verify_tag_signature;
+    use crate::testutil;
     use crate::types::{ApmSettings, ProfileScope, RegistryConfig, RegistryUploadAuthConfig};
-    use base64::Engine as _;
     use std::fs;
     use tempfile::TempDir;
 
@@ -3908,7 +4620,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(verify_tag_signature(&repo, "1.0.0", &signing.trusted_key).unwrap());
+        assert!(
+            verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&signing.trusted_key))
+                .unwrap()
+        );
     }
 
     #[test]
@@ -4041,85 +4756,109 @@ mod tests {
     }
 
     fn write_test_signing_key(root: &Path, registry: &str) -> TestSigningFixture {
+        write_seeded_signing_key(root, registry, [9u8; 32], "registry_ed25519")
+    }
+
+    fn write_seeded_signing_key(
+        root: &Path,
+        registry: &str,
+        seed: [u8; 32],
+        name: &str,
+    ) -> TestSigningFixture {
         let signing_dir = root.join("signing");
         fs::create_dir_all(&signing_dir).unwrap();
 
-        let seed = [9u8; 32];
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
-        let raw_public_key = signing_key.verifying_key().to_bytes();
-        let public_blob = ssh_ed25519_public_key_blob(&raw_public_key);
-        let public_blob_b64 = base64::engine::general_purpose::STANDARD.encode(public_blob);
-        let private_key = signing_dir.join("registry_ed25519");
+        let keypair = crate::sshkey::Ed25519Keypair::from_seed(seed);
+        let private_key = signing_dir.join(name);
 
-        fs::write(
-            &private_key,
-            openssh_ed25519_private_key(&seed, &raw_public_key, registry),
-        )
-        .unwrap();
+        fs::write(&private_key, keypair.to_openssh_private_key(registry)).unwrap();
         restrict_private_key_permissions(&private_key).unwrap();
 
         TestSigningFixture {
-            trusted_key: format!("{registry}:Ed25519:{public_blob_b64}"),
+            trusted_key: keypair.trust_key_line(registry),
             private_key,
         }
     }
 
-    fn ssh_ed25519_public_key_blob(public_key: &[u8; 32]) -> Vec<u8> {
-        let mut blob = Vec::new();
-        push_ssh_string(&mut blob, b"ssh-ed25519");
-        push_ssh_string(&mut blob, public_key);
-        blob
-    }
+    #[test]
+    fn retirement_resign_rotates_release_and_partition_signatures() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=stable",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
 
-    fn openssh_ed25519_private_key(
-        seed: &[u8; 32],
-        public_key: &[u8; 32],
-        comment: &str,
-    ) -> String {
-        let public_blob = ssh_ed25519_public_key_blob(public_key);
-        let mut private_key = Vec::new();
-        private_key.extend_from_slice(seed);
-        private_key.extend_from_slice(public_key);
+        // Maintainer A signs everything and then retires; B survives.
+        let key_a = write_seeded_signing_key(tmp.path(), "aos-core", [9u8; 32], "key_a");
+        let key_b = write_seeded_signing_key(tmp.path(), "aos-core", [10u8; 32], "key_b");
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
 
-        let mut private = Vec::new();
-        push_u32(&mut private, 0x1234_5678);
-        push_u32(&mut private, 0x1234_5678);
-        push_ssh_string(&mut private, b"ssh-ed25519");
-        push_ssh_string(&mut private, public_key);
-        push_ssh_string(&mut private, &private_key);
-        push_ssh_string(&mut private, comment.as_bytes());
-        for pad in 1..=(8 - private.len() % 8) {
-            if private.len() % 8 == 0 {
-                break;
-            }
-            private.push(pad as u8);
-        }
+        let version = semver::Version::new(1, 0, 0);
+        let key_a_path = key_a.private_key.to_str().unwrap();
+        sign_tag(
+            &repo,
+            "1.0.0",
+            "HEAD",
+            Some("release 1.0.0"),
+            key_a_path,
+            false,
+        )
+        .unwrap();
+        let printer = Printer::new(0, true, false);
+        channel_init_dir(&repo, "prod", &version, key_a_path, &printer).unwrap();
 
-        let mut blob = b"openssh-key-v1\0".to_vec();
-        push_ssh_string(&mut blob, b"none");
-        push_ssh_string(&mut blob, b"none");
-        push_ssh_string(&mut blob, b"");
-        push_u32(&mut blob, 1);
-        push_ssh_string(&mut blob, &public_blob);
-        push_ssh_string(&mut blob, &private);
+        // Nothing is affected while A is still a survivor.
+        let survivors_both = vec![key_a.trusted_key.clone(), key_b.trusted_key.clone()];
+        let plan = plan_retirement_resign(&repo, &survivors_both).unwrap();
+        assert!(plan.is_empty());
 
-        let encoded = base64::engine::general_purpose::STANDARD.encode(blob);
-        let mut out = "-----BEGIN OPENSSH PRIVATE KEY-----\n".to_string();
-        for chunk in encoded.as_bytes().chunks(70) {
-            out.push_str(std::str::from_utf8(chunk).unwrap());
-            out.push('\n');
-        }
-        out.push_str("-----END OPENSSH PRIVATE KEY-----\n");
-        out
-    }
+        // Retiring A: the release tag and every partition need re-signing.
+        let survivors = vec![key_b.trusted_key.clone()];
+        let plan = plan_retirement_resign(&repo, &survivors).unwrap();
+        assert_eq!(plan.affected_releases, vec![version.clone()]);
+        assert_eq!(plan.affected_partitions.len(), 256);
 
-    fn push_ssh_string(out: &mut Vec<u8>, value: &[u8]) {
-        push_u32(out, value.len() as u32);
-        out.extend_from_slice(value);
-    }
+        execute_retirement_resign(&repo, &plan, key_b.private_key.to_str().unwrap(), &printer)
+            .unwrap();
 
-    fn push_u32(out: &mut Vec<u8>, value: u32) {
-        out.extend_from_slice(&value.to_be_bytes());
+        // The release tag now verifies only against the survivor.
+        assert!(
+            verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&key_b.trusted_key)).unwrap()
+        );
+        assert!(
+            !verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&key_a.trusted_key))
+                .unwrap()
+        );
+
+        // Partition payloads were regenerated against the new tag object
+        // and verify against the survivor.
+        let payload = fs::read(repo.join(".git/channels/prod/00")).unwrap();
+        let oid = hash_tag_object(&repo, &payload).unwrap();
+        assert!(
+            verify_tag_signature(&repo, &oid, std::slice::from_ref(&key_b.trusted_key)).unwrap()
+        );
+        let map = read_channel_partition_map(&repo, "prod").unwrap();
+        assert_eq!(channel::compute_frontier(&map), Some(version));
+
+        // Re-planning against the survivor finds nothing left to re-sign.
+        let plan = plan_retirement_resign(&repo, &survivors).unwrap();
+        assert!(plan.is_empty());
     }
 
     #[cfg(unix)]
@@ -4638,5 +5377,119 @@ nar_size = 1
         assert_eq!(format_size(2048), "2.0 KiB");
         assert_eq!(format_size(3_300_000), "3.1 MiB");
         assert_eq!(format_size(2_147_483_648), "2.0 GiB");
+    }
+
+    /// Initialize a git repository with one commit at `dir`.
+    fn init_authoring_clone(dir: &Path) {
+        fs::create_dir_all(dir).unwrap();
+        testutil::git(dir, &["init"]);
+        fs::write(dir.join("registry.toml"), "[registry]\n").unwrap();
+        testutil::git(dir, &["add", "."]);
+        testutil::git(dir, &["commit", "-m", "init"]);
+    }
+
+    #[test]
+    fn local_registries_skips_configured_names() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("configured-reg")).unwrap();
+        fs::create_dir_all(tmp.path().join("authored-reg/packages/t")).unwrap();
+        fs::write(
+            tmp.path().join("authored-reg/packages/t/tool-1.0.0.toml"),
+            "",
+        )
+        .unwrap();
+
+        let local = local_registries(tmp.path(), &["configured-reg"]);
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].name, "authored-reg");
+        assert_eq!(local[0].packages, 1);
+        assert_eq!(local[0].origin, None);
+    }
+
+    #[test]
+    fn local_registries_reports_origin() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("authored-reg");
+        init_authoring_clone(&dir);
+        testutil::git(
+            &dir,
+            &["remote", "add", "origin", "https://cdn.example.com/reg"],
+        );
+
+        let local = local_registries(tmp.path(), &[]);
+        assert_eq!(local.len(), 1);
+        assert_eq!(
+            local[0].origin.as_deref(),
+            Some("https://cdn.example.com/reg")
+        );
+    }
+
+    #[test]
+    fn local_registries_missing_dir_is_empty() {
+        let tmp = TempDir::new().unwrap();
+        assert!(local_registries(&tmp.path().join("absent"), &[]).is_empty());
+    }
+
+    #[test]
+    fn authoring_clone_precious_ignores_plain_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("consumer-reg");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("registry.toml"), "[registry]\n").unwrap();
+
+        assert!(authoring_clone_precious(&dir).unwrap().is_none());
+        assert!(
+            authoring_clone_precious(&tmp.path().join("absent"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn authoring_clone_precious_without_remote() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("authored-reg");
+        init_authoring_clone(&dir);
+
+        let reason = authoring_clone_precious(&dir).unwrap();
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("no remote")),
+            "got: {reason:?}"
+        );
+    }
+
+    #[test]
+    fn authoring_clone_precious_uncommitted_changes() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("authored-reg");
+        init_authoring_clone(&dir);
+        fs::write(dir.join("registry.toml"), "[registry]\nname = \"x\"\n").unwrap();
+
+        let reason = authoring_clone_precious(&dir).unwrap();
+        assert_eq!(reason.as_deref(), Some("uncommitted changes"));
+    }
+
+    #[test]
+    fn authoring_clone_precious_unpushed_and_pushed() {
+        let tmp = TempDir::new().unwrap();
+        let origin = tmp.path().join("origin.git");
+        fs::create_dir_all(&origin).unwrap();
+        testutil::git(&origin, &["init", "--bare"]);
+
+        let dir = tmp.path().join("authored-reg");
+        init_authoring_clone(&dir);
+        testutil::git(&dir, &["remote", "add", "origin", origin.to_str().unwrap()]);
+
+        let reason = authoring_clone_precious(&dir).unwrap();
+        assert!(
+            reason
+                .as_deref()
+                .is_some_and(|r| r.contains("not pushed to any remote")),
+            "got: {reason:?}"
+        );
+
+        let branch = testutil::git(&dir, &["branch", "--show-current"]);
+        testutil::git(&dir, &["push", "origin", &branch]);
+        assert!(authoring_clone_precious(&dir).unwrap().is_none());
     }
 }

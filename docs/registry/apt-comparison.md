@@ -151,7 +151,7 @@ counterpart. The AOS column links to the reference doc that specifies it.
 | `dists/<suite>/…/binary-<arch>/` partitioning | **Channels are branches** (`refs/heads/<channel>`); `HEAD` = the default channel. (No `[components]` table in the target.) | [`versioning-and-channels.md`](./versioning-and-channels.md) |
 | `Valid-Until` — time-based freshness bound | **No direct analogue / no in-band signed expiry.** Freshness = low CDN TTL on `/channels` (and `info/refs`, `objects/info`) + the consumer's own max-staleness policy + the monotonic anti-rollback floor | [`signing-and-trust.md`](./signing-and-trust.md), [`versioning-and-channels.md`](./versioning-and-channels.md) |
 | dumb-HTTP, static-mirror-friendly | dumb-HTTP is the substrate — the repo is a valid bare dumb-HTTP repo; a stock `git clone` works (design-brief §12) | [`architecture.md`](./architecture.md), [`http-layout.md`](./http-layout.md) |
-| `signed-by=` per-source key pinning | per-registry key pinning via TOFU + `trusted-keys.d/<registry>.pub` | [`signing-and-trust.md`](./signing-and-trust.md) |
+| `signed-by=` per-source key pinning | per-registry out-of-band anchor in `trusted-keys.d/<registry>.pub` + in-band `keys.toml` roster | [`signing-and-trust.md`](./signing-and-trust.md) |
 | `snapshot.debian.org` reproducible archives | reproducible snapshots are intrinsic: a signed tag addresses an immutable commit; the whole object closure is content-addressed | [`versioning-and-channels.md`](./versioning-and-channels.md) |
 | Phased updates (`Phased-Update-Percentage`) | **256 signed partition tags** `/channels/<name>/00..ff`; the publisher points N partitions at a new release to roll it to N/256 of the fleet; clients self-select a deterministic bucket | [`versioning-and-channels.md`](./versioning-and-channels.md) |
 | `Components` (`main` / `contrib` / `non-free`) | **Not adopted** — the target has no `[components]` table; a registry is one git repo, partitioned by channel branches | [`versioning-and-channels.md`](./versioning-and-channels.md) |
@@ -293,15 +293,18 @@ freshness is **out of band**, assembled from three pieces (design-brief §11):
 See [`signing-and-trust.md`](./signing-and-trust.md) and
 [`versioning-and-channels.md`](./versioning-and-channels.md).
 
-### 5.6 `signed-by=` → TOFU + `trusted-keys.d`
+### 5.6 `signed-by=` → out-of-band anchor + `trusted-keys.d` roster
 
-Both pin a per-source key. AOS reuses the existing primitive: a registry's
-Ed25519 public key in `name:Ed25519:<base64>` format (parsed by
-`parse_signing_key`, `crates/aos-package/src/security.rs:306`), trust-on-first-use
-plus `trusted-keys.d/<registry>.pub`. Verification today runs
-`git verify-commit` against a temporary `allowed_signers`
-(`crates/aos-package/src/security.rs:199`); the target moves this to
-`git verify-tag` over the signed tag objects.
+Both pin a per-source key. AOS pins a registry's Ed25519 public key in
+`name:Ed25519:<base64>` format (parsed by `parse_signing_key`,
+`crates/aos-package/src/security.rs:575`) into `trusted-keys.d/<registry>.pub`.
+Where APT's `signed-by=` names a static keyring file, AOS goes further: the
+anchor is delivered **out-of-band** (baked into the image by `aos.apm.registries`,
+or `apr trust pin` — no silent trust-on-first-use), and from it the committed
+`keys.toml` roster lets the trusted set rotate **in-band** across multiple
+maintainer keys. Verification runs `git verify-tag` / `git verify-commit` against
+a temporary `allowed_signers` built from the whole trusted set
+(`crates/aos-package/src/security.rs:455`,`:490`).
 
 ---
 
@@ -374,7 +377,7 @@ The same Ed25519 key signs narinfos (separate signature object). See
 | Incremental index updates | `Packages.diff` (pdiff) | thin `delta-*.pack` graph | **AOS ahead** (DAG, not one text file) |
 | Concurrent-publish consistency | `by-hash/SHA256/<h>` | immutable objects + atomic ref flip | **AOS ahead** (intrinsic) |
 | Time-based freshness | `Valid-Until` (in-band signed expiry) | low CDN TTL + consumer max-staleness + anti-rollback floor (no in-band expiry) | **AOS weaker** (out-of-band, not publisher-signed) |
-| Per-source key pinning | `signed-by=` | TOFU + `trusted-keys.d/<registry>.pub` | **parity (kept)** |
+| Per-source key pinning | `signed-by=` | out-of-band anchor in `trusted-keys.d/<registry>.pub` + `keys.toml` roster | **AOS ahead** (in-band rotation) |
 | Reproducible snapshots | `snapshot.debian.org` | immutable signed tags | **AOS ahead** (no extra service) |
 | Phased rollout | `Phased-Update-Percentage` | 256 signed partition tags | **AOS ahead** (explicit cohorts) |
 
@@ -415,8 +418,9 @@ git-native registry path:
 - Channel rollout uses 256 signed partition tag objects, a persisted semver
   floor/bucket state, and `registry::fetch` delta/full/fallback object
   resolution.
-- Signing uses SSH-format Ed25519 tag signatures, TOFU/trusted-key storage, and
-  committed `keys.toml` rotation/revocation helpers.
+- Signing uses SSH-format Ed25519 tag signatures, an out-of-band `trusted-keys.d`
+  anchor (image-baked or pinned), and the committed `keys.toml` roster that
+  clients pin in-band for rotation/revocation.
 - `apr release` now orchestrates the producer-safe path: signed semver tag,
   full packs and compressed thin deltas, static index refresh, optional static
   cache generation, channel partition updates, and immutable-first static-origin
@@ -443,7 +447,7 @@ deps    │ Depends (solver)    │   ↑    │ explicit closures              
 consist │ by-hash             │   ↑    │ immutable objects + atomic ref flip │ AOS ahead
 chan    │ suites/components   │   →    │ channels = branches (no components) │
 rollout │ Phased-Update-%     │   ↑    │ 256 signed partition tags           │ AOS ahead
-trust   │ signed-by=          │   ≈    │ TOFU + trusted-keys.d/              │
+trust   │ signed-by=          │   ↑    │ anchor + trusted-keys.d/ roster     │
 fresh   │ snapshot.debian.org │   ↑    │ immutable signed tags               │ AOS ahead
 freshTTL│ Valid-Until         │   ↓    │ CDN TTL + consumer policy           │ APT ahead (in-band)
 clone   │ APT-specific client │   ↑    │ stock `git clone` (dumb HTTP)       │ AOS ahead

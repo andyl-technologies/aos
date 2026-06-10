@@ -235,7 +235,7 @@ in {
   # stays at the top level.
   checks = {
     eval = import ./lib/testing/eval.nix {
-      inherit pkgs lib;
+      inherit pkgs lib mkSystem;
       system = serverSystem;
     };
     build = let

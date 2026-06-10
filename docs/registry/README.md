@@ -35,10 +35,13 @@ rollout. Distribution rides on a **guaranteed delta graph**: every `X.Y.0`
 release ships a self-contained **full pack** and every release ships a small set
 of **thin delta packs** (`delta-<from-semver>.pack`) that the client completes
 with `git index-pack --fix-thin`; **all objects also exist loose** as the
-correctness fallback. Trust is rooted in **one SSH-format Ed25519 key** that
-signs the git tag objects, verified by a `signed partition tag → signed semver
-tag → commit` chain with **name-binding** (the embedded tag-name must match the
-serving path). The guiding philosophy is **asymmetric cost: make publishing as
+correctness fallback. Trust is rooted in an **out-of-band anchor** (baked into
+the AOS image, or pinned) and evolves through a committed **`keys.toml` roster**
+of SSH-format Ed25519 maintainer keys; releases are verified by a `signed
+partition tag → signed semver tag → commit` chain (signed by **any active roster
+key**) with **name-binding** (the embedded tag-name must match the serving path),
+and rotation/revocation reaches machines **in-band** on their next sync. The
+guiding philosophy is **asymmetric cost: make publishing as
 expensive as possible so consumption is as cheap as possible** — the producer
 pays once, every consumer benefits.
 
@@ -57,9 +60,11 @@ This reference set answers, for the AOS registry's **target state**:
 - *How it is versioned & rolled out* — semver releases, channels-as-branches
   with a frontier head, the 256-partition rollout, deterministic bucket
   selection, and anti-rollback / fix-forward.
-- *How it is trusted* — one Ed25519 key, signed tag objects, name-binding,
-  the `tag → tag → commit` chain, and freshness via low CDN TTL + consumer
-  max-staleness policy + the monotonic anti-rollback floor (no in-band expiry).
+- *How it is trusted* — an out-of-band anchor (image-baked or pinned) plus a
+  committed `keys.toml` roster of Ed25519 maintainer keys, signed tag objects,
+  any-active-key verification, name-binding, the `tag → tag → commit` chain, and
+  freshness via low CDN TTL + consumer max-staleness policy + the monotonic
+  anti-rollback floor (no in-band expiry).
 - *How it is published* — the producer pipeline (commit → sign tag →
   pack/delta/zstd → `update-server-info` → advance partitions → upload), CDN
   atomicity and concurrency.
@@ -145,7 +150,8 @@ surface without conflicting.
   narinfo + NAR           │     nix-cache-info / <hash>.narinfo / nar/      │
                           └──────────────────────────────────────────────┘
                                           │
-                  trust roots in ONE SSH-format Ed25519 key:
+          trust roots in an OUT-OF-BAND anchor (image-baked / pinned),
+          evolves via the committed keys.toml roster (any active key):
    signed partition tag ──▶ signed semver tag ──▶ commit (Merkle DAG)
    verified with NAME-BINDING (embedded tag name == serving path name)
 ```
@@ -182,9 +188,11 @@ surface without conflicting.
 | **Anti-rollback** | A consumer keeps a monotonic floor and never moves to a release older than its current one. Aborting a bad rollout is **fix-forward** (publish a newer release, point partitions at it), never partition-decrement. |
 | **NAR** | Nix ARchive — the serialized form of a store path; the actual build artifact, stored content-addressed and zstd-compressed (`<hash>.nar.zst`) under the cache location (see **Binary-cache location** below: the committed `registry.toml` `[[caches]]`, the consumer's client-side `registries.d` override, or the origin itself). |
 | **Binary-cache location** | The NAR substituter is **not advertised in signed tags**. It lives in the committed git-repo-root `registry.toml` `[[caches]]` (authenticated transitively by the tag → commit → tree → file; see [repo-layout.md](repo-layout.md)), optionally overridden/supplemented by the consumer's client-side `registries.d/<name>.toml` (**higher priority wins**); a relative cache URL means the **origin itself**. An authenticated-but-wrong cache pointer still cannot serve bad bytes — NARs are content-addressed and SHA-256-verified. |
-| **`keys.toml`** | A **committed tree file** (TARGET) — the **trust roster** listing the active signing key(s) (`id` + `key`, **no role field**, no `root`/`operational` tier) + a `revoked` list, authenticated via the signed tag. It does **not** bootstrap trust (a key in a file authenticated by that key is circular). The model is **decided: ≥2 overlapping active keys** — the git lineage (signed tag → commit → parent chain) provides continuity, so **no separate offline-root tier and no TUF-style root role**. **Rotation** = publish `keys.toml` listing old + new keys (overlap window) in a tag signed by a currently-trusted key. **Planned retirement** = list the key under `revoked`, signed by one of the *other* overlapping active keys. **Compromise** is handled **out-of-band** (consumer re-pins via `trusted-keys.d` / `apr trust`). See [repo-layout.md](repo-layout.md) and [signing-and-trust.md](signing-and-trust.md). |
+| **`keys.toml`** | A **committed tree file** — the **trust roster** listing the active signing key(s) (`id` + `key`, **no role field**, no `root`/`operational` tier) + a `revoked` list, authenticated via the signed tag. Clients **consume it during sync** as the authoritative trusted-key set; a tag is valid when signed by **any active roster key**. It does **not** bootstrap trust (a key in a file authenticated by that key is circular) — bootstrap is the out-of-band anchor (see **Baked trust anchor**). The model is **decided: ≥2 overlapping active keys** — the git lineage plus continuity enforcement provides continuity, so **no separate offline-root tier and no TUF-style root role**. **Rotation** = publish `keys.toml` listing old + new keys (overlap window) in a commit signed by a currently-trusted key; clients pin the new key on next sync. **Retirement/revocation** = `apr keys retire` lists the key under `revoked` (signed by another active key) and re-signs affected tags; it propagates **in-band**. See [repo-layout.md](repo-layout.md) and [signing-and-trust.md](signing-and-trust.md). |
 | **narinfo / `nix-cache-info`** | The standard Nix binary-cache HTTP surface (`<storehash>.narinfo` per store path; the fixed `nix-cache-info` stub marking an origin as a cache) the origin **MAY** serve for stock `nix` substitution; narinfo signing **reuses the one Ed25519 key**. |
-| **TOFU** | Trust On First Use — bootstrap trust is **client-side**, not from `keys.toml`: a registry's Ed25519 signing key is pinned the first time it is seen unless already admin-provisioned in `trusted-keys.d/<registry>.pub`. After pinning, key rotation/revocation is governed by the committed `keys.toml` roster (see [repo-layout.md](repo-layout.md)). |
+| **Baked trust anchor** | The out-of-band root of trust, delivered by the image rather than discovered on the network. The `aos.apm.registries` module ([modules/base/apm-registries.nix](../../modules/base/apm-registries.nix)) writes `/etc/apm/registries.d/<name>.toml` (with `[registry.signing] public_key` = the first trust key) and `/etc/apm/trusted-keys.d/<name>.pub` (all trust keys) into the image, so `apm` verifies first contact with **no** manual `apr trust pin`. Updating it is an image rebuild; day-to-day key rotation reaches deployed machines in-band via the `keys.toml` roster. |
+| **No silent TOFU** | The registry sync path **does not** accept a signing key on first use. Bootstrap trust must arrive out-of-band — the baked anchor, an explicit `apr trust pin`, or the `[registry.signing] public_key` config anchor (consulted only when the store is empty). Signing is enforced by default (absent `[registry.signing]` verifies); `required = false` / `apm registry add --no-verify` is the only opt-out, intended for local dev registries. A `tofu_check` primitive still exists but is exercised only by tests. |
+| **`APM_SYSTEM_CONFIG_DIR`** | Environment variable that redirects the `/etc/apm` system config root (and every path derived from it — `registries.d`, `trusted-keys.d`) in both profile scopes, when set to a non-empty absolute path. The supported way to point `apm`/`apr` at a writable fixture tree when developing on non-AOS hosts; relative/empty values are ignored. |
 
 ---
 
