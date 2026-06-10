@@ -707,7 +707,11 @@ fn walk_dir(root: &Path, current: &Path, files: &mut Vec<String>) -> Result<()> 
             .to_string_lossy()
             .to_string();
 
-        if path.is_dir() {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("reading file type for {}", path.display()))?;
+
+        if file_type.is_dir() {
             walk_dir(root, &path, files)?;
         } else {
             files.push(relative);
@@ -1304,5 +1308,34 @@ references = []
         assert_eq!(file_list[0], "bin/curl");
         assert_eq!(file_list[1], "lib/libcurl.a");
         assert_eq!(file_list[2], "lib/libcurl.so");
+    }
+
+    #[test]
+    fn files_lists_symlinks_without_following_directory_targets() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("share/tool")).unwrap();
+        fs::write(root.join("bin/tool"), b"binary").unwrap();
+        fs::write(root.join("share/tool/payload.txt"), b"payload").unwrap();
+        symlink("tool", root.join("bin/tool-link")).unwrap();
+        symlink(".", root.join("share/tool/current")).unwrap();
+
+        let mut file_list = Vec::new();
+        walk_dir(root, root, &mut file_list).unwrap();
+        file_list.sort();
+
+        assert_eq!(
+            file_list,
+            vec![
+                "bin/tool",
+                "bin/tool-link",
+                "share/tool/current",
+                "share/tool/payload.txt",
+            ]
+        );
     }
 }
