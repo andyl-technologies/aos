@@ -233,6 +233,107 @@ in {
           grep -qx "Host Command Test" "$work/author-name.out"
           grep -qx "host-command@example.invalid" "$work/author-email.out"
 
+          host_key_root="host-reg:Ed25519:YWJjZA=="
+          host_key_backup="host-reg:Ed25519:ZWZnaA=="
+          host_key_canary="host-reg:Ed25519:aGlqaA=="
+          host_key_foreign="other-reg:Ed25519:bWlzbWF0Y2g="
+          trust_file="$config/apm/trusted-keys.d/host-reg.pub"
+
+          run_clean ${self}/bin/apr keys list --registry host-reg \
+            > "$work/apr-keys-list-empty.out" 2>&1
+          grep -q "Registry 'host-reg' has no keys in keys.toml" \
+            "$work/apr-keys-list-empty.out"
+          assert_no_profile
+
+          run_clean ${self}/bin/apr keys add root "$host_key_root" \
+            --registry host-reg \
+            --no-commit > "$work/apr-keys-add-root-no-commit.out" 2>&1
+          grep -q "Added active signing key 'root'" \
+            "$work/apr-keys-add-root-no-commit.out"
+          grep -q 'id = "root"' "$reg/keys.toml"
+          grep -q "$host_key_root" "$reg/keys.toml"
+          run_clean ${self}/bin/apr status --registry host-reg \
+            > "$work/apr-status-keys-no-commit.out" 2>&1
+          grep -q "keys.toml" "$work/apr-status-keys-no-commit.out"
+          if git -C "$reg" log --oneline --grep "registry: add signing key root" \
+            | grep -q .; then
+            cat "$work/apr-status-keys-no-commit.out"
+            exit 1
+          fi
+          git -C "$reg" add keys.toml
+          git -C "$reg" commit -m "registry: add host root signing key" \
+            > "$work/git-commit-host-root-key.out" 2>&1
+
+          if run_clean ${self}/bin/apr keys add duplicate "$host_key_root" \
+            --registry host-reg > "$work/apr-keys-add-duplicate.out" 2>&1; then
+            cat "$work/apr-keys-add-duplicate.out"
+            exit 1
+          fi
+          grep -q "signing key already exists" "$work/apr-keys-add-duplicate.out"
+
+          if run_clean ${self}/bin/apr keys add foreign "$host_key_foreign" \
+            --registry host-reg > "$work/apr-keys-add-foreign.out" 2>&1; then
+            cat "$work/apr-keys-add-foreign.out"
+            exit 1
+          fi
+          grep -q "belongs to registry 'other-reg', expected 'host-reg'" \
+            "$work/apr-keys-add-foreign.out"
+
+          run_clean ${self}/bin/apr keys add backup "$host_key_backup" \
+            --registry host-reg > "$work/apr-keys-add-backup.out" 2>&1
+          grep -q "Added active signing key 'backup'" \
+            "$work/apr-keys-add-backup.out"
+          run_clean ${self}/bin/apr keys retire root \
+            --registry host-reg \
+            --reason "host rotation" > "$work/apr-keys-retire-root.out" 2>&1
+          grep -q "Retired signing key 'root'.*vouched by 'backup'" \
+            "$work/apr-keys-retire-root.out"
+          run_clean ${self}/bin/apr keys list --registry host-reg \
+            > "$work/apr-keys-list-rotated.out" 2>&1
+          grep -q "backup:" "$work/apr-keys-list-rotated.out"
+          grep -q "root: host rotation" "$work/apr-keys-list-rotated.out"
+          git -C "$reg" log --oneline > "$work/apr-keys-log.out"
+          grep -q "registry: add signing key backup" "$work/apr-keys-log.out"
+          grep -q "registry: retire signing key root" "$work/apr-keys-log.out"
+          assert_no_profile
+
+          run_clean ${self}/bin/apr trust list host-reg \
+            > "$work/apr-trust-list-empty.out" 2>&1
+          grep -q "host-reg: no pinned keys" "$work/apr-trust-list-empty.out"
+          run_clean ${self}/bin/apr trust pin host-reg "$host_key_root" \
+            > "$work/apr-trust-pin-root.out" 2>&1
+          grep -q "Pinned trust key for registry 'host-reg'" \
+            "$work/apr-trust-pin-root.out"
+          test -f "$trust_file"
+          grep -q "$host_key_root" "$trust_file"
+          run_clean ${self}/bin/apr trust pin host-reg "$host_key_backup" \
+            > "$work/apr-trust-pin-backup.out" 2>&1
+          test "$(wc -l < "$trust_file")" = "2"
+          run_clean ${self}/bin/apr trust list host-reg \
+            > "$work/apr-trust-list-pinned.out" 2>&1
+          grep -q "host-reg: Ed25519" "$work/apr-trust-list-pinned.out"
+          if run_clean ${self}/bin/apr trust pin host-reg "$host_key_foreign" \
+            > "$work/apr-trust-pin-foreign.out" 2>&1; then
+            cat "$work/apr-trust-pin-foreign.out"
+            exit 1
+          fi
+          grep -q "belongs to registry 'other-reg', expected 'host-reg'" \
+            "$work/apr-trust-pin-foreign.out"
+          run_clean ${self}/bin/apr trust pin host-reg "$host_key_canary" --replace \
+            > "$work/apr-trust-replace.out" 2>&1
+          grep -q "Re-pinned trust key for registry 'host-reg'" \
+            "$work/apr-trust-replace.out"
+          test "$(wc -l < "$trust_file")" = "1"
+          grep -q "$host_key_canary" "$trust_file"
+          run_clean ${self}/bin/apr trust remove host-reg \
+            > "$work/apr-trust-remove.out" 2>&1
+          grep -q "Removed pinned trust keys" "$work/apr-trust-remove.out"
+          test ! -e "$trust_file"
+          run_clean ${self}/bin/apr trust remove host-reg \
+            > "$work/apr-trust-remove-repeat.out" 2>&1
+          grep -q "No pinned trust keys found" "$work/apr-trust-remove-repeat.out"
+          assert_no_profile
+
           run_clean ${self}/bin/apr status --registry host-reg > "$work/apr-status.out" 2>&1
           if grep -q '[^[:space:]]' "$work/apr-status.out"; then
             cat "$work/apr-status.out"
