@@ -199,34 +199,30 @@ pub async fn sync_git(
     // Step 6: Pin the verified head's trust roster. This runs only after
     // both the signature and fast-forward checks pass, so the writable
     // store never changes on a failed sync.
-    if enforcing {
-        if let Some(report) = apply_roster(&key_store, config, &repo_dir, &new_commit)? {
-            if !report.is_noop() {
-                printer.info(&format!(
-                    "Registry '{}': trust roster updated ({} pinned, {} unpinned, {} masked)",
-                    config.name, report.pinned, report.unpinned, report.masked,
-                ));
-            }
-            // The roster may have rotated keys; the resolved channel chain
-            // must verify against the post-pin set, not only the bootstrap
-            // set.
-            if let (TrackingMode::Channel(channel_name), Some((semver, channel_oid))) =
-                (tracking_mode, &channel_resolution)
-            {
-                let post_pin = assemble_trusted_set(&key_store, config);
-                verify::verify_tag_chain(
-                    &repo_dir,
-                    channel_oid,
-                    channel_name,
-                    &semver.to_string(),
-                    &post_pin,
-                )
-                .with_context(|| {
-                    format!(
-                        "re-verifying channel '{channel_name}' against the updated trust roster"
-                    )
-                })?;
-            }
+    if enforcing && let Some(report) = apply_roster(&key_store, config, &repo_dir, &new_commit)? {
+        if !report.is_noop() {
+            printer.info(&format!(
+                "Registry '{}': trust roster updated ({} pinned, {} unpinned, {} masked)",
+                config.name, report.pinned, report.unpinned, report.masked,
+            ));
+        }
+        // The roster may have rotated keys; the resolved channel chain
+        // must verify against the post-pin set, not only the bootstrap
+        // set.
+        if let (TrackingMode::Channel(channel_name), Some((semver, channel_oid))) =
+            (tracking_mode, &channel_resolution)
+        {
+            let post_pin = assemble_trusted_set(&key_store, config);
+            verify::verify_tag_chain(
+                &repo_dir,
+                channel_oid,
+                channel_name,
+                &semver.to_string(),
+                &post_pin,
+            )
+            .with_context(|| {
+                format!("re-verifying channel '{channel_name}' against the updated trust roster")
+            })?;
         }
     }
 
@@ -320,10 +316,10 @@ fn assemble_trusted_set(store: &KeyStore, config: &RegistryConfig) -> Vec<String
         .iter()
         .map(TrustedKey::key_line)
         .collect();
-    if keys.is_empty() {
-        if let Some(anchor) = config.signing.as_ref().and_then(|s| s.public_key.as_ref()) {
-            keys.push(anchor.clone());
-        }
+    if keys.is_empty()
+        && let Some(anchor) = config.signing.as_ref().and_then(|s| s.public_key.as_ref())
+    {
+        keys.push(anchor.clone());
     }
     keys
 }
