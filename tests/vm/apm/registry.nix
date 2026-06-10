@@ -1023,6 +1023,18 @@ in {
       cat /tmp/unpublish-retire-tool.out
       assert_file_not_exists "$REG_DIR/packages/r/retire-tool.toml" \
         "consumer package TOML removed by unpublish"
+      git -C "$REG_DIR" rm -f "closures/$RETIRE_HASH" \
+        > /tmp/unpublish-retire-tool-closure-rm.out 2>&1 || {
+        cat /tmp/unpublish-retire-tool-closure-rm.out
+        fail "maintainer prunes retired package closure metadata"
+      }
+      git -C "$REG_DIR" commit -m "registry: prune retired consumer closure" \
+        > /tmp/unpublish-retire-tool-closure-commit.out 2>&1 || {
+        cat /tmp/unpublish-retire-tool-closure-commit.out
+        fail "maintainer commits retired package closure pruning"
+      }
+      assert_file_not_exists "$REG_DIR/closures/$RETIRE_HASH" \
+        "retired package closure metadata pruned"
       $APR packages --registry test-reg > /tmp/unpublish-packages-final.out 2>&1 || {
         cat /tmp/unpublish-packages-final.out
         fail "apr packages succeeds after final unpublish"
@@ -1104,6 +1116,28 @@ in {
         "policy reports no candidate after registry unpublish"
       assert_file_contains /tmp/unpublish-policy-after.out "test-reg (installed, unavailable)" \
         "policy marks unpublished installed version unavailable"
+      $APM depends retire-tool > /tmp/unpublish-depends-after.out 2>&1 || {
+        cat /tmp/unpublish-depends-after.out
+        fail "apm depends succeeds from installed closure after registry unpublish"
+      }
+      cat /tmp/unpublish-depends-after.out
+      assert_file_contains /tmp/unpublish-depends-after.out "retire-tool (1.0.0)" \
+        "depends reports unpublished installed package root"
+      assert_file_contains /tmp/unpublish-depends-after.out "retire-dep (1.0.0)" \
+        "depends resolves installed dependency after registry unpublish"
+      assert_file_contains /tmp/unpublish-depends-after.out \
+        "unique store paths in installed dependency tree" \
+        "depends reports installed dependency tree summary"
+      $APM rdepends retire-dep > /tmp/unpublish-rdepends-after.out 2>&1 || {
+        cat /tmp/unpublish-rdepends-after.out
+        fail "apm rdepends succeeds from installed closure after dependency metadata prune"
+      }
+      cat /tmp/unpublish-rdepends-after.out
+      assert_file_contains /tmp/unpublish-rdepends-after.out \
+        "retire-dep (1.0.0) is required by:" \
+        "rdepends reports dependents for retained dependency"
+      assert_file_contains /tmp/unpublish-rdepends-after.out "retire-tool (1.0.0)" \
+        "rdepends finds unpublished installed dependent via local store closure"
       "$PROFILE/current/bin/retire-tool" > /tmp/unpublish-retire-tool-run-after.out
       assert_file_contains /tmp/unpublish-retire-tool-run-after.out \
         "^retire-tool 1.0.0 via retire-dep 1.0.0$" \
