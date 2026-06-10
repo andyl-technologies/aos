@@ -685,6 +685,66 @@ in {
           run_clean ${self}/bin/apm files hostinstall > "$work/apm-files-host-install.out" 2>&1
           grep -q "bin/host-install-tool" "$work/apm-files-host-install.out"
 
+          install_src_v2="$work/host-install-src-v2"
+          mkdir -p "$install_src_v2/bin" "$install_src_v2/share/host-install"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'printf "host install package v2 executed\n"' \
+            > "$install_src_v2/bin/host-install-tool"
+          chmod +x "$install_src_v2/bin/host-install-tool"
+          printf '%s\n' "host install payload v2" > "$install_src_v2/share/host-install/payload.txt"
+          install_store_v2=$(nix_store --add "$install_src_v2")
+          install_hash_v2=$(basename "$install_store_v2" | cut -d- -f1)
+          run_clean ${self}/bin/apr publish "$install_store_v2" \
+            --name hostinstall \
+            --version 2.0.0 \
+            --description "Host APM install fixture v2" \
+            --license MIT \
+            --maintainer host@example.invalid \
+            --registry host-install-reg \
+            --no-commit > "$work/apr-publish-host-install-v2.out" 2>&1
+          run_clean ${self}/bin/apr cache generate \
+            --registry host-install-reg \
+            --output "$work/install-static-cache/cache" \
+            --cache-url "http://127.0.0.1:$install_cache_port/cache" \
+            --priority 77 \
+            --no-commit > "$work/apr-cache-host-install-v2.out" 2>&1
+          test -f "$work/install-static-cache/cache/$install_hash_v2.narinfo"
+          git -C "$install_reg" add -A
+          git -C "$install_reg" commit -m "release: hostinstall 2.0.0" \
+            > "$work/git-commit-host-install-v2.out" 2>&1
+
+          run_clean ${self}/bin/apm update --registry host-install-client \
+            > "$work/apm-update-host-install-v2.out" 2>&1
+          grep -q "Registry 'host-install-client': done" "$work/apm-update-host-install-v2.out"
+          run_clean ${self}/bin/apm list --upgradable \
+            > "$work/apm-upgradable-host-install.out" 2>&1
+          grep -q "hostinstall/host-install-client" "$work/apm-upgradable-host-install.out"
+          grep -q "upgradable: 2.0.0" "$work/apm-upgradable-host-install.out"
+
+          nix_store --delete --ignore-liveness "$install_store_v2" \
+            > "$work/nix-delete-host-install-v2.out" 2>&1
+          if nix_store --check-validity "$install_store_v2" \
+            > "$work/nix-valid-host-install-v2-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-install-v2-deleted.out"
+            exit 1
+          fi
+
+          run_clean ${self}/bin/apm upgrade hostinstall --yes \
+            > "$work/apm-upgrade-host-install.out" 2>&1
+          grep -q "Downloading" "$work/apm-upgrade-host-install.out"
+          grep -q "Upgraded 1 package" "$work/apm-upgrade-host-install.out"
+          nix_store --check-validity "$install_store_v2" \
+            > "$work/nix-valid-host-install-v2-imported.out" 2>&1
+          "$profile/current/bin/host-install-tool" > "$work/host-install-v2-run.out"
+          grep -q "host install package v2 executed" "$work/host-install-v2-run.out"
+          assert_default_profile_absent
+
+          run_clean ${self}/bin/apm verify hostinstall > "$work/apm-verify-host-install-v2.out" 2>&1
+          grep -q "integrity verified" "$work/apm-verify-host-install-v2.out"
+          run_clean ${self}/bin/apm files hostinstall > "$work/apm-files-host-install-v2.out" 2>&1
+          grep -q "bin/host-install-tool" "$work/apm-files-host-install-v2.out"
+
           run_clean ${self}/bin/apm remove hostinstall --yes \
             > "$work/apm-remove-host-install.out" 2>&1
           grep -q "Removed 1 package" "$work/apm-remove-host-install.out"
