@@ -377,6 +377,15 @@ in {
     testScript = ''
       ${setupImageRegistryWorkflow}
 
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
+
       echo "==> Test: unavailable image format fails after package resolution"
       if $APM install server --system --registry image-reg --image vmdk \
         --output /tmp/server.vmdk --dry-run > /tmp/image-vmdk.out 2>&1; then
@@ -394,6 +403,129 @@ in {
         fail "unavailable format must not be reported as package not found"
       else
         pass "unavailable format reaches image validation"
+      fi
+
+      echo "==> Maintainer: validate and prune a missing image cache artifact"
+      export HOME=/tmp
+      export USER=root
+      APM_CONFIG="$HOME/.config/apm"
+      rm -f "/tmp/image-cache/$QCOW2_HASH.narinfo"
+
+      if $APR validate --registry image-reg \
+        --package server \
+        --platform x86_64-linux \
+        --jobs 2 > /tmp/image-validate-missing-qcow2.out 2>&1; then
+        cat /tmp/image-validate-missing-qcow2.out
+        fail "apr validate should fail when an image cache artifact is missing"
+      else
+        cat /tmp/image-validate-missing-qcow2.out
+        pass "apr validate reports missing image cache artifact"
+      fi
+      assert_file_contains /tmp/image-validate-missing-qcow2.out \
+        "not found in any cache" \
+        "apr validate reports the missing qcow2 image"
+
+      $APR validate --registry image-reg \
+        --package server \
+        --platform x86_64-linux \
+        --jobs 2 \
+        --fix > /tmp/image-validate-fix-qcow2.out 2>&1 || {
+        cat /tmp/image-validate-fix-qcow2.out
+        fail "apr validate --fix prunes only the missing image metadata"
+      }
+      cat /tmp/image-validate-fix-qcow2.out
+      assert_file_contains /tmp/image-validate-fix-qcow2.out \
+        "Removed 1 missing cache entry" \
+        "apr validate --fix reports image metadata pruning"
+      assert_file_contains "$REG_DIR/packages/s/server.toml" \
+        'format = "raw"' \
+        "validate fix keeps cache-backed raw image metadata"
+      assert_file_not_contains "$REG_DIR/packages/s/server.toml" \
+        'format = "qcow2"' \
+        "validate fix removes missing qcow2 image metadata"
+      assert_file_contains "$REG_DIR/packages/s/server.toml" \
+        "$SERVER_HASH" \
+        "validate fix keeps sysroot package metadata"
+
+      $APR verify --registry image-reg > /tmp/image-verify-after-fix.out 2>&1 || {
+        cat /tmp/image-verify-after-fix.out
+        fail "apr verify accepts image registry after validate fix"
+      }
+      assert_file_contains /tmp/image-verify-after-fix.out "no errors" \
+        "apr verify validates image registry after validate fix"
+      git -C "$REG_DIR" status --short --untracked-files=all \
+        > /tmp/image-validate-fix-status.out
+      assert_file_contains /tmp/image-validate-fix-status.out \
+        "packages/s/server.toml" \
+        "validate fix leaves an image metadata changeset"
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "registry: prune missing qcow2 image artifact" \
+        > /tmp/image-validate-fix-commit.out 2>&1 || {
+        cat /tmp/image-validate-fix-commit.out
+        fail "maintainer commits pruned image changeset"
+      }
+      cat /tmp/image-validate-fix-commit.out
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      echo "==> Consumer: sync pruned image metadata and download remaining image"
+      export HOME=/tmp/image-consumer
+      export USER=imageuser
+      APM_CONFIG="$HOME/.config/apm"
+      $APM update --registry image-reg > /tmp/image-update-after-fix.out 2>&1 || {
+        cat /tmp/image-update-after-fix.out
+        fail "apm update syncs pruned image metadata"
+      }
+      cat /tmp/image-update-after-fix.out
+      $APM show server > /tmp/image-show-after-fix.out 2>&1 || {
+        cat /tmp/image-show-after-fix.out
+        fail "apm show resolves server after image prune"
+      }
+      assert_file_contains /tmp/image-show-after-fix.out "Image formats.*raw" \
+        "apm show keeps raw image format after validate fix"
+      assert_file_not_contains /tmp/image-show-after-fix.out "qcow2" \
+        "apm show hides pruned qcow2 image format"
+
+      git -C /var/lib/apm/registries/image-reg pull --ff-only origin "$DEFAULT_BRANCH" \
+        > /tmp/image-system-pull-after-fix.out 2>&1 || {
+        cat /tmp/image-system-pull-after-fix.out
+        fail "system registry clone syncs pruned image metadata"
+      }
+      cat /tmp/image-system-pull-after-fix.out
+
+      if $APM install server --system --registry image-reg --image qcow2 \
+        --output /tmp/server.qcow2 --dry-run > /tmp/image-qcow2-after-fix.out 2>&1; then
+        cat /tmp/image-qcow2-after-fix.out
+        fail "pruned qcow2 image format should be rejected"
+      else
+        cat /tmp/image-qcow2-after-fix.out
+        pass "pruned qcow2 image format is rejected"
+      fi
+      assert_file_contains /tmp/image-qcow2-after-fix.out "Available: raw" \
+        "qcow2 rejection lists only remaining raw image"
+      assert_file_not_contains /tmp/image-qcow2-after-fix.out "Available: raw, qcow2" \
+        "qcow2 rejection does not advertise pruned image"
+
+      delete_store_path "$IMAGE_RAW_STORE" "raw image after validate fix"
+      rm -f /tmp/server-pruned.raw
+      $APM install server --system --registry image-reg --image raw \
+        --output /tmp/server-pruned.raw --yes \
+        > /tmp/image-raw-after-fix-install.out 2>&1 || {
+        cat /tmp/image-raw-after-fix-install.out
+        fail "apm downloads remaining raw image after validate fix"
+      }
+      cat /tmp/image-raw-after-fix-install.out
+      assert_file_contains /tmp/image-raw-after-fix-install.out "Downloading" \
+        "raw image install downloads after validate fix"
+      assert_file_contains /tmp/image-raw-after-fix-install.out \
+        "written to /tmp/server-pruned.raw" \
+        "raw image install reports output after validate fix"
+      assert_file_exists /tmp/server-pruned.raw \
+        "raw image output exists after validate fix"
+      RAW_AFTER_FIX=$(sha256sum /tmp/server-pruned.raw | cut -d' ' -f1)
+      if [ "$RAW_AFTER_FIX" = "$RAW_EXPECTED" ]; then
+        pass "remaining raw image output matches original hash"
+      else
+        fail "remaining raw image hash mismatch: $RAW_AFTER_FIX"
       fi
 
       if kill "$CACHE_PID" 2>/dev/null; then
