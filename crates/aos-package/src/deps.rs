@@ -1016,6 +1016,8 @@ references = ["llllllllllllllllllllllllllllllll"]
                 registry: "low-priority".into(),
                 installed_at: "2026-06-09T00:00:00Z".into(),
                 held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }];
 
@@ -1054,6 +1056,8 @@ references = ["llllllllllllllllllllllllllllllll"]
                 registry: "low-priority".into(),
                 installed_at: "2026-06-09T00:00:00Z".into(),
                 held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }];
         let high_candidate = PackageMeta {
@@ -1156,6 +1160,8 @@ references = []
                     registry: "test-reg".into(),
                     installed_at: "2026-06-09T00:00:00Z".into(),
                     held: false,
+                    source_drv: String::new(),
+                    source_nar_hash: String::new(),
                 }),
             },
             InstalledMeta {
@@ -1173,6 +1179,8 @@ references = []
                     registry: "test-reg".into(),
                     installed_at: "2026-06-09T00:00:01Z".into(),
                     held: false,
+                    source_drv: String::new(),
+                    source_nar_hash: String::new(),
                 }),
             },
         ];

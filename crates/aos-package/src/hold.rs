@@ -95,6 +95,8 @@ mod tests {
                 registry: "aos-core".into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }
     }

@@ -278,6 +278,12 @@ pub struct ApmMeta {
     pub installed_at: String,
     /// Prevent this package from being upgraded.
     pub held: bool,
+    /// Source derivation store path associated with this installed package.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_drv: String,
+    /// NAR hash for the source derivation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_nar_hash: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -1148,11 +1154,19 @@ last_update = "2026-02-13T10:30:00Z"
                 registry: "aos-core".into(),
                 installed_at: "2026-02-13T10:30:00Z".into(),
                 held: false,
+                source_drv: "/var/lib/store/src123-curl-8.5.0.drv".into(),
+                source_nar_hash: "sha256:source".into(),
             }),
         };
         let json = serde_json::to_string_pretty(&meta).unwrap();
         let parsed: InstalledMeta = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.store_path, meta.store_path);
+        let parsed_apm = parsed.apm.as_ref().unwrap();
+        assert_eq!(
+            parsed_apm.source_drv,
+            "/var/lib/store/src123-curl-8.5.0.drv"
+        );
+        assert_eq!(parsed_apm.source_nar_hash, "sha256:source");
         let apm = parsed.apm.unwrap();
         assert_eq!(apm.name, "curl");
         assert!(apm.explicit);

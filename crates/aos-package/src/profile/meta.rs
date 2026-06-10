@@ -310,6 +310,8 @@ pub fn rebuild_meta(
                     registry: reg.config.name.clone(),
                     installed_at: "rebuilt".into(),
                     held: false,
+                    source_drv: pkg.source_drv.clone(),
+                    source_nar_hash: pkg.source_nar_hash.clone(),
                 }),
             }
         } else {
@@ -376,6 +378,8 @@ mod tests {
                 registry: registry.into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }
     }
