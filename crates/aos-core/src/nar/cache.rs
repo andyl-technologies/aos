@@ -94,8 +94,59 @@ impl NarInfoSigner {
     /// Compute the Nix narinfo fingerprint for signing.
     pub fn fingerprint(store_path: &str, nar_hash: &str, nar_size: i64, refs: &[String]) -> String {
         let refs_str = refs.join(",");
+        let nar_hash = nar_hash_for_fingerprint(nar_hash);
         format!("1;{store_path};{nar_hash};{nar_size};{refs_str}")
     }
+}
+
+const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
+
+fn nar_hash_for_fingerprint(hash: &str) -> String {
+    if let Some(encoded) = hash.strip_prefix("sha256-") {
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) {
+            if bytes.len() == 32 {
+                return format!("sha256:{}", encode_nix_base32(&bytes));
+            }
+        }
+        return hash.to_string();
+    }
+
+    let Some(encoded) = hash.strip_prefix("sha256:") else {
+        return hash.to_string();
+    };
+    if encoded.len() == 64
+        && encoded
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        if let Ok(bytes) = hex::decode(encoded) {
+            if bytes.len() == 32 {
+                return format!("sha256:{}", encode_nix_base32(&bytes));
+            }
+        }
+    }
+    hash.to_string()
+}
+
+fn encode_nix_base32(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+
+    let len = (bytes.len() * 8).div_ceil(5);
+    let mut out = String::with_capacity(len);
+    for n in (0..len).rev() {
+        let bit = n * 5;
+        let i = bit / 8;
+        let j = bit % 8;
+        let mut c = (bytes[i] >> j) as u16;
+        if i + 1 < bytes.len() {
+            c |= (bytes[i + 1] as u16) << (8 - j);
+        }
+        out.push(NIX_BASE32[(c & 0x1f) as usize] as char);
+    }
+    out
 }
 
 fn parse_key_data(content: &str) -> Result<(String, Vec<u8>)> {
@@ -144,6 +195,11 @@ pub fn render_static_narinfo(
         .iter()
         .map(|reference| basename(reference).to_string())
         .collect();
+    let fingerprint_references: Vec<String> = input
+        .references
+        .iter()
+        .map(|reference| format!("{store_dir}/{}", basename(reference)))
+        .collect();
     let deriver = input.deriver.map(basename);
     let url = nar_url(input.store_path, input.nar_hash, input.compression);
 
@@ -153,7 +209,7 @@ pub fn render_static_narinfo(
             &store_path,
             input.nar_hash,
             input.nar_size as i64,
-            &references,
+            &fingerprint_references,
         );
         if let Some(signature) = signer.sign(&fingerprint) {
             signatures.push(signature);
@@ -260,7 +316,7 @@ mod tests {
         let refs = vec!["/nix/store/ref111-libc".to_string()];
         let input = StaticNarInfoInput {
             store_path: "/nix/store/abc123-hello",
-            nar_hash: "sha256:def456",
+            nar_hash: "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=",
             nar_size: 42,
             references: &refs,
             deriver: None,
@@ -281,16 +337,41 @@ mod tests {
         let mut key = [0u8; 32];
         key[0] = 1;
         let verifying_key = ed25519_dalek::SigningKey::from_bytes(&key).verifying_key();
+        let fingerprint_refs = vec!["/nix/store/ref111-libc".to_string()];
         let fingerprint = NarInfoSigner::fingerprint(
             &parsed.store_path,
             &parsed.nar_hash,
             parsed.nar_size as i64,
-            &parsed.references,
+            &fingerprint_refs,
+        );
+        assert_eq!(
+            fingerprint,
+            "1;/nix/store/abc123-hello;sha256:1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s;42;/nix/store/ref111-libc"
         );
         use ed25519_dalek::Verifier as _;
         verifying_key
             .verify(fingerprint.as_bytes(), &signature)
             .unwrap();
+    }
+
+    #[test]
+    fn nix_base32_matches_stock_nix_hash_convert() {
+        let bytes = hex::decode("800d59cfcd3c05e900cb4e214be48f6b886a08df").unwrap();
+        assert_eq!(
+            encode_nix_base32(&bytes),
+            "vw46m23bizj4n8afrc0fj19wrp7mj3c0"
+        );
+    }
+
+    #[test]
+    fn nar_hash_for_fingerprint_normalizes_sha256_hash_formats() {
+        let sri = "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=";
+        let hex = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let nix32 = "sha256:1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s";
+
+        assert_eq!(nar_hash_for_fingerprint(sri), nix32);
+        assert_eq!(nar_hash_for_fingerprint(hex), nix32);
+        assert_eq!(nar_hash_for_fingerprint(nix32), nix32);
     }
 
     #[test]
