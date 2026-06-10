@@ -2316,6 +2316,321 @@ in {
   };
 
   # -------------------------------------------------------------------------
+  # registry-signed-commit-trust — Trusted commit signatures for git sync
+  # -------------------------------------------------------------------------
+  registry-signed-commit-trust = testing.mkVMTest {
+    name = "apm-registry-signed-commit-trust";
+    rootfsDeps = maintainerWorkflowDeps;
+    memory = 2048;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupNixPublishEnv}
+
+      echo "==> Test: trusted signed commits for registry sync"
+
+      export GIT_CONFIG_NOSYSTEM=1
+      export GIT_CONFIG_GLOBAL=/tmp/empty-gitconfig
+      : > "$GIT_CONFIG_GLOBAL"
+
+      make_signed_tool() {
+        version="$1"
+        src="/tmp/signed-tool-$version-src"
+        rm -rf "$src"
+        mkdir -p "$src/bin" "$src/share/signed-tool"
+        cat > "$src/bin/signed-tool" << EOF
+      #!/bin/sh
+      echo "signed-tool $version executed"
+      EOF
+        chmod +x "$src/bin/signed-tool"
+        printf "signed-tool payload %s\n" "$version" \
+          > "$src/share/signed-tool/payload.txt"
+        nix-store --add "$src"
+      }
+
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/signed-valid-$label.out" 2>&1; then
+          pass "$label valid in store"
+        else
+          cat "/tmp/signed-valid-$label.out"
+          fail "$label should be valid in store"
+        fi
+      }
+
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/signed-missing-$label.out" 2>&1; then
+          cat "/tmp/signed-missing-$label.out"
+          fail "$label should be missing from store"
+        else
+          pass "$label missing from store"
+        fi
+      }
+
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        if nix-store --delete --ignore-liveness "$path" > "/tmp/signed-delete-$label.out" 2>&1; then
+          pass "$label deleted before apm download"
+        else
+          cat "/tmp/signed-delete-$label.out"
+          fail "$label should be deletable before apm download"
+          return 1
+        fi
+        assert_store_missing "$path" "$label"
+      }
+
+      wait_for_cache_server() {
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://127.0.0.1:18106/nix-cache-info >/dev/null; then
+            return 0
+          fi
+          sleep 1
+        done
+        return 1
+      }
+
+      commit_signed() {
+        key="$1"
+        label="$2"
+        message="$3"
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" \
+          -c gpg.format=ssh \
+          -c "user.signingkey=$key" \
+          commit -S -m "$message" > "/tmp/signed-commit-$label.out" 2>&1 || {
+          cat "/tmp/signed-commit-$label.out"
+          fail "signed commit succeeds: $message"
+          return 1
+        }
+        cat "/tmp/signed-commit-$label.out"
+        git -C "$REG_DIR" cat-file -p HEAD > "/tmp/signed-commit-$label.object"
+        assert_file_contains "/tmp/signed-commit-$label.object" \
+          "BEGIN SSH SIGNATURE" "registry commit $label carries SSH signature"
+      }
+
+      publish_signed_tool() {
+        version="$1"
+        store="$2"
+        label="$3"
+        $APR publish "$store" \
+          --name signed-tool \
+          --version "$version" \
+          --description "Signed commit trust workflow tool" \
+          --license MIT \
+          --maintainer signed-commit@example.invalid \
+          --registry signed-reg \
+          --no-commit > "/tmp/signed-publish-$label.out" 2>&1 || {
+          cat "/tmp/signed-publish-$label.out"
+          fail "apr publish signed-tool $version succeeds"
+          return 1
+        }
+        cat "/tmp/signed-publish-$label.out"
+        $APR cache generate \
+          --registry signed-reg \
+          --output /tmp/signed-cache \
+          --cache-url http://127.0.0.1:18106 \
+          --priority 52 \
+          --no-commit > "/tmp/signed-cache-$label.out" 2>&1 || {
+          cat "/tmp/signed-cache-$label.out"
+          fail "apr cache generate signed-tool $version succeeds"
+          return 1
+        }
+        cat "/tmp/signed-cache-$label.out"
+      }
+
+      GOOD_KEY=/tmp/signed-commit-good
+      BAD_KEY=/tmp/signed-commit-bad
+      ssh-keygen -q -t ed25519 -N "" -f "$GOOD_KEY"
+      ssh-keygen -q -t ed25519 -N "" -f "$BAD_KEY"
+      GOOD_PUBLIC=$(cut -d ' ' -f2 < "$GOOD_KEY.pub")
+      TRUST_KEY="signed-reg:Ed25519:$GOOD_PUBLIC"
+
+      TOOL_V1_STORE=$(make_signed_tool 1.0.0)
+      TOOL_V2_STORE=$(make_signed_tool 2.0.0)
+      TOOL_V3_STORE=$(make_signed_tool 3.0.0)
+      TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V3_HASH=$(basename "$TOOL_V3_STORE" | cut -d- -f1)
+
+      mount -o remount,rw / || true
+      assert_store_valid "$TOOL_V1_STORE" "signed-tool-v1"
+      assert_store_valid "$TOOL_V2_STORE" "signed-tool-v2"
+      assert_store_valid "$TOOL_V3_STORE" "signed-tool-v3"
+
+      echo "==> Maintainer: publish signed-tool 1.0.0 with trusted commit key"
+      $APR create signed-reg
+      REG_DIR="$REG_STORAGE/signed-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      publish_signed_tool 1.0.0 "$TOOL_V1_STORE" v1
+      assert_file_exists "/tmp/signed-cache/$TOOL_V1_HASH.narinfo" \
+        "static cache has signed-tool v1 narinfo"
+      assert_file_contains "$REG_DIR/registry.toml" \
+        "http://127.0.0.1:18106" "registry records signed cache URL"
+      commit_signed "$GOOD_KEY" v1 "release: signed-tool 1.0.0"
+
+      git init --bare --object-format=sha256 /tmp/signed-origin.git
+      git -C /tmp/signed-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      git -C "$REG_DIR" remote add origin /tmp/signed-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      python3 -m http.server 18106 --bind 127.0.0.1 \
+        --directory /tmp/signed-cache > /tmp/signed-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      if wait_for_cache_server; then
+        pass "signed static cache HTTP server started"
+      else
+        cat /tmp/signed-cache-http.log || true
+        fail "signed static cache HTTP server started"
+      fi
+
+      echo "==> Consumer: add trusted signed registry and install v1"
+      export HOME=/tmp/signed-consumer
+      export USER=signeduser
+      APM_CONFIG="$HOME/.config/apm"
+      mkdir -p "$HOME"
+
+      $APM registry add file:///tmp/signed-origin.git \
+        --name signed-reg \
+        --branch "$DEFAULT_BRANCH" \
+        --trust-key "$TRUST_KEY" > /tmp/signed-add.out 2>&1 || {
+        cat /tmp/signed-add.out
+        fail "apm registry add syncs trusted signed registry"
+      }
+      cat /tmp/signed-add.out
+      assert_file_contains /tmp/signed-add.out "Signing.*trusted key pinned" \
+        "registry add reports pinned signing key"
+      CONFIG_FILE="$APM_CONFIG/registries.d/signed-reg.toml"
+      assert_file_contains "$CONFIG_FILE" "required = true" \
+        "consumer config requires signed commits"
+      assert_file_contains "$CONFIG_FILE" "$TRUST_KEY" \
+        "consumer config stores trusted signing key"
+      assert_file_contains "$HOME/.local/share/apm/registries/signed-reg/registry.toml" \
+        "http://127.0.0.1:18106" "signed registry sync materializes cache endpoint"
+
+      $APM search signed-tool --registry signed-reg > /tmp/signed-search-v1.out 2>&1 || {
+        cat /tmp/signed-search-v1.out
+        fail "apm search sees trusted signed v1"
+      }
+      assert_file_contains /tmp/signed-search-v1.out "1.0.0" \
+        "trusted signed registry exposes v1"
+
+      delete_store_path "$TOOL_V1_STORE" "signed-tool-v1"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install signed-tool --registry signed-reg --yes \
+        > /tmp/signed-install-v1.out 2>&1 || {
+        cat /tmp/signed-install-v1.out
+        fail "apm install downloads trusted signed v1"
+      }
+      cat /tmp/signed-install-v1.out
+      assert_file_contains /tmp/signed-install-v1.out "Downloading" \
+        "apm install downloads signed v1 NAR"
+      assert_store_valid "$TOOL_V1_STORE" "signed-tool-v1"
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/signed-tool"
+      "$PROFILE_TOOL" > /tmp/signed-run-v1.out
+      assert_file_contains /tmp/signed-run-v1.out \
+        "signed-tool 1.0.0 executed" "trusted signed v1 executable runs"
+
+      echo "==> Maintainer: publish v2 signed by the wrong key"
+      export HOME=/tmp
+      export USER=root
+      APM_CONFIG="$HOME/.config/apm"
+      publish_signed_tool 2.0.0 "$TOOL_V2_STORE" v2-bad
+      commit_signed "$BAD_KEY" v2-bad "release: signed-tool 2.0.0"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      echo "==> Consumer: reject wrong-key registry update"
+      export HOME=/tmp/signed-consumer
+      export USER=signeduser
+      APM_CONFIG="$HOME/.config/apm"
+      if $APM update --registry signed-reg > /tmp/signed-update-bad.out 2>&1; then
+        cat /tmp/signed-update-bad.out
+        fail "apm update should reject commit signed by wrong key"
+      else
+        cat /tmp/signed-update-bad.out
+        pass "apm update rejects commit signed by wrong key"
+      fi
+      assert_file_contains /tmp/signed-update-bad.out \
+        "commit signature verification failed" \
+        "wrong-key update reports signature verification failure"
+      $APM search signed-tool --registry signed-reg > /tmp/signed-search-after-bad.out 2>&1 || {
+        cat /tmp/signed-search-after-bad.out
+        fail "apm search still works after rejected signed update"
+      }
+      assert_file_contains /tmp/signed-search-after-bad.out "1.0.0" \
+        "rejected signed update leaves v1 metadata active"
+      assert_file_not_contains /tmp/signed-search-after-bad.out "2.0.0" \
+        "rejected signed update does not expose wrong-key v2"
+      "$PROFILE_TOOL" > /tmp/signed-run-after-bad.out
+      assert_file_contains /tmp/signed-run-after-bad.out \
+        "signed-tool 1.0.0 executed" "wrong-key update leaves installed v1 active"
+
+      echo "==> Maintainer: publish v3 signed by the trusted key"
+      export HOME=/tmp
+      export USER=root
+      APM_CONFIG="$HOME/.config/apm"
+      publish_signed_tool 3.0.0 "$TOOL_V3_STORE" v3-good
+      assert_file_exists "/tmp/signed-cache/$TOOL_V3_HASH.narinfo" \
+        "static cache has signed-tool v3 narinfo"
+      commit_signed "$GOOD_KEY" v3-good "release: signed-tool 3.0.0"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      echo "==> Consumer: recover on trusted signed update and upgrade"
+      export HOME=/tmp/signed-consumer
+      export USER=signeduser
+      APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$TOOL_V3_STORE" "signed-tool-v3"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM update --registry signed-reg > /tmp/signed-update-good.out 2>&1 || {
+        cat /tmp/signed-update-good.out
+        fail "apm update accepts trusted signed v3"
+      }
+      cat /tmp/signed-update-good.out
+      $APM list --upgradable > /tmp/signed-upgradable-v3.out 2>&1 || {
+        cat /tmp/signed-upgradable-v3.out
+        fail "apm list --upgradable sees trusted v3"
+      }
+      assert_file_contains /tmp/signed-upgradable-v3.out "signed-tool" \
+        "trusted signed v3 update names package"
+      assert_file_contains /tmp/signed-upgradable-v3.out "3.0.0" \
+        "trusted signed v3 update reports candidate"
+
+      $APM upgrade signed-tool --yes > /tmp/signed-upgrade-v3.out 2>&1 || {
+        cat /tmp/signed-upgrade-v3.out
+        fail "apm upgrade downloads trusted signed v3"
+      }
+      cat /tmp/signed-upgrade-v3.out
+      assert_file_contains /tmp/signed-upgrade-v3.out "Downloading" \
+        "apm upgrade downloads signed v3 NAR"
+      assert_store_valid "$TOOL_V3_STORE" "signed-tool-v3"
+      "$PROFILE_TOOL" > /tmp/signed-run-v3.out
+      assert_file_contains /tmp/signed-run-v3.out \
+        "signed-tool 3.0.0 executed" "trusted signed v3 executable runs"
+
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "signed static cache HTTP server stopped"
+      fi
+      wait "$CACHE_PID" 2>/dev/null || true
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
   # registry-trust-keys-workflow — Committed and local trust key commands
   # -------------------------------------------------------------------------
   registry-trust-keys-workflow = testing.mkVMTest {
