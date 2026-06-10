@@ -490,13 +490,14 @@ async fn resolve_channel_head(
     let signing_key = config
         .signing
         .as_ref()
-        .map(|signing| signing.public_key.as_str())
+        .and_then(|signing| signing.public_key.clone())
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "channel tracking for '{}' requires a trusted signing.public_key",
                 config.name,
             )
         })?;
+    let trusted_keys = vec![signing_key];
     let release_tags = semver_tag_object_map(repo_dir).await?;
     let assigned_bucket = match state.bucket {
         Some(bucket) => bucket,
@@ -510,7 +511,7 @@ async fn resolve_channel_head(
             channel_name,
             bucket,
             repo_dir,
-            signing_key,
+            &trusted_keys,
             &release_tags,
         )
         .await
@@ -546,7 +547,7 @@ async fn fetch_and_verify_partition(
     channel_name: &str,
     bucket: u8,
     repo_dir: &Path,
-    signing_key: &str,
+    trusted_keys: &[String],
     release_tags: &BTreeMap<String, semver::Version>,
 ) -> Result<Option<verify::VerifiedRelease>> {
     let url = join_cache_url(base_url, &channel::partition_path(channel_name, bucket));
@@ -584,7 +585,7 @@ async fn fetch_and_verify_partition(
         &channel_oid,
         channel_name,
         &release.to_string(),
-        signing_key,
+        trusted_keys,
     )
     .map(Some)
 }
@@ -1287,7 +1288,7 @@ mod tests {
             signing_keys: Default::default(),
             signing: Some(SigningConfig {
                 required: true,
-                public_key: "core:Ed25519:base64key".to_string(),
+                public_key: Some("core:Ed25519:base64key".to_string()),
             }),
         }
     }

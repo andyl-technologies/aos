@@ -431,8 +431,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        write_meta(&profile, "aaa111", &sample_meta("curl", "core", true, false)).unwrap();
-        write_meta(&profile, "bbb222", &sample_meta("zlib", "core", false, false)).unwrap();
+        write_meta(
+            &profile,
+            "aaa111",
+            &sample_meta("curl", "core", true, false),
+        )
+        .unwrap();
+        write_meta(
+            &profile,
+            "bbb222",
+            &sample_meta("zlib", "core", false, false),
+        )
+        .unwrap();
         write_meta(&profile, "ccc333", &sample_meta("jq", "extra", true, true)).unwrap();
 
         // Only "core" is still configured; "extra" was removed.
@@ -444,7 +454,11 @@ mod tests {
 
         // With every registry configured, nothing is orphaned.
         let all_configured: HashSet<&str> = ["core", "extra"].into_iter().collect();
-        assert!(orphaned_by_registry(&profile, &all_configured).unwrap().is_empty());
+        assert!(
+            orphaned_by_registry(&profile, &all_configured)
+                .unwrap()
+                .is_empty()
+        );
 
         // With no registries configured, every apm package is orphaned.
         let none: HashSet<&str> = HashSet::new();
@@ -462,7 +476,11 @@ mod tests {
         };
 
         let configured: HashSet<&str> = ["core"].into_iter().collect();
-        assert!(orphaned_by_registry(&profile, &configured).unwrap().is_empty());
+        assert!(
+            orphaned_by_registry(&profile, &configured)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     // 7. auto_installed returns only explicit=false entries

@@ -40,6 +40,24 @@ pub struct TrustedKey {
     pub source: KeySource,
 }
 
+impl TrustedKey {
+    /// Render the key in its canonical `registry:algorithm:base64key` line
+    /// form, as stored in `trusted-keys.d` files and accepted by
+    /// [`parse_signing_key`].
+    pub fn key_line(&self) -> String {
+        format!("{}:{}:{}", self.registry, self.algorithm, self.public_key)
+    }
+}
+
+/// Prefix marking a revoked-key exclusion line in a `trusted-keys.d` file.
+///
+/// A writable trusted-keys file may contain comment lines of the form
+/// `# revoked: registry:Ed25519:<base64>`. Keys listed this way are
+/// filtered out of [`KeyStore::lookup_all`] results even when the same key
+/// is still present in a read-only anchor directory (e.g. baked into the
+/// image under `/etc/apm/trusted-keys.d`).
+const REVOKED_LINE_PREFIX: &str = "# revoked:";
+
 // ---------------------------------------------------------------------------
 // Key store
 // ---------------------------------------------------------------------------
@@ -75,8 +93,16 @@ impl KeyStore {
     ///
     /// A registry key file may contain multiple `registry:Ed25519:<base64>`
     /// lines during rotation overlap. Older single-line files still parse.
+    ///
+    /// Keys named on `# revoked:` exclusion lines (in any scanned file; in
+    /// practice only the writable store contains them) are filtered from
+    /// the entire result, masking revoked keys that still appear in
+    /// read-only anchor directories. A key found in several directories is
+    /// returned once, with the earliest directory determining its
+    /// [`KeySource`].
     pub fn lookup_all(&self, registry: &str) -> Vec<TrustedKey> {
         let mut keys = Vec::new();
+        let mut revoked: Vec<String> = Vec::new();
         for (i, dir) in self.trusted_dirs.iter().enumerate() {
             let path = dir.join(format!("{registry}.pub"));
             if let Ok(content) = fs::read_to_string(&path) {
@@ -85,6 +111,10 @@ impl KeyStore {
                     .map(str::trim)
                     .filter(|line| !line.is_empty())
                 {
+                    if let Some(excluded) = parse_revoked_line(line) {
+                        revoked.push(excluded);
+                        continue;
+                    }
                     let Ok((reg, algo, pubkey)) = parse_signing_key(line) else {
                         continue;
                     };
@@ -106,12 +136,26 @@ impl KeyStore {
                 }
             }
         }
+        keys.retain(|key| !revoked.contains(&key.key_line()));
+        let mut seen: Vec<String> = Vec::new();
+        keys.retain(|key| {
+            let line = key.key_line();
+            if seen.contains(&line) {
+                false
+            } else {
+                seen.push(line);
+                true
+            }
+        });
         keys
     }
 
     /// Persist a trusted key to the first (writable) directory.
     ///
-    /// Creates the directory if it does not exist.
+    /// Creates the directory if it does not exist. `# revoked:` exclusion
+    /// lines already present in the file are preserved — except an
+    /// exclusion naming the key being pinned, which is dropped (explicitly
+    /// pinning a key un-revokes it).
     pub fn store(&self, key: &TrustedKey) -> Result<()> {
         let dir = self
             .trusted_dirs
@@ -122,7 +166,7 @@ impl KeyStore {
             .with_context(|| format!("creating trusted keys directory {}", dir.display()))?;
 
         let path = dir.join(format!("{}.pub", key.registry));
-        let new_line = format!("{}:{}:{}", key.registry, key.algorithm, key.public_key);
+        let new_line = key.key_line();
         let mut lines: Vec<String> = if path.exists() {
             fs::read_to_string(&path)
                 .with_context(|| format!("reading trusted key file {}", path.display()))?
@@ -130,6 +174,12 @@ impl KeyStore {
                 .map(str::trim)
                 .filter(|line| !line.is_empty())
                 .filter_map(|line| {
+                    if let Some(excluded) = parse_revoked_line(line) {
+                        if excluded == new_line {
+                            return None;
+                        }
+                        return Some(format!("{REVOKED_LINE_PREFIX} {excluded}"));
+                    }
                     parse_signing_key(line)
                         .ok()
                         .map(|(registry, algorithm, public_key)| {
@@ -153,6 +203,110 @@ impl KeyStore {
         Ok(())
     }
 
+    /// Synchronize the writable store for `registry` with a roster's active
+    /// key set.
+    ///
+    /// Performs one atomic rewrite of the writable
+    /// `trusted-keys.d/<registry>.pub` file so that it contains exactly:
+    ///
+    /// - one key line per entry of `active`, and
+    /// - one `# revoked:` exclusion line for every key visible in a
+    ///   read-only directory that is *not* in `active`, masking revoked
+    ///   keys baked into image anchors.
+    ///
+    /// Keys previously pinned in the writable file but absent from
+    /// `active` are removed; exclusion lines for keys that re-entered
+    /// `active` are dropped. Read-only directories are never modified.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no writable directory is configured or the
+    /// file cannot be read or written.
+    pub fn sync_registry_keys(
+        &self,
+        registry: &str,
+        active: &[TrustedKey],
+    ) -> Result<KeySyncReport> {
+        let dir = self
+            .trusted_dirs
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no trusted key directories configured"))?;
+
+        let active_lines: Vec<String> = active.iter().map(TrustedKey::key_line).collect();
+
+        // Keys previously pinned in the writable file (key lines only).
+        let path = dir.join(format!("{registry}.pub"));
+        let mut previously_pinned: Vec<String> = Vec::new();
+        if let Ok(content) = fs::read_to_string(&path) {
+            for line in content
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+            {
+                if parse_revoked_line(line).is_some() {
+                    continue;
+                }
+                if let Ok((reg, algo, pubkey)) = parse_signing_key(line) {
+                    if reg == registry {
+                        previously_pinned.push(format!("{reg}:{algo}:{pubkey}"));
+                    }
+                }
+            }
+        }
+
+        // Keys visible in read-only directories that are no longer active
+        // must be masked with an exclusion line.
+        let mut masked: Vec<String> = Vec::new();
+        for dir in self.trusted_dirs.iter().skip(1) {
+            let path = dir.join(format!("{registry}.pub"));
+            if let Ok(content) = fs::read_to_string(&path) {
+                for line in content
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                {
+                    let Ok((reg, algo, pubkey)) = parse_signing_key(line) else {
+                        continue;
+                    };
+                    if reg != registry {
+                        continue;
+                    }
+                    let key_line = format!("{reg}:{algo}:{pubkey}");
+                    if !active_lines.contains(&key_line) && !masked.contains(&key_line) {
+                        masked.push(key_line);
+                    }
+                }
+            }
+        }
+
+        let pinned = active_lines
+            .iter()
+            .filter(|line| !previously_pinned.contains(line))
+            .count();
+        let unpinned = previously_pinned
+            .iter()
+            .filter(|line| !active_lines.contains(line))
+            .count();
+
+        let mut lines = active_lines;
+        for excluded in &masked {
+            lines.push(format!("{REVOKED_LINE_PREFIX} {excluded}"));
+        }
+        let mut content = lines.join("\n");
+        content.push('\n');
+
+        fs::create_dir_all(dir)
+            .with_context(|| format!("creating trusted keys directory {}", dir.display()))?;
+        fs::write(&path, &content)
+            .with_context(|| format!("writing trusted keys to {}", path.display()))?;
+
+        Ok(KeySyncReport {
+            pinned,
+            unpinned,
+            masked: masked.len(),
+        })
+    }
+
     /// Remove a trusted key for `registry`.
     ///
     /// Searches all writable directories (index 0) and read-only
@@ -168,6 +322,35 @@ impl KeyStore {
         }
         Ok(false)
     }
+}
+
+/// Summary of a [`KeyStore::sync_registry_keys`] rewrite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeySyncReport {
+    /// Keys newly written to the writable store.
+    pub pinned: usize,
+    /// Previously pinned keys removed from the writable store.
+    pub unpinned: usize,
+    /// Read-only anchor keys masked with `# revoked:` exclusion lines.
+    pub masked: usize,
+}
+
+impl KeySyncReport {
+    /// `true` when the rewrite changed nothing observable.
+    pub fn is_noop(&self) -> bool {
+        self.pinned == 0 && self.unpinned == 0 && self.masked == 0
+    }
+}
+
+/// Parse a `# revoked: <key>` exclusion line.
+///
+/// Returns the canonical key line when `line` is a well-formed exclusion
+/// (the embedded key must itself parse via [`parse_signing_key`]), and
+/// `None` otherwise. Other comment lines are not exclusions.
+fn parse_revoked_line(line: &str) -> Option<String> {
+    let rest = line.strip_prefix(REVOKED_LINE_PREFIX)?.trim();
+    let (registry, algorithm, public_key) = parse_signing_key(rest).ok()?;
+    Some(format!("{registry}:{algorithm}:{public_key}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -230,23 +413,51 @@ pub fn tofu_check(
 // Commit signature verification
 // ---------------------------------------------------------------------------
 
-/// Verify a git commit's SSH signature against an expected Ed25519 public key.
+/// Build a temporary `allowed_signers` file for a set of trusted keys.
 ///
-/// Creates a temporary `allowed_signers` file and invokes
-/// `git verify-commit`.  Returns `Ok(true)` if the signature is valid,
-/// `Ok(false)` if the signature is invalid or missing, and `Err` if
-/// the git command itself could not be executed.
-pub fn verify_commit_signature(repo_path: &Path, commit: &str, expected_key: &str) -> Result<bool> {
-    let (_reg, _algo, pubkey) = parse_signing_key(expected_key)?;
+/// Each key (in `registry:Ed25519:<base64>` form) becomes one
+/// `<principal> ssh-ed25519 <base64>` line, so `git verify-commit` /
+/// `git verify-tag` succeed when a signature matches *any* listed key.
+///
+/// An empty key set is a hard error: verification against nothing must
+/// never pass, and refusing up front keeps every caller fail-closed.
+fn write_allowed_signers(trusted_keys: &[String]) -> Result<tempfile::NamedTempFile> {
+    if trusted_keys.is_empty() {
+        bail!("empty trusted key set; refusing to verify signatures against no keys");
+    }
 
-    // Build a temporary allowed-signers file.
-    // Format: <principal> <key-type> <base64-key>
-    let signers_content = format!("registry ssh-ed25519 {pubkey}\n");
+    let mut signers_content = String::new();
+    for key in trusted_keys {
+        let (_reg, _algo, pubkey) = parse_signing_key(key)?;
+        signers_content.push_str(&format!("registry ssh-ed25519 {pubkey}\n"));
+    }
 
     let mut signers_file =
         tempfile::NamedTempFile::new().context("creating temporary allowed-signers file")?;
     std::io::Write::write_all(&mut signers_file, signers_content.as_bytes())
         .context("writing temporary allowed-signers file")?;
+    Ok(signers_file)
+}
+
+/// Verify a git commit's SSH signature against a set of trusted Ed25519
+/// keys.
+///
+/// Creates a temporary `allowed_signers` file with one line per key and
+/// invokes `git verify-commit`; the signature is accepted when it matches
+/// *any* key in `trusted_keys` (each in `registry:Ed25519:<base64>` form).
+/// Returns `Ok(true)` if the signature is valid, `Ok(false)` if the
+/// signature is invalid or missing.
+///
+/// # Errors
+///
+/// Returns an error when `trusted_keys` is empty, a key fails to parse,
+/// or the git command itself could not be executed.
+pub fn verify_commit_signature(
+    repo_path: &Path,
+    commit: &str,
+    trusted_keys: &[String],
+) -> Result<bool> {
+    let signers_file = write_allowed_signers(trusted_keys)?;
     let signers_path = signers_file.path();
 
     // Configure git to use SSH signing verification with our signers file.
@@ -265,20 +476,19 @@ pub fn verify_commit_signature(repo_path: &Path, commit: &str, expected_key: &st
     Ok(output.status.success())
 }
 
-/// Verify a git tag object's SSH signature against an expected Ed25519 key.
+/// Verify a git tag object's SSH signature against a set of trusted
+/// Ed25519 keys.
 ///
 /// This mirrors [`verify_commit_signature`] but invokes `git verify-tag`.
-/// Returns `Ok(true)` when the signature is valid, `Ok(false)` when it is
-/// invalid or missing, and `Err` only for local execution/setup failures.
-pub fn verify_tag_signature(repo_path: &Path, tag: &str, expected_key: &str) -> Result<bool> {
-    let (_reg, _algo, pubkey) = parse_signing_key(expected_key)?;
-
-    let signers_content = format!("registry ssh-ed25519 {pubkey}\n");
-
-    let mut signers_file =
-        tempfile::NamedTempFile::new().context("creating temporary allowed-signers file")?;
-    std::io::Write::write_all(&mut signers_file, signers_content.as_bytes())
-        .context("writing temporary allowed-signers file")?;
+/// Returns `Ok(true)` when the signature matches any key in
+/// `trusted_keys`, `Ok(false)` when it is invalid or missing.
+///
+/// # Errors
+///
+/// Returns an error when `trusted_keys` is empty, a key fails to parse,
+/// or only for local execution/setup failures.
+pub fn verify_tag_signature(repo_path: &Path, tag: &str, trusted_keys: &[String]) -> Result<bool> {
+    let signers_file = write_allowed_signers(trusted_keys)?;
     let signers_path = signers_file.path();
 
     let output = std::process::Command::new("git")
@@ -503,7 +713,9 @@ mod tests {
                 "release 1.0.0",
             ],
         );
-        assert!(verify_tag_signature(&repo, "1.0.0", &aos_trust_key).unwrap());
+        assert!(
+            verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&aos_trust_key)).unwrap()
+        );
 
         let signer_secret_b64 = base64::engine::general_purpose::STANDARD.encode(seed);
         let signer =
@@ -709,6 +921,214 @@ mod tests {
             }
             other => panic!("expected KeyMismatch, got {other:?}"),
         }
+    }
+
+    // -- multi-key verification ----------------------------------------------
+
+    /// Build a `registry:Ed25519:<base64>` trust key line and write the
+    /// matching OpenSSH private key file, returning `(trust_key, key_path)`.
+    fn test_keypair(dir: &Path, registry: &str, seed: [u8; 32], name: &str) -> (String, PathBuf) {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let raw_public_key = signing_key.verifying_key().to_bytes();
+        let blob = ssh_ed25519_public_key_blob(&raw_public_key);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&blob);
+        let trust_key = format!("{registry}:Ed25519:{b64}");
+
+        let key_path = dir.join(name);
+        fs::write(
+            &key_path,
+            openssh_ed25519_private_key(&seed, &raw_public_key, registry),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        (trust_key, key_path)
+    }
+
+    #[test]
+    fn verify_tag_signature_accepts_any_key_in_set() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git(&repo, &["init"]);
+        git(&repo, &["config", "user.name", "registry"]);
+        git(&repo, &["config", "user.email", "registry"]);
+        git(&repo, &["config", "commit.gpgsign", "false"]);
+        fs::write(repo.join("file"), "content").unwrap();
+        git(&repo, &["add", "file"]);
+        git(&repo, &["commit", "-m", "init"]);
+
+        let (key_a, _path_a) = test_keypair(temp.path(), "registry", [1_u8; 32], "key_a");
+        let (key_b, path_b) = test_keypair(temp.path(), "registry", [2_u8; 32], "key_b");
+
+        // Tag signed by B.
+        git(
+            &repo,
+            &[
+                "-c",
+                "gpg.format=ssh",
+                "-c",
+                &format!("user.signingkey={}", path_b.display()),
+                "tag",
+                "-s",
+                "1.0.0",
+                "-m",
+                "release 1.0.0",
+            ],
+        );
+
+        // Verifies when B is anywhere in the trusted set.
+        assert!(verify_tag_signature(&repo, "1.0.0", &[key_a.clone(), key_b.clone()]).unwrap());
+        assert!(verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&key_b)).unwrap());
+        // Fails when the set lacks B.
+        assert!(!verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&key_a)).unwrap());
+        // An empty trusted set is a hard error, never a pass.
+        let err = verify_tag_signature(&repo, "1.0.0", &[]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("empty trusted key set"),
+            "{err:#}"
+        );
+    }
+
+    // -- revoked-key exclusions ----------------------------------------------
+
+    #[test]
+    fn lookup_all_filters_revoked_exclusions_across_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let writable = tmp.path().join("writable");
+        let anchors = tmp.path().join("anchors");
+        fs::create_dir_all(&writable).unwrap();
+        fs::create_dir_all(&anchors).unwrap();
+
+        // Read-only anchor still lists a revoked key A alongside B.
+        fs::write(
+            anchors.join("core.pub"),
+            "core:Ed25519:AAAA\ncore:Ed25519:BBBB\n",
+        )
+        .unwrap();
+        // The writable store pins B and masks A.
+        fs::write(
+            writable.join("core.pub"),
+            "core:Ed25519:BBBB\n# revoked: core:Ed25519:AAAA\n",
+        )
+        .unwrap();
+
+        let store = KeyStore::new(vec![writable, anchors]);
+        let keys = store.lookup_all("core");
+        let lines: Vec<String> = keys.iter().map(TrustedKey::key_line).collect();
+        assert!(
+            !lines.contains(&"core:Ed25519:AAAA".to_string()),
+            "{lines:?}"
+        );
+        assert!(lines.contains(&"core:Ed25519:BBBB".to_string()));
+    }
+
+    #[test]
+    fn store_preserves_exclusion_lines() {
+        let tmp = TempDir::new().unwrap();
+        let writable = tmp.path().join("writable");
+        fs::create_dir_all(&writable).unwrap();
+        fs::write(
+            writable.join("core.pub"),
+            "core:Ed25519:BBBB\n# revoked: core:Ed25519:AAAA\n",
+        )
+        .unwrap();
+
+        let store = KeyStore::new(vec![writable.clone()]);
+        store
+            .store(&TrustedKey {
+                registry: "core".into(),
+                algorithm: "Ed25519".into(),
+                public_key: "CCCC".into(),
+                fingerprint: key_fingerprint("CCCC"),
+                source: KeySource::Tofu,
+            })
+            .unwrap();
+
+        let content = fs::read_to_string(writable.join("core.pub")).unwrap();
+        assert!(
+            content.contains("# revoked: core:Ed25519:AAAA"),
+            "{content}"
+        );
+        assert!(content.contains("core:Ed25519:CCCC"));
+    }
+
+    #[test]
+    fn store_unrevokes_explicitly_pinned_key() {
+        let tmp = TempDir::new().unwrap();
+        let writable = tmp.path().join("writable");
+        fs::create_dir_all(&writable).unwrap();
+        fs::write(writable.join("core.pub"), "# revoked: core:Ed25519:AAAA\n").unwrap();
+
+        let store = KeyStore::new(vec![writable.clone()]);
+        store
+            .store(&TrustedKey {
+                registry: "core".into(),
+                algorithm: "Ed25519".into(),
+                public_key: "AAAA".into(),
+                fingerprint: key_fingerprint("AAAA"),
+                source: KeySource::Tofu,
+            })
+            .unwrap();
+
+        let content = fs::read_to_string(writable.join("core.pub")).unwrap();
+        assert!(!content.contains("# revoked:"), "{content}");
+        let keys = store.lookup_all("core");
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].public_key, "AAAA");
+    }
+
+    #[test]
+    fn sync_registry_keys_pins_unpins_and_masks() {
+        let tmp = TempDir::new().unwrap();
+        let writable = tmp.path().join("writable");
+        let anchors = tmp.path().join("anchors");
+        fs::create_dir_all(&writable).unwrap();
+        fs::create_dir_all(&anchors).unwrap();
+
+        // Image anchor ships A; the writable store pinned A earlier.
+        fs::write(anchors.join("core.pub"), "core:Ed25519:AAAA\n").unwrap();
+        fs::write(writable.join("core.pub"), "core:Ed25519:AAAA\n").unwrap();
+
+        let store = KeyStore::new(vec![writable.clone(), anchors]);
+        // Roster rotated to B only: A must be unpinned and masked.
+        let active = vec![TrustedKey {
+            registry: "core".into(),
+            algorithm: "Ed25519".into(),
+            public_key: "BBBB".into(),
+            fingerprint: key_fingerprint("BBBB"),
+            source: KeySource::Tofu,
+        }];
+        let report = store.sync_registry_keys("core", &active).unwrap();
+        assert_eq!(report.pinned, 1);
+        assert_eq!(report.unpinned, 1);
+        assert_eq!(report.masked, 1);
+
+        let keys = store.lookup_all("core");
+        let lines: Vec<String> = keys.iter().map(TrustedKey::key_line).collect();
+        assert_eq!(lines, vec!["core:Ed25519:BBBB".to_string()]);
+
+        // Re-enrolling A drops its exclusion and reports the pin.
+        let active = vec![
+            active[0].clone(),
+            TrustedKey {
+                registry: "core".into(),
+                algorithm: "Ed25519".into(),
+                public_key: "AAAA".into(),
+                fingerprint: key_fingerprint("AAAA"),
+                source: KeySource::Tofu,
+            },
+        ];
+        let report = store.sync_registry_keys("core", &active).unwrap();
+        assert_eq!(report.pinned, 1);
+        assert_eq!(report.unpinned, 0);
+        assert_eq!(report.masked, 0);
+        let content = fs::read_to_string(writable.join("core.pub")).unwrap();
+        assert!(!content.contains("# revoked:"), "{content}");
+        assert_eq!(store.lookup_all("core").len(), 2);
     }
 
     fn git(repo: &Path, args: &[&str]) {
