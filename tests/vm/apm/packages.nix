@@ -321,6 +321,7 @@
     ++ [
       pkgs.findutils
       pkgs.iproute2
+      pkgs.jq
       pkgs.python3
       pkgs.zstd
       surfaceLeafTool
@@ -3680,6 +3681,7 @@ in {
       LEAF_BIN="$PROFILE/current/bin/surface-leaf"
       UPGRADE_BIN="$PROFILE/current/bin/upgradeface"
       SOURCE_BIN="$PROFILE/current/bin/sourceful"
+      JQ="${pkgs.jq}/bin/jq"
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -4003,11 +4005,24 @@ in {
       assert_file_contains /tmp/surface-search-names.out "surfacepkg" "apm search --names-only finds package names"
       run_ok search-installed "$APM" search surface --installed
       assert_file_contains /tmp/surface-search-installed.out "surfacepkg" "apm search --installed filters through profile metadata"
+      run_ok search-installed-json "$APM" --json search surface --installed
+      "$JQ" -e \
+        'map(select(.name == "surfacepkg" and .registry == "surface-reg" and .version == "1.0.0")) | length == 1' \
+        /tmp/surface-search-installed-json.out >/dev/null
 
       run_ok show "$APM" show surfacepkg
       assert_file_contains /tmp/surface-show.out "Surface command fixture" "apm show prints package details"
       assert_file_contains /tmp/surface-show.out "Installed.*yes" "apm show sees installed profile metadata"
       assert_file_contains /tmp/surface-show.out "surface-leaf" "apm show resolves real dependency names"
+      run_ok show-json "$APM" --json show surfacepkg
+      "$JQ" -e --arg store "$SURFACE_STORE" \
+        '.name == "surfacepkg"
+          and .registry == "surface-reg"
+          and .version == "1.0.0"
+          and .installed == true
+          and .store_path == $store
+          and (.dependencies | index("surface-leaf"))' \
+        /tmp/surface-show-json.out >/dev/null
       run_ok list "$APM" list
       assert_file_contains /tmp/surface-list.out "surfacepkg/surface-reg" "apm list includes registry package"
       run_ok list-installed "$APM" list --installed
@@ -4017,6 +4032,15 @@ in {
         "apm list --installed reports upgradeface"
       assert_file_contains /tmp/surface-list-installed.out "sourceful/surface-reg" \
         "apm list --installed reports sourceful"
+      run_ok list-installed-json "$APM" --json list --installed
+      "$JQ" -e \
+        'map(.name) as $names
+          | ($names | index("surfacepkg"))
+          and ($names | index("surface-leaf"))
+          and ($names | index("upgradeface"))
+          and ($names | index("sourceful"))
+          and (map(select(.name == "surfacepkg" and .status == "installed")) | length == 1)' \
+        /tmp/surface-list-installed-json.out >/dev/null
 
       $APM hold surfacepkg > /tmp/surface-hold.out 2>&1 || {
         cat /tmp/surface-hold.out
@@ -4028,6 +4052,14 @@ in {
       run_ok list-held "$APM" list --held
       assert_file_contains /tmp/surface-list-held.out "surfacepkg/surface-reg" \
         "apm list --held reports held package"
+      run_ok list-held-json "$APM" --json list --held
+      "$JQ" -e \
+        'length == 1
+          and .[0].name == "surfacepkg"
+          and .[0].registry == "surface-reg"
+          and (.[0].status | contains("installed"))
+          and (.[0].status | contains("held"))' \
+        /tmp/surface-list-held-json.out >/dev/null
 
       run_ok depends "$APM" depends surfacepkg
       assert_file_contains /tmp/surface-depends.out "surface-leaf" \
@@ -4101,6 +4133,15 @@ in {
         "apm list --upgradable reports candidate"
       assert_file_not_contains /tmp/surface-list-upgradable.out "surface-leaf" \
         "apm list --upgradable does not advertise automatic dependency"
+      run_ok list-upgradable-json "$APM" --json list --upgradable
+      "$JQ" -e \
+        'length == 1
+          and .[0].name == "upgradeface"
+          and .[0].registry == "surface-reg"
+          and .[0].version == "1.0.0"
+          and (.[0].status | contains("installed"))
+          and (.[0].status | contains("upgradable: 2.0.0"))' \
+        /tmp/surface-list-upgradable-json.out >/dev/null
       run_ok policy-upgrade "$APM" policy upgradeface
       assert_file_contains /tmp/surface-policy-upgrade.out "Candidate: 2.0.0" \
         "apm policy reports upgrade candidate"
@@ -4134,6 +4175,14 @@ in {
       "$UPGRADE_BIN" > /tmp/surface-upgradeface-v2-run.out
       assert_file_contains /tmp/surface-upgradeface-v2-run.out "^upgradeface 2.0.0$" \
         "full-upgraded executable runs from profile"
+      run_ok rollback-list-json "$APM" --json rollback --list
+      "$JQ" -e \
+        'map(select(.current == true)) as $current
+          | ($current | length == 1)
+          and ($current[0].roots | map(.package.name) | index("surfacepkg"))
+          and ($current[0].roots | map(.package.name) | index("upgradeface"))
+          and ($current[0].roots | map(.package.name) | index("sourceful"))' \
+        /tmp/surface-rollback-list-json.out >/dev/null
 
       echo "==> Maintainer: publish newer sourceful candidate"
       export HOME=/tmp
@@ -4224,6 +4273,16 @@ in {
         "apm orphans lists sourceful package from removed registry"
       assert_file_contains /tmp/surface-orphans-removed.out "removed registry 'surface-reg'" \
         "apm orphans names the removed registry"
+      run_ok orphans-removed-json "$APM" --json orphans
+      "$JQ" -e \
+        'map(.name) as $names
+          | ($names | index("surfacepkg"))
+          and ($names | index("surface-leaf"))
+          and ($names | index("upgradeface"))
+          and ($names | index("sourceful"))
+          and (map(select(.name == "surface-leaf" and .explicit == false)) | length == 1)
+          and (map(select(.registry == "surface-reg")) | length == 4)' \
+        /tmp/surface-orphans-removed-json.out >/dev/null
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "static cache HTTP server stopped"
