@@ -937,6 +937,65 @@ in {
       $APR merge release-2026q2 --registry maint-reg
       ssh-keygen -q -t ed25519 -N "" -f /tmp/maint-release-key
 
+      $APR release 1.0.0 \
+        --registry maint-reg \
+        --key /tmp/maint-release-key \
+        --cache-url http://127.0.0.1:18084 \
+        --cache-output /tmp/maint-release-cache-dry-run \
+        --channel stable \
+        --init-channel \
+        --upload-url file:///tmp/maint-origin-dry-run \
+        --dry-run \
+        > /tmp/release-dry-run.out 2>&1 || {
+        cat /tmp/release-dry-run.out
+        fail "apr release --dry-run plans full maintainer release"
+      }
+      cat /tmp/release-dry-run.out
+      assert_file_contains /tmp/release-dry-run.out "Release plan" \
+        "apr release --dry-run reports release plan"
+      assert_file_contains /tmp/release-dry-run.out \
+        "commit registry.toml cache pointer http://127.0.0.1:18084 if needed" \
+        "release dry-run plans cache pointer"
+      assert_file_contains /tmp/release-dry-run.out "generate static Nix cache files" \
+        "release dry-run plans static cache output"
+      assert_file_contains /tmp/release-dry-run.out "initialize channel stable" \
+        "release dry-run plans channel initialization"
+      assert_file_contains /tmp/release-dry-run.out \
+        "upload immutable files first and mutable refs/channels last" \
+        "release dry-run plans static origin upload"
+      if git -C "$REG_DIR" rev-parse "1.0.0^{tag}" >/tmp/release-dry-run-tag.out 2>&1; then
+        cat /tmp/release-dry-run-tag.out
+        fail "release dry-run should not create release tag"
+      else
+        pass "release dry-run does not create release tag"
+      fi
+      if [ -e "$REG_DIR/.git/releases/1/0/0" ]; then
+        fail "release dry-run should not write release pack artifacts"
+      else
+        pass "release dry-run does not write release pack artifacts"
+      fi
+      if [ -e /tmp/maint-release-cache-dry-run ]; then
+        fail "release dry-run should not generate static cache output"
+      else
+        pass "release dry-run does not generate static cache output"
+      fi
+      if [ -e /tmp/maint-origin-dry-run ]; then
+        fail "release dry-run should not upload static origin files"
+      else
+        pass "release dry-run does not upload static origin files"
+      fi
+      if grep -q "http://127.0.0.1:18084" "$REG_DIR/registry.toml"; then
+        fail "release dry-run should not mutate registry cache pointer"
+      else
+        pass "release dry-run leaves registry cache pointer unchanged"
+      fi
+      if git -C "$REG_DIR" status --short --untracked-files=all | grep -q .; then
+        git -C "$REG_DIR" status --short --untracked-files=all
+        fail "release dry-run should leave worktree clean"
+      else
+        pass "release dry-run leaves worktree clean"
+      fi
+
       echo "dirty maintainer scratch note" > "$REG_DIR/maintainer-notes.txt"
       if $APR release 1.0.0 \
         --registry maint-reg \
