@@ -157,7 +157,23 @@ in {
           substituters =
           NIXCONF
 
+          dump_recent_work_files() {
+            if ! test -d "$work"; then
+              return
+            fi
+            printf '\nRecent host APR/APM workflow logs:\n' >&2
+            for path in $(${pkgs.findutils}/bin/find "$work" -maxdepth 1 -type f -printf '%T@ %p\n' | ${pkgs.coreutils}/bin/sort -nr | ${pkgs.coreutils}/bin/head -20 | ${pkgs.coreutils}/bin/cut -d ' ' -f2-); do
+              printf '\n--- %s ---\n' "$path" >&2
+              ${pkgs.coreutils}/bin/tail -n 80 "$path" >&2 || true
+            done
+          }
+
           cleanup() {
+            status=$?
+            if test "$status" -ne 0; then
+              printf '\nhost APR/APM command-surface workflow failed with exit %s\n' "$status" >&2
+              dump_recent_work_files
+            fi
             if test -n "$cache_server_pid"; then
               kill "$cache_server_pid" 2>/dev/null || true
               wait "$cache_server_pid" 2>/dev/null || true
@@ -1606,6 +1622,32 @@ in {
             > "$work/apr-release-host-keyadd-tag-object.out"
           grep -q "BEGIN SSH SIGNATURE" \
             "$work/apr-release-host-keyadd-tag-object.out"
+          run_clean ${self}/bin/apr keys retire next \
+            --registry host-keyadd \
+            --vouched-by initial \
+            --reason "manual rotation" \
+            --key "$work/host-install-release-key" \
+            --no-resign > "$work/apr-keys-retire-next-no-resign.out" 2>&1
+          grep -q "Skipped re-signing (--no-resign). Affected tags:" \
+            "$work/apr-keys-retire-next-no-resign.out"
+          grep -q "release tag 1.0.0" \
+            "$work/apr-keys-retire-next-no-resign.out"
+          grep -q "Retired signing key 'next'" \
+            "$work/apr-keys-retire-next-no-resign.out"
+          git -C "$keyadd_reg" log --oneline -1 \
+            > "$work/git-log-host-keyadd-retire-next.out"
+          grep -q "registry: retire signing key next" \
+            "$work/git-log-host-keyadd-retire-next.out"
+          run_clean ${self}/bin/apr --json keys list --registry host-keyadd \
+            > "$work/apr-keys-list-host-keyadd-retired.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg initial "$keyadd_initial_trust_key" \
+            '.registry == "host-keyadd"
+              and (.active | any(.id == "initial" and .key == $initial))
+              and (.active | all(.id != "next"))
+              and (.revoked | any(.id == "next"
+                and .reason == "manual rotation"))' \
+            "$work/apr-keys-list-host-keyadd-retired.json" >/dev/null
 
           PYTHONUNBUFFERED=1 ${pkgs.python3}/bin/python3 -m http.server "$install_cache_port" \
             --bind 127.0.0.1 --directory "$work/install-static-cache-upload" \
