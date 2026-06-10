@@ -99,6 +99,18 @@ Why this must be evaluated head-to-head before implementation:
 - **nspawn's remaining honest use case** is a package that needs its own
   multi-unit init tree — currently a set of approximately zero (k3s is one
   binary plus a preflight, both expressible as host units under the target).
+- **Socket activation and verity favor it too** (verified, systemd 259):
+  socket units with `PrivateNetwork=` + `JoinsNamespaceOf=` pass **named** fds
+  natively into a sandboxed unit, while nspawn forwards `$LISTEN_FDS` only to
+  a `--boot` init and drops fd names (`LISTEN_FDNAMES` forwarding is an open
+  RFE, systemd#17764), needing `systemd-socket-proxyd` as a bridge. And
+  `RootImage=` carries dm-verity natively (`RootHash=`, `RootVerity=`,
+  `RootHashSignature=`, v246+) — signed container roots extending the registry
+  trust chain to runtime integrity. The `RootImage=` + `DynamicUser=` +
+  `PrivateUsers=` + `MountAPIVFS=` stack is upstream's own portable-services
+  **default profile** — the flagship-supported composition, not an experiment.
+  (Caveats: loop-device based, auto-adds `After=systemd-udevd.service` so not
+  early-boot, and must not be combined with `PrivateDevices=yes`.)
 
 Prior-art note: NixOS's declarative nspawn `containers.*` is the closest
 precedent for "module system generates nspawn units," and it is widely
@@ -205,8 +217,17 @@ PartOf=aos-pkg-%i.target
 [Service]
 Type=notify
 Delegate=yes
+Slice=aos-pkg-%i.slice
+DevicePolicy=closed
+DeviceAllow=/dev/loop-control rw
+DeviceAllow=block-loop rwm
+DeviceAllow=block-blkext rwm
+DeviceAllow=/dev/mapper/control rw
+DeviceAllow=block-device-mapper rwm
 ExecStart=/usr/lib/systemd/systemd-nspawn \
   --quiet \
+  --keep-unit \
+  --register=no \
   --machine=%i \
   --image=/var/lib/machines/%i.img \
   --volatile=overlay \
@@ -220,6 +241,18 @@ Restart=on-failure
 [Install]
 WantedBy=aos-pkg-%i.target
 ```
+
+Three of those lines are load-bearing on a machined-less host (verified
+against systemd 259): **`--register=no`**, because a privileged nspawn treats
+failed machined registration as **fatal**; **`--keep-unit`**, because without
+it nspawn asks PID 1 for its own transient scope under `machine.slice` *even
+with* `--register=no` — escaping the unit's cgroup and making
+`Slice=`/`Delegate=` dead letters; and the `DevicePolicy=closed` +
+`DeviceAllow=` loop/device-mapper block, which mirrors upstream's own
+`systemd-nspawn@.service` and is what lets `--image=` attach its loop device
+under a closed device policy. With `--keep-unit`, `Slice=aos-pkg-%i.slice` is
+fully honored — the package's container, like its gated oneshots, lives under
+`aos.slice/aos-pkg-<name>.slice` (see §Composition below).
 
 Per-package divergence (network mode, binds, capabilities, user-ns policy) is
 supplied by a drop-in the package synthesizes —
@@ -264,8 +297,13 @@ Three modes, selected by the manifest's `network` permission:
   gated oneshot from the target-sandbox design, now opening the container's
   ports on the host base table. Reachability from off-host additionally needs
   host-side forwarding — nspawn `--port=` (DNAT) or an equivalent nftables DNAT
-  rule installed by the same gated service; both revert on stop. *Needs
-  verification:* `--port=` behavior with networkd-managed veths.
+  rule installed by the same gated service; both revert on stop. Verified for
+  systemd 259: `--port=` works only with private networking and is
+  **nftables-only** (the iptables backend was removed in v259); its rules live
+  in systemd's own `io.systemd.nat` table, so AOS's base table — whose forward
+  chain defaults to `policy drop` — can still eat the DNATed traffic. The
+  gated firewall service must add the matching forward accept, or install the
+  DNAT in the base table itself instead of using `--port=`.
 - **`--network-zone=<zone>` (multi-container L2).** nspawn maintains a virtual
   zone hub so several containers share an isolated L2 without an external
   bridge. Available, less-documented; veth+managed-network is the more
@@ -291,10 +329,11 @@ serviceConfig = {
 
 For a package that declares `cgroup-delegate` the same keys go on
 `aos-package@<pkg>.service`, and the container's PID1 manages workload cgroups
-beneath the delegated root. `--keep-unit` is an alternative for high-privilege
-packages: the container process lands in the nspawn service's own cgroup rather
-than a child scope — simpler, flatter, same net effect for a single-purpose
-privileged container.
+beneath the delegated root. Note `--keep-unit` is not an alternative but the
+**default for every package** on this machined-less host (see the template
+above): the container lives in the nspawn service's own cgroup under the
+package slice, and nspawn creates a payload subcgroup beneath it (upstream
+pairs this with `DelegateSubgroup=supervisor`, v254+ — adopt the same).
 
 ## Ephemeral overlay root (fs-revert)
 
@@ -310,6 +349,83 @@ Stateful packages that genuinely need an accumulating root use
 `--directory=<extracted-root>` (writable) and own their snapshot/rollback story
 — out of scope here, flagged in [open-questions.md](open-questions.md).
 
+## Composition: packages that depend on each other
+
+Cross-package structure follows one distinction and four rules, each grounded
+in verified prior art.
+
+**"Depends on" means two different things.**
+
+1. **Closure dependencies** (the overwhelming majority): `runtimeDeps` on
+   libraries and tools — zlib, iptables, even `pkgs.k3s`-the-payload. These
+   are inert bytes that ride the Nix closure into the dependent's root
+   image/`RootImage=`. Nix already composes these flatly and perfectly, and a
+   payload being *also* installable as a service does not infect its
+   dependents: B's binaries inside A's container run **as A**, under **A's**
+   manifest.
+2. **Service dependencies** (rare, explicit): A needs B *running* — a web app
+   needs the database package up. These are **not** closure edges; they are
+   orchestration edges between flat siblings.
+
+**Rule 1 — permissions never flow along closure edges.** Grants attach to the
+runtime context: the unit/container that executes code declares for all code
+it executes, like a statically-linked Android app. The cautionary precedent is
+exact: Android deprecated `sharedUserId` (API 29) because merged security
+identities made permission grants non-deterministic and impossible to unwind.
+No inheritance, no transitive union, ever.
+
+**Rule 2 — service dependencies are flat sibling edges, declared by name.**
+A package's `expose` block may declare `requires = ["b"]`
+([authoring.md](authoring.md)); apm resolves it like any dependency and the
+expose phase materializes `After=`/`Wants=` edges between the **targets**
+(`aos-pkg-a.target` → `aos-pkg-b.target`). Honest gap: this is genuinely
+**new resolver surface** — today's resolver
+(`crates/aos-package/src/resolve.rs`) finds the root by name but walks
+dependencies by store-path hash only; `PackageMeta` has no named dependencies
+(Decision 18 in [open-questions.md](open-questions.md)). The supporting fact
+is favorable: `apm install a b` already lands both in **one profile
+generation**, so cross-package edges materialize atomically before the
+generation switch. Keeping ordering edges is deliberate: snapd offers *no*
+cross-snap ordering and its users hand-roll retry loops as a recurring,
+documented pain point.
+
+**Rule 3 — communication channels are declared on both sides.** B exposes a
+socket/port; A declares the matching `host-paths` (unix socket dir) or network
+reachability. Precedent: snapd's content interface (producer slot + consumer
+plug + store-gated auto-connect) — coupling is capability-shaped and visible
+in both manifests ([permissions.md](permissions.md)).
+
+**Rule 4 — no nested containers.** Verified mechanism (v259):
+nspawn-in-nspawn *works under nspawn's defaults* — the default capability set
+includes `CAP_SYS_ADMIN`, and the seccomp allowlist includes `@mount`,
+`clone`, `setns` — and **breaks precisely when capabilities are dropped**
+(systemd#12798). So a default-deny (least-privilege) package can never host a
+nested container; only a near-fully-privileged one can, which inverts the
+sandbox. Upstream considers nesting expected-to-work but it is undocumented
+and untested (doc+test PR systemd#34811, still draft). The one sanctioned
+"nesting" — k3s spawning runc containers inside its nominal wrapper — is
+possible only because k3s is effectively unconfined; it is the degenerate
+case, not a pattern. Kubernetes reached the same conclusion: pods are a flat
+container list, and ordered helpers became sidecars-as-init-containers rather
+than nesting.
+
+**Resource hierarchy lives in slices, not containers.** Every package's units
+— the nspawn instance (or sandboxed host units) *and* its gated oneshots — run
+under `aos.slice/aos-pkg-<name>.slice`. Slices carry resource control only (no
+config, no privilege), give `systemd-cgtop` per-package accounting, and
+replace what `machine.slice` would have provided with machined off. With
+`--keep-unit` the unit's `Slice=` is fully honored (see the template above).
+
+**The pod case (co-location) is one package, not two nested ones.** Two
+processes that must share fate and a network namespace are a single
+(meta-)package: under nspawn, two units inside one container; under the
+per-unit substrate, two host units sharing a netns via `JoinsNamespaceOf=` —
+verified semantics: shares **network + IPC + /tmp only** (no UTS, no PID),
+requires `PrivateNetwork=`/`PrivateIPC=`/`PrivateTmp=` on **both** units,
+implies no ordering (add `After=`/`Requires=` yourself), and works on socket
+units — giving named-fd socket activation into the shared namespace, which
+nspawn cannot do (systemd#17764).
+
 ## Lifecycle
 
 Install and enable are split (see [boot-activation.md](boot-activation.md) and
@@ -322,10 +438,10 @@ Install and enable are split (see [boot-activation.md](boot-activation.md) and
    image step is **not yet implemented** — `PackageMeta` in
    `crates/aos-package/src/types.rs` has no container/image field today; see
    [apm-integration.md](apm-integration.md).)
-2. **Enable** — `systemctl enable --now aos-pkg-<name>.target` (or, at first boot,
-   Ignition enables the target via the single `systemd.units[]` entry the
-   target-sandbox design already allows). The target `Wants=` the
-   `aos-package@<pkg>` instance.
+2. **Enable** — `systemctl preset aos-pkg-<name>.target` against the merged
+   preset policy; at first boot PID 1's native preset pass does this for every
+   unit (see [boot-activation.md](boot-activation.md) §3.2). The target
+   `Wants=` the `aos-package@<pkg>` instance.
 3. **Run** — `aos-package@<pkg>.service` `ExecStart`s nspawn; `Type=notify` +
    `--notify=ready` lets the container PID1 signal readiness.
 4. **Stop** — `systemctl stop aos-pkg-<name>.target` → `PartOf` propagates to the
@@ -430,6 +546,7 @@ ExecStart=/usr/lib/systemd/systemd-nspawn \
   --image=/var/lib/machines/k3s.img \
   --network=host \
   --keep-unit \
+  --register=no \
   --capability=all \
   --bind=/sys \
   --bind=/var/lib/rancher:/var/lib/rancher \
@@ -498,11 +615,12 @@ Nothing here weakens [../roles/targets-and-sandbox.md](../roles/targets-and-sand
 - **Containment edges** — the nspawn instance carries `PartOf=aos-pkg-<name>.target`
   like every other member. Invariant 3 holds.
 - **One enable switch** — still exactly the target. How that switch is flipped
-  is owned by [boot-activation.md](boot-activation.md) §3.2 (canonical; lean
-  Option B, `apm` performs enable) — the roles-era single Ignition
-  `systemd.units[]` entry described in the precursor doc is superseded for
-  packages. The container template and its drop-in ship inert in EROFS either
-  way.
+  is owned by [boot-activation.md](boot-activation.md) §3.2 (canonical:
+  systemd presets — image `disable *`, Ignition-written host preset file,
+  PID 1 first-boot preset pass, `systemctl preset` for runtime installs) — the
+  roles-era single Ignition `systemd.units[]` entry described in the precursor
+  doc is superseded for packages. The container template and its drop-in ship
+  inert in EROFS either way.
 
 ## Open items (carried to [open-questions.md](open-questions.md))
 

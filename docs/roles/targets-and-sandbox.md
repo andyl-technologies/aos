@@ -148,10 +148,12 @@ forbidden.
 
 > **Packages-direction note.** The packages doc set
 > (`../packages/boot-activation.md` §3.2) supersedes this enable mechanism:
-> there, enable is performed by `apm` after install (its Option B), not by an
-> Ignition `systemd.units[]` entry. The single-entry path above remains the
-> documented roles-era mechanism for this PR only. Where the two descriptions
-> disagree, `boot-activation.md` §3.2 is canonical for packages.
+> there, enable is expressed via **systemd presets** (image ships `disable *`;
+> Ignition writes a per-host preset file via `storage.files`; PID 1 applies
+> presets natively on first boot; `systemctl preset` for runtime installs) —
+> not by an Ignition `systemd.units[]` entry. The single-entry path above
+> remains the documented roles-era mechanism for this PR only. Where the two
+> descriptions disagree, `boot-activation.md` §3.2 is canonical for packages.
 
 ## What changes
 

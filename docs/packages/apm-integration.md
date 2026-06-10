@@ -125,6 +125,12 @@ units, enables targets, or starts machines. "Exposing a container" is exactly
 that missing step. The rest of this doc is about adding it without disturbing
 steps 1–6.
 
+One favorable ground-truth update: the systemd client surface already exists —
+`crates/aos-systemd` is a complete async zbus D-Bus client (start / stop /
+restart / reload / isolate, job tracking, `settle`), currently exercised only
+by the `apm _test-systemd-client` test shim. The expose/enable phase is
+wiring, not greenfield.
+
 ---
 
 ## 2. Declaring an exposed container in the manifest
@@ -150,6 +156,17 @@ separate store path. Settle this in [`open-questions.md`](open-questions.md).
 
 These fields are **proposed**, not implemented. All would be `#[serde(default)]`
 so existing registries parse unchanged.
+
+> **Fail-open hazard (must fix before any permission-bearing package ships).**
+> The TOML parser is serde-tolerant — no `deny_unknown_fields`
+> (`registry/parse.rs`) — which makes the additions backward-compatible for
+> *old registries*, but it cuts the other way for **old clients**: an apm
+> predating the `[permissions]` schema will parse the entry, silently drop the
+> permissions block, and install/expose the package **without knowing or
+> enforcing its privilege**. The schema needs a capability gate that old
+> clients *do* parse and refuse on — e.g. a `min-format`/`requires-features`
+> field introduced *before* the first permission-bearing package is published.
+> Tracked as Decision 19 in [`open-questions.md`](open-questions.md).
 
 ```toml
 [versions.platforms.x86_64-linux]
@@ -187,6 +204,7 @@ pub struct ExposeMeta {
     pub target: String,
     pub units: Vec<String>,
     pub images: Vec<SysrootImageEntry>, // reuse the existing struct
+    pub requires: Vec<String>,          // service deps by package NAME (Decision 18)
     // no `kind` — every exposing package is a container; see PermissionsMeta
 }
 // added to PackageMeta as:
@@ -202,6 +220,14 @@ pub struct ExposeMeta {
 > permission manifest is **part of the package's signed registry metadata**, so
 > a package cannot widen its own privileges after publish. See Decision 1 in
 > [`open-questions.md`](open-questions.md), now resolved by this model.
+
+`requires` is **new resolver surface**: today's resolution
+(`crates/aos-package/src/resolve.rs`) finds the root package by name and then
+walks dependencies by store-path hash only — `PackageMeta.references` carries
+hashes, never names. Resolving `requires` means name-level resolution per
+entry plus closure merge (the download path already deduplicates by hash). The
+semantics — target-level `After=`/`Wants=` edges between flat siblings — live
+in [`container-model.md`](container-model.md) §Composition.
 
 Reusing `SysrootImageEntry` for `expose.images` is deliberate: the container
 root is "just another pre-compiled image artifact," and the verify/download
@@ -319,10 +345,10 @@ expose phase runs:
 3. **Drop the target handle.** Generate `aos-pkg-<name>.target` with `Wants=` the
    launch unit and member units, matching the roles-as-targets design in
    [`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md).
-4. **Enable.** Enabling is the separate step (Decision 8): either
-   `systemctl enable --now aos-pkg-<name>.target`, or — at first boot — emit an
-   Ignition `systemd.units[]` fragment that enables the target
-   (see [`boot-activation.md`](boot-activation.md)).
+4. **Enable.** Enabling is the separate step (Decision 8, resolved):
+   `systemctl preset aos-pkg-<name>.target` against the merged preset policy —
+   at first boot PID 1's native preset pass covers every unit (see
+   [`boot-activation.md`](boot-activation.md) §3.2).
 
 ### 4.1 Where the unit files physically land
 
@@ -348,6 +374,15 @@ swap of the *package* profile should also re-materialize these units (so a
 rollback of the package also rolls back its units). This is the single biggest
 unresolved mechanism; tracked as Decision 16 in
 [`open-questions.md`](open-questions.md).
+
+Upstream precedent for the materialization shape: `portablectl attach` copies
+matching units out of the image into a dedicated search-path directory —
+`/etc/systemd/system.attached/` (persistent) or
+`/run/systemd/system.attached/` (runtime) — and injects behavior via numbered
+drop-ins (`10-profile.conf`, `20-portable.conf`), deliberately keeping
+attached units out of admin-owned `/etc/systemd/system/`. An `apm`-owned
+attach directory of the same shape is the natural answer to Decision 16:
+cleanly separable, obviously machine-managed, generation-swappable.
 
 ### 4.2 The expose phase is idempotent and generation-scoped
 

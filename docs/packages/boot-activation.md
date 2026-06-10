@@ -146,8 +146,8 @@ separate `packages.d/desired.toml`, or fold both into one document.
 > for how enable is expressed. `../roles/targets-and-sandbox.md` §"Activation"
 > and [container-model.md](container-model.md)'s invariant list describe the
 > roles-era single `systemd.units[]` entry; for packages that path is
-> superseded by the options below (lean **Option B**). Where the docs disagree,
-> this section wins.
+> superseded by the **preset mechanism** below. Where the docs disagree, this
+> section wins.
 
 The original roles design enabled a role by emitting **one**
 `systemd.units[]` entry per role in the Ignition config with `enabled: true`,
@@ -158,30 +158,62 @@ packages direction: per Ignition spec **v12 §5.6.4**, `systemd.units[].enabled`
 available to us for roles/packages. So "enable" can no longer be a single
 `enabled: true` toggle in the fetched/merged Ignition fragment.
 
-How enable is expressed instead **(new — needs verification against the exact
-v12 surface we target)**:
+**Enable is expressed through systemd presets** — the mechanism every major
+distro converged on, and one systemd applies *itself* on first boot:
 
-- **Option A — explicit wants link via `storage.links`.** The enable hook becomes
-  a `storage.links[]` entry that creates
-  `/etc/systemd/system/multi-user.target.wants/aos-pkg-<name>.target` →
-  `…/aos-pkg-<name>.target`. This is what the old design already does for member
-  units' side-effects (storage.links are how role drop-ins were shipped), so it
-  is a known-working primitive — we just point it at the target's wants symlink
-  instead of relying on `enabled`. Honest cost: we re-implement, in our own
-  fragment generator, the `[Install]`→symlink logic Ignition used to do for us.
-- **Option B — enable performed by `apm` at install time.** Since the package is
-  being installed by `apm` at boot anyway (§4), `apm` can run
-  `systemctl enable aos-pkg-<name>.target` (or write the wants symlink into the
-  per-gen `/etc` lower) as part of `install`/an `apm enable` step. This keeps
-  Ignition out of the enable business entirely and puts install+enable in one
-  tool. Honest cost: enable now depends on the install step succeeding and on
-  `apm` knowing the target name a package exposes (requires the container/target
-  metadata from [apm-integration.md](apm-integration.md)).
+1. **The image ships default-deny policy:**
+   `/usr/lib/systemd/system-preset/99-aos-default.preset` containing
+   `disable *` (Arch ships exactly this file). Every `aos-pkg-*.target` is
+   inert unless something more specific enables it.
+2. **Ignition writes one per-host preset file** via plain `storage.files`:
+   `/etc/systemd/system-preset/20-aos-host.preset`, one
+   `enable aos-pkg-<name>.target` line per desired package. No
+   `systemd.units[]` surface, no `[Install]`-symlink reimplementation. Preset
+   files sort lexicographically with first-match-wins, so `20-…` beats `99-…`.
+3. **First boot: PID 1 applies presets natively.** Verified against systemd
+   v259 source (`src/core/main.c` first-boot detection, `src/core/manager.c`
+   `manager_preset_all()`; behavior since v215): when `/etc/machine-id` is
+   missing or contains `uninitialized`, systemd runs the equivalent of
+   `systemctl preset-all` after generators and before unit enumeration. No AOS
+   code runs at all for first-boot enablement.
+4. **Runtime installs: `apm` runs `systemctl preset aos-pkg-<name>.target`**
+   after the expose phase — the exact pattern Fedora's `%systemd_post` /
+   `systemd-update-helper` uses. `preset` is idempotent and policy-respecting:
+   it enables only what the merged preset files allow, so a fleet that ships a
+   stricter preset automatically refuses enablement.
 
-Recommendation for planning: **lean Option B** (enable via `apm`), with Option A
-as the fallback for packages with no `apm`-visible target. Either way the enable
-*decision* still originates in the Ignition-declared set — the host that lists
-`k3s-worker` in `desired.toml` is the host that enables it.
+Distro precedent (verified): Debian's auto-enable is itself implemented as
+`systemctl preset --preset-mode=enable-only` (deb-systemd-helper, after Debian
+bug #772555); Fedora enables only units allowlisted in `90-default.preset` and
+replaced scriptlets with `systemd-update-helper` + RPM file triggers; Arch
+ships `disable *` and never auto-enables. AOS composes the Arch default with a
+Fedora-style per-host allowlist written by Ignition.
+
+**Needs verification (the new load-bearing items):**
+
+- **machine-id provisioning.** The first-boot preset pass fires only if
+  `/etc/machine-id` is absent or `uninitialized` at first real boot. If the
+  image pre-commits a machine-id, or anything writes one before stage 2, the
+  pass silently never runs. Audit AOS's machine-id handling.
+- **Preset mode.** The first-boot pass is **enable-only** unless systemd is
+  built with `-Dfirst-boot-full-preset=true` (the meson default is still false
+  in 259). Enable-only suffices for our model — nothing is enabled in the
+  image to begin with; the flag is optional hardening. Decide in
+  `pkgs/system/systemd.nix`.
+- **/etc overlay timing.** Enablement symlinks land in
+  `/etc/systemd/system/`; the writable `/etc` overlay must be assembled before
+  PID 1's preset pass in stage 2 (it is mounted in the initrd before
+  switch-root, so this should hold — confirm). The Ignition files stage writes
+  the preset file into the per-gen `/etc` lower in the initrd, so the policy
+  is in place before PID 1 starts.
+
+The earlier strawmen — **Option A** (re-implement `[Install]`→symlink via
+`storage.links`) and **Option B** (`apm` runs `systemctl enable`) — are
+**superseded**: presets subsume both with less custom code and an
+upstream-native first-boot path. Option A remains a theoretical fallback if
+the machine-id precondition cannot be met. Either way the enable *decision*
+still originates in the Ignition-declared set — the host that lists
+`k3s-worker` in `desired.toml` is the host whose preset file enables it.
 
 ---
 
@@ -235,15 +267,13 @@ switch-root, so it should be — confirm the profile dir is on the persistent
 
 ### 4.2 Enable follows install
 
-Working assumption: `apm install` performs the **expose phase** (materialize
-unit files into the writable `/etc` overlay + drop the target); **enabling** the
-target is a separate, tightly-ordered step — see Decision 8 in
-[open-questions.md](open-questions.md), which covers who runs expose vs. enable.
-Under Option B (§3.2) that enable step (e.g. `aos-enable-packages.service`,
-ordered after install) runs the enable after install completes:
+`apm install` performs the **expose phase** (materialize unit files into the
+writable `/etc` overlay + drop the target); **enabling** is `systemctl preset`
+against the merged preset policy (§3.2), run by `apm` immediately after expose
+(Decision 8 in [open-questions.md](open-questions.md), resolved to this split):
 
 ```
-install (apm install ...)  →  enable (systemctl enable/start aos-pkg-<name>.target)
+install (apm install ...) → expose (units + target) → systemctl preset aos-pkg-<name>.target → start
 ```
 
 For plain packages, "enable" reaches the target and its member units (the
@@ -343,9 +373,11 @@ initrd:
 
 stage 2:
   (network-online.target reached on demand if any package is "fetched")
+  (first boot: PID 1 preset pass already enabled baked packages per the
+   Ignition-written host preset file — §3.2)
   aos-install-packages.service          # apm install --from desired.toml  [INSTALLED]
-    └─ (Option B) apm enable / systemctl enable aos-pkg-<name>.target
-  aos-enable... → systemd reaches aos-pkg-<name>.target       [ENABLED]
+    └─ apm runs: systemctl preset aos-pkg-<name>.target    (per §3.2 policy)
+  systemd reaches aos-pkg-<name>.target                        [ENABLED]
        ├─ plain package: member units + gated modules/sysctl/firewall services
        └─ container package: systemd-nspawn@<name> instance (see container-model.md)
   multi-user.target
@@ -364,10 +396,12 @@ targets-and-sandbox "strict disabled = inert" guarantee requires.
 - **The bridge does not exist yet.** `aos-seed-profiles` seeds only the system
   profile; there is no boot step today that runs `apm install` for additional
   packages. `aos-install-packages.service` is entirely new.
-- **`systemd.units[].enabled` is gone (v12 §5.6.4).** Enable must be expressed
-  via `storage.links` (Option A) or by `apm` (Option B). We must re-implement the
-  `[Install]`→wants-symlink logic ourselves; Ignition no longer does it for
-  roles/packages. The exact v12 surface we target **needs verification**.
+- **`systemd.units[].enabled` is gone (v12 §5.6.4).** Enable is expressed via
+  systemd presets (§3.2): the image ships `disable *`, Ignition writes a
+  per-host preset file, PID 1 applies presets on first boot, and `apm` runs
+  `systemctl preset` for runtime installs. Nothing re-implements
+  `[Install]`→symlink logic. The **machine-id precondition** for the
+  first-boot pass needs verification (§3.2).
 - **Idempotency depends on `apm` generation behavior.** If `apm install` mints a
   generation on every invocation regardless of input, the boot step will churn
   generations each boot and needs an explicit "unchanged set" guard. **Needs

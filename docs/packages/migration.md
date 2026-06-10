@@ -15,11 +15,36 @@ also settles the relationship to PR #28 / [`../roles/targets-and-sandbox.md`](..
 that precursor doc stays where it is as history, and its content is superseded
 by this doc set.
 
+> **REVISED DIRECTION (2026-06).** Investigation resolved *where package
+> definitions live*: **not** a central `modules/packages/` tree. Service
+> integration becomes an optional **`expose` attribute on package derivations
+> in `pkgs/`**, rendered at build time to eval-free artifacts, with `modules/`
+> shrinking to host policy (bake list, presets, permission policy) — see
+> [`authoring.md`](authoring.md). The rename below is therefore **superseded
+> as a destination**: the module tree is *dissolved*, not renamed. The rename
+> tables remain accurate as an inventory of every touchpoint that must move;
+> the increment plan is revised to:
+>
+> 1. Extend `mkDerivation` with the filtered `expose` attribute + the
+>    build-time unit/manifest renderer (reusing the pure
+>    `systemdLib`/`render-role.nix` functions — verified pure, see
+>    [`authoring.md`](authoring.md)).
+> 2. Define `test-http-server` via `expose` end-to-end (build → image bake →
+>    preset enable → VM check) while the role tree still exists.
+> 3. Dissolve `modules/roles/*` one package at a time into `pkgs/` `expose`
+>    blocks (k3s via meta-packages), deleting the `roleType` machinery last.
+> 4. Land the thin `modules/packages.nix` policy module + preset wiring
+>    ([`boot-activation.md`](boot-activation.md) §3.2).
+>
+> Validation gates per increment are unchanged (`aos fmt --check`,
+> `checks.eval`, `checks.vm.boot`, fleet suite).
+
 This is one of the package docs. Siblings:
 [README.md](README.md), [permissions.md](permissions.md),
 [container-model.md](container-model.md),
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
-[config.md](config.md), [open-questions.md](open-questions.md).
+[config.md](config.md), [open-questions.md](open-questions.md),
+[authoring.md](authoring.md).
 
 Audience: anyone working on `modules/roles/`, `lib/testing/fleet-spec.nix`,
 `lib/testing/fleet.nix`, `lib/modules/systemd/render-role.nix`, `tests/fleet/`,

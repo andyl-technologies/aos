@@ -197,7 +197,12 @@ kernel has the needed namespace configs and ships systemd-nspawn; nesting
 flaky. Known risk areas: cgroup-v2 delegation depth, writable `/proc/sys` for
 container init, `/dev` population, and the fact that **machined is disabled**
 (see Decision 7) so `machinectl`-based introspection (`vm.exec_in_container`,
-`vm.container_status`) needs an alternative.
+`vm.container_status`) needs an alternative. Verified for v259: every
+generated nspawn unit must use `--keep-unit --register=no` — privileged
+registration failure is **fatal** without machined, and without `--keep-unit`
+nspawn allocates its own scope under `machine.slice` via PID 1 *even with*
+`--register=no`, escaping the package's slice (see the corrected template in
+[container-model.md](container-model.md)).
 
 **Options.**
 - Drive containers purely via `systemctl` + explicit nspawn units, parse
@@ -340,16 +345,21 @@ installed unit closures must be validated so a bad fetch doesn't wedge boot.
 - Extend the ignition module to synthesize the unit + file list from a
   `aos.packages.<name>` declaration directly.
 
-**Who runs expose vs. enable.** A sub-question that both
-[apm-integration.md](apm-integration.md) §4 and [boot-activation.md](boot-activation.md)
-§4.2 defer to here: the **expose phase** (materialize the package's unit files
-into the writable `/etc` overlay + drop the `aos-pkg-<package>.target`) is
-distinct from **enabling** that target (wiring the `multi-user.target.wants`
-symlink and starting it). The working assumption across the doc set is that
-**`apm install` performs expose**, and **enable is a separate, tightly-ordered
-step** (a follow-on `aos-enable-packages.service`, or `apm` itself per §3.2
-Option B). Firming up the ownership split — and whether enable is ever expressed
-via Ignition `storage.links` (Option A) instead — is part of this decision.
+**Who runs expose vs. enable — RESOLVED (systemd presets).** The **expose
+phase** (materialize unit files + drop the `aos-pkg-<package>.target`) is
+performed by `apm install`; **enablement is systemd presets**
+([boot-activation.md](boot-activation.md) §3.2, canonical): the image ships
+`99-aos-default.preset` (`disable *`), Ignition writes one per-host preset
+file via `storage.files`, **PID 1 itself applies presets on first boot**
+(verified against v259 source: keyed on `/etc/machine-id` absent or
+`uninitialized`; enable-only unless systemd is built with
+`-Dfirst-boot-full-preset=true`), and runtime installs run
+`systemctl preset aos-pkg-<name>.target` — the Fedora `systemd-update-helper`
+pattern. The old Option A (`storage.links` symlinks) / Option B
+(`systemctl enable`) strawmen are superseded. **Remaining needs-verification:**
+AOS machine-id provisioning must leave `/etc/machine-id` absent or
+`uninitialized` until first real boot, and the `/etc` overlay upper must be
+writable when PID 1 runs the pass.
 
 **Proposed next step.** *boot* + *apm*: design the desired-packages handoff and
 the oneshot ordering in [boot-activation.md](boot-activation.md); fix the
@@ -627,7 +637,13 @@ nesting risk — Decision 4; no container-root image for single-binary packages 
 Decision 5), and shrinks nspawn's honest use case to "package needs its own
 multi-unit init tree" — currently approximately none. Choosing the substrate
 late invalidates the container-root builder, image format, and template
-decisions, so it is upstream of Decisions 4, 5, 11, and 13.
+decisions, so it is upstream of Decisions 4, 5, 11, and 13. Further verified
+evidence for the per-unit side: socket units + `PrivateNetwork=` +
+`JoinsNamespaceOf=` give named-fd socket activation and a two-unit pod
+primitive (nspawn forwards `$LISTEN_FDS` only to a `--boot` init, unnamed —
+systemd#17764); `RootImage=` carries dm-verity (`RootHashSignature=`) for
+signed container roots; and `RootImage=` + `DynamicUser=` + `PrivateUsers=` is
+upstream's own portable-services default profile.
 
 **Options.**
 - Per-unit sandboxing as the default materialization; nspawn opt-in for
@@ -644,6 +660,58 @@ harness cost. Record the outcome in
 
 ---
 
+## 18. Package-name service dependencies (`requires`)
+
+**Statement.** Cross-package service dependencies ("A needs B *running*") are
+declared by package **name** in the `expose` block
+([authoring.md](authoring.md)) and materialize as `After=`/`Wants=` edges
+between package targets ([container-model.md](container-model.md)
+§Composition). Today's resolver has no named dependencies at all:
+`PackageMeta.references` carries store-path hashes only, and resolution walks
+`closures/<hash>` adjacency or BFS over hashes
+(`crates/aos-package/src/resolve.rs`).
+
+**Why it matters.** This is new resolver surface (name-level resolution +
+closure merge), and the semantics need pinning: install-time pull-in
+(deb-style `Depends:`) vs. enable-time check vs. both. Favorable ground truth:
+`apm install a b` already shares one profile generation, so cross-package
+edges can be materialized atomically before the generation switch.
+Counter-precedent against over-building: snapd ships *no* cross-snap ordering
+and pushes retry loops onto users — a documented pain point — so flat ordering
+edges are worth having, but nothing more (no version-constraint solver; the
+registry channel model already pins versions).
+
+**Proposed next step.** *apm*: add `requires: Vec<String>` to the `expose`
+metadata; resolve names at install; emit target edges in the expose phase.
+**DECIDE-EARLY** (schema-shaping).
+
+---
+
+## 19. Registry schema capability gate (fail-open on old clients)
+
+**Statement.** The registry TOML parser is serde-tolerant (no
+`deny_unknown_fields` — `registry/parse.rs`). New `expose`/`[permissions]`
+blocks parse as no-ops on old clients: an apm predating the schema would
+install and expose a permission-bearing package **without knowing or
+enforcing its privilege** — fail-open.
+
+**Why it matters.** The enforcement story in
+[permissions.md](permissions.md) assumes the host reads the manifest. A fleet
+with stale apm binaries silently bypasses it.
+
+**Options.** A `min-format`/`requires-features` field added to the schema
+**before** the first permission-bearing package is published, which old
+clients parse and refuse on; or publishing permission-bearing packages in a
+shape old resolvers fail closed on (e.g. a new required key inside
+`[versions.platforms.<p>]`). The first is cleaner; both require acting *now*,
+while no permission-bearing packages exist.
+
+**Proposed next step.** *apm*: add the gate field to `PackageMeta` + parser in
+the next schema change, before any `expose` work ships.
+**DECIDE-BEFORE-MVP** (fail-closed property).
+
+---
+
 ## Decision summary
 
 | # | Decision | Disposition | Owner |
@@ -655,7 +723,7 @@ harness cost. Record the outcome in
 | 5 | Container root build + delivery + signing | DECIDE-EARLY / -BEFORE-MVP | pkgs / apm |
 | 6 | Image size: bake vs. fetch-at-boot | DECIDE-EARLY | pkgs / boot |
 | 7 | machined/portabled/importd stay disabled | DECIDE-EARLY | pkgs |
-| 8 | Install-at-boot via Ignition + apm | DECIDE-BEFORE-MVP | boot / apm |
+| 8 | Install-at-boot via Ignition + apm — enable mechanism **RESOLVED: systemd presets** (machine-id precondition needs verification) | DECIDE-BEFORE-MVP | boot / apm |
 | 9 | Config & credential delivery | DEFER (open) | packages-core / apm |
 | 10 | Security boundary strength & labeling | DECIDE-EARLY | packages-core |
 | 11 | Upgrade/rollback of containers | DECIDE-EARLY | apm / packages-core |
@@ -665,6 +733,8 @@ harness cost. Record the outcome in
 | 15 | Systemd unit naming convention — **RESOLVED: `aos-pkg-<name>`** | RESOLVED | packages-core |
 | 16 | Writable /etc overlay path for runtime-installed package units | DECIDE-BEFORE-MVP | boot / apm |
 | 17 | Execution substrate: per-unit sandboxing (`RootImage=` + directives) vs. nspawn | DECIDE-BEFORE-MVP | packages-core / pkgs |
+| 18 | Package-name service dependencies (`requires`) — new resolver surface | DECIDE-EARLY | apm |
+| 19 | Registry schema capability gate (fail-open on old clients) | DECIDE-BEFORE-MVP | apm |
 
 ---
 
