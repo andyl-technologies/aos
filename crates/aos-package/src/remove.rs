@@ -44,7 +44,11 @@ pub async fn run(
     }
 
     // Step 1: Open profile and get current generation.
-    let profile = Profile::open(config.scope)?;
+    let profile = if dry_run {
+        Profile::open_readonly(config.scope)
+    } else {
+        Profile::open(config.scope)?
+    };
     let current_gen = profile
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
@@ -123,7 +127,11 @@ pub async fn run_autoremove(
     printer: &Printer,
 ) -> Result<RemoveOutcome> {
     // Step 1: Open profile.
-    let profile = Profile::open(config.scope)?;
+    let profile = if dry_run {
+        Profile::open_readonly(config.scope)
+    } else {
+        Profile::open(config.scope)?
+    };
     let current_gen = profile
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
