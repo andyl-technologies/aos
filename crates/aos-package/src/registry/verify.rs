@@ -1,10 +1,10 @@
 //! Signed tag-object parsing and name-binding helpers.
 
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use crate::gitcmd;
 use crate::security::verify_tag_signature;
 
 /// The target type recorded in a git tag object.
@@ -36,7 +36,7 @@ pub struct VerifiedRelease {
 ///
 /// Returns an error if the object is not readable or lacks required tag fields.
 pub fn read_tag_object(repo: &Path, oid: &str) -> Result<TagObject> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .args(["cat-file", "-p", oid])
         .current_dir(repo)
         .output()
@@ -65,19 +65,21 @@ pub fn verify_name_binding(tag: &TagObject, expected_name: &str) -> Result<()> {
 /// Verify `channel tag -> semver tag -> commit` and return the trusted release.
 ///
 /// `channel_tag` may be an object id or ref for the partition tag. `release_tag`
-/// is the expected semver tag name, without `refs/tags/`.
+/// is the expected semver tag name, without `refs/tags/`. Each tag signature
+/// must match *any* key in `trusted_keys` (each in
+/// `registry:Ed25519:<base64>` form); an empty key set is an error.
 pub fn verify_tag_chain(
     repo: &Path,
     channel_tag: &str,
     channel_name: &str,
     release_tag: &str,
-    expected_key: &str,
+    trusted_keys: &[String],
 ) -> Result<VerifiedRelease> {
-    if !verify_tag_signature(repo, channel_tag, expected_key)? {
-        bail!("channel tag '{channel_tag}' is not signed by the trusted key");
+    if !verify_tag_signature(repo, channel_tag, trusted_keys)? {
+        bail!("channel tag '{channel_tag}' is not signed by any trusted key");
     }
-    if !verify_tag_signature(repo, release_tag, expected_key)? {
-        bail!("release tag '{release_tag}' is not signed by the trusted key");
+    if !verify_tag_signature(repo, release_tag, trusted_keys)? {
+        bail!("release tag '{release_tag}' is not signed by any trusted key");
     }
 
     let channel = read_tag_object(repo, channel_tag)
@@ -153,7 +155,7 @@ pub fn parse_tag_object(content: &str) -> Result<TagObject> {
 }
 
 fn resolve_tag_object(repo: &Path, tag: &str) -> Result<String> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .args(["rev-parse", &format!("{tag}^{{tag}}")])
         .current_dir(repo)
         .output()

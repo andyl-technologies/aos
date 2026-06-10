@@ -255,6 +255,7 @@ async fn assert_stock_git_syncs_sha256_dumb_http_registry(fixture_name: &str) ->
         &TrackingMode::Branch("main".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -358,7 +359,7 @@ async fn fixture_syncs_git_native_registry_over_static_http() -> Result<()> {
     assert!(verify_tag_signature(
         fixture.source_path(),
         "1.0.0",
-        fixture.trusted_key(),
+        &[fixture.trusted_key().to_string()],
     )?);
 
     fixture.publish_bare_origin()?;
@@ -371,6 +372,7 @@ async fn fixture_syncs_git_native_registry_over_static_http() -> Result<()> {
         &TrackingMode::Branch("main".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -438,6 +440,7 @@ async fn static_origin_upload_e2e_syncs_uploaded_filesystem_destination() -> Res
         &TrackingMode::Branch("main".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -499,7 +502,7 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
     assert!(verify_tag_signature(
         fixture.source_path(),
         "1.1.0",
-        fixture.trusted_key(),
+        &[fixture.trusted_key().to_string()],
     )?);
     assert!(uploaded.path().join("channels/stable/00").exists());
     assert!(
@@ -523,6 +526,7 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -554,6 +558,7 @@ async fn legacy_bundle_only_http_origin_fails_with_clean_break_error() -> Result
         &TrackingMode::Branch("main".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -596,6 +601,7 @@ async fn dual_surface_http_origin_prefers_git_native_over_legacy_manifest() -> R
         &TrackingMode::Branch("main".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -640,6 +646,7 @@ async fn signed_channel_http_e2e_advances_persisted_bucket() -> Result<()> {
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -670,6 +677,7 @@ async fn signed_channel_http_e2e_advances_persisted_bucket() -> Result<()> {
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -740,6 +748,7 @@ async fn channel_rollout_e2e_enforces_safety_gates_and_fix_forward() -> Result<(
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -753,6 +762,7 @@ async fn channel_rollout_e2e_enforces_safety_gates_and_fix_forward() -> Result<(
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -768,6 +778,7 @@ async fn channel_rollout_e2e_enforces_safety_gates_and_fix_forward() -> Result<(
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -782,6 +793,7 @@ async fn channel_rollout_e2e_enforces_safety_gates_and_fix_forward() -> Result<(
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -798,6 +810,7 @@ async fn channel_rollout_e2e_enforces_safety_gates_and_fix_forward() -> Result<(
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -827,6 +840,7 @@ async fn channel_first_sync_fails_closed_when_no_partition_is_usable() -> Result
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -856,6 +870,7 @@ async fn channel_reachable_unchanged_partition_fails_when_freshness_is_stale() -
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -870,6 +885,7 @@ async fn channel_reachable_unchanged_partition_fails_when_freshness_is_stale() -
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -899,6 +915,7 @@ async fn channel_torn_publish_keeps_old_floor_when_partition_leads_objects() -> 
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -919,6 +936,7 @@ async fn channel_torn_publish_keeps_old_floor_when_partition_leads_objects() -> 
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -954,6 +972,7 @@ async fn channel_interleaved_partition_advances_reject_stale_publisher_rollback(
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -971,6 +990,7 @@ async fn channel_interleaved_partition_advances_reject_stale_publisher_rollback(
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )
@@ -985,6 +1005,7 @@ async fn channel_interleaved_partition_advances_reject_stale_publisher_rollback(
         &TrackingMode::Channel("stable".into()),
         fixture.cache_dir(),
         fixture.registries_dir(),
+        &fixture.trusted_keys_dirs(),
         &mut state,
         &fixture.printer(),
     )

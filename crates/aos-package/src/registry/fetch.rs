@@ -5,9 +5,9 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use tokio::process::Command;
 
 use crate::download::join_cache_url;
+use crate::gitcmd;
 use crate::registry::pack;
 use aos_core::output::Printer;
 
@@ -304,7 +304,7 @@ async fn git_fetch_release(
     target: &semver::Version,
 ) -> Result<FetchStep> {
     let refspec = release_refspec(target);
-    let output = Command::new("git")
+    let output = gitcmd::transport_async()
         .arg("-C")
         .arg(repo_dir)
         .args(["fetch", "--force", origin, &refspec])

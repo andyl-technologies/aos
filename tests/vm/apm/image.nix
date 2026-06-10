@@ -241,7 +241,7 @@
     export HOME=/tmp/image-consumer
     export USER=imageuser
     mkdir -p "$HOME"
-    $APM registry add file:///tmp/image-origin.git \
+    $APM registry add --no-verify file:///tmp/image-origin.git \
       --name image-reg \
       --branch "$DEFAULT_BRANCH" > /tmp/image-registry-add.out 2>&1 || {
       cat /tmp/image-registry-add.out

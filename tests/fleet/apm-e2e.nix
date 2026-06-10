@@ -316,12 +316,24 @@ in {
           # CI and the fixer must delete this block (or flip `if` →
           # `if !`). The check is intentionally exit-code only — a
           # tripwire for "bug is gone", not a tight oracle.
-          BIG=$AOS_ROOT/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bigpkg-1.0
+          #
+          # The pusher gets its OWN store root: push now dedups via the
+          # server's /query-missing before uploading, and the server
+          # answers from its nix DB. With the bogus path registered in
+          # the shared $AOS_ROOT DB (as this block originally did), the
+          # server reports it as already cached and the push exits 0
+          # without ever reaching put_nar — firing the tripwire for the
+          # wrong reason. A separate pusher root keeps the path missing
+          # on the server so the broken upload path is still exercised.
+          PUSHER_ROOT=/tmp/tripwire-root
+          mkdir -p "$PUSHER_ROOT/store" "$PUSHER_ROOT/var/nix/db"
+          cp "$AOS_ROOT/var/nix/db/db.sqlite" "$PUSHER_ROOT/var/nix/db/db.sqlite"
+          BIG=$PUSHER_ROOT/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bigpkg-1.0
           mkdir -p "$BIG/share"
           dd if=/dev/urandom of="$BIG/share/blob" bs=1M count=2 status=none
-          sqlite3 "$AOS_ROOT/var/nix/db/db.sqlite" \\
+          sqlite3 "$PUSHER_ROOT/var/nix/db/db.sqlite" \\
             "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$BIG', 'sha256:0000000000000000000000000000000000000000000000000000000000000002', 2100000, 4096, 1, ''');"
-          if ${pkgs.aos}/bin/aos cache push "$BIG" \\
+          if AOS_ROOT=$PUSHER_ROOT ${pkgs.aos}/bin/aos cache push "$BIG" \\
               --to http://127.0.0.1:15000/default --token "$PROV" \\
               --batch-threshold 0 2>&1; then
             echo "CROSS-FAIL FIRED: aos cache push --batch-threshold 0 unexpectedly succeeded." >&2
@@ -366,7 +378,7 @@ in {
       # agent doesn't spawn a login shell, so without this every
       # command would see a fresh empty $HOME.
       client.succeed(
-          "HOME=/tmp ${pkgs.aos}/bin/apm registry add git://server:9418/test-reg --name test-reg",
+          "HOME=/tmp ${pkgs.aos}/bin/apm registry add --no-verify git://server:9418/test-reg --name test-reg",
           timeout=120,
       )
       # `apm update` walks `git fetch` + `git archive | tar -x` over

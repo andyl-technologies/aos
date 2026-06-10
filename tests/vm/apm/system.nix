@@ -423,6 +423,9 @@
     url = "file:///var/lib/apm/registries/test"
     priority = 500
     enabled = true
+
+    [registry.signing]
+    required = false
     CFGEOF
 
         ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
@@ -575,6 +578,9 @@
     priority = 500
     enabled = true
     branch = "$DEFAULT_BRANCH"
+
+    [registry.signing]
+    required = false
     CFGEOF
     git clone --branch "$DEFAULT_BRANCH" /tmp/system-origin.git /var/lib/apm/registries/system-reg
     ln -sfn /var/lib/apm/registries/system-reg /var/lib/apm/remote/system-reg
@@ -769,6 +775,9 @@ in {
       url = "file:///var/lib/apm/remote/system-mirror"
       priority = 500
       enabled = true
+
+      [registry.signing]
+      required = false
       CFGEOF
 
       cat > /var/lib/apm/registries/system-mirror/registry.toml << 'REGEOF'

@@ -474,7 +474,7 @@ in {
       export HOME=/tmp/install-basic-consumer
       export USER=basicuser
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/install-basic-origin.git \
+      $APM registry add --no-verify file:///tmp/install-basic-origin.git \
         --name install-basic-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/install-basic-registry-add.out 2>&1 || {
         cat /tmp/install-basic-registry-add.out
@@ -656,7 +656,7 @@ in {
       export HOME=/tmp/install-deps-consumer
       export USER=depsuser
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/install-deps-origin.git \
+      $APM registry add --no-verify file:///tmp/install-deps-origin.git \
         --name install-deps-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/install-deps-registry-add.out 2>&1 || {
         cat /tmp/install-deps-registry-add.out
@@ -886,7 +886,7 @@ in {
       export HOME=/tmp/idemp-consumer
       export USER=idempuser
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/idemp-origin.git \
+      $APM registry add --no-verify file:///tmp/idemp-origin.git \
         --name idemp-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/idemp-registry-add.out 2>&1 || {
         cat /tmp/idemp-registry-add.out
@@ -1211,7 +1211,7 @@ in {
       export HOME=/tmp/download-consumer
       export USER=downloaduser
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/download-origin.git \
+      $APM registry add --no-verify file:///tmp/download-origin.git \
         --name download-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/download-registry-add.out 2>&1 || {
         cat /tmp/download-registry-add.out
@@ -1410,7 +1410,7 @@ in {
       export HOME=/tmp/reinstall-consumer
       export USER=reinstalluser
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/reinstall-origin.git \
+      $APM registry add --no-verify file:///tmp/reinstall-origin.git \
         --name reinstall-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/reinstall-registry-add.out 2>&1 || {
         cat /tmp/reinstall-registry-add.out
@@ -1637,7 +1637,7 @@ in {
       export HOME=/tmp/remove-basic-consumer
       export USER=removebasicuser
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/remove-basic-origin.git \
+      $APM registry add --no-verify file:///tmp/remove-basic-origin.git \
         --name remove-basic-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/remove-basic-registry-add.out 2>&1 || {
         cat /tmp/remove-basic-registry-add.out
@@ -1882,7 +1882,7 @@ in {
       export HOME=/tmp/remove-consumer
       export USER=removeuser
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/remove-origin.git \
+      $APM registry add --no-verify file:///tmp/remove-origin.git \
         --name remove-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/remove-registry-add.out 2>&1 || {
         cat /tmp/remove-registry-add.out
@@ -2179,7 +2179,7 @@ in {
 
       echo "==> Consumer: install both upgrade tools at 1.0.0"
       as_consumer
-      $APM registry add file:///tmp/upgrade-origin.git \
+      $APM registry add --no-verify file:///tmp/upgrade-origin.git \
         --name upgrade-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/upgrade-registry-add.out 2>&1 || {
         cat /tmp/upgrade-registry-add.out
@@ -2508,7 +2508,7 @@ in {
       export HOME=/tmp/rollback-consumer
       export USER=rollbackuser
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/rollback-origin.git \
+      $APM registry add --no-verify file:///tmp/rollback-origin.git \
         --name rollback-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/rollback-registry-add.out 2>&1 || {
         cat /tmp/rollback-registry-add.out
@@ -2858,7 +2858,7 @@ in {
       APM_CONFIG="$HOME/.config/apm"
       PROFILE="/var/lib/profiles/per-user/$USER"
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/lifecycle-origin.git \
+      $APM registry add --no-verify file:///tmp/lifecycle-origin.git \
         --name lifecycle-reg \
         --branch "$DEFAULT_BRANCH"
 
@@ -3355,7 +3355,7 @@ in {
       export USER=surfaceuser
       APM_CONFIG="$HOME/.config/apm"
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/surface-origin.git \
+      $APM registry add --no-verify file:///tmp/surface-origin.git \
         --name surface-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/surface-registry-add.out 2>&1 || {
         cat /tmp/surface-registry-add.out
@@ -3785,7 +3785,7 @@ in {
       export HOME=/tmp/hold-consumer
       export USER=holduser
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/hold-origin.git \
+      $APM registry add --no-verify file:///tmp/hold-origin.git \
         --name hold-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/hold-registry-add.out 2>&1 || {
         cat /tmp/hold-registry-add.out

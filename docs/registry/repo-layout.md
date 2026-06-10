@@ -20,7 +20,7 @@ anything being placed in the tag message (tags are pure pointers — see
 ```
 <repo root>/                          ← a commit's tree (what `git checkout` yields)
 ├── registry.toml                     ← [registry] name/description + [[caches]]
-├── keys.toml                         ← trust roster: active signing key(s) + revoked list   (TARGET)
+├── keys.toml                         ← trust roster: active signing key(s) + revoked list
 ├── .gitattributes                    ← "closures/** -diff"
 ├── packages/
 │   ├── a/apache.toml
@@ -41,8 +41,8 @@ maintains that roster through supported rotation/revocation workflows.
 ## 2. `registry.toml` — registry-level config (root of the tree)
 
 The git-repo-**root** `registry.toml` is the existing `RegistryRootConfig`
-(`crates/aos-package/src/types.rs:563-568`), read by `read_registry_toml`
-(`registry_ops.rs:391-402`) and written with a default at `registry_ops.rs:443-450`.
+(`crates/aos-package/src/types.rs:737`), read by `read_registry_toml`
+(`registry_ops.rs`) and written with a default during `apr create`.
 
 > **Do not confuse this with the removed signed-HTTP-root `registry.toml`.** An
 > intermediate design briefly proposed a *mutable file served at the origin root*
@@ -68,28 +68,34 @@ url      = "./nar"
 priority = 100                         # fallback
 ```
 
-- `[[caches]]` is `CacheEntry { url, priority }`, `default_cache_priority() == 100`
-  (`types.rs:582-590`). `resolve_mirrors` sorts **descending** (higher first,
-  `registry_ops.rs:405-414`); `resolve_mirror` takes the first
-  (`download.rs:85-97`). See [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
+- `[[caches]]` is `CacheEntry { url, priority }` (`types.rs:753`),
+  `default_cache_priority() == 100`. `resolve_mirrors` sorts **descending** (higher
+  first); `resolve_mirror` takes the first. See
+  [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
 - **No signing key here.** The in-repo `RegistryRootConfig.signing` field was
   removed; a key inside a file authenticated *by* that key is circular for
-  bootstrap. Key trust lives in `keys.toml` + client-side TOFU (§3).
+  bootstrap. Key trust lives in the `keys.toml` roster (§3), anchored
+  out-of-band by the image-baked `trusted-keys.d` or `apr trust pin`.
 
 ---
 
-## 3. `keys.toml` — the trust roster (TARGET)
+## 3. `keys.toml` — the trust roster
 
 A dedicated committed file holding the **active signing key(s)** and a **revoked
-list**, authenticated via the signed tag like everything else. It does **not**
-bootstrap trust — initial trust is **TOFU-pinned client-side** in
-`trusted-keys.d/<registry>.pub` (`crates/aos-package/src/security.rs`,
-`types.rs` `trusted_keys_dirs()`). `apr create` writes this file during the
-initial commit; pass `--trust-key registry:Ed25519:<base64>` and
-optionally `--trust-key-id <id>` (default `initial`) to seed the active-key
-list, or omit `--trust-key` to write an empty schema-1 roster. Operators maintain
-the roster after creation with `apr keys add`, `apr keys retire`, and
-`apr keys list`.
+list**, authenticated via the signed tag like everything else. Clients **consume
+it during sync** (`pin_rotated_keys`, `crates/aos-package/src/registry/keys.rs`):
+it is the **authoritative trusted-key set** once the consumer is anchored. It does
+**not** bootstrap trust — initial trust is delivered **out-of-band**, either
+baked into the image (`aos.apm.registries` → `trusted-keys.d/<registry>.pub`) or
+pinned by an operator (`apr trust pin`). After that anchor, the roster *evolves*
+trust in-band under continuity enforcement (signed fast-forward by an
+already-trusted key); see [`signing-and-trust.md`](signing-and-trust.md) §2.5–§2.6.
+`apr create` writes this file during the initial commit; pass
+`--trust-key registry:Ed25519:<base64>` and optionally `--trust-key-id <id>`
+(default `initial`) to seed the active-key list, or omit `--trust-key` to write an
+empty schema-1 roster. Operators maintain the roster after creation with
+`apr keys generate`, `apr keys add`, `apr keys retire`, and `apr keys list`;
+roster-modifying commits are signed.
 
 ```toml
 schema = 1
@@ -120,14 +126,20 @@ commit in a tag signed by a currently-trusted key. A consumer that trusts the ol
 key verifies the tag, reads `keys.toml`, and pins the new key. Later, publish
 with only the new key (the old key is dropped).
 
-**Planned retirement:** use `apr keys retire <id> [--vouched-by <survivor-id>]`
-to list the key under `[[revoked]]`, then publish the resulting commit in a tag
-**signed by one of the *other* overlapping active keys.** The command refuses to
-retire the last active key, so a retiring key never has to revoke itself.
+**Planned retirement / revocation:** use `apr keys retire <id> [--vouched-by
+<survivor-id>] [--reason ..]` to list the key under `[[revoked]]` in a commit
+**signed by one of the *other* overlapping active keys** (the command refuses to
+retire the last active key, so a retiring key never revokes itself). Because
+signatures by a revoked key stop verifying, retirement also **re-signs** the
+channel partition tags and the release tags they reference whose only valid signer
+was the retired key, using the vouching key (`--no-resign` skips). The revocation
+propagates to consumers **in-band** on their next sync, which pins the new active
+set and masks the dropped key.
 
-**Compromise:** handled **out-of-band** — the consumer re-pins via `trusted-keys.d`
-(`apr trust`). An in-repo key cannot credibly revoke itself, and compromise is rare
-enough that the out-of-band re-pin is acceptable.
+**Compromise — local recovery:** if a consumer must stop trusting a key that still
+appears in a **read-only** baked anchor, the operator re-pins the writable store
+with `apr trust pin --replace`; the `# revoked:` masking excludes the bad key
+without touching the image-baked file.
 
 > **Defence-in-depth note:** even an authenticated-but-wrong cache pointer can't serve
 > bad bytes — NARs are content-addressed and SHA-256-verified on download
@@ -219,16 +231,16 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 
 ---
 
-## 7. CURRENT vs TARGET summary
+## 7. Status summary
 
-| File | CURRENT (today's code) | TARGET |
-|---|---|---|
-| `registry.toml` | `[registry]` + `[[caches]]` | unchanged shape |
-| `keys.toml` | emitted by `apr create` as schema-1 roster; maintained by `apr keys list/add/retire`; parser plus rotation-pin/revocation helpers exist | committed trust roster maintained through active-key rotation and revocation workflows |
-| `packages/<x>/<name>.toml` | nested `PackageToml` | unchanged |
-| `closures/<hash>` | adjacency list | unchanged |
-| `.gitattributes` | `closures/** -diff` | unchanged |
-| bootstrap trust | TOFU `trusted-keys.d` (pin) | TOFU `trusted-keys.d` (pin) + `keys.toml` overlap rotation |
+| File | Status (today's code) |
+|---|---|
+| `registry.toml` | `[registry]` + `[[caches]]` (no signing pubkey) |
+| `keys.toml` | emitted by `apr create` as a schema-1 roster; maintained by `apr keys generate/list/add/retire` (signed roster commits, survivor-vouched + re-signed retirement); **consumed by clients** during sync (`pin_rotated_keys`) as the authoritative trusted-key set |
+| `packages/<x>/<name>.toml` | nested `PackageToml` |
+| `closures/<hash>` | adjacency list |
+| `.gitattributes` | `closures/** -diff` |
+| bootstrap trust | out-of-band anchor — image-baked `aos.apm.registries` → `trusted-keys.d`, or `apr trust pin`, or `[registry.signing] public_key` when the store is empty — then `keys.toml` overlap rotation in-band (no silent TOFU) |
 
 See also: [`signing-and-trust.md`](signing-and-trust.md) (keys, rotation/revocation),
 [`http-layout.md`](http-layout.md) (served layout), `current-state.md` (as-built

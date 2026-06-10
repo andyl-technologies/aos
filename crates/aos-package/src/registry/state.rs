@@ -90,16 +90,66 @@ pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
     Ok(())
 }
 
+/// Record a private-key path in the `[registry.signing_keys]` section.
+///
+/// Reads the existing map, inserts or replaces the entry for `id`, and
+/// rewrites only that section, preserving every other user-edited field
+/// (mirroring [`save_state`]).
+///
+/// # Errors
+///
+/// Returns an error when the config file does not exist, cannot be
+/// parsed, or cannot be rewritten.
+pub fn upsert_signing_key(path: &Path, id: &str, key_path: &str) -> Result<()> {
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let rf: RegistryFile =
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+
+    let mut signing_keys = rf.registry.signing_keys;
+    signing_keys.insert(id.to_string(), key_path.to_string());
+
+    let mut section = String::from("\n[registry.signing_keys]\n");
+    for (entry_id, entry_path) in &signing_keys {
+        section.push_str(&format!(
+            "\"{}\" = \"{}\"\n",
+            escape_toml_string(entry_id),
+            escape_toml_string(entry_path),
+        ));
+    }
+
+    let new_content = if let Some(start) = find_section(&content, "[registry.signing_keys]") {
+        let after_header = start + "[registry.signing_keys]".len();
+        let end = content[after_header..]
+            .find("\n[")
+            .map(|pos| after_header + pos)
+            .unwrap_or(content.len());
+        let before = content[..start].trim_end_matches('\n');
+        let after = &content[end..];
+        format!("{before}{section}{after}")
+    } else {
+        let trimmed = content.trim_end_matches('\n');
+        format!("{trimmed}{section}")
+    };
+
+    std::fs::write(path, &new_content).with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
+}
+
 fn escape_toml_string(input: &str) -> String {
     input.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Find the byte offset of the `[registry.state]` header in the file content.
 fn find_state_section(content: &str) -> Option<usize> {
-    // Look for the header at the start of a line.
+    find_section(content, "[registry.state]")
+}
+
+/// Find the byte offset of a `[section]` header at the start of a line.
+fn find_section(content: &str, header: &str) -> Option<usize> {
     for (i, line) in content.lines().enumerate() {
         let trimmed = line.trim();
-        if trimmed == "[registry.state]" {
+        if trimmed == header {
             // Calculate byte offset: sum of previous lines + newlines.
             let offset: usize = content
                 .lines()

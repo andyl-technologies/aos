@@ -4,6 +4,7 @@ use clap::Args;
 pub use aos_package::PackageCommand;
 
 #[derive(Args)]
+#[command(after_long_help = aos_package::ENVIRONMENT_HELP)]
 pub struct PackageArgs {
     #[command(subcommand)]
     pub command: PackageCommand,

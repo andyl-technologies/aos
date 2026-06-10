@@ -7,15 +7,16 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
-use tokio::process::Command;
 
 use crate::download::join_cache_url;
-use crate::registry::{channel, fetch, verify};
-use crate::types::{RegistryConfig, RegistryState, SigningConfig, TrackingMode};
+use crate::gitcmd;
+use crate::registry::{channel, fetch, keys, verify};
+use crate::security::{self, KeyStore, KeySyncReport, TrustedKey, key_fingerprint};
+use crate::types::{RegistryConfig, RegistryState, TrackingMode};
 use aos_core::output::Printer;
 
 // ---------------------------------------------------------------------------
@@ -63,24 +64,51 @@ impl std::fmt::Display for GitVersion {
 /// Sync a git-transport registry.
 ///
 /// Full flow:
-/// 1. Ensure local bare git repo exists
+/// 1. Ensure local bare git repo exists; assemble the trusted key set
 /// 2. Fetch refs (tag pin, branch tracking, or default)
-/// 3. Verify commit signature if required
-/// 4. Enforce fast-forward from last known commit
-/// 5. Extract package TOML files into the cache directory
+/// 3. Determine the new HEAD commit (channel mode verifies the partition
+///    tag chain against the trusted set)
+/// 4. Verify the head commit signature against the trusted set
+/// 5. Enforce fast-forward from last known commit
+/// 6. Pin the verified head's `keys.toml` roster into the writable
+///    trusted-key store (channel mode then re-verifies the tag chain
+///    against the post-pin set)
+/// 7. Extract package TOML files into the cache directory
+///
+/// Verification is fail-closed: a registry config without a
+/// `[registry.signing]` section enforces signatures, and only an explicit
+/// `required = false` opts out. Roster changes are accepted only when
+/// delivered as a fast-forward in a head commit signed by an
+/// already-trusted key, which gives in-band key rotation its continuity
+/// guarantee.
 pub async fn sync_git(
     config: &RegistryConfig,
     tracking_mode: &TrackingMode,
     cache_dir: &Path,
     registries_dir: &Path,
+    trusted_keys_dirs: &[PathBuf],
     state: &mut RegistryState,
     printer: &Printer,
 ) -> Result<SyncResult> {
     let git_url = normalize_git_url(&config.url);
     let repo_dir = cache_dir.join(&config.name).join("repo.git");
 
-    // Step 1: Ensure repo.
+    // Step 1: Ensure repo; assemble the trusted key set.
     printer.info(&format!("Syncing registry '{}' via git...", config.name));
+    let key_store = KeyStore::new(trusted_keys_dirs.to_vec());
+    let enforcing = signing_enforced(config);
+    let trusted_keys = assemble_trusted_set(&key_store, config);
+    if enforcing && trusted_keys.is_empty() {
+        bail!(
+            "registry '{}' requires signed metadata but no trusted key is available.\n\
+             Pin a maintainer key with `apr trust pin {} <{}:Ed25519:base64key>`, or set\n\
+             [registry.signing] public_key in the registry config.\n\
+             (Setting [registry.signing] required = false disables verification.)",
+            config.name,
+            config.name,
+            config.name,
+        );
+    }
     ensure_sha256_capable_git().await?;
     if is_plain_http_url(&config.url) {
         preflight_git_native_http_origin(&git_url).await?;
@@ -112,9 +140,19 @@ pub async fn sync_git(
 
     // Step 3: Determine the new HEAD commit.
     let mut record_successful_freshness = true;
+    let mut channel_resolution: Option<(semver::Version, String)> = None;
     let new_commit = if let TrackingMode::Channel(channel_name) = tracking_mode {
-        match resolve_channel_head(config, &git_url, channel_name, &repo_dir, state).await {
-            Ok(resolved) => {
+        match resolve_channel_head(
+            config,
+            &git_url,
+            channel_name,
+            &repo_dir,
+            &trusted_keys,
+            state,
+        )
+        .await
+        {
+            Ok((resolved, channel_oid)) => {
                 record_successful_freshness = channel_success_freshness_at(
                     config,
                     state,
@@ -122,6 +160,7 @@ pub async fn sync_git(
                     &resolved.semver,
                     unix_now_secs(),
                 )?;
+                channel_resolution = Some((resolved.semver, channel_oid));
                 resolved.commit
             }
             Err(err) => {
@@ -147,11 +186,9 @@ pub async fn sync_git(
         fetch::resolve_objects(&repo_dir, &git_url, &target, &retained_before, printer).await?;
     }
 
-    // Step 4: Verify commit signature if signing.required.
-    if let Some(ref signing) = config.signing {
-        if signing.required && !matches!(tracking_mode, TrackingMode::Channel(_)) {
-            verify_commit_signature(&repo_dir, &new_commit, signing).await?;
-        }
+    // Step 4: Verify the head commit signature against the trusted set.
+    if enforcing {
+        verify_head_commit(&repo_dir, &new_commit, &trusted_keys)?;
     }
 
     // Step 5: Enforce fast-forward.
@@ -159,7 +196,37 @@ pub async fn sync_git(
         enforce_fast_forward(&repo_dir, old_commit, &new_commit).await?;
     }
 
-    // Step 6: Extract authenticated tree files used by consumers.
+    // Step 6: Pin the verified head's trust roster. This runs only after
+    // both the signature and fast-forward checks pass, so the writable
+    // store never changes on a failed sync.
+    if enforcing && let Some(report) = apply_roster(&key_store, config, &repo_dir, &new_commit)? {
+        if !report.is_noop() {
+            printer.info(&format!(
+                "Registry '{}': trust roster updated ({} pinned, {} unpinned, {} masked)",
+                config.name, report.pinned, report.unpinned, report.masked,
+            ));
+        }
+        // The roster may have rotated keys; the resolved channel chain
+        // must verify against the post-pin set, not only the bootstrap
+        // set.
+        if let (TrackingMode::Channel(channel_name), Some((semver, channel_oid))) =
+            (tracking_mode, &channel_resolution)
+        {
+            let post_pin = assemble_trusted_set(&key_store, config);
+            verify::verify_tag_chain(
+                &repo_dir,
+                channel_oid,
+                channel_name,
+                &semver.to_string(),
+                &post_pin,
+            )
+            .with_context(|| {
+                format!("re-verifying channel '{channel_name}' against the updated trust roster")
+            })?;
+        }
+    }
+
+    // Step 7: Extract authenticated tree files used by consumers.
     let registry_cache_dir = cache_dir.join(&config.name);
     let packages_dir = registry_cache_dir.join("packages");
     let old_packages = count_toml_files(&packages_dir).await;
@@ -167,7 +234,7 @@ pub async fn sync_git(
     extract_closures(&repo_dir, &new_commit, &registry_cache_dir.join("closures")).await?;
     let new_packages = count_toml_files(&packages_dir).await;
 
-    // Step 6b: Materialise root registry files so resolve_mirror and trust
+    // Step 7b: Materialise root registry files so resolve_mirror and trust
     // roster helpers can read the authenticated tree after sync. Without
     // registry.toml, the only cache fallback is the registry URL itself, which
     // fails for git:// transports.
@@ -218,6 +285,98 @@ pub async fn sync_git(
         packages_updated: updated,
         packages_removed: removed,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Trust helpers
+// ---------------------------------------------------------------------------
+
+/// `true` when signature verification is enforced for this registry.
+///
+/// Fail-closed: an absent `[registry.signing]` section enforces
+/// verification; only an explicit `required = false` opts out.
+fn signing_enforced(config: &RegistryConfig) -> bool {
+    config
+        .signing
+        .as_ref()
+        .is_none_or(|signing| signing.required)
+}
+
+/// Assemble the trusted key set for a registry.
+///
+/// Every key visible in the trusted-key store (which applies `# revoked:`
+/// exclusions) is trusted. The `[registry.signing] public_key` config
+/// entry is a *bootstrap* anchor: it is consulted only when the store has
+/// no keys for the registry at all, and is superseded once roster keys are
+/// pinned — a revoked key lingering in a config file must not stay
+/// trusted forever.
+fn assemble_trusted_set(store: &KeyStore, config: &RegistryConfig) -> Vec<String> {
+    let mut keys: Vec<String> = store
+        .lookup_all(&config.name)
+        .iter()
+        .map(TrustedKey::key_line)
+        .collect();
+    if keys.is_empty()
+        && let Some(anchor) = config.signing.as_ref().and_then(|s| s.public_key.as_ref())
+    {
+        keys.push(anchor.clone());
+    }
+    keys
+}
+
+/// Verify the new head commit's signature against the trusted set.
+fn verify_head_commit(repo_dir: &Path, commit: &str, trusted_keys: &[String]) -> Result<()> {
+    let verified = security::verify_commit_signature(repo_dir, commit, trusted_keys)
+        .with_context(|| format!("verifying signature of commit {commit}"))?;
+    if !verified {
+        let fingerprints: Vec<String> = trusted_keys
+            .iter()
+            .filter_map(|key| {
+                security::parse_signing_key(key)
+                    .ok()
+                    .map(|(_, _, pubkey)| key_fingerprint(&pubkey))
+            })
+            .collect();
+        bail!(
+            "commit signature verification failed for {commit}: not signed by any trusted key \
+             (trusted fingerprints: {}).\n\
+             The registry requires signed commits; if a maintainer key rotated, ensure the\n\
+             rotation was delivered through a signed fast-forward sync.",
+            fingerprints.join(", "),
+        );
+    }
+    Ok(())
+}
+
+/// Pin the trust roster committed at the verified head into the writable
+/// trusted-key store.
+///
+/// Returns the sync report, or an error when the verified head has no
+/// usable roster: under enforcement a missing or empty `keys.toml` is a
+/// misconfigured registry, not a pass.
+fn apply_roster(
+    store: &KeyStore,
+    config: &RegistryConfig,
+    repo_dir: &Path,
+    commit: &str,
+) -> Result<Option<KeySyncReport>> {
+    let Some(roster) = keys::load_keys_toml_at_commit(repo_dir, commit)? else {
+        bail!(
+            "registry '{}' requires signed metadata but commit {commit} has no keys.toml \
+             trust roster.\n\
+             Publish a roster with `apr keys add`, or set [registry.signing] required = false.",
+            config.name,
+        );
+    };
+    if roster.active.is_empty() {
+        bail!(
+            "registry '{}' requires signed metadata but its keys.toml roster has no active \
+             keys at {commit}.\n\
+             Publish a roster with `apr keys add`, or set [registry.signing] required = false.",
+            config.name,
+        );
+    }
+    keys::pin_rotated_keys(store, &config.name, &roster).map(Some)
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +450,7 @@ async fn probe_static_http_status(
 }
 
 async fn ensure_sha256_capable_git() -> Result<()> {
-    let version_output = Command::new("git")
+    let version_output = gitcmd::hermetic_async()
         .arg("--version")
         .output()
         .await
@@ -321,7 +480,7 @@ async fn ensure_sha256_capable_git() -> Result<()> {
     }
 
     let tmp = tempfile::TempDir::new().context("creating temporary git capability probe repo")?;
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["init", "--bare", "--object-format=sha256"])
         .arg(tmp.path())
         .output()
@@ -375,7 +534,7 @@ async fn ensure_repo(repo_dir: &Path, _url: &str) -> Result<()> {
         .await
         .with_context(|| format!("creating {}", repo_dir.display()))?;
 
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["init", "--bare", "--object-format=sha256"])
         .current_dir(repo_dir)
         .output()
@@ -430,7 +589,7 @@ async fn fetch_refs(repo_dir: &Path, url: &str, tracking_mode: &TrackingMode) ->
     // Add --force to allow tag updates.
     args.push("--force".to_string());
 
-    let output = Command::new("git")
+    let output = gitcmd::transport_async()
         .args(&args)
         .current_dir(repo_dir)
         .output()
@@ -465,7 +624,7 @@ async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Re
         TrackingMode::Default => "refs/remotes/origin/HEAD".to_string(),
     };
 
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["rev-parse", &ref_to_resolve])
         .current_dir(repo_dir)
         .output()
@@ -480,23 +639,25 @@ async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Re
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Resolve a channel partition to a verified release.
+///
+/// Returns the verified release together with the partition tag object id
+/// so callers can re-verify the chain after the trust roster is pinned.
 async fn resolve_channel_head(
     config: &RegistryConfig,
     base_url: &str,
     channel_name: &str,
     repo_dir: &Path,
+    trusted_keys: &[String],
     state: &mut RegistryState,
-) -> Result<verify::VerifiedRelease> {
-    let signing_key = config
-        .signing
-        .as_ref()
-        .map(|signing| signing.public_key.as_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "channel tracking for '{}' requires a trusted signing.public_key",
-                config.name,
-            )
-        })?;
+) -> Result<(verify::VerifiedRelease, String)> {
+    if trusted_keys.is_empty() {
+        bail!(
+            "channel tracking for '{}' requires a trusted key: pin one with `apr trust pin` \
+             or set [registry.signing] public_key",
+            config.name,
+        );
+    }
     let release_tags = semver_tag_object_map(repo_dir).await?;
     let assigned_bucket = match state.bucket {
         Some(bucket) => bucket,
@@ -510,12 +671,12 @@ async fn resolve_channel_head(
             channel_name,
             bucket,
             repo_dir,
-            signing_key,
+            trusted_keys,
             &release_tags,
         )
         .await
         {
-            Ok(Some(resolved)) => {
+            Ok(Some((resolved, channel_oid))) => {
                 let floor = state
                     .floor
                     .as_deref()
@@ -526,7 +687,7 @@ async fn resolve_channel_head(
 
                 state.bucket.get_or_insert(assigned_bucket);
                 state.floor = Some(resolved.semver.to_string());
-                return Ok(resolved);
+                return Ok((resolved, channel_oid));
             }
             Ok(None) => {}
             Err(err) => {
@@ -546,9 +707,9 @@ async fn fetch_and_verify_partition(
     channel_name: &str,
     bucket: u8,
     repo_dir: &Path,
-    signing_key: &str,
+    trusted_keys: &[String],
     release_tags: &BTreeMap<String, semver::Version>,
-) -> Result<Option<verify::VerifiedRelease>> {
+) -> Result<Option<(verify::VerifiedRelease, String)>> {
     let url = join_cache_url(base_url, &channel::partition_path(channel_name, bucket));
     let response = reqwest::get(&url)
         .await
@@ -584,13 +745,13 @@ async fn fetch_and_verify_partition(
         &channel_oid,
         channel_name,
         &release.to_string(),
-        signing_key,
+        trusted_keys,
     )
-    .map(Some)
+    .map(|release| Some((release, channel_oid)))
 }
 
 fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
-    let mut child = std::process::Command::new("git")
+    let mut child = gitcmd::hermetic()
         .args(["hash-object", "-w", "-t", "tag", "--stdin"])
         .current_dir(repo_dir)
         .stdin(Stdio::piped())
@@ -617,7 +778,7 @@ fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
 }
 
 async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semver::Version>> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["tag", "-l"])
         .current_dir(repo_dir)
         .output()
@@ -643,7 +804,7 @@ async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semve
 }
 
 async fn resolve_tag_object(repo_dir: &Path, tag: &str) -> Result<String> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["rev-parse", &format!("{tag}^{{tag}}")])
         .current_dir(repo_dir)
         .output()
@@ -703,7 +864,7 @@ async fn prune_unretained_release_dirs(repo_dir: &Path, retained: &[String]) -> 
 /// Lists all tags in the repo, parses each as semver (stripping `v` prefix),
 /// filters by the constraint, and resolves the latest matching tag's commit.
 async fn resolve_best_version_tag(repo_dir: &Path, req: &semver::VersionReq) -> Result<String> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["tag", "-l"])
         .current_dir(repo_dir)
         .output()
@@ -746,7 +907,7 @@ async fn resolve_best_version_tag(repo_dir: &Path, req: &semver::VersionReq) -> 
     })?;
 
     // Resolve tag to commit.
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["rev-parse", &format!("refs/tags/{best_tag}")])
         .current_dir(repo_dir)
         .output()
@@ -791,31 +952,6 @@ fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
 /// This checks that the commit was signed and that the signature is valid.
 /// The actual key verification depends on the user's git configuration
 /// (gpg.ssh.allowedSignersFile or gpg keyring).
-async fn verify_commit_signature(
-    repo_dir: &Path,
-    commit: &str,
-    _signing: &SigningConfig,
-) -> Result<()> {
-    let output = Command::new("git")
-        .args(["verify-commit", commit])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("running git verify-commit {commit}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "commit signature verification failed for {commit}:\n{}\n\n\
-             The registry requires signed commits (signing.required = true).\n\
-             Ensure the registry maintainer's public key is trusted.",
-            stderr.trim(),
-        );
-    }
-
-    Ok(())
-}
-
 /// Enforce that `new_commit` is a descendant of `old_commit` (fast-forward).
 ///
 /// Uses `git merge-base --is-ancestor` to check the relationship.
@@ -824,7 +960,7 @@ async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &st
         return Ok(());
     }
 
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["merge-base", "--is-ancestor", old_commit, new_commit])
         .current_dir(repo_dir)
         .output()
@@ -880,7 +1016,7 @@ async fn extract_tree_dir(
     }
 
     let tarball = tempfile::NamedTempFile::new().context("creating temporary git archive")?;
-    let archive = Command::new("git")
+    let archive = gitcmd::hermetic_async()
         .args(["archive", "--format=tar", "-o"])
         .arg(tarball.path())
         .arg(commit)
@@ -918,7 +1054,7 @@ async fn extract_tree_dir(
 }
 
 async fn tree_path_exists(repo_dir: &Path, commit: &str, tree_path: &str) -> Result<bool> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["cat-file", "-e", &format!("{commit}:{tree_path}")])
         .current_dir(repo_dir)
         .output()
@@ -951,7 +1087,7 @@ async fn extract_optional_root_file(
     target_dir: &Path,
     file: &str,
 ) -> Result<()> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["show", &format!("{commit}:{file}")])
         .current_dir(repo_dir)
         .output()
@@ -1256,6 +1392,8 @@ fn is_leap_year(year: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::SigningConfig;
+    use tokio::process::Command;
 
     /// Build a `git` command for fixture setup with the developer's global
     /// and system config neutralized, so tests don't inherit `~/.gitconfig`
@@ -1287,7 +1425,7 @@ mod tests {
             signing_keys: Default::default(),
             signing: Some(SigningConfig {
                 required: true,
-                public_key: "core:Ed25519:base64key".to_string(),
+                public_key: Some("core:Ed25519:base64key".to_string()),
             }),
         }
     }
