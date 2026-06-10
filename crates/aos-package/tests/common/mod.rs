@@ -291,7 +291,7 @@ key = "{}"
             signing_keys: Default::default(),
             signing: Some(SigningConfig {
                 required: true,
-                public_key: self.trusted_key().to_string(),
+                public_key: Some(self.trusted_key().to_string()),
             }),
         }
     }
@@ -605,13 +605,12 @@ enabled = {}
     }
     if let Some(signing) = &config.signing {
         out.push_str(&format!(
-            r#"
-[registry.signing]
-required = {}
-public_key = "{}"
-"#,
-            signing.required, signing.public_key
+            "\n[registry.signing]\nrequired = {}\n",
+            signing.required
         ));
+        if let Some(public_key) = &signing.public_key {
+            out.push_str(&format!("public_key = \"{public_key}\"\n"));
+        }
     }
     out
 }

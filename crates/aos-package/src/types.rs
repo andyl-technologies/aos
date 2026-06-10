@@ -337,12 +337,23 @@ fn default_true() -> bool {
 }
 
 /// Signing configuration embedded in a registry config.
+///
+/// Signature verification is fail-closed: a registry config *without* a
+/// `[registry.signing]` section behaves as `required = true`. Writing an
+/// explicit `required = false` is the only way to opt a registry out of
+/// verification (intended for local development fixtures).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SigningConfig {
     #[serde(default = "default_true")]
     pub required: bool,
-    /// Key in `"name:Ed25519:base64key"` format.
-    pub public_key: String,
+    /// Bootstrap trust anchor in `"name:Ed25519:base64key"` format.
+    ///
+    /// This key seeds the trusted set on first contact, before the
+    /// registry's committed `keys.toml` roster has been verified and
+    /// pinned. Once roster keys are pinned into `trusted-keys.d`, the
+    /// roster — not this field — is the authoritative trusted-key set.
+    #[serde(default)]
+    pub public_key: Option<String>,
 }
 
 /// Producer-side defaults for registry static-cache upload authentication.
@@ -1071,7 +1082,10 @@ public_key = "aos-core:Ed25519:base64keyhere"
         assert!(upload_auth.ssh_ask_pass);
         let signing = rf.registry.signing.unwrap();
         assert!(signing.required);
-        assert_eq!(signing.public_key, "aos-core:Ed25519:base64keyhere");
+        assert_eq!(
+            signing.public_key.as_deref(),
+            Some("aos-core:Ed25519:base64keyhere")
+        );
     }
 
     #[test]

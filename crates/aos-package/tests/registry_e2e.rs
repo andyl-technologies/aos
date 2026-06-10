@@ -358,7 +358,7 @@ async fn fixture_syncs_git_native_registry_over_static_http() -> Result<()> {
     assert!(verify_tag_signature(
         fixture.source_path(),
         "1.0.0",
-        fixture.trusted_key(),
+        &[fixture.trusted_key().to_string()],
     )?);
 
     fixture.publish_bare_origin()?;
@@ -499,7 +499,7 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
     assert!(verify_tag_signature(
         fixture.source_path(),
         "1.1.0",
-        fixture.trusted_key(),
+        &[fixture.trusted_key().to_string()],
     )?);
     assert!(uploaded.path().join("channels/stable/00").exists());
     assert!(

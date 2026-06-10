@@ -3908,7 +3908,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(verify_tag_signature(&repo, "1.0.0", &signing.trusted_key).unwrap());
+        assert!(
+            verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&signing.trusted_key))
+                .unwrap()
+        );
     }
 
     #[test]
