@@ -481,7 +481,7 @@ in {
   # -------------------------------------------------------------------------
   registry-publish = testing.mkVMTest {
     name = "apm-registry-publish";
-    rootfsDeps = publishDeps;
+    rootfsDeps = publishDeps ++ [pkgs.jq];
     memory = 512;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -548,6 +548,17 @@ in {
       else
         pass "apr packages does not report the older version as current"
       fi
+      $APR --json packages --registry test-reg > /tmp/packages.json 2>&1 || {
+        cat /tmp/packages.json
+        fail "apr --json packages lists published packages"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        'length == 1 and .[0].name == "testpkg" and .[0].version == "2.0.0"' \
+        /tmp/packages.json >/dev/null || {
+        cat /tmp/packages.json
+        fail "apr --json packages reports latest published version"
+      }
+      pass "apr --json packages reports latest published version"
 
       $APR packages --registry test-reg --outdated \
         > /tmp/packages-outdated.out 2>&1 || {
@@ -570,6 +581,21 @@ in {
       else
         pass "apr show --version hides non-selected versions"
       fi
+      $APR --json show testpkg --registry test-reg --version 1.0.0 \
+        > /tmp/show-v1.json 2>&1 || {
+        cat /tmp/show-v1.json
+        fail "apr --json show --version selects existing version"
+      }
+      ${pkgs.jq}/bin/jq -e --arg store "${aosPkg}" \
+        '.package.name == "testpkg"
+          and (.versions | length) == 1
+          and .versions[0].version == "1.0.0"
+          and .versions[0].platforms."x86_64-linux".store_path == $store' \
+        /tmp/show-v1.json >/dev/null || {
+        cat /tmp/show-v1.json
+        fail "apr --json show --version reports only selected v1"
+      }
+      pass "apr --json show --version reports only selected v1"
 
       $APR show testpkg --registry test-reg --version 1.0.0 --raw \
         > /tmp/show-v1-raw.out 2>&1 || {
@@ -2546,7 +2572,7 @@ in {
   # -------------------------------------------------------------------------
   registry-branch-workflow = testing.mkVMTest {
     name = "apm-registry-branch-workflow";
-    rootfsDeps = closureWorkflowDeps;
+    rootfsDeps = closureWorkflowDeps ++ [pkgs.jq];
     memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -2638,6 +2664,18 @@ in {
       }
       assert_file_contains /tmp/branch-packages-feature.out "featurepkg 1.0.0" \
         "apr packages sees feature package on feature branch"
+      $APR --json packages --registry test-reg \
+        > /tmp/branch-packages-feature.json 2>&1 || {
+        cat /tmp/branch-packages-feature.json
+        fail "apr --json packages lists feature branch package"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        'length == 1 and .[0].name == "featurepkg" and .[0].version == "1.0.0"' \
+        /tmp/branch-packages-feature.json >/dev/null || {
+        cat /tmp/branch-packages-feature.json
+        fail "apr --json packages sees feature package on feature branch"
+      }
+      pass "apr --json packages sees feature package on feature branch"
       $APR verify --registry test-reg > /tmp/branch-verify-feature.out 2>&1 || {
         cat /tmp/branch-verify-feature.out
         fail "apr verify accepts feature branch package"
@@ -2663,6 +2701,17 @@ in {
       }
       assert_file_not_contains /tmp/branch-packages-default.out "featurepkg" \
         "apr packages hides feature package before merge"
+      $APR --json packages --registry test-reg \
+        > /tmp/branch-packages-default.json 2>&1 || {
+        cat /tmp/branch-packages-default.json
+        fail "apr --json packages succeeds on default branch before merge"
+      }
+      ${pkgs.jq}/bin/jq -e 'length == 0' \
+        /tmp/branch-packages-default.json >/dev/null || {
+        cat /tmp/branch-packages-default.json
+        fail "apr --json packages hides feature package before merge"
+      }
+      pass "apr --json packages hides feature package before merge"
 
       $APR merge feature-1 --registry test-reg > /tmp/branch-merge.out 2>&1 || {
         cat /tmp/branch-merge.out
@@ -2682,6 +2731,24 @@ in {
       }
       assert_file_contains /tmp/branch-show-merged.out "Real branch workflow fixture" \
         "apr show displays merged package metadata"
+      $APR --json show featurepkg --registry test-reg \
+        > /tmp/branch-show-merged.json 2>&1 || {
+        cat /tmp/branch-show-merged.json
+        fail "apr --json show resolves merged package"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        --arg store "$FEATURE_STORE" \
+        --arg dep "$FEATURE_DEP_HASH" \
+        '.package.name == "featurepkg"
+          and .package.description == "Real branch workflow fixture"
+          and .versions[0].version == "1.0.0"
+          and .versions[0].platforms."x86_64-linux".store_path == $store
+          and ((.versions[0].platforms."x86_64-linux".references | index($dep)) != null)' \
+        /tmp/branch-show-merged.json >/dev/null || {
+        cat /tmp/branch-show-merged.json
+        fail "apr --json show displays merged closure metadata"
+      }
+      pass "apr --json show displays merged closure metadata"
       $APR verify --registry test-reg > /tmp/branch-verify-merged.out 2>&1 || {
         cat /tmp/branch-verify-merged.out
         fail "apr verify accepts merged branch package"

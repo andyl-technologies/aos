@@ -339,6 +339,8 @@ in {
             cat "$work/apr-status.out"
             exit 1
           fi
+          run_clean ${self}/bin/apr --json packages --registry host-reg > "$work/apr-packages-empty.json"
+          ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apr-packages-empty.json" >/dev/null
           pkg_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           mkdir -p "$reg/packages/h" "$reg/closures"
           printf '%s\n' \
@@ -423,8 +425,19 @@ in {
 
           run_clean ${self}/bin/apr packages --registry host-reg > "$work/apr-packages.out" 2>&1
           grep -q "hostpkg 1.0.0" "$work/apr-packages.out"
+          run_clean ${self}/bin/apr --json packages --registry host-reg > "$work/apr-packages.json"
+          ${pkgs.jq}/bin/jq -e \
+            'length == 1 and .[0].name == "hostpkg" and .[0].version == "1.0.0"' \
+            "$work/apr-packages.json" >/dev/null
           run_clean ${self}/bin/apr show hostpkg --registry host-reg > "$work/apr-show.out" 2>&1
           grep -q "Host-authored package metadata" "$work/apr-show.out"
+          run_clean ${self}/bin/apr --json show hostpkg --registry host-reg > "$work/apr-show.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.package.name == "hostpkg"
+              and .package.description == "Host-authored package metadata from feature branch"
+              and .versions[0].version == "1.0.0"
+              and .versions[0].platforms."x86_64-linux".store_path == "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hostpkg-1.0.0"' \
+            "$work/apr-show.json" >/dev/null
           run_clean ${self}/bin/apr show hostpkg --registry host-reg --raw > "$work/apr-show-raw.out" 2>&1
           grep -q "store_path = \"/nix/store/$pkg_hash-hostpkg-1.0.0\"" "$work/apr-show-raw.out"
           run_clean ${self}/bin/apr verify --registry host-reg > "$work/apr-verify.out" 2>&1
