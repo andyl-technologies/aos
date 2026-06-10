@@ -894,6 +894,10 @@ in {
           grep -q "integrity verified" "$work/apm-verify-host-install-v2.out"
           run_clean ${self}/bin/apm files hostinstall > "$work/apm-files-host-install-v2.out" 2>&1
           grep -q "bin/host-install-tool" "$work/apm-files-host-install-v2.out"
+          run_clean ${self}/bin/apm --json files hostinstall > "$work/apm-files-host-install-v2.json"
+          ${pkgs.jq}/bin/jq -e \
+            'index("bin/host-install-tool") != null and index("share/host-install/payload.txt") != null' \
+            "$work/apm-files-host-install-v2.json" >/dev/null
 
           run_clean ${self}/bin/apm remove hostinstall --yes \
             > "$work/apm-remove-host-install.out" 2>&1

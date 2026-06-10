@@ -9,7 +9,7 @@ use super::profile::meta;
 use super::registry::{RegistrySet, store_path_hash};
 use super::store;
 use super::types::{InstalledMeta, PackageMeta};
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
 // Dependency tree node
@@ -236,6 +236,11 @@ pub async fn files(config: &ApmConfig, package: &str, printer: &Printer) -> Resu
     let mut file_list = Vec::new();
     walk_dir(path, path, &mut file_list)?;
     file_list.sort();
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!(file_list));
+        return Ok(());
+    }
 
     for f in &file_list {
         printer.plain(f);
