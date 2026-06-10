@@ -2027,6 +2027,38 @@ in {
       }
       cat /tmp/remove-basic-registry-add.out
 
+      if $APM remove remove-basic-tool --dry-run > /tmp/remove-basic-empty-dry-run.out 2>&1; then
+        cat /tmp/remove-basic-empty-dry-run.out
+        fail "remove dry-run should fail when no profile is installed"
+      else
+        cat /tmp/remove-basic-empty-dry-run.out
+        pass "remove dry-run fails before any package is installed"
+      fi
+      assert_file_contains /tmp/remove-basic-empty-dry-run.out "nothing installed" \
+        "empty remove dry-run reports no current generation"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty remove dry-run leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty remove dry-run should not initialize profile state"
+      fi
+
+      if $APM autoremove --dry-run > /tmp/remove-basic-empty-autoremove-dry-run.out 2>&1; then
+        cat /tmp/remove-basic-empty-autoremove-dry-run.out
+        fail "autoremove dry-run should fail when no profile is installed"
+      else
+        cat /tmp/remove-basic-empty-autoremove-dry-run.out
+        pass "autoremove dry-run fails before any package is installed"
+      fi
+      assert_file_contains /tmp/remove-basic-empty-autoremove-dry-run.out "nothing installed" \
+        "empty autoremove dry-run reports no current generation"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty autoremove dry-run leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty autoremove dry-run should not initialize profile state"
+      fi
+
       delete_store_path "$REMOVE_STORE" "remove-basic-tool"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
@@ -2048,6 +2080,28 @@ in {
         pass "remove-basic install creates generation 1"
       else
         fail "remove-basic install should create gen-1"
+      fi
+
+      $APM remove remove-basic-tool --dry-run > /tmp/remove-basic-remove-dry-run.out 2>&1 || {
+        cat /tmp/remove-basic-remove-dry-run.out
+        fail "apm remove --dry-run remove-basic-tool succeeds"
+      }
+      cat /tmp/remove-basic-remove-dry-run.out
+      assert_file_contains /tmp/remove-basic-remove-dry-run.out "will be REMOVED" \
+        "remove dry-run prints removal plan"
+      assert_file_contains /tmp/remove-basic-remove-dry-run.out "Dry run -- no changes made" \
+        "remove dry-run reports no mutation"
+      assert_file_not_contains /tmp/remove-basic-remove-dry-run.out "Creating new generation" \
+        "remove dry-run does not create a generation"
+      assert_file_exists "$PROFILE/meta/$REMOVE_HASH.json" \
+        "remove dry-run preserves installed metadata"
+      "$REMOVE_BIN" > /tmp/remove-basic-run-after-dry-run.out
+      assert_file_contains /tmp/remove-basic-run-after-dry-run.out "^remove-basic-tool 1.0.0$" \
+        "remove dry-run leaves executable active"
+      if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
+        pass "remove dry-run keeps generation 1 active"
+      else
+        fail "remove dry-run should keep gen-1"
       fi
 
       $APM remove remove-basic-tool --yes > /tmp/remove-basic-remove.out 2>&1 || {
