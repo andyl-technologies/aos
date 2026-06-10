@@ -639,6 +639,15 @@ in {
       DEP_BIN="$PROFILE/current/bin/install-libfoo"
       WRAPPER_BIN="$PROFILE/current/bin/install-with-deps"
 
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
+
       assert_store_valid() {
         path="$1"
         label="$2"
@@ -675,7 +684,15 @@ in {
       }
 
       generation_count() {
-        find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        if [ -d "$PROFILE" ]; then
+          find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        else
+          printf '0'
+        fi
+      }
+
+      cache_nar_count() {
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' 2>/dev/null | wc -l | tr -d ' '
       }
 
       wait_for_cache_server() {
@@ -785,6 +802,44 @@ in {
       delete_store_path "$DEP_STORE" "install-libfoo"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
+
+      $APM install install-with-deps install-basic-tool \
+        --registry install-deps-reg \
+        --dry-run > /tmp/install-deps-dry-run.out 2>&1 || {
+        cat /tmp/install-deps-dry-run.out
+        fail "apm install --dry-run resolves multi-root package plan"
+      }
+      cat /tmp/install-deps-dry-run.out
+      assert_file_contains /tmp/install-deps-dry-run.out "install-with-deps (2.0.0, install-deps-reg)" \
+        "install dry-run plans wrapper root"
+      assert_file_contains /tmp/install-deps-dry-run.out "install-basic-tool (1.0.0, install-deps-reg)" \
+        "install dry-run plans second explicit root"
+      assert_file_contains /tmp/install-deps-dry-run.out "Additional dependencies" \
+        "install dry-run plans dependency section"
+      assert_file_contains /tmp/install-deps-dry-run.out "install-libfoo (1.0.0, install-deps-reg)" \
+        "install dry-run lists automatic dependency"
+      assert_file_contains /tmp/install-deps-dry-run.out "Dry run -- no changes made" \
+        "install dry-run reports no mutation"
+      assert_file_not_contains /tmp/install-deps-dry-run.out "Downloading 3 NAR" \
+        "install dry-run does not download package bodies"
+      assert_file_not_contains /tmp/install-deps-dry-run.out "Updating profile" \
+        "install dry-run does not update profile"
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "install dry-run leaves NAR cache empty"
+      else
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' -print
+        fail "install dry-run should not download NAR bodies"
+      fi
+      assert_store_missing "$BASIC_STORE" "install-basic-tool"
+      assert_store_missing "$WRAPPER_STORE" "install-with-deps"
+      assert_store_missing "$DEP_STORE" "install-libfoo"
+      if [ ! -e "$PROFILE" ]; then
+        pass "install dry-run leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "install dry-run should not initialize profile state"
+      fi
+
       $APM install install-with-deps install-basic-tool \
         --registry install-deps-reg \
         --yes > /tmp/install-deps.out 2>&1 || {
@@ -1457,6 +1512,12 @@ in {
         pass "download-only creates no profile generation"
       else
         fail "download-only should not create profile generation"
+      fi
+      if [ ! -e "$PROFILE" ]; then
+        pass "download-only leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "download-only should not initialize profile state"
       fi
 
       echo "==> Consumer: normal install after download-only activates package"
