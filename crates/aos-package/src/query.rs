@@ -27,7 +27,7 @@ pub async fn search(
 
     // If --installed, load profile metadata to filter results.
     let installed_hashes: Option<HashMap<String, InstalledMeta>> = if installed_only {
-        let profile = Profile::open(config.scope)?;
+        let profile = Profile::open_readonly(config.scope);
         let meta_list = list_meta(&profile)?;
         let map = meta_list
             .into_iter()
@@ -131,7 +131,7 @@ pub async fn show(
     let registry_name = reg.config.name.clone();
 
     // Check if installed.
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
     let meta_list = list_meta(&profile)?;
     let pkg_hash = store_path_hash(&meta.store_path).to_string();
     let installed_meta = meta_list
@@ -235,7 +235,7 @@ pub async fn list(
     let registries = load_registries(config)?;
 
     // Load profile metadata for install/upgrade/held checks.
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
     let meta_list = list_meta(&profile)?;
 
     // Installed state belongs to the registry that supplied the package. The

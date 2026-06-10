@@ -87,7 +87,7 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
 pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
 
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
     let installed = meta::list_meta(&profile)?;
     let (target_hashes, target_versions) =
         rdepends_target_hashes(package, &registries, &installed)?;
@@ -147,7 +147,7 @@ pub async fn policy(config: &ApmConfig, package: &str, printer: &Printer) -> Res
     }
 
     // Check installed version.
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
     let installed = meta::list_meta(&profile)?;
     let installed_version = policy_installed_versions(package, &installed);
 
@@ -179,7 +179,7 @@ pub async fn policy(config: &ApmConfig, package: &str, printer: &Printer) -> Res
 
 /// `apm files <package>` -- list files in the package's store path.
 pub async fn files(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
     let installed = meta::list_meta(&profile)?;
 
     let store_path = installed
