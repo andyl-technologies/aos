@@ -4896,6 +4896,9 @@ in {
       run_ok files "$APM" files surfacepkg
       assert_file_contains /tmp/surface-files.out "bin/surfacepkg" \
         "apm files walks installed store path"
+      run_ok files-json "$APM" --json files surfacepkg
+      "$JQ" -e 'index("bin/surfacepkg") != null' \
+        /tmp/surface-files-json.out >/dev/null
       run_fail source-default "$APM" source surfacepkg
       assert_file_contains /tmp/surface-source-default.out "no source derivation recorded" \
         "apm source reports APR-published packages without source drv"
