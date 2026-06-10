@@ -822,6 +822,27 @@ pub enum KeysCommand {
         #[arg(long)]
         registry: Option<String>,
     },
+    /// Generate a maintainer Ed25519 keypair and register its private key
+    Generate {
+        /// Stable key id (also names the private key file)
+        id: String,
+        /// Also append the public key to committed keys.toml
+        #[arg(long)]
+        add: bool,
+        /// Skip creating a git commit (with --add)
+        #[arg(long)]
+        no_commit: bool,
+        /// Private key path used to sign the roster commit (with --add)
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the roster
+        /// commit (with --add)
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
     /// Add an active signing key to committed keys.toml
     Add {
         /// Stable key id inside keys.toml
