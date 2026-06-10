@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::profile::Profile;
+use aos_core::nix::aos_nix_env;
 use aos_core::output::Printer;
 
 /// Run `apm clean [--generations] [--keep=N]`.
@@ -42,6 +43,7 @@ pub async fn run_gc(printer: &Printer) -> Result<()> {
     printer.info("Running garbage collection...");
 
     let output = tokio::process::Command::new("nix-store")
+        .envs(aos_nix_env())
         .arg("--gc")
         .output()
         .await

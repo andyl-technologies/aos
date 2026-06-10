@@ -339,6 +339,7 @@
       pkgs.zstd
       sourcefulV1
     ];
+  gcAltDeps = fixtures.commonDeps ++ nixRuntimeDeps;
   realInstallDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -385,6 +386,23 @@
     alt_nix_store() {
       NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_NIX_STATE_DIR" nix-store "$@"
     }
+  '';
+  setupEmptyAltNixGcEnv = ''
+    export AOS_ROOT=/tmp/aos-gc-alt-root
+    export AOS_NIX_STORE_DIR=/tmp/apm-gc-alt-store
+    export AOS_NIX_STATE_DIR=/tmp/apm-gc-alt-nix-state/var/nix
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR=/tmp/nix-conf
+    export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    rm -rf /nix/var/nix
+    mkdir -p "$NIX_CONF_DIR" "$AOS_NIX_STORE_DIR" "$AOS_NIX_STATE_DIR/db" "$AOS_NIX_STATE_DIR/gcroots"
+    cat > "$NIX_CONF_DIR/nix.conf" << 'NIXCONF'
+    experimental-features = nix-command
+    sandbox = false
+    substituters =
+    NIXCONF
+    NIX_STORE_DIR="$AOS_NIX_STORE_DIR" NIX_STATE_DIR="$AOS_NIX_STATE_DIR" \
+      nix-store --init || true
   '';
 in {
   # -------------------------------------------------------------------------
@@ -3296,7 +3314,32 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 13. command-surface — Real APM command surface workflow
+  # 13. gc-alt-nix-state — GC with re-rooted Nix state
+  # -------------------------------------------------------------------------
+  gc-alt-nix-state = testing.mkVMTest {
+    name = "apm-gc-alt-nix-state";
+    rootfsDeps = gcAltDeps;
+    memory = 512;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupEmptyAltNixGcEnv}
+
+      echo "==> Test: apm gc honors alternate Nix state DB"
+
+      $APM gc > /tmp/gc-alt.out 2>&1 || {
+        cat /tmp/gc-alt.out
+        fail "apm gc succeeds using AOS_NIX_STATE_DIR"
+      }
+      cat /tmp/gc-alt.out
+      assert_file_contains /tmp/gc-alt.out "Garbage collection complete" \
+        "apm gc runs through alternate Nix state"
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 14. command-surface — Real APM command surface workflow
   # -------------------------------------------------------------------------
   command-surface = testing.mkVMTest {
     name = "apm-command-surface";
@@ -3879,7 +3922,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 14. hold-prevent-upgrade — Hold/unhold prevents/allows upgrades
+  # 15. hold-prevent-upgrade — Hold/unhold prevents/allows upgrades
   # -------------------------------------------------------------------------
   hold-prevent-upgrade = testing.mkVMTest {
     name = "apm-hold-prevent-upgrade";
