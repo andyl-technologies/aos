@@ -16,7 +16,7 @@ use aos_core::nar::info as narinfo;
 use aos_core::nix::aos_nix_env;
 use serde_json::Value;
 
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
 use crate::gitcmd;
@@ -1531,6 +1531,16 @@ pub async fn show(
     let toml_val: toml::Value = toml::from_str(&content)?;
     let selected_versions = selected_package_versions(&toml_val, version)?;
 
+    if printer.mode() == OutputMode::Json {
+        let value = if version.is_some() {
+            package_toml_with_versions(&toml_val, &selected_versions)?
+        } else {
+            toml_val.clone()
+        };
+        printer.json(&serde_json::to_value(&value)?);
+        return Ok(());
+    }
+
     if raw {
         if version.is_some() {
             let filtered = package_toml_with_versions(&toml_val, &selected_versions)?;
@@ -1617,6 +1627,10 @@ pub async fn packages(
     let packages_dir = dir.join("packages");
 
     if !packages_dir.is_dir() {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!([]));
+            return Ok(());
+        }
         printer.info("No packages found.");
         return Ok(());
     }
@@ -1649,6 +1663,20 @@ pub async fn packages(
     }
 
     pkgs.sort();
+
+    if printer.mode() == OutputMode::Json {
+        let packages_json = pkgs
+            .iter()
+            .map(|(name, version)| {
+                serde_json::json!({
+                    "name": name,
+                    "version": version,
+                })
+            })
+            .collect::<Vec<_>>();
+        printer.json(&serde_json::json!(packages_json));
+        return Ok(());
+    }
 
     if pkgs.is_empty() {
         printer.info("No packages found.");
