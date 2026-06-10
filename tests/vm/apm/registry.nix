@@ -1,4 +1,4 @@
-# tests/vm/apm/registry.nix — Registry management VM tests (16 tests)
+# tests/vm/apm/registry.nix — Registry management VM tests
 #
 # Tests for `apr` registry lifecycle commands: create, add, remove, publish,
 # unpublish, branch workflow, validate, signed tags, trust/key workflows, and
@@ -47,6 +47,25 @@
     NIXCONF
     nix-store --init || true
     nix-store --load-db < /aos-registration
+  '';
+  setupAltNixPublishEnv = ''
+    export AOS_ROOT=/tmp/aos-alt-root
+    export AOS_NIX_STORE_DIR=/nix/store
+    export AOS_NIX_STATE_DIR=/tmp/apr-alt-nix-state/var/nix
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR=/tmp/nix-conf
+    export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    rm -rf /nix/var/nix
+    mkdir -p "$NIX_CONF_DIR" "$AOS_NIX_STATE_DIR/db" "$AOS_NIX_STATE_DIR/gcroots"
+    cat > "$NIX_CONF_DIR/nix.conf" << 'NIXCONF'
+    experimental-features = nix-command
+    sandbox = false
+    substituters =
+    NIXCONF
+    NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_NIX_STATE_DIR" \
+      nix-store --init || true
+    NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_NIX_STATE_DIR" \
+      nix-store --load-db < /aos-registration
   '';
   mkRegistryTool = {
     pname,
@@ -112,7 +131,7 @@
     ];
 in {
   # -------------------------------------------------------------------------
-  # 1. registry-create — Initialize a new empty registry
+  # registry-create — Initialize a new empty registry
   # -------------------------------------------------------------------------
   registry-create = testing.mkVMTest {
     name = "apm-registry-create";
@@ -153,7 +172,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 2. registry-add-clone — Add a remote registry via clone
+  # registry-add-clone — Add a remote registry via clone
   # -------------------------------------------------------------------------
   registry-add-clone = testing.mkVMTest {
     name = "apm-registry-add-clone";
@@ -201,7 +220,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 3. registry-add-no-clone-publish-hint — Config-only add has publish hint
+  # registry-add-no-clone-publish-hint — Config-only add has publish hint
   # -------------------------------------------------------------------------
   registry-add-no-clone-publish-hint = testing.mkVMTest {
     name = "apm-registry-add-no-clone-publish-hint";
@@ -246,7 +265,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 4. registry-remove — Remove a registry
+  # registry-remove — Remove a registry
   # -------------------------------------------------------------------------
   registry-remove = testing.mkVMTest {
     name = "apm-registry-remove";
@@ -284,7 +303,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 5. registry-remove-unprivileged — Remove without profile write access
+  # registry-remove-unprivileged — Remove without profile write access
   # -------------------------------------------------------------------------
   registry-remove-unprivileged = testing.mkVMTest {
     name = "apm-registry-remove-unprivileged";
@@ -335,7 +354,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 6. registry-publish — Publish a package entry to the registry
+  # registry-publish — Publish a package entry to the registry
   # -------------------------------------------------------------------------
   registry-publish = testing.mkVMTest {
     name = "apm-registry-publish";
@@ -458,7 +477,60 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 7. registry-publish-sysroot — Publish a sysroot package with images
+  # registry-publish-alt-nix-state — Publish against re-rooted Nix state
+  # -------------------------------------------------------------------------
+  registry-publish-alt-nix-state = testing.mkVMTest {
+    name = "apm-registry-publish-alt-nix-state";
+    rootfsDeps = publishDeps;
+    memory = 1024;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupAltNixPublishEnv}
+
+      echo "==> Test: apr publish honors alternate Nix state DB"
+
+      $APR create alt-state-reg
+      REG_DIR="$REG_STORAGE/alt-state-reg"
+
+      $APR publish ${aosPkg} \
+        --name alt-state-pkg \
+        --version 1.0.0 \
+        --description "Published from alternate Nix state" \
+        --license MIT \
+        --maintainer alt-state@example.invalid \
+        --registry alt-state-reg > /tmp/alt-state-publish.out 2>&1 || {
+        cat /tmp/alt-state-publish.out
+        fail "apr publish succeeds using AOS_NIX_STATE_DIR"
+      }
+      cat /tmp/alt-state-publish.out
+
+      assert_file_exists "$REG_DIR/packages/a/alt-state-pkg.toml" \
+        "alternate-state publish writes package metadata"
+      assert_file_contains "$REG_DIR/packages/a/alt-state-pkg.toml" \
+        "store_path = \"${aosPkg}\"" \
+        "alternate-state publish records the requested store path"
+      assert_file_contains "$REG_DIR/packages/a/alt-state-pkg.toml" \
+        "nar_hash" "alternate-state publish records NAR hash"
+
+      STORE_HASH=$(basename ${aosPkg} | cut -d- -f1)
+      assert_file_exists "$REG_DIR/closures/$STORE_HASH" \
+        "alternate-state publish writes closure metadata"
+      assert_file_contains "$REG_DIR/closures/$STORE_HASH" "$STORE_HASH" \
+        "alternate-state closure metadata contains root hash"
+
+      $APR verify --registry alt-state-reg > /tmp/alt-state-verify.out 2>&1 || {
+        cat /tmp/alt-state-verify.out
+        fail "apr verify accepts alternate-state published registry"
+      }
+      assert_file_contains /tmp/alt-state-verify.out "no errors" \
+        "apr verify validates alternate-state published registry"
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # registry-publish-sysroot — Publish a sysroot package with images
   # -------------------------------------------------------------------------
   registry-publish-sysroot = testing.mkVMTest {
     name = "apm-registry-publish-sysroot";
@@ -500,7 +572,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 8. registry-unpublish — Selectively remove versions and platforms
+  # registry-unpublish — Selectively remove versions and platforms
   # -------------------------------------------------------------------------
   registry-unpublish = testing.mkVMTest {
     name = "apm-registry-unpublish";
@@ -712,7 +784,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 9. registry-maintainer-workflow — Real release, cache, install, execute
+  # registry-maintainer-workflow — Real release, cache, install, execute
   # -------------------------------------------------------------------------
   registry-maintainer-workflow = testing.mkVMTest {
     name = "apm-registry-maintainer-workflow";
@@ -1108,7 +1180,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 10. registry-channel-workflow — Signed channel rollout and consumer upgrade
+  # registry-channel-workflow — Signed channel rollout and consumer upgrade
   # -------------------------------------------------------------------------
   registry-channel-workflow = testing.mkVMTest {
     name = "apm-registry-channel-workflow";
@@ -1469,7 +1541,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 11. registry-branch-workflow — Branch create, switch, merge modes, pull
+  # registry-branch-workflow — Branch create, switch, merge modes, pull
   # -------------------------------------------------------------------------
   registry-branch-workflow = testing.mkVMTest {
     name = "apm-registry-branch-workflow";
@@ -1964,7 +2036,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 11. registry-validate — Validate registry TOML structure
+  # registry-validate — Validate registry TOML structure
   # -------------------------------------------------------------------------
   registry-validate = testing.mkVMTest {
     name = "apm-registry-validate";
@@ -2022,7 +2094,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 12. registry-bundle — Signed tag, re-sign, and no-bundle clean break
+  # registry-bundle — Signed tag, re-sign, and no-bundle clean break
   # -------------------------------------------------------------------------
   registry-bundle = testing.mkVMTest {
     name = "apm-registry-signed-tag-clean-break";
@@ -2185,7 +2257,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 13. registry-trust-keys-workflow — Committed and local trust key commands
+  # registry-trust-keys-workflow — Committed and local trust key commands
   # -------------------------------------------------------------------------
   registry-trust-keys-workflow = testing.mkVMTest {
     name = "apm-registry-trust-keys-workflow";
@@ -2409,7 +2481,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 14. closure-generate — Closure files created and well-formed
+  # closure-generate — Closure files created and well-formed
   # -------------------------------------------------------------------------
   closure-generate = testing.mkVMTest {
     name = "apm-closure-generate";
@@ -2533,7 +2605,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 15. closure-verify — apr verify validates closure consistency
+  # closure-verify — apr verify validates closure consistency
   # -------------------------------------------------------------------------
   closure-verify = testing.mkVMTest {
     name = "apm-closure-verify";

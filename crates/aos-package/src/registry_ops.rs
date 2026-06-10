@@ -13,6 +13,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use aos_cache::AuthOptions;
 use aos_core::nar::info as narinfo;
+use aos_core::nix::aos_nix_env;
 use serde_json::Value;
 
 use aos_core::output::Printer;
@@ -151,6 +152,12 @@ fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     }
 
     Ok(output.stdout)
+}
+
+fn nix_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    command.envs(aos_nix_env());
+    command
 }
 
 /// Run a git command that is allowed to fail, returning (success, stdout, stderr).
@@ -361,7 +368,7 @@ fn default_platform() -> String {
 
 /// Introspect a store path using `nix path-info --json --closure-size`.
 fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
-    let output = Command::new("nix")
+    let output = nix_command("nix")
         .args(["path-info", "--json", "--closure-size", store_path])
         .output()
         .with_context(|| format!("running nix path-info on {store_path}"))?;
@@ -435,7 +442,7 @@ fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
 
 /// Return metadata for the derivation that produced `store_path`, if known.
 fn introspect_deriver(store_path: &str) -> Result<Option<StorePathInfo>> {
-    let output = Command::new("nix-store")
+    let output = nix_command("nix-store")
         .args(["-q", "--deriver", store_path])
         .output()
         .with_context(|| format!("querying deriver for {store_path}"))?;
@@ -476,7 +483,7 @@ struct StorePathInfo {
 /// enumerate the closure and `nix-store -q --references` for each member.
 fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
     // Get the full closure via nix-store -qR.
-    let output = Command::new("nix-store")
+    let output = nix_command("nix-store")
         .args(["-qR", store_path])
         .output()
         .with_context(|| format!("running nix-store -qR {store_path}"))?;
@@ -495,7 +502,7 @@ fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
     // For each path in the closure, get its direct references.
     let mut result = Vec::with_capacity(closure_paths.len());
     for path in &closure_paths {
-        let ref_output = Command::new("nix-store")
+        let ref_output = nix_command("nix-store")
             .args(["-q", "--references", path])
             .output()
             .with_context(|| format!("running nix-store -q --references {path}"))?;
