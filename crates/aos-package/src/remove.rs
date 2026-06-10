@@ -11,7 +11,7 @@ use super::registry::store_path_hash;
 use super::store::closure_paths;
 use super::types::InstalledMeta;
 use aos_core::error::AosError;
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -68,6 +68,18 @@ pub async fn run(
     print_removal_summary(&to_remove, &orphans, printer);
 
     if dry_run {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&remove_result_json(
+                "remove",
+                "planned",
+                packages,
+                auto_remove,
+                true,
+                &to_remove,
+                &orphans,
+                None,
+            ));
+        }
         printer.info("Dry run -- no changes made.");
         return Ok(RemoveOutcome {
             orphan_count: orphans.len(),
@@ -108,6 +120,18 @@ pub async fn run(
         "Removed {total_removed} package(s) in generation {}.",
         new_gen.number,
     ));
+    if printer.mode() == OutputMode::Json {
+        printer.json(&remove_result_json(
+            "remove",
+            "removed",
+            packages,
+            auto_remove,
+            false,
+            &to_remove,
+            &orphans,
+            Some(new_gen.number),
+        ));
+    }
 
     Ok(RemoveOutcome {
         orphan_count: orphans.len(),
@@ -135,6 +159,18 @@ pub async fn run_autoremove(
     let orphans = find_orphans(&inspect_profile, &empty_exclude).await?;
 
     if orphans.is_empty() {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&remove_result_json(
+                "autoremove",
+                "current",
+                &[],
+                true,
+                false,
+                &[],
+                &[],
+                None,
+            ));
+        }
         printer.info("No orphaned packages to remove.");
         return Ok(RemoveOutcome::default());
     }
@@ -146,6 +182,18 @@ pub async fn run_autoremove(
     print_removal_summary(&[], &orphans, printer);
 
     if dry_run {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&remove_result_json(
+                "autoremove",
+                "planned",
+                &[],
+                true,
+                true,
+                &[],
+                &orphans,
+                None,
+            ));
+        }
         printer.info("Dry run -- no changes made.");
         return Ok(RemoveOutcome {
             orphan_count: orphans.len(),
@@ -185,6 +233,18 @@ pub async fn run_autoremove(
         orphans.len(),
         new_gen.number,
     ));
+    if printer.mode() == OutputMode::Json {
+        printer.json(&remove_result_json(
+            "autoremove",
+            "removed",
+            &[],
+            true,
+            false,
+            &[],
+            &orphans,
+            Some(new_gen.number),
+        ));
+    }
 
     Ok(RemoveOutcome {
         orphan_count: orphans.len(),
@@ -194,6 +254,59 @@ pub async fn run_autoremove(
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
+
+fn remove_result_json(
+    action: &str,
+    status: &str,
+    packages: &[String],
+    auto_remove: bool,
+    dry_run: bool,
+    explicit_removals: &[InstalledMeta],
+    orphan_removals: &[InstalledMeta],
+    generation: Option<u32>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "action": action,
+        "status": status,
+        "requested": packages,
+        "autoremove": auto_remove,
+        "dry_run": dry_run,
+        "generation": generation,
+        "removed": explicit_removals.len() + orphan_removals.len(),
+        "explicit_removed": explicit_removals.len(),
+        "orphan_removed": orphan_removals.len(),
+        "packages": explicit_removals
+            .iter()
+            .map(installed_meta_json)
+            .collect::<Vec<_>>(),
+        "orphans": orphan_removals
+            .iter()
+            .map(installed_meta_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn installed_meta_json(meta: &InstalledMeta) -> serde_json::Value {
+    let Some(apm) = &meta.apm else {
+        return serde_json::json!({
+            "store_path": meta.store_path.as_str(),
+            "name": null,
+            "version": null,
+            "registry": null,
+            "explicit": null,
+            "held": null,
+        });
+    };
+
+    serde_json::json!({
+        "name": apm.name.as_str(),
+        "version": apm.version.as_str(),
+        "registry": apm.registry.as_str(),
+        "store_path": meta.store_path.as_str(),
+        "explicit": apm.explicit,
+        "held": apm.held,
+    })
+}
 
 /// Find installed metadata entries matching package names.
 ///

@@ -1096,11 +1096,30 @@ in {
             exit 1
           fi
 
-          run_clean ${self}/bin/apm install hostinstall \
+          run_clean ${self}/bin/apm --json install hostinstall \
             --registry host-install-client \
-            --yes > "$work/apm-install-host-install.out" 2>&1
-          grep -q "Downloading" "$work/apm-install-host-install.out"
-          grep -q "Installed 1 package" "$work/apm-install-host-install.out"
+            --yes > "$work/apm-install-host-install.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+            '.action == "install"
+              and .status == "installed"
+              and .requested == ["hostinstall"]
+              and .reinstall == false
+              and .download_only == false
+              and .no_deps == false
+              and .dry_run == false
+              and .generation == 1
+              and (.roots | length == 1)
+              and .roots[0].name == "hostinstall"
+              and .roots[0].registry == "host-install-client"
+              and .roots[0].version == "1.0.0"
+              and .roots[0].store_path == $store
+              and .roots[0].explicit == true
+              and (.closure | length >= 1)
+              and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+              and (.downloads.planned >= 1)
+              and (.downloads.downloaded >= 1)
+              and (.downloads.imported >= 1)' \
+            "$work/apm-install-host-install.json" >/dev/null
           nix_store --check-validity "$install_store" \
             > "$work/nix-valid-host-install-imported.out" 2>&1
           "$profile/current/bin/host-install-tool" > "$work/host-install-run.out"
@@ -1277,9 +1296,27 @@ in {
               and .[0].store_path == $store' \
             "$work/apm-held-host-install.json" >/dev/null
 
-          run_clean ${self}/bin/apm reinstall hostinstall --yes \
-            > "$work/apm-reinstall-held-host-install.out" 2>&1
-          grep -q "Reinstalled 1 package" "$work/apm-reinstall-held-host-install.out"
+          run_clean ${self}/bin/apm --json reinstall hostinstall --yes \
+            > "$work/apm-reinstall-held-host-install.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+            '.action == "reinstall"
+              and .status == "reinstalled"
+              and .requested == ["hostinstall"]
+              and .reinstall == true
+              and .download_only == false
+              and .no_deps == false
+              and .dry_run == false
+              and .generation == 4
+              and (.roots | length == 1)
+              and .roots[0].name == "hostinstall"
+              and .roots[0].version == "2.0.0"
+              and .roots[0].registry == "host-install-client"
+              and .roots[0].store_path == $store
+              and .roots[0].explicit == true
+              and (.downloads.planned >= 1)
+              and (.downloads.downloaded >= 1)
+              and (.downloads.imported >= 1)' \
+            "$work/apm-reinstall-held-host-install.json" >/dev/null
           "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-reinstall.out"
           grep -q "host install package v2 executed" "$work/host-install-v2-after-reinstall.out"
           run_clean ${self}/bin/apm --json held > "$work/apm-held-host-install-after-reinstall.json"
@@ -1298,9 +1335,27 @@ in {
           ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apm-held-host-install-after-unhold.json" >/dev/null
           assert_default_profile_absent
 
-          run_clean ${self}/bin/apm remove hostinstall --yes \
-            > "$work/apm-remove-host-install.out" 2>&1
-          grep -q "Removed 1 package" "$work/apm-remove-host-install.out"
+          run_clean ${self}/bin/apm --json remove hostinstall --yes \
+            > "$work/apm-remove-host-install.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+            '.action == "remove"
+              and .status == "removed"
+              and .requested == ["hostinstall"]
+              and .autoremove == false
+              and .dry_run == false
+              and .generation == 5
+              and .removed == 1
+              and .explicit_removed == 1
+              and .orphan_removed == 0
+              and (.packages | length == 1)
+              and .packages[0].name == "hostinstall"
+              and .packages[0].version == "2.0.0"
+              and .packages[0].registry == "host-install-client"
+              and .packages[0].store_path == $store
+              and .packages[0].explicit == true
+              and .packages[0].held == false
+              and .orphans == []' \
+            "$work/apm-remove-host-install.json" >/dev/null
           run_clean ${self}/bin/apm list --installed > "$work/apm-installed-after-host-remove.out" 2>&1
           if grep -q "hostinstall" "$work/apm-installed-after-host-remove.out"; then
             cat "$work/apm-installed-after-host-remove.out"

@@ -21,7 +21,7 @@ use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::{verify_download_hash, verify_nar_hash};
 use aos_core::error::AosError;
 use aos_core::nar::info as narinfo;
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -43,8 +43,17 @@ pub async fn run(
     ignore_lock: &IgnoreSysrootLock,
     printer: &Printer,
 ) -> Result<()> {
+    let json_mode = printer.mode() == OutputMode::Json;
     if packages.is_empty() {
-        printer.info("No packages specified.");
+        if json_mode {
+            printer.json(&serde_json::json!({
+                "action": if reinstall { "reinstall" } else { "install" },
+                "status": "no_packages",
+                "requested": [],
+            }));
+        } else {
+            printer.info("No packages specified.");
+        }
         return Ok(());
     }
 
@@ -83,6 +92,21 @@ pub async fn run(
         && missing.is_empty()
         && requested_closures_already_installed(&closures, &installed)
     {
+        if json_mode {
+            printer.json(&install_result_json(
+                "current",
+                packages,
+                &closures,
+                reinstall,
+                download_only,
+                no_deps,
+                false,
+                0,
+                0,
+                0,
+                None,
+            ));
+        }
         printer.info("All requested packages are already installed. No changes made.");
         return Ok(());
     }
@@ -92,10 +116,23 @@ pub async fn run(
         if let Some((sys_name, sys_ver)) =
             crate::sysroot::check_sysroot_containment(&closure.root.references, config)
         {
-            printer.info(&format!(
-                "{} {} already provided by sysroot {} {}",
-                closure.root.name, closure.root.version, sys_name, sys_ver,
-            ));
+            if json_mode {
+                printer.json(&serde_json::json!({
+                    "action": if reinstall { "reinstall" } else { "install" },
+                    "status": "sysroot_provided",
+                    "requested": packages,
+                    "package": install_package_json(&closure.registry_name, &closure.root, true),
+                    "sysroot": {
+                        "name": sys_name,
+                        "version": sys_ver,
+                    },
+                }));
+            } else {
+                printer.info(&format!(
+                    "{} {} already provided by sysroot {} {}",
+                    closure.root.name, closure.root.version, sys_name, sys_ver,
+                ));
+            }
             return Ok(());
         }
     }
@@ -176,6 +213,21 @@ pub async fn run(
     );
 
     if dry_run {
+        if json_mode {
+            printer.json(&install_result_json(
+                "planned",
+                packages,
+                &closures,
+                reinstall,
+                download_only,
+                no_deps,
+                true,
+                resolved.len(),
+                0,
+                0,
+                None,
+            ));
+        }
         printer.info("Dry run -- no changes made.");
         return Ok(());
     }
@@ -186,6 +238,8 @@ pub async fn run(
     }
 
     // Step 8: Download missing NARs.
+    let mut downloaded_count = 0;
+    let mut imported_count = 0;
     if !resolved.is_empty() {
         printer.step(3, 7, "Downloading packages...");
 
@@ -198,6 +252,7 @@ pub async fn run(
             printer,
         )
         .await?;
+        downloaded_count = results.len();
 
         // Verify downloads.
         printer.step(4, 7, "Verifying downloads...");
@@ -209,6 +264,21 @@ pub async fn run(
         }
 
         if download_only {
+            if json_mode {
+                printer.json(&install_result_json(
+                    "downloaded",
+                    packages,
+                    &closures,
+                    reinstall,
+                    download_only,
+                    no_deps,
+                    false,
+                    resolved.len(),
+                    downloaded_count,
+                    0,
+                    None,
+                ));
+            }
             printer.success(&format!(
                 "Downloaded {} NAR(s); no profile changes made.",
                 results.len(),
@@ -228,9 +298,25 @@ pub async fn run(
             .await
             .with_context(|| format!("importing {}", result.store_path))?;
         }
+        imported_count = results.len();
     } else {
         printer.info("All packages already in store, skipping download.");
         if download_only {
+            if json_mode {
+                printer.json(&install_result_json(
+                    "downloaded",
+                    packages,
+                    &closures,
+                    reinstall,
+                    download_only,
+                    no_deps,
+                    false,
+                    0,
+                    0,
+                    0,
+                    None,
+                ));
+            }
             printer.info("Download only -- no profile changes made.");
             return Ok(());
         }
@@ -341,6 +427,25 @@ pub async fn run(
         packages.len(),
         new_gen.number,
     ));
+    if json_mode {
+        printer.json(&install_result_json(
+            if reinstall {
+                "reinstalled"
+            } else {
+                "installed"
+            },
+            packages,
+            &closures,
+            reinstall,
+            download_only,
+            no_deps,
+            false,
+            resolved.len(),
+            downloaded_count,
+            imported_count,
+            Some(new_gen.number),
+        ));
+    }
 
     Ok(())
 }
@@ -355,6 +460,85 @@ pub async fn run(
 /// `std::env::consts` in the future.
 fn platform() -> String {
     "x86_64-linux".to_string()
+}
+
+fn install_result_json(
+    status: &str,
+    packages: &[String],
+    closures: &[ResolvedClosure],
+    reinstall: bool,
+    download_only: bool,
+    no_deps: bool,
+    dry_run: bool,
+    resolved_downloads: usize,
+    downloaded: usize,
+    imported: usize,
+    generation: Option<u32>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "action": if reinstall { "reinstall" } else { "install" },
+        "status": status,
+        "requested": packages,
+        "reinstall": reinstall,
+        "download_only": download_only,
+        "no_deps": no_deps,
+        "dry_run": dry_run,
+        "generation": generation,
+        "roots": install_roots_json(closures),
+        "closure": install_closure_json(packages, closures),
+        "downloads": {
+            "planned": resolved_downloads,
+            "downloaded": downloaded,
+            "imported": imported,
+        },
+    })
+}
+
+fn install_roots_json(closures: &[ResolvedClosure]) -> Vec<serde_json::Value> {
+    closures
+        .iter()
+        .map(|closure| install_package_json(&closure.registry_name, &closure.root, true))
+        .collect()
+}
+
+fn install_closure_json(
+    packages: &[String],
+    closures: &[ResolvedClosure],
+) -> Vec<serde_json::Value> {
+    let explicit_names: HashSet<&str> = packages.iter().map(String::as_str).collect();
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+
+    for closure in closures {
+        for meta in &closure.closure {
+            let hash = store_path_hash(&meta.store_path).to_string();
+            if !seen.insert(hash) {
+                continue;
+            }
+            entries.push(install_package_json(
+                &closure.registry_name,
+                meta,
+                explicit_names.contains(meta.name.as_str()),
+            ));
+        }
+    }
+
+    entries
+}
+
+fn install_package_json(registry: &str, meta: &PackageMeta, explicit: bool) -> serde_json::Value {
+    serde_json::json!({
+        "name": meta.name.as_str(),
+        "version": meta.version.as_str(),
+        "registry": registry,
+        "platform": meta.platform.as_str(),
+        "store_path": meta.store_path.as_str(),
+        "nar_hash": meta.nar_hash.as_str(),
+        "nar_size": meta.nar_size,
+        "closure_size": meta.closure_size,
+        "explicit": explicit,
+        "sysroot": meta.sysroot,
+    })
 }
 
 /// Load registries from the config's cache directory.
