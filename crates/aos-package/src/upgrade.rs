@@ -53,14 +53,10 @@ pub async fn run(
     ignore_lock: &IgnoreSysrootLock,
     printer: &Printer,
 ) -> Result<()> {
-    // Step 1: Open profile and load installed metadata.
+    // Step 1: Inspect profile and load installed metadata.
     printer.step(1, 7, "Loading installed packages...");
-    let profile = if dry_run {
-        Profile::open_readonly(config.scope)
-    } else {
-        Profile::open(config.scope)?
-    };
-    let installed = list_meta(&profile)?;
+    let inspect_profile = Profile::open_readonly(config.scope);
+    let installed = list_meta(&inspect_profile)?;
 
     // Step 2: Load registries from cache.
     printer.step(2, 7, "Loading registries...");
@@ -201,6 +197,7 @@ pub async fn run(
 
     // Step 8: Create new generation.
     printer.step(6, 7, "Updating profile...");
+    let profile = Profile::open(config.scope)?;
     let prev_gen = profile.current_generation()?;
     let new_gen = profile.new_generation()?;
 

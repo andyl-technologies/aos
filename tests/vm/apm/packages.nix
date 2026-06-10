@@ -3105,6 +3105,28 @@ in {
         fail "empty upgrade dry-run should not download NAR bodies"
       fi
 
+      $APM upgrade --yes > /tmp/upgrade-empty.out 2>&1 || {
+        cat /tmp/upgrade-empty.out
+        fail "apm upgrade succeeds before any package is installed"
+      }
+      cat /tmp/upgrade-empty.out
+      assert_file_contains /tmp/upgrade-empty.out "All packages are up to date" \
+        "empty upgrade reports no candidates"
+      assert_file_not_contains /tmp/upgrade-empty.out "Updating profile" \
+        "empty upgrade does not update profile"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty upgrade leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty upgrade should not initialize profile state"
+      fi
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "empty upgrade leaves NAR cache empty"
+      else
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' -print
+        fail "empty upgrade should not download NAR bodies"
+      fi
+
       delete_store_path "$ALPHA_V1_STORE" "upgrade-alpha-v1"
       delete_store_path "$BETA_V1_STORE" "upgrade-beta-v1"
       rm -rf "$HOME/.cache/apm"
