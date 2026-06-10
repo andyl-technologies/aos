@@ -293,9 +293,11 @@ this. The option the original survey missed.
 - **Introspection:** `systemd-confext status`; merged files are plainly
   visible in `/etc`.
 - **Maturity:** recent but in-core and actively used by the
-  sysext/confext ecosystem. **Needs verification:** that the AOS systemd build
-  ships `systemd-confext` and how a confext overlay composes with AOS's own
-  3-layer `/etc` overlay.
+  sysext/confext ecosystem. **Verified: NOT built today** —
+  `pkgs/system/systemd.nix` sets `-Dsysext=false` and no confext flag
+  (default off). This option therefore costs a systemd build-flag change plus
+  hermetic image-mint tooling, and the composition of a confext overlay with
+  AOS's own 3-layer `/etc` overlay is untested.
 
 ## Option matrix
 

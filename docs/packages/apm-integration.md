@@ -347,7 +347,7 @@ expose phase runs:
    [`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md).
 4. **Enable.** Enabling is the separate step (Decision 8, resolved):
    `systemctl preset aos-pkg-<name>.target` against the merged preset policy —
-   at first boot PID 1's native preset pass covers every unit (see
+   at boot the every-boot `aos-preset.service` pass covers every unit (see
    [`boot-activation.md`](boot-activation.md) §3.2).
 
 ### 4.1 Where the unit files physically land

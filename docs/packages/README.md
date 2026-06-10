@@ -65,7 +65,7 @@ baking them into the image as Ignition fragments.
 | **high-privilege package** | A package like k3s whose manifest declares host privilege (host net/cgroups, global kernel modules, broad caps). Its container is *nominal* — a packaging/lifecycle wrapper, not a security boundary; see the honesty note below. |
 | **privilege gradient** | Boundary strength runs from "full sandbox" (empty manifest) to "packaging wrapper" (k3s), set entirely by the manifest — not a categorical shape split. |
 | **install-at-boot** | Ignition lists desired packages; an apm first-boot service installs them before enable. |
-| **enable** | The package target becomes wanted via **systemd preset policy** (image default `disable *`; per-host Ignition-written preset file; PID 1's native first-boot preset pass; `systemctl preset` at runtime installs — see [`boot-activation.md`](boot-activation.md) §3.2) and is started. |
+| **enable** | The package target becomes wanted via **systemd preset policy** (image default `disable *`; per-host Ignition-written preset file; an every-boot `aos-preset.service` pass; `systemctl preset` at runtime installs — see [`boot-activation.md`](boot-activation.md) §3.2) and is started. |
 | **`expose` attribute** | The optional attrset on a package derivation carrying its units, `[permissions]` manifest, and service `requires` — rendered at build time to eval-free artifacts. See [`authoring.md`](authoring.md). |
 
 ## The model in one paragraph
