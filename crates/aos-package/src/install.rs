@@ -57,12 +57,8 @@ pub async fn run(
         ensure_skipped_dependencies_present(&closures).await?;
         prune_dependency_members(&mut closures);
     }
-    let profile = if dry_run || download_only {
-        Profile::open_readonly(config.scope)
-    } else {
-        Profile::open(config.scope)?
-    };
-    let installed = list_meta(&profile)?;
+    let inspect_profile = Profile::open_readonly(config.scope);
+    let installed = list_meta(&inspect_profile)?;
     let all_metas = collect_unique_metas(&closures);
     let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
     let missing = if reinstall {
@@ -220,6 +216,7 @@ pub async fn run(
 
     // Step 8: Create new profile generation.
     printer.step(6, 7, "Updating profile...");
+    let profile = Profile::open(config.scope)?;
     let prev_gen = profile.current_generation()?;
     let new_gen = profile.new_generation()?;
     let explicit_names: HashSet<&str> = packages.iter().map(|s| s.as_str()).collect();
