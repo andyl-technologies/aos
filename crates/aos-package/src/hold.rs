@@ -30,7 +30,7 @@ pub async fn run_unhold(config: &ApmConfig, package: &str, printer: &Printer) ->
 
 /// Run `apm held` -- list all held packages.
 pub async fn run_held(config: &ApmConfig, printer: &Printer) -> Result<()> {
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
 
     let held = meta::held_packages(&profile)?;
 

@@ -12,7 +12,7 @@ use aos_core::output::{OutputMode, Printer};
 /// when possible so operators can choose rollback targets by package version
 /// rather than only by generation number.
 pub async fn list(config: &ApmConfig, printer: &Printer) -> Result<()> {
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
     let generations = profile.list_generations()?;
     let current = profile.current_generation()?.map(|g| g.number);
     let reg_configs = config.enabled_registries();
