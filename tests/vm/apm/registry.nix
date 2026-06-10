@@ -220,7 +220,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # registry-add-no-clone-publish-hint — Config-only add has publish hint
+  # registry-add-no-clone-publish-hint — Config-only add has recovery hints
   # -------------------------------------------------------------------------
   registry-add-no-clone-publish-hint = testing.mkVMTest {
     name = "apm-registry-add-no-clone-publish-hint";
@@ -230,7 +230,7 @@ in {
       ${fixtures.setupPreamble}
       ${fixtures.mkRemoteRegistry}
 
-      echo "==> Test: apr add --no-clone followed by apr publish"
+      echo "==> Test: apr add --no-clone followed by update and apr publish"
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -272,15 +272,53 @@ in {
       else
         cat /tmp/publish-no-clone.out
         assert_file_contains /tmp/publish-no-clone.out \
-          "has no local clone" "apr publish reports missing local clone"
+          "has no writable local clone" "apr publish reports missing writable clone"
         assert_file_contains /tmp/publish-no-clone.out \
-          "apm update --registry no-clone-reg" \
-          "apr publish points to the valid apm update syntax"
+          "only syncs consumer metadata" \
+          "apr publish explains apm update cannot create a publishing worktree"
         assert_file_not_contains /tmp/publish-no-clone.out \
           "apm update no-clone-reg" \
           "apr publish does not suggest invalid positional update syntax"
         assert_file_contains /tmp/publish-no-clone.out \
           "apr create no-clone-reg" "apr publish points to apr create"
+      fi
+
+      $APM update --registry no-clone-reg > /tmp/update-no-clone.out 2>&1 || {
+        cat /tmp/update-no-clone.out
+        fail "apm update --registry syncs config-only registry metadata"
+      }
+      cat /tmp/update-no-clone.out
+      assert_file_contains /tmp/update-no-clone.out \
+        "Registry 'no-clone-reg': done" \
+        "apm update --registry follows the no-clone recovery hint for consumers"
+      assert_dir_exists "$HOME/.local/share/apm/remote/no-clone-reg/repo.git" \
+        "apm update materializes consumer git cache"
+      assert_file_exists "$REG_STORAGE/no-clone-reg/registry.toml" \
+        "apm update materializes authenticated registry root metadata"
+      if [ -d "$REG_STORAGE/no-clone-reg/.git" ]; then
+        fail "apm update should not create an APR publishing worktree"
+      else
+        pass "apm update leaves APR publishing worktree absent"
+      fi
+
+      if $APR publish /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dummy-1.0.0 \
+        --name dummy --version 1.0.0 --registry no-clone-reg --no-commit \
+        > /tmp/publish-after-update.out 2>&1; then
+        fail "apr publish should still fail after consumer metadata update"
+      else
+        cat /tmp/publish-after-update.out
+        assert_file_contains /tmp/publish-after-update.out \
+          "has no writable local clone" \
+          "apr publish still reports missing writable clone after apm update"
+        assert_file_contains /tmp/publish-after-update.out \
+          "only syncs consumer metadata" \
+          "apr publish distinguishes consumer metadata from publishing worktree"
+        assert_file_not_contains /tmp/publish-after-update.out \
+          "not a git repository" \
+          "apr publish does not fall through to a raw git error"
+        assert_file_not_contains /tmp/publish-after-update.out \
+          "store path" \
+          "apr publish validates writable clone before store introspection"
       fi
 
       check_fail
