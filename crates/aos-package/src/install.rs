@@ -14,7 +14,7 @@ use super::profile::meta::{
     delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
 };
 use super::registry::{RegistrySet, store_path_hash};
-use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
+use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_closure, resolve_multiple};
 use super::store::{create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
@@ -52,17 +52,24 @@ pub async fn run(
     printer.step(1, 7, "Loading registries...");
     let registries = load_registries(config)?;
 
+    let inspect_profile = Profile::open_readonly(config.scope);
+    let installed = list_meta(&inspect_profile)?;
+    if require_installed || reinstall {
+        ensure_reinstall_targets_installed(packages, &installed)?;
+    }
+
     // Step 2: Resolve closures for all requested packages.
     printer.step(2, 7, "Resolving dependencies...");
-    let mut closures = resolve_multiple(&registries, packages, registry_filter)?;
+    let mut closures = resolve_install_closures(
+        &registries,
+        packages,
+        registry_filter,
+        reinstall && registry_filter.is_none(),
+        &installed,
+    )?;
     if no_deps {
         ensure_skipped_dependencies_present(&closures).await?;
         prune_dependency_members(&mut closures);
-    }
-    let inspect_profile = Profile::open_readonly(config.scope);
-    let installed = list_meta(&inspect_profile)?;
-    if require_installed {
-        ensure_reinstall_targets_installed(packages, &installed)?;
     }
     let all_metas = collect_unique_metas(&closures);
     let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
@@ -341,6 +348,35 @@ fn platform() -> String {
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
     RegistrySet::load(&config.cache_path(), &reg_configs, &platform())
+}
+
+fn resolve_install_closures(
+    registries: &RegistrySet,
+    packages: &[String],
+    registry_filter: Option<&str>,
+    preserve_installed_sources: bool,
+    installed: &[InstalledMeta],
+) -> Result<Vec<ResolvedClosure>> {
+    if !preserve_installed_sources {
+        return resolve_multiple(registries, packages, registry_filter);
+    }
+
+    let mut closures = Vec::with_capacity(packages.len());
+    for package in packages {
+        let registry_name = installed_source_registry(package, installed)
+            .ok_or_else(|| anyhow::anyhow!("package not installed: {package}"))?;
+        let closure = resolve_closure(registries, package, Some(registry_name))
+            .with_context(|| format!("resolving package '{package}'"))?;
+        closures.push(closure);
+    }
+    Ok(closures)
+}
+
+fn installed_source_registry<'a>(package: &str, installed: &'a [InstalledMeta]) -> Option<&'a str> {
+    installed.iter().find_map(|meta| {
+        let apm = meta.apm.as_ref()?;
+        (apm.name == package).then_some(apm.registry.as_str())
+    })
 }
 
 fn requested_closures_already_installed(
@@ -969,6 +1005,17 @@ mod tests {
         meta
     }
 
+    fn sample_installed_from_registry(
+        name: &str,
+        version: &str,
+        registry: &str,
+        store_path: &str,
+    ) -> InstalledMeta {
+        let mut meta = sample_installed(name, version, store_path);
+        meta.apm.as_mut().unwrap().registry = registry.to_string();
+        meta
+    }
+
     fn sample_closure(root: PackageMeta, closure: Vec<PackageMeta>) -> ResolvedClosure {
         ResolvedClosure {
             registry_name: "test-reg".to_string(),
@@ -976,6 +1023,65 @@ mod tests {
             closure,
             total_nar_size: 1,
         }
+    }
+
+    fn package_toml(name: &str, version: &str, store_path: &str) -> String {
+        format!(
+            r#"[package]
+name = "{name}"
+description = "test package"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "{version}"
+
+[versions.platforms.x86_64-linux]
+store_path = "{store_path}"
+nar_hash = "sha256-test"
+nar_size = 1
+closure_size = 1
+references = []
+source_drv = ""
+source_nar_hash = ""
+"#
+        )
+    }
+
+    #[test]
+    fn reinstall_resolution_preserves_installed_source_registry() {
+        let tmp = TempDir::new().unwrap();
+        let high_path = "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-switch-tool-1.0.0";
+        let low_path = "/nix/store/llllllllllllllllllllllllllllllll-switch-tool-1.0.0";
+        let high_toml = package_toml("switch-tool", "1.0.0", high_path);
+        let low_toml = package_toml("switch-tool", "1.0.0", low_path);
+        let high = crate::registry::tests::make_registry(
+            &tmp,
+            "high-priority",
+            900,
+            &[("switch-tool", high_toml.as_str())],
+        );
+        let low = crate::registry::tests::make_registry(
+            &tmp,
+            "low-priority",
+            100,
+            &[("switch-tool", low_toml.as_str())],
+        );
+        let registries = RegistrySet::new(vec![high, low]);
+        let installed = vec![sample_installed_from_registry(
+            "switch-tool",
+            "1.0.0",
+            "low-priority",
+            low_path,
+        )];
+        let packages = vec!["switch-tool".to_string()];
+
+        let closures =
+            resolve_install_closures(&registries, &packages, None, true, &installed).unwrap();
+
+        assert_eq!(closures.len(), 1);
+        assert_eq!(closures[0].registry_name, "low-priority");
+        assert_eq!(closures[0].root.store_path, low_path);
     }
 
     #[test]

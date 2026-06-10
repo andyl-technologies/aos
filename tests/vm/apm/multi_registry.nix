@@ -582,6 +582,42 @@ in {
         pass "source switch drops previous registry metadata"
       fi
 
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM reinstall switch-tool --yes > /tmp/switch-reinstall-low-source.out 2>&1 || {
+        cat /tmp/switch-reinstall-low-source.out
+        fail "apm reinstall preserves selected registry source"
+      }
+      cat /tmp/switch-reinstall-low-source.out
+      assert_file_contains /tmp/switch-reinstall-low-source.out "Downloading" \
+        "source-preserving reinstall downloads selected lower priority NAR"
+      assert_file_contains /tmp/switch-reinstall-low-source.out "Reinstalled 1 package" \
+        "source-preserving reinstall creates repair generation"
+      "$PROFILE_SWITCH_TOOL" > /tmp/switch-run-low-after-reinstall.out
+      assert_file_contains /tmp/switch-run-low-after-reinstall.out \
+        "switch-tool 1.0.0 from low-priority" \
+        "plain reinstall keeps selected registry executable"
+      if [ -L "$CURRENT_PROFILE/usr/$SWITCH_LOW_HASH" ]; then
+        pass "plain reinstall keeps selected registry profile root"
+      else
+        fail "plain reinstall should keep selected registry profile root"
+      fi
+      if [ -L "$CURRENT_PROFILE/usr/$SWITCH_HIGH_HASH" ]; then
+        fail "plain reinstall should not restore higher priority duplicate"
+      else
+        pass "plain reinstall does not restore higher priority duplicate"
+      fi
+      $APM list --installed > /tmp/switch-installed-after-reinstall.out 2>&1
+      assert_file_contains /tmp/switch-installed-after-reinstall.out \
+        "switch-tool/low-priority 1.0.0" \
+        "plain reinstall keeps selected registry metadata"
+      if ${grepBin} -q "switch-tool/high-priority" /tmp/switch-installed-after-reinstall.out; then
+        cat /tmp/switch-installed-after-reinstall.out
+        fail "plain reinstall should not restore high priority metadata"
+      else
+        pass "plain reinstall keeps high priority metadata absent"
+      fi
+
       export HOME=/tmp/priority-filter-consumer
       export USER=priorityfilter
       mkdir -p "$HOME"
