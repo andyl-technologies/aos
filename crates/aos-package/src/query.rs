@@ -25,21 +25,17 @@ pub async fn search(
 ) -> Result<()> {
     let registries = load_registries(config)?;
 
-    // If --installed, load profile metadata to filter results.
-    let installed_hashes: Option<HashMap<String, InstalledMeta>> = if installed_only {
-        let profile = Profile::open_readonly(config.scope);
-        let meta_list = list_meta(&profile)?;
-        let map = meta_list
-            .into_iter()
-            .map(|m| {
-                let hash = store_path_hash(&m.store_path).to_string();
-                (hash, m)
-            })
-            .collect();
-        Some(map)
-    } else {
-        None
-    };
+    if installed_only {
+        return search_installed(
+            config,
+            &registries,
+            pattern,
+            names_only,
+            registry_filter,
+            printer,
+        )
+        .await;
+    }
 
     // Collect matches: (name, registry_name, version, description).
     let mut results: Vec<(String, String, String, String)> = Vec::new();
@@ -54,14 +50,6 @@ pub async fn search(
         let matches = reg.search(pattern, names_only);
 
         for meta in matches {
-            // If --installed, skip packages not in profile.
-            if let Some(ref installed) = installed_hashes {
-                let hash = store_path_hash(&meta.store_path).to_string();
-                if !installed.contains_key(&hash) {
-                    continue;
-                }
-            }
-
             results.push((
                 meta.name.clone(),
                 reg.config.name.clone(),
@@ -99,6 +87,81 @@ pub async fn search(
     }
 
     Ok(())
+}
+
+async fn search_installed(
+    config: &ApmConfig,
+    registries: &RegistrySet,
+    pattern: &str,
+    names_only: bool,
+    registry_filter: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    let profile = Profile::open_readonly(config.scope);
+    let meta_list = list_meta(&profile)?;
+    let pattern_lower = pattern.to_lowercase();
+    let mut results: Vec<(String, String, String, String)> = Vec::new();
+
+    for meta in &meta_list {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+        if let Some(filter) = registry_filter {
+            if apm.registry != filter {
+                continue;
+            }
+        }
+
+        let description = installed_description(registries, &apm.registry, &meta.store_path);
+        let name_match = apm.name.to_lowercase().contains(&pattern_lower);
+        let description_match = !names_only && description.to_lowercase().contains(&pattern_lower);
+        if !name_match && !description_match {
+            continue;
+        }
+
+        results.push((
+            apm.name.clone(),
+            apm.registry.clone(),
+            apm.version.clone(),
+            description,
+        ));
+    }
+
+    results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    if printer.mode() == OutputMode::Json {
+        let json_results: Vec<serde_json::Value> = results
+            .iter()
+            .map(|(name, registry, version, description)| {
+                serde_json::json!({
+                    "name": name,
+                    "registry": registry,
+                    "version": version,
+                    "description": description,
+                })
+            })
+            .collect();
+        printer.json(&serde_json::json!(json_results));
+    } else {
+        for (name, registry, version, description) in &results {
+            printer.plain(&format!("{name}/{registry} {version} - {description}"));
+        }
+    }
+
+    Ok(())
+}
+
+fn installed_description(
+    registries: &RegistrySet,
+    registry_name: &str,
+    store_path: &str,
+) -> String {
+    let hash = store_path_hash(store_path);
+    registries
+        .get_registry(registry_name)
+        .and_then(|reg| reg.get_by_hash(hash))
+        .map(|meta| meta.description.clone())
+        .unwrap_or_else(|| "installed package unavailable in registry".to_string())
 }
 
 // ---------------------------------------------------------------------------

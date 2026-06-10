@@ -1067,6 +1067,32 @@ in {
         "installed list keeps installed package after registry unpublish"
       assert_file_contains /tmp/unpublish-installed-after.out "unavailable" \
         "installed list marks unpublished installed package unavailable"
+      $APM search retire-tool --registry test-reg --names-only \
+        > /tmp/unpublish-search-after.out 2>&1 || {
+        cat /tmp/unpublish-search-after.out
+        fail "apm search succeeds after package is unpublished"
+      }
+      assert_file_not_contains /tmp/unpublish-search-after.out "retire-tool" \
+        "default search hides package after registry unpublish"
+      $APM search retire-tool --installed > /tmp/unpublish-search-installed-after.out 2>&1 || {
+        cat /tmp/unpublish-search-installed-after.out
+        fail "apm search --installed succeeds after package is unpublished"
+      }
+      cat /tmp/unpublish-search-installed-after.out
+      assert_file_contains /tmp/unpublish-search-installed-after.out \
+        "retire-tool/test-reg 1.0.0" \
+        "installed search keeps installed package after registry unpublish"
+      assert_file_contains /tmp/unpublish-search-installed-after.out "unavailable" \
+        "installed search marks unpublished package unavailable"
+      $APM --json search retire-tool --installed \
+        > /tmp/unpublish-search-installed-after.json || {
+        cat /tmp/unpublish-search-installed-after.json
+        fail "apm --json search --installed succeeds after package is unpublished"
+      }
+      assert_file_contains /tmp/unpublish-search-installed-after.json "retire-tool" \
+        "installed search JSON keeps unpublished package"
+      assert_file_contains /tmp/unpublish-search-installed-after.json "unavailable" \
+        "installed search JSON marks unpublished package unavailable"
       "$PROFILE/current/bin/retire-tool" > /tmp/unpublish-retire-tool-run-after.out
       assert_file_contains /tmp/unpublish-retire-tool-run-after.out \
         "^retire-tool 1.0.0 via retire-dep 1.0.0$" \
