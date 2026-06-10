@@ -1093,6 +1093,8 @@ in {
       "$PROFILE_WRAPPER_BIN" > /tmp/idemp-run-repaired.out
       assert_file_contains /tmp/idemp-run-repaired.out "^idempkg 1.0.0$" \
         "profile executable runs after repair install"
+      assert_file_contains "$PROFILE/meta/$IDEMP_HASH.json" '"explicit": true' \
+        "repair install preserves explicit dependency metadata"
 
       REPAIR_CURRENT=$(readlink "$PROFILE/current")
       REPAIR_COUNT=$(generation_count)
@@ -1101,6 +1103,28 @@ in {
       else
         fail "repair install should create gen-4 (current=$REPAIR_CURRENT count=$REPAIR_COUNT)"
       fi
+
+      echo "==> Consumer: autoremove wrapper after repair keeps explicitly installed dependency"
+      $APM remove idemp-wrapper --autoremove --yes \
+        > /tmp/idemp-remove-wrapper-after-promotion.out 2>&1 || {
+        cat /tmp/idemp-remove-wrapper-after-promotion.out
+        fail "apm remove --autoremove idemp-wrapper succeeds after dependency promotion"
+      }
+      cat /tmp/idemp-remove-wrapper-after-promotion.out
+      assert_file_contains /tmp/idemp-remove-wrapper-after-promotion.out "idemp-wrapper" \
+        "remove names repaired wrapper"
+      assert_file_not_contains /tmp/idemp-remove-wrapper-after-promotion.out "idempkg" \
+        "autoremove does not remove explicitly installed dependency"
+      if [ -e "$PROFILE_WRAPPER_BIN" ]; then
+        fail "removed wrapper executable should not remain active"
+      else
+        pass "removed wrapper executable is absent"
+      fi
+      "$PROFILE_IDEMP_BIN" > /tmp/idemp-run-after-wrapper-remove.out
+      assert_file_contains /tmp/idemp-run-after-wrapper-remove.out "^idempkg 1.0.0$" \
+        "explicit dependency remains active after wrapper autoremove"
+      assert_file_contains "$PROFILE/meta/$IDEMP_HASH.json" '"explicit": true' \
+        "explicit dependency metadata remains after wrapper autoremove"
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "static cache HTTP server stopped"
