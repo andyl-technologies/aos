@@ -2438,6 +2438,85 @@ in {
           }
           assert_default_profile_absent
 
+          if nix_store --check-validity "$install_store_v2" \
+            > "$work/nix-valid-host-install-v2-before-orphan.out" 2>&1; then
+            nix_store --delete --ignore-liveness "$install_store_v2" \
+              > "$work/nix-delete-host-install-v2-before-orphan.out" 2>&1
+          fi
+          if nix_store --check-validity "$install_leaf_store_v2" \
+            > "$work/nix-valid-host-leaf-v2-before-orphan.out" 2>&1; then
+            nix_store --delete --ignore-liveness "$install_leaf_store_v2" \
+              > "$work/nix-delete-host-leaf-v2-before-orphan.out" 2>&1
+          fi
+          home="$work/orphan-home"
+          config="$work/orphan-config"
+          data="$work/orphan-share"
+          cache="$work/orphan-cache"
+          profile_root="$work/orphan-profiles"
+          profile="$profile_root/per-user/unknown"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+          run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
+            --name orphan-reg \
+            --branch stable > "$work/apm-add-orphan-reg.out" 2>&1
+          grep -q "Registry 'orphan-reg' added" "$work/apm-add-orphan-reg.out"
+          run_clean ${self}/bin/apm --json install hostinstall \
+            --registry orphan-reg \
+            --yes > "$work/apm-install-orphan-reg.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+            '.action == "install"
+              and .status == "installed"
+              and .requested == ["hostinstall"]
+              and .generation == 1
+              and (.roots | length == 1)
+              and .roots[0].name == "hostinstall"
+              and .roots[0].registry == "orphan-reg"
+              and .roots[0].version == "2.0.0"
+              and .roots[0].store_path == $store
+              and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+              and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+              and (.downloads.planned >= 2)
+              and (.downloads.downloaded >= 2)
+              and (.downloads.imported >= 2)' \
+            "$work/apm-install-orphan-reg.json" >/dev/null
+          "$profile/current/bin/host-install-tool" \
+            > "$work/host-install-orphan-before-remove.out"
+          grep -q "host leaf package v2 executed" \
+            "$work/host-install-orphan-before-remove.out"
+          grep -q "host install package v2 executed" \
+            "$work/host-install-orphan-before-remove.out"
+          run_clean ${self}/bin/apm --json orphans \
+            > "$work/apm-orphans-before-registry-remove.json"
+          ${pkgs.jq}/bin/jq -e 'length == 0' \
+            "$work/apm-orphans-before-registry-remove.json" >/dev/null
+          run_clean ${self}/bin/apm registry remove orphan-reg \
+            > "$work/apm-registry-remove-orphan-reg.out" 2>&1
+          grep -q "Registry 'orphan-reg' removed" \
+            "$work/apm-registry-remove-orphan-reg.out"
+          grep -q "now orphaned" "$work/apm-registry-remove-orphan-reg.out"
+          test ! -e "$config/apm/registries.d/orphan-reg.toml"
+          test ! -e "$data/apm/registries/orphan-reg"
+          test ! -e "$data/apm/remote/orphan-reg"
+          "$profile/current/bin/host-install-tool" \
+            > "$work/host-install-orphan-after-remove.out"
+          grep -q "host leaf package v2 executed" \
+            "$work/host-install-orphan-after-remove.out"
+          grep -q "host install package v2 executed" \
+            "$work/host-install-orphan-after-remove.out"
+          run_clean ${self}/bin/apm --json orphans \
+            > "$work/apm-orphans-after-registry-remove.json"
+          ${pkgs.jq}/bin/jq -e \
+            'length == 2
+              and any(.[]; .name == "hostinstall"
+                and .version == "2.0.0"
+                and .registry == "orphan-reg"
+                and .explicit == true)
+              and any(.[]; .name == "hostleaf"
+                and .version == "2.0.0"
+                and .registry == "orphan-reg"
+                and .explicit == false)' \
+            "$work/apm-orphans-after-registry-remove.json" >/dev/null
+          assert_default_profile_absent
+
           mkdir -p "$out"
           echo "PASS" > "$out/result"
         '';
