@@ -1296,6 +1296,8 @@ in {
           git -C "$install_reg" commit -m "release: hostinstall 1.0.0" \
             > "$work/git-commit-host-install.out" 2>&1
           ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/host-install-release-key"
+          install_release_public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/host-install-release-key.pub")
+          install_channel_trust_key="host-install-channel:Ed25519:$install_release_public_key"
           run_clean ${self}/bin/apr --json release 1.0.0 \
             --registry host-install-reg \
             --key "$work/host-install-release-key" \
@@ -1340,6 +1342,7 @@ in {
           test -f "$work/install-release-cache/cache/$install_leaf_hash.narinfo"
           test -f "$work/install-release-cache/cache/$install_hash.narinfo"
           test -f "$work/install-static-cache-upload/cache/HEAD"
+          test -f "$work/install-static-cache-upload/cache/info/refs"
           test -f "$work/install-static-cache-upload/cache/releases/1/0/0/objects/info/packs"
           test -f "$work/install-static-cache-upload/cache/channels/stable/00"
           grep -q "BEGIN SSH SIGNATURE" \
@@ -1376,6 +1379,45 @@ in {
             cat "$work/install-cache-server.log"
             exit 1
           fi
+          main_home="$home"
+          main_config="$config"
+          main_data="$data"
+          main_cache="$cache"
+          main_profile_root="$profile_root"
+          main_profile="$profile"
+          home="$work/channel-home"
+          config="$work/channel-config"
+          data="$work/channel-share"
+          cache="$work/channel-cache"
+          profile_root="$work/channel-profiles"
+          profile="$profile_root/per-user/unknown"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+          run_clean ${self}/bin/apm registry add "http://127.0.0.1:$install_cache_port/cache" \
+            --name host-install-channel \
+            --channel stable \
+            --trust-key "$install_channel_trust_key" \
+            > "$work/apm-add-host-install-channel.out" 2>&1
+          grep -q "Registry 'host-install-channel' added" \
+            "$work/apm-add-host-install-channel.out"
+          channel_config="$config/apm/registries.d/host-install-channel.toml"
+          grep -q 'channel = "stable"' "$channel_config"
+          grep -q 'floor = "1.0.0"' "$channel_config"
+          grep -q 'bucket = ' "$channel_config"
+          grep -q 'public_key = "host-install-channel:Ed25519:' "$channel_config"
+          run_clean ${self}/bin/apm search hostinstall \
+            --registry host-install-channel \
+            > "$work/apm-search-host-install-channel.out" 2>&1
+          grep -q "hostinstall/host-install-channel 1.0.0" \
+            "$work/apm-search-host-install-channel.out"
+          grep -q "http://127.0.0.1:$install_cache_port/cache" \
+            "$data/apm/registries/host-install-channel/registry.toml"
+          assert_no_profile
+          home="$main_home"
+          config="$main_config"
+          data="$main_data"
+          cache="$main_cache"
+          profile_root="$main_profile_root"
+          profile="$main_profile"
 
           run_clean ${self}/bin/apm registry add "file://$install_origin" \
             --name host-install-client \
