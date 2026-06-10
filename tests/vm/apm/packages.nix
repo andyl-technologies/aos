@@ -160,6 +160,10 @@
     pname = "reinstall-tool";
     version = "1.0.0";
   };
+  reinstallPeerTool = mkProfileTool {
+    pname = "reinstall-peer";
+    version = "1.0.0";
+  };
   rollbackToolV1 = mkProfileTool {
     pname = "rollback-tool";
     version = "1.0.0";
@@ -317,6 +321,7 @@
       pkgs.python3
       pkgs.zstd
       reinstallTool
+      reinstallPeerTool
     ];
   realHoldDeps =
     fixtures.commonDeps
@@ -1568,10 +1573,12 @@ in {
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
-      echo "==> Test: real apm reinstall refreshes an installed package"
+      echo "==> Test: real apm reinstall refreshes installed packages"
 
       TOOL_STORE="${reinstallTool}"
+      PEER_STORE="${reinstallPeerTool}"
       TOOL_HASH=$(basename "$TOOL_STORE" | cut -d- -f1)
+      PEER_HASH=$(basename "$PEER_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/reinstalluser"
 
       assert_file_not_contains() {
@@ -1638,8 +1645,9 @@ in {
 
       mount -o remount,rw / || true
       assert_store_valid "$TOOL_STORE" "reinstall-tool"
+      assert_store_valid "$PEER_STORE" "reinstall-peer"
 
-      echo "==> Maintainer: publish reinstall-tool and static cache"
+      echo "==> Maintainer: publish reinstall packages and static cache"
       $APR create reinstall-reg
       REG_DIR="$REG_STORAGE/reinstall-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
@@ -1651,8 +1659,18 @@ in {
         --maintainer reinstall-workflow@example.invalid \
         --registry reinstall-reg \
         --no-commit
+      $APR publish "$PEER_STORE" \
+        --name reinstall-peer \
+        --version 1.0.0 \
+        --description "Peer tool for reinstall workflow" \
+        --license MIT \
+        --maintainer reinstall-workflow@example.invalid \
+        --registry reinstall-reg \
+        --no-commit
       assert_file_contains "$REG_DIR/packages/r/reinstall-tool.toml" \
         "$TOOL_HASH" "published metadata records reinstall-tool store hash"
+      assert_file_contains "$REG_DIR/packages/r/reinstall-peer.toml" \
+        "$PEER_HASH" "published metadata records reinstall-peer store hash"
 
       $APR cache generate \
         --registry reinstall-reg \
@@ -1662,9 +1680,11 @@ in {
         --no-commit
       assert_file_exists "/tmp/reinstall-cache/$TOOL_HASH.narinfo" \
         "static cache has reinstall-tool narinfo"
+      assert_file_exists "/tmp/reinstall-cache/$PEER_HASH.narinfo" \
+        "static cache has reinstall-peer narinfo"
 
       git -C "$REG_DIR" add -A
-      git -C "$REG_DIR" commit -m "release: reinstall workflow package"
+      git -C "$REG_DIR" commit -m "release: reinstall workflow packages"
       git init --bare --object-format=sha256 /tmp/reinstall-origin.git
       git -C "$REG_DIR" remote add origin /tmp/reinstall-origin.git
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
@@ -1681,7 +1701,7 @@ in {
         fail "static cache HTTP server started"
       fi
 
-      echo "==> Consumer: install then force reinstall while store path is still valid"
+      echo "==> Consumer: install then force reinstall packages while store paths are still valid"
       export HOME=/tmp/reinstall-consumer
       export USER=reinstalluser
       mkdir -p "$HOME"
@@ -1694,87 +1714,113 @@ in {
       cat /tmp/reinstall-registry-add.out
 
       delete_store_path "$TOOL_STORE" "reinstall-tool"
+      delete_store_path "$PEER_STORE" "reinstall-peer"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
-      $APM install reinstall-tool --registry reinstall-reg --yes > /tmp/reinstall-install.out 2>&1 || {
+      $APM install reinstall-tool reinstall-peer --registry reinstall-reg --yes > /tmp/reinstall-install.out 2>&1 || {
         cat /tmp/reinstall-install.out
-        fail "initial apm install reinstall-tool succeeds"
+        fail "initial apm install reinstall packages succeeds"
       }
       cat /tmp/reinstall-install.out
-      assert_file_contains /tmp/reinstall-install.out "Downloading 1 NAR" \
-        "initial install downloads reinstall-tool"
-      assert_file_contains /tmp/reinstall-install.out "Installed 1 package" \
-        "initial install creates profile generation"
+      assert_file_contains /tmp/reinstall-install.out "Downloading 2 NAR" \
+        "initial install downloads both reinstall packages"
+      assert_file_contains /tmp/reinstall-install.out "Installed 2 package" \
+        "initial install creates profile generation for both packages"
       assert_store_valid "$TOOL_STORE" "reinstall-tool"
+      assert_store_valid "$PEER_STORE" "reinstall-peer"
       "$PROFILE/current/bin/reinstall-tool" > /tmp/reinstall-run-1.out
+      "$PROFILE/current/bin/reinstall-peer" > /tmp/reinstall-peer-run-1.out
       assert_file_contains /tmp/reinstall-run-1.out "^reinstall-tool 1.0.0$" \
         "installed executable runs before reinstall"
+      assert_file_contains /tmp/reinstall-peer-run-1.out "^reinstall-peer 1.0.0$" \
+        "installed peer executable runs before reinstall"
+      assert_file_contains "$PROFILE/meta/$TOOL_HASH.json" '"explicit": true' \
+        "reinstall-tool metadata is explicit"
+      assert_file_contains "$PROFILE/meta/$PEER_HASH.json" '"explicit": true' \
+        "reinstall-peer metadata is explicit"
 
       if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
         pass "initial install creates exactly generation 1"
       else
         fail "initial install should create only gen-1"
       fi
-      if [ "$(cache_nar_count)" = "1" ]; then
-        pass "initial install retains one downloaded NAR"
+      if [ "$(cache_nar_count)" = "2" ]; then
+        pass "initial install retains two downloaded NARs"
       else
-        fail "initial install should retain one downloaded NAR"
+        fail "initial install should retain two downloaded NARs"
       fi
 
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
-      $APM reinstall reinstall-tool --yes > /tmp/reinstall-command.out 2>&1 || {
+      $APM reinstall reinstall-tool reinstall-peer --yes > /tmp/reinstall-command.out 2>&1 || {
         cat /tmp/reinstall-command.out
-        fail "apm reinstall succeeds for installed package"
+        fail "apm reinstall succeeds for installed packages"
       }
       cat /tmp/reinstall-command.out
       assert_file_not_contains /tmp/reinstall-command.out "already installed" \
-        "apm reinstall does not no-op on installed package"
-      assert_file_contains /tmp/reinstall-command.out "Downloading 1 NAR" \
-        "apm reinstall downloads reinstall-tool again"
+        "apm reinstall does not no-op on installed packages"
+      assert_file_contains /tmp/reinstall-command.out "Downloading 2 NAR" \
+        "apm reinstall downloads both packages again"
       assert_file_contains /tmp/reinstall-command.out "packages will be reinstalled" \
         "apm reinstall reports reinstall plan"
-      assert_file_contains /tmp/reinstall-command.out "Reinstalled 1 package" \
-        "apm reinstall creates profile generation"
+      assert_file_contains /tmp/reinstall-command.out "Reinstalled 2 package" \
+        "apm reinstall creates profile generation for both packages"
       if [ "$(readlink "$PROFILE/current")" = "gen-2" ] && [ "$(generation_count)" = "2" ]; then
         pass "apm reinstall creates generation 2"
       else
         fail "apm reinstall should create gen-2"
       fi
-      if [ "$(cache_nar_count)" = "1" ]; then
+      if [ "$(cache_nar_count)" = "2" ]; then
         pass "apm reinstall repopulates NAR cache"
       else
-        fail "apm reinstall should repopulate one downloaded NAR"
+        fail "apm reinstall should repopulate two downloaded NARs"
       fi
       "$PROFILE/current/bin/reinstall-tool" > /tmp/reinstall-run-2.out
+      "$PROFILE/current/bin/reinstall-peer" > /tmp/reinstall-peer-run-2.out
       assert_file_contains /tmp/reinstall-run-2.out "^reinstall-tool 1.0.0$" \
         "reinstalled executable runs from generation 2"
+      assert_file_contains /tmp/reinstall-peer-run-2.out "^reinstall-peer 1.0.0$" \
+        "reinstalled peer executable runs from generation 2"
+      assert_file_contains "$PROFILE/meta/$TOOL_HASH.json" '"explicit": true' \
+        "apm reinstall preserves reinstall-tool explicit metadata"
+      assert_file_contains "$PROFILE/meta/$PEER_HASH.json" '"explicit": true' \
+        "apm reinstall preserves reinstall-peer explicit metadata"
 
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
-      $APM install reinstall-tool --registry reinstall-reg --reinstall --yes > /tmp/install-reinstall-flag.out 2>&1 || {
+      $APM install reinstall-tool reinstall-peer --registry reinstall-reg --reinstall --yes > /tmp/install-reinstall-flag.out 2>&1 || {
         cat /tmp/install-reinstall-flag.out
-        fail "apm install --reinstall succeeds for installed package"
+        fail "apm install --reinstall succeeds for installed packages"
       }
       cat /tmp/install-reinstall-flag.out
       assert_file_not_contains /tmp/install-reinstall-flag.out "already installed" \
-        "apm install --reinstall does not no-op on installed package"
-      assert_file_contains /tmp/install-reinstall-flag.out "Downloading 1 NAR" \
-        "apm install --reinstall downloads reinstall-tool again"
+        "apm install --reinstall does not no-op on installed packages"
+      assert_file_contains /tmp/install-reinstall-flag.out "Downloading 2 NAR" \
+        "apm install --reinstall downloads both packages again"
       assert_file_contains /tmp/install-reinstall-flag.out "packages will be reinstalled" \
         "apm install --reinstall reports reinstall plan"
-      assert_file_contains /tmp/install-reinstall-flag.out "Reinstalled 1 package" \
-        "apm install --reinstall creates profile generation"
+      assert_file_contains /tmp/install-reinstall-flag.out "Reinstalled 2 package" \
+        "apm install --reinstall creates profile generation for both packages"
       if [ "$(readlink "$PROFILE/current")" = "gen-3" ] && [ "$(generation_count)" = "3" ]; then
         pass "apm install --reinstall creates generation 3"
       else
         fail "apm install --reinstall should create gen-3"
       fi
-      if [ "$(cache_nar_count)" = "1" ]; then
+      if [ "$(cache_nar_count)" = "2" ]; then
         pass "apm install --reinstall repopulates NAR cache"
       else
-        fail "apm install --reinstall should repopulate one downloaded NAR"
+        fail "apm install --reinstall should repopulate two downloaded NARs"
       fi
+      "$PROFILE/current/bin/reinstall-tool" > /tmp/reinstall-run-3.out
+      "$PROFILE/current/bin/reinstall-peer" > /tmp/reinstall-peer-run-3.out
+      assert_file_contains /tmp/reinstall-run-3.out "^reinstall-tool 1.0.0$" \
+        "install --reinstall executable runs from generation 3"
+      assert_file_contains /tmp/reinstall-peer-run-3.out "^reinstall-peer 1.0.0$" \
+        "install --reinstall peer executable runs from generation 3"
+      assert_file_contains "$PROFILE/meta/$TOOL_HASH.json" '"explicit": true' \
+        "apm install --reinstall preserves reinstall-tool explicit metadata"
+      assert_file_contains "$PROFILE/meta/$PEER_HASH.json" '"explicit": true' \
+        "apm install --reinstall preserves reinstall-peer explicit metadata"
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "static cache HTTP server stopped"
