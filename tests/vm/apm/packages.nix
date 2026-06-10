@@ -611,7 +611,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 2. install-with-deps — Install a real package closure with dependencies
+  # 2. install-with-deps — Install multiple real package roots with dependencies
   # -------------------------------------------------------------------------
   install-with-deps = testing.mkVMTest {
     name = "apm-install-with-deps";
@@ -621,13 +621,16 @@ in {
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
-      echo "==> Test: real apm install with dependency workflow"
+      echo "==> Test: real apm install with dependency and multi-root workflow"
 
+      BASIC_STORE="${installBasicTool}"
       DEP_STORE="${installDepTool}"
       WRAPPER_STORE="${installWithDepsTool}"
+      BASIC_HASH=$(basename "$BASIC_STORE" | cut -d- -f1)
       DEP_HASH=$(basename "$DEP_STORE" | cut -d- -f1)
       WRAPPER_HASH=$(basename "$WRAPPER_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/depsuser"
+      BASIC_BIN="$PROFILE/current/bin/install-basic-tool"
       DEP_BIN="$PROFILE/current/bin/install-libfoo"
       WRAPPER_BIN="$PROFILE/current/bin/install-with-deps"
 
@@ -681,16 +684,27 @@ in {
       }
 
       mount -o remount,rw / || true
+      assert_store_valid "$BASIC_STORE" "install-basic-tool"
       assert_store_valid "$DEP_STORE" "install-libfoo"
       assert_store_valid "$WRAPPER_STORE" "install-with-deps"
       nix-store -q --references "$WRAPPER_STORE" > /tmp/install-with-deps-refs.out
       assert_file_contains /tmp/install-with-deps-refs.out "$DEP_STORE" \
         "install-with-deps has a real Nix reference to install-libfoo"
 
-      echo "==> Maintainer: publish dependency, wrapper, and static cache"
+      echo "==> Maintainer: publish dependency, wrapper, second root, and static cache"
       $APR create install-deps-reg
       REG_DIR="$REG_STORAGE/install-deps-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      $APR publish "$BASIC_STORE" \
+        --name install-basic-tool \
+        --version 1.0.0 \
+        --description "Second explicit install root fixture" \
+        --license MIT \
+        --maintainer install-deps@example.invalid \
+        --registry install-deps-reg \
+        --no-commit
+      assert_file_contains "$REG_DIR/packages/i/install-basic-tool.toml" \
+        "$BASIC_HASH" "published second-root metadata records store hash"
       $APR publish "$DEP_STORE" \
         --name install-libfoo \
         --version 1.0.0 \
@@ -722,6 +736,8 @@ in {
         --cache-url http://127.0.0.1:18094 \
         --priority 54 \
         --no-commit
+      assert_file_exists "/tmp/install-deps-cache/$BASIC_HASH.narinfo" \
+        "static cache has second-root narinfo"
       assert_file_exists "/tmp/install-deps-cache/$DEP_HASH.narinfo" \
         "static cache has dependency narinfo"
       assert_file_exists "/tmp/install-deps-cache/$WRAPPER_HASH.narinfo" \
@@ -759,37 +775,52 @@ in {
       }
       cat /tmp/install-deps-registry-add.out
 
+      delete_store_path "$BASIC_STORE" "install-basic-tool"
       delete_store_path "$WRAPPER_STORE" "install-with-deps"
       delete_store_path "$DEP_STORE" "install-libfoo"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
-      $APM install install-with-deps --registry install-deps-reg --yes > /tmp/install-deps.out 2>&1 || {
+      $APM install install-with-deps install-basic-tool \
+        --registry install-deps-reg \
+        --yes > /tmp/install-deps.out 2>&1 || {
         cat /tmp/install-deps.out
-        fail "apm install install-with-deps succeeds"
+        fail "apm install multiple package roots succeeds"
       }
       cat /tmp/install-deps.out
+      assert_file_contains /tmp/install-deps.out "install-with-deps (2.0.0, install-deps-reg)" \
+        "multi-root install plans wrapper root"
+      assert_file_contains /tmp/install-deps.out "install-basic-tool (1.0.0, install-deps-reg)" \
+        "multi-root install plans second explicit root"
       assert_file_contains /tmp/install-deps.out "Additional dependencies" \
-        "install with deps plans automatic dependency"
-      assert_file_contains /tmp/install-deps.out "Downloading 2 NAR" \
-        "install with deps downloads wrapper and dependency"
-      assert_file_contains /tmp/install-deps.out "Installed 1 package" \
-        "install with deps creates profile generation"
+        "multi-root install plans automatic dependency once"
+      assert_file_contains /tmp/install-deps.out "install-libfoo (1.0.0, install-deps-reg)" \
+        "multi-root install lists shared dependency"
+      assert_file_contains /tmp/install-deps.out "Downloading 3 NAR" \
+        "multi-root install downloads both roots and dependency"
+      assert_file_contains /tmp/install-deps.out "Installed 2 package" \
+        "multi-root install reports both requested roots"
+      assert_store_valid "$BASIC_STORE" "install-basic-tool"
       assert_store_valid "$DEP_STORE" "install-libfoo"
       assert_store_valid "$WRAPPER_STORE" "install-with-deps"
       "$WRAPPER_BIN" > /tmp/install-with-deps-run.out
       assert_file_contains /tmp/install-with-deps-run.out "^install-libfoo 1.0.0$" \
         "installed wrapper executes dependency from profile"
+      "$BASIC_BIN" > /tmp/install-basic-root-run.out
+      assert_file_contains /tmp/install-basic-root-run.out "^install-basic-tool 1.0.0$" \
+        "second explicit root executable runs from profile"
       "$DEP_BIN" > /tmp/install-dep-run.out
       assert_file_contains /tmp/install-dep-run.out "^install-libfoo 1.0.0$" \
         "dependency executable is active in profile"
       assert_file_contains "$PROFILE/meta/$WRAPPER_HASH.json" '"explicit": true' \
         "wrapper metadata is explicit"
+      assert_file_contains "$PROFILE/meta/$BASIC_HASH.json" '"explicit": true' \
+        "second root metadata is explicit"
       assert_file_contains "$PROFILE/meta/$DEP_HASH.json" '"explicit": false' \
         "dependency metadata is automatic"
       if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
-        pass "install with deps creates generation 1"
+        pass "multi-root install with deps creates generation 1"
       else
-        fail "install with deps should create gen-1"
+        fail "multi-root install with deps should create gen-1"
       fi
 
       if kill "$CACHE_PID" 2>/dev/null; then
