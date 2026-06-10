@@ -15,7 +15,7 @@ use super::types::{InstalledMeta, PackageMeta};
 use super::verify as hash_verify;
 use aos_core::error::AosError;
 use aos_core::nix::aos_nix_env;
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
 // Platform detection (shared helper)
@@ -57,6 +57,12 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
         })?;
 
     let store_path = &installed.store_path;
+    let installed_apm = installed
+        .apm
+        .as_ref()
+        .ok_or_else(|| AosError::PackageNotFound {
+            name: package.to_string(),
+        })?;
 
     // 2. Load registries and resolve the exact installed package entry for
     // its NAR hash. The latest registry candidate may differ after rollback.
@@ -71,8 +77,20 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
 
     // 3-4. Run nix-store --dump and hash the output.
     match hash_verify::verify_installed(store_path, expected_hash).await {
-        Ok(()) => {
-            printer.success(&format!("OK: '{package}' integrity verified"));
+        Ok(actual_hash) => {
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "package": package,
+                    "registry": &installed_apm.registry,
+                    "version": &installed_apm.version,
+                    "store_path": store_path,
+                    "expected_nar_hash": expected_hash,
+                    "actual_nar_hash": &actual_hash,
+                    "verified": true,
+                }));
+            } else {
+                printer.success(&format!("OK: '{package}' integrity verified"));
+            }
             Ok(())
         }
         Err(e) => {

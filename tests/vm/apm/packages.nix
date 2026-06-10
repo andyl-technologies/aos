@@ -4963,6 +4963,16 @@ in {
       run_ok verify "$APM" verify surfacepkg
       assert_file_contains /tmp/surface-verify.out "integrity verified" \
         "apm verify validates real installed NAR hash"
+      run_ok verify-json "$APM" --json verify surfacepkg
+      "$JQ" -e --arg store "$SURFACE_STORE" \
+        '.package == "surfacepkg"
+          and .registry == "surface-reg"
+          and .version == "1.0.0"
+          and .store_path == $store
+          and .verified == true
+          and (.expected_nar_hash | startswith("sha256-"))
+          and (.actual_nar_hash | startswith("sha256:"))' \
+        /tmp/surface-verify-json.out >/dev/null
 
       echo "==> Maintainer: publish command-surface upgrade candidate"
       export HOME=/tmp

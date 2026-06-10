@@ -182,7 +182,7 @@ pub async fn store_path_nar_hash(store_path: &str) -> Result<String> {
 /// 1. Run `nix-store --dump <store_path>` to get the current NAR.
 /// 2. Compute SHA-256 of the NAR stream.
 /// 3. Compare against `expected_nar_hash` from the registry.
-pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Result<()> {
+pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Result<String> {
     let actual = store_path_nar_hash(store_path).await?;
     if !sha256_hashes_equal(&actual, expected_nar_hash)? {
         return Err(AosError::HashMismatch {
@@ -191,7 +191,7 @@ pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Resu
         }
         .into());
     }
-    Ok(())
+    Ok(actual)
 }
 
 // ---------------------------------------------------------------------------
