@@ -1,0 +1,45 @@
+//! Test-only git helpers insulated from the host's git configuration.
+//!
+//! Test fixtures must behave identically on every machine, but plain `git`
+//! invocations read `~/.gitconfig` and the system config — a host that sets
+//! `commit.gpgsign`, `init.templateDir`, or similar breaks fixture setup in
+//! ways unrelated to the code under test. These helpers pin the relevant
+//! environment so fixture repositories are built hermetically.
+//!
+//! Only fixture *setup* goes through here. Code under test keeps spawning
+//! git the way production does: tolerating host configuration is part of
+//! its contract.
+
+use std::path::Path;
+use std::process::Command;
+
+/// Build a git command that ignores global and system configuration and
+/// carries a fixed author/committer identity.
+pub(crate) fn git_command(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "AOS Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "AOS Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com");
+    cmd
+}
+
+/// Run a hermetic git command in `dir`, panicking on failure.
+pub(crate) fn git(dir: &Path, args: &[&str]) -> String {
+    let output = git_command(dir)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("running git {} in {}: {e}", args.join(" "), dir.display()));
+    assert!(
+        output.status.success(),
+        "git {} failed in {}\nstdout:\n{}\nstderr:\n{}",
+        args.join(" "),
+        dir.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}

@@ -24,6 +24,9 @@ pub mod update;
 pub mod upgrade;
 pub mod verify;
 
+#[cfg(test)]
+pub(crate) mod testutil;
+
 use std::fs;
 use std::path::PathBuf;
 
@@ -432,6 +435,10 @@ pub enum RegistryCommand {
         /// Keep local clone on disk
         #[arg(long)]
         keep_local: bool,
+        /// Delete the local clone even when it is an authoring clone with
+        /// uncommitted or unpushed work
+        #[arg(long)]
+        force: bool,
     },
     /// Manage trusted registry signing keys
     Trust {
@@ -1410,9 +1417,11 @@ async fn run_registry(
             )
             .await
         }
-        RegistryCommand::Remove { name, keep_local } => {
-            registry_remove(config, name, *keep_local, printer).await
-        }
+        RegistryCommand::Remove {
+            name,
+            keep_local,
+            force,
+        } => registry_remove(config, name, *keep_local, *force, printer).await,
         RegistryCommand::Trust { command } => registry_ops::run_trust(config, command, printer),
         RegistryCommand::Keys { command } => registry_ops::run_keys(config, command, printer),
         RegistryCommand::Create {
@@ -1725,11 +1734,19 @@ async fn run_registry(
 }
 
 async fn registry_list(config: &config::ApmConfig, printer: &Printer) -> Result<()> {
+    let configured_names: Vec<&str> = config
+        .registries
+        .iter()
+        .map(|(cfg, _)| cfg.name.as_str())
+        .collect();
+    let local = registry_ops::local_registries(&config.scope.registries_path(), &configured_names);
+
     if config.registries.is_empty() {
         printer.info(&format!(
             "No registries configured. Add one with `{} add <url>`.",
             aos_core::invocation::package_registry_command()
         ));
+        print_local_registries(&local, printer);
         return Ok(());
     }
 
@@ -1787,10 +1804,38 @@ async fn registry_list(config: &config::ApmConfig, printer: &Printer) -> Result<
         printer.plain("");
     }
 
+    print_local_registries(&local, printer);
+
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Print the `apr list` section for local clones that have no
+/// `registries.d/` entry — typically registries authored with `apr create`,
+/// which are otherwise invisible to consumer-side commands.
+fn print_local_registries(local: &[registry_ops::LocalRegistry], printer: &Printer) {
+    if local.is_empty() {
+        return;
+    }
+
+    printer.header("Local registries (not configured):");
+    printer.plain("");
+
+    for reg in local {
+        printer.header(&format!("  {}", reg.name));
+        printer.kv("Path", &reg.path.display().to_string());
+        if let Some(ref origin) = reg.origin {
+            printer.kv("Remote", origin);
+        }
+        printer.kv("Packages", &reg.packages.to_string());
+        printer.plain("");
+    }
+
+    printer.info(&format!(
+        "Local registries are not used for installs until configured with `{} add <url>`.",
+        aos_core::invocation::package_registry_command()
+    ));
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn registry_add(
     config: &config::ApmConfig,
@@ -1931,11 +1976,31 @@ async fn registry_remove(
     config: &config::ApmConfig,
     name: &str,
     keep_local: bool,
+    force: bool,
     printer: &Printer,
 ) -> Result<()> {
-    if config.find_registry(name).is_none() {
+    let clone_dir = config.scope.registries_path().join(name);
+
+    // A registry can exist as a local authoring clone (`apr create`) without
+    // a registries.d entry; accept those too so everything `apr list` shows
+    // can be removed.
+    if config.find_registry(name).is_none() && !clone_dir.is_dir() {
         return Err(AosError::RegistryError {
             message: format!("registry '{name}' not found"),
+        }
+        .into());
+    }
+
+    if !keep_local
+        && !force
+        && let Some(reason) = registry_ops::authoring_clone_precious(&clone_dir)?
+    {
+        return Err(AosError::RegistryError {
+            message: format!(
+                "registry '{name}' has a local authoring clone at {} with {reason}.\n\
+                 Push it first, keep it with --keep-local, or delete it anyway with --force.",
+                clone_dir.display(),
+            ),
         }
         .into());
     }
@@ -1960,9 +2025,8 @@ async fn registry_remove(
             let _ = fs::remove_dir_all(&cache_dir);
         }
 
-        let registries_dir = config.scope.registries_path().join(name);
-        if registries_dir.exists() {
-            let _ = fs::remove_dir_all(&registries_dir);
+        if clone_dir.exists() {
+            let _ = fs::remove_dir_all(&clone_dir);
         }
     }
 
@@ -2193,7 +2257,7 @@ mod tests {
         let config = make_config(&tmp, vec![]);
 
         let printer = Printer::new(0, true, false);
-        let result = registry_remove(&config, "nonexistent", false, &printer).await;
+        let result = registry_remove(&config, "nonexistent", false, false, &printer).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"), "got: {err}");
