@@ -207,11 +207,29 @@
     extraRuntimeDeps = [e2eHelperV2];
   };
 
+  fleetHelperV1 = mkProfileTool {
+    pname = "fleet-helper";
+    version = "1.0.0";
+    program = "fleet-helper";
+    message = "fleet-helper 1.0.0 executed";
+  };
+
+  fleetHelperV2 = mkProfileTool {
+    pname = "fleet-helper";
+    version = "2.0.0";
+    program = "fleet-helper";
+    message = "fleet-helper 2.0.0 executed";
+  };
+
   fleetToolV1 = mkProfileTool {
     pname = "fleet-tool";
     version = "1.0.0";
     program = "fleet-tool";
     message = "fleet-tool 1.0.0 executed";
+    extraCommands = ''
+      "${fleetHelperV1}/bin/fleet-helper"
+    '';
+    extraRuntimeDeps = [fleetHelperV1];
   };
 
   fleetToolV2 = mkProfileTool {
@@ -219,6 +237,10 @@
     version = "2.0.0";
     program = "fleet-tool";
     message = "fleet-tool 2.0.0 executed";
+    extraCommands = ''
+      "${fleetHelperV2}/bin/fleet-helper"
+    '';
+    extraRuntimeDeps = [fleetHelperV2];
   };
 
   mkSystemToplevel = {
@@ -302,6 +324,8 @@
       e2eHelperV2
       e2eToolV1
       e2eToolV2
+      fleetHelperV1
+      fleetHelperV2
       fleetToolV1
       fleetToolV2
     ];
@@ -754,12 +778,27 @@ in {
 
       FLEET_V1_STORE="${fleetToolV1}"
       FLEET_V2_STORE="${fleetToolV2}"
+      FLEET_V1_DEP_STORE="${fleetHelperV1}"
+      FLEET_V2_DEP_STORE="${fleetHelperV2}"
       FLEET_V1_HASH=$(basename "$FLEET_V1_STORE" | cut -d- -f1)
       FLEET_V2_HASH=$(basename "$FLEET_V2_STORE" | cut -d- -f1)
+      FLEET_V1_DEP_HASH=$(basename "$FLEET_V1_DEP_STORE" | cut -d- -f1)
+      FLEET_V2_DEP_HASH=$(basename "$FLEET_V2_DEP_STORE" | cut -d- -f1)
 
       publish_fleet_tool() {
         version="$1"
         store_path="$2"
+        dep_store_path="$3"
+        run_logged "/tmp/fleet-publish-helper-$version.out" "$APR" publish "$dep_store_path" \
+          --name fleet-helper \
+          --version "$version" \
+          --description "Fleet rolling update dependency" \
+          --license MIT \
+          --maintainer fleet@example.invalid \
+          --registry fleet-reg \
+          --no-commit || {
+          fail "apr publish fleet-helper $version"
+        }
         run_logged "/tmp/fleet-publish-$version.out" "$APR" publish "$store_path" \
           --name fleet-tool \
           --version "$version" \
@@ -784,11 +823,18 @@ in {
 
       run_fleet_profile() {
         user="$1"
-        expected="$2"
+        expected_helper="$2"
+        expected_tool="$3"
         "/var/lib/profiles/per-user/$user/current/bin/fleet-tool" \
           > "/tmp/fleet-run-$user.out"
-        assert_file_contains "/tmp/fleet-run-$user.out" "$expected" \
-          "fleet profile $user runs $expected"
+        assert_file_contains "/tmp/fleet-run-$user.out" "$expected_helper" \
+          "fleet profile $user runs dependency $expected_helper"
+        assert_file_contains "/tmp/fleet-run-$user.out" "$expected_tool" \
+          "fleet profile $user runs root $expected_tool"
+        "/var/lib/profiles/per-user/$user/current/bin/fleet-helper" \
+          > "/tmp/fleet-helper-run-$user.out"
+        assert_file_contains "/tmp/fleet-helper-run-$user.out" "$expected_helper" \
+          "fleet profile $user exposes dependency $expected_helper"
       }
 
       $APR create fleet-reg
@@ -799,9 +845,11 @@ in {
       git -C "$REG_DIR" remote add origin /tmp/fleet-origin.git
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
-      publish_fleet_tool 1.0.0 "$FLEET_V1_STORE"
+      publish_fleet_tool 1.0.0 "$FLEET_V1_STORE" "$FLEET_V1_DEP_STORE"
       assert_file_exists "/tmp/fleet-cache/$FLEET_V1_HASH.narinfo" \
         "static cache has fleet-tool v1 narinfo"
+      assert_file_exists "/tmp/fleet-cache/$FLEET_V1_DEP_HASH.narinfo" \
+        "static cache has fleet-helper v1 narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
@@ -810,6 +858,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$FLEET_V1_STORE" "fleet-tool-v1"
+      delete_store_path "$FLEET_V1_DEP_STORE" "fleet-helper-v1"
 
       export HOME=/tmp/fleet-a
       export USER=fleet_a
@@ -822,13 +871,17 @@ in {
       run_logged /tmp/fleet-a-install-v1.out "$APM" install fleet-tool --registry fleet-reg --yes || {
         fail "fleet A installs v1"
       }
-      assert_file_contains /tmp/fleet-a-install-v1.out "Downloading" \
-        "fleet A downloads v1"
-      run_fleet_profile fleet_a "fleet-tool 1.0.0 executed"
+      assert_file_contains /tmp/fleet-a-install-v1.out "Downloading 2 NAR" \
+        "fleet A downloads v1 closure"
+      run_fleet_profile fleet_a \
+        "fleet-helper 1.0.0 executed" \
+        "fleet-tool 1.0.0 executed"
 
       export HOME=/tmp/fleet-b
       export USER=fleet_b
       mkdir -p "$HOME"
+      delete_store_path "$FLEET_V1_STORE" "fleet-tool-v1-fleet-b"
+      delete_store_path "$FLEET_V1_DEP_STORE" "fleet-helper-v1-fleet-b"
       run_logged /tmp/fleet-b-add.out "$APM" registry add --no-verify file:///tmp/fleet-origin.git \
         --name fleet-reg \
         --branch "$DEFAULT_BRANCH" || {
@@ -837,19 +890,29 @@ in {
       run_logged /tmp/fleet-b-install-v1.out "$APM" install fleet-tool --registry fleet-reg --yes || {
         fail "fleet B installs v1"
       }
-      run_fleet_profile fleet_b "fleet-tool 1.0.0 executed"
+      assert_file_contains /tmp/fleet-b-install-v1.out "Downloading 2 NAR" \
+        "fleet B downloads v1 closure"
+      run_fleet_profile fleet_a \
+        "fleet-helper 1.0.0 executed" \
+        "fleet-tool 1.0.0 executed"
+      run_fleet_profile fleet_b \
+        "fleet-helper 1.0.0 executed" \
+        "fleet-tool 1.0.0 executed"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
-      publish_fleet_tool 2.0.0 "$FLEET_V2_STORE"
+      publish_fleet_tool 2.0.0 "$FLEET_V2_STORE" "$FLEET_V2_DEP_STORE"
       assert_file_exists "/tmp/fleet-cache/$FLEET_V2_HASH.narinfo" \
         "static cache has fleet-tool v2 narinfo"
+      assert_file_exists "/tmp/fleet-cache/$FLEET_V2_DEP_HASH.narinfo" \
+        "static cache has fleet-helper v2 narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       export HOME=/tmp/fleet-a
       export USER=fleet_a
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$FLEET_V2_STORE" "fleet-tool-v2"
+      delete_store_path "$FLEET_V2_DEP_STORE" "fleet-helper-v2"
       run_logged /tmp/fleet-a-update-v2.out "$APM" update --registry fleet-reg || {
         fail "fleet A update syncs v2"
       }
@@ -858,20 +921,35 @@ in {
       }
       assert_file_contains /tmp/fleet-a-upgrade-v2.out "Upgraded 1 package" \
         "fleet A upgrade creates v2 generation"
-      run_fleet_profile fleet_a "fleet-tool 2.0.0 executed"
+      assert_file_contains /tmp/fleet-a-upgrade-v2.out "Downloading 2 NAR" \
+        "fleet A downloads v2 closure"
+      run_fleet_profile fleet_a \
+        "fleet-helper 2.0.0 executed" \
+        "fleet-tool 2.0.0 executed"
 
       export HOME=/tmp/fleet-b
       export USER=fleet_b
       APM_CONFIG="$HOME/.config/apm"
-      run_fleet_profile fleet_b "fleet-tool 1.0.0 executed"
+      run_fleet_profile fleet_b \
+        "fleet-helper 1.0.0 executed" \
+        "fleet-tool 1.0.0 executed"
 
+      delete_store_path "$FLEET_V2_STORE" "fleet-tool-v2-fleet-b"
+      delete_store_path "$FLEET_V2_DEP_STORE" "fleet-helper-v2-fleet-b"
       run_logged /tmp/fleet-b-update-v2.out "$APM" update --registry fleet-reg || {
         fail "fleet B update syncs v2"
       }
       run_logged /tmp/fleet-b-upgrade-v2.out "$APM" upgrade --yes || {
         fail "fleet B upgrades to v2"
       }
-      run_fleet_profile fleet_b "fleet-tool 2.0.0 executed"
+      assert_file_contains /tmp/fleet-b-upgrade-v2.out "Downloading 2 NAR" \
+        "fleet B downloads v2 closure"
+      run_fleet_profile fleet_a \
+        "fleet-helper 2.0.0 executed" \
+        "fleet-tool 2.0.0 executed"
+      run_fleet_profile fleet_b \
+        "fleet-helper 2.0.0 executed" \
+        "fleet-tool 2.0.0 executed"
 
       export HOME=/tmp/fleet-a
       export USER=fleet_a
@@ -881,12 +959,16 @@ in {
       }
       assert_file_contains /tmp/fleet-a-rollback.out "Rolled back to generation 1" \
         "fleet A rollback selects v1 generation"
-      run_fleet_profile fleet_a "fleet-tool 1.0.0 executed"
+      run_fleet_profile fleet_a \
+        "fleet-helper 1.0.0 executed" \
+        "fleet-tool 1.0.0 executed"
 
       export HOME=/tmp/fleet-b
       export USER=fleet_b
       APM_CONFIG="$HOME/.config/apm"
-      run_fleet_profile fleet_b "fleet-tool 2.0.0 executed"
+      run_fleet_profile fleet_b \
+        "fleet-helper 2.0.0 executed" \
+        "fleet-tool 2.0.0 executed"
 
       stop_static_cache
       check_fail
