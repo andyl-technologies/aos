@@ -605,10 +605,23 @@ async fn write_response_with_length(
     Ok(())
 }
 
+/// Build a git command insulated from the host's global and system git
+/// configuration.
+///
+/// Fixture repositories configure everything they need repo-locally
+/// (identity, signing keys, allowed signers); a host `~/.gitconfig` that
+/// enables e.g. `commit.gpgsign` with a GPG key must not leak into them.
+fn git_command(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+    cmd
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<()> {
-    let output = Command::new("git")
+    let output = git_command(dir)
         .args(args)
-        .current_dir(dir)
         .output()
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
     if !output.status.success() {
@@ -623,9 +636,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn git_stdout(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = git_command(dir)
         .args(args)
-        .current_dir(dir)
         .output()
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
     if !output.status.success() {
@@ -640,9 +652,8 @@ fn git_stdout(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
+    let output = git_command(dir)
         .args(args)
-        .current_dir(dir)
         .output()
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
     if !output.status.success() {

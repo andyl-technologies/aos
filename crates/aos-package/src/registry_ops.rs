@@ -143,6 +143,124 @@ fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String, String)> {
     Ok((output.status.success(), stdout, stderr))
 }
 
+/// A registry clone present in the scope's registry-storage directory but
+/// absent from the consumer configuration (`registries.d/`).
+///
+/// These are typically authoring clones made by `apr create`, which never
+/// writes a `registries.d` entry; without this struct `apr list` would not
+/// surface them at all.
+#[derive(Debug)]
+pub struct LocalRegistry {
+    /// Directory name, which doubles as the registry name.
+    pub name: String,
+    /// Absolute path to the clone.
+    pub path: PathBuf,
+    /// URL of the `origin` remote, when the clone is a git repository that
+    /// has one configured.
+    pub origin: Option<String>,
+    /// Number of package definition files under `packages/`.
+    pub packages: usize,
+}
+
+/// List registry clones under `registries_path` whose name is not in
+/// `configured`.
+///
+/// Returns entries sorted by name. Missing or unreadable directories yield an
+/// empty list: this feeds an informational `apr list` section, not an
+/// integrity check.
+pub fn local_registries(registries_path: &Path, configured: &[&str]) -> Vec<LocalRegistry> {
+    let Ok(entries) = std::fs::read_dir(registries_path) else {
+        return Vec::new();
+    };
+
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if configured.contains(&name.as_str()) {
+            continue;
+        }
+        let origin = git(&path, &["remote", "get-url", "origin"]).ok();
+        let packages = count_package_tomls(&path.join("packages"));
+        found.push(LocalRegistry {
+            name,
+            path,
+            origin,
+            packages,
+        });
+    }
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found
+}
+
+/// Count `.toml` files anywhere under `dir`.
+fn count_package_tomls(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut count = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            count += count_package_tomls(&path);
+        } else if path.extension().is_some_and(|ext| ext == "toml") {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Explain why deleting `dir` would lose work, if it would.
+///
+/// A directory under the registry-storage path is an authoring clone when it
+/// contains a `.git` entry — consumer-side syncs only materialise plain files
+/// there. Such a clone is precious when it holds uncommitted changes, has no
+/// remote at all (every commit exists only here), or has commits unreachable
+/// from any remote-tracking ref. Returns `Ok(None)` for consumer-extracted
+/// directories and fully pushed clones.
+///
+/// # Errors
+///
+/// Fails when the directory looks like a git repository but git cannot
+/// inspect it (e.g. a corrupted clone).
+pub fn authoring_clone_precious(dir: &Path) -> Result<Option<String>> {
+    if !dir.join(".git").exists() {
+        return Ok(None);
+    }
+
+    let status = git(dir, &["status", "--porcelain"])?;
+    if !status.is_empty() {
+        return Ok(Some("uncommitted changes".to_string()));
+    }
+
+    if git(dir, &["remote"])?.is_empty() {
+        return Ok(Some(
+            "commits that exist nowhere else (no remote is configured)".to_string(),
+        ));
+    }
+
+    let unpushed = git(
+        dir,
+        &["rev-list", "--count", "--branches", "--not", "--remotes"],
+    )?;
+    let unpushed: u64 = unpushed
+        .parse()
+        .with_context(|| format!("parsing unpushed commit count {unpushed:?}"))?;
+    if unpushed > 0 {
+        return Ok(Some(format!(
+            "{unpushed} commit{} not pushed to any remote",
+            if unpushed == 1 { "" } else { "s" },
+        )));
+    }
+
+    Ok(None)
+}
+
 /// Parse a Nix store path into (name, version).
 ///
 /// Format: `/nix/store/{hash}-{name}-{version}`
@@ -1024,7 +1142,6 @@ fn build_package_toml(
 }
 
 /// `apr unpublish <PACKAGE> [VERSION]`
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 pub async fn unpublish(
     config: &ApmConfig,
@@ -4195,6 +4312,7 @@ fn format_size(bytes: u64) -> String {
 mod tests {
     use super::*;
     use crate::security::verify_tag_signature;
+    use crate::testutil;
     use crate::types::{ApmSettings, ProfileScope, RegistryConfig, RegistryUploadAuthConfig};
     use std::fs;
     use tempfile::TempDir;
@@ -5172,5 +5290,119 @@ nar_size = 1
         assert_eq!(format_size(2048), "2.0 KiB");
         assert_eq!(format_size(3_300_000), "3.1 MiB");
         assert_eq!(format_size(2_147_483_648), "2.0 GiB");
+    }
+
+    /// Initialize a git repository with one commit at `dir`.
+    fn init_authoring_clone(dir: &Path) {
+        fs::create_dir_all(dir).unwrap();
+        testutil::git(dir, &["init"]);
+        fs::write(dir.join("registry.toml"), "[registry]\n").unwrap();
+        testutil::git(dir, &["add", "."]);
+        testutil::git(dir, &["commit", "-m", "init"]);
+    }
+
+    #[test]
+    fn local_registries_skips_configured_names() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("configured-reg")).unwrap();
+        fs::create_dir_all(tmp.path().join("authored-reg/packages/t")).unwrap();
+        fs::write(
+            tmp.path().join("authored-reg/packages/t/tool-1.0.0.toml"),
+            "",
+        )
+        .unwrap();
+
+        let local = local_registries(tmp.path(), &["configured-reg"]);
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].name, "authored-reg");
+        assert_eq!(local[0].packages, 1);
+        assert_eq!(local[0].origin, None);
+    }
+
+    #[test]
+    fn local_registries_reports_origin() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("authored-reg");
+        init_authoring_clone(&dir);
+        testutil::git(
+            &dir,
+            &["remote", "add", "origin", "https://cdn.example.com/reg"],
+        );
+
+        let local = local_registries(tmp.path(), &[]);
+        assert_eq!(local.len(), 1);
+        assert_eq!(
+            local[0].origin.as_deref(),
+            Some("https://cdn.example.com/reg")
+        );
+    }
+
+    #[test]
+    fn local_registries_missing_dir_is_empty() {
+        let tmp = TempDir::new().unwrap();
+        assert!(local_registries(&tmp.path().join("absent"), &[]).is_empty());
+    }
+
+    #[test]
+    fn authoring_clone_precious_ignores_plain_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("consumer-reg");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("registry.toml"), "[registry]\n").unwrap();
+
+        assert!(authoring_clone_precious(&dir).unwrap().is_none());
+        assert!(
+            authoring_clone_precious(&tmp.path().join("absent"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn authoring_clone_precious_without_remote() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("authored-reg");
+        init_authoring_clone(&dir);
+
+        let reason = authoring_clone_precious(&dir).unwrap();
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("no remote")),
+            "got: {reason:?}"
+        );
+    }
+
+    #[test]
+    fn authoring_clone_precious_uncommitted_changes() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("authored-reg");
+        init_authoring_clone(&dir);
+        fs::write(dir.join("registry.toml"), "[registry]\nname = \"x\"\n").unwrap();
+
+        let reason = authoring_clone_precious(&dir).unwrap();
+        assert_eq!(reason.as_deref(), Some("uncommitted changes"));
+    }
+
+    #[test]
+    fn authoring_clone_precious_unpushed_and_pushed() {
+        let tmp = TempDir::new().unwrap();
+        let origin = tmp.path().join("origin.git");
+        fs::create_dir_all(&origin).unwrap();
+        testutil::git(&origin, &["init", "--bare"]);
+
+        let dir = tmp.path().join("authored-reg");
+        init_authoring_clone(&dir);
+        testutil::git(&dir, &["remote", "add", "origin", origin.to_str().unwrap()]);
+
+        let reason = authoring_clone_precious(&dir).unwrap();
+        assert!(
+            reason
+                .as_deref()
+                .is_some_and(|r| r.contains("not pushed to any remote")),
+            "got: {reason:?}"
+        );
+
+        let branch = testutil::git(&dir, &["branch", "--show-current"]);
+        testutil::git(&dir, &["push", "origin", &branch]);
+        assert!(authoring_clone_precious(&dir).unwrap().is_none());
     }
 }
