@@ -223,8 +223,18 @@ in {
           run_clean ${self}/bin/apm --help > "$work/apm-help.out"
           grep -q "Usage:" "$work/apm-help.out"
 
-          run_clean ${self}/bin/apr create host-reg > "$work/apr-create.out" 2>&1
           reg="$data/apm/registries/host-reg"
+          run_clean ${self}/bin/apr --json create host-reg > "$work/apr-create.json"
+          ${pkgs.jq}/bin/jq -e --arg reg "$reg" \
+            '.action == "create"
+              and .registry == "host-reg"
+              and .path == $reg
+              and .remote == null
+              and .trust_key_id == null
+              and .current == "stable"
+              and (.head | length == 64)
+              and (.branches | any(.name == "stable" and .current == true))' \
+            "$work/apr-create.json" >/dev/null
           test -f "$reg/registry.toml"
           test -d "$reg/.git"
 
@@ -1017,14 +1027,36 @@ in {
 
           run_clean ${self}/bin/apr create host-install-reg > "$work/apr-create-host-install.out" 2>&1
           install_reg="$data/apm/registries/host-install-reg"
-          run_clean ${self}/bin/apr publish "$install_store" \
+          run_clean ${self}/bin/apr --json publish "$install_store" \
             --name hostinstall \
             --version 1.0.0 \
             --description "Host APM install fixture" \
             --license MIT \
             --maintainer host@example.invalid \
             --registry host-install-reg \
-            --no-commit > "$work/apr-publish-host-install.out" 2>&1
+            --no-commit > "$work/apr-publish-host-install.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg store "$install_store" \
+            '.action == "publish"
+              and .registry == "host-install-reg"
+              and .package == "hostinstall"
+              and .version == "1.0.0"
+              and .platform == "x86_64-linux"
+              and .store_path == $store
+              and (.nar_hash | startswith("sha256-"))
+              and (.nar_size > 0)
+              and (.closure_size > 0)
+              and .source == null
+              and .sysroot == false
+              and .previous == null
+              and .images == []
+              and .package_file == "packages/h/hostinstall.toml"
+              and (.closure_file | startswith("closures/"))
+              and .committed == false
+              and .commit_message == null
+              and .current == "stable"
+              and (.head | length == 64)' \
+            "$work/apr-publish-host-install.json" >/dev/null
           run_clean ${self}/bin/apr cache generate \
             --registry host-install-reg \
             --output "$work/install-static-cache-output/cache" \
@@ -1126,9 +1158,20 @@ in {
           git -C "$install_reg" commit -m "release: hostinstall 2.0.0" \
             > "$work/git-commit-host-install-v2.out" 2>&1
 
-          run_clean ${self}/bin/apm update --registry host-install-client \
-            > "$work/apm-update-host-install-v2.out" 2>&1
-          grep -q "Registry 'host-install-client': done" "$work/apm-update-host-install-v2.out"
+          run_clean ${self}/bin/apm --json update --registry host-install-client \
+            > "$work/apm-update-host-install-v2.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.registry == "host-install-client"
+              and .updated == 1
+              and (.registries | length == 1)
+              and .registries[0].registry == "host-install-client"
+              and .registries[0].status == "updated"
+              and .registries[0].packages == 1
+              and .registries[0].updated == 1
+              and .registries[0].added == 0
+              and .registries[0].removed == 0
+              and (.registries[0].commit | length == 64)' \
+            "$work/apm-update-host-install-v2.json" >/dev/null
           run_clean ${self}/bin/apm list --upgradable \
             > "$work/apm-upgradable-host-install.out" 2>&1
           grep -q "hostinstall/host-install-client" "$work/apm-upgradable-host-install.out"

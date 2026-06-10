@@ -489,18 +489,60 @@ in {
 
       echo "==> Test: publish a package to registry"
 
-      # Create registry
-      $APR create test-reg
-
       REG_DIR="$REG_STORAGE/test-reg"
+      $APR --json create test-reg > /tmp/create-test-reg.json 2>&1 || {
+        cat /tmp/create-test-reg.json
+        fail "apr --json create initializes registry"
+      }
+      ${pkgs.jq}/bin/jq -e --arg reg "$REG_DIR" \
+        '.action == "create"
+          and .registry == "test-reg"
+          and .path == $reg
+          and .remote == null
+          and .trust_key_id == null
+          and .current == "stable"
+          and (.head | length == 64)
+          and (.branches | any(.name == "stable" and .current == true))' \
+        /tmp/create-test-reg.json >/dev/null || {
+        cat /tmp/create-test-reg.json
+        fail "apr --json create reports initialized registry"
+      }
+      pass "apr --json create reports initialized registry"
 
-      $APR publish ${aosPkg} \
+      $APR --json publish ${aosPkg} \
         --name testpkg \
         --version 1.0.0 \
         --description "Published by the APR VM workflow" \
         --license MIT \
         --maintainer test \
-        --registry test-reg
+        --registry test-reg > /tmp/publish-testpkg-v1.json 2>&1 || {
+        cat /tmp/publish-testpkg-v1.json
+        fail "apr --json publish creates package metadata"
+      }
+      ${pkgs.jq}/bin/jq -e --arg store "${aosPkg}" \
+        '.action == "publish"
+          and .registry == "test-reg"
+          and .package == "testpkg"
+          and .version == "1.0.0"
+          and .platform == "x86_64-linux"
+          and .store_path == $store
+          and (.nar_hash | startswith("sha256-"))
+          and (.nar_size > 0)
+          and (.closure_size > 0)
+          and .sysroot == false
+          and .previous == null
+          and .images == []
+          and .package_file == "packages/t/testpkg.toml"
+          and (.closure_file | startswith("closures/"))
+          and .committed == true
+          and .commit_message == "publish testpkg 1.0.0 (x86_64-linux)"
+          and .current == "stable"
+          and (.head | length == 64)' \
+        /tmp/publish-testpkg-v1.json >/dev/null || {
+        cat /tmp/publish-testpkg-v1.json
+        fail "apr --json publish reports committed package metadata"
+      }
+      pass "apr --json publish reports committed package metadata"
 
       # Verify packages/t/testpkg.toml exists
       assert_file_exists "$REG_DIR/packages/t/testpkg.toml" \
@@ -741,6 +783,7 @@ in {
       closureWorkflowDeps
       ++ [
         pkgs.iproute2
+        pkgs.jq
         pkgs.python3
         pkgs.zstd
       ];
@@ -998,12 +1041,29 @@ in {
         "missing-platform unpublish error names requested platform"
 
       HEAD_BEFORE_NO_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
-      $APR unpublish removepkg 2.0.0 --platform aarch64-linux \
-        --registry test-reg --no-commit > /tmp/unpublish-aarch64.out 2>&1 || {
-        cat /tmp/unpublish-aarch64.out
+      $APR --json unpublish removepkg 2.0.0 --platform aarch64-linux \
+        --registry test-reg --no-commit > /tmp/unpublish-aarch64.json 2>&1 || {
+        cat /tmp/unpublish-aarch64.json
         fail "apr unpublish --platform --no-commit removes one platform"
       }
-      cat /tmp/unpublish-aarch64.out
+      ${pkgs.jq}/bin/jq -e --arg head "$HEAD_BEFORE_NO_COMMIT" \
+        '.action == "unpublish"
+          and .registry == "test-reg"
+          and .package == "removepkg"
+          and .version == "2.0.0"
+          and .platform == "aarch64-linux"
+          and .status == "updated"
+          and .package_file == "packages/r/removepkg.toml"
+          and .package_file_removed == false
+          and .committed == false
+          and .commit_message == null
+          and .current == "stable"
+          and .head == $head' \
+        /tmp/unpublish-aarch64.json >/dev/null || {
+        cat /tmp/unpublish-aarch64.json
+        fail "apr --json unpublish --no-commit reports staged platform removal"
+      }
+      pass "apr --json unpublish --no-commit reports staged platform removal"
       HEAD_AFTER_NO_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
       if [ "$HEAD_BEFORE_NO_COMMIT" = "$HEAD_AFTER_NO_COMMIT" ]; then
         pass "apr unpublish --no-commit leaves HEAD unchanged"
@@ -1069,14 +1129,31 @@ in {
       assert_file_contains /tmp/unpublish-show-v2.out "Version: 2.0.0" \
         "apr show reports remaining v2"
 
-      $APR unpublish removepkg 2.0.0 --platform x86_64-linux \
+      $APR --json unpublish removepkg 2.0.0 --platform x86_64-linux \
         --registry test-reg \
         --message "registry: remove final removepkg platform" \
-        > /tmp/unpublish-final-platform.out 2>&1 || {
-        cat /tmp/unpublish-final-platform.out
+        > /tmp/unpublish-final-platform.json 2>&1 || {
+        cat /tmp/unpublish-final-platform.json
         fail "apr unpublish removes final platform and package file"
       }
-      cat /tmp/unpublish-final-platform.out
+      ${pkgs.jq}/bin/jq -e \
+        '.action == "unpublish"
+          and .registry == "test-reg"
+          and .package == "removepkg"
+          and .version == "2.0.0"
+          and .platform == "x86_64-linux"
+          and .status == "removed"
+          and .package_file == "packages/r/removepkg.toml"
+          and .package_file_removed == true
+          and .committed == true
+          and .commit_message == "registry: remove final removepkg platform"
+          and .current == "stable"
+          and (.head | length == 64)' \
+        /tmp/unpublish-final-platform.json >/dev/null || {
+        cat /tmp/unpublish-final-platform.json
+        fail "apr --json unpublish reports committed final platform removal"
+      }
+      pass "apr --json unpublish reports committed final platform removal"
 
       # Verify TOML file removed
       assert_file_not_exists "$REG_DIR/packages/r/removepkg.toml" \
