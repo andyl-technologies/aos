@@ -167,8 +167,30 @@
         exit 0
       fi
 
-      bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr
+      mirror_and_capture() {
+        pipe="$1"
+        output="$2"
+        if [ -c /dev/console ]; then
+          tee "$output" < "$pipe" > /dev/console
+        else
+          cat < "$pipe" > "$output"
+        fi
+      }
+
+      rm -f /tmp/agent-stdout /tmp/agent-stderr \
+        /tmp/agent-stdout.pipe /tmp/agent-stderr.pipe
+      mkfifo /tmp/agent-stdout.pipe /tmp/agent-stderr.pipe
+      mirror_and_capture /tmp/agent-stdout.pipe /tmp/agent-stdout &
+      stdout_mirror=$!
+      mirror_and_capture /tmp/agent-stderr.pipe /tmp/agent-stderr &
+      stderr_mirror=$!
+
+      bash /tmp/agent-cmd >/tmp/agent-stdout.pipe 2>/tmp/agent-stderr.pipe
       exit_code=$?
+      wait "$stdout_mirror" 2>/dev/null || true
+      wait "$stderr_mirror" 2>/dev/null || true
+      rm -f /tmp/agent-stdout.pipe /tmp/agent-stderr.pipe
+
       stdout_size=$(stat -c %s /tmp/agent-stdout)
       stderr_size=$(stat -c %s /tmp/agent-stderr)
       header="$exit_code $stdout_size $stderr_size"
@@ -295,10 +317,32 @@
           exit 0
         fi
 
+        mirror_and_capture() {
+          pipe="$1"
+          output="$2"
+          if [ -c /dev/console ]; then
+            tee "$output" < "$pipe" > /dev/console
+          else
+            cat < "$pipe" > "$output"
+          fi
+        }
+
+        rm -f /tmp/agent-stdout /tmp/agent-stderr \
+          /tmp/agent-stdout.pipe /tmp/agent-stderr.pipe
+        mkfifo /tmp/agent-stdout.pipe /tmp/agent-stderr.pipe
+        mirror_and_capture /tmp/agent-stdout.pipe /tmp/agent-stdout &
+        stdout_mirror=$!
+        mirror_and_capture /tmp/agent-stderr.pipe /tmp/agent-stderr &
+        stderr_mirror=$!
+
         # 3<&- closes the virtio-serial port in the command's process
         # tree — no apm/git/nix-store child inherits the transport fd.
-        bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr 3<&-
+        bash /tmp/agent-cmd >/tmp/agent-stdout.pipe 2>/tmp/agent-stderr.pipe 3<&-
         exit_code=$?
+        wait "$stdout_mirror" 2>/dev/null || true
+        wait "$stderr_mirror" 2>/dev/null || true
+        rm -f /tmp/agent-stdout.pipe /tmp/agent-stderr.pipe
+
         stdout_size=$(stat -c %s /tmp/agent-stdout)
         stderr_size=$(stat -c %s /tmp/agent-stderr)
         header="$exit_code $stdout_size $stderr_size"
