@@ -3532,6 +3532,22 @@ in {
         fail "empty clean generations should not initialize profile state"
       fi
 
+      if $APM rollback > /tmp/rollback-empty.out 2>&1; then
+        cat /tmp/rollback-empty.out
+        fail "rollback should fail when no profile generation is active"
+      else
+        cat /tmp/rollback-empty.out
+        pass "rollback fails before any package is installed"
+      fi
+      assert_file_contains /tmp/rollback-empty.out "no active generation" \
+        "empty rollback reports missing active generation"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty rollback leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty rollback should not initialize profile state"
+      fi
+
       if $APM rollback --dry-run > /tmp/rollback-empty-dry-run.out 2>&1; then
         cat /tmp/rollback-empty-dry-run.out
         fail "rollback dry-run should fail when no profile generation is active"
