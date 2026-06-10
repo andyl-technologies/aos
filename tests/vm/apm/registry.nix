@@ -2088,10 +2088,10 @@ in {
         path="$1"
         label="$2"
         if nix-store --delete --ignore-liveness "$path" > "/tmp/static-release-delete-$label.out" 2>&1; then
-          pass "$label deleted before apm download"
+          pass "$label deleted from store"
         else
           cat "/tmp/static-release-delete-$label.out"
-          fail "$label should be deletable before apm download"
+          fail "$label should be deletable from store"
           return 1
         fi
         assert_store_missing "$path" "$label"
@@ -2135,6 +2135,10 @@ in {
       REG_DIR="$REG_STORAGE/static-release-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       ssh-keygen -q -t ed25519 -N "" -f /tmp/static-release-key
+      nix --extra-experimental-features nix-command key generate-secret \
+        --key-name static-release-cache > /tmp/static-release-cache.sec
+      TRUSTED_PUBLIC_KEY=$(nix --extra-experimental-features nix-command \
+        key convert-secret-to-public < /tmp/static-release-cache.sec)
 
       $APR release 1.0.0 \
         --registry static-release-reg \
@@ -2145,6 +2149,7 @@ in {
         --maintainer static-release@example.invalid \
         --key /tmp/static-release-key \
         --cache-output /tmp/static-release-cache \
+        --cache-key /tmp/static-release-cache.sec \
         --cache-url http://127.0.0.1:18120 \
         --upload-url file:///tmp/static-release-origin \
         > /tmp/static-release.out 2>&1 || {
@@ -2177,6 +2182,12 @@ in {
         "uploaded static origin has root narinfo"
       assert_file_exists "/tmp/static-release-origin/$LEAF_HASH.narinfo" \
         "uploaded static origin has dependency narinfo"
+      assert_file_contains "/tmp/static-release-origin/$ROOT_HASH.narinfo" \
+        "Sig: static-release-cache:" \
+        "uploaded static origin signs root narinfo"
+      assert_file_contains "/tmp/static-release-origin/$LEAF_HASH.narinfo" \
+        "Sig: static-release-cache:" \
+        "uploaded static origin signs dependency narinfo"
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
@@ -2189,6 +2200,25 @@ in {
         cat /tmp/static-release-http.log || true
         fail "uploaded static origin HTTP server started"
       fi
+
+      echo "==> Stock Nix: copy signed release closure from uploaded origin"
+      delete_store_path "$ROOT_STORE" "closure-root-stock-nix"
+      delete_store_path "$LEAF_STORE" "closure-leaf-stock-nix"
+      nix --extra-experimental-features nix-command \
+        --option require-sigs true \
+        --option trusted-public-keys "$TRUSTED_PUBLIC_KEY" \
+        copy --from http://127.0.0.1:18120 "$ROOT_STORE" \
+        > /tmp/static-release-stock-nix-copy.out 2>&1 || {
+        cat /tmp/static-release-stock-nix-copy.out
+        fail "stock Nix imports signed release closure from uploaded origin"
+      }
+      cat /tmp/static-release-stock-nix-copy.out
+      assert_store_valid "$ROOT_STORE" "closure-root-stock-nix"
+      assert_store_valid "$LEAF_STORE" "closure-leaf-stock-nix"
+      "$ROOT_STORE/bin/closure-root" > /tmp/static-release-stock-nix-run.out
+      assert_file_contains /tmp/static-release-stock-nix-run.out \
+        "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
+        "stock Nix imported release closure executes with its dependency"
 
       export HOME=/tmp/static-release-consumer
       export USER=staticreleaseuser
@@ -2332,6 +2362,7 @@ in {
         --previous 1.0.0 \
         --key /tmp/static-release-key \
         --cache-output /tmp/static-release-cache \
+        --cache-key /tmp/static-release-cache.sec \
         --cache-url http://127.0.0.1:18120 \
         --upload-url file:///tmp/static-release-origin \
         > /tmp/static-release-v2.out 2>&1 || {
@@ -2347,6 +2378,12 @@ in {
         "uploaded static origin has v2 root narinfo"
       assert_file_exists "/tmp/static-release-origin/$LEAF_V2_HASH.narinfo" \
         "uploaded static origin has v2 dependency narinfo"
+      assert_file_contains "/tmp/static-release-origin/$ROOT_V2_HASH.narinfo" \
+        "Sig: static-release-cache:" \
+        "uploaded static origin signs v2 root narinfo"
+      assert_file_contains "/tmp/static-release-origin/$LEAF_V2_HASH.narinfo" \
+        "Sig: static-release-cache:" \
+        "uploaded static origin signs v2 dependency narinfo"
 
       echo "==> Consumer: upgrade from uploaded static origin downloads anonymous v2 closure"
       export HOME=/tmp/static-release-consumer
