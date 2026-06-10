@@ -1289,8 +1289,10 @@ in {
       echo "maint-runner 1.0.0 executed"
       RUNNEREOF
       chmod +x "$RUNNER_SRC/bin/maint-runner"
+      ln -s maint-runner "$RUNNER_SRC/bin/maint-runner-link"
       dd if=/dev/zero of="$RUNNER_SRC/share/maint-runner/payload.bin" \
         bs=1M count=12
+      ln -s . "$RUNNER_SRC/share/maint-runner/current"
       RUNNER_STORE=$(nix-store --add "$RUNNER_SRC")
       RUNNER_HASH=$(basename "$RUNNER_STORE" | cut -d- -f1)
 
@@ -1701,6 +1703,21 @@ in {
       "$PROFILE_RUNNER" > /tmp/profile-runner.out
       assert_file_contains /tmp/profile-runner.out "maint-runner 1.0.0 executed" \
         "installed runner executes from profile"
+      $APM files maint-runner > /tmp/maint-runner-files.out 2>&1 || {
+        cat /tmp/maint-runner-files.out
+        fail "apm files lists installed maintainer package"
+      }
+      cat /tmp/maint-runner-files.out
+      assert_file_contains /tmp/maint-runner-files.out "bin/maint-runner" \
+        "apm files lists installed executable"
+      assert_file_contains /tmp/maint-runner-files.out "bin/maint-runner-link" \
+        "apm files lists file symlink without resolving it"
+      assert_file_contains /tmp/maint-runner-files.out "share/maint-runner/payload.bin" \
+        "apm files lists large payload"
+      assert_file_contains /tmp/maint-runner-files.out "share/maint-runner/current" \
+        "apm files lists directory symlink without recursing"
+      assert_file_not_contains /tmp/maint-runner-files.out "current/current" \
+        "apm files does not recurse through directory symlink loop"
       $APM list > /tmp/apm-list.out 2>&1
       assert_file_contains /tmp/apm-list.out "maint-runner" \
         "apm list shows installed maintainer package"
