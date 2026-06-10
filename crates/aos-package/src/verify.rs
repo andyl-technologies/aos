@@ -8,6 +8,7 @@ use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 use aos_core::error::AosError;
+use aos_core::nix::aos_nix_env;
 
 // ---------------------------------------------------------------------------
 // SHA-256 computation
@@ -161,6 +162,7 @@ pub fn verify_store_path(actual: &str, expected: &str) -> Result<()> {
 /// 3. Compare against `expected_nar_hash` from the registry.
 pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Result<()> {
     let output = tokio::process::Command::new("nix-store")
+        .envs(aos_nix_env())
         .args(["--dump", store_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
