@@ -3574,6 +3574,26 @@ async fn channel_status(
         }
     }
 
+    if printer.mode() == OutputMode::Json {
+        let versions = counts
+            .iter()
+            .rev()
+            .map(|(version, count)| {
+                serde_json::json!({
+                    "version": version.to_string(),
+                    "partitions": count,
+                })
+            })
+            .collect::<Vec<_>>();
+        printer.json(&serde_json::json!({
+            "channel": channel_name,
+            "frontier": frontier.as_ref().map(ToString::to_string),
+            "missing_partitions": missing,
+            "versions": versions,
+        }));
+        return Ok(());
+    }
+
     printer.header(&format!("Channel: {channel_name}"));
     if let Some(frontier) = frontier {
         printer.kv("Frontier", &frontier.to_string());

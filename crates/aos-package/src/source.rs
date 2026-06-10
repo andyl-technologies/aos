@@ -190,7 +190,7 @@ pub async fn run_source(
     let enabled = config.enabled_registries();
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
 
-    let mut installed_store_path_for_verify = None;
+    let mut installed_store_path = None;
     let (registry_name, source_drv, source_nar_hash, expected_hash) = if verify_source {
         let profile = Profile::open_readonly(config.scope);
         let all_meta = meta::list_meta(&profile)?;
@@ -201,7 +201,7 @@ pub async fn run_source(
                 name: package.to_string(),
             })?;
         let source_meta = resolve_installed_source_metadata(&reg_set, package, installed)?;
-        installed_store_path_for_verify = Some(installed.store_path.clone());
+        installed_store_path = Some(installed.store_path.clone());
 
         (
             source_meta.registry_name,
@@ -215,6 +215,7 @@ pub async fn run_source(
 
         if let Some(installed) = find_installed_package(&all_meta, package) {
             let source_meta = resolve_installed_source_metadata(&reg_set, package, installed)?;
+            installed_store_path = Some(installed.store_path.clone());
             (
                 source_meta.registry_name,
                 source_meta.source_drv,
@@ -245,7 +246,7 @@ pub async fn run_source(
         );
     }
     let expected_hash = if verify_source {
-        let store_path = installed_store_path_for_verify.as_deref().ok_or_else(|| {
+        let store_path = installed_store_path.as_deref().ok_or_else(|| {
             anyhow::anyhow!("missing installed store path for source verification")
         })?;
         hash_verify::store_path_nar_hash(store_path)
@@ -257,10 +258,21 @@ pub async fn run_source(
 
     // Default or --show-drv: just print the source derivation path.
     if show_drv || (!fetch && !verify_source) {
-        printer.header(&format!("Source derivation for '{package}':"));
-        printer.kv("Source drv", &source_drv);
-        printer.kv("Source NAR hash", &source_nar_hash);
-        printer.kv("Registry", &registry_name);
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "package": package,
+                "registry": &registry_name,
+                "source_drv": &source_drv,
+                "source_nar_hash": &source_nar_hash,
+                "installed": installed_store_path.is_some(),
+                "installed_store_path": installed_store_path.as_deref(),
+            }));
+        } else {
+            printer.header(&format!("Source derivation for '{package}':"));
+            printer.kv("Source drv", &source_drv);
+            printer.kv("Source NAR hash", &source_nar_hash);
+            printer.kv("Registry", &registry_name);
+        }
         return Ok(());
     }
 
@@ -290,7 +302,19 @@ pub async fn run_source(
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let path = stdout.trim().to_string();
-        printer.success(&format!("Source realised: {path}"));
+        if printer.mode() == OutputMode::Json && !verify_source {
+            printer.json(&serde_json::json!({
+                "package": package,
+                "registry": &registry_name,
+                "source_drv": &source_drv,
+                "source_nar_hash": &source_nar_hash,
+                "installed": installed_store_path.is_some(),
+                "installed_store_path": installed_store_path.as_deref(),
+                "realised_path": &path,
+            }));
+        } else {
+            printer.success(&format!("Source realised: {path}"));
+        }
         realised_path = Some(path);
     }
 
@@ -348,9 +372,24 @@ pub async fn run_source(
         printer.kv("Rebuilt NAR hash", &actual_hash);
 
         if hash_verify::sha256_hashes_equal(&actual_hash, &expected_hash)? {
-            printer.success(&format!(
-                "OK: source rebuild of '{package}' matches installed binary"
-            ));
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "package": package,
+                    "registry": &registry_name,
+                    "source_drv": &source_drv,
+                    "source_nar_hash": &source_nar_hash,
+                    "installed": installed_store_path.is_some(),
+                    "installed_store_path": installed_store_path.as_deref(),
+                    "built_path": &built_path,
+                    "expected_nar_hash": &expected_hash,
+                    "actual_nar_hash": &actual_hash,
+                    "verified": true,
+                }));
+            } else {
+                printer.success(&format!(
+                    "OK: source rebuild of '{package}' matches installed binary"
+                ));
+            }
         } else {
             printer.error(&format!(
                 "MISMATCH: source rebuild of '{package}' differs from installed binary"

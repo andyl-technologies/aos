@@ -4931,17 +4931,57 @@ in {
         "apm source reports sourceful v1 source path"
       assert_file_contains /tmp/surface-source-sourceful.out "Source NAR hash" \
         "apm source reports sourceful source NAR hash"
+      run_ok source-sourceful-json "$APM" --json source sourceful
+      "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
+        '.package == "sourceful"
+          and .registry == "surface-reg"
+          and .source_drv == $source
+          and .installed == true
+          and .installed_store_path == $store
+          and (.source_nar_hash | startswith("sha256-"))' \
+        /tmp/surface-source-sourceful-json.out >/dev/null
       run_ok source-sourceful-show-drv "$APM" source sourceful --show-drv
       assert_file_contains /tmp/surface-source-sourceful-show-drv.out "$SOURCE_V1_SRC_STORE" \
         "apm source --show-drv reports sourceful v1 source path"
+      run_ok source-sourceful-show-drv-json "$APM" --json source sourceful --show-drv
+      "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
+        '.package == "sourceful"
+          and .registry == "surface-reg"
+          and .source_drv == $source
+          and .installed == true
+          and .installed_store_path == $store
+          and (.source_nar_hash | startswith("sha256-"))' \
+        /tmp/surface-source-sourceful-show-drv-json.out >/dev/null
       run_ok source-sourceful-fetch "$APM" source sourceful --fetch
       assert_file_contains /tmp/surface-source-sourceful-fetch.out "Source realised: $SOURCE_V1_SRC_STORE" \
         "apm source --fetch realises sourceful v1 derivation"
+      run_ok source-sourceful-fetch-json "$APM" --json source sourceful --fetch
+      "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
+        '.package == "sourceful"
+          and .registry == "surface-reg"
+          and .source_drv == $source
+          and .installed == true
+          and .installed_store_path == $store
+          and .realised_path == $source
+          and (.source_nar_hash | startswith("sha256-"))' \
+        /tmp/surface-source-sourceful-fetch-json.out >/dev/null
       run_ok source-sourceful-verify "$APM" source sourceful --verify
       assert_file_contains /tmp/surface-source-sourceful-verify.out "$SOURCE_V1_SRC_STORE" \
         "apm source --verify uses sourceful v1 source path"
       assert_file_contains /tmp/surface-source-sourceful-verify.out "matches installed binary" \
         "apm source --verify compares sourceful rebuild with installed binary"
+      run_ok source-sourceful-verify-json "$APM" --json source sourceful --verify
+      "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
+        '.package == "sourceful"
+          and .registry == "surface-reg"
+          and .source_drv == $source
+          and .installed == true
+          and .installed_store_path == $store
+          and .built_path == $source
+          and .verified == true
+          and (.expected_nar_hash | startswith("sha256:"))
+          and (.actual_nar_hash | startswith("sha256:"))' \
+        /tmp/surface-source-sourceful-verify-json.out >/dev/null
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
       $APM reinstall sourceful --yes > /tmp/surface-reinstall-sourceful.out 2>&1 || {
