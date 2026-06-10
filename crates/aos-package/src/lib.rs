@@ -34,6 +34,15 @@ use aos_core::output::Printer;
 use sysroot::KernelUpgradeMode;
 use types::{ProfileScope, RegistryUploadAuthConfig};
 
+/// Environment-variable documentation appended to `apm`/`apr` long help.
+pub const ENVIRONMENT_HELP: &str = "Environment:
+  APM_SYSTEM_CONFIG_DIR  Override the system configuration root (default
+                         /etc/apm). Affects every derived system path,
+                         including registries.d and trusted-keys.d, in both
+                         the user and system profile scopes. Must be an
+                         absolute path; intended for development on non-AOS
+                         hosts.";
+
 /// Clap subcommand enum for `aos package` / `apm`.
 #[derive(Subcommand)]
 pub enum PackageCommand {
@@ -256,6 +265,7 @@ pub enum PackageCommand {
         drain: bool,
     },
     /// Manage registries
+    #[command(after_long_help = ENVIRONMENT_HELP)]
     Registry {
         #[command(subcommand)]
         command: RegistryCommand,
