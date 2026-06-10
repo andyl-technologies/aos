@@ -113,7 +113,7 @@
       port="$1"
       directory="$2"
       log="$3"
-      python3 -m http.server "$port" --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server "$port" --bind 127.0.0.1 \
         --directory "$directory" > "$log" 2>&1 &
       CACHE_PID=$!
 

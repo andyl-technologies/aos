@@ -555,7 +555,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18093 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18093 --bind 127.0.0.1 \
         --directory /tmp/install-basic-cache > /tmp/install-basic-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -737,7 +737,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18094 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18094 --bind 127.0.0.1 \
         --directory /tmp/install-deps-cache > /tmp/install-deps-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -967,7 +967,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18086 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18086 --bind 127.0.0.1 \
         --directory /tmp/idemp-cache > /tmp/idemp-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -1640,7 +1640,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18088 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18088 --bind 127.0.0.1 \
         --directory /tmp/reinstall-cache > /tmp/reinstall-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -1867,7 +1867,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18095 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18095 --bind 127.0.0.1 \
         --directory /tmp/remove-basic-cache > /tmp/remove-basic-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -2083,7 +2083,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18124 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18124 --bind 127.0.0.1 \
         --directory /tmp/readd-cache > /tmp/readd-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -2370,7 +2370,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18087 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18087 --bind 127.0.0.1 \
         --directory /tmp/remove-cache > /tmp/remove-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -2734,7 +2734,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18092 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18092 --bind 127.0.0.1 \
         --directory /tmp/upgrade-cache > /tmp/upgrade-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -3081,7 +3081,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18104 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18104 --bind 127.0.0.1 \
         --directory /tmp/rollback-cache > /tmp/rollback-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -3458,7 +3458,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18083 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18083 --bind 127.0.0.1 \
         --directory /tmp/lifecycle-cache > /tmp/lifecycle-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -3821,7 +3821,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18123 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18123 --bind 127.0.0.1 \
         --directory /tmp/source-alt-cache > /tmp/source-alt-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -4203,7 +4203,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18105 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18105 --bind 127.0.0.1 \
         --directory /tmp/surface-cache > /tmp/surface-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -4760,7 +4760,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18085 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18085 --bind 127.0.0.1 \
         --directory /tmp/hold-cache > /tmp/hold-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then

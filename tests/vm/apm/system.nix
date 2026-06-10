@@ -558,7 +558,7 @@
 
     ${pkgs.iproute2}/sbin/ip link set lo up || true
     ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-    python3 -m http.server 18085 --bind 127.0.0.1 \
+    PYTHONUNBUFFERED=1 python3 -m http.server 18085 --bind 127.0.0.1 \
       --directory /tmp/system-cache > /tmp/system-cache-http.log 2>&1 &
     CACHE_PID=$!
     if wait_for_system_cache; then

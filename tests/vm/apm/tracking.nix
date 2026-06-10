@@ -166,7 +166,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18104 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18104 --bind 127.0.0.1 \
         --directory /tmp/branch-cache > /tmp/branch-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -413,7 +413,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18105 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18105 --bind 127.0.0.1 \
         --directory /tmp/tag-cache > /tmp/tag-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -680,7 +680,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18106 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18106 --bind 127.0.0.1 \
         --directory /tmp/vtilde-cache > /tmp/vtilde-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -959,7 +959,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18107 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18107 --bind 127.0.0.1 \
         --directory /tmp/vcaret-cache > /tmp/vcaret-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -1235,7 +1235,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18108 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18108 --bind 127.0.0.1 \
         --directory /tmp/commit-cache > /tmp/commit-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -1445,7 +1445,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18103 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18103 --bind 127.0.0.1 \
         --directory /tmp/default-cache > /tmp/default-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -1725,7 +1725,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18109 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18109 --bind 127.0.0.1 \
         --directory /tmp/git-native-cache > /tmp/git-native-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
