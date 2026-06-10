@@ -18,12 +18,109 @@
   curlBin = "${pkgs.curl}/bin/curl";
   grepBin = "${pkgs.grep}/bin/grep";
   nixStoreBin = "${pkgs.nix}/bin/nix-store";
+  nixInstantiateBin = "${pkgs.nix}/bin/nix-instantiate";
   sha256sumBin = "${pkgs.coreutils}/bin/sha256sum";
   statBin = "${pkgs.coreutils}/bin/stat";
   cutBin = "${pkgs.coreutils}/bin/cut";
   catBin = "${pkgs.coreutils}/bin/cat";
   tailBin = "${pkgs.coreutils}/bin/tail";
   aosBin = "${self}/bin/aos";
+  nixRuntimeDeps = [
+    pkgs.nix
+    pkgs.brotli
+    pkgs.curl
+    pkgs.openssl
+    pkgs.sqlite
+    pkgs.boost
+    pkgs.editline
+    pkgs.libsodium
+    pkgs.libarchive
+    pkgs.gc
+    pkgs.lowdown
+    pkgs.bzip2
+    pkgs.zlib
+  ];
+  nixLibPath = builtins.concatStringsSep ":" (map (pkg: "${pkg}/lib") nixRuntimeDeps);
+  rpcBuildFixtureBuilder = pkgs.mkDerivation {
+    pname = "rpc-build-log-fixture-builder";
+    version = "1.0.0";
+    src = null;
+    phases = [
+      {
+        name = "build";
+        script = ''
+          cat > builder.c <<'CEOF'
+          #include <errno.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <sys/stat.h>
+
+          static int mkdir_if_missing(const char *path) {
+            if (mkdir(path, 0755) == 0 || errno == EEXIST) {
+              return 0;
+            }
+            fprintf(stderr, "mkdir %s: %s\n", path, strerror(errno));
+            return 1;
+          }
+
+          int main(int argc, char **argv) {
+            const char *out = getenv("out");
+            const char *bash = argc > 1 ? argv[1] : NULL;
+            char bin_dir[4096];
+            char exe_path[4096];
+
+            if (out == NULL || out[0] == '\0') {
+              fputs("missing out environment variable\n", stderr);
+              return 1;
+            }
+            if (bash == NULL || bash[0] == '\0') {
+              fputs("missing bash store path argument\n", stderr);
+              return 1;
+            }
+
+            fputs("rpc build fixture: configure\n", stderr);
+            fputs("rpc build fixture: carriage-before", stderr);
+            fputs("\rrpc build fixture: carriage-after\r\n", stderr);
+            for (int i = 0; i < 256; i++) {
+              fputc('x', stderr);
+            }
+            fputc('\n', stderr);
+
+            if (snprintf(bin_dir, sizeof(bin_dir), "%s/bin", out) >= (int)sizeof(bin_dir) ||
+                snprintf(exe_path, sizeof(exe_path), "%s/rpc-build-log-fixture", bin_dir) >= (int)sizeof(exe_path)) {
+              fputs("output path too long\n", stderr);
+              return 1;
+            }
+
+            if (mkdir_if_missing(out) != 0 || mkdir_if_missing(bin_dir) != 0) {
+              return 1;
+            }
+
+            FILE *exe = fopen(exe_path, "w");
+            if (exe == NULL) {
+              fprintf(stderr, "open %s: %s\n", exe_path, strerror(errno));
+              return 1;
+            }
+            fprintf(exe, "#!%s/bin/bash\nprintf 'rpc build fixture executed\\n'\n", bash);
+            if (fclose(exe) != 0) {
+              fprintf(stderr, "close %s: %s\n", exe_path, strerror(errno));
+              return 1;
+            }
+            if (chmod(exe_path, 0755) != 0) {
+              fprintf(stderr, "chmod %s: %s\n", exe_path, strerror(errno));
+              return 1;
+            }
+
+            return 0;
+          }
+          CEOF
+          mkdir -p "$out/bin"
+          cc builder.c -o "$out/bin/rpc-build-log-fixture-builder"
+        '';
+      }
+    ];
+  };
 
   serverPreamble = ''
         ${iproute2Bin} link set lo up || true
@@ -106,6 +203,36 @@
           ${tailBin} -c +6 "$1"
         }
 
+        init_real_build_nix_db() {
+          root="$1"
+          export NIX_REMOTE=""
+          export NIX_CONF_DIR=/tmp/nix-conf
+          export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export AOS_NIX_STORE_DIR=/nix/store
+          export AOS_NIX_STATE_DIR="$root/var/nix"
+
+          rm -f "$root/var/nix/db/db.sqlite" \
+            "$root/var/nix/db/db.sqlite-shm" \
+            "$root/var/nix/db/db.sqlite-wal"
+          mkdir -p /dev/pts
+          mount -t devpts devpts /dev/pts 2>/dev/null || true
+          mkdir -p "$NIX_CONF_DIR" "$root/var/nix/db" "$root/var/nix/gcroots"
+          ${catBin} > "$NIX_CONF_DIR/nix.conf" << 'NIXCONF'
+        experimental-features = nix-command
+        sandbox = false
+        build-users-group =
+        max-build-log-size = 10485760
+        max-silent-time = 0
+        substituters =
+        timeout = 0
+    NIXCONF
+
+          NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$root/var/nix" \
+            ${nixStoreBin} --init || true
+          NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$root/var/nix" \
+            ${nixStoreBin} --load-db < /aos-registration
+        }
+
         init_mock_nix_db "$AOS_ROOT"
   '';
 
@@ -154,17 +281,19 @@
     wait $SERVER_PID 2>/dev/null || true
   '';
 
-  serverDeps = [
-    self
-    pkgs.curl
-    pkgs.coreutils
-    pkgs.socat
-    pkgs.jq
-    pkgs.sqlite
-    pkgs.iproute2
-    pkgs.grep
-    pkgs.nix
-  ];
+  serverDeps =
+    [
+      self
+      pkgs.curl
+      pkgs.coreutils
+      pkgs.socat
+      pkgs.jq
+      pkgs.sqlite
+      pkgs.iproute2
+      pkgs.grep
+    ]
+    ++ nixRuntimeDeps;
+  buildStreamDeps = serverDeps ++ [rpcBuildFixtureBuilder];
 in {
   # ---------------------------------------------------------------------------
   # Test 1: rpc-cache-query-missing
@@ -361,80 +490,164 @@ in {
   # ---------------------------------------------------------------------------
   rpc-build-stream = testing.mkVMTest {
     name = "rpc-build-stream";
-    rootfsDeps = serverDeps;
-    memory = 1024;
+    rootfsDeps = buildStreamDeps;
+    memory = 2048;
     testScript = ''
-      ${serverPreamble}
-      ${serverConfig}
-      ${startServer}
-      ${getAuthToken}
+        ${serverPreamble}
+        init_real_build_nix_db "$AOS_ROOT"
+        ${serverConfig}
+        ${startServer}
+        ${getAuthToken}
 
-      FAIL=0
+        FAIL=0
 
-      echo "==> Test: Build rejects non-existent derivation"
-      HTTP_CODE=$(${curlBin} -s -o /tmp/build-resp.json -w '%{http_code}' \
-        -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-        "http://127.0.0.1:15000/default/build?drv=/nix/store/00000000000000000000000000000000-fake.drv")
-      echo "Build: HTTP $HTTP_CODE"
-      test "$HTTP_CODE" = "400" || { echo "FAIL: expected REST build HTTP 400"; FAIL=1; }
+        ${catBin} > /tmp/rpc-build-log.nix << 'NIXEOF'
+      let
+        bash = builtins.storePath "${pkgs.bash}";
+        fixtureBuilder = builtins.storePath "${rpcBuildFixtureBuilder}";
+      in
+        derivation {
+          name = "rpc-build-log-fixture";
+          system = "x86_64-linux";
+          builder = "''${fixtureBuilder}/bin/rpc-build-log-fixture-builder";
+          args = [
+            "''${bash}"
+          ];
+        }
+      NIXEOF
 
-      echo "==> Test: ConnectRPC Build rejects invalid derivation"
-      write_connect_json_request \
-        '{"view":"default","derivation":"/nix/store/00000000000000000000000000000000-fake.drv"}' \
-        /tmp/rpc-build-invalid.req
-      RPC_CODE=$(${curlBin} -s -o /tmp/rpc-build-invalid.json -w '%{http_code}' \
-        -X POST \
-        -H "Content-Type: application/connect+json" \
-        -H "Connect-Protocol-Version: 1" \
-        -H "Authorization: Bearer $ACCESS_TOKEN" \
-        --data-binary @/tmp/rpc-build-invalid.req \
-        http://127.0.0.1:15000/aos.build.v1.BuildService/Build)
-      RPC_RESP=$(connect_json_payload /tmp/rpc-build-invalid.json)
-      echo "RPC Build: HTTP $RPC_CODE $RPC_RESP"
-      test "$RPC_CODE" = "200" || { echo "FAIL: expected RPC build streaming HTTP 200"; FAIL=1; }
-      ERROR_CODE=$(echo "$RPC_RESP" | ${jqBin} -r '.error.code // empty')
-      test "$ERROR_CODE" = "invalid_argument" || { echo "FAIL: expected invalid_argument, got $ERROR_CODE"; FAIL=1; }
+        BUILD_DRV=$(NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_ROOT/var/nix" \
+          ${nixInstantiateBin} /tmp/rpc-build-log.nix)
+        echo "Real build derivation: $BUILD_DRV"
+        echo "$BUILD_DRV" | ${grepBin} -q '^/nix/store/.*\.drv$' || \
+          { echo "FAIL: nix-instantiate did not return a .drv"; FAIL=1; }
 
-      echo "==> Test: BuildClosure rejects empty list"
-      write_connect_json_request '{"view":"default","derivations":[]}' /tmp/rpc-build-closure-empty.req
-      RPC_CODE2=$(${curlBin} -s -o /tmp/rpc-build-closure-empty.json -w '%{http_code}' \
-        -X POST \
-        -H "Content-Type: application/connect+json" \
-        -H "Connect-Protocol-Version: 1" \
-        -H "Authorization: Bearer $ACCESS_TOKEN" \
-        --data-binary @/tmp/rpc-build-closure-empty.req \
-        http://127.0.0.1:15000/aos.build.v1.BuildService/BuildClosure)
-      RPC_RESP2=$(connect_json_payload /tmp/rpc-build-closure-empty.json)
-      echo "RPC BuildClosure: HTTP $RPC_CODE2 $RPC_RESP2"
-      test "$RPC_CODE2" = "200" || { echo "FAIL: expected RPC build-closure streaming HTTP 200"; FAIL=1; }
-      ERROR_CODE2=$(echo "$RPC_RESP2" | ${jqBin} -r '.error.code // empty')
-      test "$ERROR_CODE2" = "invalid_argument" || { echo "FAIL: expected invalid_argument, got $ERROR_CODE2"; FAIL=1; }
+        echo "==> Test: REST Build streams a real derivation"
+        rm -f /tmp/build-real.sse
+        ${curlBin} -sN -X POST \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          "http://127.0.0.1:15000/default/build?drv=$BUILD_DRV" \
+          > /tmp/build-real.sse 2>/tmp/build-real.curl.err &
+        BUILD_STREAM_PID=$!
+        for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+          if ${grepBin} -q '^event: complete$' /tmp/build-real.sse; then break; fi
+          if ${grepBin} -q '^event: error$' /tmp/build-real.sse; then break; fi
+          sleep 1
+        done
+        kill $BUILD_STREAM_PID 2>/dev/null || true
+        wait $BUILD_STREAM_PID 2>/dev/null || true
+        if ${grepBin} -q '^event: error$' /tmp/build-real.sse; then
+          echo "Build error event:"
+          ${grepBin} -A1 '^event: error$' /tmp/build-real.sse | ${tailBin} -c 2000
+        fi
 
-      echo "==> Test: ConnectRPC Build requires auth"
-      write_connect_json_request \
-        '{"view":"default","derivation":"/nix/store/00000000000000000000000000000000-fake.drv"}' \
-        /tmp/rpc-build-noauth.req
-      RPC_NOAUTH_CODE=$(${curlBin} -s -o /tmp/rpc-build-noauth.json -w '%{http_code}' \
-        -X POST \
-        -H "Content-Type: application/connect+json" \
-        -H "Connect-Protocol-Version: 1" \
-        --data-binary @/tmp/rpc-build-noauth.req \
-        http://127.0.0.1:15000/aos.build.v1.BuildService/Build)
-      RPC_NOAUTH=$(connect_json_payload /tmp/rpc-build-noauth.json)
-      echo "RPC Build no-auth: HTTP $RPC_NOAUTH_CODE $RPC_NOAUTH"
-      test "$RPC_NOAUTH_CODE" = "200" || { echo "FAIL: expected RPC build no-auth streaming HTTP 200"; FAIL=1; }
-      RPC_NOAUTH_ERROR=$(echo "$RPC_NOAUTH" | ${jqBin} -r '.error.code // empty')
-      test "$RPC_NOAUTH_ERROR" = "unauthenticated" || \
-        { echo "FAIL: expected unauthenticated RPC build error, got $RPC_NOAUTH_ERROR"; FAIL=1; }
+        ${grepBin} -q '^event: status$' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing status event"; FAIL=1; }
+        ${grepBin} -q '^event: log$' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing log event"; FAIL=1; }
+        ${grepBin} -q '^event: complete$' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing complete event"; FAIL=1; }
+        if ${grepBin} -q '^event: error$' /tmp/build-real.sse; then
+          echo "FAIL: real build emitted error event"
+          FAIL=1
+        fi
+        ${grepBin} -q 'rpc build fixture: configure' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing configure log"; FAIL=1; }
+        ${grepBin} -q 'rpc build fixture: carriage-after' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing carriage-return log"; FAIL=1; }
+        ${grepBin} -q 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing delimiter-free log chunk"; FAIL=1; }
 
-      echo "==> Test: Build requires auth"
-      NOAUTH=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
-        -X POST "http://127.0.0.1:15000/default/build?drv=/nix/store/fake.drv")
-      test "$NOAUTH" = "401" || { echo "FAIL: expected 401, got $NOAUTH"; FAIL=1; }
+        BUILD_OUT=$(NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_ROOT/var/nix" \
+          ${nixStoreBin} -q --outputs "$BUILD_DRV")
+        "$BUILD_OUT/bin/rpc-build-log-fixture" > /tmp/rpc-build-output.txt
+        ${grepBin} -q 'rpc build fixture executed' /tmp/rpc-build-output.txt || \
+          { echo "FAIL: built output did not execute"; FAIL=1; }
 
-      ${stopServer}
-      if [ "$FAIL" -ne 0 ]; then exit 1; fi
-      echo "==> rpc-build-stream passed"
+        echo "==> Test: REST Build replays completed build logs"
+        rm -f /tmp/build-replay.sse
+        ${curlBin} -sN -X POST \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          -H "Last-Event-ID: 0" \
+          "http://127.0.0.1:15000/default/build?drv=$BUILD_DRV" \
+          > /tmp/build-replay.sse 2>/tmp/build-replay.curl.err &
+        REPLAY_STREAM_PID=$!
+        for _i in 1 2 3 4 5; do
+          if ${grepBin} -q '^event: complete$' /tmp/build-replay.sse; then break; fi
+          sleep 1
+        done
+        kill $REPLAY_STREAM_PID 2>/dev/null || true
+        wait $REPLAY_STREAM_PID 2>/dev/null || true
+
+        ${grepBin} -q '^event: log$' /tmp/build-replay.sse || \
+          { echo "FAIL: replay stream missing log event"; FAIL=1; }
+        ${grepBin} -q '^event: complete$' /tmp/build-replay.sse || \
+          { echo "FAIL: replay stream missing complete event"; FAIL=1; }
+
+        echo "==> Test: Build rejects non-existent derivation"
+        HTTP_CODE=$(${curlBin} -s -o /tmp/build-resp.json -w '%{http_code}' \
+          -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+          "http://127.0.0.1:15000/default/build?drv=/nix/store/00000000000000000000000000000000-fake.drv")
+        echo "Build: HTTP $HTTP_CODE"
+        test "$HTTP_CODE" = "400" || { echo "FAIL: expected REST build HTTP 400"; FAIL=1; }
+
+        echo "==> Test: ConnectRPC Build rejects invalid derivation"
+        write_connect_json_request \
+          '{"view":"default","derivation":"/nix/store/00000000000000000000000000000000-fake.drv"}' \
+          /tmp/rpc-build-invalid.req
+        RPC_CODE=$(${curlBin} -s -o /tmp/rpc-build-invalid.json -w '%{http_code}' \
+          -X POST \
+          -H "Content-Type: application/connect+json" \
+          -H "Connect-Protocol-Version: 1" \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          --data-binary @/tmp/rpc-build-invalid.req \
+          http://127.0.0.1:15000/aos.build.v1.BuildService/Build)
+        RPC_RESP=$(connect_json_payload /tmp/rpc-build-invalid.json)
+        echo "RPC Build: HTTP $RPC_CODE $RPC_RESP"
+        test "$RPC_CODE" = "200" || { echo "FAIL: expected RPC build streaming HTTP 200"; FAIL=1; }
+        ERROR_CODE=$(echo "$RPC_RESP" | ${jqBin} -r '.error.code // empty')
+        test "$ERROR_CODE" = "invalid_argument" || { echo "FAIL: expected invalid_argument, got $ERROR_CODE"; FAIL=1; }
+
+        echo "==> Test: BuildClosure rejects empty list"
+        write_connect_json_request '{"view":"default","derivations":[]}' /tmp/rpc-build-closure-empty.req
+        RPC_CODE2=$(${curlBin} -s -o /tmp/rpc-build-closure-empty.json -w '%{http_code}' \
+          -X POST \
+          -H "Content-Type: application/connect+json" \
+          -H "Connect-Protocol-Version: 1" \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          --data-binary @/tmp/rpc-build-closure-empty.req \
+          http://127.0.0.1:15000/aos.build.v1.BuildService/BuildClosure)
+        RPC_RESP2=$(connect_json_payload /tmp/rpc-build-closure-empty.json)
+        echo "RPC BuildClosure: HTTP $RPC_CODE2 $RPC_RESP2"
+        test "$RPC_CODE2" = "200" || { echo "FAIL: expected RPC build-closure streaming HTTP 200"; FAIL=1; }
+        ERROR_CODE2=$(echo "$RPC_RESP2" | ${jqBin} -r '.error.code // empty')
+        test "$ERROR_CODE2" = "invalid_argument" || { echo "FAIL: expected invalid_argument, got $ERROR_CODE2"; FAIL=1; }
+
+        echo "==> Test: ConnectRPC Build requires auth"
+        write_connect_json_request \
+          '{"view":"default","derivation":"/nix/store/00000000000000000000000000000000-fake.drv"}' \
+          /tmp/rpc-build-noauth.req
+        RPC_NOAUTH_CODE=$(${curlBin} -s -o /tmp/rpc-build-noauth.json -w '%{http_code}' \
+          -X POST \
+          -H "Content-Type: application/connect+json" \
+          -H "Connect-Protocol-Version: 1" \
+          --data-binary @/tmp/rpc-build-noauth.req \
+          http://127.0.0.1:15000/aos.build.v1.BuildService/Build)
+        RPC_NOAUTH=$(connect_json_payload /tmp/rpc-build-noauth.json)
+        echo "RPC Build no-auth: HTTP $RPC_NOAUTH_CODE $RPC_NOAUTH"
+        test "$RPC_NOAUTH_CODE" = "200" || { echo "FAIL: expected RPC build no-auth streaming HTTP 200"; FAIL=1; }
+        RPC_NOAUTH_ERROR=$(echo "$RPC_NOAUTH" | ${jqBin} -r '.error.code // empty')
+        test "$RPC_NOAUTH_ERROR" = "unauthenticated" || \
+          { echo "FAIL: expected unauthenticated RPC build error, got $RPC_NOAUTH_ERROR"; FAIL=1; }
+
+        echo "==> Test: Build requires auth"
+        NOAUTH=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
+          -X POST "http://127.0.0.1:15000/default/build?drv=/nix/store/fake.drv")
+        test "$NOAUTH" = "401" || { echo "FAIL: expected 401, got $NOAUTH"; FAIL=1; }
+
+        ${stopServer}
+        if [ "$FAIL" -ne 0 ]; then exit 1; fi
+        echo "==> rpc-build-stream passed"
     '';
   };
 
