@@ -35,7 +35,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 
 use aos_core::error::AosError;
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 use sysroot::KernelUpgradeMode;
 use types::{ProfileScope, RegistryUploadAuthConfig};
 
@@ -1232,6 +1232,7 @@ pub async fn run(
                     packages,
                     registry.as_deref(),
                     *reinstall,
+                    false,
                     *download_only,
                     *no_deps,
                     dry_run,
@@ -1245,15 +1246,29 @@ pub async fn run(
         PackageCommand::Remove {
             packages,
             autoremove,
-        } => remove::run(&config, packages, *autoremove, dry_run, yes, printer).await,
-        PackageCommand::Autoremove => remove::run_autoremove(&config, dry_run, yes, printer).await,
+        } => {
+            let auto_remove = *autoremove || config.settings.auto_autoremove;
+            let outcome =
+                remove::run(&config, packages, auto_remove, dry_run, yes, printer).await?;
+            if config.settings.auto_gc && auto_remove && !dry_run && outcome.orphan_count > 0 {
+                clean::run_gc_after_mutation(printer).await?;
+            }
+            Ok(())
+        }
+        PackageCommand::Autoremove => {
+            let outcome = remove::run_autoremove(&config, dry_run, yes, printer).await?;
+            if config.settings.auto_gc && !dry_run && outcome.orphan_count > 0 {
+                clean::run_gc_after_mutation(printer).await?;
+            }
+            Ok(())
+        }
         PackageCommand::Reinstall {
             packages,
             ignore_sysroot_lock,
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
             install::run(
-                &config, packages, None, true, false, false, dry_run, yes, &ignore, printer,
+                &config, packages, None, true, true, false, false, dry_run, yes, &ignore, printer,
             )
             .await
         }
@@ -1742,6 +1757,37 @@ async fn registry_list(config: &config::ApmConfig, printer: &Printer) -> Result<
         .collect();
     let local = registry_ops::local_registries(&config.scope.registries_path(), &configured_names);
 
+    if printer.mode() == OutputMode::Json {
+        let cache_dir = config.cache_path();
+        let registries = config
+            .registries
+            .iter()
+            .map(|(reg_config, state)| {
+                let tracking = reg_config
+                    .tracking_mode()
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|_| "invalid".to_string());
+                let packages_dir = cache_dir.join(&reg_config.name).join("packages");
+                let signing_required = reg_config.signing.as_ref().map(|signing| signing.required);
+                serde_json::json!({
+                    "name": &reg_config.name,
+                    "url": &reg_config.url,
+                    "priority": reg_config.priority,
+                    "enabled": reg_config.enabled,
+                    "status": if reg_config.enabled { "enabled" } else { "disabled" },
+                    "transport": format!("{:?}", reg_config.transport()),
+                    "tracking": tracking,
+                    "packages": count_packages_in_dir(&packages_dir),
+                    "last_update": state.as_ref().and_then(|state| state.last_update.as_ref()),
+                    "last_commit": state.as_ref().and_then(|state| state.last_commit.as_ref()),
+                    "signing_required": signing_required,
+                })
+            })
+            .collect::<Vec<_>>();
+        printer.json(&serde_json::json!(registries));
+        return Ok(());
+    }
+
     if config.registries.is_empty() {
         printer.info(&format!(
             "No registries configured. Add one with `{} add <url>`.",
@@ -1950,7 +1996,7 @@ enabled = true
 
     if !clone {
         printer.success(&format!(
-            "Registry '{name}' added. Run `{pkg_cmd} update {name}` to sync package metadata."
+            "Registry '{name}' added. Run `{pkg_cmd} update --registry {name}` to sync package metadata."
         ));
         return Ok(());
     }
@@ -1966,7 +2012,7 @@ enabled = true
     if let Err(e) = update::run(&synced, Some(&name), printer).await {
         printer.warning(&format!(
             "Registry '{name}' was added, but the initial sync failed: {e}\n\
-             Retry with `{pkg_cmd} update {name}`."
+             Retry with `{pkg_cmd} update --registry {name}`."
         ));
     }
 

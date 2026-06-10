@@ -5,12 +5,14 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::download::{
-    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfos,
+    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     resolve_mirror,
 };
 use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
-use super::profile::meta::{delete_meta, list_meta, write_meta};
+use super::profile::meta::{
+    delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
+};
 use super::registry::{RegistrySet, store_path_hash};
 use super::resolve::resolve_closure;
 use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
@@ -18,7 +20,7 @@ use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::{verify_download_hash, verify_nar_hash};
 use aos_core::error::AosError;
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -51,10 +53,11 @@ pub async fn run(
     ignore_lock: &IgnoreSysrootLock,
     printer: &Printer,
 ) -> Result<()> {
-    // Step 1: Open profile and load installed metadata.
+    let json_mode = printer.mode() == OutputMode::Json;
+    // Step 1: Inspect profile and load installed metadata.
     printer.step(1, 7, "Loading installed packages...");
-    let profile = Profile::open(config.scope)?;
-    let installed = list_meta(&profile)?;
+    let inspect_profile = Profile::open_readonly(config.scope);
+    let installed = list_meta(&inspect_profile)?;
 
     // Step 2: Load registries from cache.
     printer.step(2, 7, "Loading registries...");
@@ -70,6 +73,25 @@ pub async fn run(
         if !held_back.is_empty() {
             print_held_back(&held_back, printer);
         }
+        if json_mode {
+            let status = if held_back.is_empty() {
+                "current"
+            } else {
+                "held_back"
+            };
+            printer.json(&upgrade_result_json(
+                status,
+                packages,
+                exclude,
+                &to_upgrade,
+                &held_back,
+                dry_run,
+                None,
+                0,
+                0,
+                0,
+            ));
+        }
         printer.info("All packages are up to date.");
         return Ok(());
     }
@@ -78,6 +100,20 @@ pub async fn run(
     print_upgrade_summary(&to_upgrade, &held_back, printer);
 
     if dry_run {
+        if json_mode {
+            printer.json(&upgrade_result_json(
+                "planned",
+                packages,
+                exclude,
+                &to_upgrade,
+                &held_back,
+                true,
+                None,
+                0,
+                0,
+                0,
+            ));
+        }
         printer.info("Dry run -- no changes made.");
         return Ok(());
     }
@@ -146,18 +182,22 @@ pub async fn run(
         .collect();
 
     // Download missing NARs.
+    let mut planned_downloads = 0usize;
+    let mut downloaded_count = 0usize;
+    let mut imported_count = 0usize;
     if !to_download.is_empty() {
         printer.step(4, 7, "Downloading packages...");
 
         let requests = build_download_requests(&upgrade_closures, &to_download, config)?;
         let engine = std::sync::Arc::new(default_engine());
-        let resolved: Vec<ResolvedDownload> = fetch_narinfos(
+        let resolved: Vec<ResolvedDownload> = fetch_narinfo_closure(
             std::sync::Arc::clone(&engine),
             &requests,
             config.settings.parallel_downloads,
             printer,
         )
         .await?;
+        planned_downloads = resolved.len();
         let cache_dir = config.nar_cache_path();
 
         let results = download_nars(
@@ -167,6 +207,7 @@ pub async fn run(
             printer,
         )
         .await?;
+        downloaded_count = results.len();
 
         // Verify downloads.
         printer.step(5, 7, "Verifying downloads...");
@@ -189,12 +230,14 @@ pub async fn run(
             .await
             .with_context(|| format!("importing {}", result.store_path))?;
         }
+        imported_count = results.len();
     } else {
         printer.info("All packages already in store, skipping download.");
     }
 
     // Step 8: Create new generation.
     printer.step(6, 7, "Updating profile...");
+    let profile = Profile::open(config.scope)?;
     let prev_gen = profile.current_generation()?;
     let new_gen = profile.new_generation()?;
 
@@ -257,12 +300,15 @@ pub async fn run(
                     registry: registry_name.clone(),
                     installed_at: now_iso.clone(),
                     held: flags.held,
+                    source_drv: meta.source_drv.clone(),
+                    source_nar_hash: meta.source_nar_hash.clone(),
                 }),
             };
 
             write_meta(&profile, &hash, &installed_meta)?;
         }
     }
+    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
 
     // Build FHS tree for the new generation.
     let roots = new_gen.roots()?;
@@ -277,6 +323,20 @@ pub async fn run(
         to_upgrade.len(),
         new_gen.number,
     ));
+    if json_mode {
+        printer.json(&upgrade_result_json(
+            "upgraded",
+            packages,
+            exclude,
+            &to_upgrade,
+            &held_back,
+            false,
+            Some(new_gen.number),
+            planned_downloads,
+            downloaded_count,
+            imported_count,
+        ));
+    }
 
     Ok(())
 }
@@ -392,14 +452,23 @@ fn obsolete_installed_hashes(
     installed: &[InstalledMeta],
     needed_hashes: &HashSet<String>,
 ) -> HashSet<String> {
-    installed
-        .iter()
-        .filter_map(|meta| {
-            meta.apm.as_ref()?;
-            let hash = store_path_hash(&meta.store_path).to_string();
-            (!needed_hashes.contains(&hash)).then_some(hash)
-        })
-        .collect()
+    let mut hashes = HashSet::new();
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+
+        let hash = store_path_hash(&meta.store_path).to_string();
+        if needed_hashes.contains(&hash) {
+            continue;
+        }
+
+        hashes.insert(hash);
+        if !apm.source_drv.is_empty() {
+            hashes.insert(store_path_hash(&apm.source_drv).to_string());
+        }
+    }
+    hashes
 }
 
 /// Filter out held and excluded packages from upgrade candidates.
@@ -437,6 +506,52 @@ pub fn filter_held_and_excluded(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn upgrade_result_json(
+    status: &str,
+    packages: &[String],
+    exclude: &[String],
+    upgrades: &[UpgradeCandidate],
+    held_back: &[UpgradeCandidate],
+    dry_run: bool,
+    generation: Option<u32>,
+    planned_downloads: usize,
+    downloaded: usize,
+    imported: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "action": "upgrade",
+        "status": status,
+        "requested": packages,
+        "exclude": exclude,
+        "dry_run": dry_run,
+        "generation": generation,
+        "upgraded": upgrades.len(),
+        "held_back": held_back.iter().map(upgrade_candidate_json).collect::<Vec<_>>(),
+        "upgrades": upgrades.iter().map(upgrade_candidate_json).collect::<Vec<_>>(),
+        "downloads": {
+            "planned": planned_downloads,
+            "downloaded": downloaded,
+            "imported": imported,
+        },
+    })
+}
+
+fn upgrade_candidate_json(candidate: &UpgradeCandidate) -> serde_json::Value {
+    serde_json::json!({
+        "name": candidate.name.as_str(),
+        "registry": candidate.registry.as_str(),
+        "old_version": candidate.old_version.as_str(),
+        "new_version": candidate.new_version.as_str(),
+        "old_store_hash": candidate.old_store_hash.as_str(),
+        "new_store_hash": store_path_hash(&candidate.new_meta.store_path),
+        "new_store_path": candidate.new_meta.store_path.as_str(),
+        "platform": candidate.new_meta.platform.as_str(),
+        "nar_hash": candidate.new_meta.nar_hash.as_str(),
+        "nar_size": candidate.new_meta.nar_size,
+        "closure_size": candidate.new_meta.closure_size,
+    })
+}
 
 /// Get the current platform string.
 fn platform() -> String {
@@ -696,6 +811,8 @@ mod tests {
                 registry: registry.into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }
     }
@@ -850,8 +967,13 @@ references = []
 
     #[test]
     fn obsolete_installed_hashes_skips_only_unneeded_apm_roots() {
+        let mut old_tool =
+            sample_installed_with_flags("tool", "1.0.0", "oldtoolhash", "aos-core", true, false);
+        old_tool.apm.as_mut().unwrap().source_drv =
+            "/var/lib/store/oldsourcehash-tool-src.drv".to_string();
+
         let installed = vec![
-            sample_installed_with_flags("tool", "1.0.0", "oldtoolhash", "aos-core", true, false),
+            old_tool,
             sample_installed_with_flags(
                 "runtime",
                 "1.0.0",
@@ -877,6 +999,7 @@ references = []
         let obsolete = obsolete_installed_hashes(&installed, &needed);
 
         assert!(obsolete.contains("oldtoolhash"));
+        assert!(obsolete.contains("oldsourcehash"));
         assert!(obsolete.contains("oldruntimehash"));
         assert!(!obsolete.contains("keptroot"));
         assert!(!obsolete.contains("nonapmroot"));

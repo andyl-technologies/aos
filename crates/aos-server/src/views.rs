@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use aos_core::nix::aos_nix_env;
 
 use crate::config::ViewConfig;
 
@@ -123,6 +124,7 @@ impl ViewManager {
     ) -> Result<()> {
         // Query the derivation's own references (not build outputs).
         let output = std::process::Command::new("nix-store")
+            .envs(aos_nix_env())
             .args(["-qR", drv_path])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

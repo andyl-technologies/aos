@@ -558,7 +558,7 @@
 
     ${pkgs.iproute2}/sbin/ip link set lo up || true
     ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-    python3 -m http.server 18085 --bind 127.0.0.1 \
+    PYTHONUNBUFFERED=1 python3 -m http.server 18085 --bind 127.0.0.1 \
       --directory /tmp/system-cache > /tmp/system-cache-http.log 2>&1 &
     CACHE_PID=$!
     if wait_for_system_cache; then
@@ -747,100 +747,43 @@ in {
   # --------------------------------------------------------------------------
   system-registry-mirror-scope = testing.mkVMTest {
     name = "apm-system-registry-mirror-scope";
-    rootfsDeps = testDeps;
+    rootfsDeps = systemInstallWorkflowDeps;
     memory = 1024;
     testScript = ''
-      export HOME=/tmp/home
-      export NIX_REMOTE=""
-      export NIX_CONF_DIR=/tmp/nix-conf
-      export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-      mkdir -p "$NIX_CONF_DIR" /nix/var/nix/db /nix/var/nix/gcroots
-      cat > "$NIX_CONF_DIR/nix.conf" << 'NIXCONF'
-      experimental-features = nix-command
-      sandbox = false
-      NIXCONF
-      nix-store --init || true
-      nix-store --load-db < /aos-registration
+      ${setupRealSystemInstallWorkflow}
 
       echo "==> Test: apm install --system resolves mirrors from system scope"
 
-      mkdir -p /etc/apm/registries.d
-      mkdir -p /var/lib/apm/remote/system-mirror/packages/s
-      mkdir -p /var/lib/apm/registries/system-mirror
-      mkdir -p "$HOME/.local/share/apm/registries/system-mirror"
-
-      cat > /etc/apm/registries.d/system-mirror.toml << 'CFGEOF'
+      BAD_HOME=/tmp/system-scope-user-home
+      mkdir -p "$BAD_HOME/.local/share/apm/registries/system-reg"
+      cat > "$BAD_HOME/.local/share/apm/registries/system-reg/registry.toml" << 'REGEOF'
       [registry]
-      name = "system-mirror"
-      url = "file:///var/lib/apm/remote/system-mirror"
-      priority = 500
-      enabled = true
-
-      [registry.signing]
-      required = false
-      CFGEOF
-
-      cat > /var/lib/apm/registries/system-mirror/registry.toml << 'REGEOF'
-      [registry]
-      name = "system-mirror"
-
-      [[caches]]
-      url = "http://127.0.0.1:9/system-cache"
-      priority = 1000
-      REGEOF
-
-      cat > "$HOME/.local/share/apm/registries/system-mirror/registry.toml" << 'REGEOF'
-      [registry]
-      name = "system-mirror"
-
+      name = "system-reg"
       [[caches]]
       url = "http://127.0.0.1:9/user-cache"
-      priority = 1000
+      priority = 9999
       REGEOF
 
-      cat > /var/lib/apm/remote/system-mirror/packages/s/server.toml << 'PKGEOF'
-      [package]
-      name = "server"
-      description = "System mirror scope fixture"
-      sysroot = true
-      license = "MIT"
-      maintainer = "test"
+      HOME="$BAD_HOME" $APM install server --system --registry system-reg --yes \
+        > /tmp/system-mirror-scope-install.out 2>&1 || {
+        cat /tmp/system-mirror-scope-install.out
+        fail "apm install --system downloads via system-scope registry clone"
+      }
+      cat /tmp/system-mirror-scope-install.out
+      assert_file_contains /tmp/system-mirror-scope-install.out "Downloading" \
+        "system-scope mirror install downloads the missing sysroot"
+      if grep -q "user-cache" /tmp/system-mirror-scope-install.out; then
+        fail "system install should not use the user-scope registry clone"
+      else
+        pass "system install ignores user-scope registry clone"
+      fi
+      assert_store_valid "$TOPLEVEL_STORE" "system toplevel after scoped mirror install"
 
-      [[versions]]
-      version = "1.0.0"
-
-      [versions.platforms.x86_64-linux]
-      store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-server-1.0.0"
-      nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-      nar_size = 1024
-      closure_size = 1024
-      source_drv = ""
-      source_nar_hash = ""
-      references = []
-      PKGEOF
-
-      set +e
-      OUTPUT=$(${apm}/bin/apm install server --system --dry-run 2>&1)
-      STATUS=$?
-      set -e
-      echo "$OUTPUT"
-
-      if [ "$STATUS" -eq 0 ]; then
-        echo "FAIL: mirror scope test expected narinfo fetch to fail"
-        exit 1
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "system static cache HTTP server stopped"
       fi
 
-      if ! echo "$OUTPUT" | grep -q "system-cache"; then
-        echo "FAIL: system-scope cache URL was not used"
-        exit 1
-      fi
-
-      if echo "$OUTPUT" | grep -q "user-cache"; then
-        echo "FAIL: user-scope cache URL leaked into system install"
-        exit 1
-      fi
-
-      echo "==> system-registry-mirror-scope PASSED"
+      check_fail
     '';
   };
 

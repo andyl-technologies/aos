@@ -40,6 +40,271 @@
     nix-store --init || true
     nix-store --load-db < /aos-registration
   '';
+  mkTrackingLeafTool = {
+    rootName,
+    version,
+  }:
+    pkgs.mkDerivation {
+      pname = "${rootName}-leaf";
+      inherit version;
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.bash
+      ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p "$out/bin"
+            printf '%s\n' \
+              '#!${pkgs.bash}/bin/bash' \
+              "printf '${rootName}-leaf ${version}\\n'" \
+              > "$out/bin/${rootName}-leaf"
+            chmod +x "$out/bin/${rootName}-leaf"
+          '';
+        }
+      ];
+    };
+  mkTrackingRootTool = {
+    pname,
+    version,
+    leaf,
+  }:
+    pkgs.mkDerivation {
+      inherit pname version;
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.bash
+      ];
+      runtimeDeps = [
+        leaf
+      ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p "$out/bin" "$out/share/${pname}"
+            printf '%s\n' \
+              '#!${pkgs.bash}/bin/bash' \
+              'leaf_output="$(${leaf}/bin/${pname}-leaf)"' \
+              'printf "${pname} ${version} via %s\n" "$leaf_output"' \
+              > "$out/bin/${pname}"
+            chmod +x "$out/bin/${pname}"
+            printf '%s\n' "${pname} payload ${version}" \
+              > "$out/share/${pname}/payload.txt"
+          '';
+        }
+      ];
+    };
+  branchLeafToolV1 = mkTrackingLeafTool {
+    rootName = "branch-tool";
+    version = "1.0.0";
+  };
+  branchToolV1 = mkTrackingRootTool {
+    pname = "branch-tool";
+    version = "1.0.0";
+    leaf = branchLeafToolV1;
+  };
+  branchLeafToolV2 = mkTrackingLeafTool {
+    rootName = "branch-tool";
+    version = "2.0.0";
+  };
+  branchToolV2 = mkTrackingRootTool {
+    pname = "branch-tool";
+    version = "2.0.0";
+    leaf = branchLeafToolV2;
+  };
+  branchLeafToolV9 = mkTrackingLeafTool {
+    rootName = "branch-tool";
+    version = "9.0.0";
+  };
+  branchToolV9 = mkTrackingRootTool {
+    pname = "branch-tool";
+    version = "9.0.0";
+    leaf = branchLeafToolV9;
+  };
+  tagLeafToolV1 = mkTrackingLeafTool {
+    rootName = "tag-tool";
+    version = "1.0.0";
+  };
+  tagToolV1 = mkTrackingRootTool {
+    pname = "tag-tool";
+    version = "1.0.0";
+    leaf = tagLeafToolV1;
+  };
+  tagLeafToolV2 = mkTrackingLeafTool {
+    rootName = "tag-tool";
+    version = "2.0.0";
+  };
+  tagToolV2 = mkTrackingRootTool {
+    pname = "tag-tool";
+    version = "2.0.0";
+    leaf = tagLeafToolV2;
+  };
+  vtildeLeafTool100 = mkTrackingLeafTool {
+    rootName = "vtilde-tool";
+    version = "1.0.0";
+  };
+  vtildeTool100 = mkTrackingRootTool {
+    pname = "vtilde-tool";
+    version = "1.0.0";
+    leaf = vtildeLeafTool100;
+  };
+  vtildeLeafTool101 = mkTrackingLeafTool {
+    rootName = "vtilde-tool";
+    version = "1.0.1";
+  };
+  vtildeTool101 = mkTrackingRootTool {
+    pname = "vtilde-tool";
+    version = "1.0.1";
+    leaf = vtildeLeafTool101;
+  };
+  vtildeLeafTool102 = mkTrackingLeafTool {
+    rootName = "vtilde-tool";
+    version = "1.0.2";
+  };
+  vtildeTool102 = mkTrackingRootTool {
+    pname = "vtilde-tool";
+    version = "1.0.2";
+    leaf = vtildeLeafTool102;
+  };
+  vtildeLeafTool103 = mkTrackingLeafTool {
+    rootName = "vtilde-tool";
+    version = "1.0.3";
+  };
+  vtildeTool103 = mkTrackingRootTool {
+    pname = "vtilde-tool";
+    version = "1.0.3";
+    leaf = vtildeLeafTool103;
+  };
+  vtildeLeafTool110 = mkTrackingLeafTool {
+    rootName = "vtilde-tool";
+    version = "1.1.0";
+  };
+  vtildeTool110 = mkTrackingRootTool {
+    pname = "vtilde-tool";
+    version = "1.1.0";
+    leaf = vtildeLeafTool110;
+  };
+  vtildeLeafTool111 = mkTrackingLeafTool {
+    rootName = "vtilde-tool";
+    version = "1.1.1";
+  };
+  vtildeTool111 = mkTrackingRootTool {
+    pname = "vtilde-tool";
+    version = "1.1.1";
+    leaf = vtildeLeafTool111;
+  };
+  vcaretLeafTool100 = mkTrackingLeafTool {
+    rootName = "vcaret-tool";
+    version = "1.0.0";
+  };
+  vcaretTool100 = mkTrackingRootTool {
+    pname = "vcaret-tool";
+    version = "1.0.0";
+    leaf = vcaretLeafTool100;
+  };
+  vcaretLeafTool120 = mkTrackingLeafTool {
+    rootName = "vcaret-tool";
+    version = "1.2.0";
+  };
+  vcaretTool120 = mkTrackingRootTool {
+    pname = "vcaret-tool";
+    version = "1.2.0";
+    leaf = vcaretLeafTool120;
+  };
+  vcaretLeafTool130 = mkTrackingLeafTool {
+    rootName = "vcaret-tool";
+    version = "1.3.0";
+  };
+  vcaretTool130 = mkTrackingRootTool {
+    pname = "vcaret-tool";
+    version = "1.3.0";
+    leaf = vcaretLeafTool130;
+  };
+  vcaretLeafTool200 = mkTrackingLeafTool {
+    rootName = "vcaret-tool";
+    version = "2.0.0";
+  };
+  vcaretTool200 = mkTrackingRootTool {
+    pname = "vcaret-tool";
+    version = "2.0.0";
+    leaf = vcaretLeafTool200;
+  };
+  vcaretLeafTool210 = mkTrackingLeafTool {
+    rootName = "vcaret-tool";
+    version = "2.1.0";
+  };
+  vcaretTool210 = mkTrackingRootTool {
+    pname = "vcaret-tool";
+    version = "2.1.0";
+    leaf = vcaretLeafTool210;
+  };
+  commitLeafToolV1 = mkTrackingLeafTool {
+    rootName = "commit-tool";
+    version = "1.0.0";
+  };
+  commitToolV1 = mkTrackingRootTool {
+    pname = "commit-tool";
+    version = "1.0.0";
+    leaf = commitLeafToolV1;
+  };
+  commitLeafToolV2 = mkTrackingLeafTool {
+    rootName = "commit-tool";
+    version = "2.0.0";
+  };
+  commitToolV2 = mkTrackingRootTool {
+    pname = "commit-tool";
+    version = "2.0.0";
+    leaf = commitLeafToolV2;
+  };
+  defaultLeafToolV1 = mkTrackingLeafTool {
+    rootName = "default-tool";
+    version = "1.0.0";
+  };
+  defaultToolV1 = mkTrackingRootTool {
+    pname = "default-tool";
+    version = "1.0.0";
+    leaf = defaultLeafToolV1;
+  };
+  defaultLeafToolV2 = mkTrackingLeafTool {
+    rootName = "default-tool";
+    version = "2.0.0";
+  };
+  defaultToolV2 = mkTrackingRootTool {
+    pname = "default-tool";
+    version = "2.0.0";
+    leaf = defaultLeafToolV2;
+  };
+  gitNativeLeafTool100 = mkTrackingLeafTool {
+    rootName = "git-native-tool";
+    version = "1.0.0";
+  };
+  gitNativeTool100 = mkTrackingRootTool {
+    pname = "git-native-tool";
+    version = "1.0.0";
+    leaf = gitNativeLeafTool100;
+  };
+  gitNativeLeafTool110 = mkTrackingLeafTool {
+    rootName = "git-native-tool";
+    version = "1.1.0";
+  };
+  gitNativeTool110 = mkTrackingRootTool {
+    pname = "git-native-tool";
+    version = "1.1.0";
+    leaf = gitNativeLeafTool110;
+  };
+  gitNativeLeafTool200 = mkTrackingLeafTool {
+    rootName = "git-native-tool";
+    version = "2.0.0";
+  };
+  gitNativeTool200 = mkTrackingRootTool {
+    pname = "git-native-tool";
+    version = "2.0.0";
+    leaf = gitNativeLeafTool200;
+  };
   trackingWorkflowDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -55,28 +320,22 @@ in {
   # -------------------------------------------------------------------------
   tracking-branch = testing.mkVMTest {
     name = "apm-tracking-branch";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        branchLeafToolV1
+        branchToolV1
+        branchLeafToolV2
+        branchToolV2
+        branchLeafToolV9
+        branchToolV9
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: branch tracking follows selected branch"
-
-      make_branch_tool() {
-        version="$1"
-        src="/tmp/branch-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/branch-tool"
-        cat > "$src/bin/branch-tool" << EOF
-      #!/bin/sh
-      echo "branch-tool $version executed"
-      EOF
-        chmod +x "$src/bin/branch-tool"
-        printf "branch-tool payload %s\n" "$version" \
-          > "$src/share/branch-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -135,12 +394,28 @@ in {
         git -C "$REG_DIR" commit -m "release: branch-tool $version"
       }
 
-      TOOL_V1_STORE=$(make_branch_tool 1.0.0)
-      TOOL_V2_STORE=$(make_branch_tool 2.0.0)
-      TOOL_V9_STORE=$(make_branch_tool 9.0.0)
+      TOOL_V1_STORE="${branchToolV1}"
+      TOOL_V1_DEP_STORE="${branchLeafToolV1}"
+      TOOL_V2_STORE="${branchToolV2}"
+      TOOL_V2_DEP_STORE="${branchLeafToolV2}"
+      TOOL_V9_STORE="${branchToolV9}"
+      TOOL_V9_DEP_STORE="${branchLeafToolV9}"
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V1_DEP_HASH=$(basename "$TOOL_V1_DEP_STORE" | cut -d- -f1)
       TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V2_DEP_HASH=$(basename "$TOOL_V2_DEP_STORE" | cut -d- -f1)
       TOOL_V9_HASH=$(basename "$TOOL_V9_STORE" | cut -d- -f1)
+      TOOL_V9_DEP_HASH=$(basename "$TOOL_V9_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_V1_STORE" > /tmp/branch-v1-refs.out
+      assert_file_contains /tmp/branch-v1-refs.out "$TOOL_V1_DEP_STORE" \
+        "branch-tool v1 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V2_STORE" > /tmp/branch-v2-refs.out
+      assert_file_contains /tmp/branch-v2-refs.out "$TOOL_V2_DEP_STORE" \
+        "branch-tool v2 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V9_STORE" > /tmp/branch-v9-refs.out
+      assert_file_contains /tmp/branch-v9-refs.out "$TOOL_V9_DEP_STORE" \
+        "branch-tool default-branch root has a real dependency closure"
 
       $APR create branch-reg
       REG_DIR="$REG_STORAGE/branch-reg"
@@ -155,18 +430,22 @@ in {
       publish_branch_version 1.0.0 "$TOOL_V1_STORE"
       assert_file_exists "/tmp/branch-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has branch-tool release v1 narinfo"
+      assert_file_exists "/tmp/branch-cache/$TOOL_V1_DEP_HASH.narinfo" \
+        "static cache has branch-tool release v1 dependency narinfo"
       git -C "$REG_DIR" push origin release
 
       $APR branch switch "$DEFAULT_BRANCH" --registry branch-reg
       publish_branch_version 9.0.0 "$TOOL_V9_STORE"
       assert_file_exists "/tmp/branch-cache/$TOOL_V9_HASH.narinfo" \
         "static cache has default branch distraction narinfo"
+      assert_file_exists "/tmp/branch-cache/$TOOL_V9_DEP_HASH.narinfo" \
+        "static cache has default branch distraction dependency narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18104 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18104 --bind 127.0.0.1 \
         --directory /tmp/branch-cache > /tmp/branch-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -211,6 +490,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_V1_STORE" "branch-tool-v1"
+      delete_store_path "$TOOL_V1_DEP_STORE" "branch-tool-v1-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -220,13 +500,15 @@ in {
         fail "apm install downloads selected branch v1"
       }
       cat /tmp/branch-install-v1.out
-      assert_file_contains /tmp/branch-install-v1.out "Downloading" \
-        "apm install downloads branch v1 NAR"
+      assert_file_contains /tmp/branch-install-v1.out "Downloading 2 NAR" \
+        "apm install downloads branch v1 closure"
       assert_store_valid "$TOOL_V1_STORE" "branch-tool v1"
+      assert_store_valid "$TOOL_V1_DEP_STORE" "branch-tool v1 dependency"
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/branch-tool"
       "$PROFILE_TOOL" > /tmp/branch-run-v1.out
       assert_file_contains /tmp/branch-run-v1.out \
-        "branch-tool 1.0.0 executed" "installed branch v1 tool executes"
+        "^branch-tool 1.0.0 via branch-tool-leaf 1.0.0$" \
+        "installed branch v1 tool executes through dependency"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
@@ -234,12 +516,15 @@ in {
       publish_branch_version 2.0.0 "$TOOL_V2_STORE"
       assert_file_exists "/tmp/branch-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has branch-tool release v2 narinfo"
+      assert_file_exists "/tmp/branch-cache/$TOOL_V2_DEP_HASH.narinfo" \
+        "static cache has branch-tool release v2 dependency narinfo"
       git -C "$REG_DIR" push origin release
 
       export HOME=/tmp/branch-consumer
       export USER=branchuser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_V2_STORE" "branch-tool-v2"
+      delete_store_path "$TOOL_V2_DEP_STORE" "branch-tool-v2-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -264,14 +549,16 @@ in {
         fail "apm upgrade downloads selected branch v2"
       }
       cat /tmp/branch-upgrade.out
-      assert_file_contains /tmp/branch-upgrade.out "Downloading" \
-        "apm upgrade downloads branch v2 NAR"
+      assert_file_contains /tmp/branch-upgrade.out "Downloading 2 NAR" \
+        "apm upgrade downloads branch v2 closure"
       assert_file_contains /tmp/branch-upgrade.out "Upgraded 1 package" \
         "apm upgrade activates branch v2"
       assert_store_valid "$TOOL_V2_STORE" "branch-tool v2"
+      assert_store_valid "$TOOL_V2_DEP_STORE" "branch-tool v2 dependency"
       "$PROFILE_TOOL" > /tmp/branch-run-v2.out
       assert_file_contains /tmp/branch-run-v2.out \
-        "branch-tool 2.0.0 executed" "upgraded branch v2 tool executes"
+        "^branch-tool 2.0.0 via branch-tool-leaf 2.0.0$" \
+        "upgraded branch v2 tool executes through dependency"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
@@ -284,28 +571,20 @@ in {
   # -------------------------------------------------------------------------
   tracking-tag = testing.mkVMTest {
     name = "apm-tracking-tag";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        tagLeafToolV1
+        tagToolV1
+        tagLeafToolV2
+        tagToolV2
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: tag tracking stays pinned to selected tag"
-
-      make_tag_tool() {
-        version="$1"
-        src="/tmp/tag-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/tag-tool"
-        cat > "$src/bin/tag-tool" << EOF
-      #!/bin/sh
-      echo "tag-tool $version executed"
-      EOF
-        chmod +x "$src/bin/tag-tool"
-        printf "tag-tool payload %s\n" "$version" \
-          > "$src/share/tag-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -391,10 +670,21 @@ in {
         cat "/tmp/tag-commit-$version.out"
       }
 
-      TOOL_V1_STORE=$(make_tag_tool 1.0.0)
-      TOOL_V2_STORE=$(make_tag_tool 2.0.0)
+      TOOL_V1_STORE="${tagToolV1}"
+      TOOL_V1_DEP_STORE="${tagLeafToolV1}"
+      TOOL_V2_STORE="${tagToolV2}"
+      TOOL_V2_DEP_STORE="${tagLeafToolV2}"
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V1_DEP_HASH=$(basename "$TOOL_V1_DEP_STORE" | cut -d- -f1)
       TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V2_DEP_HASH=$(basename "$TOOL_V2_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_V1_STORE" > /tmp/tag-v1-refs.out
+      assert_file_contains /tmp/tag-v1-refs.out "$TOOL_V1_DEP_STORE" \
+        "tag-tool v1 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V2_STORE" > /tmp/tag-v2-refs.out
+      assert_file_contains /tmp/tag-v2-refs.out "$TOOL_V2_DEP_STORE" \
+        "tag-tool v2 root has a real dependency closure"
 
       $APR create tag-reg
       REG_DIR="$REG_STORAGE/tag-reg"
@@ -403,6 +693,8 @@ in {
       git -C "$REG_DIR" tag v1.0.0
       assert_file_exists "/tmp/tag-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has tag-tool v1 narinfo"
+      assert_file_exists "/tmp/tag-cache/$TOOL_V1_DEP_HASH.narinfo" \
+        "static cache has tag-tool v1 dependency narinfo"
 
       git init --bare --object-format=sha256 /tmp/tag-origin.git
       git -C /tmp/tag-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
@@ -413,7 +705,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18105 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18105 --bind 127.0.0.1 \
         --directory /tmp/tag-cache > /tmp/tag-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -458,6 +750,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_V1_STORE" "tag-tool-v1"
+      delete_store_path "$TOOL_V1_DEP_STORE" "tag-tool-v1-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -467,25 +760,30 @@ in {
         fail "apm install downloads selected tag v1"
       }
       cat /tmp/tag-install-v1.out
-      assert_file_contains /tmp/tag-install-v1.out "Downloading" \
-        "apm install downloads tag v1 NAR"
+      assert_file_contains /tmp/tag-install-v1.out "Downloading 2 NAR" \
+        "apm install downloads tag v1 closure"
       assert_store_valid "$TOOL_V1_STORE" "tag-tool v1"
+      assert_store_valid "$TOOL_V1_DEP_STORE" "tag-tool v1 dependency"
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/tag-tool"
       "$PROFILE_TOOL" > /tmp/tag-run-v1.out
       assert_file_contains /tmp/tag-run-v1.out \
-        "tag-tool 1.0.0 executed" "installed tag v1 tool executes"
+        "^tag-tool 1.0.0 via tag-tool-leaf 1.0.0$" \
+        "installed tag v1 tool executes through dependency"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
       publish_tag_version 2.0.0 "$TOOL_V2_STORE"
       assert_file_exists "/tmp/tag-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has tag-tool v2 narinfo on default branch"
+      assert_file_exists "/tmp/tag-cache/$TOOL_V2_DEP_HASH.narinfo" \
+        "static cache has tag-tool v2 dependency narinfo on default branch"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       export HOME=/tmp/tag-consumer
       export USER=taguser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_V2_STORE" "tag-tool-v2"
+      delete_store_path "$TOOL_V2_DEP_STORE" "tag-tool-v2-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -520,9 +818,11 @@ in {
       assert_file_not_contains /tmp/tag-upgrade.out "Downloading" \
         "tag-pinned upgrade does not download default branch v2"
       assert_store_missing "$TOOL_V2_STORE" "tag-tool v2"
+      assert_store_missing "$TOOL_V2_DEP_STORE" "tag-tool v2 dependency"
       "$PROFILE_TOOL" > /tmp/tag-run-still-v1.out
       assert_file_contains /tmp/tag-run-still-v1.out \
-        "tag-tool 1.0.0 executed" "tag-pinned profile remains on v1"
+        "^tag-tool 1.0.0 via tag-tool-leaf 1.0.0$" \
+        "tag-pinned profile remains on v1"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
@@ -535,28 +835,28 @@ in {
   # -------------------------------------------------------------------------
   tracking-version-tilde = testing.mkVMTest {
     name = "apm-tracking-version-tilde";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        vtildeLeafTool100
+        vtildeTool100
+        vtildeLeafTool101
+        vtildeTool101
+        vtildeLeafTool102
+        vtildeTool102
+        vtildeLeafTool103
+        vtildeTool103
+        vtildeLeafTool110
+        vtildeTool110
+        vtildeLeafTool111
+        vtildeTool111
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: version tilde tracking follows best matching tag"
-
-      make_vtilde_tool() {
-        version="$1"
-        src="/tmp/vtilde-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/vtilde-tool"
-        cat > "$src/bin/vtilde-tool" << EOF
-      #!/bin/sh
-      echo "vtilde-tool $version executed"
-      EOF
-        chmod +x "$src/bin/vtilde-tool"
-        printf "vtilde-tool payload %s\n" "$version" \
-          > "$src/share/vtilde-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -648,16 +948,36 @@ in {
         }
       }
 
-      TOOL_100_STORE=$(make_vtilde_tool 1.0.0)
-      TOOL_101_STORE=$(make_vtilde_tool 1.0.1)
-      TOOL_102_STORE=$(make_vtilde_tool 1.0.2)
-      TOOL_110_STORE=$(make_vtilde_tool 1.1.0)
-      TOOL_103_STORE=$(make_vtilde_tool 1.0.3)
-      TOOL_111_STORE=$(make_vtilde_tool 1.1.1)
+      TOOL_100_STORE="${vtildeTool100}"
+      TOOL_100_DEP_STORE="${vtildeLeafTool100}"
+      TOOL_101_STORE="${vtildeTool101}"
+      TOOL_101_DEP_STORE="${vtildeLeafTool101}"
+      TOOL_102_STORE="${vtildeTool102}"
+      TOOL_102_DEP_STORE="${vtildeLeafTool102}"
+      TOOL_103_STORE="${vtildeTool103}"
+      TOOL_103_DEP_STORE="${vtildeLeafTool103}"
+      TOOL_110_STORE="${vtildeTool110}"
+      TOOL_110_DEP_STORE="${vtildeLeafTool110}"
+      TOOL_111_STORE="${vtildeTool111}"
+      TOOL_111_DEP_STORE="${vtildeLeafTool111}"
       TOOL_102_HASH=$(basename "$TOOL_102_STORE" | cut -d- -f1)
+      TOOL_102_DEP_HASH=$(basename "$TOOL_102_DEP_STORE" | cut -d- -f1)
       TOOL_103_HASH=$(basename "$TOOL_103_STORE" | cut -d- -f1)
+      TOOL_103_DEP_HASH=$(basename "$TOOL_103_DEP_STORE" | cut -d- -f1)
       TOOL_110_HASH=$(basename "$TOOL_110_STORE" | cut -d- -f1)
+      TOOL_110_DEP_HASH=$(basename "$TOOL_110_DEP_STORE" | cut -d- -f1)
       TOOL_111_HASH=$(basename "$TOOL_111_STORE" | cut -d- -f1)
+      TOOL_111_DEP_HASH=$(basename "$TOOL_111_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_102_STORE" > /tmp/vtilde-102-refs.out
+      assert_file_contains /tmp/vtilde-102-refs.out "$TOOL_102_DEP_STORE" \
+        "vtilde-tool 1.0.2 root has a real dependency closure"
+      nix-store -q --references "$TOOL_103_STORE" > /tmp/vtilde-103-refs.out
+      assert_file_contains /tmp/vtilde-103-refs.out "$TOOL_103_DEP_STORE" \
+        "vtilde-tool 1.0.3 root has a real dependency closure"
+      nix-store -q --references "$TOOL_111_STORE" > /tmp/vtilde-111-refs.out
+      assert_file_contains /tmp/vtilde-111-refs.out "$TOOL_111_DEP_STORE" \
+        "out-of-range vtilde-tool 1.1.1 root has a real dependency closure"
 
       $APR create vtilde-reg
       REG_DIR="$REG_STORAGE/vtilde-reg"
@@ -668,8 +988,12 @@ in {
       publish_vtilde_version 1.1.0 "$TOOL_110_STORE"
       assert_file_exists "/tmp/vtilde-cache/$TOOL_102_HASH.narinfo" \
         "static cache has vtilde-tool 1.0.2 narinfo"
+      assert_file_exists "/tmp/vtilde-cache/$TOOL_102_DEP_HASH.narinfo" \
+        "static cache has vtilde-tool 1.0.2 dependency narinfo"
       assert_file_exists "/tmp/vtilde-cache/$TOOL_110_HASH.narinfo" \
         "static cache has out-of-range 1.1.0 narinfo"
+      assert_file_exists "/tmp/vtilde-cache/$TOOL_110_DEP_HASH.narinfo" \
+        "static cache has out-of-range 1.1.0 dependency narinfo"
 
       git init --bare --object-format=sha256 /tmp/vtilde-origin.git
       git -C /tmp/vtilde-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
@@ -680,7 +1004,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18106 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18106 --bind 127.0.0.1 \
         --directory /tmp/vtilde-cache > /tmp/vtilde-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -725,6 +1049,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_102_STORE" "vtilde-tool-1.0.2"
+      delete_store_path "$TOOL_102_DEP_STORE" "vtilde-tool-1.0.2-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -734,9 +1059,10 @@ in {
         fail "apm install downloads initial best tilde package"
       }
       cat /tmp/vtilde-install.out
-      assert_file_contains /tmp/vtilde-install.out "Downloading" \
-        "apm install downloads initial tilde NAR"
+      assert_file_contains /tmp/vtilde-install.out "Downloading 2 NAR" \
+        "apm install downloads initial tilde closure"
       assert_store_valid "$TOOL_102_STORE" "vtilde-tool 1.0.2"
+      assert_store_valid "$TOOL_102_DEP_STORE" "vtilde-tool 1.0.2 dependency"
       PROFILE="/var/lib/profiles/per-user/$USER"
       assert_file_not_exists "$PROFILE/meta/$TOOL_110_HASH.json" \
         "initial tilde install does not record out-of-range 1.1.0 metadata"
@@ -748,7 +1074,8 @@ in {
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/vtilde-tool"
       "$PROFILE_TOOL" > /tmp/vtilde-run-initial.out
       assert_file_contains /tmp/vtilde-run-initial.out \
-        "vtilde-tool 1.0.2 executed" "installed initial tilde tool executes"
+        "^vtilde-tool 1.0.2 via vtilde-tool-leaf 1.0.2$" \
+        "installed initial tilde tool executes through dependency"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
@@ -758,8 +1085,12 @@ in {
       publish_vtilde_version 1.1.1 "$TOOL_111_STORE"
       assert_file_exists "/tmp/vtilde-cache/$TOOL_103_HASH.narinfo" \
         "static cache has in-range vtilde-tool 1.0.3 narinfo"
+      assert_file_exists "/tmp/vtilde-cache/$TOOL_103_DEP_HASH.narinfo" \
+        "static cache has in-range vtilde-tool 1.0.3 dependency narinfo"
       assert_file_exists "/tmp/vtilde-cache/$TOOL_111_HASH.narinfo" \
         "static cache has out-of-range vtilde-tool 1.1.1 narinfo"
+      assert_file_exists "/tmp/vtilde-cache/$TOOL_111_DEP_HASH.narinfo" \
+        "static cache has out-of-range vtilde-tool 1.1.1 dependency narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
       git -C "$REG_DIR" push origin maintenance-1.0
       git -C "$REG_DIR" push origin --tags
@@ -768,7 +1099,9 @@ in {
       export USER=vtildeuser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_103_STORE" "vtilde-tool-1.0.3"
+      delete_store_path "$TOOL_103_DEP_STORE" "vtilde-tool-1.0.3-dep"
       delete_store_path "$TOOL_111_STORE" "vtilde-tool-1.1.1"
+      delete_store_path "$TOOL_111_DEP_STORE" "vtilde-tool-1.1.1-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -797,13 +1130,16 @@ in {
         "tilde upgrade plans in-range update"
       assert_file_not_contains /tmp/vtilde-upgrade.out "1.1.1" \
         "tilde upgrade does not plan out-of-range update"
-      assert_file_contains /tmp/vtilde-upgrade.out "Downloading" \
-        "tilde upgrade downloads in-range NAR"
+      assert_file_contains /tmp/vtilde-upgrade.out "Downloading 2 NAR" \
+        "tilde upgrade downloads in-range closure"
       assert_store_valid "$TOOL_103_STORE" "vtilde-tool 1.0.3"
+      assert_store_valid "$TOOL_103_DEP_STORE" "vtilde-tool 1.0.3 dependency"
       assert_store_missing "$TOOL_111_STORE" "vtilde-tool 1.1.1"
+      assert_store_missing "$TOOL_111_DEP_STORE" "vtilde-tool 1.1.1 dependency"
       "$PROFILE_TOOL" > /tmp/vtilde-run-upgraded.out
       assert_file_contains /tmp/vtilde-run-upgraded.out \
-        "vtilde-tool 1.0.3 executed" "upgraded tilde tool executes"
+        "^vtilde-tool 1.0.3 via vtilde-tool-leaf 1.0.3$" \
+        "upgraded tilde tool executes through dependency"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
@@ -816,28 +1152,26 @@ in {
   # -------------------------------------------------------------------------
   tracking-version-caret = testing.mkVMTest {
     name = "apm-tracking-version-caret";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        vcaretLeafTool100
+        vcaretTool100
+        vcaretLeafTool120
+        vcaretTool120
+        vcaretLeafTool130
+        vcaretTool130
+        vcaretLeafTool200
+        vcaretTool200
+        vcaretLeafTool210
+        vcaretTool210
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: version caret tracking follows best matching tag"
-
-      make_vcaret_tool() {
-        version="$1"
-        src="/tmp/vcaret-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/vcaret-tool"
-        cat > "$src/bin/vcaret-tool" << EOF
-      #!/bin/sh
-      echo "vcaret-tool $version executed"
-      EOF
-        chmod +x "$src/bin/vcaret-tool"
-        printf "vcaret-tool payload %s\n" "$version" \
-          > "$src/share/vcaret-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -929,15 +1263,34 @@ in {
         }
       }
 
-      TOOL_100_STORE=$(make_vcaret_tool 1.0.0)
-      TOOL_120_STORE=$(make_vcaret_tool 1.2.0)
-      TOOL_200_STORE=$(make_vcaret_tool 2.0.0)
-      TOOL_130_STORE=$(make_vcaret_tool 1.3.0)
-      TOOL_210_STORE=$(make_vcaret_tool 2.1.0)
+      TOOL_100_STORE="${vcaretTool100}"
+      TOOL_100_DEP_STORE="${vcaretLeafTool100}"
+      TOOL_120_STORE="${vcaretTool120}"
+      TOOL_120_DEP_STORE="${vcaretLeafTool120}"
+      TOOL_130_STORE="${vcaretTool130}"
+      TOOL_130_DEP_STORE="${vcaretLeafTool130}"
+      TOOL_200_STORE="${vcaretTool200}"
+      TOOL_200_DEP_STORE="${vcaretLeafTool200}"
+      TOOL_210_STORE="${vcaretTool210}"
+      TOOL_210_DEP_STORE="${vcaretLeafTool210}"
       TOOL_120_HASH=$(basename "$TOOL_120_STORE" | cut -d- -f1)
+      TOOL_120_DEP_HASH=$(basename "$TOOL_120_DEP_STORE" | cut -d- -f1)
       TOOL_130_HASH=$(basename "$TOOL_130_STORE" | cut -d- -f1)
+      TOOL_130_DEP_HASH=$(basename "$TOOL_130_DEP_STORE" | cut -d- -f1)
       TOOL_200_HASH=$(basename "$TOOL_200_STORE" | cut -d- -f1)
+      TOOL_200_DEP_HASH=$(basename "$TOOL_200_DEP_STORE" | cut -d- -f1)
       TOOL_210_HASH=$(basename "$TOOL_210_STORE" | cut -d- -f1)
+      TOOL_210_DEP_HASH=$(basename "$TOOL_210_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_120_STORE" > /tmp/vcaret-120-refs.out
+      assert_file_contains /tmp/vcaret-120-refs.out "$TOOL_120_DEP_STORE" \
+        "vcaret-tool 1.2.0 root has a real dependency closure"
+      nix-store -q --references "$TOOL_130_STORE" > /tmp/vcaret-130-refs.out
+      assert_file_contains /tmp/vcaret-130-refs.out "$TOOL_130_DEP_STORE" \
+        "vcaret-tool 1.3.0 root has a real dependency closure"
+      nix-store -q --references "$TOOL_210_STORE" > /tmp/vcaret-210-refs.out
+      assert_file_contains /tmp/vcaret-210-refs.out "$TOOL_210_DEP_STORE" \
+        "out-of-range vcaret-tool 2.1.0 root has a real dependency closure"
 
       $APR create vcaret-reg
       REG_DIR="$REG_STORAGE/vcaret-reg"
@@ -947,8 +1300,12 @@ in {
       publish_vcaret_version 2.0.0 "$TOOL_200_STORE"
       assert_file_exists "/tmp/vcaret-cache/$TOOL_120_HASH.narinfo" \
         "static cache has vcaret-tool 1.2.0 narinfo"
+      assert_file_exists "/tmp/vcaret-cache/$TOOL_120_DEP_HASH.narinfo" \
+        "static cache has vcaret-tool 1.2.0 dependency narinfo"
       assert_file_exists "/tmp/vcaret-cache/$TOOL_200_HASH.narinfo" \
         "static cache has out-of-range 2.0.0 narinfo"
+      assert_file_exists "/tmp/vcaret-cache/$TOOL_200_DEP_HASH.narinfo" \
+        "static cache has out-of-range 2.0.0 dependency narinfo"
 
       git init --bare --object-format=sha256 /tmp/vcaret-origin.git
       git -C /tmp/vcaret-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
@@ -959,7 +1316,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18107 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18107 --bind 127.0.0.1 \
         --directory /tmp/vcaret-cache > /tmp/vcaret-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -1004,6 +1361,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_120_STORE" "vcaret-tool-1.2.0"
+      delete_store_path "$TOOL_120_DEP_STORE" "vcaret-tool-1.2.0-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -1013,9 +1371,10 @@ in {
         fail "apm install downloads initial best caret package"
       }
       cat /tmp/vcaret-install.out
-      assert_file_contains /tmp/vcaret-install.out "Downloading" \
-        "apm install downloads initial caret NAR"
+      assert_file_contains /tmp/vcaret-install.out "Downloading 2 NAR" \
+        "apm install downloads initial caret closure"
       assert_store_valid "$TOOL_120_STORE" "vcaret-tool 1.2.0"
+      assert_store_valid "$TOOL_120_DEP_STORE" "vcaret-tool 1.2.0 dependency"
       PROFILE="/var/lib/profiles/per-user/$USER"
       assert_file_not_exists "$PROFILE/meta/$TOOL_200_HASH.json" \
         "initial caret install does not record out-of-range 2.0.0 metadata"
@@ -1027,7 +1386,8 @@ in {
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/vcaret-tool"
       "$PROFILE_TOOL" > /tmp/vcaret-run-initial.out
       assert_file_contains /tmp/vcaret-run-initial.out \
-        "vcaret-tool 1.2.0 executed" "installed initial caret tool executes"
+        "^vcaret-tool 1.2.0 via vcaret-tool-leaf 1.2.0$" \
+        "installed initial caret tool executes through dependency"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
@@ -1037,8 +1397,12 @@ in {
       publish_vcaret_version 2.1.0 "$TOOL_210_STORE"
       assert_file_exists "/tmp/vcaret-cache/$TOOL_130_HASH.narinfo" \
         "static cache has in-range vcaret-tool 1.3.0 narinfo"
+      assert_file_exists "/tmp/vcaret-cache/$TOOL_130_DEP_HASH.narinfo" \
+        "static cache has in-range vcaret-tool 1.3.0 dependency narinfo"
       assert_file_exists "/tmp/vcaret-cache/$TOOL_210_HASH.narinfo" \
         "static cache has out-of-range vcaret-tool 2.1.0 narinfo"
+      assert_file_exists "/tmp/vcaret-cache/$TOOL_210_DEP_HASH.narinfo" \
+        "static cache has out-of-range vcaret-tool 2.1.0 dependency narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
       git -C "$REG_DIR" push origin maintenance-1
       git -C "$REG_DIR" push origin --tags
@@ -1047,7 +1411,9 @@ in {
       export USER=vcaretuser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_130_STORE" "vcaret-tool-1.3.0"
+      delete_store_path "$TOOL_130_DEP_STORE" "vcaret-tool-1.3.0-dep"
       delete_store_path "$TOOL_210_STORE" "vcaret-tool-2.1.0"
+      delete_store_path "$TOOL_210_DEP_STORE" "vcaret-tool-2.1.0-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -1076,13 +1442,16 @@ in {
         "caret upgrade plans in-range update"
       assert_file_not_contains /tmp/vcaret-upgrade.out "2.1.0" \
         "caret upgrade does not plan out-of-range update"
-      assert_file_contains /tmp/vcaret-upgrade.out "Downloading" \
-        "caret upgrade downloads in-range NAR"
+      assert_file_contains /tmp/vcaret-upgrade.out "Downloading 2 NAR" \
+        "caret upgrade downloads in-range closure"
       assert_store_valid "$TOOL_130_STORE" "vcaret-tool 1.3.0"
+      assert_store_valid "$TOOL_130_DEP_STORE" "vcaret-tool 1.3.0 dependency"
       assert_store_missing "$TOOL_210_STORE" "vcaret-tool 2.1.0"
+      assert_store_missing "$TOOL_210_DEP_STORE" "vcaret-tool 2.1.0 dependency"
       "$PROFILE_TOOL" > /tmp/vcaret-run-upgraded.out
       assert_file_contains /tmp/vcaret-run-upgraded.out \
-        "vcaret-tool 1.3.0 executed" "upgraded caret tool executes"
+        "^vcaret-tool 1.3.0 via vcaret-tool-leaf 1.3.0$" \
+        "upgraded caret tool executes through dependency"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
@@ -1095,28 +1464,20 @@ in {
   # -------------------------------------------------------------------------
   tracking-commit = testing.mkVMTest {
     name = "apm-tracking-commit";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        commitLeafToolV1
+        commitToolV1
+        commitLeafToolV2
+        commitToolV2
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: commit tracking stays pinned to selected commit"
-
-      make_commit_tool() {
-        version="$1"
-        src="/tmp/commit-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/commit-tool"
-        cat > "$src/bin/commit-tool" << EOF
-      #!/bin/sh
-      echo "commit-tool $version executed"
-      EOF
-        chmod +x "$src/bin/commit-tool"
-        printf "commit-tool payload %s\n" "$version" \
-          > "$src/share/commit-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -1202,10 +1563,21 @@ in {
         cat "/tmp/commit-commit-$version.out"
       }
 
-      TOOL_V1_STORE=$(make_commit_tool 1.0.0)
-      TOOL_V2_STORE=$(make_commit_tool 2.0.0)
+      TOOL_V1_STORE="${commitToolV1}"
+      TOOL_V1_DEP_STORE="${commitLeafToolV1}"
+      TOOL_V2_STORE="${commitToolV2}"
+      TOOL_V2_DEP_STORE="${commitLeafToolV2}"
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V1_DEP_HASH=$(basename "$TOOL_V1_DEP_STORE" | cut -d- -f1)
       TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V2_DEP_HASH=$(basename "$TOOL_V2_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_V1_STORE" > /tmp/commit-v1-refs.out
+      assert_file_contains /tmp/commit-v1-refs.out "$TOOL_V1_DEP_STORE" \
+        "commit-tool v1 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V2_STORE" > /tmp/commit-v2-refs.out
+      assert_file_contains /tmp/commit-v2-refs.out "$TOOL_V2_DEP_STORE" \
+        "commit-tool v2 root has a real dependency closure"
 
       $APR create commit-reg
       REG_DIR="$REG_STORAGE/commit-reg"
@@ -1216,11 +1588,15 @@ in {
       echo "Pinned commit: $PINNED_COMMIT"
       assert_file_exists "/tmp/commit-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has commit-tool v1 narinfo"
+      assert_file_exists "/tmp/commit-cache/$TOOL_V1_DEP_HASH.narinfo" \
+        "static cache has commit-tool v1 dependency narinfo"
 
       publish_commit_version 2.0.0 "$TOOL_V2_STORE"
       ADVANCED_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
       assert_file_exists "/tmp/commit-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has commit-tool v2 narinfo"
+      assert_file_exists "/tmp/commit-cache/$TOOL_V2_DEP_HASH.narinfo" \
+        "static cache has commit-tool v2 dependency narinfo"
       if [ "$PINNED_COMMIT" = "$ADVANCED_COMMIT" ]; then
         fail "advanced commit should differ from pinned commit"
       else
@@ -1235,7 +1611,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18108 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18108 --bind 127.0.0.1 \
         --directory /tmp/commit-cache > /tmp/commit-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -1280,7 +1656,9 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_V1_STORE" "commit-tool-v1"
+      delete_store_path "$TOOL_V1_DEP_STORE" "commit-tool-v1-dep"
       delete_store_path "$TOOL_V2_STORE" "commit-tool-v2"
+      delete_store_path "$TOOL_V2_DEP_STORE" "commit-tool-v2-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -1290,17 +1668,20 @@ in {
         fail "apm install downloads pinned commit v1"
       }
       cat /tmp/commit-install.out
-      assert_file_contains /tmp/commit-install.out "Downloading" \
-        "apm install downloads pinned commit NAR"
+      assert_file_contains /tmp/commit-install.out "Downloading 2 NAR" \
+        "apm install downloads pinned commit closure"
       assert_store_valid "$TOOL_V1_STORE" "commit-tool v1"
+      assert_store_valid "$TOOL_V1_DEP_STORE" "commit-tool v1 dependency"
       assert_store_missing "$TOOL_V2_STORE" "commit-tool v2"
+      assert_store_missing "$TOOL_V2_DEP_STORE" "commit-tool v2 dependency"
       PROFILE="/var/lib/profiles/per-user/$USER"
       assert_file_not_exists "$PROFILE/meta/$TOOL_V2_HASH.json" \
         "commit-pinned install does not record later v2 metadata"
       PROFILE_TOOL="$PROFILE/current/bin/commit-tool"
       "$PROFILE_TOOL" > /tmp/commit-run-v1.out
       assert_file_contains /tmp/commit-run-v1.out \
-        "commit-tool 1.0.0 executed" "installed commit-pinned v1 tool executes"
+        "^commit-tool 1.0.0 via commit-tool-leaf 1.0.0$" \
+        "installed commit-pinned v1 tool executes through dependency"
 
       $APM update --registry commit-reg > /tmp/commit-update.out 2>&1 || {
         cat /tmp/commit-update.out
@@ -1333,9 +1714,11 @@ in {
       assert_file_not_contains /tmp/commit-upgrade.out "Downloading" \
         "commit-pinned upgrade does not download later v2"
       assert_store_missing "$TOOL_V2_STORE" "commit-tool v2"
+      assert_store_missing "$TOOL_V2_DEP_STORE" "commit-tool v2 dependency"
       "$PROFILE_TOOL" > /tmp/commit-run-still-v1.out
       assert_file_contains /tmp/commit-run-still-v1.out \
-        "commit-tool 1.0.0 executed" "commit-pinned profile remains on v1"
+        "^commit-tool 1.0.0 via commit-tool-leaf 1.0.0$" \
+        "commit-pinned profile remains on v1"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
@@ -1348,28 +1731,20 @@ in {
   # -------------------------------------------------------------------------
   tracking-default = testing.mkVMTest {
     name = "apm-tracking-default";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        defaultLeafToolV1
+        defaultToolV1
+        defaultLeafToolV2
+        defaultToolV2
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: default tracking follows default branch HEAD"
-
-      make_default_tool() {
-        version="$1"
-        src="/tmp/default-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/default-tool"
-        cat > "$src/bin/default-tool" << EOF
-      #!/bin/sh
-      echo "default-tool $version executed"
-      EOF
-        chmod +x "$src/bin/default-tool"
-        printf "default-tool payload %s\n" "$version" \
-          > "$src/share/default-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       delete_store_path() {
         path="$1"
@@ -1419,10 +1794,21 @@ in {
         git -C "$REG_DIR" commit -m "release: default-tool $version"
       }
 
-      TOOL_V1_STORE=$(make_default_tool 1.0.0)
-      TOOL_V2_STORE=$(make_default_tool 2.0.0)
+      TOOL_V1_STORE="${defaultToolV1}"
+      TOOL_V1_DEP_STORE="${defaultLeafToolV1}"
+      TOOL_V2_STORE="${defaultToolV2}"
+      TOOL_V2_DEP_STORE="${defaultLeafToolV2}"
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V1_DEP_HASH=$(basename "$TOOL_V1_DEP_STORE" | cut -d- -f1)
       TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V2_DEP_HASH=$(basename "$TOOL_V2_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_V1_STORE" > /tmp/default-v1-refs.out
+      assert_file_contains /tmp/default-v1-refs.out "$TOOL_V1_DEP_STORE" \
+        "default-tool v1 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V2_STORE" > /tmp/default-v2-refs.out
+      assert_file_contains /tmp/default-v2-refs.out "$TOOL_V2_DEP_STORE" \
+        "default-tool v2 root has a real dependency closure"
 
       $APR create default-reg
       REG_DIR="$REG_STORAGE/default-reg"
@@ -1436,6 +1822,8 @@ in {
       fi
       assert_file_exists "/tmp/default-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has default-tool v1 narinfo"
+      assert_file_exists "/tmp/default-cache/$TOOL_V1_DEP_HASH.narinfo" \
+        "static cache has default-tool v1 dependency narinfo"
 
       git init --bare --object-format=sha256 /tmp/default-origin.git
       git -C /tmp/default-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
@@ -1445,7 +1833,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18103 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18103 --bind 127.0.0.1 \
         --directory /tmp/default-cache > /tmp/default-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -1516,6 +1904,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_V1_STORE" "default-tool-v1"
+      delete_store_path "$TOOL_V1_DEP_STORE" "default-tool-v1-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -1525,25 +1914,30 @@ in {
         fail "apm install downloads default branch v1"
       }
       cat /tmp/default-install-v1.out
-      assert_file_contains /tmp/default-install-v1.out "Downloading" \
-        "apm install downloads default v1 NAR"
+      assert_file_contains /tmp/default-install-v1.out "Downloading 2 NAR" \
+        "apm install downloads default v1 closure"
       assert_store_valid "$TOOL_V1_STORE" "default-tool v1"
+      assert_store_valid "$TOOL_V1_DEP_STORE" "default-tool v1 dependency"
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/default-tool"
       "$PROFILE_TOOL" > /tmp/default-run-v1.out
       assert_file_contains /tmp/default-run-v1.out \
-        "default-tool 1.0.0 executed" "installed default v1 tool executes"
+        "^default-tool 1.0.0 via default-tool-leaf 1.0.0$" \
+        "installed default v1 tool executes through dependency"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
       publish_default_version 2.0.0 "$TOOL_V2_STORE"
       assert_file_exists "/tmp/default-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has default-tool v2 narinfo"
+      assert_file_exists "/tmp/default-cache/$TOOL_V2_DEP_HASH.narinfo" \
+        "static cache has default-tool v2 dependency narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       export HOME=/tmp/default-consumer
       export USER=defaultuser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_V2_STORE" "default-tool-v2"
+      delete_store_path "$TOOL_V2_DEP_STORE" "default-tool-v2-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -1566,14 +1960,16 @@ in {
         fail "apm upgrade downloads default branch v2"
       }
       cat /tmp/default-upgrade.out
-      assert_file_contains /tmp/default-upgrade.out "Downloading" \
-        "apm upgrade downloads default v2 NAR"
+      assert_file_contains /tmp/default-upgrade.out "Downloading 2 NAR" \
+        "apm upgrade downloads default v2 closure"
       assert_file_contains /tmp/default-upgrade.out "Upgraded 1 package" \
         "apm upgrade activates default v2"
       assert_store_valid "$TOOL_V2_STORE" "default-tool v2"
+      assert_store_valid "$TOOL_V2_DEP_STORE" "default-tool v2 dependency"
       "$PROFILE_TOOL" > /tmp/default-run-v2.out
       assert_file_contains /tmp/default-run-v2.out \
-        "default-tool 2.0.0 executed" "upgraded default v2 tool executes"
+        "^default-tool 2.0.0 via default-tool-leaf 2.0.0$" \
+        "upgraded default v2 tool executes through dependency"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
@@ -1586,28 +1982,22 @@ in {
   # -------------------------------------------------------------------------
   tracking-bundle-sync = testing.mkVMTest {
     name = "apm-tracking-git-native-clean-break";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        gitNativeLeafTool100
+        gitNativeTool100
+        gitNativeLeafTool110
+        gitNativeTool110
+        gitNativeLeafTool200
+        gitNativeTool200
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: real git-native version tracking after bundle cutover"
-
-      make_git_native_tool() {
-        version="$1"
-        src="/tmp/git-native-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/git-native-tool"
-        cat > "$src/bin/git-native-tool" << EOF
-      #!/bin/sh
-      echo "git-native-tool $version executed"
-      EOF
-        chmod +x "$src/bin/git-native-tool"
-        printf "git-native-tool payload %s\n" "$version" \
-          > "$src/share/git-native-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -1699,11 +2089,23 @@ in {
         }
       }
 
-      TOOL_100_STORE=$(make_git_native_tool 1.0.0)
-      TOOL_110_STORE=$(make_git_native_tool 1.1.0)
-      TOOL_200_STORE=$(make_git_native_tool 2.0.0)
+      TOOL_100_STORE="${gitNativeTool100}"
+      TOOL_100_DEP_STORE="${gitNativeLeafTool100}"
+      TOOL_110_STORE="${gitNativeTool110}"
+      TOOL_110_DEP_STORE="${gitNativeLeafTool110}"
+      TOOL_200_STORE="${gitNativeTool200}"
+      TOOL_200_DEP_STORE="${gitNativeLeafTool200}"
       TOOL_110_HASH=$(basename "$TOOL_110_STORE" | cut -d- -f1)
+      TOOL_110_DEP_HASH=$(basename "$TOOL_110_DEP_STORE" | cut -d- -f1)
       TOOL_200_HASH=$(basename "$TOOL_200_STORE" | cut -d- -f1)
+      TOOL_200_DEP_HASH=$(basename "$TOOL_200_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_110_STORE" > /tmp/git-native-110-refs.out
+      assert_file_contains /tmp/git-native-110-refs.out "$TOOL_110_DEP_STORE" \
+        "git-native-tool 1.1.0 root has a real dependency closure"
+      nix-store -q --references "$TOOL_200_STORE" > /tmp/git-native-200-refs.out
+      assert_file_contains /tmp/git-native-200-refs.out "$TOOL_200_DEP_STORE" \
+        "out-of-range git-native-tool 2.0.0 root has a real dependency closure"
 
       $APR create git-native-reg
       REG_DIR="$REG_STORAGE/git-native-reg"
@@ -1713,8 +2115,12 @@ in {
       publish_git_native_version 2.0.0 "$TOOL_200_STORE"
       assert_file_exists "/tmp/git-native-cache/$TOOL_110_HASH.narinfo" \
         "static cache has git-native-tool 1.1.0 narinfo"
+      assert_file_exists "/tmp/git-native-cache/$TOOL_110_DEP_HASH.narinfo" \
+        "static cache has git-native-tool 1.1.0 dependency narinfo"
       assert_file_exists "/tmp/git-native-cache/$TOOL_200_HASH.narinfo" \
         "static cache has out-of-range git-native-tool 2.0.0 narinfo"
+      assert_file_exists "/tmp/git-native-cache/$TOOL_200_DEP_HASH.narinfo" \
+        "static cache has out-of-range git-native-tool 2.0.0 dependency narinfo"
 
       git init --bare --object-format=sha256 /tmp/git-native-origin.git
       git -C /tmp/git-native-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
@@ -1725,7 +2131,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18109 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18109 --bind 127.0.0.1 \
         --directory /tmp/git-native-cache > /tmp/git-native-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -1776,7 +2182,9 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_110_STORE" "git-native-tool-1.1.0"
+      delete_store_path "$TOOL_110_DEP_STORE" "git-native-tool-1.1.0-dep"
       delete_store_path "$TOOL_200_STORE" "git-native-tool-2.0.0"
+      delete_store_path "$TOOL_200_DEP_STORE" "git-native-tool-2.0.0-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -1786,14 +2194,17 @@ in {
         fail "apm install downloads best git-native package"
       }
       cat /tmp/git-native-install.out
-      assert_file_contains /tmp/git-native-install.out "Downloading" \
-        "apm install downloads git-native NAR"
+      assert_file_contains /tmp/git-native-install.out "Downloading 2 NAR" \
+        "apm install downloads git-native closure"
       assert_store_valid "$TOOL_110_STORE" "git-native-tool 1.1.0"
+      assert_store_valid "$TOOL_110_DEP_STORE" "git-native-tool 1.1.0 dependency"
       assert_store_missing "$TOOL_200_STORE" "git-native-tool 2.0.0"
+      assert_store_missing "$TOOL_200_DEP_STORE" "git-native-tool 2.0.0 dependency"
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/git-native-tool"
       "$PROFILE_TOOL" > /tmp/git-native-run.out
       assert_file_contains /tmp/git-native-run.out \
-        "git-native-tool 1.1.0 executed" "installed git-native tool executes"
+        "^git-native-tool 1.1.0 via git-native-tool-leaf 1.1.0$" \
+        "installed git-native tool executes through dependency"
 
       if $APR bundle --tag v1.1.0 --output /tmp/bundles --registry git-native-reg \
         > /tmp/bundle-out 2>&1; then

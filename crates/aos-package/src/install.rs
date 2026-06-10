@@ -1,24 +1,27 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::download::{
-    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfos,
-    resolve_mirror,
+    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
+    fetch_narinfos, order_resolved_downloads, reference_store_path, resolve_mirror,
 };
 use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
-use super::profile::meta::{delete_meta, list_meta, write_meta};
+use super::profile::meta::{
+    delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
+};
 use super::registry::{RegistrySet, store_path_hash};
-use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
+use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_closure, resolve_multiple};
 use super::store::{create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::{verify_download_hash, verify_nar_hash};
 use aos_core::error::AosError;
-use aos_core::output::Printer;
+use aos_core::nar::info as narinfo;
+use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -32,6 +35,7 @@ pub async fn run(
     packages: &[String],
     registry_filter: Option<&str>,
     reinstall: bool,
+    require_installed: bool,
     download_only: bool,
     no_deps: bool,
     dry_run: bool,
@@ -39,8 +43,17 @@ pub async fn run(
     ignore_lock: &IgnoreSysrootLock,
     printer: &Printer,
 ) -> Result<()> {
+    let json_mode = printer.mode() == OutputMode::Json;
     if packages.is_empty() {
-        printer.info("No packages specified.");
+        if json_mode {
+            printer.json(&serde_json::json!({
+                "action": if reinstall { "reinstall" } else { "install" },
+                "status": "no_packages",
+                "requested": [],
+            }));
+        } else {
+            printer.info("No packages specified.");
+        }
         return Ok(());
     }
 
@@ -48,14 +61,25 @@ pub async fn run(
     printer.step(1, 7, "Loading registries...");
     let registries = load_registries(config)?;
 
+    let inspect_profile = Profile::open_readonly(config.scope);
+    let installed = list_meta(&inspect_profile)?;
+    if require_installed || reinstall {
+        ensure_reinstall_targets_installed(packages, &installed)?;
+    }
+
     // Step 2: Resolve closures for all requested packages.
     printer.step(2, 7, "Resolving dependencies...");
-    let mut closures = resolve_multiple(&registries, packages, registry_filter)?;
+    let mut closures = resolve_install_closures(
+        &registries,
+        packages,
+        registry_filter,
+        reinstall && registry_filter.is_none(),
+        &installed,
+    )?;
     if no_deps {
+        ensure_skipped_dependencies_present(&closures).await?;
         prune_dependency_members(&mut closures);
     }
-    let profile = Profile::open(config.scope)?;
-    let installed = list_meta(&profile)?;
     let all_metas = collect_unique_metas(&closures);
     let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
     let missing = if reinstall {
@@ -68,6 +92,21 @@ pub async fn run(
         && missing.is_empty()
         && requested_closures_already_installed(&closures, &installed)
     {
+        if json_mode {
+            printer.json(&install_result_json(
+                "current",
+                packages,
+                &closures,
+                reinstall,
+                download_only,
+                no_deps,
+                false,
+                0,
+                0,
+                0,
+                None,
+            ));
+        }
         printer.info("All requested packages are already installed. No changes made.");
         return Ok(());
     }
@@ -77,10 +116,23 @@ pub async fn run(
         if let Some((sys_name, sys_ver)) =
             crate::sysroot::check_sysroot_containment(&closure.root.references, config)
         {
-            printer.info(&format!(
-                "{} {} already provided by sysroot {} {}",
-                closure.root.name, closure.root.version, sys_name, sys_ver,
-            ));
+            if json_mode {
+                printer.json(&serde_json::json!({
+                    "action": if reinstall { "reinstall" } else { "install" },
+                    "status": "sysroot_provided",
+                    "requested": packages,
+                    "package": install_package_json(&closure.registry_name, &closure.root, true),
+                    "sysroot": {
+                        "name": sys_name,
+                        "version": sys_ver,
+                    },
+                }));
+            } else {
+                printer.info(&format!(
+                    "{} {} already provided by sysroot {} {}",
+                    closure.root.name, closure.root.version, sys_name, sys_ver,
+                ));
+            }
             return Ok(());
         }
     }
@@ -129,8 +181,18 @@ pub async fn run(
     let engine = std::sync::Arc::new(default_engine());
     let resolved: Vec<ResolvedDownload> = if requests.is_empty() {
         Vec::new()
+    } else if no_deps {
+        let resolved = fetch_narinfos(
+            std::sync::Arc::clone(&engine),
+            &requests,
+            config.settings.parallel_downloads,
+            printer,
+        )
+        .await?;
+        ensure_narinfo_references_present(&resolved).await?;
+        order_resolved_downloads(&requests, resolved)?
     } else {
-        fetch_narinfos(
+        fetch_narinfo_closure(
             std::sync::Arc::clone(&engine),
             &requests,
             config.settings.parallel_downloads,
@@ -151,6 +213,21 @@ pub async fn run(
     );
 
     if dry_run {
+        if json_mode {
+            printer.json(&install_result_json(
+                "planned",
+                packages,
+                &closures,
+                reinstall,
+                download_only,
+                no_deps,
+                true,
+                resolved.len(),
+                0,
+                0,
+                None,
+            ));
+        }
         printer.info("Dry run -- no changes made.");
         return Ok(());
     }
@@ -161,6 +238,8 @@ pub async fn run(
     }
 
     // Step 8: Download missing NARs.
+    let mut downloaded_count = 0;
+    let mut imported_count = 0;
     if !resolved.is_empty() {
         printer.step(3, 7, "Downloading packages...");
 
@@ -173,6 +252,7 @@ pub async fn run(
             printer,
         )
         .await?;
+        downloaded_count = results.len();
 
         // Verify downloads.
         printer.step(4, 7, "Verifying downloads...");
@@ -184,6 +264,21 @@ pub async fn run(
         }
 
         if download_only {
+            if json_mode {
+                printer.json(&install_result_json(
+                    "downloaded",
+                    packages,
+                    &closures,
+                    reinstall,
+                    download_only,
+                    no_deps,
+                    false,
+                    resolved.len(),
+                    downloaded_count,
+                    0,
+                    None,
+                ));
+            }
             printer.success(&format!(
                 "Downloaded {} NAR(s); no profile changes made.",
                 results.len(),
@@ -203,9 +298,25 @@ pub async fn run(
             .await
             .with_context(|| format!("importing {}", result.store_path))?;
         }
+        imported_count = results.len();
     } else {
         printer.info("All packages already in store, skipping download.");
         if download_only {
+            if json_mode {
+                printer.json(&install_result_json(
+                    "downloaded",
+                    packages,
+                    &closures,
+                    reinstall,
+                    download_only,
+                    no_deps,
+                    false,
+                    0,
+                    0,
+                    0,
+                    None,
+                ));
+            }
             printer.info("Download only -- no profile changes made.");
             return Ok(());
         }
@@ -213,6 +324,7 @@ pub async fn run(
 
     // Step 8: Create new profile generation.
     printer.step(6, 7, "Updating profile...");
+    let profile = Profile::open(config.scope)?;
     let prev_gen = profile.current_generation()?;
     let new_gen = profile.new_generation()?;
     let explicit_names: HashSet<&str> = packages.iter().map(|s| s.as_str()).collect();
@@ -247,11 +359,30 @@ pub async fn run(
         .unwrap_or_default()
         .as_secs() as i64;
     let now_iso = chrono_iso8601(now);
+    let installed_flags_by_hash = installed_flags_by_hash(&installed);
+    let installed_flags_by_name = installed_flags_by_name(&installed);
 
     for closure in &closures {
         for meta in &closure.closure {
             let hash = store_path_hash(&meta.store_path).to_string();
-            let is_explicit = explicit_names.contains(meta.name.as_str());
+            let hash_flags = installed_flags_by_hash
+                .get(hash.as_str())
+                .copied()
+                .unwrap_or_default();
+            let name_flags = if explicit_names.contains(meta.name.as_str()) {
+                installed_flags_by_name
+                    .get(meta.name.as_str())
+                    .copied()
+                    .unwrap_or_default()
+            } else {
+                InstalledFlags::default()
+            };
+            let existing_flags = InstalledFlags {
+                explicit: hash_flags.explicit || name_flags.explicit,
+                held: hash_flags.held || name_flags.held,
+            };
+            let is_explicit =
+                explicit_names.contains(meta.name.as_str()) || existing_flags.explicit;
 
             let installed = InstalledMeta {
                 store_path: meta.store_path.clone(),
@@ -267,13 +398,16 @@ pub async fn run(
                     explicit: is_explicit,
                     registry: closure.registry_name.clone(),
                     installed_at: now_iso.clone(),
-                    held: false,
+                    held: existing_flags.held,
+                    source_drv: meta.source_drv.clone(),
+                    source_nar_hash: meta.source_nar_hash.clone(),
                 }),
             };
 
             write_meta(&profile, &hash, &installed)?;
         }
     }
+    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
 
     // Build FHS tree for the new generation.
     let roots = new_gen.roots()?;
@@ -293,6 +427,25 @@ pub async fn run(
         packages.len(),
         new_gen.number,
     ));
+    if json_mode {
+        printer.json(&install_result_json(
+            if reinstall {
+                "reinstalled"
+            } else {
+                "installed"
+            },
+            packages,
+            &closures,
+            reinstall,
+            download_only,
+            no_deps,
+            false,
+            resolved.len(),
+            downloaded_count,
+            imported_count,
+            Some(new_gen.number),
+        ));
+    }
 
     Ok(())
 }
@@ -309,10 +462,118 @@ fn platform() -> String {
     "x86_64-linux".to_string()
 }
 
+fn install_result_json(
+    status: &str,
+    packages: &[String],
+    closures: &[ResolvedClosure],
+    reinstall: bool,
+    download_only: bool,
+    no_deps: bool,
+    dry_run: bool,
+    resolved_downloads: usize,
+    downloaded: usize,
+    imported: usize,
+    generation: Option<u32>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "action": if reinstall { "reinstall" } else { "install" },
+        "status": status,
+        "requested": packages,
+        "reinstall": reinstall,
+        "download_only": download_only,
+        "no_deps": no_deps,
+        "dry_run": dry_run,
+        "generation": generation,
+        "roots": install_roots_json(closures),
+        "closure": install_closure_json(packages, closures),
+        "downloads": {
+            "planned": resolved_downloads,
+            "downloaded": downloaded,
+            "imported": imported,
+        },
+    })
+}
+
+fn install_roots_json(closures: &[ResolvedClosure]) -> Vec<serde_json::Value> {
+    closures
+        .iter()
+        .map(|closure| install_package_json(&closure.registry_name, &closure.root, true))
+        .collect()
+}
+
+fn install_closure_json(
+    packages: &[String],
+    closures: &[ResolvedClosure],
+) -> Vec<serde_json::Value> {
+    let explicit_names: HashSet<&str> = packages.iter().map(String::as_str).collect();
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+
+    for closure in closures {
+        for meta in &closure.closure {
+            let hash = store_path_hash(&meta.store_path).to_string();
+            if !seen.insert(hash) {
+                continue;
+            }
+            entries.push(install_package_json(
+                &closure.registry_name,
+                meta,
+                explicit_names.contains(meta.name.as_str()),
+            ));
+        }
+    }
+
+    entries
+}
+
+fn install_package_json(registry: &str, meta: &PackageMeta, explicit: bool) -> serde_json::Value {
+    serde_json::json!({
+        "name": meta.name.as_str(),
+        "version": meta.version.as_str(),
+        "registry": registry,
+        "platform": meta.platform.as_str(),
+        "store_path": meta.store_path.as_str(),
+        "nar_hash": meta.nar_hash.as_str(),
+        "nar_size": meta.nar_size,
+        "closure_size": meta.closure_size,
+        "explicit": explicit,
+        "sysroot": meta.sysroot,
+    })
+}
+
 /// Load registries from the config's cache directory.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
     RegistrySet::load(&config.cache_path(), &reg_configs, &platform())
+}
+
+fn resolve_install_closures(
+    registries: &RegistrySet,
+    packages: &[String],
+    registry_filter: Option<&str>,
+    preserve_installed_sources: bool,
+    installed: &[InstalledMeta],
+) -> Result<Vec<ResolvedClosure>> {
+    if !preserve_installed_sources {
+        return resolve_multiple(registries, packages, registry_filter);
+    }
+
+    let mut closures = Vec::with_capacity(packages.len());
+    for package in packages {
+        let registry_name = installed_source_registry(package, installed)
+            .ok_or_else(|| anyhow::anyhow!("package not installed: {package}"))?;
+        let closure = resolve_closure(registries, package, Some(registry_name))
+            .with_context(|| format!("resolving package '{package}'"))?;
+        closures.push(closure);
+    }
+    Ok(closures)
+}
+
+fn installed_source_registry<'a>(package: &str, installed: &'a [InstalledMeta]) -> Option<&'a str> {
+    installed.iter().find_map(|meta| {
+        let apm = meta.apm.as_ref()?;
+        (apm.name == package).then_some(apm.registry.as_str())
+    })
 }
 
 fn requested_closures_already_installed(
@@ -336,6 +597,27 @@ fn requested_closures_already_installed(
     })
 }
 
+fn ensure_reinstall_targets_installed(
+    packages: &[String],
+    installed: &[InstalledMeta],
+) -> Result<()> {
+    let installed_names: HashSet<&str> = installed
+        .iter()
+        .filter_map(|meta| meta.apm.as_ref().map(|apm| apm.name.as_str()))
+        .collect();
+    let missing: Vec<&str> = packages
+        .iter()
+        .map(String::as_str)
+        .filter(|package| !installed_names.contains(package))
+        .collect();
+
+    match missing.as_slice() {
+        [] => Ok(()),
+        [package] => anyhow::bail!("package not installed: {package}"),
+        packages => anyhow::bail!("packages not installed: {}", packages.join(", ")),
+    }
+}
+
 fn installed_apm_for_hash<'a>(installed: &'a [InstalledMeta], hash: &str) -> Option<&'a ApmMeta> {
     installed.iter().find_map(|meta| {
         if store_path_hash(&meta.store_path) == hash {
@@ -344,6 +626,44 @@ fn installed_apm_for_hash<'a>(installed: &'a [InstalledMeta], hash: &str) -> Opt
             None
         }
     })
+}
+
+#[derive(Clone, Copy, Default)]
+struct InstalledFlags {
+    explicit: bool,
+    held: bool,
+}
+
+fn installed_flags_by_hash(installed: &[InstalledMeta]) -> HashMap<&str, InstalledFlags> {
+    installed
+        .iter()
+        .filter_map(|meta| {
+            let apm = meta.apm.as_ref()?;
+            Some((
+                store_path_hash(&meta.store_path),
+                InstalledFlags {
+                    explicit: apm.explicit,
+                    held: apm.held,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn installed_flags_by_name(installed: &[InstalledMeta]) -> HashMap<&str, InstalledFlags> {
+    installed
+        .iter()
+        .filter_map(|meta| {
+            let apm = meta.apm.as_ref()?;
+            Some((
+                apm.name.as_str(),
+                InstalledFlags {
+                    explicit: apm.explicit,
+                    held: apm.held,
+                },
+            ))
+        })
+        .collect()
 }
 
 fn prune_dependency_members(closures: &mut [ResolvedClosure]) {
@@ -361,21 +681,105 @@ fn prune_dependency_members(closures: &mut [ResolvedClosure]) {
     }
 }
 
+async fn ensure_skipped_dependencies_present(closures: &[ResolvedClosure]) -> Result<()> {
+    let requested_hashes: HashSet<String> = closures
+        .iter()
+        .map(|closure| store_path_hash(&closure.root.store_path).to_string())
+        .collect();
+    let mut seen = HashSet::new();
+    let mut skipped = Vec::new();
+
+    for closure in closures {
+        for meta in &closure.closure {
+            let hash = store_path_hash(&meta.store_path).to_string();
+            if requested_hashes.contains(&hash) || !seen.insert(hash) {
+                continue;
+            }
+            skipped.push(meta);
+        }
+    }
+
+    if skipped.is_empty() {
+        return Ok(());
+    }
+
+    let store_paths: Vec<String> = skipped.iter().map(|meta| meta.store_path.clone()).collect();
+    let missing = filter_missing(&store_paths).await?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let missing_set: HashSet<&str> = missing.iter().map(|path| path.as_str()).collect();
+    let labels: Vec<String> = skipped
+        .iter()
+        .filter(|meta| missing_set.contains(meta.store_path.as_str()))
+        .map(|meta| format!("{} ({})", meta.name, meta.store_path))
+        .collect();
+
+    anyhow::bail!(
+        "--no-deps requested but dependency store path(s) are missing: {}",
+        labels.join(", ")
+    );
+}
+
+async fn ensure_narinfo_references_present(resolved: &[ResolvedDownload]) -> Result<()> {
+    let requested_hashes: HashSet<String> = resolved
+        .iter()
+        .map(|item| narinfo::store_hash(&item.narinfo.store_path).to_string())
+        .collect();
+    let mut seen = HashSet::new();
+    let mut references = Vec::new();
+
+    for item in resolved {
+        let parent_hash = narinfo::store_hash(&item.narinfo.store_path);
+
+        for reference in &item.narinfo.references {
+            let reference_hash = narinfo::store_hash(reference);
+            if reference_hash == parent_hash
+                || requested_hashes.contains(reference_hash)
+                || !seen.insert(reference_hash.to_string())
+            {
+                continue;
+            }
+
+            references.push(reference_store_path(reference, &item.narinfo.store_path));
+        }
+    }
+
+    if references.is_empty() {
+        return Ok(());
+    }
+
+    let missing = filter_missing(&references).await?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "--no-deps requested but dependency store path(s) are missing: {}",
+        missing.join(", ")
+    );
+}
+
 fn installed_store_hashes_for_names(
     installed: &[InstalledMeta],
     package_names: &HashSet<&str>,
 ) -> HashSet<String> {
-    installed
-        .iter()
-        .filter_map(|meta| {
-            let apm = meta.apm.as_ref()?;
-            if package_names.contains(apm.name.as_str()) {
-                Some(store_path_hash(&meta.store_path).to_string())
-            } else {
-                None
-            }
-        })
-        .collect()
+    let mut hashes = HashSet::new();
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+        if !package_names.contains(apm.name.as_str()) {
+            continue;
+        }
+
+        hashes.insert(store_path_hash(&meta.store_path).to_string());
+        if !apm.source_drv.is_empty() {
+            hashes.insert(store_path_hash(&apm.source_drv).to_string());
+        }
+    }
+    hashes
 }
 
 pub(crate) fn copy_roots_except_hashes(
@@ -796,8 +1200,33 @@ mod tests {
                 registry: "test-reg".to_string(),
                 installed_at: "2026-06-09T00:00:00Z".to_string(),
                 held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }
+    }
+
+    fn sample_installed_with_flags(
+        name: &str,
+        version: &str,
+        store_path: &str,
+        explicit: bool,
+        held: bool,
+    ) -> InstalledMeta {
+        let mut meta = sample_installed_with_explicit(name, version, store_path, explicit);
+        meta.apm.as_mut().unwrap().held = held;
+        meta
+    }
+
+    fn sample_installed_from_registry(
+        name: &str,
+        version: &str,
+        registry: &str,
+        store_path: &str,
+    ) -> InstalledMeta {
+        let mut meta = sample_installed(name, version, store_path);
+        meta.apm.as_mut().unwrap().registry = registry.to_string();
+        meta
     }
 
     fn sample_closure(root: PackageMeta, closure: Vec<PackageMeta>) -> ResolvedClosure {
@@ -807,6 +1236,65 @@ mod tests {
             closure,
             total_nar_size: 1,
         }
+    }
+
+    fn package_toml(name: &str, version: &str, store_path: &str) -> String {
+        format!(
+            r#"[package]
+name = "{name}"
+description = "test package"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "{version}"
+
+[versions.platforms.x86_64-linux]
+store_path = "{store_path}"
+nar_hash = "sha256-test"
+nar_size = 1
+closure_size = 1
+references = []
+source_drv = ""
+source_nar_hash = ""
+"#
+        )
+    }
+
+    #[test]
+    fn reinstall_resolution_preserves_installed_source_registry() {
+        let tmp = TempDir::new().unwrap();
+        let high_path = "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-switch-tool-1.0.0";
+        let low_path = "/nix/store/llllllllllllllllllllllllllllllll-switch-tool-1.0.0";
+        let high_toml = package_toml("switch-tool", "1.0.0", high_path);
+        let low_toml = package_toml("switch-tool", "1.0.0", low_path);
+        let high = crate::registry::tests::make_registry(
+            &tmp,
+            "high-priority",
+            900,
+            &[("switch-tool", high_toml.as_str())],
+        );
+        let low = crate::registry::tests::make_registry(
+            &tmp,
+            "low-priority",
+            100,
+            &[("switch-tool", low_toml.as_str())],
+        );
+        let registries = RegistrySet::new(vec![high, low]);
+        let installed = vec![sample_installed_from_registry(
+            "switch-tool",
+            "1.0.0",
+            "low-priority",
+            low_path,
+        )];
+        let packages = vec!["switch-tool".to_string()];
+
+        let closures =
+            resolve_install_closures(&registries, &packages, None, true, &installed).unwrap();
+
+        assert_eq!(closures.len(), 1);
+        assert_eq!(closures[0].registry_name, "low-priority");
+        assert_eq!(closures[0].root.store_path, low_path);
     }
 
     #[test]
@@ -869,6 +1357,38 @@ mod tests {
     }
 
     #[test]
+    fn installed_flags_by_hash_preserves_explicit_and_held_state() {
+        let installed = vec![sample_installed_with_flags(
+            "idempkg",
+            "1.0.0",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-idempkg-1.0.0",
+            true,
+            true,
+        )];
+
+        let flags = installed_flags_by_hash(&installed);
+        let entry = flags.get("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        assert!(entry.explicit);
+        assert!(entry.held);
+    }
+
+    #[test]
+    fn installed_flags_by_name_preserves_explicit_and_held_state() {
+        let installed = vec![sample_installed_with_flags(
+            "switch-tool",
+            "1.0.0",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-switch-tool-1.0.0",
+            true,
+            true,
+        )];
+
+        let flags = installed_flags_by_name(&installed);
+        let entry = flags.get("switch-tool").unwrap();
+        assert!(entry.explicit);
+        assert!(entry.held);
+    }
+
+    #[test]
     fn prune_dependency_members_keeps_only_requested_roots() {
         let root_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-wrapper-1.0.0";
         let dep_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-libdep-1.0.0";
@@ -884,13 +1404,17 @@ mod tests {
     }
 
     #[test]
-    fn installed_store_hashes_for_names_selects_replaced_runtime_roots() {
+    fn installed_store_hashes_for_names_selects_replaced_runtime_and_source_roots() {
+        let mut switch_tool = sample_installed(
+            "switch-tool",
+            "1.0.0",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-switch-tool-1.0.0",
+        );
+        switch_tool.apm.as_mut().unwrap().source_drv =
+            "/nix/store/cccccccccccccccccccccccccccccccc-switch-tool-src.drv".to_string();
+
         let installed = vec![
-            sample_installed(
-                "switch-tool",
-                "1.0.0",
-                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-switch-tool-1.0.0",
-            ),
+            switch_tool,
             sample_installed(
                 "kept-tool",
                 "1.0.0",
@@ -901,6 +1425,7 @@ mod tests {
         let hashes = installed_store_hashes_for_names(&installed, &names);
 
         assert!(hashes.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        assert!(hashes.contains("cccccccccccccccccccccccccccccccc"));
         assert!(!hashes.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
     }
 

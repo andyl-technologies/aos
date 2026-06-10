@@ -718,7 +718,7 @@ mod tests {
         let refs = vec!["/nix/store/ref111-libc".to_string()];
         let input = StaticNarInfoInput {
             store_path: "/nix/store/abc123-hello",
-            nar_hash: "sha256:def456",
+            nar_hash: "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=",
             nar_size: 42,
             references: &refs,
             deriver: None,
@@ -737,11 +737,12 @@ mod tests {
             .unwrap();
         let signature = ed25519_dalek::Signature::try_from(signature_bytes.as_slice()).unwrap();
         let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&raw_public_key).unwrap();
+        let fingerprint_refs = vec!["/nix/store/ref111-libc".to_string()];
         let fingerprint = NarInfoSigner::fingerprint(
             &parsed.store_path,
             &parsed.nar_hash,
             parsed.nar_size as i64,
-            &parsed.references,
+            &fingerprint_refs,
         );
         use ed25519_dalek::Verifier as _;
         verifying_key

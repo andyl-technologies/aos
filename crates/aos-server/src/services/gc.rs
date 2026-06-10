@@ -6,10 +6,12 @@ use std::sync::Arc;
 use connectrpc::{ConnectError, Context, ErrorCode};
 use tokio::process::Command;
 
+use aos_core::nix::aos_nix_env;
 use aos_proto::aos::gc::v1::*;
 
 use crate::evict;
 use crate::routes::AppState;
+use crate::services;
 
 /// ConnectRPC GC service backed by the shared `AppState`.
 pub struct GcServiceImpl {
@@ -30,6 +32,7 @@ impl GcService for GcServiceImpl {
         if self.state.views.get_view(view).is_none() {
             return Err(ConnectError::new(ErrorCode::NotFound, "unknown view"));
         }
+        services::require_rpc_permission(&ctx, &self.state, view, "build")?;
 
         // Step 1: Expire TTL roots.
         let expired = evict::expire_ttl_roots(&self.state.views, view)
@@ -63,6 +66,7 @@ impl GcService for GcServiceImpl {
         // Step 3: Run `nix-store --gc` if collect_store is true and not dry run.
         let collected_bytes = if collect_store && !dry_run {
             let child = Command::new("nix-store")
+                .envs(aos_nix_env())
                 .arg("--gc")
                 .arg("--print-freed")
                 .stdout(Stdio::piped())

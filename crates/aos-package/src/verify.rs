@@ -8,6 +8,7 @@ use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 use aos_core::error::AosError;
+use aos_core::nix::aos_nix_env;
 
 // ---------------------------------------------------------------------------
 // SHA-256 computation
@@ -153,14 +154,10 @@ pub fn verify_store_path(actual: &str, expected: &str) -> Result<()> {
 // Post-install verification
 // ---------------------------------------------------------------------------
 
-/// Verify an installed package against registry metadata.
-///
-/// Used by `apm verify <pkg>`:
-/// 1. Run `nix-store --dump <store_path>` to get the current NAR.
-/// 2. Compute SHA-256 of the NAR stream.
-/// 3. Compare against `expected_nar_hash` from the registry.
-pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Result<()> {
+/// Compute the NAR hash for a store path by streaming `nix-store --dump`.
+pub async fn store_path_nar_hash(store_path: &str) -> Result<String> {
     let output = tokio::process::Command::new("nix-store")
+        .envs(aos_nix_env())
         .args(["--dump", store_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -176,7 +173,17 @@ pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Resu
         .into());
     }
 
-    let actual = sha256_stream(output.stdout.as_slice())?;
+    sha256_stream(output.stdout.as_slice())
+}
+
+/// Verify an installed package against registry metadata.
+///
+/// Used by `apm verify <pkg>`:
+/// 1. Run `nix-store --dump <store_path>` to get the current NAR.
+/// 2. Compute SHA-256 of the NAR stream.
+/// 3. Compare against `expected_nar_hash` from the registry.
+pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Result<String> {
+    let actual = store_path_nar_hash(store_path).await?;
     if !sha256_hashes_equal(&actual, expected_nar_hash)? {
         return Err(AosError::HashMismatch {
             expected: expected_nar_hash.to_string(),
@@ -184,7 +191,7 @@ pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Resu
         }
         .into());
     }
-    Ok(())
+    Ok(actual)
 }
 
 // ---------------------------------------------------------------------------

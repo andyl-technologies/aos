@@ -22,6 +22,7 @@
   sha256sumBin = "${pkgs.coreutils}/bin/sha256sum";
   statBin = "${pkgs.coreutils}/bin/stat";
   cutBin = "${pkgs.coreutils}/bin/cut";
+  catBin = "${pkgs.coreutils}/bin/cat";
   aosBin = "${self}/bin/aos";
 
   # Shared preamble: loopback interface, mock Nix DB, server config.
@@ -76,6 +77,16 @@
           rm -f "$nar_tmp"
           ${sqliteBin} "$root/var/nix/db/db.sqlite" \
             "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs, ca) VALUES ('$store_path', 'sha256:$nar_hash', 1000000, $nar_size, 1, NULL, 'fixed:r:sha256:$nar_hash');"
+        }
+
+        register_store_reference() {
+          referrer="$1"
+          reference="$2"
+          root="$3"
+          ${sqliteBin} "$root/var/nix/db/db.sqlite" \
+            "INSERT OR IGNORE INTO Refs (referrer, reference)
+             SELECT referrer.id, reference.id FROM ValidPaths referrer, ValidPaths reference
+             WHERE referrer.path = '$referrer' AND reference.path = '$reference';"
         }
 
         promote_view_path() {
@@ -382,41 +393,120 @@ in {
     memory = 1024;
     testScript = ''
       ${serverPreamble}
+      CLIENT_STATE_ROOT=/tmp/aos-registry-cache-client-state
+      SERVER_AOS_ROOT=/tmp/aos-registry-cache-server
+      init_mock_nix_db "$CLIENT_STATE_ROOT"
+      init_mock_nix_db "$SERVER_AOS_ROOT"
       ${serverConfig}
       ${startServer}
       ${getAuthToken}
 
       FAIL=0
 
-      echo "==> Step 1: Create test package"
-      TEST_PKG="/tmp/aos/store/cccccccccccccccccccccccccccccccccc-reg-test-1.0"
-      mkdir -p "$TEST_PKG/bin" "$TEST_PKG/lib"
+      echo "==> Step 1: Create registry package closure"
+      PKG_HASH="cccccccccccccccccccccccccccccccc"
+      LIB_HASH="dddddddddddddddddddddddddddddddd"
+      TEST_PKG="$SERVER_AOS_ROOT/store/$PKG_HASH-reg-test-1.0"
+      TEST_LIB="$SERVER_AOS_ROOT/store/$LIB_HASH-libregtest-1.0"
+      mkdir -p "$TEST_PKG/bin" "$TEST_PKG/share/reg-test" "$TEST_LIB/lib"
+      echo "libregtest fixture" > "$TEST_LIB/lib/libregtest.so"
       echo '#!/bin/sh' > "$TEST_PKG/bin/reg-test"
-      echo 'echo "registry test v1.0"' >> "$TEST_PKG/bin/reg-test"
+      echo 'echo "registry test v1.0 using libregtest"' >> "$TEST_PKG/bin/reg-test"
       chmod +x "$TEST_PKG/bin/reg-test"
-      echo "libregtest.so stub" > "$TEST_PKG/lib/libregtest.so"
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$TEST_PKG', 'sha256:0003', 1000000, 8192, 1, '''''');"
+      echo "$TEST_LIB/lib/libregtest.so" > "$TEST_PKG/share/reg-test/lib-path"
+      dd if=/dev/urandom of="$TEST_PKG/share/reg-test/large-payload.bin" bs=1024 count=1536 2>/dev/null
+      register_ca_store_path "$TEST_LIB" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
+      register_ca_store_path "$TEST_PKG" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
+      register_store_reference "$TEST_PKG" "$TEST_LIB" "$CLIENT_STATE_ROOT"
 
-      echo "==> Step 2: Push to cache"
-      ${aosBin} cache push "$TEST_PKG" \
+      echo "==> Step 2: Push registry package closure to HTTP cache"
+      if ! AOS_ROOT="$SERVER_AOS_ROOT" \
+        AOS_NIX_STORE_DIR="$SERVER_AOS_ROOT/store" \
+        AOS_NIX_STATE_DIR="$CLIENT_STATE_ROOT/var/nix" \
+        ${aosBin} cache push "$TEST_PKG" \
         --to "http://127.0.0.1:15000/default" \
-        --token "$ACCESS_TOKEN" 2>&1 || echo "WARN: push returned non-zero"
+        --compression zstd \
+        --token "$PROV_TOKEN" > /tmp/cache-registry-push.out 2>&1; then
+        cat /tmp/cache-registry-push.out
+        echo "FAIL: registry package cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-registry-push.out
+      ${grepBin} -F -q "2/2 paths need uploading" /tmp/cache-registry-push.out || \
+        { echo "FAIL: registry closure was not uploaded from a single root path"; FAIL=1; }
+      test -d "$TEST_PKG" || { echo "FAIL: server package path missing after upload"; FAIL=1; }
+      test -d "$TEST_LIB" || { echo "FAIL: server library path missing after upload"; FAIL=1; }
+      promote_view_path "$SERVER_AOS_ROOT" default bin "$TEST_PKG"
+      promote_view_path "$SERVER_AOS_ROOT" default src "$TEST_LIB"
 
       echo "==> Step 3: Verify in cache"
-      HASH="cccccccccccccccccccccccccccccccccc"
-      HTTP_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
-        "http://127.0.0.1:15000/default/$HASH.narinfo")
-      echo "narinfo: HTTP $HTTP_CODE"
+      QUERY=$(${curlBin} -s \
+        -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"paths\":[\"$PKG_HASH\",\"$LIB_HASH\"]}" \
+        http://127.0.0.1:15000/default/query-missing)
+      echo "query-missing: $QUERY"
+      echo "$QUERY" | ${jqBin} -e '.missing == []' >/dev/null || \
+        { echo "FAIL: pushed registry closure still reported missing"; FAIL=1; }
 
-      echo "==> Step 4: Verify package structure"
+      for hash in "$PKG_HASH" "$LIB_HASH"; do
+        HTTP_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
+          "http://127.0.0.1:15000/default/$hash.narinfo")
+        echo "narinfo $hash: HTTP $HTTP_CODE"
+        test "$HTTP_CODE" = "200" || { echo "FAIL: expected narinfo HTTP 200 for $hash"; FAIL=1; }
+      done
+
+      PKG_NARINFO=$(${curlBin} -sf "http://127.0.0.1:15000/default/$PKG_HASH.narinfo")
+      LIB_NARINFO=$(${curlBin} -sf "http://127.0.0.1:15000/default/$LIB_HASH.narinfo")
+      echo "$PKG_NARINFO" > /tmp/cache-registry-pkg.narinfo
+      echo "$LIB_NARINFO" > /tmp/cache-registry-lib.narinfo
+      echo "$PKG_NARINFO" | ${grepBin} -F -q "StorePath: $TEST_PKG" || \
+        { echo "FAIL: package narinfo missing store path"; FAIL=1; }
+      echo "$PKG_NARINFO" | ${grepBin} -F -q "$LIB_HASH-libregtest-1.0" || \
+        { echo "FAIL: package narinfo missing library reference"; cat /tmp/cache-registry-pkg.narinfo; FAIL=1; }
+      echo "$LIB_NARINFO" | ${grepBin} -F -q "StorePath: $TEST_LIB" || \
+        { echo "FAIL: library narinfo missing store path"; FAIL=1; }
+
+      PKG_NAR_URL=$(echo "$PKG_NARINFO" | ${grepBin} "^URL:" | ${cutBin} -d' ' -f2)
+      LIB_NAR_URL=$(echo "$LIB_NARINFO" | ${grepBin} "^URL:" | ${cutBin} -d' ' -f2)
+      test -n "$PKG_NAR_URL" || { echo "FAIL: package narinfo missing NAR URL"; FAIL=1; }
+      test -n "$LIB_NAR_URL" || { echo "FAIL: library narinfo missing NAR URL"; FAIL=1; }
+      ${curlBin} -sf "http://127.0.0.1:15000/default/$PKG_NAR_URL" \
+        -o /tmp/cache-registry-pkg.nar
+      ${curlBin} -sf "http://127.0.0.1:15000/default/$LIB_NAR_URL" \
+        -o /tmp/cache-registry-lib.nar
+      PKG_NAR_SIZE=$(${statBin} -c%s /tmp/cache-registry-pkg.nar)
+      LIB_NAR_SIZE=$(${statBin} -c%s /tmp/cache-registry-lib.nar)
+      test "$PKG_NAR_SIZE" -gt 0 || { echo "FAIL: downloaded package NAR is empty"; FAIL=1; }
+      test "$PKG_NAR_SIZE" -gt 1048576 || { echo "FAIL: package NAR did not exercise large upload path"; FAIL=1; }
+      test "$LIB_NAR_SIZE" -gt 0 || { echo "FAIL: downloaded library NAR is empty"; FAIL=1; }
+
+      echo "==> Step 4: Repeat push is a no-op"
+      if ! AOS_ROOT="$SERVER_AOS_ROOT" \
+        AOS_NIX_STORE_DIR="$SERVER_AOS_ROOT/store" \
+        AOS_NIX_STATE_DIR="$CLIENT_STATE_ROOT/var/nix" \
+        ${aosBin} cache push "$TEST_PKG" \
+        --to "http://127.0.0.1:15000/default" \
+        --compression zstd \
+        --token "$PROV_TOKEN" > /tmp/cache-registry-repeat.out 2>&1; then
+        cat /tmp/cache-registry-repeat.out
+        echo "FAIL: repeat registry cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-registry-repeat.out
+      ${grepBin} -F -q "All paths already cached." /tmp/cache-registry-repeat.out || \
+        { echo "FAIL: repeat registry push did not detect cached closure"; FAIL=1; }
+
+      echo "==> Step 5: Verify package structure"
       test -d "$TEST_PKG/bin" || { echo "FAIL: missing bin/"; FAIL=1; }
-      test -d "$TEST_PKG/lib" || { echo "FAIL: missing lib/"; FAIL=1; }
+      test -f "$TEST_LIB/lib/libregtest.so" || { echo "FAIL: missing library payload"; FAIL=1; }
+      ${grepBin} -F -q "$TEST_LIB/lib/libregtest.so" "$TEST_PKG/share/reg-test/lib-path" || \
+        { echo "FAIL: package payload does not point at library payload"; FAIL=1; }
       test -x "$TEST_PKG/bin/reg-test" || { echo "FAIL: not executable"; FAIL=1; }
 
-      echo "==> Step 5: Verify execution"
+      echo "==> Step 6: Verify execution"
       OUTPUT=$("$TEST_PKG/bin/reg-test")
-      echo "$OUTPUT" | ${grepBin} -q "registry test v1.0" || \
+      echo "$OUTPUT" | ${grepBin} -q "registry test v1.0 using libregtest" || \
         { echo "FAIL: unexpected output: $OUTPUT"; FAIL=1; }
 
       ${stopServer}
@@ -585,6 +675,10 @@ in {
     memory = 1024;
     testScript = ''
       ${serverPreamble}
+      CLIENT_STATE_ROOT=/tmp/aos-resume-client-state
+      SERVER_AOS_ROOT=/tmp/aos-resume-server
+      init_mock_nix_db "$CLIENT_STATE_ROOT"
+      init_mock_nix_db "$SERVER_AOS_ROOT"
       ${serverConfig}
       ${startServer}
       ${getAuthToken}
@@ -592,52 +686,85 @@ in {
       FAIL=0
 
       # Create and push a test path
-      TEST_PATH="/tmp/aos/store/22222222222222222222222222222222-resume-test-1.0"
+      HASH="22222222222222222222222222222222"
+      TEST_PATH="$SERVER_AOS_ROOT/store/$HASH-resume-test-1.0"
       mkdir -p "$TEST_PATH/data"
       dd if=/dev/urandom of="$TEST_PATH/data/payload.bin" bs=1024 count=64 2>/dev/null
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$TEST_PATH', 'sha256:2222', 1000000, 65536, 1, '''''');"
+      register_ca_store_path "$TEST_PATH" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
 
       echo "==> Push test path to server"
-      ${aosBin} cache push "$TEST_PATH" \
+      if ! AOS_ROOT="$SERVER_AOS_ROOT" \
+        AOS_NIX_STORE_DIR="$SERVER_AOS_ROOT/store" \
+        AOS_NIX_STATE_DIR="$CLIENT_STATE_ROOT/var/nix" \
+        ${aosBin} cache push "$TEST_PATH" \
         --to "http://127.0.0.1:15000/default" \
-        --token "$ACCESS_TOKEN" 2>&1 || echo "WARN: push non-zero"
+        --token "$PROV_TOKEN" > /tmp/cache-resume-push.out 2>&1; then
+        cat /tmp/cache-resume-push.out
+        echo "FAIL: cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-resume-push.out
+      ${grepBin} -F -q "1/1 paths need uploading" /tmp/cache-resume-push.out || \
+        { echo "FAIL: resume fixture was not uploaded"; FAIL=1; }
+      promote_view_path "$SERVER_AOS_ROOT" default bin "$TEST_PATH"
 
       echo "==> Test: simulate partial download"
-      HASH="22222222222222222222222222222222"
-      NARINFO=$(${curlBin} -s "http://127.0.0.1:15000/default/$HASH.narinfo" || true)
+      NARINFO=$(${curlBin} -sf "http://127.0.0.1:15000/default/$HASH.narinfo")
       echo "narinfo: $NARINFO"
+      echo "$NARINFO" | ${grepBin} -F -q "StorePath: $TEST_PATH" || \
+        { echo "FAIL: narinfo missing store path"; FAIL=1; }
+      echo "$NARINFO" | ${grepBin} -F -q "URL: nar/" || \
+        { echo "FAIL: narinfo missing NAR URL"; FAIL=1; }
 
-      if echo "$NARINFO" | ${grepBin} -q "URL:"; then
-        NAR_URL=$(echo "$NARINFO" | ${grepBin} "^URL:" | cut -d' ' -f2)
-        echo "==> NAR URL: $NAR_URL"
+      NAR_URL=$(echo "$NARINFO" | ${grepBin} "^URL:" | ${cutBin} -d' ' -f2)
+      test -n "$NAR_URL" || { echo "FAIL: empty NAR URL"; FAIL=1; }
+      echo "==> NAR URL: $NAR_URL"
 
-        # Download first 1024 bytes (partial)
-        ${curlBin} -s -r 0-1023 "http://127.0.0.1:15000/default/$NAR_URL" \
-          -o /tmp/partial.nar 2>/dev/null || true
-        PARTIAL_SIZE=$(stat -c%s /tmp/partial.nar 2>/dev/null || echo 0)
-        echo "==> Partial: $PARTIAL_SIZE bytes"
+      FULL_CODE=$(${curlBin} -s -w '%{http_code}' \
+        "http://127.0.0.1:15000/default/$NAR_URL" \
+        -o /tmp/full.nar)
+      echo "==> Full download HTTP $FULL_CODE"
+      test "$FULL_CODE" = "200" || { echo "FAIL: full NAR download failed"; FAIL=1; }
+      FULL_SIZE=$(${statBin} -c%s /tmp/full.nar)
+      echo "==> Full: $FULL_SIZE bytes"
+      test "$FULL_SIZE" -gt 1024 || { echo "FAIL: full NAR too small for range test"; FAIL=1; }
 
-        if [ "$PARTIAL_SIZE" -gt 0 ]; then
-          # Resume from partial offset
-          ${curlBin} -s -r "$PARTIAL_SIZE-" "http://127.0.0.1:15000/default/$NAR_URL" \
-            -o /tmp/rest.nar 2>/dev/null || true
+      # Download first 1024 bytes (partial)
+      PARTIAL_CODE=$(${curlBin} -s -D /tmp/partial.headers -r 0-1023 \
+        -w '%{http_code}' "http://127.0.0.1:15000/default/$NAR_URL" \
+        -o /tmp/partial.nar)
+      echo "==> Partial download HTTP $PARTIAL_CODE"
+      test "$PARTIAL_CODE" = "206" || { echo "FAIL: partial NAR download did not return 206"; FAIL=1; }
+      PARTIAL_SIZE=$(${statBin} -c%s /tmp/partial.nar)
+      echo "==> Partial: $PARTIAL_SIZE bytes"
+      test "$PARTIAL_SIZE" -eq 1024 || { echo "FAIL: expected 1024-byte partial"; FAIL=1; }
+      ${grepBin} -i -q '^content-range: bytes 0-1023/' /tmp/partial.headers || \
+        { echo "FAIL: partial response missing Content-Range"; cat /tmp/partial.headers; FAIL=1; }
 
-          # Full download for comparison
-          ${curlBin} -s "http://127.0.0.1:15000/default/$NAR_URL" \
-            -o /tmp/full.nar 2>/dev/null || true
-          FULL_SIZE=$(stat -c%s /tmp/full.nar 2>/dev/null || echo 0)
-          echo "==> Full: $FULL_SIZE bytes"
-        fi
-        echo "==> Resume simulation complete"
-      else
-        echo "==> Skipping range test (narinfo not available for mock path)"
-      fi
+      # Resume from partial offset.
+      REST_CODE=$(${curlBin} -s -D /tmp/rest.headers -r "$PARTIAL_SIZE-" \
+        -w '%{http_code}' "http://127.0.0.1:15000/default/$NAR_URL" \
+        -o /tmp/rest.nar)
+      echo "==> Resume download HTTP $REST_CODE"
+      test "$REST_CODE" = "206" || { echo "FAIL: resume NAR download did not return 206"; FAIL=1; }
+      ${grepBin} -i -q "^content-range: bytes $PARTIAL_SIZE-" /tmp/rest.headers || \
+        { echo "FAIL: resume response missing Content-Range"; cat /tmp/rest.headers; FAIL=1; }
+
+      ${catBin} /tmp/partial.nar /tmp/rest.nar > /tmp/resumed.nar
+      RESUMED_SIZE=$(${statBin} -c%s /tmp/resumed.nar)
+      echo "==> Resumed: $RESUMED_SIZE bytes"
+      test "$RESUMED_SIZE" -eq "$FULL_SIZE" || \
+        { echo "FAIL: resumed NAR size does not match full download"; FAIL=1; }
+      FULL_HASH=$(${sha256sumBin} /tmp/full.nar | ${cutBin} -d' ' -f1)
+      RESUMED_HASH=$(${sha256sumBin} /tmp/resumed.nar | ${cutBin} -d' ' -f1)
+      test "$RESUMED_HASH" = "$FULL_HASH" || \
+        { echo "FAIL: resumed NAR hash does not match full download"; FAIL=1; }
+      echo "==> Resume simulation complete"
 
       echo "==> Verify content-range capability"
       CACHE_INFO=$(${curlBin} -s http://127.0.0.1:15000/default/nix-cache-info)
       echo "$CACHE_INFO" | ${grepBin} -q "content-range" || \
-        echo "WARN: content-range not in capabilities"
+        { echo "FAIL: content-range not in capabilities"; FAIL=1; }
 
       ${stopServer}
 

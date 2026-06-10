@@ -4,7 +4,14 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::profile::Profile;
-use aos_core::output::Printer;
+use aos_core::nix::aos_nix_env;
+use aos_core::output::{OutputMode, Printer};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NarCacheCleanResult {
+    freed_bytes: u64,
+    files_removed: usize,
+}
 
 /// Run `apm clean [--generations] [--keep=N]`.
 ///
@@ -17,18 +24,103 @@ pub async fn run(
     keep: u32,
     printer: &Printer,
 ) -> Result<()> {
+    let json_mode = printer.mode() == OutputMode::Json;
     if generations {
+        let profile = Profile::open_readonly(config.scope);
+        let all_generations = profile.list_generations()?;
+        let current_generation = profile.current_generation()?.map(|g| g.number);
+        let generations_before: Vec<u32> = all_generations
+            .iter()
+            .map(|generation| generation.number)
+            .collect();
+
+        if all_generations.len() <= keep as usize {
+            if json_mode {
+                printer.json(&clean_generations_json(
+                    "current",
+                    keep,
+                    current_generation,
+                    &generations_before,
+                    &generations_before,
+                    &[],
+                ));
+            }
+            printer.info("No old generations to remove.");
+            return Ok(());
+        }
+
+        let cutoff = all_generations.len() - keep as usize;
+        let has_prunable_generation = all_generations[..cutoff]
+            .iter()
+            .any(|generation| Some(generation.number) != current_generation);
+
+        if !has_prunable_generation {
+            if json_mode {
+                printer.json(&clean_generations_json(
+                    "current",
+                    keep,
+                    current_generation,
+                    &generations_before,
+                    &generations_before,
+                    &[],
+                ));
+            }
+            printer.info("No old generations to remove.");
+            return Ok(());
+        }
+
         let profile = Profile::open(config.scope)?;
         let removed = profile.prune_generations(keep)?;
+        let generations_after: Vec<u32> = profile
+            .list_generations()?
+            .iter()
+            .map(|generation| generation.number)
+            .collect();
+        let removed_generations: Vec<u32> =
+            removed.iter().map(|generation| generation.number).collect();
         if removed.is_empty() {
+            if json_mode {
+                printer.json(&clean_generations_json(
+                    "current",
+                    keep,
+                    current_generation,
+                    &generations_before,
+                    &generations_after,
+                    &removed_generations,
+                ));
+            }
             printer.info("No old generations to remove.");
         } else {
+            if json_mode {
+                printer.json(&clean_generations_json(
+                    "cleaned",
+                    keep,
+                    current_generation,
+                    &generations_before,
+                    &generations_after,
+                    &removed_generations,
+                ));
+            }
             printer.success(&format!("Removed {} old generation(s).", removed.len()));
         }
     } else {
         let cache_dir = config.nar_cache_path();
-        let freed = clear_nar_cache(&cache_dir)?;
-        printer.success(&format!("Cleared NAR cache, freed {}.", format_size(freed)));
+        let cleaned = clear_nar_cache(&cache_dir)?;
+        if json_mode {
+            printer.json(&serde_json::json!({
+                "action": "clean",
+                "mode": "cache",
+                "status": if cleaned.files_removed == 0 { "current" } else { "cleaned" },
+                "cache_dir": cache_dir.to_string_lossy(),
+                "files_removed": cleaned.files_removed,
+                "freed_bytes": cleaned.freed_bytes,
+                "freed": format_size(cleaned.freed_bytes),
+            }));
+        }
+        printer.success(&format!(
+            "Cleared NAR cache, freed {}.",
+            format_size(cleaned.freed_bytes)
+        ));
     }
 
     Ok(())
@@ -39,9 +131,23 @@ pub async fn run(
 /// Delegates to the system's `nix-store --gc` to reclaim unreachable
 /// store paths.
 pub async fn run_gc(printer: &Printer) -> Result<()> {
+    run_gc_impl(printer, true).await
+}
+
+/// Run automatic GC after another mutating command.
+///
+/// Text output is preserved for normal mode, but JSON mode stays silent so the
+/// parent command remains a single JSON document.
+pub async fn run_gc_after_mutation(printer: &Printer) -> Result<()> {
+    run_gc_impl(printer, false).await
+}
+
+async fn run_gc_impl(printer: &Printer, emit_json: bool) -> Result<()> {
     printer.info("Running garbage collection...");
 
+    let nix_env = aos_nix_env();
     let output = tokio::process::Command::new("nix-store")
+        .envs(nix_env.iter().cloned())
         .arg("--gc")
         .output()
         .await
@@ -53,6 +159,20 @@ pub async fn run_gc(printer: &Printer) -> Result<()> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if emit_json && printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "gc",
+            "status": "completed",
+            "success": true,
+            "nix_store_dir": nix_env_value(&nix_env, "NIX_STORE_DIR"),
+            "nix_state_dir": nix_env_value(&nix_env, "NIX_STATE_DIR"),
+            "stdout": stdout.trim_end(),
+            "stderr": stderr.trim_end(),
+        }));
+        return Ok(());
+    }
+
     if !stdout.is_empty() {
         printer.plain(stdout.trim_end());
     }
@@ -61,14 +181,24 @@ pub async fn run_gc(printer: &Printer) -> Result<()> {
     Ok(())
 }
 
+fn nix_env_value(env: &[(&'static str, String)], key: &str) -> Option<String> {
+    env.iter()
+        .find_map(|(name, value)| (*name == key).then(|| value.clone()))
+}
+
 /// Clear the NAR cache directory and return the number of bytes freed.
 ///
 /// Removes all regular files in the directory. Subdirectories are left
 /// intact (the directory structure itself is cheap).
-fn clear_nar_cache(cache_dir: &Path) -> Result<u64> {
+fn clear_nar_cache(cache_dir: &Path) -> Result<NarCacheCleanResult> {
     let entries = match std::fs::read_dir(cache_dir) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(NarCacheCleanResult {
+                freed_bytes: 0,
+                files_removed: 0,
+            });
+        }
         Err(e) => {
             return Err(e)
                 .with_context(|| format!("reading NAR cache directory {}", cache_dir.display()));
@@ -76,18 +206,23 @@ fn clear_nar_cache(cache_dir: &Path) -> Result<u64> {
     };
 
     let mut freed: u64 = 0;
+    let mut files_removed = 0;
 
     for entry in entries {
         let entry = entry?;
         let meta = entry.metadata()?;
         if meta.is_file() {
             freed += meta.len();
+            files_removed += 1;
             std::fs::remove_file(entry.path())
                 .with_context(|| format!("removing cached file {}", entry.path().display()))?;
         }
     }
 
-    Ok(freed)
+    Ok(NarCacheCleanResult {
+        freed_bytes: freed,
+        files_removed,
+    })
 }
 
 /// Format a byte count as a human-readable size string.
@@ -107,6 +242,29 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+fn clean_generations_json(
+    status: &str,
+    keep: u32,
+    current_generation: Option<u32>,
+    generations_before: &[u32],
+    generations_after: &[u32],
+    removed_generations: &[u32],
+) -> serde_json::Value {
+    serde_json::json!({
+        "action": "clean",
+        "mode": "generations",
+        "status": status,
+        "keep": keep,
+        "current_generation": current_generation,
+        "generations_before": generations_before,
+        "generations_after": generations_after,
+        "generations_before_count": generations_before.len(),
+        "generations_after_count": generations_after.len(),
+        "removed_generations": removed_generations,
+        "removed": removed_generations.len(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,8 +280,9 @@ mod tests {
         std::fs::write(&file_a, vec![0u8; 1024]).unwrap();
         std::fs::write(&file_b, vec![0u8; 2048]).unwrap();
 
-        let freed = clear_nar_cache(tmp.path()).unwrap();
-        assert_eq!(freed, 3072);
+        let cleaned = clear_nar_cache(tmp.path()).unwrap();
+        assert_eq!(cleaned.freed_bytes, 3072);
+        assert_eq!(cleaned.files_removed, 2);
 
         // Files should be gone.
         assert!(!file_a.exists());
@@ -133,14 +292,16 @@ mod tests {
     #[test]
     fn clear_nar_cache_empty_dir_returns_zero() {
         let tmp = TempDir::new().unwrap();
-        let freed = clear_nar_cache(tmp.path()).unwrap();
-        assert_eq!(freed, 0);
+        let cleaned = clear_nar_cache(tmp.path()).unwrap();
+        assert_eq!(cleaned.freed_bytes, 0);
+        assert_eq!(cleaned.files_removed, 0);
     }
 
     #[test]
     fn clear_nar_cache_nonexistent_dir_returns_zero() {
-        let freed = clear_nar_cache(Path::new("/tmp/nonexistent-apm-test-dir")).unwrap();
-        assert_eq!(freed, 0);
+        let cleaned = clear_nar_cache(Path::new("/tmp/nonexistent-apm-test-dir")).unwrap();
+        assert_eq!(cleaned.freed_bytes, 0);
+        assert_eq!(cleaned.files_removed, 0);
     }
 
     #[test]

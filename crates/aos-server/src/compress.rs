@@ -141,6 +141,20 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
 /// paths typical in tests and `apm install` consumers, but a future
 /// streaming-hash refactor would be friendlier to large closures.
 pub fn compute_file_hash_size(store_path: &str, compression: Compression) -> Result<(String, u64)> {
+    let bytes = nar_bytes(store_path, compression)?;
+    let digest = Sha256::digest(&bytes);
+    Ok((
+        format!("sha256:{}", hex::encode(digest)),
+        bytes.len() as u64,
+    ))
+}
+
+/// Return the exact compressed NAR bytes for a store path.
+///
+/// This is used for byte-range responses, where the server must know the full
+/// response length before it can answer a `Range:` request. Normal full-body
+/// NAR GETs still use `nar_stream` to avoid buffering.
+pub fn nar_bytes(store_path: &str, compression: Compression) -> Result<Vec<u8>> {
     use std::process::Command as StdCommand;
 
     let output = match compression {
@@ -197,9 +211,5 @@ pub fn compute_file_hash_size(store_path: &str, compression: Compression) -> Res
         anyhow::bail!("compression pipeline failed for {store_path}");
     }
 
-    let digest = Sha256::digest(&output.stdout);
-    Ok((
-        format!("sha256:{}", hex::encode(digest)),
-        output.stdout.len() as u64,
-    ))
+    Ok(output.stdout)
 }
