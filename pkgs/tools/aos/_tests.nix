@@ -244,6 +244,18 @@ in {
           grep -q "Usage:" "$work/apr-help.out"
           run_clean ${self}/bin/apm --help > "$work/apm-help.out"
           grep -q "Usage:" "$work/apm-help.out"
+          run_clean ${self}/bin/apm --json gc > "$work/apm-gc-alt-store.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg store "$store_dir" \
+            --arg state "$state_dir" \
+            '.action == "gc"
+              and .status == "completed"
+              and .success == true
+              and .nix_store_dir == $store
+              and .nix_state_dir == $state
+              and (.stdout | type == "string")
+              and (.stderr | type == "string")' \
+            "$work/apm-gc-alt-store.json" >/dev/null
 
           reg="$data/apm/registries/host-reg"
           run_clean ${self}/bin/apr --json create host-reg > "$work/apr-create.json"
@@ -266,6 +278,77 @@ in {
           git -C "$reg" log -1 --format=%ae > "$work/author-email.out"
           grep -qx "Host Command Test" "$work/author-name.out"
           grep -qx "host-command@example.invalid" "$work/author-email.out"
+
+          remove_keep="$data/apm/registries/remove-keep-local"
+          run_clean ${self}/bin/apr create remove-keep-local \
+            > "$work/apr-create-remove-keep-local.out" 2>&1
+          if run_clean ${self}/bin/apm registry remove remove-keep-local \
+            > "$work/apm-registry-remove-keep-local-unsafe.out" 2>&1; then
+            cat "$work/apm-registry-remove-keep-local-unsafe.out"
+            exit 1
+          fi
+          grep -q "local authoring clone" \
+            "$work/apm-registry-remove-keep-local-unsafe.out"
+          grep -q "no remote is configured" \
+            "$work/apm-registry-remove-keep-local-unsafe.out"
+          test -d "$remove_keep"
+          run_clean ${self}/bin/apr remove remove-keep-local --keep-local \
+            > "$work/apr-remove-keep-local.out" 2>&1
+          grep -q "Registry 'remove-keep-local' removed" \
+            "$work/apr-remove-keep-local.out"
+          test -d "$remove_keep"
+          run_clean ${self}/bin/apr remove remove-keep-local --force \
+            > "$work/apr-remove-keep-local-force.out" 2>&1
+          grep -q "Registry 'remove-keep-local' removed" \
+            "$work/apr-remove-keep-local-force.out"
+          test ! -e "$remove_keep"
+
+          remove_dirty="$data/apm/registries/remove-dirty"
+          run_clean ${self}/bin/apr create remove-dirty \
+            > "$work/apr-create-remove-dirty.out" 2>&1
+          printf '%s\n' "local maintainer notes" \
+            > "$remove_dirty/maintainer-notes.txt"
+          if run_clean ${self}/bin/apm registry remove remove-dirty \
+            > "$work/apm-registry-remove-dirty.out" 2>&1; then
+            cat "$work/apm-registry-remove-dirty.out"
+            exit 1
+          fi
+          grep -q "local authoring clone" "$work/apm-registry-remove-dirty.out"
+          grep -q "uncommitted changes" "$work/apm-registry-remove-dirty.out"
+          test -f "$remove_dirty/maintainer-notes.txt"
+          run_clean ${self}/bin/apr remove remove-dirty --force \
+            > "$work/apr-remove-dirty-force.out" 2>&1
+          grep -q "Registry 'remove-dirty' removed" \
+            "$work/apr-remove-dirty-force.out"
+          test ! -e "$remove_dirty"
+
+          remove_unpushed_origin="$work/remove-unpushed-origin.git"
+          git init --bare --object-format=sha256 "$remove_unpushed_origin" \
+            > "$work/git-init-remove-unpushed-origin.out" 2>&1
+          remove_unpushed="$data/apm/registries/remove-unpushed"
+          run_clean ${self}/bin/apr create remove-unpushed \
+            --remote "$remove_unpushed_origin" \
+            > "$work/apr-create-remove-unpushed.out" 2>&1
+          git -C "$remove_unpushed" remote get-url origin \
+            > "$work/git-remove-unpushed-origin.out"
+          grep -qx "$remove_unpushed_origin" \
+            "$work/git-remove-unpushed-origin.out"
+          if run_clean ${self}/bin/apm registry remove remove-unpushed \
+            > "$work/apm-registry-remove-unpushed.out" 2>&1; then
+            cat "$work/apm-registry-remove-unpushed.out"
+            exit 1
+          fi
+          grep -q "local authoring clone" "$work/apm-registry-remove-unpushed.out"
+          grep -q "not pushed to any remote" \
+            "$work/apm-registry-remove-unpushed.out"
+          test -d "$remove_unpushed"
+          git -C "$remove_unpushed" push origin stable \
+            > "$work/git-push-remove-unpushed.out" 2>&1
+          run_clean ${self}/bin/apr remove remove-unpushed \
+            > "$work/apr-remove-unpushed-after-push.out" 2>&1
+          grep -q "Registry 'remove-unpushed' removed" \
+            "$work/apr-remove-unpushed-after-push.out"
+          test ! -e "$remove_unpushed"
 
           run_clean ${self}/bin/apr keys generate root --registry host-reg \
             > "$work/apr-keys-generate-root.out" 2>&1
@@ -1398,6 +1481,132 @@ in {
               and (.branches | any(.name == "origin/stable" and .remote == true))' \
             "$work/apr-push-host-install-v1.json" >/dev/null
 
+          run_clean ${self}/bin/apr create host-direct-release \
+            > "$work/apr-create-host-direct-release.out" 2>&1
+          direct_reg="$data/apm/registries/host-direct-release"
+          direct_release_url="http://127.0.0.1:$install_cache_port/direct-release"
+          run_clean ${self}/bin/apr --json release 1.0.0 \
+            --registry host-direct-release \
+            --store-path "$install_store" \
+            --name hostdirect \
+            --description "Host direct release fixture" \
+            --license MIT \
+            --maintainer host@example.invalid \
+            --key "$work/host-install-release-key" \
+            --cache-output "$work/direct-release-cache" \
+            --cache-url "$direct_release_url" \
+            --cache-priority 66 \
+            --upload-url "file://$work/install-static-cache-upload/direct-release" \
+            > "$work/apr-release-host-direct.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg cache "$work/direct-release-cache" \
+            --arg cache_url "$direct_release_url" \
+            --arg upload_url "file://$work/install-static-cache-upload/direct-release" \
+            '.action == "release"
+              and .status == "released"
+              and .registry == "host-direct-release"
+              and .version == "1.0.0"
+              and .dry_run == false
+              and .cache_output == $cache
+              and .cache_url == $cache_url
+              and .cache_priority == 66
+              and .cache_pointer_updated == true
+              and .upload_urls == [$upload_url]
+              and (.cache.paths >= 2)
+              and (.cache.narinfos >= 2)
+              and (.cache.nars >= 2)
+              and .cache.output_dir == $cache
+              and (.full_pack | startswith("pack-") and endswith(".pack"))
+              and .deltas == []
+              and (.uploaded_files > 0)
+              and (.uploaded_bytes > 0)' \
+            "$work/apr-release-host-direct.json" >/dev/null
+          test -f "$direct_reg/packages/h/hostdirect.toml"
+          grep -q "$direct_release_url" "$direct_reg/registry.toml"
+          git -C "$direct_reg" rev-parse --verify '1.0.0^{tag}' \
+            > "$work/apr-release-host-direct-tag.out"
+          git -C "$direct_reg" cat-file -p 1.0.0 \
+            > "$work/apr-release-host-direct-tag-object.out"
+          grep -q "BEGIN SSH SIGNATURE" \
+            "$work/apr-release-host-direct-tag-object.out"
+          test -f "$work/direct-release-cache/$install_leaf_hash.narinfo"
+          test -f "$work/direct-release-cache/$install_hash.narinfo"
+          test -f "$work/install-static-cache-upload/direct-release/HEAD"
+          test -f "$work/install-static-cache-upload/direct-release/info/refs"
+          test -f "$work/install-static-cache-upload/direct-release/releases/1/0/0/objects/info/packs"
+          test -f "$work/install-static-cache-upload/direct-release/nix-cache-info"
+          test -f "$work/install-static-cache-upload/direct-release/$install_leaf_hash.narinfo"
+          test -f "$work/install-static-cache-upload/direct-release/$install_hash.narinfo"
+          find "$work/install-static-cache-upload/direct-release/releases/1/0/0/objects/pack" \
+            -name 'pack-*.pack' | grep -q .
+
+          keyadd_public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/host-install-release-key.pub")
+          keyadd_initial_trust_key="host-keyadd:Ed25519:$keyadd_public_key"
+          run_clean ${self}/bin/apr create host-keyadd \
+            --trust-key "$keyadd_initial_trust_key" \
+            --trust-key-id initial \
+            --key "$work/host-install-release-key" \
+            > "$work/apr-create-host-keyadd.out" 2>&1
+          keyadd_reg="$data/apm/registries/host-keyadd"
+          run_clean ${self}/bin/apm registry add --no-verify "file://$keyadd_reg" \
+            --name host-keyadd \
+            --no-clone > "$work/apm-add-host-keyadd-config.out" 2>&1
+          grep -q "apm update --registry host-keyadd" \
+            "$work/apm-add-host-keyadd-config.out"
+          run_clean ${self}/bin/apr keys generate next \
+            --registry host-keyadd \
+            --add \
+            --key "$work/host-install-release-key" \
+            > "$work/apr-keys-generate-add-next.out" 2>&1
+          host_keyadd_next=$(grep -o 'host-keyadd:Ed25519:[A-Za-z0-9+/=]*' \
+            "$work/apr-keys-generate-add-next.out" | head -1)
+          host_keyadd_next_path="$config/apm/keys/host-keyadd-next.key"
+          test -f "$host_keyadd_next_path"
+          grep -q "$host_keyadd_next" "$keyadd_reg/keys.toml"
+          grep -q 'id = "next"' "$keyadd_reg/keys.toml"
+          grep -q '"next" = "' "$config/apm/registries.d/host-keyadd.toml"
+          git -C "$keyadd_reg" log --oneline -1 \
+            > "$work/git-log-host-keyadd-next.out"
+          grep -q "registry: add signing key next" \
+            "$work/git-log-host-keyadd-next.out"
+          run_clean ${self}/bin/apr --json keys list --registry host-keyadd \
+            > "$work/apr-keys-list-host-keyadd.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg initial "$keyadd_initial_trust_key" \
+            --arg next "$host_keyadd_next" \
+            '.registry == "host-keyadd"
+              and (.active | any(.id == "initial" and .key == $initial))
+              and (.active | any(.id == "next" and .key == $next))
+              and .revoked == []' \
+            "$work/apr-keys-list-host-keyadd.json" >/dev/null
+          run_clean ${self}/bin/apr --json release 1.0.0 \
+            --registry host-keyadd \
+            --store-path "$install_leaf_store" \
+            --name hostkeyed \
+            --description "Host generated key-id release fixture" \
+            --license MIT \
+            --maintainer host@example.invalid \
+            --key-id next \
+            > "$work/apr-release-host-keyadd.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "release"
+              and .status == "released"
+              and .registry == "host-keyadd"
+              and .version == "1.0.0"
+              and .dry_run == false
+              and .cache == null
+              and .cache_pointer_updated == false
+              and .uploaded_files == null
+              and (.full_pack | startswith("pack-") and endswith(".pack"))' \
+            "$work/apr-release-host-keyadd.json" >/dev/null
+          test -f "$keyadd_reg/packages/h/hostkeyed.toml"
+          git -C "$keyadd_reg" rev-parse --verify '1.0.0^{tag}' \
+            > "$work/apr-release-host-keyadd-tag.out"
+          git -C "$keyadd_reg" cat-file -p 1.0.0 \
+            > "$work/apr-release-host-keyadd-tag-object.out"
+          grep -q "BEGIN SSH SIGNATURE" \
+            "$work/apr-release-host-keyadd-tag-object.out"
+
           PYTHONUNBUFFERED=1 ${pkgs.python3}/bin/python3 -m http.server "$install_cache_port" \
             --bind 127.0.0.1 --directory "$work/install-static-cache-upload" \
             > "$work/install-cache-server.log" 2>&1 &
@@ -1413,6 +1622,63 @@ in {
           main_cache="$cache"
           main_profile_root="$profile_root"
           main_profile="$profile"
+          home="$work/direct-home"
+          config="$work/direct-config"
+          data="$work/direct-share"
+          cache="$work/direct-cache"
+          profile_root="$work/direct-profiles"
+          profile="$profile_root/per-user/unknown"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+          run_clean ${self}/bin/apm registry add --no-verify "$direct_release_url" \
+            --name host-direct-release \
+            --tag 1.0.0 > "$work/apm-add-host-direct-release.out" 2>&1
+          grep -q "Registry 'host-direct-release' added" \
+            "$work/apm-add-host-direct-release.out"
+          grep -q 'tag = "1.0.0"' \
+            "$config/apm/registries.d/host-direct-release.toml"
+          run_clean ${self}/bin/apm search hostdirect \
+            --registry host-direct-release \
+            > "$work/apm-search-host-direct-release.out" 2>&1
+          grep -q "hostdirect/host-direct-release 1.0.0" \
+            "$work/apm-search-host-direct-release.out"
+          nix_store --delete --ignore-liveness "$install_store" \
+            > "$work/nix-delete-host-direct-install.out" 2>&1
+          nix_store --delete --ignore-liveness "$install_leaf_store" \
+            > "$work/nix-delete-host-direct-leaf.out" 2>&1
+          if nix_store --check-validity "$install_store" \
+            > "$work/nix-valid-host-direct-install-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-direct-install-deleted.out"
+            exit 1
+          fi
+          if nix_store --check-validity "$install_leaf_store" \
+            > "$work/nix-valid-host-direct-leaf-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-direct-leaf-deleted.out"
+            exit 1
+          fi
+          run_clean ${self}/bin/apm --json install hostdirect \
+            --registry host-direct-release \
+            --yes > "$work/apm-install-host-direct-release.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+            '.action == "install"
+              and .status == "installed"
+              and .requested == ["hostdirect"]
+              and .generation == 1
+              and (.roots | length == 1)
+              and .roots[0].name == "hostdirect"
+              and .roots[0].registry == "host-direct-release"
+              and .roots[0].version == "1.0.0"
+              and .roots[0].store_path == $store
+              and (.closure | any(.name == "hostdirect" and .store_path == $store and .explicit == true))
+              and (.downloads.planned >= 2)
+              and (.downloads.downloaded >= 2)
+              and (.downloads.imported >= 2)' \
+            "$work/apm-install-host-direct-release.json" >/dev/null
+          "$profile/current/bin/host-install-tool" \
+            > "$work/host-direct-release-run.out"
+          grep -q "host leaf package executed" "$work/host-direct-release-run.out"
+          grep -q "host install package executed" "$work/host-direct-release-run.out"
+          assert_default_profile_absent
+          rm -rf "$profile_root"
           home="$work/channel-home"
           config="$work/channel-config"
           data="$work/channel-share"
@@ -1888,6 +2154,90 @@ in {
           profile_root="$main_profile_root"
           profile="$main_profile"
 
+          git -C "$install_reg" push origin 1.0.0 2.0.0 \
+            > "$work/git-push-host-install-tags.out" 2>&1
+          main_home="$home"
+          main_config="$config"
+          main_data="$data"
+          main_cache="$cache"
+          main_profile_root="$profile_root"
+          main_profile="$profile"
+          home="$work/tagged-home"
+          config="$work/tagged-config"
+          data="$work/tagged-share"
+          cache="$work/tagged-cache"
+          profile_root="$work/tagged-profiles"
+          profile="$profile_root/per-user/unknown"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+          run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
+            --name host-install-tag \
+            --tag 1.0.0 > "$work/apm-add-host-install-tag.out" 2>&1
+          grep -q "Registry 'host-install-tag' added" \
+            "$work/apm-add-host-install-tag.out"
+          tag_config="$config/apm/registries.d/host-install-tag.toml"
+          grep -q 'tag = "1.0.0"' "$tag_config"
+          run_clean ${self}/bin/apm search hostinstall \
+            --registry host-install-tag \
+            > "$work/apm-search-host-install-tag.out" 2>&1
+          grep -q "hostinstall/host-install-tag 1.0.0" \
+            "$work/apm-search-host-install-tag.out"
+          if grep -q "2.0.0" "$work/apm-search-host-install-tag.out"; then
+            cat "$work/apm-search-host-install-tag.out"
+            exit 1
+          fi
+          if nix_store --check-validity "$install_store" \
+            > "$work/nix-valid-host-install-before-tag.out" 2>&1; then
+            nix_store --delete --ignore-liveness "$install_store" \
+              > "$work/nix-delete-host-install-before-tag.out" 2>&1
+          fi
+          if nix_store --check-validity "$install_leaf_store" \
+            > "$work/nix-valid-host-leaf-before-tag.out" 2>&1; then
+            nix_store --delete --ignore-liveness "$install_leaf_store" \
+              > "$work/nix-delete-host-leaf-before-tag.out" 2>&1
+          fi
+          run_clean ${self}/bin/apm --json install hostinstall \
+            --registry host-install-tag \
+            --yes > "$work/apm-install-host-install-tag.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+            '.action == "install"
+              and .status == "installed"
+              and .requested == ["hostinstall"]
+              and .generation == 1
+              and (.roots | length == 1)
+              and .roots[0].name == "hostinstall"
+              and .roots[0].registry == "host-install-tag"
+              and .roots[0].version == "1.0.0"
+              and .roots[0].store_path == $store
+              and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+              and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+              and (.downloads.planned >= 2)
+              and (.downloads.downloaded >= 2)
+              and (.downloads.imported >= 2)' \
+            "$work/apm-install-host-install-tag.json" >/dev/null
+          "$profile/current/bin/host-install-tool" \
+            > "$work/host-install-tag-run.out"
+          grep -q "host leaf package executed" "$work/host-install-tag-run.out"
+          grep -q "host install package executed" "$work/host-install-tag-run.out"
+          if grep -q "v2 executed" "$work/host-install-tag-run.out"; then
+            cat "$work/host-install-tag-run.out"
+            exit 1
+          fi
+          run_clean ${self}/bin/apm list --upgradable \
+            > "$work/apm-upgradable-host-install-tag.out" 2>&1
+          if grep -q "hostinstall/host-install-tag" \
+            "$work/apm-upgradable-host-install-tag.out"; then
+            cat "$work/apm-upgradable-host-install-tag.out"
+            exit 1
+          fi
+          assert_default_profile_absent
+          rm -rf "$profile_root"
+          home="$main_home"
+          config="$main_config"
+          data="$main_data"
+          cache="$main_cache"
+          profile_root="$main_profile_root"
+          profile="$main_profile"
+
           run_clean ${self}/bin/apm --json update --registry host-install-client \
             > "$work/apm-update-host-install-v2-before-push.json" 2>&1 || {
             cat "$work/apm-update-host-install-v2-before-push.json"
@@ -2353,6 +2703,85 @@ in {
             cat "$work/apm-gc-host-install.json"
             exit 1
           }
+          assert_default_profile_absent
+
+          if nix_store --check-validity "$install_store_v2" \
+            > "$work/nix-valid-host-install-v2-before-orphan.out" 2>&1; then
+            nix_store --delete --ignore-liveness "$install_store_v2" \
+              > "$work/nix-delete-host-install-v2-before-orphan.out" 2>&1
+          fi
+          if nix_store --check-validity "$install_leaf_store_v2" \
+            > "$work/nix-valid-host-leaf-v2-before-orphan.out" 2>&1; then
+            nix_store --delete --ignore-liveness "$install_leaf_store_v2" \
+              > "$work/nix-delete-host-leaf-v2-before-orphan.out" 2>&1
+          fi
+          home="$work/orphan-home"
+          config="$work/orphan-config"
+          data="$work/orphan-share"
+          cache="$work/orphan-cache"
+          profile_root="$work/orphan-profiles"
+          profile="$profile_root/per-user/unknown"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+          run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
+            --name orphan-reg \
+            --branch stable > "$work/apm-add-orphan-reg.out" 2>&1
+          grep -q "Registry 'orphan-reg' added" "$work/apm-add-orphan-reg.out"
+          run_clean ${self}/bin/apm --json install hostinstall \
+            --registry orphan-reg \
+            --yes > "$work/apm-install-orphan-reg.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+            '.action == "install"
+              and .status == "installed"
+              and .requested == ["hostinstall"]
+              and .generation == 1
+              and (.roots | length == 1)
+              and .roots[0].name == "hostinstall"
+              and .roots[0].registry == "orphan-reg"
+              and .roots[0].version == "2.0.0"
+              and .roots[0].store_path == $store
+              and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+              and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+              and (.downloads.planned >= 2)
+              and (.downloads.downloaded >= 2)
+              and (.downloads.imported >= 2)' \
+            "$work/apm-install-orphan-reg.json" >/dev/null
+          "$profile/current/bin/host-install-tool" \
+            > "$work/host-install-orphan-before-remove.out"
+          grep -q "host leaf package v2 executed" \
+            "$work/host-install-orphan-before-remove.out"
+          grep -q "host install package v2 executed" \
+            "$work/host-install-orphan-before-remove.out"
+          run_clean ${self}/bin/apm --json orphans \
+            > "$work/apm-orphans-before-registry-remove.json"
+          ${pkgs.jq}/bin/jq -e 'length == 0' \
+            "$work/apm-orphans-before-registry-remove.json" >/dev/null
+          run_clean ${self}/bin/apm registry remove orphan-reg \
+            > "$work/apm-registry-remove-orphan-reg.out" 2>&1
+          grep -q "Registry 'orphan-reg' removed" \
+            "$work/apm-registry-remove-orphan-reg.out"
+          grep -q "now orphaned" "$work/apm-registry-remove-orphan-reg.out"
+          test ! -e "$config/apm/registries.d/orphan-reg.toml"
+          test ! -e "$data/apm/registries/orphan-reg"
+          test ! -e "$data/apm/remote/orphan-reg"
+          "$profile/current/bin/host-install-tool" \
+            > "$work/host-install-orphan-after-remove.out"
+          grep -q "host leaf package v2 executed" \
+            "$work/host-install-orphan-after-remove.out"
+          grep -q "host install package v2 executed" \
+            "$work/host-install-orphan-after-remove.out"
+          run_clean ${self}/bin/apm --json orphans \
+            > "$work/apm-orphans-after-registry-remove.json"
+          ${pkgs.jq}/bin/jq -e \
+            'length == 2
+              and any(.[]; .name == "hostinstall"
+                and .version == "2.0.0"
+                and .registry == "orphan-reg"
+                and .explicit == true)
+              and any(.[]; .name == "hostleaf"
+                and .version == "2.0.0"
+                and .registry == "orphan-reg"
+                and .explicit == false)' \
+            "$work/apm-orphans-after-registry-remove.json" >/dev/null
           assert_default_profile_absent
 
           mkdir -p "$out"
