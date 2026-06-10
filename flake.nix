@@ -63,7 +63,7 @@
       system: let
         aos = aosFor system;
         packages = [
-          aos.pkgs.aos
+          (aos.pkgs.aos.overrideAttrs (_: {doCheck = false;}))
           aos.pkgs.just
           aos.pkgs.rust
           aos.pkgs.rust.dev

@@ -142,6 +142,51 @@
     "preBazelBuild"
   ];
 
+  # Re-thread `overrideAttrs` (and `override`) through a language wrapper
+  # (mkCargoPackage, mkGoPackage, mkBazelPackage) so that wrapper-level args
+  # take effect when overridden — `doCheck`, `cargoTestFlags`, `goTestFlags`,
+  # `bazelTarget`, and the rest of cargo/go/bazelSpecificAttrs.
+  #
+  # `overrideAttrs` is the right tool here: those attrs are arguments to the
+  # *builder* (the layer nixpkgs calls overrideAttrs over — stdenv.mkDerivation
+  # there, our wrapper here), not formals of the package function (the layer
+  # `override`/callPackage covers). Re-running the wrapper with merged args is
+  # the exact analog of nixpkgs' stdenv.mkDerivation.overrideAttrs, which
+  # re-invokes mkDerivation with `prev // (f prev)`.
+  #
+  # The override mechanism inherited from mkDerivation can't do this: the
+  # wrapper has already consumed its specific attrs (e.g. `doCheck`) and frozen
+  # the phases list (cargoPhases resolves `doCheck` at eval time, omitting the
+  # check phase entirely), so overriding them through the inherited hook is a
+  # silent no-op. nixpkgs avoids the problem differently — its check phase is
+  # static and `doCheck` is a build-time env var read by the generic builder —
+  # but AOS selects phases at eval time, so the wrapper must re-run.
+  #
+  # `prevArgs` is the wrapper's argument set (matching nixpkgs, where
+  # overrideAttrs' `prev` is the args passed to the builder, not the computed
+  # derivation). Both hooks accept either an attrset or a `prevArgs: {...}`
+  # function; the attrset form is an AOS ergonomic extension (nixpkgs'
+  # overrideAttrs is strictly a function).
+  addBuilderOverrides = builder: args: drv:
+    drv
+    // {
+      override = f:
+        builder (
+          if builtins.isFunction f
+          then f args
+          else args // f
+        );
+      overrideAttrs = f:
+        builder (
+          args
+          // (
+            if builtins.isFunction f
+            then f args
+            else f
+          )
+        );
+    };
+
   mkCargoPackage = args: let
     # Extract cargo-specific attrs for the phase generator
     cargoArgs =
@@ -156,12 +201,14 @@
     # Remove cargo-specific attrs before passing to mkDerivation
     restArgs = removeAttrs args cargoSpecificAttrs;
   in
-    mkDerivation (
-      restArgs
-      // {
-        buildDeps = [self.rust] ++ (args.buildDeps or []);
-        phases = phases.cargoPhases cargoArgs;
-      }
+    addBuilderOverrides mkCargoPackage args (
+      mkDerivation (
+        restArgs
+        // {
+          buildDeps = [self.rust] ++ (args.buildDeps or []);
+          phases = phases.cargoPhases cargoArgs;
+        }
+      )
     );
 
   mkGoPackage = args: let
@@ -182,17 +229,19 @@
       };
     restArgs = removeAttrs args goSpecificAttrs;
   in
-    mkDerivation (
-      restArgs
-      // {
-        buildDeps = [self.go] ++ (args.buildDeps or []);
-        phases = phases.goPhases goArgsWithDefaults;
-        # Guard: the Go toolchain must not leak into the runtime closure.
-        # -trimpath (in goPhases) prevents source-path embedding; this
-        # disallowedReferences catches any residual leak at build time.
-        # Matches nixpkgs' buildGoModule pattern.
-        disallowedReferences = args.disallowedReferences or [self.go];
-      }
+    addBuilderOverrides mkGoPackage args (
+      mkDerivation (
+        restArgs
+        // {
+          buildDeps = [self.go] ++ (args.buildDeps or []);
+          phases = phases.goPhases goArgsWithDefaults;
+          # Guard: the Go toolchain must not leak into the runtime closure.
+          # -trimpath (in goPhases) prevents source-path embedding; this
+          # disallowedReferences catches any residual leak at build time.
+          # Matches nixpkgs' buildGoModule pattern.
+          disallowedReferences = args.disallowedReferences or [self.go];
+        }
+      )
     );
 
   # Wire fetchBazelDeps with AOS-specific defaults
@@ -247,30 +296,32 @@
     # Remove bazel-specific attrs before passing to mkDerivation
     restArgs = removeAttrs args bazelSpecificAttrs;
   in
-    mkDerivation (
-      restArgs
-      // {
-        buildDeps =
-          [
-            bazel
-            jdk
-            self.patchelf
-          ]
-          ++ tools
-          ++ (args.buildDeps or []);
-        phases = phases.bazelPhases {
-          bazelDeps = deps;
-          inherit bazel jdk tools;
-          inherit bootstrapTools;
-          patchelf = self.patchelf;
-          bash = stdenv.bash;
-          caCertificates = caCerts;
-          inherit bazelTarget bazelFlags bazelBuildFlags;
-          inherit scrubMap;
-          preBuild = args.preBazelBuild or "";
-          inherit installPhase;
-        };
-      }
+    addBuilderOverrides mkBazelPackage args (
+      mkDerivation (
+        restArgs
+        // {
+          buildDeps =
+            [
+              bazel
+              jdk
+              self.patchelf
+            ]
+            ++ tools
+            ++ (args.buildDeps or []);
+          phases = phases.bazelPhases {
+            bazelDeps = deps;
+            inherit bazel jdk tools;
+            inherit bootstrapTools;
+            patchelf = self.patchelf;
+            bash = stdenv.bash;
+            caCertificates = caCerts;
+            inherit bazelTarget bazelFlags bazelBuildFlags;
+            inherit scrubMap;
+            preBuild = args.preBazelBuild or "";
+            inherit installPhase;
+          };
+        }
+      )
     );
 
   # callPackage: import a package file and auto-fill its arguments from `self`.
