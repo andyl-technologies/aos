@@ -115,6 +115,41 @@ fn resolve_installed_package_meta<'a>(
         })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceMetadata {
+    registry_name: String,
+    source_drv: String,
+    source_nar_hash: String,
+}
+
+fn resolve_installed_source_metadata(
+    reg_set: &RegistrySet,
+    package: &str,
+    installed: &InstalledMeta,
+) -> Result<SourceMetadata> {
+    let installed_apm = installed
+        .apm
+        .as_ref()
+        .ok_or_else(|| AosError::PackageNotFound {
+            name: package.to_string(),
+        })?;
+
+    if !installed_apm.source_drv.is_empty() {
+        return Ok(SourceMetadata {
+            registry_name: installed_apm.registry.clone(),
+            source_drv: installed_apm.source_drv.clone(),
+            source_nar_hash: installed_apm.source_nar_hash.clone(),
+        });
+    }
+
+    let pkg_meta = resolve_installed_package_meta(reg_set, package, installed)?;
+    Ok(SourceMetadata {
+        registry_name: installed_apm.registry.clone(),
+        source_drv: pkg_meta.source_drv.clone(),
+        source_nar_hash: pkg_meta.source_nar_hash.clone(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // apm source <package>
 // ---------------------------------------------------------------------------
@@ -137,6 +172,7 @@ pub async fn run_source(
     let enabled = config.enabled_registries();
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
 
+    let mut installed_store_path_for_verify = None;
     let (registry_name, source_drv, source_nar_hash, expected_hash) = if verify_source {
         let profile = Profile::open_readonly(config.scope);
         let all_meta = meta::list_meta(&profile)?;
@@ -146,19 +182,14 @@ pub async fn run_source(
             .ok_or_else(|| AosError::PackageNotFound {
                 name: package.to_string(),
             })?;
-        let installed_apm = installed
-            .apm
-            .as_ref()
-            .ok_or_else(|| AosError::PackageNotFound {
-                name: package.to_string(),
-            })?;
-        let pkg_meta = resolve_installed_package_meta(&reg_set, package, installed)?;
+        let source_meta = resolve_installed_source_metadata(&reg_set, package, installed)?;
+        installed_store_path_for_verify = Some(installed.store_path.clone());
 
         (
-            installed_apm.registry.clone(),
-            pkg_meta.source_drv.clone(),
-            pkg_meta.source_nar_hash.clone(),
-            pkg_meta.nar_hash.clone(),
+            source_meta.registry_name,
+            source_meta.source_drv,
+            source_meta.source_nar_hash,
+            String::new(),
         )
     } else {
         let (reg, pkg_meta) =
@@ -182,6 +213,16 @@ pub async fn run_source(
             registry_name
         );
     }
+    let expected_hash = if verify_source {
+        let store_path = installed_store_path_for_verify.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("missing installed store path for source verification")
+        })?;
+        hash_verify::store_path_nar_hash(store_path)
+            .await
+            .with_context(|| format!("hashing installed package {store_path}"))?
+    } else {
+        expected_hash
+    };
 
     // Default or --show-drv: just print the source derivation path.
     if show_drv || (!fetch && !verify_source) {
@@ -539,6 +580,40 @@ references = []
         let selected = resolve_installed_package_meta(&reg_set, "verifytool", &installed).unwrap();
         assert_eq!(selected.version, "1.0.0");
         assert_eq!(selected.nar_hash, "sha256:v1");
+    }
+
+    #[test]
+    fn source_verify_uses_installed_source_metadata_without_registry_entry() {
+        let reg_set = RegistrySet::new(Vec::new());
+        let installed = InstalledMeta {
+            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-verifytool-1.0.0".into(),
+            pushed_at: 1707800000,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1707800000,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: "verifytool".into(),
+                version: "1.0.0".into(),
+                explicit: true,
+                registry: "test-reg".into(),
+                installed_at: "2026-02-16T00:00:00Z".into(),
+                held: false,
+                source_drv: "/nix/store/srcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrc-src.drv".into(),
+                source_nar_hash: "sha256:source".into(),
+            }),
+        };
+
+        let selected =
+            resolve_installed_source_metadata(&reg_set, "verifytool", &installed).unwrap();
+
+        assert_eq!(selected.registry_name, "test-reg");
+        assert_eq!(
+            selected.source_drv,
+            "/nix/store/srcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrc-src.drv"
+        );
+        assert_eq!(selected.source_nar_hash, "sha256:source");
     }
 
     // -- verify: installed meta lookup (unit test) ---------------------------
