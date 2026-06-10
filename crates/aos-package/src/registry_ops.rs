@@ -2025,6 +2025,22 @@ pub async fn validate(
     }
 
     if mirrors.is_empty() {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "status": "no_caches",
+                "package": package,
+                "platform": platform,
+                "fix": fix,
+                "jobs": jobs,
+                "caches": 0,
+                "checked": 0,
+                "found": 0,
+                "missing": 0,
+                "missing_entries": [],
+                "removed": 0,
+            }));
+            return Ok(());
+        }
         printer.warning("No caches configured in registry.toml. Cannot validate.");
         return Ok(());
     }
@@ -2032,6 +2048,22 @@ pub async fn validate(
     let entries = collect_cache_validation_entries(&dir, package, platform)?;
 
     if entries.is_empty() {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "status": "no_entries",
+                "package": package,
+                "platform": platform,
+                "fix": fix,
+                "jobs": jobs,
+                "caches": mirrors.len(),
+                "checked": 0,
+                "found": 0,
+                "missing": 0,
+                "missing_entries": [],
+                "removed": 0,
+            }));
+            return Ok(());
+        }
         printer.info("No entries to validate.");
         return Ok(());
     }
@@ -2063,6 +2095,7 @@ pub async fn validate(
     let mut missing = 0u32;
     let mut ok = 0u32;
     let mut missing_store_paths = HashSet::new();
+    let mut results = Vec::new();
     for handle in handles {
         let result = handle.await?;
         if result.found {
@@ -2080,20 +2113,60 @@ pub async fn validate(
                 result.entry.name, result.entry.store_path, detail
             ));
         }
+        results.push(result);
     }
 
     if missing == 0 {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&cache_validation_summary_json(
+                "ok",
+                package,
+                platform,
+                fix,
+                jobs,
+                mirrors.len(),
+                ok,
+                missing,
+                0,
+                &results,
+            ));
+            return Ok(());
+        }
         printer.success(&format!("All {ok} entries found in caches."));
     } else if fix {
         let removed = remove_missing_cache_entries(&dir, &missing_store_paths)?;
         if removed == 0 {
+            if printer.mode() == OutputMode::Json {
+                bail!(
+                    "{}; no matching registry entries removed.",
+                    cache_validation_missing_error(ok, missing, &results)
+                );
+            }
             bail!("{ok} found, {missing} missing; no matching registry entries removed.");
+        }
+        if printer.mode() == OutputMode::Json {
+            printer.json(&cache_validation_summary_json(
+                "fixed",
+                package,
+                platform,
+                fix,
+                jobs,
+                mirrors.len(),
+                ok,
+                missing,
+                removed,
+                &results,
+            ));
+            return Ok(());
         }
         let noun = if removed == 1 { "entry" } else { "entries" };
         printer.success(&format!(
             "Removed {removed} missing cache {noun} from registry metadata."
         ));
     } else {
+        if printer.mode() == OutputMode::Json {
+            bail!("{}", cache_validation_missing_error(ok, missing, &results));
+        }
         bail!("{ok} found, {missing} missing.");
     }
 
@@ -2114,6 +2187,77 @@ struct CacheValidationResult {
     entry: CacheValidationEntry,
     found: bool,
     details: Vec<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cache_validation_summary_json(
+    status: &str,
+    package: Option<&str>,
+    platform: Option<&str>,
+    fix: bool,
+    jobs: u32,
+    caches: usize,
+    found: u32,
+    missing: u32,
+    removed: usize,
+    results: &[CacheValidationResult],
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": status,
+        "package": package,
+        "platform": platform,
+        "fix": fix,
+        "jobs": jobs,
+        "caches": caches,
+        "checked": found + missing,
+        "found": found,
+        "missing": missing,
+        "missing_entries": results
+            .iter()
+            .filter(|result| !result.found)
+            .map(cache_validation_result_json)
+            .collect::<Vec<_>>(),
+        "removed": removed,
+    })
+}
+
+fn cache_validation_result_json(result: &CacheValidationResult) -> serde_json::Value {
+    serde_json::json!({
+        "name": &result.entry.name,
+        "platform": &result.entry.platform,
+        "store_path": &result.entry.store_path,
+        "store_hash": &result.entry.store_hash,
+        "nar_hash": &result.entry.nar_hash,
+        "details": &result.details,
+    })
+}
+
+fn cache_validation_missing_error(
+    found: u32,
+    missing: u32,
+    results: &[CacheValidationResult],
+) -> String {
+    let missing_entries = results
+        .iter()
+        .filter(|result| !result.found)
+        .map(|result| {
+            let detail = result
+                .details
+                .first()
+                .map(|detail| format!(" ({detail})"))
+                .unwrap_or_default();
+            format!(
+                "{}: {} not found in any cache{}",
+                result.entry.name, result.entry.store_path, detail
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    if missing_entries.is_empty() {
+        format!("{found} found, {missing} missing")
+    } else {
+        format!("{found} found, {missing} missing: {missing_entries}")
+    }
 }
 
 fn collect_cache_validation_entries(
