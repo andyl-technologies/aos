@@ -547,6 +547,20 @@ in {
       assert_file_contains /tmp/switch-run-high.out \
         "switch-tool 1.0.0 from high-priority" \
         "unfiltered switch-tool install executes high priority package"
+      $APM hold switch-tool > /tmp/switch-hold-high.out 2>&1 || {
+        cat /tmp/switch-hold-high.out
+        fail "apm hold marks high priority switch-tool held"
+      }
+      cat /tmp/switch-hold-high.out
+      assert_file_contains /tmp/switch-hold-high.out "set on hold" \
+        "apm hold reports high priority switch-tool hold"
+      $APM held > /tmp/switch-held-high.out 2>&1 || {
+        cat /tmp/switch-held-high.out
+        fail "apm held lists high priority switch-tool"
+      }
+      assert_file_contains /tmp/switch-held-high.out \
+        "switch-tool 1.0.0 (high-priority)" \
+        "held list reports high priority switch-tool before source switch"
 
       $APM install switch-tool --registry low-priority --yes \
         > /tmp/switch-install-low.out 2>&1 || {
@@ -561,6 +575,15 @@ in {
       assert_file_contains /tmp/switch-run-low.out \
         "switch-tool 1.0.0 from low-priority" \
         "source switch profile executable comes from selected registry"
+      assert_file_contains "$CURRENT_PROFILE/meta/$SWITCH_LOW_HASH.json" \
+        '"held": true' "source switch preserves held metadata"
+      $APM held > /tmp/switch-held-low.out 2>&1 || {
+        cat /tmp/switch-held-low.out
+        fail "apm held lists selected registry switch-tool after source switch"
+      }
+      assert_file_contains /tmp/switch-held-low.out \
+        "switch-tool 1.0.0 (low-priority)" \
+        "held list follows selected registry after source switch"
       if [ -L "$CURRENT_PROFILE/usr/$SWITCH_LOW_HASH" ]; then
         pass "source switch records selected registry profile root"
       else
@@ -597,6 +620,15 @@ in {
       assert_file_contains /tmp/switch-run-low-after-reinstall.out \
         "switch-tool 1.0.0 from low-priority" \
         "plain reinstall keeps selected registry executable"
+      assert_file_contains "$CURRENT_PROFILE/meta/$SWITCH_LOW_HASH.json" \
+        '"held": true' "plain reinstall preserves held metadata"
+      $APM held > /tmp/switch-held-low-after-reinstall.out 2>&1 || {
+        cat /tmp/switch-held-low-after-reinstall.out
+        fail "apm held lists selected registry switch-tool after reinstall"
+      }
+      assert_file_contains /tmp/switch-held-low-after-reinstall.out \
+        "switch-tool 1.0.0 (low-priority)" \
+        "held list follows selected registry after reinstall"
       if [ -L "$CURRENT_PROFILE/usr/$SWITCH_LOW_HASH" ]; then
         pass "plain reinstall keeps selected registry profile root"
       else
