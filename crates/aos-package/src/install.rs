@@ -57,7 +57,11 @@ pub async fn run(
         ensure_skipped_dependencies_present(&closures).await?;
         prune_dependency_members(&mut closures);
     }
-    let profile = Profile::open(config.scope)?;
+    let profile = if dry_run || download_only {
+        Profile::open_readonly(config.scope)
+    } else {
+        Profile::open(config.scope)?
+    };
     let installed = list_meta(&profile)?;
     let all_metas = collect_unique_metas(&closures);
     let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
