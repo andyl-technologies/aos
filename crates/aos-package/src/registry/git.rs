@@ -38,6 +38,11 @@ pub struct SyncResult {
     pub packages_removed: usize,
 }
 
+struct ResolvedHead {
+    commit: String,
+    release_tag: Option<String>,
+}
+
 const MIN_SHA256_GIT_VERSION: GitVersion = GitVersion {
     major: 2,
     minor: 42,
@@ -143,7 +148,7 @@ pub async fn sync_git(
     // Step 3: Determine the new HEAD commit.
     let mut record_successful_freshness = true;
     let mut channel_resolution: Option<(semver::Version, String)> = None;
-    let new_commit = if let TrackingMode::Channel(channel_name) = tracking_mode {
+    let resolved_head = if let TrackingMode::Channel(channel_name) = tracking_mode {
         match resolve_channel_head(
             config,
             &git_url,
@@ -163,7 +168,10 @@ pub async fn sync_git(
                     unix_now_secs(),
                 )?;
                 channel_resolution = Some((resolved.semver, channel_oid));
-                resolved.commit
+                ResolvedHead {
+                    commit: resolved.commit,
+                    release_tag: None,
+                }
             }
             Err(err) => {
                 return Err(channel_refresh_error(
@@ -177,6 +185,7 @@ pub async fn sync_git(
     } else {
         resolve_fetch_head(&repo_dir, tracking_mode).await?
     };
+    let new_commit = resolved_head.commit;
 
     if matches!(tracking_mode, TrackingMode::Channel(_)) {
         let target = state
@@ -190,6 +199,9 @@ pub async fn sync_git(
 
     // Step 4: Verify the head commit signature against the trusted set.
     if enforcing {
+        if let Some(release_tag) = resolved_head.release_tag.as_deref() {
+            verify_release_tag(&repo_dir, release_tag, &trusted_keys)?;
+        }
         verify_head_commit(&repo_dir, &new_commit, &trusted_keys)?;
     }
 
@@ -345,6 +357,27 @@ fn verify_head_commit(repo_dir: &Path, commit: &str, trusted_keys: &[String]) ->
              (trusted fingerprints: {}).\n\
              The registry requires signed commits; if a maintainer key rotated, ensure the\n\
              rotation was delivered through a signed fast-forward sync.",
+            fingerprints.join(", "),
+        );
+    }
+    Ok(())
+}
+
+fn verify_release_tag(repo_dir: &Path, tag: &str, trusted_keys: &[String]) -> Result<()> {
+    let verified = security::verify_tag_signature(repo_dir, tag, trusted_keys)
+        .with_context(|| format!("verifying signature of release tag {tag}"))?;
+    if !verified {
+        let fingerprints: Vec<String> = trusted_keys
+            .iter()
+            .filter_map(|key| {
+                security::parse_signing_key(key)
+                    .ok()
+                    .map(|(_, _, pubkey)| key_fingerprint(&pubkey))
+            })
+            .collect();
+        bail!(
+            "release tag signature verification failed for {tag}: not signed by any trusted key \
+             (trusted fingerprints: {}).",
             fingerprints.join(", "),
         );
     }
@@ -607,18 +640,24 @@ async fn fetch_refs(repo_dir: &Path, url: &str, tracking_mode: &TrackingMode) ->
     Ok(())
 }
 
-/// Resolve the commit SHA to use after fetching.
-async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Result<String> {
+/// Resolve the authenticated commit to use after fetching.
+async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Result<ResolvedHead> {
     let ref_to_resolve = match tracking_mode {
         TrackingMode::Commit(hash) => {
             // Already a commit hash.
-            return Ok(hash.clone());
+            return Ok(ResolvedHead {
+                commit: hash.clone(),
+                release_tag: None,
+            });
         }
         TrackingMode::Branch(branch) | TrackingMode::Channel(branch) => {
             format!("refs/remotes/origin/{branch}")
         }
         TrackingMode::Tag(tag) => {
-            format!("refs/tags/{tag}")
+            return Ok(ResolvedHead {
+                commit: resolve_ref_to_commit(repo_dir, &format!("refs/tags/{tag}")).await?,
+                release_tag: Some(tag.clone()),
+            });
         }
         TrackingMode::Version(req) => {
             // List all tags, parse as semver, pick the best match.
@@ -637,6 +676,29 @@ async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Re
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("git rev-parse {} failed: {}", ref_to_resolve, stderr.trim());
+    }
+
+    Ok(ResolvedHead {
+        commit: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        release_tag: None,
+    })
+}
+
+async fn resolve_ref_to_commit(repo_dir: &Path, ref_to_resolve: &str) -> Result<String> {
+    let output = gitcmd::hermetic_async()
+        .args(["rev-parse", &format!("{ref_to_resolve}^{{commit}}")])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .with_context(|| format!("resolving ref {ref_to_resolve} to commit"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "git rev-parse {}^{{commit}} failed: {}",
+            ref_to_resolve,
+            stderr.trim(),
+        );
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -866,7 +928,10 @@ async fn prune_unretained_release_dirs(repo_dir: &Path, retained: &[String]) -> 
 ///
 /// Lists all tags in the repo, parses each as semver (stripping `v` prefix),
 /// filters by the constraint, and resolves the latest matching tag's commit.
-async fn resolve_best_version_tag(repo_dir: &Path, req: &semver::VersionReq) -> Result<String> {
+async fn resolve_best_version_tag(
+    repo_dir: &Path,
+    req: &semver::VersionReq,
+) -> Result<ResolvedHead> {
     let output = gitcmd::hermetic_async()
         .args(["tag", "-l"])
         .current_dir(repo_dir)
@@ -909,19 +974,10 @@ async fn resolve_best_version_tag(repo_dir: &Path, req: &semver::VersionReq) -> 
         )
     })?;
 
-    // Resolve tag to commit.
-    let output = gitcmd::hermetic_async()
-        .args(["rev-parse", &format!("refs/tags/{best_tag}")])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("resolving tag {best_tag}"))?;
-
-    if !output.status.success() {
-        bail!("git rev-parse refs/tags/{best_tag} failed");
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(ResolvedHead {
+        commit: resolve_ref_to_commit(repo_dir, &format!("refs/tags/{best_tag}")).await?,
+        release_tag: Some(best_tag),
+    })
 }
 
 /// Parse a tag string as a semver `Version`, stripping a leading `v` prefix,
@@ -1783,7 +1839,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resolved, expected);
+        assert_eq!(resolved.commit, expected);
+        assert_eq!(resolved.release_tag, None);
         let output = git(&repo_dir).args(["tag", "-l"]).output().await.unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());

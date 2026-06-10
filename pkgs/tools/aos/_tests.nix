@@ -3034,6 +3034,56 @@ in {
             exit 1
           }
 
+          producer_home="$home"
+          producer_config="$config"
+          producer_data="$data"
+          producer_cache="$cache"
+          producer_profile_root="$profile_root"
+
+          home="$work/tag-client-home"
+          config="$work/tag-client-config"
+          data="$work/tag-client-share"
+          cache="$work/tag-client-cache"
+          profile_root="$work/tag-client-profiles"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+          run_clean ${self}/bin/apm registry add "http://127.0.0.1:$port/host-keyresign/.git" \
+            --name host-keyresign \
+            --tag 1.0.0 \
+            --trust-key "$trust_key" \
+            > "$work/apm-add-host-keyresign-tag.out" 2>&1
+          grep -q "Registry 'host-keyresign' added" \
+            "$work/apm-add-host-keyresign-tag.out"
+          run_clean ${self}/bin/apm search hostkeyresign \
+            --registry host-keyresign \
+            > "$work/apm-search-host-keyresign-tag.out" 2>&1
+          grep -q "hostkeyresign/host-keyresign 1.0.0" \
+            "$work/apm-search-host-keyresign-tag.out"
+
+          home="$work/version-client-home"
+          config="$work/version-client-config"
+          data="$work/version-client-share"
+          cache="$work/version-client-cache"
+          profile_root="$work/version-client-profiles"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+          run_clean ${self}/bin/apm registry add "http://127.0.0.1:$port/host-keyresign/.git" \
+            --name host-keyresign \
+            --version '^1.0' \
+            --trust-key "$trust_key" \
+            > "$work/apm-add-host-keyresign-version.out" 2>&1
+          grep -q "Registry 'host-keyresign' added" \
+            "$work/apm-add-host-keyresign-version.out"
+          run_clean ${self}/bin/apm search hostkeyresign \
+            --registry host-keyresign \
+            > "$work/apm-search-host-keyresign-version.out" 2>&1
+          grep -q "hostkeyresign/host-keyresign 1.0.0" \
+            "$work/apm-search-host-keyresign-version.out"
+
+          home="$producer_home"
+          config="$producer_config"
+          data="$producer_data"
+          cache="$producer_cache"
+          profile_root="$producer_profile_root"
+
           mkdir -p "$out"
           echo "PASS" > "$out/result"
         '';
