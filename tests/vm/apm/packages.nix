@@ -1770,7 +1770,228 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 8. remove-autoremove — Remove with --autoremove flag
+  # 8. registry-readd-heals-orphans — Re-add registry after orphaning packages
+  # -------------------------------------------------------------------------
+  registry-readd-heals-orphans = testing.mkVMTest {
+    name = "apm-registry-readd-heals-orphans";
+    rootfsDeps = realInstallDeps;
+    memory = 1024;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupNixEnv}
+
+      echo "==> Test: registry re-add heals orphaned installed packages"
+
+      TOOL_STORE="${installBasicTool}"
+      TOOL_HASH=$(basename "$TOOL_STORE" | cut -d- -f1)
+      PROFILE="/var/lib/profiles/per-user/readduser"
+      TOOL_BIN="$PROFILE/current/bin/install-basic-tool"
+
+      assert_dir_not_exists() {
+        if [ ! -d "$1" ]; then
+          pass "$2"
+        else
+          fail "$2 (directory should not exist: $1)"
+        fi
+      }
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/readd-valid-$label.out" 2>&1; then
+          pass "$label valid in store"
+        else
+          cat "/tmp/readd-valid-$label.out"
+          fail "$label should be valid in store"
+        fi
+      }
+
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/readd-missing-$label.out" 2>&1; then
+          cat "/tmp/readd-missing-$label.out"
+          fail "$label should be missing from store"
+        else
+          pass "$label missing from store"
+        fi
+      }
+
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        if nix-store --delete --ignore-liveness "$path" > "/tmp/readd-delete-$label.out" 2>&1; then
+          pass "$label deleted before apm download"
+        else
+          cat "/tmp/readd-delete-$label.out"
+          fail "$label should be deletable before apm download"
+          return 1
+        fi
+        assert_store_missing "$path" "$label"
+      }
+
+      wait_for_cache_server() {
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://127.0.0.1:18124/nix-cache-info >/dev/null; then
+            return 0
+          fi
+          sleep 1
+        done
+        return 1
+      }
+
+      run_ok() {
+        label="$1"
+        shift
+        if "$@" > "/tmp/readd-$label.out" 2>&1; then
+          pass "$label exits 0"
+        else
+          cat "/tmp/readd-$label.out"
+          fail "$label should exit 0"
+        fi
+      }
+
+      mount -o remount,rw / || true
+      assert_store_valid "$TOOL_STORE" "readd-tool"
+
+      echo "==> Maintainer: publish readd-tool and static cache"
+      $APR create readd-reg
+      REG_DIR="$REG_STORAGE/readd-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      $APR publish "$TOOL_STORE" \
+        --name readd-tool \
+        --version 1.0.0 \
+        --description "Registry re-add recovery fixture" \
+        --license MIT \
+        --maintainer readd@example.invalid \
+        --registry readd-reg \
+        --no-commit
+      assert_file_contains "$REG_DIR/packages/r/readd-tool.toml" \
+        "$TOOL_HASH" "published readd-tool metadata records store hash"
+
+      $APR cache generate \
+        --registry readd-reg \
+        --output /tmp/readd-cache \
+        --cache-url http://127.0.0.1:18124 \
+        --priority 54 \
+        --no-commit
+      assert_file_exists "/tmp/readd-cache/$TOOL_HASH.narinfo" \
+        "static cache has readd-tool narinfo"
+      assert_file_contains "$REG_DIR/registry.toml" \
+        "http://127.0.0.1:18124" "registry records readd cache URL"
+
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "release: readd-tool 1.0.0"
+      git init --bare --object-format=sha256 /tmp/readd-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/readd-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      python3 -m http.server 18124 --bind 127.0.0.1 \
+        --directory /tmp/readd-cache > /tmp/readd-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      if wait_for_cache_server; then
+        pass "static cache HTTP server started"
+      else
+        cat /tmp/readd-cache-http.log || true
+        fail "static cache HTTP server started"
+      fi
+
+      echo "==> Consumer: install readd-tool"
+      export HOME=/tmp/readd-consumer
+      export USER=readduser
+      mkdir -p "$HOME"
+      $APM registry add file:///tmp/readd-origin.git \
+        --name readd-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/readd-registry-add.out 2>&1 || {
+        cat /tmp/readd-registry-add.out
+        fail "apm registry add syncs readd registry"
+      }
+      cat /tmp/readd-registry-add.out
+
+      delete_store_path "$TOOL_STORE" "readd-tool"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install readd-tool --registry readd-reg --yes > /tmp/readd-install.out 2>&1 || {
+        cat /tmp/readd-install.out
+        fail "apm install downloads readd-tool"
+      }
+      cat /tmp/readd-install.out
+      assert_file_contains /tmp/readd-install.out "Downloading 1 NAR" \
+        "readd-tool install downloads package NAR"
+      assert_file_contains /tmp/readd-install.out "Installed 1 package" \
+        "readd-tool install creates profile generation"
+      "$TOOL_BIN" > /tmp/readd-run.out
+      assert_file_contains /tmp/readd-run.out "^install-basic-tool 1.0.0$" \
+        "installed readd-tool executable runs from profile"
+
+      run_ok verify-before-remove "$APM" verify readd-tool
+      assert_file_contains /tmp/readd-verify-before-remove.out "integrity verified" \
+        "apm verify validates readd-tool before registry removal"
+
+      echo "==> Consumer: remove registry and observe orphaned package"
+      $APM registry remove readd-reg > /tmp/readd-remove-registry.out 2>&1 || {
+        cat /tmp/readd-remove-registry.out
+        fail "apm registry remove readd-reg succeeds"
+      }
+      cat /tmp/readd-remove-registry.out
+      assert_file_contains /tmp/readd-remove-registry.out "Registry 'readd-reg' removed" \
+        "registry remove reports removal"
+      assert_file_not_exists "$HOME/.config/apm/registries.d/readd-reg.toml" \
+        "registry remove deletes config"
+      assert_dir_not_exists "$HOME/.local/share/apm/registries/readd-reg" \
+        "registry remove deletes local clone"
+
+      run_ok orphans-after-remove "$APM" orphans
+      assert_file_contains /tmp/readd-orphans-after-remove.out "readd-tool" \
+        "apm orphans lists installed package after registry removal"
+      assert_file_contains /tmp/readd-orphans-after-remove.out "removed registry 'readd-reg'" \
+        "apm orphans names removed registry"
+      if $APM verify readd-tool > /tmp/readd-verify-orphan.out 2>&1; then
+        cat /tmp/readd-verify-orphan.out
+        fail "apm verify should fail while source registry is absent"
+      else
+        cat /tmp/readd-verify-orphan.out
+        pass "apm verify fails while source registry is absent"
+      fi
+      assert_file_contains /tmp/readd-verify-orphan.out "not present in registry 'readd-reg'" \
+        "orphaned verify error points at missing source registry"
+
+      echo "==> Consumer: re-add registry and verify package recovery"
+      $APM registry add file:///tmp/readd-origin.git \
+        --name readd-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/readd-registry-readd.out 2>&1 || {
+        cat /tmp/readd-registry-readd.out
+        fail "apm registry add re-adds removed registry"
+      }
+      cat /tmp/readd-registry-readd.out
+      assert_file_contains /tmp/readd-registry-readd.out "Registry 'readd-reg' added" \
+        "registry re-add reports success"
+      assert_dir_exists "$HOME/.local/share/apm/registries/readd-reg" \
+        "registry re-add reclones local registry"
+
+      run_ok orphans-after-readd "$APM" orphans
+      assert_file_contains /tmp/readd-orphans-after-readd.out "No orphaned packages" \
+        "apm orphans clears after registry re-add"
+      run_ok verify-after-readd "$APM" verify readd-tool
+      assert_file_contains /tmp/readd-verify-after-readd.out "integrity verified" \
+        "apm verify works again after registry re-add"
+      "$TOOL_BIN" > /tmp/readd-run-after-readd.out
+      assert_file_contains /tmp/readd-run-after-readd.out "^install-basic-tool 1.0.0$" \
+        "installed executable still runs after registry re-add"
+
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "static cache HTTP server stopped"
+      fi
+      wait "$CACHE_PID" 2>/dev/null || true
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 9. remove-autoremove — Remove with --autoremove flag
   # -------------------------------------------------------------------------
   remove-autoremove = testing.mkVMTest {
     name = "apm-remove-autoremove";
@@ -2059,7 +2280,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 9. upgrade-package — Upgrade package to newer version
+  # 10. upgrade-package — Upgrade package to newer version
   # -------------------------------------------------------------------------
   upgrade-package = testing.mkVMTest {
     name = "apm-upgrade-package";
@@ -2386,7 +2607,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 10. rollback-package — Roll back to previous generation
+  # 11. rollback-package — Roll back to previous generation
   # -------------------------------------------------------------------------
   rollback-package = testing.mkVMTest {
     name = "apm-rollback-package";
@@ -2756,7 +2977,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 11. package-real-closure-lifecycle — Install/upgrade/rollback real closure
+  # 12. package-real-closure-lifecycle — Install/upgrade/rollback real closure
   # -------------------------------------------------------------------------
   package-real-closure-lifecycle = testing.mkVMTest {
     name = "apm-package-real-closure-lifecycle";
@@ -3121,7 +3342,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 12. source-verify-alt-nix-state — Source and verify with re-rooted Nix state
+  # 13. source-verify-alt-nix-state — Source and verify with re-rooted Nix state
   # -------------------------------------------------------------------------
   source-verify-alt-nix-state = testing.mkVMTest {
     name = "apm-source-verify-alt-nix-state";
@@ -3314,7 +3535,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 13. gc-alt-nix-state — GC with re-rooted Nix state
+  # 14. gc-alt-nix-state — GC with re-rooted Nix state
   # -------------------------------------------------------------------------
   gc-alt-nix-state = testing.mkVMTest {
     name = "apm-gc-alt-nix-state";
@@ -3339,7 +3560,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 14. command-surface — Real APM command surface workflow
+  # 15. command-surface — Real APM command surface workflow
   # -------------------------------------------------------------------------
   command-surface = testing.mkVMTest {
     name = "apm-command-surface";
@@ -3922,7 +4143,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 15. hold-prevent-upgrade — Hold/unhold prevents/allows upgrades
+  # 16. hold-prevent-upgrade — Hold/unhold prevents/allows upgrades
   # -------------------------------------------------------------------------
   hold-prevent-upgrade = testing.mkVMTest {
     name = "apm-hold-prevent-upgrade";
