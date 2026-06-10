@@ -493,6 +493,62 @@ in {
           grep -q "BEGIN SSH SIGNATURE" "$work/release-tag-resigned.out"
           assert_no_profile
 
+          v2_hash="cccccccccccccccccccccccccccccccc"
+          printf '%s\n' \
+            "" \
+            '[[versions]]' \
+            'version = "2.0.0"' \
+            "" \
+            '[versions.platforms.x86_64-linux]' \
+            "store_path = \"/nix/store/$v2_hash-hostpkg-2.0.0\"" \
+            'nar_hash = "sha256-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC="' \
+            'nar_size = 2345' \
+            'closure_size = 2345' \
+            'source_drv = ""' \
+            'source_nar_hash = ""' \
+            'references = []' \
+            >> "$reg/packages/h/hostpkg.toml"
+          printf '%s\n' "$v2_hash" > "$reg/closures/$v2_hash"
+          git -C "$reg" add -A
+          git -C "$reg" commit -m "release: hostpkg 2.0.0" > "$work/git-commit-v2-package.out" 2>&1
+
+          run_clean ${self}/bin/apr release 2.0.0 \
+            --registry host-reg \
+            --key "$work/release-key-next" \
+            > "$work/apr-release-v2.out" 2>&1
+          grep -q "Created signed tag '2.0.0'" "$work/apr-release-v2.out"
+          grep -q "Generated full pack" "$work/apr-release-v2.out"
+          grep -q "Generated delta pack delta-1.0.0.pack.zst" "$work/apr-release-v2.out"
+          grep -q "Released host-reg 2.0.0" "$work/apr-release-v2.out"
+          find "$reg/.git/releases/2/0/0/objects/pack" -name 'pack-*.pack' | grep -q .
+          test -f "$reg/.git/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
+          git -C "$reg" rev-parse --verify '2.0.0^{tag}' > "$work/release-v2-tag-object.out"
+          git -C "$reg" cat-file -p 2.0.0 > "$work/release-v2-tag.out"
+          grep -q "BEGIN SSH SIGNATURE" "$work/release-v2-tag.out"
+
+          run_clean ${self}/bin/apr channel init canary 1.0.0 \
+            --registry host-reg \
+            --key "$work/release-key-next" \
+            > "$work/apr-channel-init.out" 2>&1
+          grep -q "Initialized channel 'canary' with 256/256 partitions on 1.0.0" "$work/apr-channel-init.out"
+          test -f "$reg/.git/channels/canary/00"
+          grep -q "BEGIN SSH SIGNATURE" "$reg/.git/channels/canary/00"
+          run_clean ${self}/bin/apr channel status canary --registry host-reg > "$work/apr-channel-status-v1.out" 2>&1
+          grep -q "Frontier: 1.0.0" "$work/apr-channel-status-v1.out"
+          grep -q "1.0.0: 256/256" "$work/apr-channel-status-v1.out"
+
+          run_clean ${self}/bin/apr channel advance canary 2.0.0 \
+            --registry host-reg \
+            --key "$work/release-key-next" \
+            --partitions 0x00,0x2a \
+            > "$work/apr-channel-advance.out" 2>&1
+          grep -q "Advanced channel 'canary' 2 partition(s) to 2.0.0" "$work/apr-channel-advance.out"
+          run_clean ${self}/bin/apr channel status canary --registry host-reg > "$work/apr-channel-status-v2.out" 2>&1
+          grep -q "Frontier: 2.0.0" "$work/apr-channel-status-v2.out"
+          grep -q "2.0.0: 2/256" "$work/apr-channel-status-v2.out"
+          grep -q "1.0.0: 254/256" "$work/apr-channel-status-v2.out"
+          assert_no_profile
+
           mkdir -p "$out"
           echo "PASS" > "$out/result"
         '';
