@@ -1781,6 +1781,15 @@ in {
         fi
       }
 
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
+
       delete_store_path() {
         path="$1"
         label="$2"
@@ -1792,6 +1801,22 @@ in {
           return 1
         fi
         assert_store_missing "$path" "$label"
+      }
+
+      cache_nar_count() {
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' 2>/dev/null | wc -l | tr -d ' '
+      }
+
+      cache_nar_http_get_count() {
+        grep -E 'GET /nar/.*\.nar\.zst HTTP/' /tmp/static-release-http.log 2>/dev/null | wc -l | tr -d ' '
+      }
+
+      generation_count() {
+        if [ -d "$PROFILE" ]; then
+          find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        else
+          printf '0'
+        fi
       }
 
       wait_for_static_origin() {
@@ -1896,6 +1921,75 @@ in {
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
+      echo "==> Consumer: no-deps refuses an unpublished missing closure reference"
+      if $APM install static-closure \
+        --registry static-release-reg \
+        --no-deps \
+        --yes > /tmp/static-release-no-deps-missing.out 2>&1; then
+        cat /tmp/static-release-no-deps-missing.out
+        fail "apm install --no-deps should fail when anonymous closure dependency is absent"
+      else
+        cat /tmp/static-release-no-deps-missing.out
+        pass "apm install --no-deps fails before downloading anonymous closure dependency"
+      fi
+      assert_file_contains /tmp/static-release-no-deps-missing.out \
+        "no-deps requested but dependency store path" \
+        "failed no-deps install reports missing anonymous dependency"
+      assert_file_not_contains /tmp/static-release-no-deps-missing.out "Downloading" \
+        "failed no-deps install does not download NAR bodies"
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "failed no-deps install leaves NAR cache empty"
+      else
+        fail "failed no-deps install should not cache release NARs"
+      fi
+      assert_store_missing "$ROOT_STORE" "closure-root"
+      assert_store_missing "$LEAF_STORE" "closure-leaf"
+      if [ "$(generation_count)" = "0" ] && [ ! -e "$PROFILE/current" ]; then
+        pass "failed no-deps install creates no profile generation"
+      else
+        fail "failed no-deps install should not create a profile generation"
+      fi
+
+      echo "==> Consumer: download-only fetches anonymous closure without importing"
+      NAR_GETS_BEFORE_DOWNLOAD_ONLY=$(cache_nar_http_get_count)
+      $APM install static-closure \
+        --registry static-release-reg \
+        --download-only \
+        --yes > /tmp/static-release-download-only.out 2>&1 || {
+        cat /tmp/static-release-download-only.out
+        fail "apm install --download-only downloads anonymous release closure"
+      }
+      cat /tmp/static-release-download-only.out
+      assert_file_contains /tmp/static-release-download-only.out "Downloading 2 NAR" \
+        "download-only downloads root and anonymous dependency NARs"
+      assert_file_contains /tmp/static-release-download-only.out "no profile changes made" \
+        "download-only reports no profile mutation"
+      assert_file_not_contains /tmp/static-release-download-only.out "Importing packages" \
+        "download-only does not import release closure"
+      assert_file_not_contains /tmp/static-release-download-only.out "Updating profile" \
+        "download-only does not update profile"
+      if [ "$(cache_nar_count)" = "2" ]; then
+        pass "download-only leaves root and dependency NARs in user cache"
+      else
+        fail "download-only should cache exactly two release NARs"
+      fi
+      EXPECTED_NAR_GETS_AFTER_DOWNLOAD_ONLY=$((NAR_GETS_BEFORE_DOWNLOAD_ONLY + 2))
+      if [ "$(cache_nar_http_get_count)" = "$EXPECTED_NAR_GETS_AFTER_DOWNLOAD_ONLY" ]; then
+        pass "download-only fetches exactly two release NAR bodies"
+      else
+        cat /tmp/static-release-http.log || true
+        fail "download-only should fetch exactly two release NAR bodies"
+      fi
+      assert_store_missing "$ROOT_STORE" "closure-root"
+      assert_store_missing "$LEAF_STORE" "closure-leaf"
+      if [ "$(generation_count)" = "0" ] && [ ! -e "$PROFILE/current" ]; then
+        pass "download-only creates no profile generation"
+      else
+        fail "download-only should not create a profile generation"
+      fi
+
+      echo "==> Consumer: normal install reuses cached anonymous closure and activates"
+      NAR_GETS_BEFORE_INSTALL=$(cache_nar_http_get_count)
       $APM install static-closure --registry static-release-reg --yes \
         > /tmp/static-release-install.out 2>&1 || {
         cat /tmp/static-release-install.out
@@ -1906,11 +2000,16 @@ in {
         "apm install downloads release closure NARs"
       assert_file_contains /tmp/static-release-install.out "Installed 1 package" \
         "apm install activates static release package"
-      NAR_COUNT=$(find "$HOME/.cache/apm" -name '*.nar.zst' | wc -l | tr -d ' ')
-      if [ "$NAR_COUNT" -ge 2 ]; then
+      if [ "$(cache_nar_http_get_count)" = "$NAR_GETS_BEFORE_INSTALL" ]; then
+        pass "normal install reuses cached anonymous closure NAR bodies"
+      else
+        cat /tmp/static-release-http.log || true
+        fail "normal install should not refetch cached anonymous closure NAR bodies"
+      fi
+      if [ "$(cache_nar_count)" = "2" ]; then
         pass "download cache contains the root and dependency NARs"
       else
-        fail "download cache should contain at least two NARs, got $NAR_COUNT"
+        fail "download cache should contain exactly two NARs"
       fi
       assert_store_valid "$ROOT_STORE" "closure-root"
       assert_store_valid "$LEAF_STORE" "closure-leaf"

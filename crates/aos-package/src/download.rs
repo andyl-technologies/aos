@@ -259,7 +259,7 @@ async fn fetch_one_narinfo(
         .with_context(|| format!("parsing narinfo for {} from {url}", req.store_path))
 }
 
-fn reference_store_path(reference: &str, parent_store_path: &str) -> String {
+pub(crate) fn reference_store_path(reference: &str, parent_store_path: &str) -> String {
     if reference.starts_with('/') {
         return reference.to_string();
     }
@@ -269,6 +269,20 @@ fn reference_store_path(reference: &str, parent_store_path: &str) -> String {
         .map(|(dir, _)| dir)
         .unwrap_or("/nix/store");
     format!("{store_dir}/{reference}")
+}
+
+pub(crate) fn order_resolved_downloads(
+    roots: &[DownloadRequest],
+    resolved: Vec<ResolvedDownload>,
+) -> Result<Vec<ResolvedDownload>> {
+    let mut fetched = HashMap::new();
+
+    for item in resolved {
+        let hash = narinfo::store_hash(&item.narinfo.store_path).to_string();
+        fetched.insert(hash, item);
+    }
+
+    order_narinfo_closure(roots, &fetched)
 }
 
 fn order_narinfo_closure(
