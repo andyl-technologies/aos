@@ -859,7 +859,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18109 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18109 --bind 127.0.0.1 \
         --directory /tmp/unpublish-cache > /tmp/unpublish-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -1555,7 +1555,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18082 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18082 --bind 127.0.0.1 \
         --directory /tmp/maint-cache > /tmp/maint-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -1832,10 +1832,10 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18090 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18090 --bind 127.0.0.1 \
         --directory "$REG_DIR/.git" > /tmp/channel-origin-http.log 2>&1 &
       ORIGIN_PID=$!
-      python3 -m http.server 18091 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18091 --bind 127.0.0.1 \
         --directory /tmp/channel-cache > /tmp/channel-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -2976,7 +2976,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18106 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18106 --bind 127.0.0.1 \
         --directory /tmp/signed-cache > /tmp/signed-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then

@@ -204,7 +204,7 @@
 
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     PY
-      python3 /tmp/aos-s3-server.py "$s3_port" "$s3_root" "$s3_events" \
+      PYTHONUNBUFFERED=1 python3 /tmp/aos-s3-server.py "$s3_port" "$s3_root" "$s3_events" \
         > /tmp/aos-s3-server.log 2>&1 &
       S3_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -359,7 +359,7 @@ in {
         "/tmp/s3-cache-root/aos-registry-test/config-cache/$STORE_HASH.narinfo"
       grep -q "Priority: 38" /tmp/generated-cache-config-auth/nix-cache-info
 
-      python3 -m http.server 18080 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18080 --bind 127.0.0.1 \
         --directory /tmp/generated-cache > /tmp/static-cache-http.log 2>&1 &
       HTTP_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -579,7 +579,7 @@ in {
         git clone --bare /tmp/git-matrix-src /tmp/git-matrix-origin.git
         git --git-dir=/tmp/git-matrix-origin.git update-server-info
 
-        python3 -m http.server 18081 --bind 127.0.0.1 \
+        PYTHONUNBUFFERED=1 python3 -m http.server 18081 --bind 127.0.0.1 \
           --directory /tmp/git-matrix-origin.git > /tmp/git-matrix-http.log 2>&1 &
         for _i in 1 2 3 4 5 6 7 8 9 10; do
           if curl -sf http://127.0.0.1:18081/HEAD >/dev/null; then

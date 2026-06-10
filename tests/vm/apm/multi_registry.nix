@@ -413,10 +413,10 @@ in {
       ${iproute2Bin} link set lo up || true
       ${iproute2Bin} addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18101 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18101 --bind 127.0.0.1 \
         --directory /tmp/low-priority-cache > /tmp/low-priority-cache-http.log 2>&1 &
       LOW_CACHE_PID=$!
-      python3 -m http.server 18102 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18102 --bind 127.0.0.1 \
         --directory /tmp/high-priority-cache > /tmp/high-priority-cache-http.log 2>&1 &
       HIGH_CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
