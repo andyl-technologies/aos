@@ -501,7 +501,11 @@ in {
       }
 
       generation_count() {
-        find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        if [ -d "$PROFILE" ]; then
+          find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        else
+          printf '0'
+        fi
       }
 
       wait_for_cache_server() {
@@ -1166,6 +1170,46 @@ in {
         "explicit dependency remains active after wrapper autoremove"
       assert_file_contains "$PROFILE/meta/$IDEMP_HASH.json" '"explicit": true' \
         "explicit dependency metadata remains after wrapper autoremove"
+
+      echo "==> Consumer: no-deps fails without existing dependency store path"
+      rm -rf "$PROFILE"
+      delete_store_path "$WRAPPER_STORE" "idemp-wrapper-missing-nodeps"
+      delete_store_path "$IDEMP_STORE" "idempkg-missing-nodeps"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      if $APM install idemp-wrapper --registry idemp-reg --no-deps --yes \
+        > /tmp/idemp-no-deps-missing.out 2>&1; then
+        cat /tmp/idemp-no-deps-missing.out
+        fail "apm install --no-deps should fail when dependency store path is absent"
+      else
+        cat /tmp/idemp-no-deps-missing.out
+        pass "apm install --no-deps fails when dependency store path is absent"
+      fi
+      assert_file_contains /tmp/idemp-no-deps-missing.out \
+        "no-deps requested but dependency store path" \
+        "failed no-deps install reports missing skipped dependency"
+      assert_file_not_contains /tmp/idemp-no-deps-missing.out "Downloading" \
+        "failed no-deps install does not download before dependency preflight"
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "failed no-deps install leaves NAR cache empty"
+      else
+        fail "failed no-deps install should not cache requested wrapper"
+      fi
+      assert_store_missing "$WRAPPER_STORE" "idemp-wrapper"
+      assert_store_missing "$IDEMP_STORE" "idempkg"
+      if [ "$(generation_count)" = "0" ] && [ ! -e "$PROFILE/current" ]; then
+        pass "failed no-deps install creates no profile generation"
+      else
+        fail "failed no-deps install should not create a profile generation"
+      fi
+      $APM list --installed > /tmp/idemp-installed-after-nodeps-fail.out 2>&1 || {
+        cat /tmp/idemp-installed-after-nodeps-fail.out
+        fail "apm list --installed succeeds after failed no-deps install"
+      }
+      assert_file_not_contains /tmp/idemp-installed-after-nodeps-fail.out "idemp-wrapper" \
+        "failed no-deps install does not record wrapper metadata"
+      assert_file_not_contains /tmp/idemp-installed-after-nodeps-fail.out "idempkg" \
+        "failed no-deps install does not record dependency metadata"
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "static cache HTTP server stopped"
