@@ -1277,6 +1277,24 @@ in {
           git -C "$install_reg" add -A
           git -C "$install_reg" commit -m "release: hostinstall 1.0.0" \
             > "$work/git-commit-host-install.out" 2>&1
+          install_origin="$work/host-install-origin.git"
+          git init --bare --object-format=sha256 "$install_origin" \
+            > "$work/git-init-host-install-origin.out" 2>&1
+          git -C "$install_reg" remote add origin "$install_origin"
+          install_remote_v1_commit=$(git -C "$install_reg" rev-parse HEAD)
+          run_clean ${self}/bin/apr --json push \
+            --registry host-install-reg \
+            --branch stable \
+            --set-upstream > "$work/apr-push-host-install-v1.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg head "$install_remote_v1_commit" \
+            '.action == "push"
+              and .branch == "stable"
+              and .set_upstream == true
+              and .force == false
+              and .head == $head
+              and (.branches | any(.name == "origin/stable" and .remote == true))' \
+            "$work/apr-push-host-install-v1.json" >/dev/null
 
           PYTHONUNBUFFERED=1 ${pkgs.python3}/bin/python3 -m http.server "$install_cache_port" \
             --bind 127.0.0.1 --directory "$work/install-static-cache-upload" \
@@ -1288,8 +1306,9 @@ in {
             exit 1
           fi
 
-          run_clean ${self}/bin/apm registry add "file://$install_reg" \
-            --name host-install-client > "$work/apm-add-host-install.out" 2>&1
+          run_clean ${self}/bin/apm registry add "file://$install_origin" \
+            --name host-install-client \
+            --branch stable > "$work/apm-add-host-install.out" 2>&1
           grep -q "Registry 'host-install-client' added" "$work/apm-add-host-install.out"
 
           nix_store --delete --ignore-liveness "$install_store" \
@@ -1439,6 +1458,50 @@ in {
             > "$work/git-commit-host-install-v2.out" 2>&1
 
           run_clean ${self}/bin/apm --json update --registry host-install-client \
+            > "$work/apm-update-host-install-v2-before-push.json" 2>&1 || {
+            cat "$work/apm-update-host-install-v2-before-push.json"
+            exit 1
+          }
+          ${pkgs.jq}/bin/jq -e \
+            --arg commit "$install_remote_v1_commit" \
+            '.registry == "host-install-client"
+              and .updated == 1
+              and (.registries | length == 1)
+              and .registries[0].registry == "host-install-client"
+              and .registries[0].status == "updated"
+              and .registries[0].commit == $commit
+              and .registries[0].packages == 2
+              and .registries[0].updated == 0
+              and .registries[0].added == 0
+              and .registries[0].removed == 0' \
+            "$work/apm-update-host-install-v2-before-push.json" >/dev/null || {
+            cat "$work/apm-update-host-install-v2-before-push.json"
+            exit 1
+          }
+          run_clean ${self}/bin/apm list --upgradable \
+            > "$work/apm-upgradable-host-install-before-push.out" 2>&1 || {
+            cat "$work/apm-upgradable-host-install-before-push.out"
+            exit 1
+          }
+          if grep -q "hostinstall/host-install-client" "$work/apm-upgradable-host-install-before-push.out"; then
+            cat "$work/apm-upgradable-host-install-before-push.out"
+            exit 1
+          fi
+          install_remote_v2_commit=$(git -C "$install_reg" rev-parse HEAD)
+          run_clean ${self}/bin/apr --json push \
+            --registry host-install-reg \
+            --branch stable > "$work/apr-push-host-install-v2.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg head "$install_remote_v2_commit" \
+            '.action == "push"
+              and .branch == "stable"
+              and .set_upstream == false
+              and .force == false
+              and .head == $head
+              and (.branches | any(.name == "origin/stable" and .remote == true))' \
+            "$work/apr-push-host-install-v2.json" >/dev/null
+
+          run_clean ${self}/bin/apm --json update --registry host-install-client \
             > "$work/apm-update-host-install-v2.json" 2>&1 || {
             cat "$work/apm-update-host-install-v2.json"
             exit 1
@@ -1529,8 +1592,8 @@ in {
             "$work/apm-files-host-install-v2.json" >/dev/null
 
           run_clean ${self}/bin/apm rollback --list > "$work/apm-rollback-list-host-install-v2.out" 2>&1
-          grep -q "gen-1: hostinstall 1.0.0" "$work/apm-rollback-list-host-install-v2.out"
-          grep -q "gen-2: hostinstall 2.0.0" "$work/apm-rollback-list-host-install-v2.out"
+          grep -q "gen-1: .*hostinstall 1.0.0" "$work/apm-rollback-list-host-install-v2.out"
+          grep -q "gen-2: .*hostinstall 2.0.0" "$work/apm-rollback-list-host-install-v2.out"
           grep -q "gen-2: .*current" "$work/apm-rollback-list-host-install-v2.out"
           run_clean ${self}/bin/apm --json rollback --list > "$work/apm-rollback-list-host-install-v2.json"
           ${pkgs.jq}/bin/jq -e \
