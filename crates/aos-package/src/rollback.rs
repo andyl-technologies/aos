@@ -99,19 +99,15 @@ pub async fn run(
     dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
-    let profile = if dry_run {
-        Profile::open_readonly(config.scope)
-    } else {
-        Profile::open(config.scope)?
-    };
+    let inspect_profile = Profile::open_readonly(config.scope);
 
     // Must have a current generation to roll back from.
-    let current = match profile.current_generation()? {
+    let current = match inspect_profile.current_generation()? {
         Some(g) => g,
         None => bail!("no active generation to roll back from"),
     };
 
-    let all_gens = profile.list_generations()?;
+    let all_gens = inspect_profile.list_generations()?;
 
     // Determine target generation.
     let target = if let Some(n) = generation {
@@ -159,6 +155,8 @@ pub async fn run(
         printer.info("Dry run: no changes made.");
         return Ok(());
     }
+
+    let profile = Profile::open(config.scope)?;
 
     // Switch to the target generation.
     profile.switch_to(target)?;
