@@ -8,9 +8,10 @@ use aos_core::output::Printer;
 
 /// Run `apm hold <package>` -- prevent a package from being upgraded.
 pub async fn run_hold(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
-    let profile = Profile::open(config.scope)?;
-
+    let profile = Profile::open_readonly(config.scope);
     let hash = find_hash_by_name(&profile, package)?;
+
+    let profile = Profile::open(config.scope)?;
     meta::set_held(&profile, &hash, true)?;
 
     printer.success(&format!("{package} set on hold."));
@@ -19,9 +20,10 @@ pub async fn run_hold(config: &ApmConfig, package: &str, printer: &Printer) -> R
 
 /// Run `apm unhold <package>` -- release the upgrade hold.
 pub async fn run_unhold(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
-    let profile = Profile::open(config.scope)?;
-
+    let profile = Profile::open_readonly(config.scope);
     let hash = find_hash_by_name(&profile, package)?;
+
+    let profile = Profile::open(config.scope)?;
     meta::set_held(&profile, &hash, false)?;
 
     printer.success(&format!("{package} released from hold."));
