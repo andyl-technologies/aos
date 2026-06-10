@@ -978,6 +978,9 @@ in {
             echo "libz.so.1 stub" > "$LIBZ/lib/libz.so.1"
             ${sqliteBin} /tmp/reg-a/var/nix/db/db.sqlite \
               "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$LIBZ', 'sha256:zzzz', 1000000, 4096, 1, '''''');"
+            LIBZ_HASH=$(basename "$LIBZ" | cut -d- -f1)
+            mkdir -p /tmp/reg-a/gcroots/default/bin
+            ln -sfn "$LIBZ" "/tmp/reg-a/gcroots/default/bin/$LIBZ_HASH"
 
             cat > /tmp/reg-a-config.toml << 'CFGEOF'
             listen = "127.0.0.1:15001"
@@ -1001,6 +1004,9 @@ in {
             echo "libz.so.1 stub" > "$LIBZ_B/lib/libz.so.1"
             ${sqliteBin} /tmp/reg-b/var/nix/db/db.sqlite \
               "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$LIBZ_B', 'sha256:zzzz', 1000000, 4096, 1, '''''');"
+            LIBZ_B_HASH=$(basename "$LIBZ_B" | cut -d- -f1)
+            mkdir -p /tmp/reg-b/gcroots/default/bin
+            ln -sfn "$LIBZ_B" "/tmp/reg-b/gcroots/default/bin/$LIBZ_B_HASH"
 
             PKG="/tmp/reg-b/store/pppppppppppppppppppppppppppppppppp-mypkg-1.0"
             mkdir -p "$PKG/bin"
@@ -1009,6 +1015,8 @@ in {
             chmod +x "$PKG/bin/mypkg"
             ${sqliteBin} /tmp/reg-b/var/nix/db/db.sqlite \
               "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$PKG', 'sha256:pppp', 1000000, 2048, 1, '''''');"
+            PKG_HASH=$(basename "$PKG" | cut -d- -f1)
+            ln -sfn "$PKG" "/tmp/reg-b/gcroots/default/bin/$PKG_HASH"
 
             cat > /tmp/reg-b-config.toml << 'CFGEOF'
             listen = "127.0.0.1:15002"
@@ -1039,13 +1047,25 @@ in {
               "http://127.0.0.1:15002/default/$HASH_Z.narinfo")
             echo "Registry A libz: HTTP $HTTP_Z_A"
             echo "Registry B libz: HTTP $HTTP_Z_B"
+            test "$HTTP_Z_A" = "200" || {
+              echo "FAIL: registry A should serve shared libz narinfo"
+              FAIL=1
+            }
+            test "$HTTP_Z_B" = "200" || {
+              echo "FAIL: registry B should serve shared libz narinfo"
+              FAIL=1
+            }
 
             HASH_P="pppppppppppppppppppppppppppppppppp"
             HTTP_P=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
               "http://127.0.0.1:15002/default/$HASH_P.narinfo")
             echo "Registry B mypkg: HTTP $HTTP_P"
+            test "$HTTP_P" = "200" || {
+              echo "FAIL: registry B should serve package narinfo"
+              FAIL=1
+            }
 
-            kill $REG_A_PID $REG_B_PID 2>/dev/null || true
+            kill -9 $REG_A_PID $REG_B_PID 2>/dev/null || true
             wait $REG_A_PID $REG_B_PID 2>/dev/null || true
 
             if [ "$FAIL" -ne 0 ]; then
@@ -1153,8 +1173,16 @@ in {
             echo "Mirror missing: $MR_MISSING"
 
             echo "==> Mirror comparison: upstream=$UP_MISSING, mirror=$MR_MISSING"
+            test "$UP_MISSING" = "0" || {
+              echo "FAIL: upstream should contain mirror package"
+              FAIL=1
+            }
+            test "$MR_MISSING" = "1" || {
+              echo "FAIL: empty mirror should miss mirror package"
+              FAIL=1
+            }
 
-            kill $UPSTREAM_PID $MIRROR_PID 2>/dev/null || true
+            kill -9 $UPSTREAM_PID $MIRROR_PID 2>/dev/null || true
             wait $UPSTREAM_PID $MIRROR_PID 2>/dev/null || true
 
             if [ "$FAIL" -ne 0 ]; then
