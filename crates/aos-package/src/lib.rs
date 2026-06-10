@@ -856,6 +856,21 @@ pub enum KeysCommand {
         #[arg(long)]
         registry: Option<String>,
     },
+    /// Register an externally-held maintainer key (from a path or command)
+    /// without generating or persisting any key material
+    Register {
+        /// Stable key id inside keys.toml
+        id: String,
+        /// Path to the existing private key file
+        #[arg(long = "key", conflicts_with = "key_command")]
+        key: Option<String>,
+        /// Command, run via `sh -c`, that prints the private key to stdout
+        #[arg(long = "key-command", conflicts_with = "key")]
+        key_command: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
     /// Add an active signing key to committed keys.toml
     Add {
         /// Stable key id inside keys.toml

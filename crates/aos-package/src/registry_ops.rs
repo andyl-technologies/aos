@@ -32,7 +32,9 @@ use crate::security::{
     KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key, verify_tag_signature,
 };
 use crate::sshkey;
-use crate::types::{CacheEntry, RegistryConfig, RegistryRootConfig};
+use crate::types::{
+    CacheEntry, RegistryConfig, RegistryRootConfig, SigningKeySource, SigningKeySpec,
+};
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
     TrustCommand,
@@ -928,7 +930,7 @@ description = ""
     commit_registry(
         &dir,
         &format!("Initialize registry '{name}'"),
-        signing_key.as_deref(),
+        signing_key.as_ref().map(|k| k.path()),
     )?;
     refresh_registry_object_store(&dir)
         .context("refreshing dumb-HTTP object store after registry creation")?;
@@ -1092,7 +1094,7 @@ pub async fn publish(
             closure_path.clone(),
             dir.join(".gitattributes"),
         ];
-        commit_registry_paths(&dir, msg, &staged_paths, signing_key.as_deref())?;
+        commit_registry_paths(&dir, msg, &staged_paths, signing_key.as_ref().map(|k| k.path()))?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after publish")?;
         committed = true;
@@ -1500,7 +1502,7 @@ pub async fn unpublish(
     if !no_commit {
         let default_msg = format!("unpublish {package}");
         let msg = message.unwrap_or(&default_msg);
-        commit_registry(&dir, msg, signing_key.as_deref())?;
+        commit_registry(&dir, msg, signing_key.as_ref().map(|k| k.path()))?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after unpublish")?;
         committed = true;
@@ -3293,6 +3295,19 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             registry.as_deref(),
             printer,
         ),
+        KeysCommand::Register {
+            id,
+            key,
+            key_command,
+            registry,
+        } => register_roster_key(
+            config,
+            id,
+            key.as_deref(),
+            key_command.as_deref(),
+            registry.as_deref(),
+            printer,
+        ),
         KeysCommand::Add {
             id,
             key,
@@ -3322,7 +3337,7 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
                 &roster,
                 *no_commit,
                 &format!("registry: add signing key {id}"),
-                commit_key.as_deref(),
+                commit_key.as_ref().map(|k| k.path()),
             )?;
             printer.success(&format!(
                 "Added active signing key '{id}' to registry '{registry_name}'."
@@ -3383,11 +3398,15 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
                 &roster,
                 *no_commit,
                 &format!("registry: retire signing key {id}"),
-                if *no_commit { None } else { signer.as_deref() },
+                if *no_commit {
+                    None
+                } else {
+                    signer.as_ref().map(|k| k.path())
+                },
             )?;
             if *no_resign {
                 print_resign_plan(&plan, printer);
-            } else if let Some(vouch_key) = signer.as_deref() {
+            } else if let Some(vouch_key) = signer.as_ref().map(|k| k.path()) {
                 execute_retirement_resign(&dir, &plan, vouch_key, printer)?;
             }
             printer.success(&format!(
@@ -3661,7 +3680,11 @@ fn generate_roster_key(
         .join("registries.d")
         .join(format!("{registry_name}.toml"));
     if config_path.exists() {
-        state::upsert_signing_key(&config_path, id, &key_path_str)?;
+        state::upsert_signing_key(
+            &config_path,
+            id,
+            &SigningKeySource::Path(key_path_str.clone()),
+        )?;
         printer.kv("Config", &config_path.display().to_string());
     } else {
         printer.warning(&format!(
@@ -3707,7 +3730,7 @@ fn generate_roster_key(
             &roster,
             no_commit,
             &format!("registry: add signing key {id}"),
-            commit_key.as_deref(),
+            commit_key.as_ref().map(|k| k.path()),
         )?;
         printer.success(&format!(
             "Added active signing key '{id}' to registry '{registry_name}'."
@@ -3715,6 +3738,109 @@ fn generate_roster_key(
     }
 
     Ok(())
+}
+
+/// `apr keys register <id>`
+///
+/// Adopt an externally-held maintainer key without generating or persisting
+/// key material. The private key is obtained from a path (`--key`) or a
+/// command (`--key-command`); its public half is derived with `ssh-keygen -y`
+/// (the same tool git uses to sign); the source is recorded under
+/// `[registry.signing_keys]` so `--key-id <id>` resolves it; and the
+/// `registry:Ed25519:<base64>` trust line is printed for an existing
+/// maintainer to add with `apr keys add`.
+///
+/// Unlike [`generate_roster_key`], nothing is generated and the private key
+/// never lands in a tool-managed file: a command source is materialized only
+/// transiently — long enough to derive the public key — and removed
+/// immediately. Resolving the source here doubles as validation that the
+/// configured path or command actually yields a usable key.
+fn register_roster_key(
+    config: &ApmConfig,
+    id: &str,
+    key: Option<&str>,
+    key_command: Option<&str>,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    validate_roster_key_id(id)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+
+    let source = match (key, key_command) {
+        (Some(_), Some(_)) => bail!("use only one of --key or --key-command"),
+        (Some(path), None) => SigningKeySource::Path(path.to_string()),
+        (None, Some(command)) => SigningKeySource::Spec(SigningKeySpec {
+            path: None,
+            command: Some(command.to_string()),
+        }),
+        (None, None) => bail!("provide the key with --key <path> or --key-command <command>"),
+    };
+
+    let resolved = resolve_signing_key_source(id, &source)?;
+    let trust_key = derive_trust_key(&registry_name, resolved.path())?;
+    let (_registry, _algorithm, public_key) = parse_signing_key(&trust_key)?;
+
+    let config_path = config
+        .scope
+        .config_dir()
+        .join("registries.d")
+        .join(format!("{registry_name}.toml"));
+    if config_path.exists() {
+        state::upsert_signing_key(&config_path, id, &source)?;
+        printer.kv("Config", &config_path.display().to_string());
+    } else {
+        printer.warning(&format!(
+            "registry '{registry_name}' has no config at {}; to use --key-id {id}, add the \
+             source under [registry.signing_keys] in that file.",
+            config_path.display(),
+        ));
+    }
+
+    printer.kv("Key id", id);
+    match (source.path(), source.command()) {
+        (Some(path), _) => printer.kv("Key path", path),
+        (_, Some(command)) => printer.kv("Key command", command),
+        _ => {}
+    }
+    printer.kv("Public key", &trust_key);
+    printer.kv("Fingerprint", &key_fingerprint(&public_key));
+    printer.info(&format!(
+        "Hand the public key to an active maintainer to add it:\n  {} keys add {id} {trust_key} --registry {registry_name}",
+        aos_core::invocation::package_registry_command(),
+    ));
+    Ok(())
+}
+
+/// Derive the `registry:Ed25519:<base64>` trust line for the private key at
+/// `key_path` by shelling out to `ssh-keygen -y`.
+///
+/// `ssh-keygen -y` reads a private key and prints its public half as
+/// `ssh-ed25519 <base64> [comment]`; the base64 field is exactly the SSH
+/// wire-format blob that the trust line carries.
+fn derive_trust_key(registry_name: &str, key_path: &str) -> Result<String> {
+    let output = std::process::Command::new("ssh-keygen")
+        .arg("-y")
+        .arg("-f")
+        .arg(key_path)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("running `ssh-keygen -y` to derive the public key")?;
+    if !output.status.success() {
+        bail!(
+            "`ssh-keygen -y` failed for the provided key: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    let line = String::from_utf8_lossy(&output.stdout);
+    let mut fields = line.split_whitespace();
+    let algorithm = fields.next().unwrap_or_default();
+    if algorithm != "ssh-ed25519" {
+        bail!("unsupported signing key type '{algorithm}'; registry keys must be Ed25519");
+    }
+    let blob = fields
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("`ssh-keygen -y` produced no public key material"))?;
+    Ok(format!("{registry_name}:Ed25519:{blob}"))
 }
 
 fn persist_committed_roster(
@@ -3747,7 +3873,7 @@ fn resolve_roster_commit_key(
     roster_before: &KeysToml,
     key: Option<&str>,
     key_id: Option<&str>,
-) -> Result<Option<String>> {
+) -> Result<Option<ResolvedSigningKey>> {
     if key.is_some() || key_id.is_some() {
         return resolve_producer_signing_key(config, dir, registry_name, key, key_id).map(Some);
     }
@@ -3899,16 +4025,189 @@ fn trusted_key_from_line(expected_registry: &str, key: &str) -> Result<TrustedKe
     })
 }
 
+/// A producer signing key resolved to a filesystem path that git can open.
+///
+/// For path sources [`path`](Self::path) points at the user's key file
+/// directly. For command sources the key material is materialized into a
+/// private temporary file (mode `0600`, in a tmpfs-backed directory when one
+/// is available) whose lifetime is bound to this value: the file is removed
+/// when the `ResolvedSigningKey` is dropped.
+///
+/// Because `ResolvedSigningKey` owns a [`tempfile::NamedTempFile`], Rust drops
+/// it — and thus deletes the materialized key — at the end of its enclosing
+/// scope, not at last use. Callers therefore keep it in a local binding for
+/// the whole signing operation: `ssh-keygen` opens the key path more than
+/// once per signature, so the path cannot be a pipe and the file must outlive
+/// every git invocation that reads it.
+#[derive(Debug)]
+struct ResolvedSigningKey {
+    path: String,
+    /// Present for command sources; dropping it removes the temporary file.
+    _materialized: Option<tempfile::NamedTempFile>,
+}
+
+impl ResolvedSigningKey {
+    /// Wrap an on-disk key path that the tool does not own or manage.
+    fn from_path(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            _materialized: None,
+        }
+    }
+
+    /// The path to hand to `git -c user.signingkey=<path>`.
+    fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+/// Candidate directories for short-lived materialized keys, most-preferred
+/// first: a tmpfs-backed runtime directory when available (`$XDG_RUNTIME_DIR`,
+/// then `/dev/shm`), falling back to the system temp directory. Keeping the
+/// plaintext key in RAM-backed storage avoids it ever touching persistent
+/// disk.
+fn ephemeral_key_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        let path = PathBuf::from(dir);
+        if path.is_dir() {
+            dirs.push(path);
+        }
+    }
+    let shm = PathBuf::from("/dev/shm");
+    if shm.is_dir() {
+        dirs.push(shm);
+    }
+    dirs.push(std::env::temp_dir());
+    dirs
+}
+
+/// Create an empty private temporary file in the most-preferred writable
+/// [`ephemeral_key_dirs`] candidate.
+///
+/// A preferred directory may exist yet be unwritable (e.g. a read-only
+/// `$XDG_RUNTIME_DIR`), so each candidate is tried in turn and the first that
+/// accepts the file wins.
+fn create_ephemeral_key_file() -> Result<tempfile::NamedTempFile> {
+    let mut last_err: Option<(PathBuf, std::io::Error)> = None;
+    for dir in ephemeral_key_dirs() {
+        match tempfile::Builder::new()
+            .prefix(".apm-signing-key-")
+            .tempfile_in(&dir)
+        {
+            Ok(file) => return Ok(file),
+            Err(err) => last_err = Some((dir, err)),
+        }
+    }
+    match last_err {
+        Some((dir, err)) => Err(anyhow::Error::new(err))
+            .with_context(|| format!("creating temporary key file in {}", dir.display())),
+        // `ephemeral_key_dirs` always yields the system temp dir, so the loop
+        // runs at least once and records an error on total failure.
+        None => bail!("no candidate directory available for a temporary key file"),
+    }
+}
+
+/// Run a signing-key command via `sh -c` and materialize its stdout into a
+/// private temporary file that `git`/`ssh-keygen` can open.
+///
+/// The command must print the unencrypted OpenSSH private key to stdout. The
+/// returned [`ResolvedSigningKey`] owns the temporary file; the key is removed
+/// from disk as soon as it is dropped.
+fn materialize_signing_key_command(command: &str) -> Result<ResolvedSigningKey> {
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .with_context(|| format!("running signing key command `{command}`"))?;
+    if !output.status.success() {
+        bail!(
+            "signing key command `{command}` failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    if output.stdout.iter().all(u8::is_ascii_whitespace) {
+        bail!("signing key command `{command}` produced no key material on stdout");
+    }
+
+    // `tempfile` creates the file with mode 0600 and O_EXCL on Unix and
+    // removes it when the handle drops.
+    let mut file = create_ephemeral_key_file()?;
+    std::io::Write::write_all(file.as_file_mut(), &output.stdout)
+        .context("writing materialized signing key to a temporary file")?;
+    file.as_file()
+        .sync_all()
+        .context("flushing materialized signing key")?;
+
+    let path = file
+        .path()
+        .to_str()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "temporary key path is not valid UTF-8: {}",
+                file.path().display()
+            )
+        })?
+        .to_string();
+    Ok(ResolvedSigningKey {
+        path,
+        _materialized: Some(file),
+    })
+}
+
+/// Resolve a configured [`SigningKeySource`] to a path git can open.
+///
+/// A path source is validated for existence and returned as-is; a command
+/// source is run and its output materialized via
+/// [`materialize_signing_key_command`].
+fn resolve_signing_key_source(
+    key_id: &str,
+    source: &SigningKeySource,
+) -> Result<ResolvedSigningKey> {
+    match (source.path(), source.command()) {
+        (Some(_), Some(_)) => {
+            bail!("signing key id '{key_id}' configures both 'path' and 'command'; set exactly one")
+        }
+        (None, None) => {
+            bail!("signing key id '{key_id}' configures neither 'path' nor 'command'")
+        }
+        (Some(path), None) => {
+            let path = path.trim();
+            if path.is_empty() {
+                bail!("local private key path for signing key id '{key_id}' is empty");
+            }
+            let path_buf = PathBuf::from(path);
+            if !path_buf.exists() {
+                bail!(
+                    "local private key path for signing key id '{key_id}' does not exist: {}",
+                    path_buf.display(),
+                );
+            }
+            Ok(ResolvedSigningKey::from_path(path))
+        }
+        (None, Some(command)) => {
+            let command = command.trim();
+            if command.is_empty() {
+                bail!("signing key command for id '{key_id}' is empty");
+            }
+            materialize_signing_key_command(command)
+                .with_context(|| format!("resolving signing key id '{key_id}' via command"))
+        }
+    }
+}
+
 fn resolve_producer_signing_key(
     config: &ApmConfig,
     dir: &Path,
     registry_name: &str,
     key: Option<&str>,
     key_id: Option<&str>,
-) -> Result<String> {
+) -> Result<ResolvedSigningKey> {
     match (key, key_id) {
         (Some(_), Some(_)) => bail!("use only one of --key or --key-id"),
-        (Some(key), None) => Ok(key.to_string()),
+        (Some(key), None) => Ok(ResolvedSigningKey::from_path(key)),
         (None, Some(key_id)) => {
             validate_roster_key_id(key_id)?;
             let roster = load_committed_roster(dir)?;
@@ -3935,22 +4234,12 @@ fn resolve_producer_signing_key(
                         registry_name,
                     )
                 })?;
-            let path = registry_config.signing_keys.get(key_id).ok_or_else(|| {
+            let source = registry_config.signing_keys.get(key_id).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "no local private key path configured for signing key id '{key_id}'; add [registry.signing_keys] {key_id} = \"/path/to/private-key\" to the registry config or pass --key"
+                    "no local private key configured for signing key id '{key_id}'; add [registry.signing_keys] {key_id} = \"/path/to/private-key\" (or {{ command = \"...\" }}) to the registry config or pass --key"
                 )
             })?;
-            if path.trim().is_empty() {
-                bail!("local private key path for signing key id '{key_id}' is empty");
-            }
-            let path_buf = PathBuf::from(path);
-            if !path_buf.exists() {
-                bail!(
-                    "local private key path for signing key id '{key_id}' does not exist: {}",
-                    path_buf.display(),
-                );
-            }
-            Ok(path.clone())
+            resolve_signing_key_source(key_id, source)
         }
         (None, None) => bail!(
             "--key or --key-id is required: registry release and channel tags must be signed tag objects"
@@ -3986,7 +4275,7 @@ async fn channel_init(
 
     let mut map = PartitionMap::new();
     for bucket in 0..=u8::MAX {
-        write_channel_partition_tag(&dir, channel_name, bucket, version, &signing_key)?;
+        write_channel_partition_tag(&dir, channel_name, bucket, version, signing_key.path())?;
         map.set(bucket as usize, version.clone())?;
     }
     update_channel_frontier(&dir, channel_name, &map)?;
@@ -4049,7 +4338,7 @@ async fn channel_advance(
     }
 
     for bucket in &selected {
-        write_channel_partition_tag(&dir, channel_name, *bucket, version, &signing_key)?;
+        write_channel_partition_tag(&dir, channel_name, *bucket, version, signing_key.path())?;
         map.set(*bucket as usize, version.clone())?;
     }
     update_channel_frontier(&dir, channel_name, &map)?;
@@ -4385,7 +4674,7 @@ pub async fn release(
                 image_formats,
                 false,
                 message,
-                Some(&signing_key),
+                Some(signing_key.path()),
                 None,
                 Some(&registry_name),
                 printer,
@@ -4398,7 +4687,7 @@ pub async fn release(
         auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
     let options = ReleaseTreeOptions {
         version,
-        signing_key,
+        signing_key: signing_key.path().to_string(),
         channel: channel.map(ToString::to_string),
         init_channel,
         count,
@@ -4978,7 +5267,7 @@ pub async fn tag(
         name,
         "HEAD",
         message.or(Some("AOS registry release")),
-        &signing_key,
+        signing_key.path(),
         false,
     )?;
     refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after tag")?;
@@ -5010,7 +5299,7 @@ pub async fn sign(
         tag_name,
         &target,
         Some("AOS registry release"),
-        &signing_key,
+        signing_key.path(),
         true,
     )?;
     refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after sign")?;
@@ -5366,7 +5655,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(resolved, "/tmp/key");
+        assert_eq!(resolved.path(), "/tmp/key");
     }
 
     #[test]
@@ -5401,7 +5690,7 @@ mod tests {
             resolve_producer_signing_key(&config, &repo, "aos-core", None, Some("initial"))
                 .unwrap();
 
-        assert_eq!(PathBuf::from(resolved), signing.private_key);
+        assert_eq!(PathBuf::from(resolved.path()), signing.private_key);
     }
 
     #[test]
@@ -5420,7 +5709,7 @@ mod tests {
         let err = resolve_producer_signing_key(&config, &repo, "aos-core", None, Some("initial"))
             .unwrap_err();
 
-        assert!(format!("{err:#}").contains("no local private key path configured"));
+        assert!(format!("{err:#}").contains("no local private key configured"));
     }
 
     #[test]
@@ -5475,7 +5764,7 @@ mod tests {
             "1.0.0",
             "HEAD",
             Some("AOS registry release"),
-            &resolved,
+            resolved.path(),
             false,
         )
         .unwrap();
@@ -5484,6 +5773,98 @@ mod tests {
             verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&signing.trusted_key))
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn producer_signing_key_command_source_signs_verifiable_release_tag() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=main",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+
+        let signing = write_test_signing_key(tmp.path(), "aos-core");
+        write_test_roster(&repo, "initial", &signing.trusted_key, &[]).unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+
+        // A command source: `cat` the key file just-in-time. This exercises
+        // the materialize-to-tempfile path that `ssh-keygen`'s double-open
+        // requires (a pipe would fail here).
+        let mut registry_config = test_registry_config("aos-core", None);
+        registry_config.signing_keys.insert(
+            "initial".to_string(),
+            SigningKeySource::Spec(SigningKeySpec {
+                path: None,
+                command: Some(format!("cat {}", signing.private_key.display())),
+            }),
+        );
+        let config = ApmConfig {
+            settings: ApmSettings::default(),
+            registries: vec![(registry_config, None)],
+            scope: ProfileScope::User,
+        };
+
+        let resolved =
+            resolve_producer_signing_key(&config, &repo, "aos-core", None, Some("initial"))
+                .unwrap();
+        // The key was materialized into a fresh temp file, not the original.
+        assert_ne!(resolved.path(), signing.private_key.to_str().unwrap());
+        let materialized = PathBuf::from(resolved.path());
+        assert!(materialized.exists());
+
+        sign_tag(
+            &repo,
+            "1.0.0",
+            "HEAD",
+            Some("AOS registry release"),
+            resolved.path(),
+            false,
+        )
+        .unwrap();
+        assert!(
+            verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&signing.trusted_key))
+                .unwrap()
+        );
+
+        // Dropping the resolved key removes the materialized temp file.
+        drop(resolved);
+        assert!(!materialized.exists());
+    }
+
+    #[test]
+    fn producer_signing_key_command_failure_is_reported() {
+        let source = SigningKeySource::Spec(SigningKeySpec {
+            path: None,
+            command: Some("exit 3".to_string()),
+        });
+        let err = resolve_signing_key_source("initial", &source).unwrap_err();
+        assert!(format!("{err:#}").contains("signing key command"));
+    }
+
+    #[test]
+    fn signing_key_source_rejects_both_path_and_command() {
+        let source = SigningKeySource::Spec(SigningKeySpec {
+            path: Some("/tmp/key".to_string()),
+            command: Some("cat /tmp/key".to_string()),
+        });
+        let err = resolve_signing_key_source("initial", &source).unwrap_err();
+        assert!(format!("{err:#}").contains("both 'path' and 'command'"));
     }
 
     #[test]
@@ -5583,7 +5964,7 @@ mod tests {
         let mut registry_config = test_registry_config(registry, None);
         registry_config.signing_keys.insert(
             key_id.to_string(),
-            private_key.to_str().unwrap().to_string(),
+            SigningKeySource::Path(private_key.to_str().unwrap().to_string()),
         );
         ApmConfig {
             settings: ApmSettings::default(),
