@@ -41,10 +41,14 @@ struct InstalledPackageRef {
 /// Falls back to walking `references` fields when no closure file exists.
 pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
+    let profile = Profile::open_readonly(config.scope);
+    let installed = meta::list_meta(&profile)?;
+
+    if has_installed_package(package, &installed) {
+        return depends_installed(package, &installed, printer).await;
+    }
 
     let Some((reg, meta)) = registries.resolve(package) else {
-        let profile = Profile::open_readonly(config.scope);
-        let installed = meta::list_meta(&profile)?;
         return depends_installed(package, &installed, printer).await;
     };
 
@@ -386,6 +390,15 @@ fn installed_apm_by_hash(installed: &[InstalledMeta]) -> HashMap<String, Install
             ))
         })
         .collect()
+}
+
+fn has_installed_package(package: &str, installed: &[InstalledMeta]) -> bool {
+    installed.iter().any(|inst| {
+        inst.apm
+            .as_ref()
+            .map(|apm| apm.name == package)
+            .unwrap_or(false)
+    })
 }
 
 fn policy_installed_versions(package: &str, installed: &[InstalledMeta]) -> Option<String> {
@@ -1036,6 +1049,32 @@ references = ["llllllllllllllllllllllllllllllll"]
             &set,
             &target_hashes
         ));
+    }
+
+    #[test]
+    fn depends_prefers_installed_package_name() {
+        let installed = vec![InstalledMeta {
+            store_path: "/nix/store/llllllllllllllllllllllllllllllll-priority-tool-9.0.0".into(),
+            pushed_at: 1707800000,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1707800000,
+            access_count: 0,
+            apm: Some(crate::types::ApmMeta {
+                name: "priority-tool".into(),
+                version: "9.0.0".into(),
+                explicit: true,
+                registry: "low-priority".into(),
+                installed_at: "2026-06-09T00:00:00Z".into(),
+                held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
+            }),
+        }];
+
+        assert!(has_installed_package("priority-tool", &installed));
+        assert!(!has_installed_package("other-tool", &installed));
     }
 
     #[test]
