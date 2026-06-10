@@ -1204,10 +1204,27 @@ in {
             exit 1
           fi
 
-          run_clean ${self}/bin/apm upgrade hostinstall --yes \
-            > "$work/apm-upgrade-host-install.out" 2>&1
-          grep -q "Downloading" "$work/apm-upgrade-host-install.out"
-          grep -q "Upgraded 1 package" "$work/apm-upgrade-host-install.out"
+          run_clean ${self}/bin/apm --json upgrade hostinstall --yes \
+            > "$work/apm-upgrade-host-install.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+            '.action == "upgrade"
+              and .status == "upgraded"
+              and .requested == ["hostinstall"]
+              and .exclude == []
+              and .dry_run == false
+              and .generation == 2
+              and .upgraded == 1
+              and .held_back == []
+              and (.upgrades | length == 1)
+              and .upgrades[0].name == "hostinstall"
+              and .upgrades[0].registry == "host-install-client"
+              and .upgrades[0].old_version == "1.0.0"
+              and .upgrades[0].new_version == "2.0.0"
+              and .upgrades[0].new_store_path == $store
+              and (.downloads.planned >= 1)
+              and (.downloads.downloaded >= 1)
+              and (.downloads.imported >= 1)' \
+            "$work/apm-upgrade-host-install.json" >/dev/null
           nix_store --check-validity "$install_store_v2" \
             > "$work/nix-valid-host-install-v2-imported.out" 2>&1
           "$profile/current/bin/host-install-tool" > "$work/host-install-v2-run.out"

@@ -20,7 +20,7 @@ use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::{verify_download_hash, verify_nar_hash};
 use aos_core::error::AosError;
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -53,6 +53,7 @@ pub async fn run(
     ignore_lock: &IgnoreSysrootLock,
     printer: &Printer,
 ) -> Result<()> {
+    let json_mode = printer.mode() == OutputMode::Json;
     // Step 1: Inspect profile and load installed metadata.
     printer.step(1, 7, "Loading installed packages...");
     let inspect_profile = Profile::open_readonly(config.scope);
@@ -72,6 +73,25 @@ pub async fn run(
         if !held_back.is_empty() {
             print_held_back(&held_back, printer);
         }
+        if json_mode {
+            let status = if held_back.is_empty() {
+                "current"
+            } else {
+                "held_back"
+            };
+            printer.json(&upgrade_result_json(
+                status,
+                packages,
+                exclude,
+                &to_upgrade,
+                &held_back,
+                dry_run,
+                None,
+                0,
+                0,
+                0,
+            ));
+        }
         printer.info("All packages are up to date.");
         return Ok(());
     }
@@ -80,6 +100,20 @@ pub async fn run(
     print_upgrade_summary(&to_upgrade, &held_back, printer);
 
     if dry_run {
+        if json_mode {
+            printer.json(&upgrade_result_json(
+                "planned",
+                packages,
+                exclude,
+                &to_upgrade,
+                &held_back,
+                true,
+                None,
+                0,
+                0,
+                0,
+            ));
+        }
         printer.info("Dry run -- no changes made.");
         return Ok(());
     }
@@ -148,6 +182,9 @@ pub async fn run(
         .collect();
 
     // Download missing NARs.
+    let mut planned_downloads = 0usize;
+    let mut downloaded_count = 0usize;
+    let mut imported_count = 0usize;
     if !to_download.is_empty() {
         printer.step(4, 7, "Downloading packages...");
 
@@ -160,6 +197,7 @@ pub async fn run(
             printer,
         )
         .await?;
+        planned_downloads = resolved.len();
         let cache_dir = config.nar_cache_path();
 
         let results = download_nars(
@@ -169,6 +207,7 @@ pub async fn run(
             printer,
         )
         .await?;
+        downloaded_count = results.len();
 
         // Verify downloads.
         printer.step(5, 7, "Verifying downloads...");
@@ -191,6 +230,7 @@ pub async fn run(
             .await
             .with_context(|| format!("importing {}", result.store_path))?;
         }
+        imported_count = results.len();
     } else {
         printer.info("All packages already in store, skipping download.");
     }
@@ -283,6 +323,20 @@ pub async fn run(
         to_upgrade.len(),
         new_gen.number,
     ));
+    if json_mode {
+        printer.json(&upgrade_result_json(
+            "upgraded",
+            packages,
+            exclude,
+            &to_upgrade,
+            &held_back,
+            false,
+            Some(new_gen.number),
+            planned_downloads,
+            downloaded_count,
+            imported_count,
+        ));
+    }
 
     Ok(())
 }
@@ -452,6 +506,52 @@ pub fn filter_held_and_excluded(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn upgrade_result_json(
+    status: &str,
+    packages: &[String],
+    exclude: &[String],
+    upgrades: &[UpgradeCandidate],
+    held_back: &[UpgradeCandidate],
+    dry_run: bool,
+    generation: Option<u32>,
+    planned_downloads: usize,
+    downloaded: usize,
+    imported: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "action": "upgrade",
+        "status": status,
+        "requested": packages,
+        "exclude": exclude,
+        "dry_run": dry_run,
+        "generation": generation,
+        "upgraded": upgrades.len(),
+        "held_back": held_back.iter().map(upgrade_candidate_json).collect::<Vec<_>>(),
+        "upgrades": upgrades.iter().map(upgrade_candidate_json).collect::<Vec<_>>(),
+        "downloads": {
+            "planned": planned_downloads,
+            "downloaded": downloaded,
+            "imported": imported,
+        },
+    })
+}
+
+fn upgrade_candidate_json(candidate: &UpgradeCandidate) -> serde_json::Value {
+    serde_json::json!({
+        "name": candidate.name.as_str(),
+        "registry": candidate.registry.as_str(),
+        "old_version": candidate.old_version.as_str(),
+        "new_version": candidate.new_version.as_str(),
+        "old_store_hash": candidate.old_store_hash.as_str(),
+        "new_store_hash": store_path_hash(&candidate.new_meta.store_path),
+        "new_store_path": candidate.new_meta.store_path.as_str(),
+        "platform": candidate.new_meta.platform.as_str(),
+        "nar_hash": candidate.new_meta.nar_hash.as_str(),
+        "nar_size": candidate.new_meta.nar_size,
+        "closure_size": candidate.new_meta.closure_size,
+    })
+}
 
 /// Get the current platform string.
 fn platform() -> String {
