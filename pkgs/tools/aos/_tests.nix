@@ -1119,6 +1119,16 @@ in {
           @AOS_COREUTILS@/bin/chmod +x "$out/bin/host-leaf-tool"
           printf '%s\n' "host leaf payload" > "$out/share/host-leaf/payload.txt"
           SCRIPT
+          cat > "$work/host-build-leaf-v2.sh" << 'SCRIPT'
+          set -eu
+          @AOS_COREUTILS@/bin/mkdir -p "$out/bin" "$out/share/host-leaf"
+          {
+            printf '%s\n' '#!@AOS_BASH@/bin/bash'
+            printf '%s\n' 'printf "host leaf package v2 executed\n"'
+          } > "$out/bin/host-leaf-tool"
+          @AOS_COREUTILS@/bin/chmod +x "$out/bin/host-leaf-tool"
+          printf '%s\n' "host leaf payload v2" > "$out/share/host-leaf/payload.txt"
+          SCRIPT
           cat > "$work/host-build-app-v1.sh" << 'SCRIPT'
           set -eu
           leaf="$1"
@@ -1157,19 +1167,26 @@ in {
           PY
           }
           substitute_fixture_paths "$work/host-build-leaf.sh"
+          substitute_fixture_paths "$work/host-build-leaf-v2.sh"
           substitute_fixture_paths "$work/host-build-app-v1.sh"
           substitute_fixture_paths "$work/host-build-app-v2.sh"
           cat > "$work/host-install-fixtures.nix" << 'NIX'
           let
             bash = "@AOS_BASH@/bin/bash";
             system = "x86_64-linux";
-            leaf = derivation {
+            leafV1 = derivation {
               name = "hostleaf-1.0.0";
               inherit system;
               builder = bash;
               args = [ ./host-build-leaf.sh ];
             };
-            app = name: builderScript: derivation {
+            leafV2 = derivation {
+              name = "hostleaf-2.0.0";
+              inherit system;
+              builder = bash;
+              args = [ ./host-build-leaf-v2.sh ];
+            };
+            app = name: leaf: builderScript: derivation {
               inherit name system;
               builder = bash;
               args = [
@@ -1179,9 +1196,10 @@ in {
               inherit leaf;
             };
           in {
-            inherit leaf;
-            appV1 = app "hostinstall-1.0.0" ./host-build-app-v1.sh;
-            appV2 = app "hostinstall-2.0.0" ./host-build-app-v2.sh;
+            leaf = leafV1;
+            inherit leafV1 leafV2;
+            appV1 = app "hostinstall-1.0.0" leafV1 ./host-build-app-v1.sh;
+            appV2 = app "hostinstall-2.0.0" leafV2 ./host-build-app-v2.sh;
           }
           NIX
           substitute_fixture_paths "$work/host-install-fixtures.nix"
@@ -1413,8 +1431,18 @@ in {
                 and .installed == true))' \
             "$work/apm-policy-host-leaf.json" >/dev/null
 
+          install_leaf_store_v2=$(nix_build "$work/host-install-fixtures.nix" -A leafV2 --no-out-link)
+          install_leaf_hash_v2=$(basename "$install_leaf_store_v2" | cut -d- -f1)
           install_store_v2=$(nix_build "$work/host-install-fixtures.nix" -A appV2 --no-out-link)
           install_hash_v2=$(basename "$install_store_v2" | cut -d- -f1)
+          run_clean ${self}/bin/apr publish "$install_leaf_store_v2" \
+            --name hostleaf \
+            --version 2.0.0 \
+            --description "Host APM dependency fixture v2" \
+            --license MIT \
+            --maintainer host@example.invalid \
+            --registry host-install-reg \
+            --no-commit > "$work/apr-publish-host-leaf-v2.out" 2>&1
           run_clean ${self}/bin/apr publish "$install_store_v2" \
             --name hostinstall \
             --version 2.0.0 \
@@ -1437,9 +1465,9 @@ in {
             '.action == "cache_generate"
               and .registry == "host-install-reg"
               and .output_dir == $output
-              and .paths >= 3
-              and .narinfos >= 3
-              and .nars >= 3
+              and .paths >= 4
+              and .narinfos >= 4
+              and .nars >= 4
               and .cache_url == $cache_url
               and .priority == 77
               and .upload_urls == [$upload_url]
@@ -1448,8 +1476,10 @@ in {
               and .committed == false' \
             "$work/apr-cache-host-install-v2.json" >/dev/null
           test -f "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
+          test -f "$work/install-static-cache-output/cache/$install_leaf_hash_v2.narinfo"
           test -f "$work/install-static-cache-output/cache/$install_hash_v2.narinfo"
           test -f "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
+          test -f "$work/install-static-cache-upload/cache/$install_leaf_hash_v2.narinfo"
           test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
           test -f "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
           find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
@@ -1537,9 +1567,16 @@ in {
 
           nix_store --delete --ignore-liveness "$install_store_v2" \
             > "$work/nix-delete-host-install-v2.out" 2>&1
+          nix_store --delete --ignore-liveness "$install_leaf_store_v2" \
+            > "$work/nix-delete-host-leaf-v2.out" 2>&1
           if nix_store --check-validity "$install_store_v2" \
             > "$work/nix-valid-host-install-v2-deleted.out" 2>&1; then
             cat "$work/nix-valid-host-install-v2-deleted.out"
+            exit 1
+          fi
+          if nix_store --check-validity "$install_leaf_store_v2" \
+            > "$work/nix-valid-host-leaf-v2-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-leaf-v2-deleted.out"
             exit 1
           fi
 
@@ -1560,14 +1597,16 @@ in {
               and .upgrades[0].old_version == "1.0.0"
               and .upgrades[0].new_version == "2.0.0"
               and .upgrades[0].new_store_path == $store
-              and (.downloads.planned >= 1)
-              and (.downloads.downloaded >= 1)
-              and (.downloads.imported >= 1)' \
+              and (.downloads.planned >= 2)
+              and (.downloads.downloaded >= 2)
+              and (.downloads.imported >= 2)' \
             "$work/apm-upgrade-host-install.json" >/dev/null
           nix_store --check-validity "$install_store_v2" \
             > "$work/nix-valid-host-install-v2-imported.out" 2>&1
+          nix_store --check-validity "$install_leaf_store_v2" \
+            > "$work/nix-valid-host-leaf-v2-imported.out" 2>&1
           "$profile/current/bin/host-install-tool" > "$work/host-install-v2-run.out"
-          grep -q "host leaf package executed" "$work/host-install-v2-run.out"
+          grep -q "host leaf package v2 executed" "$work/host-install-v2-run.out"
           grep -q "host install package v2 executed" "$work/host-install-v2-run.out"
           assert_default_profile_absent
 
@@ -1613,7 +1652,9 @@ in {
           run_clean ${self}/bin/apm --json rollback --dry-run > "$work/apm-rollback-host-install-dry-run.json"
           ${pkgs.jq}/bin/jq -e \
             --arg old "$install_store" \
+            --arg old_leaf "$install_leaf_store" \
             --arg new "$install_store_v2" \
+            --arg new_leaf "$install_leaf_store_v2" \
             '.action == "rollback"
               and .status == "planned"
               and .requested_generation == null
@@ -1621,31 +1662,48 @@ in {
               and .to_generation == 1
               and .dry_run == true
               and .generation == null
-              and (.restored | length == 1)
-              and .restored[0].store_path == $old
-              and .restored[0].registry == "host-install-client"
-              and .restored[0].package.name == "hostinstall"
-              and .restored[0].package.version == "1.0.0"
-              and (.removed | length == 1)
-              and .removed[0].store_path == $new
-              and .removed[0].registry == "host-install-client"
-              and .removed[0].package.name == "hostinstall"
-              and .removed[0].package.version == "2.0.0"
+              and (.restored | length == 2)
+              and (.restored | any(.store_path == $old
+                and .registry == "host-install-client"
+                and .package.name == "hostinstall"
+                and .package.version == "1.0.0"))
+              and (.restored | any(.store_path == $old_leaf
+                and .registry == "host-install-client"
+                and .package.name == "hostleaf"
+                and .package.version == "1.0.0"))
+              and (.removed | length == 2)
+              and (.removed | any(.store_path == $new
+                and .registry == "host-install-client"
+                and .package.name == "hostinstall"
+                and .package.version == "2.0.0"))
+              and (.removed | any(.store_path == $new_leaf
+                and .registry == "host-install-client"
+                and .package.name == "hostleaf"
+                and .package.version == "2.0.0"))
               and (.current_roots | any(.store_path == $new
                 and .package.name == "hostinstall"
                 and .package.version == "2.0.0"))
+              and (.current_roots | any(.store_path == $new_leaf
+                and .package.name == "hostleaf"
+                and .package.version == "2.0.0"))
               and (.target_roots | any(.store_path == $old
                 and .package.name == "hostinstall"
+                and .package.version == "1.0.0"))
+              and (.target_roots | any(.store_path == $old_leaf
+                and .package.name == "hostleaf"
                 and .package.version == "1.0.0"))' \
             "$work/apm-rollback-host-install-dry-run.json" >/dev/null
           "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-rollback-dry-run.out"
+          grep -q "host leaf package v2 executed" "$work/host-install-v2-after-rollback-dry-run.out"
           grep -q "host install package v2 executed" "$work/host-install-v2-after-rollback-dry-run.out"
           assert_default_profile_absent
 
           run_clean ${self}/bin/apm --json rollback > "$work/apm-rollback-host-install.json"
           ${pkgs.jq}/bin/jq -e \
             --arg old "$install_store" \
+            --arg old_leaf "$install_leaf_store" \
             --arg new "$install_store_v2" \
+            --arg new_leaf "$install_leaf_store_v2" \
             '.action == "rollback"
               and .status == "rolled_back"
               and .requested_generation == null
@@ -1653,24 +1711,39 @@ in {
               and .to_generation == 1
               and .dry_run == false
               and .generation == 1
-              and (.restored | length == 1)
-              and .restored[0].store_path == $old
-              and .restored[0].registry == "host-install-client"
-              and .restored[0].package.name == "hostinstall"
-              and .restored[0].package.version == "1.0.0"
-              and (.removed | length == 1)
-              and .removed[0].store_path == $new
-              and .removed[0].registry == "host-install-client"
-              and .removed[0].package.name == "hostinstall"
-              and .removed[0].package.version == "2.0.0"
+              and (.restored | length == 2)
+              and (.restored | any(.store_path == $old
+                and .registry == "host-install-client"
+                and .package.name == "hostinstall"
+                and .package.version == "1.0.0"))
+              and (.restored | any(.store_path == $old_leaf
+                and .registry == "host-install-client"
+                and .package.name == "hostleaf"
+                and .package.version == "1.0.0"))
+              and (.removed | length == 2)
+              and (.removed | any(.store_path == $new
+                and .registry == "host-install-client"
+                and .package.name == "hostinstall"
+                and .package.version == "2.0.0"))
+              and (.removed | any(.store_path == $new_leaf
+                and .registry == "host-install-client"
+                and .package.name == "hostleaf"
+                and .package.version == "2.0.0"))
               and (.current_roots | any(.store_path == $new
                 and .package.name == "hostinstall"
                 and .package.version == "2.0.0"))
+              and (.current_roots | any(.store_path == $new_leaf
+                and .package.name == "hostleaf"
+                and .package.version == "2.0.0"))
               and (.target_roots | any(.store_path == $old
                 and .package.name == "hostinstall"
+                and .package.version == "1.0.0"))
+              and (.target_roots | any(.store_path == $old_leaf
+                and .package.name == "hostleaf"
                 and .package.version == "1.0.0"))' \
             "$work/apm-rollback-host-install.json" >/dev/null
           "$profile/current/bin/host-install-tool" > "$work/host-install-v1-after-rollback.out"
+          grep -q "host leaf package executed" "$work/host-install-v1-after-rollback.out"
           grep -q "host install package executed" "$work/host-install-v1-after-rollback.out"
           run_clean ${self}/bin/apm list --installed > "$work/apm-installed-host-install-rollback.out" 2>&1
           grep -q "hostinstall/host-install-client" "$work/apm-installed-host-install-rollback.out"
@@ -1690,6 +1763,7 @@ in {
             > "$work/apm-upgrade-host-install-after-rollback.out" 2>&1
           grep -q "Upgraded 1 package" "$work/apm-upgrade-host-install-after-rollback.out"
           "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-rollback-upgrade.out"
+          grep -q "host leaf package v2 executed" "$work/host-install-v2-after-rollback-upgrade.out"
           grep -q "host install package v2 executed" "$work/host-install-v2-after-rollback-upgrade.out"
           assert_default_profile_absent
 
@@ -1735,6 +1809,7 @@ in {
               and (.downloads.imported >= 1)' \
             "$work/apm-reinstall-held-host-install.json" >/dev/null
           "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-reinstall.out"
+          grep -q "host leaf package v2 executed" "$work/host-install-v2-after-reinstall.out"
           grep -q "host install package v2 executed" "$work/host-install-v2-after-reinstall.out"
           run_clean ${self}/bin/apm --json held > "$work/apm-held-host-install-after-reinstall.json"
           ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
@@ -1811,7 +1886,7 @@ in {
 
           run_clean ${self}/bin/apm --json autoremove --yes \
             > "$work/apm-autoremove-host-leaf.json"
-          ${pkgs.jq}/bin/jq -e --arg store "$install_leaf_store" \
+          ${pkgs.jq}/bin/jq -e --arg store "$install_leaf_store_v2" \
             '.action == "autoremove"
               and .status == "removed"
               and .requested == []
@@ -1824,7 +1899,7 @@ in {
               and .packages == []
               and (.orphans | length == 1)
               and .orphans[0].name == "hostleaf"
-              and .orphans[0].version == "1.0.0"
+              and .orphans[0].version == "2.0.0"
               and .orphans[0].registry == "host-install-client"
               and .orphans[0].store_path == $store
               and .orphans[0].explicit == false' \
