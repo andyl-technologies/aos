@@ -120,6 +120,7 @@ in {
       pkgs.git
       pkgs.grep
       pkgs.jq
+      pkgs.openssh
       pkgs.python3
     ];
 
@@ -411,6 +412,85 @@ in {
 
           run_clean ${self}/bin/apr validate --registry host-reg --package hostpkg --jobs 2 > "$work/apr-validate-hostpkg.out" 2>&1
           grep -q "All 1 entries found in caches" "$work/apr-validate-hostpkg.out"
+          assert_no_profile
+
+          git -C "$reg" add -A
+          git -C "$reg" commit -m "registry: prune missing cache metadata" > "$work/git-commit-validate-fix.out" 2>&1
+          run_clean ${self}/bin/apr status --registry host-reg > "$work/apr-status-clean-before-release.out" 2>&1
+          if grep -q '[^[:space:]]' "$work/apr-status-clean-before-release.out"; then
+            cat "$work/apr-status-clean-before-release.out"
+            exit 1
+          fi
+
+          ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/release-key"
+          run_clean ${self}/bin/apr release 1.0.0 \
+            --registry host-reg \
+            --key "$work/release-key" \
+            --dry-run \
+            --cache-output "$work/dry-cache" \
+            --cache-url "http://127.0.0.1:$cache_port/cache" \
+            --upload-url "file://$work/dry-upload" \
+            > "$work/apr-release-dry-run.out" 2>&1
+          grep -q "Release plan" "$work/apr-release-dry-run.out"
+          grep -q "generate static Nix cache files" "$work/apr-release-dry-run.out"
+          grep -q "upload immutable files first" "$work/apr-release-dry-run.out"
+          test ! -e "$work/dry-cache"
+          test ! -e "$work/dry-upload"
+          if git -C "$reg" rev-parse --verify '1.0.0^{tag}' > "$work/release-dry-run-tag.out" 2>&1; then
+            cat "$work/release-dry-run-tag.out"
+            exit 1
+          fi
+          run_clean ${self}/bin/apr status --registry host-reg > "$work/apr-status-after-dry-run.out" 2>&1
+          if grep -q '[^[:space:]]' "$work/apr-status-after-dry-run.out"; then
+            cat "$work/apr-status-after-dry-run.out"
+            exit 1
+          fi
+          assert_no_profile
+
+          run_clean ${self}/bin/apr release 1.0.0 \
+            --registry host-reg \
+            --key "$work/release-key" \
+            > "$work/apr-release.out" 2>&1
+          grep -q "Created signed tag '1.0.0'" "$work/apr-release.out"
+          grep -q "Generated full pack" "$work/apr-release.out"
+          grep -q "Released host-reg 1.0.0" "$work/apr-release.out"
+          git -C "$reg" rev-parse --verify '1.0.0^{tag}' > "$work/release-tag-object.out"
+          git -C "$reg" cat-file -p 1.0.0 > "$work/release-tag.out"
+          grep -q "BEGIN SSH SIGNATURE" "$work/release-tag.out"
+          grep -q "tag 1.0.0" "$work/release-tag.out"
+          find "$reg/.git/releases/1/0/0/objects/pack" -name 'pack-*.pack' | grep -q .
+
+          run_clean ${self}/bin/apr release 1.0.0 \
+            --registry host-reg \
+            --key "$work/release-key" \
+            --resume \
+            > "$work/apr-release-resume.out" 2>&1
+          grep -q "Release tag 1.0.0 already exists at HEAD; resuming" "$work/apr-release-resume.out"
+          grep -q "already exists; resuming" "$work/apr-release-resume.out"
+          grep -q "Released host-reg 1.0.0" "$work/apr-release-resume.out"
+          assert_no_profile
+
+          if run_clean ${self}/bin/apr sign --registry host-reg --key "$work/release-key" \
+            > "$work/apr-sign-missing-tag.out" 2>&1; then
+            cat "$work/apr-sign-missing-tag.out"
+            exit 1
+          fi
+          grep -q "pass the existing tag name to re-sign" "$work/apr-sign-missing-tag.out"
+
+          initial_tag_object=$(git -C "$reg" rev-parse '1.0.0^{tag}')
+          initial_tag_commit=$(git -C "$reg" rev-parse '1.0.0^{commit}')
+          ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/release-key-next"
+          run_clean ${self}/bin/apr sign 1.0.0 \
+            --registry host-reg \
+            --key "$work/release-key-next" \
+            > "$work/apr-sign.out" 2>&1
+          grep -q "Re-signed tag '1.0.0'" "$work/apr-sign.out"
+          resigned_tag_object=$(git -C "$reg" rev-parse '1.0.0^{tag}')
+          resigned_tag_commit=$(git -C "$reg" rev-parse '1.0.0^{commit}')
+          test "$resigned_tag_commit" = "$initial_tag_commit"
+          test "$resigned_tag_object" != "$initial_tag_object"
+          git -C "$reg" cat-file -p 1.0.0 > "$work/release-tag-resigned.out"
+          grep -q "BEGIN SSH SIGNATURE" "$work/release-tag-resigned.out"
           assert_no_profile
 
           mkdir -p "$out"

@@ -123,6 +123,36 @@
       }
     ];
   };
+  closureLeafToolV2 = mkRegistryTool {
+    pname = "closure-leaf";
+    version = "2.0.0";
+  };
+  closureRootToolV2 = pkgs.mkDerivation {
+    pname = "closure-root";
+    version = "2.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    runtimeDeps = [
+      closureLeafToolV2
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'leaf_output="$(${closureLeafToolV2}/bin/closure-leaf)"' \
+            'printf "closure-root 2.0.0 via %s\n" "$leaf_output"' \
+            > "$out/bin/closure-root"
+          chmod +x "$out/bin/closure-root"
+        '';
+      }
+    ];
+  };
   retireDepTool = mkRegistryTool {
     pname = "retire-dep";
     version = "1.0.0";
@@ -1745,7 +1775,7 @@ in {
   # -------------------------------------------------------------------------
   registry-release-static-origin-closure = testing.mkVMTest {
     name = "apm-registry-release-static-origin-closure";
-    rootfsDeps = maintainerWorkflowDeps ++ [closureLeafTool closureRootTool];
+    rootfsDeps = maintainerWorkflowDeps ++ [closureLeafTool closureRootTool closureLeafToolV2 closureRootToolV2];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -1755,8 +1785,12 @@ in {
 
       LEAF_STORE="${closureLeafTool}"
       ROOT_STORE="${closureRootTool}"
+      LEAF_V2_STORE="${closureLeafToolV2}"
+      ROOT_V2_STORE="${closureRootToolV2}"
       LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
       ROOT_HASH=$(basename "$ROOT_STORE" | cut -d- -f1)
+      LEAF_V2_HASH=$(basename "$LEAF_V2_STORE" | cut -d- -f1)
+      ROOT_V2_HASH=$(basename "$ROOT_V2_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/staticreleaseuser"
 
       assert_store_valid() {
@@ -1839,6 +1873,7 @@ in {
 
       $APR create static-release-reg
       REG_DIR="$REG_STORAGE/static-release-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       ssh-keygen -q -t ed25519 -N "" -f /tmp/static-release-key
 
       $APR release 1.0.0 \
@@ -1900,7 +1935,7 @@ in {
       mkdir -p "$HOME"
       $APM registry add http://127.0.0.1:18120 \
         --name static-release-reg \
-        --tag 1.0.0 > /tmp/static-release-add.out 2>&1 || {
+        --branch "$DEFAULT_BRANCH" > /tmp/static-release-add.out 2>&1 || {
         cat /tmp/static-release-add.out
         fail "apm registry add syncs uploaded static origin"
       }
@@ -2018,6 +2053,89 @@ in {
       assert_file_contains /tmp/static-release-run.out \
         "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
         "installed release closure executes with its dependency"
+
+      echo "==> Maintainer: release v2 with a new anonymous closure dependency"
+      export HOME=/tmp
+      export USER=root
+      assert_store_valid "$LEAF_V2_STORE" "closure-leaf-v2"
+      assert_store_valid "$ROOT_V2_STORE" "closure-root-v2"
+      nix-store -q --references "$ROOT_V2_STORE" > /tmp/static-release-root-v2-refs.out
+      assert_file_contains /tmp/static-release-root-v2-refs.out "$LEAF_V2_STORE" \
+        "release root v2 has a real Nix reference to closure-leaf v2"
+      $APR release 2.0.0 \
+        --registry static-release-reg \
+        --store-path "$ROOT_V2_STORE" \
+        --name static-closure \
+        --description "Static release closure fixture" \
+        --license MIT \
+        --maintainer static-release@example.invalid \
+        --previous 1.0.0 \
+        --key /tmp/static-release-key \
+        --cache-output /tmp/static-release-cache \
+        --cache-url http://127.0.0.1:18120 \
+        --upload-url file:///tmp/static-release-origin \
+        > /tmp/static-release-v2.out 2>&1 || {
+        cat /tmp/static-release-v2.out
+        fail "apr release uploads static origin and cache for v2"
+      }
+      cat /tmp/static-release-v2.out
+      assert_file_contains /tmp/static-release-v2.out "Created signed tag '2.0.0'" \
+        "apr release creates signed v2 tag for uploaded origin"
+      assert_file_contains /tmp/static-release-v2.out "Uploaded" \
+        "apr release uploads v2 static origin files"
+      assert_file_exists "/tmp/static-release-origin/$ROOT_V2_HASH.narinfo" \
+        "uploaded static origin has v2 root narinfo"
+      assert_file_exists "/tmp/static-release-origin/$LEAF_V2_HASH.narinfo" \
+        "uploaded static origin has v2 dependency narinfo"
+
+      echo "==> Consumer: upgrade from uploaded static origin downloads anonymous v2 closure"
+      export HOME=/tmp/static-release-consumer
+      export USER=staticreleaseuser
+      delete_store_path "$ROOT_V2_STORE" "closure-root-v2"
+      delete_store_path "$LEAF_V2_STORE" "closure-leaf-v2"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM update --registry static-release-reg > /tmp/static-release-update-v2.out 2>&1 || {
+        cat /tmp/static-release-update-v2.out
+        fail "apm update syncs uploaded static origin v2"
+      }
+      cat /tmp/static-release-update-v2.out
+      $APM list --upgradable > /tmp/static-release-upgradable-v2.out 2>&1 || {
+        cat /tmp/static-release-upgradable-v2.out
+        fail "apm list --upgradable sees static release v2"
+      }
+      assert_file_contains /tmp/static-release-upgradable-v2.out "static-closure" \
+        "upgradable list names static release package"
+      assert_file_contains /tmp/static-release-upgradable-v2.out "2.0.0" \
+        "upgradable list reports static release v2"
+      NAR_GETS_BEFORE_UPGRADE=$(cache_nar_http_get_count)
+      $APM upgrade static-closure --yes > /tmp/static-release-upgrade-v2.out 2>&1 || {
+        cat /tmp/static-release-upgrade-v2.out
+        fail "apm upgrade downloads anonymous v2 closure from uploaded origin"
+      }
+      cat /tmp/static-release-upgrade-v2.out
+      assert_file_contains /tmp/static-release-upgrade-v2.out "Downloading 2 NAR" \
+        "apm upgrade downloads root and anonymous v2 dependency NARs"
+      assert_file_contains /tmp/static-release-upgrade-v2.out "Upgraded 1 package" \
+        "apm upgrade activates static release v2"
+      EXPECTED_NAR_GETS_AFTER_UPGRADE=$((NAR_GETS_BEFORE_UPGRADE + 2))
+      if [ "$(cache_nar_http_get_count)" = "$EXPECTED_NAR_GETS_AFTER_UPGRADE" ]; then
+        pass "upgrade fetches exactly two v2 release NAR bodies"
+      else
+        cat /tmp/static-release-http.log || true
+        fail "upgrade should fetch exactly two v2 release NAR bodies"
+      fi
+      if [ "$(cache_nar_count)" = "2" ]; then
+        pass "upgrade leaves root and dependency v2 NARs in user cache"
+      else
+        fail "upgrade should cache exactly two v2 release NARs"
+      fi
+      assert_store_valid "$ROOT_V2_STORE" "closure-root-v2"
+      assert_store_valid "$LEAF_V2_STORE" "closure-leaf-v2"
+      "$PROFILE/current/bin/closure-root" > /tmp/static-release-run-v2.out
+      assert_file_contains /tmp/static-release-run-v2.out \
+        "^closure-root 2.0.0 via closure-leaf 2.0.0$" \
+        "upgraded release closure executes with its v2 dependency"
 
       kill "$ORIGIN_PID" 2>/dev/null || true
       wait "$ORIGIN_PID" 2>/dev/null || true

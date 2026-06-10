@@ -4043,7 +4043,10 @@ async fn write_full_pack_artifact(
         bail!("full pack {existing} already exists; pass --resume to reuse it");
     }
 
-    let tmp = tempfile::TempDir::new().context("creating full-pack tempdir")?;
+    let tmp = tempfile::Builder::new()
+        .prefix(".tmp-full-pack-")
+        .tempdir_in(pack_dir)
+        .with_context(|| format!("creating full-pack tempdir in {}", pack_dir.display()))?;
     let pack_path = pack::full_pack(dir, commit, tmp.path()).await?;
     let pack_name = file_name_string(&pack_path)?;
     fs::copy(&pack_path, pack_dir.join(&pack_name))
@@ -4079,7 +4082,10 @@ async fn write_delta_artifact(
         bail!("delta pack {artifact_name} already exists; pass --resume to reuse it");
     }
 
-    let tmp = tempfile::TempDir::new().context("creating delta-pack tempdir")?;
+    let tmp = tempfile::Builder::new()
+        .prefix(".tmp-delta-pack-")
+        .tempdir_in(pack_dir)
+        .with_context(|| format!("creating delta-pack tempdir in {}", pack_dir.display()))?;
     let delta = pack::thin_delta(dir, base_commit, target_commit, base, tmp.path()).await?;
     let compressed = pack::zstd_compress(&delta, None).await?;
     fs::copy(&compressed, &dest).with_context(|| format!("copying {}", compressed.display()))?;
