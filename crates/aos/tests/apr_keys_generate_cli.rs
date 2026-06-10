@@ -202,12 +202,6 @@ fn init_registry(
         return Ok(None);
     }
 
-    git(
-        &registry_dir,
-        &["config", "user.email", "registry@example.com"],
-    )?;
-    git(&registry_dir, &["config", "user.name", "Registry Test"])?;
-    git(&registry_dir, &["config", "commit.gpgsign", "false"])?;
     fs::write(
         registry_dir.join("registry.toml"),
         format!("[registry]\nname = \"{name}\"\n"),
@@ -224,9 +218,20 @@ fn init_registry(
     Ok(Some(registry_dir))
 }
 
+/// Spawn `apr` against an isolated `HOME`, with a committer identity in the
+/// environment: registry commits refuse to run without one.
+fn apr_command(home: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_apr"));
+    cmd.env("HOME", home)
+        .env("GIT_AUTHOR_NAME", "Registry Test")
+        .env("GIT_AUTHOR_EMAIL", "registry@example.com")
+        .env("GIT_COMMITTER_NAME", "Registry Test")
+        .env("GIT_COMMITTER_EMAIL", "registry@example.com");
+    cmd
+}
+
 fn run_apr(home: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_apr"))
-        .env("HOME", home)
+    let output = apr_command(home)
         .args(args)
         .output()
         .with_context(|| format!("running apr {}", args.join(" ")))?;
@@ -242,8 +247,7 @@ fn run_apr(home: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn run_apr_err(home: &Path, args: &[&str]) -> Result<Output> {
-    let output = Command::new(env!("CARGO_BIN_EXE_apr"))
-        .env("HOME", home)
+    let output = apr_command(home)
         .args(args)
         .output()
         .with_context(|| format!("running apr {}", args.join(" ")))?;
@@ -253,8 +257,15 @@ fn run_apr_err(home: &Path, args: &[&str]) -> Result<Output> {
     Ok(output)
 }
 
+/// Run a fixture git command insulated from the host's git configuration.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "Registry Test")
+        .env("GIT_AUTHOR_EMAIL", "registry@example.com")
+        .env("GIT_COMMITTER_NAME", "Registry Test")
+        .env("GIT_COMMITTER_EMAIL", "registry@example.com")
         .args(args)
         .current_dir(dir)
         .output()

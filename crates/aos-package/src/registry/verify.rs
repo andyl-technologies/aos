@@ -1,10 +1,10 @@
 //! Signed tag-object parsing and name-binding helpers.
 
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use crate::gitcmd;
 use crate::security::verify_tag_signature;
 
 /// The target type recorded in a git tag object.
@@ -36,7 +36,7 @@ pub struct VerifiedRelease {
 ///
 /// Returns an error if the object is not readable or lacks required tag fields.
 pub fn read_tag_object(repo: &Path, oid: &str) -> Result<TagObject> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .args(["cat-file", "-p", oid])
         .current_dir(repo)
         .output()
@@ -155,7 +155,7 @@ pub fn parse_tag_object(content: &str) -> Result<TagObject> {
 }
 
 fn resolve_tag_object(repo: &Path, tag: &str) -> Result<String> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .args(["rev-parse", &format!("{tag}^{{tag}}")])
         .current_dir(repo)
         .output()

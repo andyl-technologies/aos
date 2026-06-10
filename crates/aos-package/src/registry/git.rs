@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
-use tokio::process::Command;
 
 use crate::download::join_cache_url;
+use crate::gitcmd;
 use crate::registry::{channel, fetch, keys, verify};
 use crate::security::{self, KeyStore, KeySyncReport, TrustedKey, key_fingerprint};
 use crate::types::{RegistryConfig, RegistryState, TrackingMode};
@@ -450,7 +450,7 @@ async fn probe_static_http_status(
 }
 
 async fn ensure_sha256_capable_git() -> Result<()> {
-    let version_output = Command::new("git")
+    let version_output = gitcmd::hermetic_async()
         .arg("--version")
         .output()
         .await
@@ -480,7 +480,7 @@ async fn ensure_sha256_capable_git() -> Result<()> {
     }
 
     let tmp = tempfile::TempDir::new().context("creating temporary git capability probe repo")?;
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["init", "--bare", "--object-format=sha256"])
         .arg(tmp.path())
         .output()
@@ -534,7 +534,7 @@ async fn ensure_repo(repo_dir: &Path, _url: &str) -> Result<()> {
         .await
         .with_context(|| format!("creating {}", repo_dir.display()))?;
 
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["init", "--bare", "--object-format=sha256"])
         .current_dir(repo_dir)
         .output()
@@ -589,7 +589,7 @@ async fn fetch_refs(repo_dir: &Path, url: &str, tracking_mode: &TrackingMode) ->
     // Add --force to allow tag updates.
     args.push("--force".to_string());
 
-    let output = Command::new("git")
+    let output = gitcmd::transport_async()
         .args(&args)
         .current_dir(repo_dir)
         .output()
@@ -624,7 +624,7 @@ async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Re
         TrackingMode::Default => "refs/remotes/origin/HEAD".to_string(),
     };
 
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["rev-parse", &ref_to_resolve])
         .current_dir(repo_dir)
         .output()
@@ -751,7 +751,7 @@ async fn fetch_and_verify_partition(
 }
 
 fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
-    let mut child = std::process::Command::new("git")
+    let mut child = gitcmd::hermetic()
         .args(["hash-object", "-w", "-t", "tag", "--stdin"])
         .current_dir(repo_dir)
         .stdin(Stdio::piped())
@@ -778,7 +778,7 @@ fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
 }
 
 async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semver::Version>> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["tag", "-l"])
         .current_dir(repo_dir)
         .output()
@@ -804,7 +804,7 @@ async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semve
 }
 
 async fn resolve_tag_object(repo_dir: &Path, tag: &str) -> Result<String> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["rev-parse", &format!("{tag}^{{tag}}")])
         .current_dir(repo_dir)
         .output()
@@ -864,7 +864,7 @@ async fn prune_unretained_release_dirs(repo_dir: &Path, retained: &[String]) -> 
 /// Lists all tags in the repo, parses each as semver (stripping `v` prefix),
 /// filters by the constraint, and resolves the latest matching tag's commit.
 async fn resolve_best_version_tag(repo_dir: &Path, req: &semver::VersionReq) -> Result<String> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["tag", "-l"])
         .current_dir(repo_dir)
         .output()
@@ -907,7 +907,7 @@ async fn resolve_best_version_tag(repo_dir: &Path, req: &semver::VersionReq) -> 
     })?;
 
     // Resolve tag to commit.
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["rev-parse", &format!("refs/tags/{best_tag}")])
         .current_dir(repo_dir)
         .output()
@@ -960,7 +960,7 @@ async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &st
         return Ok(());
     }
 
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["merge-base", "--is-ancestor", old_commit, new_commit])
         .current_dir(repo_dir)
         .output()
@@ -1016,7 +1016,7 @@ async fn extract_tree_dir(
     }
 
     let tarball = tempfile::NamedTempFile::new().context("creating temporary git archive")?;
-    let archive = Command::new("git")
+    let archive = gitcmd::hermetic_async()
         .args(["archive", "--format=tar", "-o"])
         .arg(tarball.path())
         .arg(commit)
@@ -1054,7 +1054,7 @@ async fn extract_tree_dir(
 }
 
 async fn tree_path_exists(repo_dir: &Path, commit: &str, tree_path: &str) -> Result<bool> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["cat-file", "-e", &format!("{commit}:{tree_path}")])
         .current_dir(repo_dir)
         .output()
@@ -1087,7 +1087,7 @@ async fn extract_optional_root_file(
     target_dir: &Path,
     file: &str,
 ) -> Result<()> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["show", &format!("{commit}:{file}")])
         .current_dir(repo_dir)
         .output()
@@ -1393,6 +1393,7 @@ fn is_leap_year(year: u64) -> bool {
 mod tests {
     use super::*;
     use crate::types::SigningConfig;
+    use tokio::process::Command;
 
     /// Build a `git` command for fixture setup with the developer's global
     /// and system config neutralized, so tests don't inherit `~/.gitconfig`

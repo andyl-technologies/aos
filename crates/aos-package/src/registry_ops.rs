@@ -18,6 +18,7 @@ use serde_json::Value;
 use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
+use crate::gitcmd;
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::nixcache;
@@ -98,8 +99,31 @@ fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<S
 }
 
 /// Run a git command in the registry directory, returning stdout.
+///
+/// Runs hermetically (see [`crate::gitcmd`]): host git configuration is
+/// hidden. Network transport commands must use [`git_transport`] instead.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git {} failed: {}", args.join(" "), stderr.trim());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Run a git network-transport command (push, pull) in the registry
+/// directory, returning stdout.
+///
+/// Unlike [`git`], the host configuration stays visible: credential
+/// helpers, proxies, and URL rewrites live there.
+fn git_transport(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = gitcmd::transport()
         .args(args)
         .current_dir(dir)
         .output()
@@ -115,7 +139,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
 
 /// Run a git command in the registry directory, returning raw stdout bytes.
 fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .args(args)
         .current_dir(dir)
         .output()
@@ -132,7 +156,7 @@ fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
 /// Run a git command that is allowed to fail, returning (success, stdout, stderr).
 #[allow(dead_code)]
 fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String, String)> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .args(args)
         .current_dir(dir)
         .output()
@@ -579,7 +603,73 @@ fn extract_hash(store_path: &str) -> &str {
 /// in [`sign_tag`]. Clients verify head-commit signatures during sync, so
 /// commits on registries with a non-empty trust roster should always be
 /// signed.
+/// Whether the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` environment variables fully
+/// specify a commit identity. They take precedence over any git config and
+/// are how hermetic environments (VM tests, build sandboxes) provide one.
+fn env_commit_identity() -> bool {
+    [
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+    ]
+    .iter()
+    .all(|var| std::env::var_os(var).is_some_and(|value| !value.is_empty()))
+}
+
+/// Read `key` from the host's global git config, failing when it is unset.
+///
+/// Registry commits record who published, so a missing identity is a setup
+/// error, not something to paper over with a placeholder.
+fn host_identity_value(key: &str) -> Result<String> {
+    gitcmd::host_config_value(key).ok_or_else(|| {
+        anyhow::anyhow!(
+            "registry commits record the maintainer's identity, but git {key} is not set.\n\
+             Set it with `git config --global {key} <value>`."
+        )
+    })
+}
+
+/// Check that a commit identity is available, without touching any repo.
+///
+/// Used by [`create`] to refuse before creating anything on disk.
+fn require_commit_identity() -> Result<()> {
+    if env_commit_identity() {
+        return Ok(());
+    }
+    for key in ["user.email", "user.name"] {
+        host_identity_value(key)?;
+    }
+    Ok(())
+}
+
+/// Ensure the maintainer's identity is available for commits in `dir`.
+///
+/// Registry git invocations are hermetic (see [`crate::gitcmd`]), so an
+/// identity living only in the maintainer's global config is invisible to
+/// them; capture it into the clone, preserving commit attribution.
+///
+/// # Errors
+///
+/// Fails when no identity is configured in the environment, the clone, or
+/// the host's global config.
+fn ensure_commit_identity(dir: &Path) -> Result<()> {
+    if env_commit_identity() {
+        return Ok(());
+    }
+
+    for key in ["user.email", "user.name"] {
+        if git(dir, &["config", key]).is_ok() {
+            continue;
+        }
+        let host = host_identity_value(key)?;
+        git(dir, &["config", key, &host])?;
+    }
+    Ok(())
+}
+
 fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
+    ensure_commit_identity(dir)?;
     git(dir, &["add", "-A"])?;
     match signing_key {
         Some(key) => {
@@ -738,6 +828,10 @@ pub async fn create(
         );
     }
 
+    // The initial commit needs a maintainer identity; likewise refuse
+    // before creating anything on disk.
+    require_commit_identity()?;
+
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
     printer.info(&format!("Initializing registry '{name}'..."));
@@ -746,15 +840,7 @@ pub async fn create(
     git(&dir, &["symbolic-ref", "HEAD", "refs/heads/stable"])?;
     objectstore::assert_sha256(&dir)?;
 
-    // Registry commits need a committer identity even on hosts without a
-    // global git config (e.g. hermetic build sandboxes); only fill in
-    // repo-local defaults when the maintainer has none configured.
-    if git(&dir, &["config", "user.email"]).is_err() {
-        git(&dir, &["config", "user.email", "registry@localhost"])?;
-    }
-    if git(&dir, &["config", "user.name"]).is_err() {
-        git(&dir, &["config", "user.name", "AOS Registry"])?;
-    }
+    ensure_commit_identity(&dir)?;
 
     // Create initial directory structure.
     std::fs::create_dir_all(dir.join("packages"))?;
@@ -2841,7 +2927,7 @@ fn tag_message_without_signature(payload: &str) -> Option<String> {
 /// Write a tag object payload into the object database, returning its id.
 fn hash_tag_object(dir: &Path, payload: &[u8]) -> Result<String> {
     use std::process::Stdio;
-    let mut child = Command::new("git")
+    let mut child = gitcmd::hermetic()
         .args(["hash-object", "-w", "-t", "tag", "--stdin"])
         .current_dir(dir)
         .stdin(Stdio::piped())
@@ -3370,7 +3456,7 @@ pub async fn push(
         args.push(b);
     }
 
-    let output = git(&dir, &args)?;
+    let output = git_transport(&dir, &args)?;
     if !output.is_empty() {
         printer.plain(&output);
     }
@@ -3393,7 +3479,7 @@ pub async fn pull(
         args.push("--rebase");
     }
 
-    let output = git(&dir, &args)?;
+    let output = git_transport(&dir, &args)?;
     printer.plain(&output);
 
     Ok(())
@@ -4251,8 +4337,9 @@ fn sign_tag(
     force: bool,
 ) -> Result<()> {
     let message = message.unwrap_or("AOS registry release");
+    ensure_commit_identity(dir)?;
     let signing_key_config = format!("user.signingkey={signing_key}");
-    let mut command = Command::new("git");
+    let mut command = gitcmd::hermetic();
     command
         .arg("-c")
         .arg("gpg.format=ssh")

@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
+
+use crate::gitcmd;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
@@ -104,7 +106,7 @@ pub async fn full_pack(repo: &Path, release_commit: &str, out_dir: &Path) -> Res
     .await?;
     let prefix = out_dir.join("pack");
 
-    let mut child = Command::new("git")
+    let mut child = gitcmd::hermetic_async()
         .arg("-C")
         .arg(repo)
         .args(pack_objects_args(false))
@@ -152,7 +154,7 @@ pub async fn thin_delta(
     let file =
         std::fs::File::create(&out).with_context(|| format!("creating {}", out.display()))?;
 
-    let mut child = Command::new("git")
+    let mut child = gitcmd::hermetic_async()
         .arg("-C")
         .arg(repo)
         .args(pack_objects_args(true))
@@ -223,7 +225,7 @@ pub async fn zstd_decompress(path: &Path, dict: Option<&Path>) -> Result<PathBuf
 /// Complete a thin pack with bases from `repo`.
 pub async fn index_pack_fix_thin(repo: &Path, pack: &Path) -> Result<()> {
     let file = std::fs::File::open(pack).with_context(|| format!("opening {}", pack.display()))?;
-    let mut cmd = Command::new("git");
+    let mut cmd = gitcmd::hermetic_async();
     cmd.arg("-C")
         .arg(repo)
         .arg("index-pack")
@@ -235,14 +237,14 @@ pub async fn index_pack_fix_thin(repo: &Path, pack: &Path) -> Result<()> {
 
 /// Index a self-contained full pack.
 pub async fn index_pack(repo: &Path, pack: &Path) -> Result<()> {
-    let mut cmd = Command::new("git");
+    let mut cmd = gitcmd::hermetic_async();
     cmd.arg("-C").arg(repo).arg("index-pack").arg(pack);
     run_status(cmd, "git index-pack").await
 }
 
 /// Verify that an indexed pack is readable and matches its index.
 pub async fn verify_pack_index(repo: &Path, idx: &Path) -> Result<()> {
-    let mut cmd = Command::new("git");
+    let mut cmd = gitcmd::hermetic_async();
     cmd.arg("-C")
         .arg(repo)
         .arg("verify-pack")
@@ -296,7 +298,7 @@ fn pack_objects_args(thin: bool) -> Vec<&'static str> {
 }
 
 async fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .arg("-C")
         .arg(repo)
         .args(args)

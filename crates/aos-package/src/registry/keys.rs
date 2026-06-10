@@ -78,7 +78,7 @@ pub fn load_keys_toml(root: &Path) -> Result<Option<KeysToml>> {
 /// the file being absent, or if the roster fails validation.
 pub fn load_keys_toml_at_commit(repo_dir: &Path, commit: &str) -> Result<Option<KeysToml>> {
     let spec = format!("{commit}:keys.toml");
-    let output = std::process::Command::new("git")
+    let output = crate::gitcmd::hermetic()
         .args(["show", &spec])
         .current_dir(repo_dir)
         .output()
