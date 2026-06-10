@@ -200,6 +200,7 @@
     ++ [
       pkgs.findutils
       pkgs.iproute2
+      pkgs.jq
       pkgs.python3
       pkgs.zstd
       priorityLowTool
@@ -454,6 +455,25 @@ in {
         "high-priority (priority 900)" "apr list shows high priority registry"
       assert_file_contains /tmp/priority-registry-list.out \
         "low-priority (priority 100)" "apr list shows low priority registry"
+      $APR --json list > /tmp/priority-registry-list.json 2>&1 || {
+        cat /tmp/priority-registry-list.json
+        fail "apr --json list reports configured priority registries"
+      }
+      if ${jqBin} -e '
+        (map(select(.name == "high-priority"
+          and .priority == 900
+          and .status == "enabled"
+          and .tracking == "branch:'"$HIGH_BRANCH"'")) | length == 1)
+        and (map(select(.name == "low-priority"
+          and .priority == 100
+          and .status == "enabled"
+          and .tracking == "branch:'"$LOW_BRANCH"'")) | length == 1)
+      ' /tmp/priority-registry-list.json >/dev/null; then
+        pass "apr --json list preserves priority and tracking metadata"
+      else
+        cat /tmp/priority-registry-list.json
+        fail "apr --json list preserves priority and tracking metadata"
+      fi
 
       $APM search priority-tool > /tmp/priority-search.out 2>&1 || {
         cat /tmp/priority-search.out
@@ -469,6 +489,39 @@ in {
       else
         pass "search hides lower priority duplicate"
       fi
+      $APM --json search priority-tool > /tmp/priority-search.json 2>&1 || {
+        cat /tmp/priority-search.json
+        fail "apm --json search resolves priority-selected package"
+      }
+      if ${jqBin} -e '
+        (map(select(.name == "priority-tool"
+          and .registry == "high-priority"
+          and .version == "2.0.0")) | length == 1)
+        and (map(select(.name == "priority-tool"
+          and .registry == "low-priority")) | length == 0)
+      ' /tmp/priority-search.json >/dev/null; then
+        pass "apm --json search deduplicates priority-tool to high priority package"
+      else
+        cat /tmp/priority-search.json
+        fail "apm --json search deduplicates priority-tool to high priority package"
+      fi
+      $APM --json search priority-tool --registry low-priority \
+        > /tmp/priority-search-low.json 2>&1 || {
+        cat /tmp/priority-search-low.json
+        fail "apm --json search --registry resolves lower priority package"
+      }
+      if ${jqBin} -e '
+        (map(select(.name == "priority-tool"
+          and .registry == "low-priority"
+          and .version == "9.0.0")) | length == 1)
+        and (map(select(.name == "priority-tool"
+          and .registry == "high-priority")) | length == 0)
+      ' /tmp/priority-search-low.json >/dev/null; then
+        pass "apm --json search --registry reports selected lower priority package"
+      else
+        cat /tmp/priority-search-low.json
+        fail "apm --json search --registry reports selected lower priority package"
+      fi
 
       $APM policy priority-tool > /tmp/priority-policy.out 2>&1 || {
         cat /tmp/priority-policy.out
@@ -481,6 +534,29 @@ in {
         "policy lists high priority candidate"
       assert_file_contains /tmp/priority-policy.out "9.0.0  100  low-priority" \
         "policy lists lower priority candidate"
+      $APM --json policy priority-tool > /tmp/priority-policy.json 2>&1 || {
+        cat /tmp/priority-policy.json
+        fail "apm --json policy reports all registry candidates"
+      }
+      if ${jqBin} -e '
+        .package == "priority-tool"
+        and .installed == null
+        and .candidate == "2.0.0"
+        and (.versions | length == 2)
+        and (.versions[0].version == "2.0.0")
+        and (.versions[0].priority == 900)
+        and (.versions[0].registry == "high-priority")
+        and (.versions[0].installed == false)
+        and (.versions[1].version == "9.0.0")
+        and (.versions[1].priority == 100)
+        and (.versions[1].registry == "low-priority")
+        and (.versions[1].installed == false)
+      ' /tmp/priority-policy.json >/dev/null; then
+        pass "apm --json policy orders duplicate candidates by priority"
+      else
+        cat /tmp/priority-policy.json
+        fail "apm --json policy orders duplicate candidates by priority"
+      fi
 
       $APM show priority-tool > /tmp/priority-show.out 2>&1 || {
         cat /tmp/priority-show.out
@@ -526,6 +602,22 @@ in {
         fail "unfiltered install should not install lower priority duplicate"
       else
         pass "unfiltered install excludes lower priority duplicate"
+      fi
+      $APM --json list --installed > /tmp/priority-installed-high.json 2>&1 || {
+        cat /tmp/priority-installed-high.json
+        fail "apm --json list --installed reports high priority install"
+      }
+      if ${jqBin} -e '
+        map(select(.name == "priority-tool")) as $matches
+        | ($matches | length == 1)
+          and $matches[0].registry == "high-priority"
+          and $matches[0].version == "2.0.0"
+          and ($matches[0].status | contains("installed"))
+      ' /tmp/priority-installed-high.json >/dev/null; then
+        pass "apm --json list --installed records high priority source"
+      else
+        cat /tmp/priority-installed-high.json
+        fail "apm --json list --installed records high priority source"
       fi
 
       $APM install switch-tool --yes > /tmp/switch-install-high.out 2>&1 || {
@@ -603,6 +695,23 @@ in {
         fail "source switch should drop previous registry metadata"
       else
         pass "source switch drops previous registry metadata"
+      fi
+      $APM --json list --installed > /tmp/switch-installed-low.json 2>&1 || {
+        cat /tmp/switch-installed-low.json
+        fail "apm --json list --installed reports selected source switch"
+      }
+      if ${jqBin} -e '
+        map(select(.name == "switch-tool")) as $matches
+        | ($matches | length == 1)
+          and $matches[0].registry == "low-priority"
+          and $matches[0].version == "1.0.0"
+          and ($matches[0].status | contains("installed"))
+          and ($matches[0].status | contains("held"))
+      ' /tmp/switch-installed-low.json >/dev/null; then
+        pass "apm --json list --installed follows selected registry after source switch"
+      else
+        cat /tmp/switch-installed-low.json
+        fail "apm --json list --installed follows selected registry after source switch"
       fi
 
       rm -rf "$HOME/.cache/apm"
@@ -684,6 +793,23 @@ in {
       assert_file_contains /tmp/priority-installed-low.out \
         "priority-tool/low-priority 9.0.0" \
         "registry-filtered install records selected registry"
+      $APM --json list --installed --registry low-priority \
+        > /tmp/priority-installed-low.json 2>&1 || {
+        cat /tmp/priority-installed-low.json
+        fail "apm --json list --installed --registry reports selected lower priority install"
+      }
+      if ${jqBin} -e '
+        length == 1
+        and .[0].name == "priority-tool"
+        and .[0].registry == "low-priority"
+        and .[0].version == "9.0.0"
+        and (.[0].status | contains("installed"))
+      ' /tmp/priority-installed-low.json >/dev/null; then
+        pass "apm --json list --installed --registry filters to selected lower priority install"
+      else
+        cat /tmp/priority-installed-low.json
+        fail "apm --json list --installed --registry filters to selected lower priority install"
+      fi
 
       $APM depends priority-tool > /tmp/priority-depends-low.out 2>&1 || {
         cat /tmp/priority-depends-low.out
@@ -753,6 +879,27 @@ in {
         fail "policy should not mark the high-priority duplicate as installed"
       else
         pass "policy does not mark the uninstalled same-version high-priority candidate"
+      fi
+      $APM --json policy same-version-tool > /tmp/same-version-policy-low.json 2>&1 || {
+        cat /tmp/same-version-policy-low.json
+        fail "apm --json policy handles same-version duplicate registry package"
+      }
+      if ${jqBin} -e '
+        .package == "same-version-tool"
+        and .installed == "1.0.0"
+        and .candidate == "1.0.0"
+        and (.versions | length == 2)
+        and (.versions[0].registry == "high-priority")
+        and (.versions[0].priority == 900)
+        and (.versions[0].installed == false)
+        and (.versions[1].registry == "low-priority")
+        and (.versions[1].priority == 100)
+        and (.versions[1].installed == true)
+      ' /tmp/same-version-policy-low.json >/dev/null; then
+        pass "apm --json policy marks only the installed same-version source"
+      else
+        cat /tmp/same-version-policy-low.json
+        fail "apm --json policy marks only the installed same-version source"
       fi
 
       $APM list --upgradable > /tmp/priority-upgradable-low.out 2>&1 || {
