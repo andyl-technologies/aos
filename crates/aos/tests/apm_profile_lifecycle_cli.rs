@@ -627,12 +627,18 @@ exit 64
     }
 
     fn write_store_command(&self, package: &PackageFixture) -> Result<()> {
+        let shell = find_shell()?;
         let bin = package.store_path.join("bin");
         fs::create_dir_all(&bin)?;
         let command = bin.join(package.name);
         fs::write(
             &command,
-            format!("printf '{} {}\\n'\n", package.name, package.version),
+            format!(
+                "#!{}\nprintf '{} {}\\n'\n",
+                shell.display(),
+                package.name,
+                package.version,
+            ),
         )?;
         make_executable(&command)?;
         Ok(())
@@ -726,12 +732,11 @@ exit 64
     }
 
     fn run_profile_command(&self, command: &str) -> Result<String> {
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(command)
+        let profile_bin = self.profile_bin(command);
+        let output = Command::new(&profile_bin)
             .env("PATH", path_with_prefix_first(&self.current_bin())?)
             .output()
-            .with_context(|| format!("running profile command {command}"))?;
+            .with_context(|| format!("running profile command {}", profile_bin.display()))?;
         if !output.status.success() {
             bail!(
                 "profile command {command} failed:\nstdout:\n{}\nstderr:\n{}",

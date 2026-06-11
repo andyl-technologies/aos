@@ -14,11 +14,16 @@
 //! ([`transport`]): credential helpers, proxies, and `url.<base>.insteadOf`
 //! rewrites are host concerns apm must honor.
 
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
 /// Environment overrides hiding the host's git configuration.
 const HERMETIC_ENV: [(&str, &str); 2] = [
     ("GIT_CONFIG_GLOBAL", "/dev/null"),
     ("GIT_CONFIG_SYSTEM", "/dev/null"),
 ];
+
+static SSH_KEYGEN: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 /// Build a git command for local object and ref operations.
 ///
@@ -48,6 +53,88 @@ pub(crate) fn transport() -> std::process::Command {
 /// Async variant of [`transport`].
 pub(crate) fn transport_async() -> tokio::process::Command {
     tokio::process::Command::new("git")
+}
+
+/// Add a `gpg.ssh.program` override when a working signer was discovered.
+///
+/// Some non-AOS host environments can execute the AOS-built `git` but the
+/// matching AOS-built `ssh-keygen` cannot resolve the caller's uid through
+/// host NSS, causing Git SSH signing to fail before it reads the key. The
+/// wrapper still keeps host Git configuration hidden; this only points Git's
+/// SSH signing/verifying subprocess at a signer that proved it can complete an
+/// actual `ssh-keygen -Y sign` operation.
+pub(crate) fn add_ssh_program_config(command: &mut std::process::Command) {
+    if let Some(path) = ssh_keygen_path() {
+        command
+            .arg("-c")
+            .arg(format!("gpg.ssh.program={}", path.display()));
+    }
+}
+
+/// Build an `ssh-keygen` command using the same working signer selection.
+pub(crate) fn ssh_keygen() -> std::process::Command {
+    match ssh_keygen_path() {
+        Some(path) => std::process::Command::new(path),
+        None => std::process::Command::new("ssh-keygen"),
+    }
+}
+
+fn ssh_keygen_path() -> Option<&'static Path> {
+    SSH_KEYGEN.get_or_init(find_working_ssh_keygen).as_deref()
+}
+
+fn find_working_ssh_keygen() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("AOS_GIT_SSH_PROGRAM") {
+        candidates.push(PathBuf::from(path));
+    }
+    for env_var in ["PATH", "AOS_HOST_PATH"] {
+        let Some(path) = std::env::var_os(env_var) else {
+            continue;
+        };
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join("ssh-keygen");
+            if !candidates.iter().any(|seen| seen == &candidate) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file() && ssh_keygen_can_sign(candidate))
+}
+
+fn ssh_keygen_can_sign(candidate: &Path) -> bool {
+    let Ok(tmp) = tempfile::TempDir::new() else {
+        return false;
+    };
+    let key = tmp.path().join("key");
+    let Ok(keygen) = std::process::Command::new(candidate)
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "aos-registry", "-f"])
+        .arg(&key)
+        .output()
+    else {
+        return false;
+    };
+    if !keygen.status.success() {
+        return false;
+    }
+
+    let payload = tmp.path().join("payload");
+    if std::fs::write(&payload, b"aos-registry").is_err() {
+        return false;
+    }
+
+    std::process::Command::new(candidate)
+        .arg("-Y")
+        .arg("sign")
+        .arg("-f")
+        .arg(&key)
+        .arg("-n")
+        .arg("git")
+        .arg(&payload)
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 /// Read a value from the host's *global* git configuration.
