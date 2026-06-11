@@ -2336,6 +2336,175 @@ in {
             and (.branches | any(.name == "origin/stable" and .remote == true))' \
           "$work/apr-push-host-install-v1.json" >/dev/null
 
+        collab_origin="$work/host-collab-origin.git"
+        git init --bare --object-format=sha256 "$collab_origin" \
+          > "$work/git-init-host-collab-origin.out" 2>&1
+        run_clean ${self}/bin/apr create host-collab \
+          --remote "$collab_origin" \
+          > "$work/apr-create-host-collab.out" 2>&1
+        collab_a_reg="$data/apm/registries/host-collab"
+        git -C "$collab_a_reg" config user.name "Host Maintainer A"
+        git -C "$collab_a_reg" config user.email "host-maintainer-a@example.invalid"
+        run_clean ${self}/bin/apr --json publish "$install_leaf_store" \
+          --name hostcollab \
+          --version 1.0.0 \
+          --description "Host collaboration fixture" \
+          --license MIT \
+          --maintainer maintainer-a@example.invalid \
+          --registry host-collab \
+          --message "publish hostcollab from maintainer A" \
+          > "$work/apr-publish-host-collab-a.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_leaf_store" \
+          '.action == "publish"
+            and .registry == "host-collab"
+            and .package == "hostcollab"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and .committed == true
+            and .commit_message == "publish hostcollab from maintainer A"' \
+          "$work/apr-publish-host-collab-a.json" >/dev/null
+        collab_a_commit=$(git -C "$collab_a_reg" rev-parse HEAD)
+        run_clean ${self}/bin/apr --json push \
+          --registry host-collab \
+          --branch stable \
+          --set-upstream > "$work/apr-push-host-collab-a.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$collab_a_commit" \
+          '.action == "push"
+            and .branch == "stable"
+            and .set_upstream == true
+            and .force == false
+            and .head == $head' \
+          "$work/apr-push-host-collab-a.json" >/dev/null
+
+        collab_main_home="$home"
+        collab_main_config="$config"
+        collab_main_data="$data"
+        collab_main_cache="$cache"
+        collab_main_profile_root="$profile_root"
+        collab_main_profile="$profile"
+        home="$work/collab-b-home"
+        config="$work/collab-b-config"
+        data="$work/collab-b-share"
+        cache="$work/collab-b-cache"
+        profile_root="$work/collab-b-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data/apm/registries" "$cache" "$profile_root"
+        collab_b_reg="$data/apm/registries/host-collab"
+        git clone --branch stable "$collab_origin" "$collab_b_reg" \
+          > "$work/git-clone-host-collab-b.out" 2>&1
+        git -C "$collab_b_reg" config user.name "Host Maintainer B"
+        git -C "$collab_b_reg" config user.email "host-maintainer-b@example.invalid"
+        run_clean ${self}/bin/apr --json show hostcollab \
+          --registry host-collab > "$work/apr-show-host-collab-b-base.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package.name == "hostcollab"
+            and .versions[0].version == "1.0.0"' \
+          "$work/apr-show-host-collab-b-base.json" >/dev/null
+        run_clean ${self}/bin/apr --json publish "$bulk_store" \
+          --name hostcollabbulk \
+          --version 1.0.0 \
+          --description "Host collaboration bulk fixture" \
+          --license MIT \
+          --maintainer maintainer-b@example.invalid \
+          --registry host-collab \
+          --message "publish hostcollabbulk from maintainer B" \
+          > "$work/apr-publish-host-collab-b.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$bulk_store" \
+          '.action == "publish"
+            and .registry == "host-collab"
+            and .package == "hostcollabbulk"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and (.nar_size > 1000000)
+            and .committed == true
+            and .commit_message == "publish hostcollabbulk from maintainer B"' \
+          "$work/apr-publish-host-collab-b.json" >/dev/null
+        collab_b_commit=$(git -C "$collab_b_reg" rev-parse HEAD)
+        run_clean ${self}/bin/apr --json push \
+          --registry host-collab \
+          --branch stable > "$work/apr-push-host-collab-b.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$collab_b_commit" \
+          '.action == "push"
+            and .branch == "stable"
+            and .set_upstream == false
+            and .force == false
+            and .head == $head' \
+          "$work/apr-push-host-collab-b.json" >/dev/null
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$collab_main_home"
+        config="$collab_main_config"
+        data="$collab_main_data"
+        cache="$collab_main_cache"
+        profile_root="$collab_main_profile_root"
+        profile="$collab_main_profile"
+
+        run_clean ${self}/bin/apr --json pull --rebase \
+          --registry host-collab > "$work/apr-pull-host-collab-a.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$collab_b_commit" \
+          '.action == "pull"
+            and .rebase == true
+            and .current == "stable"
+            and .head == $head
+            and (.branches | any(.name == "origin/stable" and .remote == true))' \
+          "$work/apr-pull-host-collab-a.json" >/dev/null
+        run_clean ${self}/bin/apr --json show hostcollabbulk \
+          --registry host-collab > "$work/apr-show-host-collab-a-after-pull.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package.name == "hostcollabbulk"
+            and .versions[0].version == "1.0.0"
+            and .versions[0].platforms."x86_64-linux".nar_size > 1000000' \
+          "$work/apr-show-host-collab-a-after-pull.json" >/dev/null
+        run_clean ${self}/bin/apr --json packages \
+          --registry host-collab > "$work/apr-packages-host-collab-after-pull.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 2
+            and any(.[]; .name == "hostcollab" and .version == "1.0.0")
+            and any(.[]; .name == "hostcollabbulk" and .version == "1.0.0")' \
+          "$work/apr-packages-host-collab-after-pull.json" >/dev/null
+
+        home="$work/collab-consumer-home"
+        config="$work/collab-consumer-config"
+        data="$work/collab-consumer-share"
+        cache="$work/collab-consumer-cache"
+        profile_root="$work/collab-consumer-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm --json registry add --no-verify \
+          "file://$collab_origin" \
+          --name host-collab-client \
+          --branch stable > "$work/apm-add-host-collab-client.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$collab_b_commit" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-collab-client"
+            and .tracking == "branch:stable"
+            and .synced == true
+            and .last_commit == $head
+            and .packages == 2' \
+          "$work/apm-add-host-collab-client.json" >/dev/null
+        run_clean ${self}/bin/apm --json search hostcollab \
+          --registry host-collab-client > "$work/apm-search-host-collab-client.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 2
+            and any(.[]; .name == "hostcollab" and .version == "1.0.0")
+            and any(.[]; .name == "hostcollabbulk" and .version == "1.0.0")' \
+          "$work/apm-search-host-collab-client.json" >/dev/null
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$collab_main_home"
+        config="$collab_main_config"
+        data="$collab_main_data"
+        cache="$collab_main_cache"
+        profile_root="$collab_main_profile_root"
+        profile="$collab_main_profile"
+
         run_clean ${self}/bin/apr create host-direct-release \
           > "$work/apr-create-host-direct-release.out" 2>&1
         direct_reg="$data/apm/registries/host-direct-release"
@@ -4827,6 +4996,30 @@ in {
           --branch stable > "$work/apm-add-host-install-no-deps.out" 2>&1
         grep -q "Registry 'host-install-no-deps' added" \
           "$work/apm-add-host-install-no-deps.out"
+        if run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-install-no-deps \
+          --no-deps \
+          --yes > "$work/apm-install-host-install-no-deps-missing.json" 2>&1; then
+          cat "$work/apm-install-host-install-no-deps-missing.json"
+          exit 1
+        fi
+        ${pkgs.jq}/bin/jq -e \
+          '.error
+            | contains("--no-deps requested")
+            and contains("hostleaf")
+            and contains("store path")' \
+          "$work/apm-install-host-install-no-deps-missing.json" >/dev/null
+        if nix_store --check-validity "$install_store_v2" \
+          > "$work/nix-valid-host-install-no-deps-missing.out" 2>&1; then
+          cat "$work/nix-valid-host-install-no-deps-missing.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_leaf_store_v2" \
+          > "$work/nix-valid-host-leaf-no-deps-missing.out" 2>&1; then
+          cat "$work/nix-valid-host-leaf-no-deps-missing.out"
+          exit 1
+        fi
+        assert_no_profile
         run_clean ${self}/bin/apm --json install hostleaf \
           --registry host-install-no-deps \
           --yes > "$work/apm-install-host-leaf-no-deps-base.json"
