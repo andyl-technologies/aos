@@ -1816,6 +1816,25 @@ in {
             and .upload_auth.upload_urls == [$upload_url, $upload_url_mirror]
             and .upload_auth.headers == ["X-Test-Workflow: host-install"]' \
           "$work/apr-origin-config-host-install-show.json" >/dev/null
+        run_clean ${self}/bin/apr --json origin config \
+          --registry host-install-channel \
+          --unset headers \
+          > "$work/apr-origin-config-host-install-unset-headers.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg upload_url "$install_default_upload" \
+          --arg upload_url_mirror "$install_default_upload_mirror" \
+          '.action == "origin_config"
+            and .registry == "host-install-channel"
+            and .upload_auth.upload_urls == [$upload_url, $upload_url_mirror]
+            and .upload_auth.headers == []' \
+          "$work/apr-origin-config-host-install-unset-headers.json" >/dev/null
+        if grep -q '^headers = ' \
+          "$config/apm/registries.d/host-install-channel.toml"; then
+          cat "$config/apm/registries.d/host-install-channel.toml"
+          exit 1
+        fi
+        grep -q 'upload_urls = \[' \
+          "$config/apm/registries.d/host-install-channel.toml"
         run_clean ${self}/bin/apr --json cache generate \
           --registry host-install-channel \
           --output "$work/install-static-cache-output/cache" \
