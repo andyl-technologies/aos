@@ -137,6 +137,43 @@ fn apm_profile_lifecycle_cli_lists_holds_executes_and_rolls_back() -> Result<()>
     )?;
     assert_package_list(&installed, &[("alpha", "1.0.0", "installed")])?;
 
+    let disabled = fixture.run_json(
+        &["--json", "registry", "disable", "lifecycle"],
+        "registry disable",
+    )?;
+    assert_eq!(disabled["action"], "registry_disable");
+    assert_eq!(disabled["status"], "disabled");
+    assert_eq!(disabled["registry"], "lifecycle");
+    assert_eq!(disabled["enabled"], false);
+    assert_eq!(disabled["previous_enabled"], true);
+    assert_eq!(disabled["changed"], true);
+
+    let orphans = fixture.run_json(&["--json", "orphans"], "orphans while disabled")?;
+    assert_orphans(&orphans, &[])?;
+
+    let installed = fixture.run_json(
+        &["--json", "list", "--installed", "--registry", "lifecycle"],
+        "list installed while disabled",
+    )?;
+    assert_package_list(&installed, &[("alpha", "1.0.0", "unavailable")])?;
+
+    let enabled = fixture.run_json(
+        &["--json", "registry", "enable", "lifecycle"],
+        "registry enable",
+    )?;
+    assert_eq!(enabled["action"], "registry_enable");
+    assert_eq!(enabled["status"], "enabled");
+    assert_eq!(enabled["registry"], "lifecycle");
+    assert_eq!(enabled["enabled"], true);
+    assert_eq!(enabled["previous_enabled"], false);
+    assert_eq!(enabled["changed"], true);
+
+    let installed = fixture.run_json(
+        &["--json", "list", "--installed", "--registry", "lifecycle"],
+        "list installed after enable",
+    )?;
+    assert_package_list(&installed, &[("alpha", "1.0.0", "installed")])?;
+
     let removed = fixture.run_json(
         &["--json", "registry", "remove", "lifecycle", "--force"],
         "registry remove",
@@ -188,6 +225,61 @@ fn apm_profile_lifecycle_cli_lists_holds_executes_and_rolls_back() -> Result<()>
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn apm_profile_lifecycle_cli_autoremoves_dependency_roots() -> Result<()> {
+    let fixture = LifecycleFixture::new()?;
+    fixture.write_registry_cache()?;
+    fixture.write_autoremove_profile()?;
+
+    assert_eq!(fixture.run_profile_command("beta")?, "beta 1.0.0\n");
+    assert_eq!(
+        fixture.run_profile_command("beta-helper")?,
+        "beta-helper 1.0.0\n"
+    );
+
+    let removed = fixture.run_json(
+        &["--json", "--yes", "remove", "--autoremove", "beta"],
+        "remove beta with autoremove",
+    )?;
+    assert_eq!(removed["action"], "remove");
+    assert_eq!(removed["status"], "removed");
+    assert_eq!(removed["removed"], 2);
+    assert_eq!(removed["explicit_removed"], 1);
+    assert_eq!(removed["orphan_removed"], 1);
+    assert_eq!(removed["generation"], 2);
+    assert_eq!(removed["packages"][0]["name"], "beta");
+    assert_eq!(removed["orphans"][0]["name"], "beta-helper");
+    assert_eq!(fixture.current_generation()?, "gen-2");
+    assert!(
+        !fixture.profile_bin("beta").exists(),
+        "remove --autoremove should delete beta from the active profile bin directory"
+    );
+    assert!(
+        !fixture.profile_bin("beta-helper").exists(),
+        "remove --autoremove should delete orphaned dependency commands"
+    );
+
+    let installed = fixture.run_json(
+        &["--json", "list", "--installed", "--registry", "lifecycle"],
+        "list installed after autoremove",
+    )?;
+    assert_package_list(&installed, &[])?;
+
+    let rolled_back = fixture.run_json(&["--json", "rollback"], "rollback autoremove")?;
+    assert_eq!(rolled_back["action"], "rollback");
+    assert_eq!(rolled_back["status"], "rolled_back");
+    assert_eq!(rolled_back["generation"], 1);
+    assert_eq!(fixture.current_generation()?, "gen-1");
+    assert_eq!(fixture.run_profile_command("beta")?, "beta 1.0.0\n");
+    assert_eq!(
+        fixture.run_profile_command("beta-helper")?,
+        "beta-helper 1.0.0\n"
+    );
+
+    Ok(())
+}
+
 struct LifecycleFixture {
     _tmp: tempfile::TempDir,
     home: PathBuf,
@@ -204,6 +296,7 @@ struct LifecyclePackages {
     alpha_v1: PackageFixture,
     alpha_v2: PackageFixture,
     beta: PackageFixture,
+    beta_helper: PackageFixture,
 }
 
 #[derive(Clone)]
@@ -240,6 +333,12 @@ impl LifecycleFixture {
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             ),
             beta: PackageFixture::new(&store, "beta", "1.0.0", "cccccccccccccccccccccccccccccccc"),
+            beta_helper: PackageFixture::new(
+                &store,
+                "beta-helper",
+                "1.0.0",
+                "dddddddddddddddddddddddddddddddd",
+            ),
         };
 
         Ok(Self {
@@ -273,6 +372,10 @@ impl LifecycleFixture {
             registry_cache.join("packages/b/beta.toml"),
             package_toml("beta", &[&self.packages.beta]),
         )?;
+        fs::write(
+            registry_cache.join("packages/b/beta-helper.toml"),
+            package_toml("beta-helper", &[&self.packages.beta_helper]),
+        )?;
         Ok(())
     }
 
@@ -297,6 +400,30 @@ impl LifecycleFixture {
         Ok(())
     }
 
+    fn write_autoremove_profile(&self) -> Result<()> {
+        fs::create_dir_all(self.profile.join("meta"))?;
+        fs::write(
+            self.profile.join("state.json"),
+            r#"{"current_generation":1,"next_generation":2}"#,
+        )?;
+
+        self.write_store_command(&self.packages.beta)?;
+        self.write_store_command(&self.packages.beta_helper)?;
+
+        let gen_dir = self.profile.join("gen-1");
+        fs::create_dir_all(gen_dir.join("usr"))?;
+        fs::create_dir_all(gen_dir.join("meta"))?;
+        fs::create_dir_all(gen_dir.join("bin"))?;
+        self.link_package_into_generation(&gen_dir, &self.packages.beta, true)?;
+        self.link_package_into_generation(&gen_dir, &self.packages.beta_helper, false)?;
+        replace_symlink(Path::new("gen-1"), &self.profile.join("current"))?;
+
+        self.write_root_meta(&self.packages.beta, false)?;
+        self.write_root_auto_meta(&self.packages.beta_helper)?;
+
+        Ok(())
+    }
+
     fn write_store_command(&self, package: &PackageFixture) -> Result<()> {
         let bin = package.store_path.join("bin");
         fs::create_dir_all(&bin)?;
@@ -315,18 +442,31 @@ impl LifecycleFixture {
         fs::create_dir_all(gen_dir.join("meta"))?;
         fs::create_dir_all(gen_dir.join("bin"))?;
         for package in packages {
-            replace_symlink(&package.store_path, &gen_dir.join("usr").join(package.hash))?;
-            replace_symlink(
-                &package.store_path.join("bin").join(package.name),
-                &gen_dir.join("bin").join(package.name),
-            )?;
-            self.write_generation_meta(&gen_dir, package, false)?;
+            self.link_package_into_generation(&gen_dir, package, true)?;
         }
         Ok(())
     }
 
+    fn link_package_into_generation(
+        &self,
+        gen_dir: &Path,
+        package: &PackageFixture,
+        explicit: bool,
+    ) -> Result<()> {
+        replace_symlink(&package.store_path, &gen_dir.join("usr").join(package.hash))?;
+        replace_symlink(
+            &package.store_path.join("bin").join(package.name),
+            &gen_dir.join("bin").join(package.name),
+        )?;
+        self.write_generation_meta(gen_dir, package, false, explicit)
+    }
+
     fn write_root_meta(&self, package: &PackageFixture, held: bool) -> Result<()> {
-        write_meta_file(&self.profile.join("meta"), package, held)
+        write_meta_file(&self.profile.join("meta"), package, held, true)
+    }
+
+    fn write_root_auto_meta(&self, package: &PackageFixture) -> Result<()> {
+        write_meta_file(&self.profile.join("meta"), package, false, false)
     }
 
     fn write_generation_meta(
@@ -334,8 +474,9 @@ impl LifecycleFixture {
         gen_dir: &Path,
         package: &PackageFixture,
         held: bool,
+        explicit: bool,
     ) -> Result<()> {
-        write_meta_file(&gen_dir.join("meta"), package, held)
+        write_meta_file(&gen_dir.join("meta"), package, held, explicit)
     }
 
     fn run_json(&self, args: &[&str], action: &str) -> Result<Value> {
@@ -476,7 +617,7 @@ fn current_platform() -> String {
     format!("{arch}-{os}")
 }
 
-fn write_meta_file(dir: &Path, package: &PackageFixture, held: bool) -> Result<()> {
+fn write_meta_file(dir: &Path, package: &PackageFixture, held: bool, explicit: bool) -> Result<()> {
     fs::create_dir_all(dir)?;
     let meta = serde_json::json!({
         "store_path": package.store_path,
@@ -489,7 +630,7 @@ fn write_meta_file(dir: &Path, package: &PackageFixture, held: bool) -> Result<(
         "apm": {
             "name": package.name,
             "version": package.version,
-            "explicit": true,
+            "explicit": explicit,
             "registry": "lifecycle",
             "installed_at": "2026-02-16T00:00:00Z",
             "held": held,
