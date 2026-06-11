@@ -6090,6 +6090,38 @@ in {
               and .registry == "orphan-reg"
               and .explicit == false)' \
           "$work/apm-orphans-after-registry-remove.json" >/dev/null
+        run_clean ${self}/bin/apm --json registry add --no-verify "file://$install_origin" \
+          --name orphan-reg \
+          --branch stable > "$work/apm-registry-reattach-orphan-reg.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$config/apm/registries.d/orphan-reg.toml" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "orphan-reg"
+            and .name == "orphan-reg"
+            and .tracking == "branch:stable"
+            and .clone == true
+            and .synced == true
+            and .verification_disabled == true
+            and .config == $config_path
+            and .packages >= 3' \
+          "$work/apm-registry-reattach-orphan-reg.json" >/dev/null
+        run_clean ${self}/bin/apm --json orphans \
+          > "$work/apm-orphans-after-registry-reattach.json"
+        ${pkgs.jq}/bin/jq -e 'length == 0' \
+          "$work/apm-orphans-after-registry-reattach.json" >/dev/null
+        run_clean ${self}/bin/apm --json verify hostinstall \
+          > "$work/apm-verify-orphan-reattached.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_store_v2" \
+          '.package == "hostinstall"
+            and .registry == "orphan-reg"
+            and .version == "2.0.0"
+            and .store_path == $store
+            and .verified == true
+            and (.expected_nar_hash | startswith("sha256-"))
+            and (.actual_nar_hash | startswith("sha256:"))' \
+          "$work/apm-verify-orphan-reattached.json" >/dev/null
         assert_default_profile_absent
 
         home="$main_home"
