@@ -5193,6 +5193,9 @@ in {
         "apm source --verify uses sourceful v1 source path"
       assert_file_contains /tmp/surface-source-sourceful-verify.out "matches installed binary" \
         "apm source --verify compares sourceful rebuild with installed binary"
+      delete_store_path "$SOURCE_V1_SRC_STORE" "sourceful-source-v1-before-json-verify"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
       run_ok source-sourceful-verify-json "$APM" --json source sourceful --verify
       "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
         '.package == "sourceful"
@@ -5205,6 +5208,9 @@ in {
           and (.expected_nar_hash | startswith("sha256:"))
           and (.actual_nar_hash | startswith("sha256:"))' \
         /tmp/surface-source-sourceful-verify-json.out >/dev/null
+      assert_file_not_contains /tmp/surface-source-sourceful-verify-json.out "Rebuilding" \
+        "apm --json source --verify emits clean JSON while downloading source"
+      assert_store_valid "$SOURCE_V1_SRC_STORE" "sourceful-source-v1-json-verify"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
       $APM reinstall sourceful --yes > /tmp/surface-reinstall-sourceful.out 2>&1 || {
