@@ -312,25 +312,83 @@ impl KeyStore {
         })
     }
 
-    /// Remove a trusted key for `registry`.
+    /// Remove trusted keys for `registry` from the effective trust set.
     ///
-    /// Searches all writable directories (index 0) and read-only
-    /// directories for the key file.  Returns `true` if a file was
-    /// found and removed; `false` otherwise.
+    /// Deletes keys from the writable directory (index 0). Keys that remain
+    /// visible from read-only anchor directories are masked by writing
+    /// `# revoked:` exclusion lines into the writable directory, leaving the
+    /// anchor files untouched.
     ///
     /// # Errors
     ///
-    /// Returns an error if an existing key file cannot be deleted.
+    /// Returns an error if the writable trust file cannot be removed or
+    /// rewritten, or if an existing anchor file cannot be read.
     pub fn remove(&self, registry: &str) -> Result<bool> {
-        for dir in &self.trusted_dirs {
-            let path = dir.join(format!("{registry}.pub"));
-            if path.exists() {
-                fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-                return Ok(true);
+        let Some(dir) = self.trusted_dirs.first() else {
+            return Ok(false);
+        };
+
+        let had_effective_keys = !self.lookup_all(registry).is_empty();
+        let path = dir.join(format!("{registry}.pub"));
+        let mut anchored = Vec::new();
+        for anchor_dir in self.trusted_dirs.iter().skip(1) {
+            for line in
+                trusted_key_lines_from_file(&anchor_dir.join(format!("{registry}.pub")), registry)?
+            {
+                if !anchored.contains(&line) {
+                    anchored.push(line);
+                }
             }
         }
-        Ok(false)
+
+        if anchored.is_empty() {
+            if path.exists() {
+                fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+            }
+            return Ok(had_effective_keys);
+        }
+
+        fs::create_dir_all(dir)
+            .with_context(|| format!("creating trusted keys directory {}", dir.display()))?;
+        let mut content = anchored
+            .iter()
+            .map(|line| format!("{REVOKED_LINE_PREFIX} {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        content.push('\n');
+        fs::write(&path, &content)
+            .with_context(|| format!("writing trusted keys to {}", path.display()))?;
+
+        Ok(had_effective_keys)
     }
+}
+
+/// Read canonical trusted-key lines for `registry` from `path`.
+fn trusted_key_lines_from_file(path: &Path, registry: &str) -> Result<Vec<String>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut lines = Vec::new();
+    let content =
+        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    for line in content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Ok((reg, algo, pubkey)) = parse_signing_key(line) else {
+            continue;
+        };
+        if reg != registry {
+            continue;
+        }
+        let key_line = format!("{reg}:{algo}:{pubkey}");
+        if !lines.contains(&key_line) {
+            lines.push(key_line);
+        }
+    }
+    Ok(lines)
 }
 
 /// Summary of a [`KeyStore::sync_registry_keys`] rewrite.
@@ -885,6 +943,29 @@ mod tests {
         assert!(store.lookup("aos-core").is_none());
         // Removing again should return false.
         assert!(!store.remove("aos-core").unwrap());
+    }
+
+    #[test]
+    fn key_store_remove_masks_anchor_keys() {
+        let tmp = TempDir::new().unwrap();
+        let writable = tmp.path().join("writable");
+        let anchors = tmp.path().join("anchors");
+        fs::create_dir_all(&writable).unwrap();
+        fs::create_dir_all(&anchors).unwrap();
+        fs::write(anchors.join("core.pub"), "core:Ed25519:AAAA\n").unwrap();
+
+        let store = KeyStore::new(vec![writable.clone(), anchors.clone()]);
+        assert!(store.remove("core").unwrap());
+        assert_eq!(
+            fs::read_to_string(anchors.join("core.pub")).unwrap(),
+            "core:Ed25519:AAAA\n"
+        );
+        assert_eq!(
+            fs::read_to_string(writable.join("core.pub")).unwrap(),
+            "# revoked: core:Ed25519:AAAA\n"
+        );
+        assert!(store.lookup_all("core").is_empty());
+        assert!(!store.remove("core").unwrap());
     }
 
     // -- tofu_check ---------------------------------------------------------
