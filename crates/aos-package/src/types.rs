@@ -430,7 +430,9 @@ pub struct RegistryConfig {
 /// OpenSSH private key to stdout. The key is materialized just-in-time into
 /// a private temporary file for the duration of a single signature and is
 /// never persisted by the tool, so the key can live exclusively in a secrets
-/// manager.
+/// manager. The command runs with the invoking user's `PATH` (stashed in
+/// `AOS_HOST_PATH` by the `aos`/`apm`/`apr` wrappers), not the tool's
+/// hermetic `PATH`, so host-installed secret-manager CLIs resolve normally.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SigningKeySource {
@@ -506,12 +508,19 @@ pub struct SigningConfig {
     pub public_key: Option<String>,
 }
 
-/// Producer-side defaults for registry static-cache upload authentication.
+/// Producer-side defaults for registry uploads: destinations and backend
+/// authentication.
 ///
-/// This is read from `[registry.upload_auth]` in `registries.d/<name>.toml`.
-/// CLI flags and their env bindings override these defaults.
+/// This is read from `[registry.upload_auth]` in `registries.d/<name>.toml`
+/// and written by `apr origin config`. CLI flags and their env bindings
+/// override these defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegistryUploadAuthConfig {
+    /// Default upload destinations (`file://`, `s3://`, `sftp://`,
+    /// `http://`), used by `apr origin upload`, `apr cache generate`, and
+    /// `apr release` when no `--upload-url` flag is given.
+    #[serde(default)]
+    pub upload_urls: Vec<String>,
     /// AOS provisioning token for AOS cache backends.
     #[serde(default)]
     pub token: Option<String>,
