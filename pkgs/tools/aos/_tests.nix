@@ -143,9 +143,10 @@ in {
         store_dir="$aos_root/store"
         state_dir="$aos_root/var/nix"
         nix_conf="$work/nix-conf"
+        host_bin="$work/host-bin"
         cache_port="18137"
         install_cache_port="18138"
-        mkdir -p "$home" "$config" "$data" "$cache" "$cache/nix" "$system_config" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$state_dir/log/nix" "$nix_conf"
+        mkdir -p "$home" "$config" "$data" "$cache" "$cache/nix" "$system_config" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$state_dir/log/nix" "$nix_conf" "$host_bin"
         profile="$profile_root/per-user/unknown"
         default_profile="/var/lib/profiles/per-user/unknown"
         cache_server_pid=""
@@ -243,7 +244,7 @@ in {
             GIT_AUTHOR_EMAIL="host-command@example.invalid" \
             GIT_COMMITTER_NAME="Host Command Test" \
             GIT_COMMITTER_EMAIL="host-command@example.invalid" \
-            PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
+            PATH="$host_bin:${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
             "$@"
         }
 
@@ -262,7 +263,7 @@ in {
             NIX_REMOTE="" \
             NIX_CONF_DIR="$nix_conf" \
             GIT_CONFIG_NOSYSTEM=1 \
-            PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
+            PATH="$host_bin:${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
             "$@"
         }
 
@@ -3029,9 +3030,14 @@ in {
           "$work/apm-add-host-keyadd-config.json" >/dev/null
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
           -f "$work/host-keyadd-external-key"
+        cat > "$host_bin/emit-host-keyadd-key" << EOF
+        #!${pkgs.runtimeShell}
+        exec ${pkgs.coreutils}/bin/cat "$work/host-keyadd-external-key"
+        EOF
+        chmod +x "$host_bin/emit-host-keyadd-key"
         run_clean ${self}/bin/apr --json keys register external \
           --registry host-keyadd \
-          --key-command "${pkgs.coreutils}/bin/cat $work/host-keyadd-external-key" \
+          --key-command "emit-host-keyadd-key" \
           > "$work/apr-keys-register-external.json"
         host_keyadd_external=$(${pkgs.jq}/bin/jq -r '.public_key' \
           "$work/apr-keys-register-external.json")
@@ -3049,6 +3055,8 @@ in {
             and (.fingerprint | length > 0)' \
           "$work/apr-keys-register-external.json" >/dev/null
         grep -q '"external" = { command = "' \
+          "$config/apm/registries.d/host-keyadd.toml"
+        grep -q 'command = "emit-host-keyadd-key"' \
           "$config/apm/registries.d/host-keyadd.toml"
         run_clean ${self}/bin/apr --json keys add external "$host_keyadd_external" \
           --registry host-keyadd \
