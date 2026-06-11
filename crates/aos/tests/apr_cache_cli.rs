@@ -287,7 +287,13 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
     };
     fs::write(
         registry_dir.join("packages/f/fixture-tool.toml"),
-        package_toml_with_name("fixture-tool", "2.0.0", &fixture_v2.tool_store_path),
+        package_toml_with_versions(
+            "fixture-tool",
+            &[
+                ("1.0.0", fixture_v1.tool_store_path.as_str()),
+                ("2.0.0", fixture_v2.tool_store_path.as_str()),
+            ],
+        ),
     )?;
     git_stdout(
         &registry_dir,
@@ -425,6 +431,87 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
             .as_str()
             .is_some_and(|status| status.contains("installed")),
         "{listed}",
+    );
+
+    let planned_rollback = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "--dry-run", "rollback", "--generation", "1"],
+        "rollback dry-run after real cache upgrade",
+    )?;
+    assert_eq!(planned_rollback["action"], "rollback");
+    assert_eq!(planned_rollback["status"], "planned", "{planned_rollback}");
+    assert_eq!(planned_rollback["from_generation"], 2, "{planned_rollback}");
+    assert_eq!(planned_rollback["to_generation"], 1, "{planned_rollback}");
+    assert_eq!(
+        planned_rollback["restored"][0]["package"]["name"],
+        "fixture-tool"
+    );
+    assert_eq!(
+        planned_rollback["restored"][0]["package"]["version"],
+        "1.0.0"
+    );
+    assert_eq!(
+        planned_rollback["removed"][0]["package"]["name"],
+        "fixture-tool"
+    );
+    assert_eq!(
+        planned_rollback["removed"][0]["package"]["version"],
+        "2.0.0"
+    );
+    assert_eq!(
+        run_profile_tool(&profile_root, "fixture-tool")?,
+        "fixture-helper 2.0.0\nfixture-tool 2.0.0\n"
+    );
+
+    let rolled_back = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "rollback", "--generation", "1"],
+        "rollback after real cache upgrade",
+    )?;
+    assert_eq!(rolled_back["action"], "rollback");
+    assert_eq!(rolled_back["status"], "rolled_back", "{rolled_back}");
+    assert_eq!(rolled_back["generation"], 1, "{rolled_back}");
+    assert_eq!(
+        run_profile_tool(&profile_root, "fixture-tool")?,
+        "fixture-helper 1.0.0\nfixture-tool 1.0.0\n"
+    );
+
+    let removed = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "--yes", "remove", "fixture-tool"],
+        "remove after real cache rollback",
+    )?;
+    assert_eq!(removed["action"], "remove");
+    assert_eq!(removed["status"], "removed", "{removed}");
+    assert_eq!(removed["removed"], 1, "{removed}");
+    assert_eq!(removed["packages"][0]["name"], "fixture-tool");
+    assert!(
+        !profile_bin_path(&profile_root, "fixture-tool").exists(),
+        "remove should delete fixture-tool from the active profile",
+    );
+
+    let restored_upgrade = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "rollback"],
+        "rollback after real cache remove",
+    )?;
+    assert_eq!(restored_upgrade["action"], "rollback");
+    assert_eq!(
+        restored_upgrade["status"], "rolled_back",
+        "{restored_upgrade}"
+    );
+    assert_eq!(restored_upgrade["generation"], 2, "{restored_upgrade}");
+    assert_eq!(
+        run_profile_tool(&profile_root, "fixture-tool")?,
+        "fixture-helper 2.0.0\nfixture-tool 2.0.0\n"
     );
 
     Ok(())
@@ -699,6 +786,10 @@ fn package_toml(store_path: &str) -> String {
 }
 
 fn package_toml_with_name(name: &str, version: &str, store_path: &str) -> String {
+    package_toml_with_versions(name, &[(version, store_path)])
+}
+
+fn package_toml_with_versions(name: &str, versions: &[(&str, &str)]) -> String {
     let platform = current_platform();
     let mut toml = format!(
         r#"[package]
@@ -706,17 +797,22 @@ name = "{name}"
 description = "Static cache fixture"
 license = "MIT"
 maintainer = "registry@example.com"
-
+"#,
+    );
+    for (version, store_path) in versions {
+        toml.push_str(&format!(
+            r#"
 [[versions]]
 version = "{version}"
 
 {}
 "#,
-        fixture_platform_toml("x86_64-linux", store_path),
-    );
-    if platform != "x86_64-linux" {
-        toml.push('\n');
-        toml.push_str(&fixture_platform_toml(&platform, store_path));
+            fixture_platform_toml("x86_64-linux", store_path),
+        ));
+        if platform != "x86_64-linux" {
+            toml.push('\n');
+            toml.push_str(&fixture_platform_toml(&platform, store_path));
+        }
     }
     toml
 }
@@ -988,11 +1084,7 @@ fn initialize_nix_store(aos_root: &Path) -> Result<()> {
 }
 
 fn run_profile_tool(profile_root: &Path, command: &str) -> Result<String> {
-    let profile_bin = profile_root
-        .join("per-user")
-        .join(std::env::var("USER").unwrap_or_else(|_| String::from("unknown")))
-        .join("current/bin")
-        .join(command);
+    let profile_bin = profile_bin_path(profile_root, command);
     assert!(
         profile_bin.exists(),
         "installed profile executable is missing at {}",
@@ -1009,6 +1101,14 @@ fn run_profile_tool(profile_root: &Path, command: &str) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn profile_bin_path(profile_root: &Path, command: &str) -> PathBuf {
+    profile_root
+        .join("per-user")
+        .join(std::env::var("USER").unwrap_or_else(|_| String::from("unknown")))
+        .join("current/bin")
+        .join(command)
 }
 
 fn run_apr_with_aos_root(home: &Path, aos_root: &Path, args: &[&str]) -> Result<String> {
