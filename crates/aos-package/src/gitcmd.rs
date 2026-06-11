@@ -88,7 +88,7 @@ fn find_working_ssh_keygen() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("AOS_GIT_SSH_PROGRAM") {
         candidates.push(PathBuf::from(path));
     }
-    for env_var in ["PATH", "AOS_HOST_PATH"] {
+    for env_var in ["AOS_HOST_PATH", "PATH"] {
         let Some(path) = std::env::var_os(env_var) else {
             continue;
         };
@@ -110,6 +110,7 @@ fn ssh_keygen_can_sign(candidate: &Path) -> bool {
     };
     let key = tmp.path().join("key");
     let Ok(keygen) = std::process::Command::new(candidate)
+        .env_remove("LD_LIBRARY_PATH")
         .args(["-q", "-t", "ed25519", "-N", "", "-C", "aos-registry", "-f"])
         .arg(&key)
         .output()
@@ -126,6 +127,7 @@ fn ssh_keygen_can_sign(candidate: &Path) -> bool {
     }
 
     std::process::Command::new(candidate)
+        .env_remove("LD_LIBRARY_PATH")
         .arg("-Y")
         .arg("sign")
         .arg("-f")
