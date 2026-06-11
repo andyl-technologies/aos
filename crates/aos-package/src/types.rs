@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -66,6 +66,96 @@ pub fn validate_registry_name(name: &str) -> Result<()> {
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
     {
         bail!("invalid registry name '{name}': use only ASCII letters, digits, '-' and '_'");
+    }
+
+    Ok(())
+}
+
+/// Validate a branch name before using it as a Git ref shorthand.
+///
+/// Branch names may include slash-separated components such as
+/// `feature/host-workflow`, but they are restricted to a small ASCII subset
+/// that is valid as a Git branch shorthand and safe to persist in registry
+/// configuration.
+///
+/// # Errors
+///
+/// Returns an error when `name` is empty, is a reserved Git shorthand, or
+/// contains characters or components that are invalid for registry branch
+/// references.
+pub fn validate_branch_name(name: &str) -> Result<()> {
+    validate_git_ref_shorthand(name, "branch name", true)
+}
+
+/// Validate a rollout channel name before using it as a Git ref and path.
+///
+/// Channels are published as a single branch and as static partition files
+/// under `channels/<name>/`, so channel names are limited to one safe ref
+/// segment.
+///
+/// # Errors
+///
+/// Returns an error when `name` is empty, contains `/`, is a reserved Git
+/// shorthand, or contains characters or components that are invalid for
+/// registry channel references.
+pub fn validate_channel_name(name: &str) -> Result<()> {
+    validate_git_ref_shorthand(name, "channel name", false)
+}
+
+/// Validate an exact Git commit object id.
+///
+/// Registry commit tracking is persisted in config and passed to `git fetch`.
+/// Accept full SHA-1 and SHA-256 object IDs only so abbreviated names,
+/// refnames, and ref expressions cannot be confused with exact commits.
+///
+/// # Errors
+///
+/// Returns an error when `hash` is not exactly 40 or 64 ASCII hex digits.
+pub fn validate_commit_hash(hash: &str) -> Result<()> {
+    if (hash.len() == 40 || hash.len() == 64)
+        && hash.chars().all(|ch| ch.is_ascii_hexdigit())
+    {
+        return Ok(());
+    }
+
+    bail!("invalid commit hash '{hash}': expected 40 or 64 ASCII hex digits")
+}
+
+fn validate_git_ref_shorthand(name: &str, kind: &str, allow_slash: bool) -> Result<()> {
+    if name.is_empty() {
+        bail!("invalid {kind}: must not be empty");
+    }
+
+    let invalid_shape = name == "@"
+        || name == "HEAD"
+        || name.starts_with('-')
+        || name.starts_with('/')
+        || name.ends_with('/')
+        || name.ends_with('.')
+        || name.starts_with("refs/")
+        || name.contains("..")
+        || name.contains("@{")
+        || name.contains("//");
+
+    if invalid_shape {
+        bail!("invalid {kind} '{name}': use a safe Git ref shorthand");
+    }
+
+    if !allow_slash && name.contains('/') {
+        bail!("invalid {kind} '{name}': use a single safe Git ref segment");
+    }
+
+    for component in name.split('/') {
+        if component.starts_with('.') || component.ends_with(".lock") {
+            bail!("invalid {kind} '{name}': use safe Git ref components");
+        }
+    }
+
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/'))
+    {
+        bail!("invalid {kind} '{name}': use only ASCII letters, digits, '.', '_', '-', and '/'");
     }
 
     Ok(())
@@ -139,6 +229,59 @@ pub fn validate_platform_name(name: &str) -> Result<()> {
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
     {
         bail!("invalid platform name '{name}': use only ASCII letters, digits, '_' and '-'");
+    }
+
+    Ok(())
+}
+
+/// Validate a Git branch or tag name before passing it to Git commands.
+///
+/// APR maintainer commands accept branch names such as `release/2026.06`
+/// and tag names such as `1.2.3`, but the names must still be safe Git
+/// refname shorthand. This keeps the accepted syntax to a small ASCII
+/// subset that covers semver tags, rollout channels, and slash-separated
+/// maintainer refs while rejecting values that would be ambiguous at
+/// command boundaries.
+///
+/// # Errors
+///
+/// Returns an error when `name` is empty, is a reserved Git shorthand, starts
+/// with `-`, contains a path separator pattern that cannot be a Git ref,
+/// contains ref-expression syntax, or contains characters outside the safe
+/// shorthand set.
+pub fn validate_git_ref_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("git ref name must not be empty");
+    }
+
+    if name.starts_with('-') {
+        bail!("invalid git ref name '{name}': must not start with '-'");
+    }
+
+    if name == "@"
+        || name == "HEAD"
+        || name.starts_with('/')
+        || name.ends_with('/')
+        || name.ends_with('.')
+        || name.starts_with("refs/")
+        || name.contains("//")
+        || name.contains("..")
+        || name.contains("@{")
+    {
+        bail!("invalid git ref name '{name}'");
+    }
+
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/' | '+'))
+    {
+        bail!("invalid git ref name '{name}'");
+    }
+
+    for component in name.split('/') {
+        if component.is_empty() || component.starts_with('.') || component.ends_with(".lock") {
+            bail!("invalid git ref name '{name}'");
+        }
     }
 
     Ok(())
@@ -737,7 +880,7 @@ pub enum TrackingMode {
 impl std::fmt::Display for TrackingMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TrackingMode::Commit(h) => write!(f, "commit:{}", &h[..h.len().min(12)]),
+            TrackingMode::Commit(h) => write!(f, "commit:{}", h.chars().take(12).collect::<String>()),
             TrackingMode::Branch(b) => write!(f, "branch:{b}"),
             TrackingMode::Channel(c) => write!(f, "channel:{c}"),
             TrackingMode::Tag(t) => write!(f, "tag:{t}"),
@@ -800,8 +943,9 @@ impl RegistryConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error when more than one tracking field is set, or when
-    /// `version` is not a valid semver constraint.
+    /// Returns an error when more than one tracking field is set, when a
+    /// branch, channel, tag, or legacy pin is not safe to use as a Git ref,
+    /// or when `version` is not a valid semver constraint.
     pub fn tracking_mode(&self) -> Result<TrackingMode> {
         // Merge legacy `pin` into `tag` if `tag` is not already set.
         let effective_tag = self.tag.clone().or_else(|| self.pin.clone());
@@ -833,15 +977,23 @@ impl RegistryConfig {
         }
 
         if let Some(ref hash) = self.commit {
+            validate_commit_hash(hash)
+                .with_context(|| format!("registry '{}': invalid commit tracking", self.name))?;
             return Ok(TrackingMode::Commit(hash.clone()));
         }
         if let Some(ref branch) = self.branch {
+            validate_branch_name(branch)
+                .with_context(|| format!("registry '{}': invalid branch tracking", self.name))?;
             return Ok(TrackingMode::Branch(branch.clone()));
         }
         if let Some(ref channel) = self.channel {
+            validate_channel_name(channel)
+                .with_context(|| format!("registry '{}': invalid channel tracking", self.name))?;
             return Ok(TrackingMode::Channel(channel.clone()));
         }
         if let Some(ref tag) = effective_tag {
+            validate_git_ref_name(tag)
+                .with_context(|| format!("registry '{}': invalid tag tracking", self.name))?;
             return Ok(TrackingMode::Tag(tag.clone()));
         }
         if let Some(ref constraint) = self.version {
@@ -1159,6 +1311,90 @@ mod tests {
     }
 
     #[test]
+    fn branch_name_validation_accepts_git_workflow_names() {
+        for name in [
+            "stable",
+            "feature/host-workflow",
+            "release/2026.06",
+            "user_name/issue-123",
+        ] {
+            validate_branch_name(name).unwrap();
+        }
+    }
+
+    #[test]
+    fn branch_name_validation_rejects_ambiguous_refnames() {
+        for name in [
+            "",
+            "-feature",
+            "HEAD",
+            "@",
+            "refs/heads/stable",
+            "../stable",
+            "stable..next",
+            ".hidden",
+            "feature/.hidden",
+            "feature.lock",
+            "feature//next",
+            "feature next",
+            "feature:next",
+            "feature@{next",
+            "feature\"next",
+        ] {
+            let err = validate_branch_name(name).unwrap_err();
+            assert!(err.to_string().contains("branch name"));
+        }
+    }
+
+    #[test]
+    fn channel_name_validation_accepts_safe_single_segments() {
+        for name in ["stable", "canary_2026-06", "AOS2026"] {
+            validate_channel_name(name).unwrap();
+        }
+    }
+
+    #[test]
+    fn channel_name_validation_rejects_paths_or_ref_syntax() {
+        for name in [
+            "",
+            "-canary",
+            "../canary",
+            "canary/prod",
+            "canary..prod",
+            "canary prod",
+            "canary\"prod",
+        ] {
+            let err = validate_channel_name(name).unwrap_err();
+            assert!(err.to_string().contains("channel name"));
+        }
+    }
+
+    #[test]
+    fn commit_hash_validation_accepts_full_object_ids() {
+        validate_commit_hash("0123456789abcdef0123456789abcdef01234567").unwrap();
+        validate_commit_hash(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn commit_hash_validation_rejects_refs_or_abbreviations() {
+        for hash in [
+            "",
+            "abc123",
+            "main",
+            "HEAD",
+            "feature..bad",
+            "0123456789abcdef0123456789abcdef0123456g",
+            "0123456789abcdef0123456789abcdef012345678",
+        ] {
+            let err = validate_commit_hash(hash).unwrap_err();
+            assert!(err.to_string().contains("commit hash"));
+        }
+    }
+
+    #[test]
     fn package_name_validation_accepts_nix_path_safe_names() {
         for name in [
             "curl",
@@ -1210,6 +1446,53 @@ mod tests {
         ] {
             let err = validate_platform_name(name).unwrap_err();
             assert!(err.to_string().contains("platform name"));
+        }
+    }
+
+    #[test]
+    fn git_ref_name_validation_accepts_branch_and_tag_names() {
+        for name in [
+            "main",
+            "release/2026.06",
+            "feature/apr-apm-workflow",
+            "v1.2.3",
+            "1.2.3+build.5",
+            "maintainer_key-1",
+        ] {
+            validate_git_ref_name(name).unwrap();
+        }
+    }
+
+    #[test]
+    fn git_ref_name_validation_rejects_option_or_ref_expression_names() {
+        for name in [
+            "",
+            "-delete",
+            "HEAD",
+            "refs/tags/release",
+            "/absolute",
+            "trailing/",
+            "double//slash",
+            "bad..ref",
+            "bad ref",
+            "bad:ref",
+            "bad^ref",
+            "bad~ref",
+            "bad?ref",
+            "bad*ref",
+            "bad[ref",
+            "bad\\ref",
+            "bad\"ref",
+            ".hidden",
+            "main/.hidden",
+            "main.lock",
+            "main/@{1}",
+            "@",
+            "trailing.",
+            "caf\u{00e9}",
+        ] {
+            let err = validate_git_ref_name(name).unwrap_err();
+            assert!(err.to_string().contains("git ref name"));
         }
     }
 
@@ -1661,11 +1944,19 @@ last_update = "2026-02-13T10:30:00Z"
     #[test]
     fn tracking_mode_commit() {
         let mut cfg = base_cfg();
-        cfg.commit = Some("abc123def456".into());
+        cfg.commit = Some("0123456789abcdef0123456789abcdef01234567".into());
         match cfg.tracking_mode().unwrap() {
-            TrackingMode::Commit(h) => assert_eq!(h, "abc123def456"),
+            TrackingMode::Commit(h) => assert_eq!(h, "0123456789abcdef0123456789abcdef01234567"),
             other => panic!("expected Commit, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn tracking_mode_rejects_invalid_commit_hash() {
+        let mut cfg = base_cfg();
+        cfg.commit = Some("main".into());
+        let err = cfg.tracking_mode().unwrap_err();
+        assert!(err.to_string().contains("invalid commit tracking"));
     }
 
     #[test]
@@ -1679,6 +1970,14 @@ last_update = "2026-02-13T10:30:00Z"
     }
 
     #[test]
+    fn tracking_mode_rejects_invalid_branch_name() {
+        let mut cfg = base_cfg();
+        cfg.branch = Some("feature..bad".into());
+        let err = cfg.tracking_mode().unwrap_err();
+        assert!(err.to_string().contains("invalid branch tracking"));
+    }
+
+    #[test]
     fn tracking_mode_channel() {
         let mut cfg = base_cfg();
         cfg.channel = Some("stable".into());
@@ -1689,6 +1988,14 @@ last_update = "2026-02-13T10:30:00Z"
     }
 
     #[test]
+    fn tracking_mode_rejects_invalid_channel_name() {
+        let mut cfg = base_cfg();
+        cfg.channel = Some("stable/canary".into());
+        let err = cfg.tracking_mode().unwrap_err();
+        assert!(err.to_string().contains("invalid channel tracking"));
+    }
+
+    #[test]
     fn tracking_mode_tag() {
         let mut cfg = base_cfg();
         cfg.tag = Some("v2026.03".into());
@@ -1696,6 +2003,14 @@ last_update = "2026-02-13T10:30:00Z"
             TrackingMode::Tag(t) => assert_eq!(t, "v2026.03"),
             other => panic!("expected Tag, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn tracking_mode_rejects_invalid_tag_name() {
+        let mut cfg = base_cfg();
+        cfg.tag = Some("release..bad".into());
+        let err = cfg.tracking_mode().unwrap_err();
+        assert!(err.to_string().contains("invalid tag tracking"));
     }
 
     #[test]
@@ -1719,6 +2034,14 @@ last_update = "2026-02-13T10:30:00Z"
             TrackingMode::Tag(t) => assert_eq!(t, "v2026.02"),
             other => panic!("expected Tag from legacy pin, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn tracking_mode_rejects_invalid_legacy_pin_name() {
+        let mut cfg = base_cfg();
+        cfg.pin = Some("release@{1}".into());
+        let err = cfg.tracking_mode().unwrap_err();
+        assert!(err.to_string().contains("invalid tag tracking"));
     }
 
     #[test]
