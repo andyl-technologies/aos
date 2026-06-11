@@ -112,9 +112,7 @@ pub fn validate_channel_name(name: &str) -> Result<()> {
 ///
 /// Returns an error when `hash` is not exactly 40 or 64 ASCII hex digits.
 pub fn validate_commit_hash(hash: &str) -> Result<()> {
-    if (hash.len() == 40 || hash.len() == 64)
-        && hash.chars().all(|ch| ch.is_ascii_hexdigit())
-    {
+    if (hash.len() == 40 || hash.len() == 64) && hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
         return Ok(());
     }
 
@@ -880,7 +878,9 @@ pub enum TrackingMode {
 impl std::fmt::Display for TrackingMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TrackingMode::Commit(h) => write!(f, "commit:{}", h.chars().take(12).collect::<String>()),
+            TrackingMode::Commit(h) => {
+                write!(f, "commit:{}", h.chars().take(12).collect::<String>())
+            }
             TrackingMode::Branch(b) => write!(f, "branch:{b}"),
             TrackingMode::Channel(c) => write!(f, "channel:{c}"),
             TrackingMode::Tag(t) => write!(f, "tag:{t}"),
@@ -1372,10 +1372,8 @@ mod tests {
     #[test]
     fn commit_hash_validation_accepts_full_object_ids() {
         validate_commit_hash("0123456789abcdef0123456789abcdef01234567").unwrap();
-        validate_commit_hash(
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        )
-        .unwrap();
+        validate_commit_hash("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+            .unwrap();
     }
 
     #[test]

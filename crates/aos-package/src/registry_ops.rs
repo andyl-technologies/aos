@@ -914,9 +914,7 @@ fn initial_keys_roster(
     };
 
     let trust_key_id = trust_key_id.unwrap_or("initial");
-    if trust_key_id.trim().is_empty() {
-        bail!("--trust-key-id cannot be empty when --trust-key is provided");
-    }
+    validate_roster_key_id(trust_key_id)?;
 
     let (key_registry, _algorithm, _public_key) = parse_signing_key(trust_key)?;
     if key_registry != registry_name {
@@ -952,8 +950,9 @@ fn initial_keys_roster(
 /// Fails when the registry directory already exists; when `--trust-key` is
 /// given without a signing key (clients verify head-commit signatures from
 /// first contact, so a seeded roster requires a signed root commit); when
-/// no git commit identity is configured; when the trust key belongs to a
-/// different registry; or when a git invocation or file write fails.
+/// no git commit identity is configured; when the trust key id is invalid;
+/// when the trust key belongs to a different registry; or when a git
+/// invocation or file write fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn create(
     config: &ApmConfig,
@@ -971,6 +970,8 @@ pub async fn create(
     if dir.exists() {
         bail!("registry '{name}' already exists at {}", dir.display());
     }
+
+    let roster = initial_keys_roster(name, trust_key, trust_key_id)?;
 
     // A registry seeded with a trust roster must start with a signed
     // commit: clients verify head-commit signatures from first contact,
@@ -1008,7 +1009,6 @@ description = ""
 "#
     );
     std::fs::write(dir.join("registry.toml"), &registry_toml)?;
-    let roster = initial_keys_roster(name, trust_key, trust_key_id)?;
     keys::write_keys_toml(&dir, &roster)?;
 
     let signing_key = if key.is_some() || key_id.is_some() {
@@ -6676,6 +6676,17 @@ mod tests {
     fn initial_keys_roster_rejects_key_id_without_key() {
         let err = initial_keys_roster("aos-core", None, Some("2026a")).unwrap_err();
         assert!(format!("{err:#}").contains("--trust-key-id requires --trust-key"));
+    }
+
+    #[test]
+    fn initial_keys_roster_rejects_invalid_key_id() {
+        let err = initial_keys_roster(
+            "aos-core",
+            Some("aos-core:Ed25519:YWJjZA=="),
+            Some("bad/id"),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("key id"));
     }
 
     #[test]
