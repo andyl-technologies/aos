@@ -7026,22 +7026,19 @@ mod tests {
     fn signing_key_command_finds_host_path_helpers() {
         let tmp = TempDir::new().unwrap();
         let helper = tmp.path().join("emit-signing-key");
-        let shell = std::env::var_os("PATH")
-            .and_then(|path| executable_on_path("bash", &path))
-            .unwrap_or_else(|| PathBuf::from("bash"));
-        fs::write(
-            &helper,
-            format!("#!{}\nprintf 'host key material'\n", shell.display()),
-        )
-        .unwrap();
+        let runtime_path = std::env::var_os("PATH").unwrap();
+        let bash = executable_on_path("bash", &runtime_path).unwrap();
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+            std::os::unix::fs::symlink(bash, &helper).unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            fs::copy(bash, &helper).unwrap();
         }
 
         let resolved = materialize_signing_key_command_with_path(
-            "emit-signing-key",
+            "emit-signing-key -c \"printf 'host key material'\"",
             Some(tmp.path().as_os_str().to_os_string()),
         )
         .unwrap();
