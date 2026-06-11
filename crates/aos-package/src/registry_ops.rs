@@ -5559,7 +5559,8 @@ impl Drop for ReleaseLock {
 ///
 /// When `--store-path` is given, first publishes that store path into the
 /// release metadata under the release version (committed and SSH-signed),
-/// then delegates to [`release_registry_tree`] to create the signed
+/// including explicit `--source-drv` provenance when provided, then
+/// delegates to [`release_registry_tree`] to create the signed
 /// release tag, generate pack artifacts, and run the optional cache,
 /// channel, and upload steps. `--dry-run` prints the plan without changing
 /// anything.
@@ -5583,6 +5584,7 @@ pub async fn release(
     maintainer: Option<&str>,
     sysroot: bool,
     previous: Option<&str>,
+    source_drv: Option<&str>,
     image_paths: &[String],
     image_formats: &[String],
     message: Option<&str>,
@@ -5632,7 +5634,7 @@ pub async fn release(
                 maintainer,
                 sysroot,
                 previous,
-                None,
+                source_drv,
                 image_paths,
                 image_formats,
                 false,

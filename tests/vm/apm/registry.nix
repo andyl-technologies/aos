@@ -1609,24 +1609,61 @@ in {
       SYSTEM_REG_CONFIG="$APM_SYSTEM_CONFIG_DIR/registries.d/override-reg.toml"
       USER_REG_CONFIG="$HOME/.config/apm/registries.d/override-reg.toml"
       PROFILE_ROOT="/var/lib/profiles/per-user/$USER/current/bin/closure-root"
-      mkdir -p "$HOME" "$APM_SYSTEM_CONFIG_DIR/registries.d"
-      cat > "$SYSTEM_REG_CONFIG" << CFGEOF
-      [registry]
-      name = "override-reg"
-      url = "file:///tmp/override-origin.git"
-      branch = "$DEFAULT_BRANCH"
-      priority = 701
-      enabled = true
-
-      [registry.signing]
-      required = false
-      CFGEOF
+      mkdir -p "$HOME"
 
       if [ -e "$USER_REG_CONFIG" ]; then
         fail "consumer should start without a user registry config"
       else
         pass "consumer starts without a user registry config"
       fi
+
+      $APM --json registry --system add --no-verify file:///tmp/override-origin.git \
+        --name override-reg \
+        --branch "$DEFAULT_BRANCH" \
+        --priority 701 > /tmp/override-system-add.json 2>&1 || {
+        cat /tmp/override-system-add.json
+        fail "apm registry --system add creates redirected system registry"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        --arg config "$SYSTEM_REG_CONFIG" \
+        --arg tracking "branch:$DEFAULT_BRANCH" \
+        '.action == "registry_add"
+          and .status == "added"
+          and .registry == "override-reg"
+          and .url == "file:///tmp/override-origin.git"
+          and .priority == 701
+          and .tracking == $tracking
+          and .clone == true
+          and .synced == true
+          and .verification_disabled == true
+          and .config == $config
+          and .packages == 1
+          and (.last_commit | length == 64)' \
+        /tmp/override-system-add.json >/dev/null || {
+        cat /tmp/override-system-add.json
+        fail "apm --json registry --system add reports redirected system registry"
+      }
+      pass "apm --json registry --system add reports redirected system registry"
+      assert_file_contains "$SYSTEM_REG_CONFIG" "last_commit = " \
+        "apm registry --system add writes sync state to redirected system config"
+      assert_file_not_exists "$USER_REG_CONFIG" \
+        "apm registry --system add does not create a shadow user registry config"
+
+      $APM --json registry --system list > /tmp/override-system-list.json 2>&1 || {
+        cat /tmp/override-system-list.json
+        fail "apm registry --system list reads redirected system registry"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        'length == 1
+          and .[0].name == "override-reg"
+          and .[0].priority == 701
+          and .[0].enabled == true
+          and .[0].packages == 1' \
+        /tmp/override-system-list.json >/dev/null || {
+        cat /tmp/override-system-list.json
+        fail "apm --json registry --system list reports redirected system registry"
+      }
+      pass "apm --json registry --system list reports redirected system registry"
 
       $APM --json update --registry override-reg > /tmp/override-update.json 2>&1 || {
         cat /tmp/override-update.json
@@ -1701,10 +1738,10 @@ in {
         "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
         "installed redirected system registry executable runs"
 
-      $APM --json registry disable override-reg \
+      $APM --json registry --system disable override-reg \
         > /tmp/override-disable.json 2>&1 || {
         cat /tmp/override-disable.json
-        fail "apm registry disable writes redirected system config"
+        fail "apm registry --system disable writes redirected system config"
       }
       ${pkgs.jq}/bin/jq -e \
         --arg config "$SYSTEM_REG_CONFIG" \
@@ -1722,9 +1759,9 @@ in {
       }
       pass "apm --json registry disable reports redirected system config"
       assert_file_contains "$SYSTEM_REG_CONFIG" "enabled = false" \
-        "apm registry disable persists to redirected system config"
+        "apm registry --system disable persists to redirected system config"
       assert_file_not_exists "$USER_REG_CONFIG" \
-        "apm registry disable does not create a shadow user registry config"
+        "apm registry --system disable does not create a shadow user registry config"
       if $APM update --registry override-reg > /tmp/override-update-disabled.out 2>&1; then
         cat /tmp/override-update-disabled.out
         fail "apm update should reject disabled redirected system registry"
@@ -1734,10 +1771,10 @@ in {
           "disabled redirected system registry blocks update"
       fi
 
-      $APM --json registry enable override-reg \
+      $APM --json registry --system enable override-reg \
         > /tmp/override-enable.json 2>&1 || {
         cat /tmp/override-enable.json
-        fail "apm registry enable writes redirected system config"
+        fail "apm registry --system enable writes redirected system config"
       }
       ${pkgs.jq}/bin/jq -e \
         --arg config "$SYSTEM_REG_CONFIG" \
@@ -1755,12 +1792,12 @@ in {
       }
       pass "apm --json registry enable reports redirected system config"
       assert_file_contains "$SYSTEM_REG_CONFIG" "enabled = true" \
-        "apm registry enable persists to redirected system config"
+        "apm registry --system enable persists to redirected system config"
 
-      $APM --json registry remove override-reg --keep-local \
+      $APM --json registry --system remove override-reg --keep-local \
         > /tmp/override-remove.json 2>&1 || {
         cat /tmp/override-remove.json
-        fail "apm registry remove deletes redirected system config"
+        fail "apm registry --system remove deletes redirected system config"
       }
       ${pkgs.jq}/bin/jq -e \
         --arg config "$SYSTEM_REG_CONFIG" \
@@ -2439,7 +2476,14 @@ in {
   # -------------------------------------------------------------------------
   registry-release-static-origin-closure = testing.mkVMTest {
     name = "apm-registry-release-static-origin-closure";
-    rootfsDeps = maintainerWorkflowDeps ++ [closureLeafTool closureRootTool closureLeafToolV2 closureRootToolV2];
+    rootfsDeps =
+      maintainerWorkflowDeps
+      ++ [
+        closureLeafTool
+        closureRootTool
+        closureLeafToolV2
+        closureRootToolV2
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -2449,12 +2493,16 @@ in {
 
       LEAF_STORE="${closureLeafTool}"
       ROOT_STORE="${closureRootTool}"
+      ROOT_SOURCE_STORE="$ROOT_STORE"
       LEAF_V2_STORE="${closureLeafToolV2}"
       ROOT_V2_STORE="${closureRootToolV2}"
+      ROOT_V2_SOURCE_STORE="$ROOT_V2_STORE"
       LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
       ROOT_HASH=$(basename "$ROOT_STORE" | cut -d- -f1)
+      ROOT_SOURCE_HASH=$(basename "$ROOT_SOURCE_STORE" | cut -d- -f1)
       LEAF_V2_HASH=$(basename "$LEAF_V2_STORE" | cut -d- -f1)
       ROOT_V2_HASH=$(basename "$ROOT_V2_STORE" | cut -d- -f1)
+      ROOT_V2_SOURCE_HASH=$(basename "$ROOT_V2_SOURCE_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/staticreleaseuser"
 
       assert_store_valid() {
@@ -2551,6 +2599,7 @@ in {
         --description "Static release closure fixture" \
         --license MIT \
         --maintainer static-release@example.invalid \
+        --source-drv "$ROOT_SOURCE_STORE" \
         --key /tmp/static-release-key \
         --cache-output /tmp/static-release-cache \
         --cache-key /tmp/static-release-cache.sec \
@@ -2569,6 +2618,13 @@ in {
         "apr release uploads static origin files"
       assert_file_contains /tmp/static-release.out "Released static-release-reg 1.0.0" \
         "apr release completes uploaded static origin workflow"
+      assert_file_contains /tmp/static-release.out "Source drv: $ROOT_SOURCE_STORE" \
+        "apr release reports explicit source provenance"
+      assert_file_contains "$REG_DIR/packages/s/static-closure.toml" \
+        "source_drv = \"$ROOT_SOURCE_STORE\"" \
+        "release metadata records v1 source provenance"
+      assert_file_contains "$REG_DIR/packages/s/static-closure.toml" \
+        'source_nar_hash = "sha256-' "release metadata records v1 source NAR hash"
 
       assert_file_exists "/tmp/static-release-cache/$ROOT_HASH.narinfo" \
         "release cache has root narinfo"
@@ -2629,6 +2685,7 @@ in {
       mkdir -p "$HOME"
       $APM registry add http://127.0.0.1:18120 \
         --name static-release-reg \
+        --no-verify \
         --branch "$DEFAULT_BRANCH" > /tmp/static-release-add.out 2>&1 || {
         cat /tmp/static-release-add.out
         fail "apm registry add syncs uploaded static origin"
@@ -2747,6 +2804,21 @@ in {
       assert_file_contains /tmp/static-release-run.out \
         "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
         "installed release closure executes with its dependency"
+      if [ -L "$PROFILE/current/src/$ROOT_SOURCE_HASH" ]; then
+        pass "installed release closure roots v1 source provenance"
+      else
+        fail "installed release closure should root v1 source provenance"
+      fi
+      $APM source static-closure --verify \
+        > /tmp/static-release-source-verify.out 2>&1 || {
+        cat /tmp/static-release-source-verify.out
+        fail "apm source --verify validates release-published source provenance"
+      }
+      cat /tmp/static-release-source-verify.out
+      assert_file_contains /tmp/static-release-source-verify.out "$ROOT_SOURCE_STORE" \
+        "apm source --verify uses v1 release source path"
+      assert_file_contains /tmp/static-release-source-verify.out "matches installed binary" \
+        "apm source --verify compares v1 release source with installed binary"
 
       echo "==> Maintainer: release v2 with a new anonymous closure dependency"
       export HOME=/tmp
@@ -2764,6 +2836,7 @@ in {
         --license MIT \
         --maintainer static-release@example.invalid \
         --previous 1.0.0 \
+        --source-drv "$ROOT_V2_SOURCE_STORE" \
         --key /tmp/static-release-key \
         --cache-output /tmp/static-release-cache \
         --cache-key /tmp/static-release-cache.sec \
@@ -2778,6 +2851,11 @@ in {
         "apr release creates signed v2 tag for uploaded origin"
       assert_file_contains /tmp/static-release-v2.out "Uploaded" \
         "apr release uploads v2 static origin files"
+      assert_file_contains /tmp/static-release-v2.out "Source drv: $ROOT_V2_SOURCE_STORE" \
+        "apr release reports v2 explicit source provenance"
+      assert_file_contains "$REG_DIR/packages/s/static-closure.toml" \
+        "source_drv = \"$ROOT_V2_SOURCE_STORE\"" \
+        "release metadata records v2 source provenance"
       assert_file_exists "/tmp/static-release-origin/$ROOT_V2_HASH.narinfo" \
         "uploaded static origin has v2 root narinfo"
       assert_file_exists "/tmp/static-release-origin/$LEAF_V2_HASH.narinfo" \
@@ -2837,6 +2915,26 @@ in {
       assert_file_contains /tmp/static-release-run-v2.out \
         "^closure-root 2.0.0 via closure-leaf 2.0.0$" \
         "upgraded release closure executes with its v2 dependency"
+      if [ ! -L "$PROFILE/current/src/$ROOT_SOURCE_HASH" ]; then
+        pass "source root for v1 release is removed after upgrade"
+      else
+        fail "source root for v1 release should be removed after upgrade"
+      fi
+      if [ -L "$PROFILE/current/src/$ROOT_V2_SOURCE_HASH" ]; then
+        pass "upgraded release closure roots v2 source provenance"
+      else
+        fail "upgraded release closure should root v2 source provenance"
+      fi
+      $APM source static-closure --verify \
+        > /tmp/static-release-source-verify-v2.out 2>&1 || {
+        cat /tmp/static-release-source-verify-v2.out
+        fail "apm source --verify validates upgraded release source provenance"
+      }
+      cat /tmp/static-release-source-verify-v2.out
+      assert_file_contains /tmp/static-release-source-verify-v2.out "$ROOT_V2_SOURCE_STORE" \
+        "apm source --verify uses v2 release source path"
+      assert_file_contains /tmp/static-release-source-verify-v2.out "matches installed binary" \
+        "apm source --verify compares v2 release source with installed binary"
 
       kill "$ORIGIN_PID" 2>/dev/null || true
       wait "$ORIGIN_PID" 2>/dev/null || true
