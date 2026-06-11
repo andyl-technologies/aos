@@ -350,6 +350,52 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
     assert_eq!(updated["registry"], registry_name);
     assert_eq!(updated["updated"], 1, "{updated}");
 
+    let held = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "hold", "fixture-tool"],
+        "hold before upgrade",
+    )?;
+    assert_eq!(held["action"], "hold");
+    assert_eq!(held["status"], "held", "{held}");
+    assert_eq!(held["package"], "fixture-tool");
+    assert_eq!(held["version"], "1.0.0");
+    assert_eq!(held["held"], true);
+
+    let held_back = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "--yes", "upgrade", "fixture-tool"],
+        "upgrade while held",
+    )?;
+    assert_eq!(held_back["action"], "upgrade");
+    assert_eq!(held_back["status"], "held_back", "{held_back}");
+    assert_eq!(held_back["upgraded"], 0, "{held_back}");
+    assert_eq!(held_back["downloads"]["downloaded"], 0, "{held_back}");
+    assert_eq!(held_back["downloads"]["imported"], 0, "{held_back}");
+    assert_eq!(held_back["held_back"][0]["name"], "fixture-tool");
+    assert_eq!(held_back["held_back"][0]["old_version"], "1.0.0");
+    assert_eq!(held_back["held_back"][0]["new_version"], "2.0.0");
+    assert_eq!(
+        run_profile_tool(&profile_root, "fixture-tool")?,
+        "fixture-tool 1.0.0\n"
+    );
+
+    let unheld = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "unhold", "fixture-tool"],
+        "unhold before upgrade",
+    )?;
+    assert_eq!(unheld["action"], "unhold");
+    assert_eq!(unheld["status"], "unheld", "{unheld}");
+    assert_eq!(unheld["package"], "fixture-tool");
+    assert_eq!(unheld["version"], "1.0.0");
+    assert_eq!(unheld["held"], false);
+
     let upgraded = run_aos_package_json_with_env(
         &consumer_home,
         &consumer_aos_root,
