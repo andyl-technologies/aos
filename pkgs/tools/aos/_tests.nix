@@ -2240,6 +2240,123 @@ in {
         fi
         assert_no_profile
 
+        multi_root_home="$home"
+        multi_root_config="$config"
+        multi_root_data="$data"
+        multi_root_cache="$cache"
+        multi_root_profile_root="$profile_root"
+        multi_root_profile="$profile"
+        home="$work/multi-root-home"
+        config="$work/multi-root-config"
+        data="$work/multi-root-share"
+        cache="$work/multi-root-cache"
+        profile_root="$work/multi-root-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
+          --name host-install-multi-root \
+          --branch stable > "$work/apm-add-host-install-multi-root.out" 2>&1
+        grep -q "Registry 'host-install-multi-root' added" \
+          "$work/apm-add-host-install-multi-root.out"
+        run_clean ${self}/bin/apm --json install hostinstall hostleaf \
+          --registry host-install-multi-root \
+          --yes > "$work/apm-install-host-install-multi-root.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall", "hostleaf"]
+            and .generation == 1
+            and (.roots | length == 2)
+            and (.roots | any(.name == "hostinstall"
+              and .registry == "host-install-multi-root"
+              and .version == "1.0.0"
+              and .store_path == $store
+              and .explicit == true))
+            and (.roots | any(.name == "hostleaf"
+              and .registry == "host-install-multi-root"
+              and .version == "1.0.0"
+              and .store_path == $leaf
+              and .explicit == true))
+            and (.closure | length == 2)
+            and (.closure | any(.name == "hostinstall"
+              and .store_path == $store
+              and .explicit == true))
+            and (.closure | any(.name == "hostleaf"
+              and .store_path == $leaf
+              and .explicit == true))
+            and (.downloads.planned >= 2)
+            and (.downloads.downloaded >= 2)
+            and (.downloads.imported >= 2)' \
+          "$work/apm-install-host-install-multi-root.json" >/dev/null
+        ${pkgs.jq}/bin/jq -e \
+          '.apm.name == "hostleaf" and .apm.explicit == true' \
+          "$profile/meta/$install_leaf_hash.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-multi-root-run.out"
+        grep -q "host leaf package executed" \
+          "$work/host-install-multi-root-run.out"
+        grep -q "host install package executed" \
+          "$work/host-install-multi-root-run.out"
+        "$profile/current/bin/host-leaf-tool" \
+          > "$work/host-leaf-multi-root-run.out"
+        grep -q "host leaf package executed" \
+          "$work/host-leaf-multi-root-run.out"
+        run_clean ${self}/bin/apm --json remove hostinstall --autoremove --yes \
+          > "$work/apm-remove-host-install-multi-root.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+          '.action == "remove"
+            and .status == "removed"
+            and .requested == ["hostinstall"]
+            and .autoremove == true
+            and .dry_run == false
+            and .generation == 2
+            and .removed == 1
+            and .explicit_removed == 1
+            and .orphan_removed == 0
+            and (.packages | length == 1)
+            and .packages[0].name == "hostinstall"
+            and .packages[0].registry == "host-install-multi-root"
+            and .packages[0].store_path == $store
+            and .packages[0].explicit == true
+            and .orphans == []' \
+          "$work/apm-remove-host-install-multi-root.json" >/dev/null
+        run_clean ${self}/bin/apm --json list --installed \
+          --registry host-install-multi-root > "$work/apm-list-host-leaf-multi-root.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostleaf"
+            and .[0].registry == "host-install-multi-root"
+            and .[0].version == "1.0.0"
+            and .[0].status == "installed"' \
+          "$work/apm-list-host-leaf-multi-root.json" >/dev/null
+        "$profile/current/bin/host-leaf-tool" \
+          > "$work/host-leaf-multi-root-after-app-remove.out"
+        grep -q "host leaf package executed" \
+          "$work/host-leaf-multi-root-after-app-remove.out"
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$multi_root_home"
+        config="$multi_root_config"
+        data="$multi_root_data"
+        cache="$multi_root_cache"
+        profile_root="$multi_root_profile_root"
+        profile="$multi_root_profile"
+        nix_store --delete --ignore-liveness "$install_store" \
+          > "$work/nix-delete-host-install-after-multi-root.out" 2>&1
+        nix_store --delete --ignore-liveness "$install_leaf_store" \
+          > "$work/nix-delete-host-leaf-after-multi-root.out" 2>&1
+        if nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-after-multi-root-delete.out" 2>&1; then
+          cat "$work/nix-valid-host-install-after-multi-root-delete.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-after-multi-root-delete.out" 2>&1; then
+          cat "$work/nix-valid-host-leaf-after-multi-root-delete.out"
+          exit 1
+        fi
+        assert_no_profile
+
         run_clean ${self}/bin/apm --json install hostinstall \
           --registry host-install-client \
           --dry-run > "$work/apm-install-host-install-dry-run.json"
