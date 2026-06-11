@@ -1,3 +1,13 @@
+//! The AOS upload-pack container format (`AOSP`).
+//!
+//! An upload pack bundles the NAR exports for several store paths into
+//! one self-describing blob, so a whole closure can be shipped to the
+//! cache server in a single request. The format is a fixed header
+//! (magic, version, entry count), a sequence of `(store hash, NAR
+//! length, NAR bytes)` entries, and a trailing SHA-256 digest of
+//! everything before it for integrity checking. See [`create_pack`] for
+//! the exact byte layout.
+
 use sha2::{Digest, Sha256};
 
 /// A store path to be included in an upload pack.
@@ -8,7 +18,7 @@ pub struct PackPath {
     pub nar_data: Vec<u8>,
 }
 
-/// Create a pack from a list of paths.
+/// Serialises a list of store paths into a single `AOSP` pack.
 ///
 /// Wire format:
 /// - `AOSP` magic (4 bytes)
@@ -19,6 +29,11 @@ pub struct PackPath {
 ///   - NAR data length as big-endian u64 (8 bytes)
 ///   - NAR data (variable)
 /// - SHA-256 digest of everything above (32 bytes)
+///
+/// The entire pack is assembled in memory; callers streaming very large
+/// closures should keep that in mind. Each [`PackPath::hash`] is written
+/// verbatim, so it must be exactly 32 ASCII bytes for the result to be
+/// parseable.
 pub fn create_pack(paths: &[PackPath]) -> Vec<u8> {
     let mut buf = Vec::new();
 

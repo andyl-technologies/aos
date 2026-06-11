@@ -1,3 +1,35 @@
+//! Registry package TOML parsing.
+//!
+//! A synced registry cache stores one TOML file per package under
+//! `packages/{first_letter}/{name}.toml`. Each file declares package-level
+//! metadata (`[package]`), one or more `[[versions]]`, and per-platform
+//! artifact details (`[versions.platforms.<platform>]`):
+//!
+//! ```toml
+//! [package]
+//! name = "curl"
+//! description = "Command-line tool and library for URL transfers"
+//! license = "MIT"
+//! maintainer = "aos-team"
+//!
+//! [[versions]]
+//! version = "8.5.0"
+//!
+//! [versions.platforms.x86_64-linux]
+//! store_path = "/var/lib/store/h7j3k8l2m9n4-curl-8.5.0"
+//! nar_hash = "sha256:..."
+//! nar_size = 3145728
+//! closure_size = 52428800
+//! source_drv = "/var/lib/store/...-curl-8.5.0.drv"
+//! source_nar_hash = "sha256:..."
+//! references = ["r4q1m2kp8v3x"]
+//! ```
+//!
+//! [`parse_registry`] walks the whole cache directory and flattens it into
+//! the per-platform [`PackageMeta`] maps used by the registry resolver: a
+//! name-to-newest-version map for normal resolution and a store-path-hash
+//! index over every version for reverse lookups.
+
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
@@ -14,42 +46,62 @@ use crate::types::{PackageMeta, SysrootImageEntry};
 /// Top-level package TOML file from a registry.
 #[derive(Debug, Deserialize)]
 struct PackageToml {
+    /// The `[package]` header with name and descriptive metadata.
     package: PackageHeader,
+    /// All published `[[versions]]` entries, oldest layout order preserved.
     #[serde(default)]
     versions: Vec<VersionEntry>,
 }
 
+/// The `[package]` header section of a package TOML file.
 #[derive(Debug, Deserialize)]
 struct PackageHeader {
+    /// Package name; must match the TOML file's basename.
     name: String,
+    /// One-line human-readable description, searched by `apm search`.
     description: String,
+    /// Optional upstream homepage URL.
     #[serde(default)]
     homepage: Option<String>,
+    /// SPDX-style license identifier.
     license: String,
+    /// Maintainer name or team handle.
     maintainer: String,
     /// Whether this package is a system toplevel (sysroot).
     #[serde(default)]
     sysroot: bool,
 }
 
+/// One `[[versions]]` entry of a package TOML file.
 #[derive(Debug, Deserialize)]
 struct VersionEntry {
+    /// Version string; semver when possible, calver otherwise.
     version: String,
     /// Previous version in the version chain (for sysroot packages).
     #[serde(default)]
     previous: Option<String>,
+    /// Per-platform artifacts, keyed by platform triple
+    /// (e.g. `x86_64-linux`).
     #[serde(default)]
     platforms: HashMap<String, PlatformEntry>,
 }
 
+/// A `[versions.platforms.<platform>]` artifact entry.
 #[derive(Debug, Deserialize)]
 struct PlatformEntry {
+    /// Absolute store path of the built output.
     store_path: String,
+    /// NAR hash of the output (`sha256:...`).
     nar_hash: String,
+    /// Uncompressed NAR size in bytes.
     nar_size: u64,
+    /// Total uncompressed size of the runtime closure in bytes.
     closure_size: u64,
+    /// Store path of the derivation that produced the output.
     source_drv: String,
+    /// NAR hash of the source derivation closure.
     source_nar_hash: String,
+    /// Store path hashes of direct runtime references.
     #[serde(default)]
     references: Vec<String>,
     /// Pre-compiled images (only for sysroot packages).
@@ -60,9 +112,13 @@ struct PlatformEntry {
 /// A pre-compiled image entry within a platform entry.
 #[derive(Debug, Deserialize)]
 struct ImageEntry {
+    /// Image format identifier (e.g. `qcow2`).
     format: String,
+    /// Absolute store path of the image artifact.
     store_path: String,
+    /// NAR hash of the image (`sha256:...`).
     nar_hash: String,
+    /// Uncompressed NAR size of the image in bytes.
     nar_size: u64,
 }
 
@@ -78,6 +134,14 @@ struct ImageEntry {
 /// the newest version for normal package resolution and `hash_index` maps
 /// every version's store path hash to its exact package metadata for reverse
 /// lookup during closure resolution and rollback metadata rebuilds.
+///
+/// A missing `packages/` directory yields empty maps; packages with no entry
+/// for `platform` are skipped silently.
+///
+/// # Errors
+///
+/// Returns an error if a directory cannot be read or any package TOML file
+/// fails to parse.
 pub fn parse_registry(
     dir: &Path,
     platform: &str,
@@ -130,11 +194,17 @@ pub fn parse_registry(
 
 /// Parse a single package TOML file and extract the newest version for the
 /// given platform. Returns `None` if the platform is not available.
+///
+/// # Errors
+///
+/// Returns an error if `content` is not valid package TOML.
 pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<PackageMeta>> {
     let metas = parse_package_toml_versions(content, platform)?;
     Ok(newest_version(&metas))
 }
 
+/// Parse a package TOML file into one [`PackageMeta`] per version that has an
+/// entry for `platform`.
 fn parse_package_toml_versions(content: &str, platform: &str) -> Result<Vec<PackageMeta>> {
     let toml: PackageToml = toml::from_str(content).context("invalid package TOML")?;
     let mut metas = Vec::new();
@@ -177,6 +247,7 @@ fn parse_package_toml_versions(content: &str, platform: &str) -> Result<Vec<Pack
     Ok(metas)
 }
 
+/// Select the newest version among parsed package metas.
 fn newest_version(metas: &[PackageMeta]) -> Option<PackageMeta> {
     metas
         .iter()
@@ -184,6 +255,9 @@ fn newest_version(metas: &[PackageMeta]) -> Option<PackageMeta> {
         .cloned()
 }
 
+/// Order two version strings: semver pairs compare semantically, a semver
+/// version outranks a non-semver one, and two non-semver versions (e.g.
+/// calver like `2026.04`) fall back to lexicographic comparison.
 fn compare_registry_versions(left: &str, right: &str) -> Ordering {
     match (semver::Version::parse(left), semver::Version::parse(right)) {
         (Ok(left), Ok(right)) => left.cmp(&right),
@@ -194,6 +268,9 @@ fn compare_registry_versions(left: &str, right: &str) -> Ordering {
 }
 
 /// Build a hash-to-package-metadata reverse index from all package versions.
+///
+/// Keys are store path hashes as returned by [`store_path_hash`]; later
+/// entries with the same hash overwrite earlier ones.
 pub fn build_hash_index(packages: &[PackageMeta]) -> HashMap<String, PackageMeta> {
     let mut index = HashMap::new();
     for meta in packages {
@@ -205,7 +282,9 @@ pub fn build_hash_index(packages: &[PackageMeta]) -> HashMap<String, PackageMeta
 
 /// Extract the hash component from a store path.
 ///
-/// `"/var/lib/store/abc123def456-curl-8.5.0"` -> `"abc123def456"`
+/// The hash is the basename segment before the first `-`:
+/// `"/var/lib/store/abc123def456-curl-8.5.0"` -> `"abc123def456"`.
+/// Inputs without a `/` or `-` are returned unchanged rather than failing.
 pub fn store_path_hash(store_path: &str) -> &str {
     let basename = store_path.rsplit('/').next().unwrap_or(store_path);
     // Hash is everything before the first '-'

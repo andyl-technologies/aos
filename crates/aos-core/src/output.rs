@@ -1,3 +1,19 @@
+//! Terminal output handling for the `aos` CLI.
+//!
+//! All user-facing text flows through a [`Printer`], which maps the
+//! `--verbose`, `--quiet`, and `--json` flags onto an [`OutputMode`] and
+//! enforces two invariants consistently across every subcommand:
+//!
+//! - Human-readable text (info, warnings, steps, headers) goes to
+//!   **stderr**, so stdout stays reserved for machine-readable data
+//!   such as store paths and JSON.
+//! - Quiet and JSON modes suppress decorative output; errors are always
+//!   surfaced (as a JSON object in JSON mode).
+//!
+//! The module also provides [`create_spinner`] and
+//! [`create_progress_bar`] helpers for long-running operations, built on
+//! `indicatif`.
+
 use console::Style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
@@ -5,9 +21,14 @@ use std::time::Duration;
 /// Determines how the CLI renders output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
+    /// Default mode: styled human-readable messages on stderr.
     Normal,
+    /// `--quiet`: suppress everything except errors.
     Quiet,
+    /// `--json`: machine-readable JSON on stdout; no decorative text.
     Json,
+    /// `--verbose`: like [`Normal`](Self::Normal) but callers may emit
+    /// additional diagnostic detail.
     Verbose,
 }
 
@@ -27,6 +48,10 @@ pub struct Printer {
 }
 
 impl Printer {
+    /// Creates a printer from the raw CLI flags.
+    ///
+    /// Mode precedence is `json > quiet > verbose > normal`: `--json`
+    /// wins over `--quiet`, which wins over any `--verbose` count.
     pub fn new(verbose: u8, quiet: bool, json: bool) -> Self {
         let mode = if json {
             OutputMode::Json
@@ -49,6 +74,7 @@ impl Printer {
         }
     }
 
+    /// Returns the active [`OutputMode`].
     pub fn mode(&self) -> OutputMode {
         self.mode
     }
@@ -58,7 +84,9 @@ impl Printer {
     // machine-readable data (store paths, JSON).
     // ------------------------------------------------------------------
 
-    /// Informational message (cyan).
+    /// Prints an informational message (cyan) to stderr.
+    ///
+    /// Suppressed in quiet and JSON modes.
     pub fn info(&self, msg: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
@@ -66,7 +94,9 @@ impl Printer {
         }
     }
 
-    /// Success message (green, bold).
+    /// Prints a success message (green, bold) to stderr.
+    ///
+    /// Suppressed in quiet and JSON modes.
     pub fn success(&self, msg: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
@@ -74,7 +104,9 @@ impl Printer {
         }
     }
 
-    /// Warning message (yellow).
+    /// Prints a warning (yellow, prefixed with `warning:`) to stderr.
+    ///
+    /// Suppressed in quiet and JSON modes.
     pub fn warning(&self, msg: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
@@ -82,8 +114,11 @@ impl Printer {
         }
     }
 
-    /// Error message (red, bold).  Always printed regardless of mode (except
-    /// JSON, where it is emitted as a JSON object).
+    /// Prints an error message (red, bold, prefixed with `error:`).
+    ///
+    /// Always printed regardless of mode. In JSON mode the message is
+    /// emitted to stdout as `{"error": "..."}` instead of styled text on
+    /// stderr.
     pub fn error(&self, msg: &str) {
         if self.mode == OutputMode::Json {
             let obj = serde_json::json!({ "error": msg });
@@ -93,7 +128,10 @@ impl Printer {
         }
     }
 
-    /// Step indicator (e.g. "[1/4] Building package ..."), cyan + bold.
+    /// Prints a step indicator such as `[1/4] Building package ...`
+    /// (cyan + bold prefix) to stderr.
+    ///
+    /// Suppressed in quiet and JSON modes.
     pub fn step(&self, current: usize, total: usize, msg: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
@@ -105,7 +143,9 @@ impl Printer {
         }
     }
 
-    /// Print a bold header line.
+    /// Prints a bold header line to stderr.
+    ///
+    /// Suppressed in quiet and JSON modes.
     pub fn header(&self, msg: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
@@ -113,7 +153,9 @@ impl Printer {
         }
     }
 
-    /// Print plain text to stderr (respects quiet).
+    /// Prints unstyled text to stderr.
+    ///
+    /// Suppressed in quiet and JSON modes.
     pub fn plain(&self, msg: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
@@ -121,7 +163,9 @@ impl Printer {
         }
     }
 
-    /// Print a key-value pair with a bold key.
+    /// Prints an indented `key: value` pair with a bold key to stderr.
+    ///
+    /// Suppressed in quiet and JSON modes.
     pub fn kv(&self, key: &str, value: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
@@ -129,8 +173,11 @@ impl Printer {
         }
     }
 
-    /// Emit a JSON value to stdout (used when `--json` is active, but can
-    /// also be called explicitly).
+    /// Emits a JSON value to stdout.
+    ///
+    /// Usually called when `--json` is active, but works in any mode for
+    /// callers that always want machine-readable output. Serialisation
+    /// failures degrade to printing `{}` rather than erroring.
     pub fn json(&self, value: &serde_json::Value) {
         println!(
             "{}",
@@ -138,8 +185,10 @@ impl Printer {
         );
     }
 
-    /// Emit a JSON value only when JSON mode is active.  Returns `true` if
-    /// JSON was emitted (so callers can skip human output).
+    /// Emits a JSON value to stdout only when JSON mode is active.
+    ///
+    /// Returns `true` if JSON was emitted, so callers can skip the
+    /// human-readable rendering of the same data.
     pub fn json_if_active(&self, value: &serde_json::Value) -> bool {
         if self.mode == OutputMode::Json {
             self.json(value);
@@ -154,7 +203,11 @@ impl Printer {
 // Progress helpers
 // ------------------------------------------------------------------
 
-/// Create an indeterminate spinner for long-running operations.
+/// Creates an indeterminate spinner for long-running operations.
+///
+/// The spinner ticks automatically every 120 ms; call
+/// `finish_and_clear` (or another `ProgressBar` finisher) when the
+/// operation completes.
 pub fn create_spinner(msg: &str) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
     pb.set_style(
@@ -168,7 +221,10 @@ pub fn create_spinner(msg: &str) -> ProgressBar {
     pb
 }
 
-/// Create a determinate progress bar for multi-item operations.
+/// Creates a determinate progress bar for multi-item operations.
+///
+/// `len` is the total number of items; advance the bar with
+/// `ProgressBar::inc` as items complete.
 #[allow(dead_code)] // public API
 pub fn create_progress_bar(len: u64, msg: &str) -> ProgressBar {
     let pb = ProgressBar::new(len);

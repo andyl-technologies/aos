@@ -1,4 +1,21 @@
 //! Channel and rollout selection helpers.
+//!
+//! A registry channel (e.g. `stable`) is published as a set of
+//! [`PARTITION_COUNT`] static partition objects under
+//! `channels/<channel>/<bucket-hex>`, each pointing at a signed release tag.
+//! Every host deterministically hashes itself into one bucket (from a
+//! registry-local salt generated on first sync), so producers can advance a
+//! release across partitions gradually and hosts follow the rollout without
+//! any server-side coordination.
+//!
+//! Two safety properties are enforced here:
+//!
+//! - **Monotonic floor**: [`check_floor`] refuses releases older than the
+//!   highest release a host has already verified and installed, blocking
+//!   rollback attacks against the mutable channel pointer.
+//! - **Complete partition sets**: [`assert_full_partition_set`] refuses to
+//!   publish a channel with unassigned buckets, so every consumer always
+//!   resolves to some release.
 
 use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
@@ -7,6 +24,9 @@ use sha2::{Digest, Sha256};
 pub const PARTITION_COUNT: usize = 256;
 
 /// In-memory view of the 256 partition targets for one channel.
+///
+/// Each bucket optionally targets one release version; `None` means the
+/// bucket has not been assigned yet (only valid before first publication).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartitionMap {
     targets: Vec<Option<semver::Version>>,
@@ -19,21 +39,21 @@ impl Default for PartitionMap {
 }
 
 impl PartitionMap {
-    /// Create an empty partition map.
+    /// Creates an empty partition map with every bucket unassigned.
     pub fn new() -> Self {
         Self {
             targets: vec![None; PARTITION_COUNT],
         }
     }
 
-    /// Create a partition map with every bucket pointing at `version`.
+    /// Creates a partition map with every bucket pointing at `version`.
     pub fn all(version: semver::Version) -> Self {
         Self {
             targets: vec![Some(version); PARTITION_COUNT],
         }
     }
 
-    /// Set a partition target.
+    /// Sets a partition target.
     ///
     /// # Errors
     ///
@@ -47,12 +67,12 @@ impl PartitionMap {
         Ok(())
     }
 
-    /// Get a partition target by bucket.
+    /// Returns the target release for a bucket, or `None` if unassigned.
     pub fn get(&self, bucket: u8) -> Option<&semver::Version> {
         self.targets[bucket as usize].as_ref()
     }
 
-    /// Iterate over all partition targets.
+    /// Iterates over all partition targets in bucket order.
     pub fn iter(&self) -> impl Iterator<Item = (u8, Option<&semver::Version>)> {
         self.targets
             .iter()
@@ -60,7 +80,7 @@ impl PartitionMap {
             .map(|(i, v)| (i as u8, v.as_ref()))
     }
 
-    /// Count partitions that target `version`.
+    /// Counts partitions that target `version`.
     pub fn count_targeting(&self, version: &semver::Version) -> usize {
         self.targets
             .iter()
@@ -86,7 +106,7 @@ pub fn select_registry_bucket(registry: &str, salt: &str) -> u8 {
     select_bucket(&format!("{registry}\0{salt}"))
 }
 
-/// Generate a fresh bucket salt for first-time bucket assignment.
+/// Generate a fresh random hex salt for first-time bucket assignment.
 pub fn generate_bucket_salt() -> String {
     let random_bytes: [u8; 32] = rand::random();
     hex::encode(random_bytes)
@@ -98,11 +118,17 @@ pub fn bucket_hex(bucket: u8) -> String {
 }
 
 /// Return the static partition object path for a channel and bucket.
+///
+/// Bucket `10` of channel `stable` maps to `channels/stable/0a`.
 pub fn partition_path(channel: &str, bucket: u8) -> String {
     format!("channels/{channel}/{}", bucket_hex(bucket))
 }
 
 /// Return the deterministic probe-forward order for a bucket.
+///
+/// Starts at the host's own bucket and wraps around all 256 buckets, so a
+/// consumer whose partition object is missing falls forward to the next
+/// available one instead of failing.
 pub fn probe_order(bucket: u8) -> Vec<u8> {
     (0..=255).map(|i| bucket.wrapping_add(i)).collect()
 }
@@ -116,6 +142,11 @@ pub fn resolve_bucket(persisted: Option<u8>, registry: &str, salt: &str) -> u8 {
 ///
 /// Equal versions are accepted as a no-op; newer versions raise the floor after
 /// the caller has verified and installed the target.
+///
+/// # Errors
+///
+/// Returns an error when `candidate` is strictly older than `floor`,
+/// indicating an attempted channel rollback.
 pub fn check_floor(floor: Option<&semver::Version>, candidate: &semver::Version) -> Result<()> {
     if let Some(floor) = floor {
         if candidate < floor {
@@ -135,6 +166,10 @@ pub fn compute_frontier(map: &PartitionMap) -> Option<semver::Version> {
 }
 
 /// Refuse to publish a channel with missing partition targets.
+///
+/// # Errors
+///
+/// Returns an error listing the hex names of every unassigned partition.
 pub fn assert_full_partition_set(map: &PartitionMap) -> Result<()> {
     let missing: Vec<String> = map
         .iter()
@@ -158,6 +193,9 @@ pub fn assert_full_partition_set(map: &PartitionMap) -> Result<()> {
 }
 
 /// Select the next `count` partitions to advance to `target` in ascending order.
+///
+/// Partitions that already target `target` are skipped, so calling this
+/// repeatedly walks the whole channel toward the new release.
 pub fn ascending_fill(count: usize, current: &PartitionMap, target: &semver::Version) -> Vec<u8> {
     current
         .iter()

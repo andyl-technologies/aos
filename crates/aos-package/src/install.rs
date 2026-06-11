@@ -1,3 +1,29 @@
+//! User-scope package installation (`apm install`, `apm reinstall`).
+//!
+//! [`run`] implements the full consumer install pipeline against the active
+//! profile:
+//!
+//! 1. **Resolve** — load registry metadata from the scope's cache and resolve
+//!    each requested package to a [`ResolvedClosure`] (root plus transitive
+//!    dependencies). With `--no-deps` the closure is pruned to the roots and
+//!    the skipped dependencies must already be present in the store.
+//! 2. **Guard** — short-circuit when everything is already installed, when a
+//!    package is already provided by the system sysroot, or when the
+//!    sysroot-lock check finds the closure would diverge from sysroot-pinned
+//!    store paths (bypassable via `--ignore-sysroot-lock`).
+//! 3. **Download and import** — fetch narinfos for the missing store paths,
+//!    print the summary, confirm, download the NARs, verify both the
+//!    compressed download hash and the NAR hash, and import into the store.
+//!    `--download-only` stops here.
+//! 4. **Switch generations** — create the next profile generation, carry
+//!    forward GC roots from the previous one (minus replaced packages),
+//!    write per-path [`InstalledMeta`] records (explicit/held flags are
+//!    preserved across reinstalls), build the merged FHS tree, and atomically
+//!    switch the profile's `current` link.
+//!
+//! System-scope installs (`--system`) do not go through this module; see
+//! [`crate::sysroot`].
+
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
@@ -29,7 +55,26 @@ use aos_core::output::{OutputMode, Printer};
 
 /// Run `apm install <packages>`.
 ///
-/// Full pipeline: resolve -> download -> verify -> import -> profile switch.
+/// Full pipeline: resolve -> download -> verify -> import -> profile switch
+/// (see the module docs for the step-by-step description). With `reinstall`
+/// every requested package must already be installed and is re-resolved from
+/// its original source registry; `require_installed` enforces the same
+/// precondition without forcing a re-download decision. In JSON output mode
+/// a machine-readable result object is emitted alongside the human output.
+///
+/// # Errors
+///
+/// Returns an error when:
+///
+/// - a requested package cannot be resolved, or (for reinstalls) is not
+///   currently installed;
+/// - the sysroot-lock check finds un-ignored violations;
+/// - `--no-deps` is given but a skipped dependency is missing from the store;
+/// - narinfo fetch, NAR download, hash verification, or store import fails;
+/// - profile generation creation, metadata writes, FHS-tree construction, or
+///   the final generation switch fails;
+/// - the user declines the confirmation prompt
+///   ([`AosError::UserCancelled`]).
 pub async fn run(
     config: &ApmConfig,
     packages: &[String],
@@ -462,6 +507,9 @@ fn platform() -> String {
     "x86_64-linux".to_string()
 }
 
+/// Build the machine-readable result object emitted in JSON output mode:
+/// action/status, the requested roots, the deduplicated closure, and
+/// download/import counters.
 fn install_result_json(
     status: &str,
     packages: &[String],
@@ -494,6 +542,7 @@ fn install_result_json(
     })
 }
 
+/// JSON entries for the explicitly requested root packages.
 fn install_roots_json(closures: &[ResolvedClosure]) -> Vec<serde_json::Value> {
     closures
         .iter()
@@ -501,6 +550,8 @@ fn install_roots_json(closures: &[ResolvedClosure]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// JSON entries for every closure member, deduplicated by store hash, with
+/// each entry flagged `explicit` when its name was requested directly.
 fn install_closure_json(
     packages: &[String],
     closures: &[ResolvedClosure],
@@ -526,6 +577,8 @@ fn install_closure_json(
     entries
 }
 
+/// JSON object for a single package (name, version, registry, store path,
+/// hashes, sizes, explicit/sysroot flags).
 fn install_package_json(registry: &str, meta: &PackageMeta, explicit: bool) -> serde_json::Value {
     serde_json::json!({
         "name": meta.name.as_str(),
@@ -547,6 +600,12 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     RegistrySet::load(&config.cache_path(), &reg_configs, &platform())
 }
 
+/// Resolve a closure per requested package.
+///
+/// With `preserve_installed_sources` (a reinstall without an explicit
+/// `--registry`), each package is re-resolved from the registry it was
+/// originally installed from instead of the highest-priority provider, so a
+/// reinstall cannot silently switch a package's source.
 fn resolve_install_closures(
     registries: &RegistrySet,
     packages: &[String],
@@ -569,6 +628,7 @@ fn resolve_install_closures(
     Ok(closures)
 }
 
+/// The registry an installed package was originally installed from, if any.
 fn installed_source_registry<'a>(package: &str, installed: &'a [InstalledMeta]) -> Option<&'a str> {
     installed.iter().find_map(|meta| {
         let apm = meta.apm.as_ref()?;
@@ -576,6 +636,9 @@ fn installed_source_registry<'a>(package: &str, installed: &'a [InstalledMeta]) 
     })
 }
 
+/// Whether the install would be a no-op: every requested root is already
+/// installed explicitly *at the same store hash*, and every closure member
+/// has an installed-metadata record.
 fn requested_closures_already_installed(
     closures: &[ResolvedClosure],
     installed: &[InstalledMeta],
@@ -597,6 +660,8 @@ fn requested_closures_already_installed(
     })
 }
 
+/// Fail with a "package(s) not installed" error when any requested name has
+/// no installed-metadata record (reinstall precondition).
 fn ensure_reinstall_targets_installed(
     packages: &[String],
     installed: &[InstalledMeta],
@@ -618,6 +683,7 @@ fn ensure_reinstall_targets_installed(
     }
 }
 
+/// Look up the apm metadata record for a store-path hash, if installed.
 fn installed_apm_for_hash<'a>(installed: &'a [InstalledMeta], hash: &str) -> Option<&'a ApmMeta> {
     installed.iter().find_map(|meta| {
         if store_path_hash(&meta.store_path) == hash {
@@ -628,12 +694,16 @@ fn installed_apm_for_hash<'a>(installed: &'a [InstalledMeta], hash: &str) -> Opt
     })
 }
 
+/// The user-controlled flags carried across reinstalls: whether the package
+/// was explicitly installed and whether it is held from upgrades.
 #[derive(Clone, Copy, Default)]
 struct InstalledFlags {
     explicit: bool,
     held: bool,
 }
 
+/// Index existing explicit/held flags by store-path hash, so an unchanged
+/// path keeps its flags when its metadata is rewritten.
 fn installed_flags_by_hash(installed: &[InstalledMeta]) -> HashMap<&str, InstalledFlags> {
     installed
         .iter()
@@ -650,6 +720,8 @@ fn installed_flags_by_hash(installed: &[InstalledMeta]) -> HashMap<&str, Install
         .collect()
 }
 
+/// Index existing explicit/held flags by package name, so a package whose
+/// store path changed (reinstall from another registry) still keeps them.
 fn installed_flags_by_name(installed: &[InstalledMeta]) -> HashMap<&str, InstalledFlags> {
     installed
         .iter()
@@ -666,6 +738,8 @@ fn installed_flags_by_name(installed: &[InstalledMeta]) -> HashMap<&str, Install
         .collect()
 }
 
+/// `--no-deps`: shrink each closure to just its root package and fix up the
+/// total NAR size accordingly.
 fn prune_dependency_members(closures: &mut [ResolvedClosure]) {
     for closure in closures {
         let root_hash = store_path_hash(&closure.root.store_path).to_string();
@@ -681,6 +755,9 @@ fn prune_dependency_members(closures: &mut [ResolvedClosure]) {
     }
 }
 
+/// `--no-deps` safety check against registry metadata: every dependency
+/// that would normally be installed must already exist in the local store,
+/// otherwise installing only the roots would leave dangling references.
 async fn ensure_skipped_dependencies_present(closures: &[ResolvedClosure]) -> Result<()> {
     let requested_hashes: HashSet<String> = closures
         .iter()
@@ -722,6 +799,9 @@ async fn ensure_skipped_dependencies_present(closures: &[ResolvedClosure]) -> Re
     );
 }
 
+/// `--no-deps` safety check against fetched narinfos: the references the
+/// binary cache reports for each root (which can be more current than the
+/// registry metadata) must also be present locally before import.
 async fn ensure_narinfo_references_present(resolved: &[ResolvedDownload]) -> Result<()> {
     let requested_hashes: HashSet<String> = resolved
         .iter()
@@ -761,6 +841,9 @@ async fn ensure_narinfo_references_present(resolved: &[ResolvedDownload]) -> Res
     );
 }
 
+/// Store-path hashes (runtime output and source derivation) of the installed
+/// packages being replaced, so their old GC roots are not carried into the
+/// new generation.
 fn installed_store_hashes_for_names(
     installed: &[InstalledMeta],
     package_names: &HashSet<&str>,
@@ -782,6 +865,9 @@ fn installed_store_hashes_for_names(
     hashes
 }
 
+/// Copy the `usr/` and `src/` GC-root symlinks from one generation to
+/// another, skipping the hashes in `skip_hashes` (replaced packages) and
+/// never overwriting links already present in the destination.
 pub(crate) fn copy_roots_except_hashes(
     from: &super::profile::Generation,
     to: &super::profile::Generation,
@@ -842,7 +928,14 @@ pub(crate) fn copy_roots_except_hashes(
 /// skipping roots for packages being upgraded.
 ///
 /// Used by the upgrade module to carry forward non-upgraded packages while
-/// replacing the old store paths of upgraded ones with new ones.
+/// replacing the old store paths of upgraded ones with new ones. Existing
+/// links in the destination generation are never overwritten.
+///
+/// # Errors
+///
+/// Returns an error when the destination `usr/`/`src/` directories cannot be
+/// created, a source entry cannot be read as a symlink, or creating a
+/// destination symlink fails.
 pub fn copy_roots_for_upgrade(
     from: &super::profile::Generation,
     to: &super::profile::Generation,

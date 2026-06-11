@@ -1,3 +1,18 @@
+//! SQLite-backed provisioning token store.
+//!
+//! Provisioning tokens are the long-lived credentials at the bottom of the
+//! server's auth chain: an administrator creates one over the bootstrap
+//! socket ([`crate::bootstrap`]), hands the plaintext to a client, and the
+//! client exchanges it for short-lived JWTs at `POST /oauth2/token`
+//! ([`crate::auth`]).
+//!
+//! Plaintexts look like `aos_{first_view}_{32 hex chars}` and are shown
+//! exactly once, at creation or rotation; only their SHA-256 hash is
+//! persisted, so a database leak does not leak usable credentials. Tokens
+//! carry a set of authorized views, a set of permissions, an optional
+//! expiry, and support revocation and rotation (with a one-hour grace
+//! period for the old secret).
+
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,13 +28,21 @@ const ROTATION_GRACE_SECS: i64 = 3600;
 /// A provisioning token record (without the plaintext secret or hash).
 #[derive(Debug, Clone)]
 pub struct TokenRecord {
+    /// Token ID (UUID v4). Used to revoke/rotate, and as the JWT `sub`.
     pub id: String,
+    /// Views the token grants access to (`"*"` is the wildcard).
     pub views: Vec<String>,
+    /// Permissions granted, e.g. `"read"`, `"build"`.
     pub permissions: Vec<String>,
+    /// Unix timestamp the token was created.
     pub created_at: i64,
+    /// UID of the local admin that created it via the bootstrap socket.
     pub created_by_uid: Option<u32>,
+    /// Unix timestamp after which the token stops validating, if any.
     pub expires_at: Option<i64>,
+    /// Unix timestamp the token was revoked, if it has been.
     pub revoked_at: Option<i64>,
+    /// Free-form operator comment.
     pub comment: Option<String>,
 }
 
@@ -33,8 +56,15 @@ pub struct TokenStore {
 }
 
 impl TokenStore {
-    /// Open (or create) the token database at `db_path` and ensure the schema
-    /// exists.
+    /// Opens (or creates) the token database at `db_path` and ensures the
+    /// schema exists.
+    ///
+    /// The database is switched to WAL journal mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database cannot be opened or the schema
+    /// cannot be created.
     pub fn open(db_path: &Path) -> Result<Self> {
         let conn = Connection::open(db_path)
             .with_context(|| format!("opening token DB at {}", db_path.display()))?;
@@ -61,11 +91,19 @@ impl TokenStore {
         })
     }
 
-    /// Generate a new provisioning token, store its hash, and return the
+    /// Generates a new provisioning token, stores its hash, and returns the
     /// plaintext secret alongside the record.
     ///
-    /// The plaintext has the format `aos_{first_view}_{32 hex chars}`. Only the
-    /// SHA-256 hash of the plaintext is stored in the database.
+    /// The plaintext has the format `aos_{first_view}_{32 hex chars}` (the
+    /// view tag falls back to `default` when `views` is empty). Only the
+    /// SHA-256 hash of the plaintext is stored in the database — this is the
+    /// only time the plaintext is available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the system clock is before the Unix epoch, the
+    /// views/permissions cannot be serialized, the connection lock is
+    /// poisoned, or the insert fails.
     pub fn create_token(
         &self,
         views: &[String],
@@ -136,8 +174,17 @@ impl TokenStore {
         Ok((plaintext, record))
     }
 
-    /// Validate a plaintext token. Returns `Some(record)` if the token exists,
-    /// is not revoked, and is not expired. Returns `None` otherwise.
+    /// Validates a plaintext token.
+    ///
+    /// Returns `Some(record)` if the token's hash is known, the token is
+    /// not revoked, and it is not expired. Returns `None` otherwise (the
+    /// reason is logged but deliberately not distinguished to the caller).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the system clock is before the Unix epoch, the
+    /// connection lock is poisoned, the query fails, or a stored row is
+    /// malformed.
     pub fn validate_token(&self, plaintext: &str) -> Result<Option<TokenRecord>> {
         let hash = sha256_hex(plaintext);
         let now = SystemTime::now()
@@ -194,7 +241,15 @@ impl TokenStore {
         Ok(Some(raw.into_record()?))
     }
 
-    /// List all non-revoked tokens. Hashes are never returned.
+    /// Lists all non-revoked tokens. Hashes are never returned.
+    ///
+    /// Expired-but-unrevoked tokens are included; callers can inspect
+    /// `expires_at` to filter them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection lock is poisoned, the query
+    /// fails, or a stored row is malformed.
     pub fn list_tokens(&self) -> Result<Vec<TokenRecord>> {
         let conn = self
             .conn
@@ -231,8 +286,15 @@ impl TokenStore {
         Ok(records)
     }
 
-    /// Revoke a token by ID. Sets `revoked_at` to now. Returns `true` if the
-    /// token was found and revoked, `false` if the ID does not exist.
+    /// Revokes a token by ID, setting `revoked_at` to now.
+    ///
+    /// Returns `true` if the token was found and revoked, `false` if the ID
+    /// does not exist or the token was already revoked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the system clock is before the Unix epoch, the
+    /// connection lock is poisoned, or the update fails.
     pub fn revoke_token(&self, id: &str) -> Result<bool> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -258,10 +320,23 @@ impl TokenStore {
         Ok(updated > 0)
     }
 
-    /// Rotate a token: revoke the old one (with a 1-hour grace period) and
-    /// create a new token with the same views and permissions.
+    /// Rotates a token: revokes the old one (with a 1-hour grace period)
+    /// and creates a new token with the same views, permissions, creator,
+    /// expiry, and comment.
     ///
-    /// Returns `None` if the token ID does not exist or is already revoked.
+    /// Returns the new plaintext secret and record, or `None` if the token
+    /// ID does not exist or is already revoked. The old row gets
+    /// `revoked_at = now` and `expires_at = now + 1h`; note that because
+    /// [`validate_token`](Self::validate_token) rejects revoked tokens
+    /// outright, the old secret stops validating immediately — the grace
+    /// window is recorded in the row but not currently honoured by
+    /// validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the system clock is before the Unix epoch, the
+    /// connection lock is poisoned, or any of the lookup/update/insert
+    /// statements fail.
     pub fn rotate_token(&self, id: &str) -> Result<Option<(String, TokenRecord)>> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -376,6 +451,8 @@ struct RawRow {
 }
 
 impl RawRow {
+    /// Deserializes the JSON-encoded views/permissions columns into a
+    /// [`TokenRecord`].
     fn into_record(self) -> Result<TokenRecord> {
         let views: Vec<String> =
             serde_json::from_str(&self.views_json).context("deserializing views")?;

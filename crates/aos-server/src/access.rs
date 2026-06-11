@@ -1,11 +1,30 @@
+//! Access-time bookkeeping for served store paths.
+//!
+//! Every time a path's narinfo is served, the cache handlers call
+//! [`update_access`] to bump the `access_count` and `last_accessed` fields
+//! in the path's per-view metadata file (`meta/{view}/{bin,src}/{hash}.json`).
+//! These fields feed the eviction scoring in [`crate::evict`], so frequently
+//! and recently used paths survive GC longer.
+
 use std::fs;
 
 use anyhow::{Context, Result};
 
 use crate::views::ViewManager;
 
-/// Update access metadata for a path when it is served via narinfo.
-/// Increments `access_count` and sets `last_accessed` to now.
+/// Updates access metadata for a path when it is served via narinfo.
+///
+/// Increments `access_count` and sets `last_accessed` to the current Unix
+/// time in the path's metadata file. The `bin/` namespace is checked first,
+/// then `src/`; only the first matching metadata file is updated. If no
+/// metadata file exists for the hash (the path may have been served without
+/// push metadata), the call is a silent no-op.
+///
+/// # Errors
+///
+/// Returns an error if the system clock is before the Unix epoch, or if an
+/// existing metadata file cannot be read, parsed as JSON, or atomically
+/// rewritten.
 pub fn update_access(views: &ViewManager, view: &str, hash: &str) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -1,3 +1,17 @@
+//! NAR streaming and compression pipelines.
+//!
+//! NAR responses are produced by piping `nix-store --dump <path>` through an
+//! external compressor (`zstd` or `xz`) selected by [`Compression`]. Three
+//! entry points cover the cache handlers' needs:
+//!
+//! - [`nar_stream`] — streaming body for full `GET .../nar/...` responses;
+//!   bytes flow from the subprocess pipeline straight into the HTTP body
+//!   without buffering.
+//! - [`nar_bytes`] — fully buffered variant, used for `Range:` requests
+//!   where the total length must be known up front.
+//! - [`compute_file_hash_size`] — hashes the compressed output to fill the
+//!   `FileHash`/`FileSize` narinfo fields (see [`crate::narinfo`]).
+
 use std::process::Stdio;
 
 use anyhow::{Context as _, Result};
@@ -10,13 +24,17 @@ use tokio_util::io::ReaderStream;
 /// Compression algorithm for NAR responses.
 #[derive(Debug, Clone, Copy)]
 pub enum Compression {
+    /// Serve the raw, uncompressed NAR.
     None,
+    /// Pipe through `zstd -c -{level}`.
     Zstd { level: i32 },
+    /// Pipe through `xz -c -T0 -{level}`.
     Xz { level: i32 },
 }
 
 impl Compression {
-    /// File extension for this compression type.
+    /// Returns the file extension for this compression type
+    /// (`nar`, `nar.zst`, or `nar.xz`).
     pub fn extension(&self) -> &str {
         match self {
             Compression::None => "nar",
@@ -25,12 +43,14 @@ impl Compression {
         }
     }
 
-    /// Content-Type header value.
+    /// Returns the `Content-Type` header value for NAR responses
+    /// (always `application/x-nix-nar`, regardless of compression).
     pub fn content_type(&self) -> &str {
         "application/x-nix-nar"
     }
 
-    /// Compression name for narinfo `Compression:` field.
+    /// Returns the compression name for the narinfo `Compression:` field
+    /// (`none`, `zstd`, or `xz`).
     pub fn narinfo_name(&self) -> &str {
         match self {
             Compression::None => "none",
@@ -40,8 +60,19 @@ impl Compression {
     }
 }
 
-/// Spawn `nix-store --dump <store_path>` and stream the NAR,
-/// optionally compressed with zstd.
+/// Spawns `nix-store --dump <store_path>` and streams the (optionally
+/// compressed) NAR as an axum response [`Body`].
+///
+/// For [`Compression::Zstd`] and [`Compression::Xz`], the dump's stdout is
+/// connected directly to the compressor's stdin so nothing is buffered in
+/// the server process. Note that errors from the subprocesses *after* a
+/// successful spawn surface as stream errors in the body, not as an `Err`
+/// from this function.
+///
+/// # Errors
+///
+/// Returns an error if `nix-store` or the compressor process cannot be
+/// spawned, or if a child's stdout pipe is unavailable.
 pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Body> {
     match compression {
         Compression::None => {
@@ -130,16 +161,23 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
     }
 }
 
-/// Compute (file_hash, file_size) of a store path's compressed NAR — i.e.
-/// the SHA-256 and byte length of exactly what `nar_stream` would emit for
-/// the given `Compression`. Used to populate the `FileHash` / `FileSize`
-/// fields of the narinfo response (`format_narinfo`); the corresponding
+/// Computes `(file_hash, file_size)` of a store path's compressed NAR —
+/// i.e. the SHA-256 and byte length of exactly what [`nar_stream`] would
+/// emit for the given [`Compression`].
+///
+/// Used to populate the `FileHash` / `FileSize` fields of the narinfo
+/// response ([`crate::narinfo::format_narinfo`]); the corresponding
 /// `NarHash` / `NarSize` come from the Nix DB and describe the uncompressed
-/// NAR instead.
+/// NAR instead. The returned hash is formatted as `sha256:{base16}`.
 ///
 /// Buffers the whole compressed stream in memory — fine for the small
 /// paths typical in tests and `apm install` consumers, but a future
 /// streaming-hash refactor would be friendlier to large closures.
+///
+/// # Errors
+///
+/// Returns an error if the dump/compression pipeline cannot be spawned or
+/// exits unsuccessfully (see [`nar_bytes`]).
 pub fn compute_file_hash_size(store_path: &str, compression: Compression) -> Result<(String, u64)> {
     let bytes = nar_bytes(store_path, compression)?;
     let digest = Sha256::digest(&bytes);
@@ -149,11 +187,17 @@ pub fn compute_file_hash_size(store_path: &str, compression: Compression) -> Res
     ))
 }
 
-/// Return the exact compressed NAR bytes for a store path.
+/// Returns the exact compressed NAR bytes for a store path, fully buffered
+/// in memory.
 ///
 /// This is used for byte-range responses, where the server must know the full
 /// response length before it can answer a `Range:` request. Normal full-body
-/// NAR GETs still use `nar_stream` to avoid buffering.
+/// NAR GETs still use [`nar_stream`] to avoid buffering.
+///
+/// # Errors
+///
+/// Returns an error if `nix-store --dump` or the compressor cannot be
+/// spawned, or if the pipeline exits with a non-zero status.
 pub fn nar_bytes(store_path: &str, compression: Compression) -> Result<Vec<u8>> {
     use std::process::Command as StdCommand;
 

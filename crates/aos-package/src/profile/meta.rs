@@ -1,3 +1,24 @@
+//! Per-package metadata storage (`meta/<hash>.json`).
+//!
+//! Every installed store path has an [`InstalledMeta`] JSON file in the
+//! profile's `meta/` directory, keyed by store-path hash. The `apm` section
+//! records what apm knows about the package: name, version, source
+//! registry, whether it was explicitly installed or pulled in as a
+//! dependency, the hold flag, and source-derivation provenance.
+//!
+//! The profile-level `meta/` always describes the *current* generation.
+//! Two recovery paths keep rollback exact:
+//!
+//! - [`snapshot_profile_meta_to_generation`] copies the entries for a
+//!   generation's roots into `gen-N/meta/` when the generation is created.
+//! - [`rebuild_meta`] (used by rollback) repopulates the profile `meta/`
+//!   from a generation's roots, preferring the generation snapshot, then
+//!   registry data by hash, then a minimal entry — so packages whose
+//!   registry entries have since been retired still restore correctly.
+//!
+//! All writes are atomic (temp file + rename); unparseable entries are
+//! skipped with a warning rather than failing whole-profile listings.
+
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -15,6 +36,11 @@ use crate::types::{ApmMeta, InstalledMeta};
 ///
 /// Creates `meta/{hash}.json` with the full `InstalledMeta` struct.
 /// Uses atomic write (temp file + rename) to avoid partial reads.
+///
+/// # Errors
+///
+/// Returns an error if the `meta/` directory cannot be created or the file
+/// cannot be serialized or written.
 pub fn write_meta(profile: &Profile, hash: &str, meta: &InstalledMeta) -> Result<()> {
     let meta_dir = profile.path.join("meta");
     std::fs::create_dir_all(&meta_dir)
@@ -30,6 +56,10 @@ pub fn write_meta(profile: &Profile, hash: &str, meta: &InstalledMeta) -> Result
 /// Read metadata for a store path hash.
 ///
 /// Returns `None` if `meta/{hash}.json` does not exist.
+///
+/// # Errors
+///
+/// Returns an error if an existing file cannot be read or parsed.
 pub fn read_meta(profile: &Profile, hash: &str) -> Result<Option<InstalledMeta>> {
     let path = profile.path.join("meta").join(format!("{hash}.json"));
     if !path.exists() {
@@ -46,6 +76,10 @@ pub fn read_meta(profile: &Profile, hash: &str) -> Result<Option<InstalledMeta>>
 /// Delete metadata for a store path hash.
 ///
 /// Removes `meta/{hash}.json`. No error if it doesn't exist.
+///
+/// # Errors
+///
+/// Returns an error if an existing file cannot be removed.
 pub fn delete_meta(profile: &Profile, hash: &str) -> Result<()> {
     let path = profile.path.join("meta").join(format!("{hash}.json"));
     match std::fs::remove_file(&path) {
@@ -61,6 +95,14 @@ pub fn delete_meta(profile: &Profile, hash: &str) -> Result<()> {
 /// package can remain installed after its registry entry is retired. Keeping a
 /// per-generation copy lets rollback restore the exact installed package state
 /// even when the registry no longer advertises that store path.
+///
+/// Only entries matching the generation's `usr/` roots are snapshotted; any
+/// stale `gen-N/meta/*.json` files are cleared first.
+///
+/// # Errors
+///
+/// Returns an error if the generation's roots cannot be read or the
+/// snapshot files cannot be written.
 pub fn snapshot_profile_meta_to_generation(
     profile: &Profile,
     generation: &Generation,
@@ -93,6 +135,7 @@ pub fn snapshot_profile_meta_to_generation(
     Ok(())
 }
 
+/// Write one snapshot entry to `gen-N/meta/<hash>.json` atomically.
 fn write_generation_meta(generation: &Generation, hash: &str, meta: &InstalledMeta) -> Result<()> {
     let meta_dir = generation.path.join("meta");
     std::fs::create_dir_all(&meta_dir)
@@ -104,6 +147,7 @@ fn write_generation_meta(generation: &Generation, hash: &str, meta: &InstalledMe
         .with_context(|| format!("writing generation metadata for {hash}"))
 }
 
+/// Read one snapshot entry from `gen-N/meta/<hash>.json`, if present.
 fn read_generation_meta(generation: &Generation, hash: &str) -> Result<Option<InstalledMeta>> {
     let path = generation.path.join("meta").join(format!("{hash}.json"));
     if !path.exists() {
@@ -124,7 +168,12 @@ fn read_generation_meta(generation: &Generation, hash: &str) -> Result<Option<In
 /// List all metadata entries in the profile.
 ///
 /// Reads all `meta/*.json` files. Files that fail to parse are skipped
-/// with a warning printed to stderr.
+/// with a warning printed to stderr. A missing `meta/` directory yields an
+/// empty list.
+///
+/// # Errors
+///
+/// Returns an error if the `meta/` directory exists but cannot be read.
 pub fn list_meta(profile: &Profile) -> Result<Vec<InstalledMeta>> {
     let meta_dir = profile.path.join("meta");
     let entries = match std::fs::read_dir(&meta_dir) {
@@ -158,6 +207,10 @@ pub fn list_meta(profile: &Profile) -> Result<Vec<InstalledMeta>> {
 }
 
 /// Find all metadata entries from a specific registry.
+///
+/// # Errors
+///
+/// Returns an error if the metadata directory cannot be listed.
 pub fn meta_by_registry(profile: &Profile, registry_name: &str) -> Result<Vec<InstalledMeta>> {
     let all = list_meta(profile)?;
     Ok(all
@@ -206,6 +259,10 @@ pub fn orphaned_by_registry(
 }
 
 /// Find all metadata entries where `apm.explicit = false` (auto-installed deps).
+///
+/// # Errors
+///
+/// Returns an error if the metadata directory cannot be listed.
 pub fn auto_installed(profile: &Profile) -> Result<Vec<InstalledMeta>> {
     let all = list_meta(profile)?;
     Ok(all
@@ -215,6 +272,10 @@ pub fn auto_installed(profile: &Profile) -> Result<Vec<InstalledMeta>> {
 }
 
 /// Find all metadata entries where `apm.held = true`.
+///
+/// # Errors
+///
+/// Returns an error if the metadata directory cannot be listed.
 pub fn held_packages(profile: &Profile) -> Result<Vec<InstalledMeta>> {
     let all = list_meta(profile)?;
     Ok(all
@@ -231,6 +292,11 @@ pub fn held_packages(profile: &Profile) -> Result<Vec<InstalledMeta>> {
 ///
 /// Reads the existing meta, modifies the `held` field, and writes back
 /// atomically.
+///
+/// # Errors
+///
+/// Returns an error if no metadata exists for `hash`, the entry has no
+/// `apm` section, or the file cannot be read or written.
 pub fn set_held(profile: &Profile, hash: &str, held: bool) -> Result<()> {
     let mut meta =
         read_meta(profile, hash)?.with_context(|| format!("no metadata for hash {hash}"))?;
@@ -254,10 +320,15 @@ pub fn set_held(profile: &Profile, hash: &str, held: bool) -> Result<()> {
 /// `meta/` is rebuilt from that generation's roots cross-referenced with
 /// the registries to recover package names, versions, and registry origin.
 ///
-/// For each root hash in the generation, looks up the package in the
-/// registries via `Registry::get_by_hash`. If found, creates `InstalledMeta`
-/// from the registry data. If not found, creates a minimal entry with just
-/// the store path.
+/// For each root hash in the generation, the entry comes from (in order of
+/// preference): the generation's own `meta/` snapshot, the registry data
+/// found via `Registry::get_by_hash`, or a minimal entry carrying just the
+/// store path.
+///
+/// # Errors
+///
+/// Returns an error if the existing metadata or generation roots cannot be
+/// read, or a rebuilt entry cannot be written.
 pub fn rebuild_meta(
     profile: &Profile,
     generation: &Generation,

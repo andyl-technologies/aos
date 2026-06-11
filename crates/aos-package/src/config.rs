@@ -1,3 +1,19 @@
+//! Loading apm configuration from disk.
+//!
+//! Configuration lives in two layered locations:
+//!
+//! - **System**: `/etc/apm/` — `apm.conf` plus a `registries.d/` directory
+//!   of per-registry TOML files.
+//! - **User**: `~/.config/apm/` — the same layout; in user scope it takes
+//!   precedence, with the system directory as a fallback.
+//!
+//! Settings fall back as a whole file (the first `apm.conf` found wins),
+//! while registries merge per name: a user-level `registries.d/<x>.toml`
+//! replaces the system-level definition of the same registry. Registry
+//! files may also carry a `[registry.state]` table recording the last sync
+//! (commit, channel floor, retained versions), which is loaded alongside
+//! the static config.
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -9,8 +25,13 @@ use super::types::{
 /// Loaded APM configuration for the current session.
 #[derive(Debug)]
 pub struct ApmConfig {
+    /// Global settings from `apm.conf` (or defaults when absent).
     pub settings: ApmSettings,
+    /// All configured registries with their last-sync state, sorted by
+    /// priority descending. Includes disabled registries; use
+    /// [`ApmConfig::enabled_registries`] to filter.
     pub registries: Vec<(RegistryConfig, Option<RegistryState>)>,
+    /// The profile scope (user or system) this configuration was loaded for.
     pub scope: ProfileScope,
 }
 
@@ -19,6 +40,15 @@ impl ApmConfig {
     ///
     /// - User scope: `~/.config/apm/` first, `/etc/apm/` fallback.
     /// - System scope: `/etc/apm/` only.
+    ///
+    /// Missing files are not errors: absent settings fall back to
+    /// [`ApmSettings::default`], and an absent `registries.d/` yields an
+    /// empty registry list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an existing `apm.conf` or registry TOML file
+    /// cannot be read or fails to parse.
     pub fn load(scope: ProfileScope) -> Result<Self> {
         let (primary, fallback) = match scope {
             ProfileScope::User => {
@@ -166,7 +196,8 @@ impl ApmConfig {
         self.scope.nar_cache_path()
     }
 
-    /// Return registries sorted by priority (highest first), only enabled ones.
+    /// Return registries sorted by priority (highest first), only enabled
+    /// ones.
     pub fn enabled_registries(&self) -> Vec<&RegistryConfig> {
         self.registries
             .iter()
@@ -175,7 +206,7 @@ impl ApmConfig {
             .collect()
     }
 
-    /// Find a registry by name.
+    /// Find a registry (and its sync state) by name, enabled or not.
     pub fn find_registry(&self, name: &str) -> Option<&(RegistryConfig, Option<RegistryState>)> {
         self.registries.iter().find(|(cfg, _)| cfg.name == name)
     }

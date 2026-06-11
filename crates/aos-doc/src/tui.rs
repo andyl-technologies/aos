@@ -1,3 +1,22 @@
+//! Interactive terminal browser for the documentation index.
+//!
+//! Built on ratatui + crossterm, the TUI presents the [`DocIndex`] across
+//! four tabs, switched with the `1`-`4` keys:
+//!
+//! 1. **Language** -- chapter/topic tree of the Nix language reference
+//! 2. **Functions** -- module tree, function list, and detail panes
+//! 3. **Options** -- namespace tree, option list, and detail panes
+//! 4. **Packages** -- package tree and detail pane
+//!
+//! Navigation is vim-flavored (`j`/`k` move, `h`/`l`/Tab switch panes,
+//! Enter expands tree nodes, `d`/`u` scroll the detail pane) and `/` opens
+//! a fuzzy-search overlay backed by [`fuzzy_search`] that can jump to any
+//! entry. `q` or Ctrl+C quits.
+//!
+//! Internally, every tab's left-hand navigation is a generic `TreeState`
+//! built from the dotted entry paths; all mutable UI state lives in the
+//! `App` struct, drawn fresh each frame by `draw`.
+
 use std::io;
 
 use crossterm::{
@@ -21,6 +40,18 @@ use crate::search::fuzzy_search;
 // Public entry point
 // ---------------------------------------------------------------------------
 
+/// Runs the interactive documentation browser until the user quits.
+///
+/// Takes ownership of the index and drives the blocking TUI event loop on a
+/// dedicated thread (via `tokio::task::spawn_blocking`) so the async runtime
+/// is not stalled. The terminal is switched into raw mode and the alternate
+/// screen for the duration of the session and restored on exit.
+///
+/// # Errors
+///
+/// Returns an error if the terminal cannot be put into raw mode or the
+/// alternate screen, if reading input events or drawing a frame fails, or
+/// if the TUI task panics.
 pub async fn run(index: DocIndex) -> anyhow::Result<()> {
     // Run the blocking TUI event loop off the async runtime.
     tokio::task::spawn_blocking(move || run_blocking(&index))
@@ -28,6 +59,10 @@ pub async fn run(index: DocIndex) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("TUI task panicked: {e}"))?
 }
 
+/// Sets up the terminal, runs the event loop, and restores the terminal.
+///
+/// Raw mode and the alternate screen are torn down even when the event loop
+/// returns an error, so the user's shell is left usable.
 fn run_blocking(index: &DocIndex) -> anyhow::Result<()> {
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
@@ -47,6 +82,7 @@ fn run_blocking(index: &DocIndex) -> anyhow::Result<()> {
 // Application state
 // ---------------------------------------------------------------------------
 
+/// The four top-level tabs, switched with the `1`-`4` keys.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Language,
@@ -56,8 +92,10 @@ enum Tab {
 }
 
 impl Tab {
+    /// All tabs in display order (matching the `1`-`4` key bindings).
     const ALL: [Tab; 4] = [Tab::Language, Tab::Functions, Tab::Options, Tab::Packages];
 
+    /// Returns this tab's position in the tab bar.
     fn index(self) -> usize {
         match self {
             Tab::Language => 0,
@@ -67,6 +105,7 @@ impl Tab {
         }
     }
 
+    /// Returns the human-readable tab title.
     fn title(self) -> &'static str {
         match self {
             Tab::Language => "Language",
@@ -77,15 +116,27 @@ impl Tab {
     }
 }
 
+/// A node in a navigation tree, stored in a flat arena indexed by `usize`.
 struct TreeNode {
+    /// Display text (one path component, chapter, or topic name).
     label: String,
+    /// Nesting depth, used for indentation (0 = root).
     depth: usize,
+    /// Whether the node's children are currently shown.
     expanded: bool,
+    /// Arena indices of child nodes, in display order.
     children: Vec<usize>,
+    /// Index into the entries vec when this node is a documented leaf.
     entry_idx: Option<usize>,
+    /// Arena index of the parent node (`None` for roots).
     parent: Option<usize>,
 }
 
+/// An expandable/collapsible tree plus its list-widget selection state.
+///
+/// `visible` is the flattened pre-order list of node indices that are
+/// currently shown given each node's `expanded` flag; the ratatui
+/// [`ListState`] selection indexes into `visible`.
 struct TreeState {
     nodes: Vec<TreeNode>,
     visible: Vec<usize>,
@@ -93,6 +144,7 @@ struct TreeState {
 }
 
 impl TreeState {
+    /// Creates a tree from arena nodes, selecting the first visible row.
     fn new(nodes: Vec<TreeNode>) -> Self {
         let mut s = Self {
             nodes,
@@ -106,6 +158,7 @@ impl TreeState {
         s
     }
 
+    /// Recomputes the flattened list of visible rows after an expand/collapse.
     fn rebuild_visible(&mut self) {
         self.visible.clear();
         let roots: Vec<usize> = (0..self.nodes.len())
@@ -116,6 +169,7 @@ impl TreeState {
         }
     }
 
+    /// Appends `idx` and (when expanded) its subtree to `visible`, pre-order.
     fn collect_visible(&mut self, idx: usize) {
         self.visible.push(idx);
         if self.nodes[idx].expanded {
@@ -126,12 +180,14 @@ impl TreeState {
         }
     }
 
+    /// Returns the arena index of the currently selected node, if any.
     fn selected_node(&self) -> Option<usize> {
         self.list_state
             .selected()
             .and_then(|i| self.visible.get(i).copied())
     }
 
+    /// Moves the selection one visible row down (clamped at the end).
     fn move_down(&mut self) {
         if let Some(sel) = self.list_state.selected() {
             if sel + 1 < self.visible.len() {
@@ -140,6 +196,7 @@ impl TreeState {
         }
     }
 
+    /// Moves the selection one visible row up (clamped at the start).
     fn move_up(&mut self) {
         if let Some(sel) = self.list_state.selected() {
             if sel > 0 {
@@ -148,6 +205,8 @@ impl TreeState {
         }
     }
 
+    /// Toggles expansion of the selected node (no-op on leaves), keeping the
+    /// selection in bounds after the visible row count changes.
     fn toggle_expand(&mut self) {
         if let Some(node_idx) = self.selected_node() {
             if !self.nodes[node_idx].children.is_empty() {
@@ -168,6 +227,11 @@ impl TreeState {
     }
 }
 
+/// All mutable UI state for the browser, rebuilt once from the index.
+///
+/// The Functions and Options tabs are three-pane (tree, list, detail) with
+/// the focused pane tracked by `func_pane`/`opt_pane`; Language and
+/// Packages are two-pane. The search overlay state is shared across tabs.
 struct App {
     tab: Tab,
     // Tab 1: Language — left chapter/topic tree, right content
@@ -198,6 +262,9 @@ struct App {
 }
 
 impl App {
+    /// Builds the initial application state from the index: per-category
+    /// navigation trees, the language content table, and the initial
+    /// function/option lists derived from the first tree selection.
     fn new(index: &DocIndex) -> Self {
         let entries = index.entries.clone();
 
@@ -271,6 +338,7 @@ impl App {
         }
     }
 
+    /// Returns the entry indices of all leaves under the tree's selection.
     fn children_entries_for_tree(
         tree: &TreeState,
         entries: &[DocEntry],
@@ -283,6 +351,7 @@ impl App {
         }
     }
 
+    /// Refreshes the middle function list after a tree selection change.
     fn update_func_list(&mut self) {
         self.func_list =
             Self::children_entries_for_tree(&self.func_tree, &self.entries, DocCategory::Function);
@@ -293,6 +362,7 @@ impl App {
         self.detail_scroll = 0;
     }
 
+    /// Refreshes the middle option list after a tree selection change.
     fn update_opt_list(&mut self) {
         self.opt_list = Self::children_entries_for_tree(
             &self.opt_tree,
@@ -306,6 +376,7 @@ impl App {
         self.detail_scroll = 0;
     }
 
+    /// Returns the entry selected in the Functions list, if any.
     fn selected_func_entry(&self) -> Option<&DocEntry> {
         self.func_list_state
             .selected()
@@ -313,6 +384,7 @@ impl App {
             .and_then(|&idx| self.entries.get(idx))
     }
 
+    /// Returns the entry selected in the Options list, if any.
     fn selected_opt_entry(&self) -> Option<&DocEntry> {
         self.opt_list_state
             .selected()
@@ -320,6 +392,7 @@ impl App {
             .and_then(|&idx| self.entries.get(idx))
     }
 
+    /// Returns the entry for the leaf selected in the Packages tree, if any.
     fn selected_pkg_entry(&self) -> Option<&DocEntry> {
         self.pkg_tree
             .selected_node()
@@ -327,6 +400,8 @@ impl App {
             .and_then(|idx| self.entries.get(idx))
     }
 
+    /// Returns the `(chapter, topic, body)` to display on the Language tab.
+    /// Selecting a chapter shows its first topic's content.
     fn selected_lang_content(&self) -> Option<&(String, String, String)> {
         self.lang_tree.selected_node().and_then(|nid| {
             let node = &self.lang_tree.nodes[nid];
@@ -355,6 +430,8 @@ impl App {
 // Tree construction helpers
 // ---------------------------------------------------------------------------
 
+/// Builds the Language tab's chapter/topic tree from the static chapter
+/// data, linking each topic to its `LanguageRef` entry when one exists.
 fn build_language_tree(entries: &[DocEntry]) -> TreeState {
     use crate::data::language::chapters;
 
@@ -392,6 +469,7 @@ fn build_language_tree(entries: &[DocEntry]) -> TreeState {
     TreeState::new(nodes)
 }
 
+/// Flattens the static language data into `(chapter, topic, body)` rows.
 fn build_language_content() -> Vec<(String, String, String)> {
     use crate::data::language::chapters;
     let mut content = Vec::new();
@@ -407,6 +485,11 @@ fn build_language_content() -> Vec<(String, String, String)> {
     content
 }
 
+/// Builds a navigation tree from the dotted paths of the given entries.
+///
+/// Each path component becomes a node, shared prefixes are merged, leaves
+/// point back at their entry, and nodes shallower than `split_depth` start
+/// expanded. Entries are sorted by path so sibling order is stable.
 fn build_path_tree(entries: &[DocEntry], indices: &[usize], split_depth: usize) -> TreeState {
     struct Builder {
         nodes: Vec<TreeNode>,
@@ -473,12 +556,14 @@ fn build_path_tree(entries: &[DocEntry], indices: &[usize], split_depth: usize) 
     TreeState::new(builder.nodes)
 }
 
+/// Collects the entry indices of all leaves in the subtree at `node_idx`.
 fn collect_leaf_entries(nodes: &[TreeNode], node_idx: usize, _entries: &[DocEntry]) -> Vec<usize> {
     let mut result = Vec::new();
     collect_leaves_recursive(nodes, node_idx, &mut result);
     result
 }
 
+/// Depth-first helper for [`collect_leaf_entries`].
 fn collect_leaves_recursive(nodes: &[TreeNode], idx: usize, result: &mut Vec<usize>) {
     if let Some(entry_idx) = nodes[idx].entry_idx {
         result.push(entry_idx);
@@ -492,6 +577,11 @@ fn collect_leaves_recursive(nodes: &[TreeNode], idx: usize, result: &mut Vec<usi
 // Event loop
 // ---------------------------------------------------------------------------
 
+/// Draw/input loop: renders a frame, then blocks on the next key event.
+///
+/// While the search overlay is open it captures all keys (Esc cancels,
+/// Enter jumps to the selected result); otherwise keys map to tab switches,
+/// navigation, pane focus, detail scrolling, and quit (`q` or Ctrl+C).
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     index: &DocIndex,
@@ -598,6 +688,7 @@ fn run_event_loop(
     Ok(())
 }
 
+/// Re-runs the fuzzy search for the current query, keeping the top 20 hits.
 fn update_search(app: &mut App) {
     app.search_results = fuzzy_search(&app.entries, &app.search_query);
     app.search_results.truncate(20);
@@ -608,6 +699,10 @@ fn update_search(app: &mut App) {
     }
 }
 
+/// Jumps to the tab that owns a search result's category.
+///
+/// Currently only switches tabs (focusing the list pane where relevant);
+/// it does not move the tree/list selection to the specific entry.
 fn navigate_to_entry(app: &mut App, entry_idx: usize) {
     let entry = &app.entries[entry_idx];
     match entry.category {
@@ -629,6 +724,7 @@ fn navigate_to_entry(app: &mut App, entry_idx: usize) {
     app.detail_scroll = 0;
 }
 
+/// Handles `j`/Down for the focused pane of the active tab.
 fn handle_nav_down(app: &mut App) {
     match app.tab {
         Tab::Language => app.lang_tree.move_down(),
@@ -666,6 +762,7 @@ fn handle_nav_down(app: &mut App) {
     }
 }
 
+/// Handles `k`/Up for the focused pane of the active tab.
 fn handle_nav_up(app: &mut App) {
     match app.tab {
         Tab::Language => app.lang_tree.move_up(),
@@ -703,6 +800,7 @@ fn handle_nav_up(app: &mut App) {
     }
 }
 
+/// Handles Enter: expands/collapses the focused tree node.
 fn handle_enter(app: &mut App) {
     match app.tab {
         Tab::Language => app.lang_tree.toggle_expand(),
@@ -724,6 +822,7 @@ fn handle_enter(app: &mut App) {
     }
 }
 
+/// Handles Tab: cycles pane focus on the three-pane tabs.
 fn handle_tab_cycle(app: &mut App) {
     match app.tab {
         Tab::Language => {} // 2-pane, tree is the only navigable pane
@@ -739,6 +838,7 @@ fn handle_tab_cycle(app: &mut App) {
     }
 }
 
+/// Handles `h`/Left: moves pane focus one pane to the left.
 fn handle_pane_left(app: &mut App) {
     match app.tab {
         Tab::Functions => {
@@ -757,6 +857,7 @@ fn handle_pane_left(app: &mut App) {
     }
 }
 
+/// Handles `l`/Right: moves pane focus one pane to the right.
 fn handle_pane_right(app: &mut App) {
     match app.tab {
         Tab::Functions => {
@@ -779,6 +880,8 @@ fn handle_pane_right(app: &mut App) {
 // Drawing
 // ---------------------------------------------------------------------------
 
+/// Renders one frame: tab bar, active tab content, status bar, and the
+/// search overlay when open.
 fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
@@ -801,6 +904,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
+/// Renders the numbered tab bar with the active tab highlighted.
 fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<Line> = Tab::ALL
         .iter()
@@ -823,6 +927,7 @@ fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(tabs, area);
 }
 
+/// Dispatches content rendering to the active tab's draw function.
 fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
     match app.tab {
         Tab::Language => draw_language_tab(f, app, area),
@@ -832,6 +937,7 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// Renders the one-line key help appropriate to the active tab.
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let help = match app.tab {
         Tab::Language => "j/k:navigate  Enter:expand/collapse  /:search  q:quit",
@@ -852,6 +958,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
 // Tab 1: Language
 // ---------------------------------------------------------------------------
 
+/// Renders the Language tab: chapter/topic tree (left), rendered markdown
+/// content (right).
 fn draw_language_tab(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -912,6 +1020,8 @@ fn draw_language_tab(f: &mut Frame, app: &mut App, area: Rect) {
 // Tab 2: Functions
 // ---------------------------------------------------------------------------
 
+/// Renders the Functions tab: module tree, function list (with abbreviated
+/// return types), and entry detail. The focused pane gets a cyan border.
 fn draw_functions_tab(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -1036,6 +1146,8 @@ fn draw_functions_tab(f: &mut Frame, app: &mut App, area: Rect) {
 // Tab 3: Options
 // ---------------------------------------------------------------------------
 
+/// Renders the Options tab: namespace tree, option list (with type names),
+/// and option detail. The focused pane gets a cyan border.
 fn draw_options_tab(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -1149,6 +1261,7 @@ fn draw_options_tab(f: &mut Frame, app: &mut App, area: Rect) {
 // Tab 4: Packages
 // ---------------------------------------------------------------------------
 
+/// Renders the Packages tab: package tree (left), package detail (right).
 fn draw_packages_tab(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -1201,6 +1314,8 @@ fn draw_packages_tab(f: &mut Frame, app: &mut App, area: Rect) {
 // Search overlay
 // ---------------------------------------------------------------------------
 
+/// Renders the search overlay anchored to the bottom of the screen, showing
+/// the query line and scored results with the selection highlighted.
 fn draw_search_overlay(f: &mut Frame, app: &mut App, area: Rect) {
     // Search overlay at the bottom of the screen.
     let height = (app.search_results.len() as u16 + 3)
@@ -1246,6 +1361,8 @@ fn draw_search_overlay(f: &mut Frame, app: &mut App, area: Rect) {
 // Detail rendering
 // ---------------------------------------------------------------------------
 
+/// Renders a function/type entry as styled text: path, type signature,
+/// summary, body, parameters, examples, see-also, and source location.
 fn render_entry_detail(entry: &DocEntry) -> Text<'static> {
     let mut lines: Vec<Line> = Vec::new();
 
@@ -1339,6 +1456,8 @@ fn render_entry_detail(entry: &DocEntry) -> Text<'static> {
     Text::from(lines)
 }
 
+/// Renders a module option entry as styled text: path, type, default,
+/// description, examples, see-also, and the declaring file.
 fn render_option_detail(entry: &DocEntry) -> Text<'static> {
     let mut lines: Vec<Line> = Vec::new();
 
@@ -1423,6 +1542,8 @@ fn render_option_detail(entry: &DocEntry) -> Text<'static> {
     Text::from(lines)
 }
 
+/// Renders a package entry as styled text: name, version, description, and
+/// any dependency/URL metadata recorded in the entry's `extra` map.
 fn render_package_detail(entry: &DocEntry) -> Text<'static> {
     let mut lines: Vec<Line> = Vec::new();
 
@@ -1508,6 +1629,9 @@ fn render_package_detail(entry: &DocEntry) -> Text<'static> {
 // Simple markdown-to-styled-text renderer
 // ---------------------------------------------------------------------------
 
+/// Converts markdown to styled lines: `#`/`##` headings become bold,
+/// fenced code blocks are dimmed and indented, full-line `**bold**` is
+/// bolded, and inline backtick spans are highlighted.
 fn render_markdown_lines(text: &str) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut in_code_block = false;
@@ -1565,6 +1689,8 @@ fn render_markdown_lines(text: &str) -> Vec<Line<'static>> {
     lines
 }
 
+/// Splits a line into spans, coloring `` `code` `` segments yellow.
+/// An unmatched backtick is emitted literally.
 fn render_inline_code(text: &str) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut rest = text;

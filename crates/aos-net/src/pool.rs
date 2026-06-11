@@ -35,6 +35,8 @@ impl Default for PoolConfig {
 }
 
 /// Statistics about the connection pool.
+///
+/// A point-in-time snapshot returned by [`ConnectionPool::stats`].
 #[derive(Debug, Clone)]
 pub struct PoolStats {
     /// Number of active connections per host.
@@ -96,8 +98,15 @@ impl ConnectionPool {
     /// Acquire a permit to connect to a host.
     ///
     /// This will block (async) if the per-host or global connection
-    /// limit has been reached. The returned `PoolPermit` releases
-    /// the slot when dropped.
+    /// limit has been reached. The returned [`PoolPermit`] releases
+    /// the slot when dropped. The global permit is always acquired
+    /// before the per-host permit so that all callers take locks in a
+    /// consistent order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an internal semaphore has been closed. The pool never
+    /// closes its semaphores, so this cannot happen in normal use.
     pub async fn acquire(&self, host: &str) -> PoolPermit {
         // Get or create the per-host semaphore.
         let host_sem = {

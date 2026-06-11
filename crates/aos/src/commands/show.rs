@@ -1,9 +1,21 @@
+//! `aos show` — display a package's metadata.
+//!
+//! Evaluates `pkgs.<package>.meta` (no build) and pretty-prints the
+//! common fields: name, version, description, license (handling both
+//! string and attrset forms), homepage, platforms, and maintainers.
+//! With `--json` the raw meta attrset is emitted instead.
+
 use anyhow::{Context, Result};
 
 use aos_core::nix::NixRunner;
 use aos_core::output::{Printer, create_spinner};
 
 /// `aos show <package>` — display package metadata.
+///
+/// # Errors
+///
+/// Returns an error if evaluating the package's `meta` attribute fails
+/// (e.g. the package does not exist).
 pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
     let attr = format!("pkgs.{package}.meta");
 

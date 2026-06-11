@@ -3,6 +3,15 @@
 //! These helpers own the static dumb-HTTP object layout used by the target
 //! registry: a bare sha256 repository, root loose-object store, per-release
 //! pack directories, and relative `objects/info/alternates`.
+//!
+//! The published origin is a plain byte tree any static file host can
+//! serve. Stock `git clone` works against it through the dumb-HTTP
+//! protocol, which requires every reachable object to exist loose in the
+//! root `objects/` store ([`ensure_loose_completeness`]) and up-to-date
+//! `info/refs` metadata ([`refresh_server_info`]). Per-release pack
+//! directories under `releases/<X>/<Y>/<Z>/objects/` carry the optimized
+//! transfer artifacts and are stitched into the root store via relative
+//! alternates ([`write_alternates`]).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -86,6 +95,12 @@ pub fn loose_object_path(oid: &str) -> Result<PathBuf> {
 /// The canonical sha256 bare repo already writes loose objects under its root
 /// `objects/` directory. This helper creates the per-release pack scaffold that
 /// later pack generation fills.
+///
+/// # Errors
+///
+/// Returns an error if the repository is not sha256, a non-empty `revspec`
+/// is unknown to the object store, or the scaffold directories cannot be
+/// created.
 pub fn write_release_objects(repo: &Path, version: &semver::Version, revspec: &str) -> Result<()> {
     assert_sha256(repo)?;
     let git_dir = repo_git_dir(repo)?;
@@ -158,6 +173,11 @@ pub fn refresh_server_info(repo: &Path) -> Result<()> {
 ///
 /// The entries intentionally use a single `../` so the file is host-independent
 /// for both local and dumb-HTTP access.
+///
+/// # Errors
+///
+/// Returns an error if the git directory cannot be resolved or the
+/// alternates file cannot be written.
 pub fn write_alternates(repo: &Path, releases: &[semver::Version]) -> Result<()> {
     let git_dir = repo_git_dir(repo)?;
     let mut sorted = releases.to_vec();
@@ -201,6 +221,11 @@ pub fn assert_sha256(repo: &Path) -> Result<()> {
 ///
 /// Bare published registries use `repo` itself. Local producer checkouts use
 /// their `.git` directory, which is the byte tree mirrored for dumb HTTP.
+///
+/// # Errors
+///
+/// Returns an error when `repo` is neither a bare repository nor inside a
+/// work tree that `git rev-parse --absolute-git-dir` can resolve.
 pub fn repo_git_dir(repo: &Path) -> Result<PathBuf> {
     if repo.join("objects").is_dir() && repo.join("HEAD").exists() {
         return Ok(repo.to_path_buf());
@@ -227,6 +252,7 @@ pub fn repo_git_dir(repo: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(path))
 }
 
+/// Run a git command with `--git-dir <repo>` and return trimmed stdout.
 fn run_git_dir(repo: &Path, args: &[&str]) -> Result<String> {
     let output = gitcmd::hermetic()
         .arg("--git-dir")
@@ -246,6 +272,8 @@ fn run_git_dir(repo: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Unpack one pack file into the repository's loose-object store
+/// (`git unpack-objects -r`).
 fn unpack_pack(repo: &Path, pack: &Path) -> Result<()> {
     let pack_file = fs::File::open(pack).with_context(|| format!("opening {}", pack.display()))?;
     let output = gitcmd::hermetic()
@@ -267,6 +295,7 @@ fn unpack_pack(repo: &Path, pack: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Find every `pack-*.pack` under the root pack dir and the release dirs.
 fn full_pack_files(repo: &Path) -> Result<Vec<PathBuf>> {
     let mut packs = Vec::new();
     collect_full_packs(&repo.join("objects").join("pack"), &mut packs)?;
@@ -274,6 +303,7 @@ fn full_pack_files(repo: &Path) -> Result<Vec<PathBuf>> {
     Ok(packs)
 }
 
+/// Recursively collect `pack-*.pack` files under `dir` (missing dir is ok).
 fn collect_full_packs(dir: &Path, packs: &mut Vec<PathBuf>) -> Result<()> {
     if !dir.exists() {
         return Ok(());

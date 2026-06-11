@@ -1,3 +1,16 @@
+//! `apm rollback` and `apm generations` — switch between profile generations.
+//!
+//! Every mutating apm command creates a new profile generation (a directory
+//! of symlinks to package store paths, see [`crate::profile`]). Rollback is
+//! therefore pure pointer surgery: it repoints the `current` symlink at an
+//! older generation and rebuilds the per-package metadata from that
+//! generation's roots — no downloads, no store mutations, and the abandoned
+//! generation remains available for rolling forward again.
+//!
+//! Generation roots are resolved against the enabled registry caches where
+//! possible so listings show `name version [registry]` instead of bare
+//! store paths.
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -14,6 +27,11 @@ use aos_core::output::{OutputMode, Printer};
 /// The listing resolves generation roots through the enabled registry caches
 /// when possible so operators can choose rollback targets by package version
 /// rather than only by generation number.
+///
+/// # Errors
+///
+/// Returns an error if the profile's generations or their root symlinks
+/// cannot be read, or if a registry cache fails to load.
 pub async fn list(config: &ApmConfig, printer: &Printer) -> Result<()> {
     let profile = Profile::open_readonly(config.scope);
     let generations = profile.list_generations()?;
@@ -96,6 +114,17 @@ pub async fn list(config: &ApmConfig, printer: &Printer) -> Result<()> {
 /// Rollback is instantaneous -- no downloads, no store mutations.
 /// It switches the `current` symlink to a previous generation and
 /// rebuilds metadata from that generation's roots.
+///
+/// Without `--generation`, the target is the highest-numbered generation
+/// below the current one. With `dry_run`, the planned switch is reported
+/// but nothing is changed.
+///
+/// # Errors
+///
+/// Returns an error if there is no active generation to roll back from, the
+/// requested generation does not exist, no previous generation is available,
+/// the profile cannot be opened for writing, or the generation switch /
+/// metadata rebuild fails.
 pub async fn run(
     config: &ApmConfig,
     generation: Option<u32>,
@@ -216,6 +245,7 @@ pub async fn run(
     Ok(())
 }
 
+/// Build the JSON document emitted for `apm rollback` (planned or applied).
 fn rollback_result_json(
     status: &str,
     requested_generation: Option<u32>,
@@ -246,6 +276,7 @@ fn rollback_result_json(
     })
 }
 
+/// Index generation roots by their store-path hash.
 fn roots_by_hash(roots: &[(String, PathBuf)]) -> HashMap<&str, &PathBuf> {
     roots
         .iter()
@@ -253,6 +284,7 @@ fn roots_by_hash(roots: &[(String, PathBuf)]) -> HashMap<&str, &PathBuf> {
         .collect()
 }
 
+/// Render a subset of roots (selected by hash) as sorted JSON entries.
 fn roots_json(
     hashes: &[&str],
     roots: &HashMap<&str, &PathBuf>,
@@ -270,6 +302,7 @@ fn roots_json(
         .collect()
 }
 
+/// Render every root of a generation as JSON entries sorted by hash.
 fn all_roots_json(roots: &[(String, PathBuf)], registries: &RegistrySet) -> Vec<serde_json::Value> {
     let mut entries = roots
         .iter()
@@ -289,6 +322,8 @@ fn all_roots_json(roots: &[(String, PathBuf)], registries: &RegistrySet) -> Vec<
     entries
 }
 
+/// Render one root as JSON, attaching package name/version/registry when the
+/// hash is known to an enabled registry cache.
 fn root_json(hash: &str, path: &PathBuf, registries: &RegistrySet) -> serde_json::Value {
     for registry in registries.registries() {
         if let Some(package) = registry.get_by_hash(hash) {
@@ -312,11 +347,14 @@ fn root_json(hash: &str, path: &PathBuf, registries: &RegistrySet) -> serde_json
     })
 }
 
+/// Load the enabled registries' caches for root resolution.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
     RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
 }
 
+/// Human description of a root: `name version [registry]` when resolvable,
+/// otherwise the raw store path.
 fn describe_root(registries: &RegistrySet, hash: &str, target: &std::path::Path) -> String {
     for registry in registries.registries() {
         if let Some(pkg) = registry.get_by_hash(hash) {

@@ -27,10 +27,15 @@ use crate::manager_proxy::{ListUnitsEntry, ManagerProxy, ServiceProxy, UnitProxy
 /// raw label preserved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobResult {
+    /// The job completed successfully (`"done"`).
     Done,
+    /// The job failed (`"failed"`).
     Failed,
+    /// The job hit its timeout (`"timeout"`).
     Timeout,
+    /// A dependency of the job failed (`"dependency"`).
     Dependency,
+    /// Any other terminal result, with the raw systemd label preserved.
     Unknown(String),
 }
 
@@ -76,7 +81,9 @@ impl serde::Serialize for JobResult {
 /// plus its classified terminal result.
 #[derive(Debug, Clone)]
 pub struct JobOutcome {
+    /// Object path of the job systemd enqueued for the operation.
     pub job_path: OwnedObjectPath,
+    /// Classified terminal result from the job's `JobRemoved` signal.
     pub result: JobResult,
 }
 
@@ -84,9 +91,15 @@ pub struct JobOutcome {
 /// [`SystemdClient::failed_units`].
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FailedUnit {
+    /// Unit name, including the type suffix (e.g. `foo.service`).
     pub name: String,
+    /// `ActiveState` at scan time (`"failed"`, or `"activating"` for the
+    /// auto-restart case).
     pub active_state: String,
+    /// `SubState` at scan time (e.g. `"auto-restart"`).
     pub sub_state: String,
+    /// `ExecMainStatus` for `.service` units (exit status of the main
+    /// process); `None` for non-services or if the read failed.
     pub exec_main_status: Option<i32>,
     /// Captured `systemctl status` output for human display.
     pub status_dump: String,
@@ -95,10 +108,12 @@ pub struct FailedUnit {
 /// Result of a post-run failed-unit scan.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FailedUnitsReport {
+    /// All units found in a failed (or failing-and-retrying) state.
     pub failed: Vec<FailedUnit>,
 }
 
 impl FailedUnitsReport {
+    /// Returns `true` if no failed units were found.
     pub fn is_empty(&self) -> bool {
         self.failed.is_empty()
     }
@@ -136,6 +151,12 @@ pub struct SystemdClient {
 impl SystemdClient {
     /// Open the system bus, build the Manager proxy, `Subscribe()`, and start
     /// the background signal-handler tasks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SystemdUnavailable`] if the system bus cannot be
+    /// reached (e.g. `/run/dbus/system_bus_socket` is absent), or any
+    /// error from [`SystemdClient::from_connection`].
     pub async fn connect() -> Result<Self> {
         let conn = zbus::Connection::system()
             .await
@@ -147,6 +168,12 @@ impl SystemdClient {
     /// tests to inject one end of a p2p pair pointing at a `FakeSystemd`; also
     /// a legitimate embedding API. Unconditionally `pub` so the integration
     /// test crate (a separate compilation unit) can reach it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Manager proxy cannot be built, if the
+    /// `Subscribe()` call fails, or if the signal streams cannot be
+    /// established.
     pub async fn from_connection(conn: zbus::Connection) -> Result<Self> {
         let manager = ManagerProxy::new(&conn).await?;
 
@@ -217,26 +244,55 @@ impl SystemdClient {
     // Each submits the job, awaits JobRemoved, classifies, and returns. Mode is
     // "replace" except `isolate_unit`.
 
+    /// Start `name` (mode `"replace"`) and await the job's terminal result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the D-Bus call fails (e.g. `NoSuchUnit`) or if
+    /// the bus connection dies while awaiting the job's `JobRemoved`.
+    /// A job that finishes with `failed`/`timeout`/... is *not* an error;
+    /// inspect [`JobOutcome::result`].
     pub async fn start_unit(&self, name: &str) -> Result<JobOutcome> {
         let path = self.manager.start_unit(name, "replace").await?;
         self.await_job(path).await
     }
 
+    /// Stop `name` (mode `"replace"`) and await the job's terminal result.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`SystemdClient::start_unit`].
     pub async fn stop_unit(&self, name: &str) -> Result<JobOutcome> {
         let path = self.manager.stop_unit(name, "replace").await?;
         self.await_job(path).await
     }
 
+    /// Restart `name` (mode `"replace"`) and await the job's terminal result.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`SystemdClient::start_unit`].
     pub async fn restart_unit(&self, name: &str) -> Result<JobOutcome> {
         let path = self.manager.restart_unit(name, "replace").await?;
         self.await_job(path).await
     }
 
+    /// Reload `name` (mode `"replace"`) and await the job's terminal result.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`SystemdClient::start_unit`].
     pub async fn reload_unit(&self, name: &str) -> Result<JobOutcome> {
         let path = self.manager.reload_unit(name, "replace").await?;
         self.await_job(path).await
     }
 
+    /// Start `name` in `"isolate"` mode (stop everything not required by
+    /// it, like `systemctl isolate`) and await the job's terminal result.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`SystemdClient::start_unit`].
     pub async fn isolate_unit(&self, name: &str) -> Result<JobOutcome> {
         let path = self.manager.start_unit(name, "isolate").await?;
         self.await_job(path).await
@@ -272,16 +328,30 @@ impl SystemdClient {
     // ---- Manager-level operations ----------------------------------------
 
     /// `Manager.Reload()` — equivalent to `systemctl daemon-reload`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the D-Bus call fails.
     pub async fn daemon_reload(&self) -> Result<()> {
         self.manager.reload().await?;
         Ok(())
     }
 
+    /// Clear the "failed" state of all units (`systemctl reset-failed`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the D-Bus call fails.
     pub async fn reset_failed(&self) -> Result<()> {
         self.manager.reset_failed().await?;
         Ok(())
     }
 
+    /// Clear the "failed" state of a single unit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the D-Bus call fails (e.g. `NoSuchUnit`).
     pub async fn reset_failed_unit(&self, name: &str) -> Result<()> {
         self.manager.reset_failed_unit(name).await?;
         Ok(())
@@ -290,6 +360,10 @@ impl SystemdClient {
     /// Queue a reboot. Like `systemctl reboot`, this returns once systemd has
     /// *queued* the reboot, not when it happens; the caller then exits cleanly
     /// or is killed as systemd tears the system down.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the D-Bus call fails.
     pub async fn reboot(&self) -> Result<()> {
         self.manager.reboot().await?;
         Ok(())
@@ -300,6 +374,11 @@ impl SystemdClient {
     /// Whether `name`'s `ActiveState == "active"`. A unit that isn't loaded
     /// (systemd returns `NoSuchUnit`) counts as not-active — matching
     /// `systemctl is-active` on an unknown unit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the D-Bus calls fail for any reason other than
+    /// `NoSuchUnit`.
     pub async fn is_active(&self, name: &str) -> Result<bool> {
         match self.manager.get_unit(name).await {
             Ok(path) => {
@@ -320,6 +399,11 @@ impl SystemdClient {
     /// `T::try_from(value)`. (The spec sketched a generic `unit_property::<T>`;
     /// returning `OwnedValue` avoids gnarly trait bounds while serving the same
     /// callers — `is_active` and the `_test-systemd-client property` op.)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the unit is not loaded (`NoSuchUnit`), if the
+    /// property does not exist, or if the D-Bus calls fail.
     pub async fn unit_property(&self, name: &str, prop: &str) -> Result<OwnedValue> {
         let path = self.manager.get_unit(name).await?;
         let props = zbus::fdo::PropertiesProxy::builder(&self.conn)
@@ -332,6 +416,12 @@ impl SystemdClient {
         Ok(props.get(iface, prop).await?)
     }
 
+    /// List units filtered by active states and shell-glob name patterns;
+    /// empty slices mean "no filter".
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the D-Bus call fails.
     pub async fn list_units_by_patterns(
         &self,
         states: &[&str],
@@ -361,6 +451,11 @@ impl SystemdClient {
     /// NOTE: filtering on `states = ["failed"]` alone (as the spec sketched in
     /// §5.8) would MISS the auto-restart case, whose `ActiveState` is
     /// `activating`, not `failed`. We mirror STC and scan all units.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the unit listing fails. Per-unit property reads
+    /// and status captures are best-effort and never fail the scan.
     pub async fn failed_units(&self) -> Result<FailedUnitsReport> {
         let units = self.manager.list_units_by_patterns(&[], &[]).await?;
         let mut failed = Vec::new();
@@ -411,6 +506,11 @@ impl SystemdClient {
     /// events seen. Mirrors switch-to-configuration-ng's settle window
     /// (`main.rs:2452-2462`). Invoke after the last submit + wait so late
     /// events still get counted/reported.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible (always returns `Ok`); the `Result` is kept
+    /// for forward compatibility with bus-error reporting.
     pub async fn settle(&self) -> Result<usize> {
         let mut count = 0usize;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);

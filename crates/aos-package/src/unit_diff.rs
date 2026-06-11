@@ -99,6 +99,7 @@ const UNIT_EXTS: &[&str] = &[
 /// clears the accumulated values — systemd's drop-in reset semantic.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Parsed {
+    /// `section name -> key -> values in declaration order`.
     pub sections: BTreeMap<String, BTreeMap<String, Vec<String>>>,
 }
 
@@ -213,6 +214,7 @@ pub struct UnitFile {
 }
 
 impl UnitFile {
+    /// Read, parse, and fingerprint one unit file; `None` if unreadable.
     fn load(path: PathBuf) -> Option<UnitFile> {
         // `fs::read` follows symlinks, so a unit shipped as a store-path
         // symlink (the generateUnits norm) resolves to its real content.
@@ -232,7 +234,9 @@ impl UnitFile {
 /// install-symlink state recorded from `*.<target>.{wants,requires,upholds}/`.
 #[derive(Debug, Clone, Default)]
 pub struct LogicalUnit {
+    /// Unit name including extension (e.g. `nginx.service`).
     pub name: String,
+    /// The primary `<name>` unit file in `/etc`, if shipped there.
     pub primary: Option<UnitFile>,
     /// Drop-ins from `<name>.d/*.conf`, sorted by filename (override order).
     pub drop_ins: Vec<UnitFile>,
@@ -280,6 +284,7 @@ impl LogicalUnit {
 /// The full set of units found under one side's `systemd/system/`.
 #[derive(Debug, Default)]
 pub struct UnitMap {
+    /// Logical units keyed by unit name.
     pub units: BTreeMap<String, LogicalUnit>,
 }
 
@@ -332,6 +337,7 @@ enum UnitType {
     Excluded,
 }
 
+/// Classify a unit by its filename extension.
 fn unit_type(name: &str) -> UnitType {
     match name.rsplit('.').next().unwrap_or("") {
         "service" | "socket" | "timer" | "mount" | "automount" | "swap" => UnitType::Active,
@@ -341,6 +347,7 @@ fn unit_type(name: &str) -> UnitType {
     }
 }
 
+/// Whether the unit is one of the never-restart mounts ([`NEVER_RESTART_MOUNTS`]).
 fn is_denylisted_mount(name: &str) -> bool {
     NEVER_RESTART_MOUNTS.contains(&name)
 }
@@ -361,6 +368,8 @@ struct Knobs {
 }
 
 impl Knobs {
+    /// Read the knobs from a merged `[Unit]` section, applying defaults for
+    /// absent keys; the last assignment of a repeated key wins.
     fn from_merged(merged: &BTreeMap<String, BTreeMap<String, Vec<String>>>) -> Knobs {
         let unit = merged.get("Unit");
         let read = |key: &str, default: bool| -> bool {
@@ -381,6 +390,7 @@ impl Knobs {
     }
 }
 
+/// systemd-style boolean parse (`1`/`yes`/`true`/`on` are true).
 fn parse_bool(s: &str) -> bool {
     matches!(
         s.trim().to_ascii_lowercase().as_str(),
@@ -388,6 +398,7 @@ fn parse_bool(s: &str) -> bool {
     )
 }
 
+/// Whether the merged unit declares a non-empty `[Service] ExecReload=`.
 fn has_exec_reload(merged: &BTreeMap<String, BTreeMap<String, Vec<String>>>) -> bool {
     merged
         .get("Service")
@@ -400,6 +411,10 @@ fn has_exec_reload(merged: &BTreeMap<String, BTreeMap<String, Vec<String>>>) -> 
 // Walk a side's systemd/system tree
 // ---------------------------------------------------------------------------
 
+/// Build the [`UnitMap`] for one side by scanning a `systemd/system/`
+/// directory: primary unit files, `<name>.d/*.conf` drop-ins, mask symlinks
+/// to `/dev/null`, and `<target>.{wants,requires,upholds}/` install links.
+/// An unreadable directory yields an empty map.
 fn walk(units_dir: &Path) -> UnitMap {
     let mut units: BTreeMap<String, LogicalUnit> = BTreeMap::new();
     let Ok(entries) = std::fs::read_dir(units_dir) else {
@@ -486,6 +501,7 @@ fn walk(units_dir: &Path) -> UnitMap {
     UnitMap { units }
 }
 
+/// Whether the filename carries one of the primary unit extensions.
 fn has_unit_ext(name: &str) -> bool {
     name.rsplit('.')
         .next()
@@ -493,6 +509,7 @@ fn has_unit_ext(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The three install-symlink directory flavors.
 #[derive(Clone, Copy)]
 enum InstallKind {
     Wants,
@@ -652,6 +669,9 @@ pub fn compute_diff(live_etc_root: &Path, candidate_etc_root: &Path) -> UnitDiff
     diff
 }
 
+/// Route a unit present live but gone in the candidate: stop it, unless it
+/// is drop-in-only, non-Active, a denylisted mount, or opted out via
+/// `X-StopOnRemoval=false`.
 fn classify_removed(name: &str, live: &LogicalUnit, diff: &mut UnitDiff) {
     // Only a unit with its own primary in /etc is "stopped" on removal —
     // a removed drop-in modifies a still-shipped systemd unit, handled by
@@ -669,6 +689,8 @@ fn classify_removed(name: &str, live: &LogicalUnit, diff: &mut UnitDiff) {
     diff.to_stop.push(name.to_string());
 }
 
+/// Route a unit new in the candidate: start it, unless it is drop-in-only,
+/// non-Active, or marked `X-OnlyManualStart=true`.
 fn classify_added(name: &str, candidate: &LogicalUnit, diff: &mut UnitDiff) {
     // Drop-in-only additions modify systemd-shipped units → daemon-reload.
     if candidate.primary.is_none() {
@@ -684,6 +706,10 @@ fn classify_added(name: &str, candidate: &LogicalUnit, diff: &mut UnitDiff) {
     diff.to_start.push(name.to_string());
 }
 
+/// Route a unit present on both sides: compare effective fingerprints and
+/// dispatch via [`changed_action`]; a change driven purely by reload-trigger
+/// content (identical files) is also recorded in `blanket_targets`.
+/// Unchanged units whose install symlinks differ go to `install_only`.
 #[allow(clippy::too_many_arguments)]
 fn classify_both(
     name: &str,
@@ -776,6 +802,7 @@ fn changed_action(name: &str, candidate: &LogicalUnit, diff: &mut UnitDiff) -> A
     }
 }
 
+/// Whether any of the wants/requires/upholds install sets differ.
 fn install_changed(live: &LogicalUnit, candidate: &LogicalUnit) -> bool {
     live.install_wants != candidate.install_wants
         || live.install_requires != candidate.install_requires

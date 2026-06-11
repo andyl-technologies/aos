@@ -1,3 +1,24 @@
+//! Index construction: scans the repository and assembles a [`DocIndex`].
+//!
+//! This module ties the rest of the crate together. It walks the AOS source
+//! tree, runs the [`crate::nix_parser`] over each `.nix` file, merges in the
+//! compiled-in builtin and language reference data from [`crate::data`], and
+//! produces the flat list of [`DocEntry`] records that the cache, search,
+//! and TUI layers consume.
+//!
+//! Doc paths follow fixed namespaces by source location:
+//!
+//! - `functions.<file>.<name>` from `lib/*.nix`
+//! - `types.<name>` from `lib/types.nix`
+//! - `options.<module>.<name>` from `modules/**/*.nix`
+//! - `packages.<name>` from `pkgs/**/*.nix`
+//! - `builtins.<name>` and `language.<chapter>.<topic>` from static data
+//!
+//! When a [`NixRunner`] is available, module options are additionally
+//! enriched with type names and default values obtained by evaluating the
+//! module system; evaluation failures degrade gracefully to comment-only
+//! metadata.
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -9,18 +30,25 @@ use crate::model::{DocCategory, DocEntry, DocIndex};
 use crate::nix_parser;
 use aos_core::nix::NixRunner;
 
-/// Build a complete `DocIndex` by scanning all source files in the repo root.
+/// Builds a complete [`DocIndex`] by scanning all source files in the repo root.
 ///
 /// This extracts documentation from:
-/// - `lib/*.nix` — function docs (category Function)
-/// - `lib/types.nix` — type docs (category Type)
-/// - `modules/**/*.nix` — module option docs (category ModuleOption)
-/// - `pkgs/**/*.nix` — package docs (category Package)
-/// - Builtin data — static builtin function docs (category Function)
-/// - Language data — static language reference entries (category LanguageRef)
+/// - `lib/*.nix` -- function docs (category [`DocCategory::Function`])
+/// - `lib/types.nix` -- type docs (category [`DocCategory::Type`])
+/// - `modules/**/*.nix` -- module option docs (category [`DocCategory::ModuleOption`])
+/// - `pkgs/**/*.nix` -- package docs (category [`DocCategory::Package`])
+/// - Builtin data -- static builtin function docs (category [`DocCategory::Function`])
+/// - Language data -- static language reference entries (category [`DocCategory::LanguageRef`])
 ///
-/// If a `NixRunner` is provided, module options are enriched with type and
-/// default metadata obtained by evaluating the module system.
+/// Missing directories are simply skipped, so the function also works on
+/// partial source trees. If a [`NixRunner`] is provided, module options are
+/// enriched with type and default metadata obtained by evaluating the
+/// module system; an evaluation failure is silently ignored.
+///
+/// # Errors
+///
+/// Returns an error if a directory listing or file read fails while
+/// scanning `lib/` (other walks tolerate per-file I/O errors).
 pub fn build_index(root: &Path, nix: Option<&NixRunner>) -> Result<DocIndex> {
     let mut entries = Vec::new();
 
@@ -55,7 +83,9 @@ pub fn build_index(root: &Path, nix: Option<&NixRunner>) -> Result<DocIndex> {
     Ok(DocIndex { built_at, entries })
 }
 
-/// Extract function docs from lib/*.nix files (except types.nix which is handled separately).
+/// Extracts function docs from `lib/*.nix` files into `functions.<file>.<name>`
+/// entries (`types.nix` and `default.nix` are skipped; types are handled by
+/// [`extract_lib_types`]).
 fn extract_lib_functions(root: &Path, entries: &mut Vec<DocEntry>) -> Result<()> {
     let lib_dir = root.join("lib");
     if !lib_dir.is_dir() {
@@ -92,7 +122,7 @@ fn extract_lib_functions(root: &Path, entries: &mut Vec<DocEntry>) -> Result<()>
     Ok(())
 }
 
-/// Extract type docs from lib/types.nix.
+/// Extracts type docs from `lib/types.nix` into `types.<name>` entries.
 fn extract_lib_types(root: &Path, entries: &mut Vec<DocEntry>) -> Result<()> {
     let types_path = root.join("lib/types.nix");
     if !types_path.is_file() {
@@ -111,7 +141,12 @@ fn extract_lib_types(root: &Path, entries: &mut Vec<DocEntry>) -> Result<()> {
     Ok(())
 }
 
-/// Extract module and option docs from modules/**/*.nix.
+/// Extracts module and option docs from `modules/**/*.nix`.
+///
+/// The module name is derived from the file path relative to `modules/`
+/// (e.g. `modules/security/ssh.nix` becomes `security.ssh`). A `##!`
+/// header produces an entry for the module itself at `options.<module>`,
+/// and each documented binding becomes `options.<module>.<name>`.
 fn extract_modules(root: &Path, entries: &mut Vec<DocEntry>) -> Result<()> {
     let modules_dir = root.join("modules");
     if !modules_dir.is_dir() {
@@ -172,7 +207,12 @@ fn extract_modules(root: &Path, entries: &mut Vec<DocEntry>) -> Result<()> {
     Ok(())
 }
 
-/// Extract package docs from pkgs/**/*.nix.
+/// Extracts package docs from `pkgs/**/*.nix` into `packages.<name>` entries.
+///
+/// `default.nix` and `_`-prefixed helper files are skipped. Every package
+/// file yields an entry even without doc comments (a minimal
+/// "AOS package: <name>" summary), and a `version = "..."` binding found in
+/// the file content is recorded in the entry's `extra` map.
 fn extract_packages(root: &Path, entries: &mut Vec<DocEntry>) -> Result<()> {
     let pkgs_dir = root.join("pkgs");
     if !pkgs_dir.is_dir() {
@@ -266,7 +306,7 @@ fn extract_packages(root: &Path, entries: &mut Vec<DocEntry>) -> Result<()> {
     Ok(())
 }
 
-/// Add static builtin function docs.
+/// Adds static builtin function docs (`builtins.<name>`) from [`crate::data::builtins`].
 fn extract_builtins(entries: &mut Vec<DocEntry>) {
     for b in builtins_data::builtins() {
         entries.push(DocEntry {
@@ -291,7 +331,8 @@ fn extract_builtins(entries: &mut Vec<DocEntry>) {
     }
 }
 
-/// Add static language reference entries.
+/// Adds static language reference entries (`language.<chapter>.<topic>`)
+/// from [`crate::data::language`], slugifying chapter and topic names.
 fn extract_language_ref(entries: &mut Vec<DocEntry>) {
     for chapter in language_data::chapters() {
         for topic in chapter.topics {
@@ -332,7 +373,7 @@ fn extract_language_ref(entries: &mut Vec<DocEntry>) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a parsed `ItemDoc` into a `DocEntry`.
+/// Converts a parsed [`nix_parser::ItemDoc`] into a [`DocEntry`].
 fn item_to_entry(
     path: &str,
     category: DocCategory,
@@ -364,7 +405,8 @@ fn item_to_entry(
     }
 }
 
-/// Recursively walk a directory, calling `f` for every `.nix` file found.
+/// Recursively walks a directory, calling `f` for every `.nix` file found.
+/// Unreadable directories are silently skipped.
 fn walk_nix_files(dir: &Path, f: &mut dyn FnMut(&Path)) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -385,12 +427,20 @@ fn walk_nix_files(dir: &Path, f: &mut dyn FnMut(&Path)) {
     }
 }
 
-/// Enrich module option entries with type and default metadata obtained by
-/// evaluating the Nix module system.
+/// Enriches module option entries with type and default metadata obtained
+/// by evaluating the Nix module system.
 ///
 /// Evaluates `system.options` and merges the resulting type names and
-/// default values into the comment-parsed `DocEntry` records.  If evaluation
-/// fails (e.g. the user hasn't built yet), the entries are left unchanged.
+/// default values into the comment-parsed [`DocEntry`] records.  If
+/// evaluation fails (e.g. the user hasn't built yet), the entries are left
+/// unchanged.
+///
+/// Matching is heuristic: evaluated option names (`aos.services.ssh.port`)
+/// and entry paths (`options.security.ssh.port`, derived from file layout)
+/// share only their trailing components, so options are matched by leaf
+/// name first and disambiguated by the last two components when several
+/// options share a leaf. Ambiguous entries are skipped rather than guessed.
+/// Only missing fields are filled in; comment-derived metadata wins.
 fn enrich_options_from_eval(nix: &NixRunner, entries: &mut [DocEntry]) {
     // Nix expression that serializes option metadata for all system options
     // to a JSON-safe attrset.
@@ -514,7 +564,8 @@ fn enrich_options_from_eval(nix: &NixRunner, entries: &mut [DocEntry]) {
     }
 }
 
-/// Format a JSON value into a human-readable string for display.
+/// Formats a JSON value as Nix-flavored display text
+/// (`[ 1 2 ]`, `{ a = 1; }`).
 fn format_json_value(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::Null => "null".to_string(),
@@ -535,7 +586,7 @@ fn format_json_value(v: &serde_json::Value) -> String {
     }
 }
 
-/// Try to extract a version string from a Nix file's content.
+/// Tries to extract a version string from a Nix file's content.
 /// Looks for patterns like `version = "1.2.3";` or `let version = "1.2.3";`.
 fn extract_version_from_content(content: &str) -> Option<String> {
     for line in content.lines() {
