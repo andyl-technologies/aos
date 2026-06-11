@@ -35,6 +35,30 @@ fn apm_profile_lifecycle_cli_lists_holds_executes_and_rolls_back() -> Result<()>
         ],
     )?;
 
+    let search = fixture.run_json(
+        &["--json", "search", "alpha", "--registry", "lifecycle"],
+        "search alpha",
+    )?;
+    assert_package_list(&search, &[("alpha", "2.0.0", "")])?;
+
+    let shown = fixture.run_json(
+        &["--json", "show", "alpha", "--registry", "lifecycle"],
+        "show alpha",
+    )?;
+    assert_eq!(shown["name"], "alpha");
+    assert_eq!(shown["version"], "2.0.0");
+    assert_eq!(shown["registry"], "lifecycle");
+    assert_eq!(shown["installed"], true);
+
+    let policy = fixture.run_json(&["--json", "policy", "alpha"], "policy alpha")?;
+    assert_eq!(policy["package"], "alpha");
+    assert_eq!(policy["installed"], "2.0.0");
+    assert_eq!(policy["candidate"], "2.0.0");
+    assert_policy_versions(&policy, &[("2.0.0", true)])?;
+
+    let files = fixture.run_json(&["--json", "files", "alpha"], "files alpha")?;
+    assert_eq!(files, serde_json::json!(["bin/alpha"]));
+
     let held = fixture.run_json(&["--json", "held"], "held before hold")?;
     assert_eq!(
         held.as_array()
@@ -63,19 +87,40 @@ fn apm_profile_lifecycle_cli_lists_holds_executes_and_rolls_back() -> Result<()>
     assert_eq!(unheld_alpha["package"], "alpha");
     assert_eq!(unheld_alpha["held"], false);
 
-    let planned = fixture.run_json(&["--json", "--dry-run", "rollback"], "rollback dry-run")?;
+    let removed_beta = fixture.run_json(&["--json", "--yes", "remove", "beta"], "remove beta")?;
+    assert_eq!(removed_beta["action"], "remove");
+    assert_eq!(removed_beta["status"], "removed");
+    assert_eq!(removed_beta["removed"], 1);
+    assert_eq!(removed_beta["explicit_removed"], 1);
+    assert_eq!(removed_beta["orphan_removed"], 0);
+    assert_eq!(removed_beta["generation"], 3);
+    assert_eq!(removed_beta["packages"][0]["name"], "beta");
+    assert_eq!(fixture.current_generation()?, "gen-3");
+    assert_eq!(fixture.run_profile_command("alpha")?, "alpha 2.0.0\n");
+    assert!(
+        !fixture.profile_bin("beta").exists(),
+        "remove should delete beta from the active profile bin directory"
+    );
+
+    let installed = fixture.run_json(
+        &["--json", "list", "--installed", "--registry", "lifecycle"],
+        "list installed after remove",
+    )?;
+    assert_package_list(&installed, &[("alpha", "2.0.0", "installed")])?;
+
+    let planned = fixture.run_json(
+        &["--json", "--dry-run", "rollback", "--generation", "1"],
+        "rollback dry-run",
+    )?;
     assert_eq!(planned["action"], "rollback");
     assert_eq!(planned["status"], "planned");
-    assert_eq!(planned["from_generation"], 2);
+    assert_eq!(planned["from_generation"], 3);
     assert_eq!(planned["to_generation"], 1);
     assert_root_names(&planned["restored"], &[("alpha", "1.0.0")])?;
-    assert_root_names(
-        &planned["removed"],
-        &[("alpha", "2.0.0"), ("beta", "1.0.0")],
-    )?;
+    assert_root_names(&planned["removed"], &[("alpha", "2.0.0")])?;
     assert_eq!(fixture.run_profile_command("alpha")?, "alpha 2.0.0\n");
 
-    let rolled_back = fixture.run_json(&["--json", "rollback"], "rollback")?;
+    let rolled_back = fixture.run_json(&["--json", "rollback", "--generation", "1"], "rollback")?;
     assert_eq!(rolled_back["action"], "rollback");
     assert_eq!(rolled_back["status"], "rolled_back");
     assert_eq!(rolled_back["generation"], 1);
@@ -91,6 +136,146 @@ fn apm_profile_lifecycle_cli_lists_holds_executes_and_rolls_back() -> Result<()>
         "list installed after rollback",
     )?;
     assert_package_list(&installed, &[("alpha", "1.0.0", "installed")])?;
+
+    let disabled = fixture.run_json(
+        &["--json", "registry", "disable", "lifecycle"],
+        "registry disable",
+    )?;
+    assert_eq!(disabled["action"], "registry_disable");
+    assert_eq!(disabled["status"], "disabled");
+    assert_eq!(disabled["registry"], "lifecycle");
+    assert_eq!(disabled["enabled"], false);
+    assert_eq!(disabled["previous_enabled"], true);
+    assert_eq!(disabled["changed"], true);
+
+    let orphans = fixture.run_json(&["--json", "orphans"], "orphans while disabled")?;
+    assert_orphans(&orphans, &[])?;
+
+    let installed = fixture.run_json(
+        &["--json", "list", "--installed", "--registry", "lifecycle"],
+        "list installed while disabled",
+    )?;
+    assert_package_list(&installed, &[("alpha", "1.0.0", "unavailable")])?;
+
+    let enabled = fixture.run_json(
+        &["--json", "registry", "enable", "lifecycle"],
+        "registry enable",
+    )?;
+    assert_eq!(enabled["action"], "registry_enable");
+    assert_eq!(enabled["status"], "enabled");
+    assert_eq!(enabled["registry"], "lifecycle");
+    assert_eq!(enabled["enabled"], true);
+    assert_eq!(enabled["previous_enabled"], false);
+    assert_eq!(enabled["changed"], true);
+
+    let installed = fixture.run_json(
+        &["--json", "list", "--installed", "--registry", "lifecycle"],
+        "list installed after enable",
+    )?;
+    assert_package_list(&installed, &[("alpha", "1.0.0", "installed")])?;
+
+    let removed = fixture.run_json(
+        &["--json", "registry", "remove", "lifecycle", "--force"],
+        "registry remove",
+    )?;
+    assert_eq!(removed["action"], "registry_remove");
+    assert_eq!(removed["status"], "removed");
+    assert_eq!(removed["registry"], "lifecycle");
+    assert_eq!(removed["config_removed"], true);
+    assert_eq!(removed["cache_removed"], true);
+    assert!(
+        !fixture
+            .xdg_config
+            .join("apm/registries.d/lifecycle.toml")
+            .exists(),
+        "registry remove should delete the config file"
+    );
+    assert_eq!(fixture.run_profile_command("alpha")?, "alpha 1.0.0\n");
+
+    let orphans = fixture.run_json(&["--json", "orphans"], "orphans")?;
+    assert_orphans(&orphans, &[("alpha", "1.0.0", "lifecycle")])?;
+
+    let installed = fixture.run_json(&["--json", "list", "--installed"], "list orphaned")?;
+    assert_package_list(&installed, &[("alpha", "1.0.0", "unavailable")])?;
+
+    let search_installed = fixture.run_json(
+        &["--json", "search", "--installed", "alpha"],
+        "search installed orphaned",
+    )?;
+    assert_eq!(
+        search_installed[0]["description"], "installed package unavailable in registry",
+        "{search_installed}",
+    );
+
+    let orphan_policy = fixture.run_json(&["--json", "policy", "alpha"], "policy orphaned")?;
+    assert_eq!(orphan_policy["installed"], "1.0.0");
+    assert!(orphan_policy["candidate"].is_null(), "{orphan_policy}");
+    assert_eq!(
+        orphan_policy["versions"]
+            .as_array()
+            .context("policy versions should be an array")?
+            .len(),
+        0
+    );
+    assert_eq!(
+        orphan_policy["unavailable_installed"],
+        serde_json::json!([{"registry": "lifecycle", "version": "1.0.0"}])
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn apm_profile_lifecycle_cli_autoremoves_dependency_roots() -> Result<()> {
+    let fixture = LifecycleFixture::new()?;
+    fixture.write_registry_cache()?;
+    fixture.write_autoremove_profile()?;
+
+    assert_eq!(fixture.run_profile_command("beta")?, "beta 1.0.0\n");
+    assert_eq!(
+        fixture.run_profile_command("beta-helper")?,
+        "beta-helper 1.0.0\n"
+    );
+
+    let removed = fixture.run_json(
+        &["--json", "--yes", "remove", "--autoremove", "beta"],
+        "remove beta with autoremove",
+    )?;
+    assert_eq!(removed["action"], "remove");
+    assert_eq!(removed["status"], "removed");
+    assert_eq!(removed["removed"], 2);
+    assert_eq!(removed["explicit_removed"], 1);
+    assert_eq!(removed["orphan_removed"], 1);
+    assert_eq!(removed["generation"], 2);
+    assert_eq!(removed["packages"][0]["name"], "beta");
+    assert_eq!(removed["orphans"][0]["name"], "beta-helper");
+    assert_eq!(fixture.current_generation()?, "gen-2");
+    assert!(
+        !fixture.profile_bin("beta").exists(),
+        "remove --autoremove should delete beta from the active profile bin directory"
+    );
+    assert!(
+        !fixture.profile_bin("beta-helper").exists(),
+        "remove --autoremove should delete orphaned dependency commands"
+    );
+
+    let installed = fixture.run_json(
+        &["--json", "list", "--installed", "--registry", "lifecycle"],
+        "list installed after autoremove",
+    )?;
+    assert_package_list(&installed, &[])?;
+
+    let rolled_back = fixture.run_json(&["--json", "rollback"], "rollback autoremove")?;
+    assert_eq!(rolled_back["action"], "rollback");
+    assert_eq!(rolled_back["status"], "rolled_back");
+    assert_eq!(rolled_back["generation"], 1);
+    assert_eq!(fixture.current_generation()?, "gen-1");
+    assert_eq!(fixture.run_profile_command("beta")?, "beta 1.0.0\n");
+    assert_eq!(
+        fixture.run_profile_command("beta-helper")?,
+        "beta-helper 1.0.0\n"
+    );
 
     Ok(())
 }
@@ -111,6 +296,7 @@ struct LifecyclePackages {
     alpha_v1: PackageFixture,
     alpha_v2: PackageFixture,
     beta: PackageFixture,
+    beta_helper: PackageFixture,
 }
 
 #[derive(Clone)]
@@ -147,6 +333,12 @@ impl LifecycleFixture {
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             ),
             beta: PackageFixture::new(&store, "beta", "1.0.0", "cccccccccccccccccccccccccccccccc"),
+            beta_helper: PackageFixture::new(
+                &store,
+                "beta-helper",
+                "1.0.0",
+                "dddddddddddddddddddddddddddddddd",
+            ),
         };
 
         Ok(Self {
@@ -180,6 +372,10 @@ impl LifecycleFixture {
             registry_cache.join("packages/b/beta.toml"),
             package_toml("beta", &[&self.packages.beta]),
         )?;
+        fs::write(
+            registry_cache.join("packages/b/beta-helper.toml"),
+            package_toml("beta-helper", &[&self.packages.beta_helper]),
+        )?;
         Ok(())
     }
 
@@ -204,6 +400,30 @@ impl LifecycleFixture {
         Ok(())
     }
 
+    fn write_autoremove_profile(&self) -> Result<()> {
+        fs::create_dir_all(self.profile.join("meta"))?;
+        fs::write(
+            self.profile.join("state.json"),
+            r#"{"current_generation":1,"next_generation":2}"#,
+        )?;
+
+        self.write_store_command(&self.packages.beta)?;
+        self.write_store_command(&self.packages.beta_helper)?;
+
+        let gen_dir = self.profile.join("gen-1");
+        fs::create_dir_all(gen_dir.join("usr"))?;
+        fs::create_dir_all(gen_dir.join("meta"))?;
+        fs::create_dir_all(gen_dir.join("bin"))?;
+        self.link_package_into_generation(&gen_dir, &self.packages.beta, true)?;
+        self.link_package_into_generation(&gen_dir, &self.packages.beta_helper, false)?;
+        replace_symlink(Path::new("gen-1"), &self.profile.join("current"))?;
+
+        self.write_root_meta(&self.packages.beta, false)?;
+        self.write_root_auto_meta(&self.packages.beta_helper)?;
+
+        Ok(())
+    }
+
     fn write_store_command(&self, package: &PackageFixture) -> Result<()> {
         let bin = package.store_path.join("bin");
         fs::create_dir_all(&bin)?;
@@ -222,18 +442,31 @@ impl LifecycleFixture {
         fs::create_dir_all(gen_dir.join("meta"))?;
         fs::create_dir_all(gen_dir.join("bin"))?;
         for package in packages {
-            replace_symlink(&package.store_path, &gen_dir.join("usr").join(package.hash))?;
-            replace_symlink(
-                &package.store_path.join("bin").join(package.name),
-                &gen_dir.join("bin").join(package.name),
-            )?;
-            self.write_generation_meta(&gen_dir, package, false)?;
+            self.link_package_into_generation(&gen_dir, package, true)?;
         }
         Ok(())
     }
 
+    fn link_package_into_generation(
+        &self,
+        gen_dir: &Path,
+        package: &PackageFixture,
+        explicit: bool,
+    ) -> Result<()> {
+        replace_symlink(&package.store_path, &gen_dir.join("usr").join(package.hash))?;
+        replace_symlink(
+            &package.store_path.join("bin").join(package.name),
+            &gen_dir.join("bin").join(package.name),
+        )?;
+        self.write_generation_meta(gen_dir, package, false, explicit)
+    }
+
     fn write_root_meta(&self, package: &PackageFixture, held: bool) -> Result<()> {
-        write_meta_file(&self.profile.join("meta"), package, held)
+        write_meta_file(&self.profile.join("meta"), package, held, true)
+    }
+
+    fn write_root_auto_meta(&self, package: &PackageFixture) -> Result<()> {
+        write_meta_file(&self.profile.join("meta"), package, false, false)
     }
 
     fn write_generation_meta(
@@ -241,8 +474,9 @@ impl LifecycleFixture {
         gen_dir: &Path,
         package: &PackageFixture,
         held: bool,
+        explicit: bool,
     ) -> Result<()> {
-        write_meta_file(&gen_dir.join("meta"), package, held)
+        write_meta_file(&gen_dir.join("meta"), package, held, explicit)
     }
 
     fn run_json(&self, args: &[&str], action: &str) -> Result<Value> {
@@ -383,7 +617,7 @@ fn current_platform() -> String {
     format!("{arch}-{os}")
 }
 
-fn write_meta_file(dir: &Path, package: &PackageFixture, held: bool) -> Result<()> {
+fn write_meta_file(dir: &Path, package: &PackageFixture, held: bool, explicit: bool) -> Result<()> {
     fs::create_dir_all(dir)?;
     let meta = serde_json::json!({
         "store_path": package.store_path,
@@ -396,7 +630,7 @@ fn write_meta_file(dir: &Path, package: &PackageFixture, held: bool) -> Result<(
         "apm": {
             "name": package.name,
             "version": package.version,
-            "explicit": true,
+            "explicit": explicit,
             "registry": "lifecycle",
             "installed_at": "2026-02-16T00:00:00Z",
             "held": held,
@@ -425,6 +659,30 @@ fn assert_package_list(json: &Value, expected: &[(&str, &str, &str)]) -> Result<
                 "{json}",
             );
         }
+    }
+    Ok(())
+}
+
+fn assert_policy_versions(json: &Value, expected: &[(&str, bool)]) -> Result<()> {
+    let versions = json["versions"]
+        .as_array()
+        .context("policy versions should be an array")?;
+    assert_eq!(versions.len(), expected.len(), "{json}");
+    for (entry, (version, installed)) in versions.iter().zip(expected.iter()) {
+        assert_eq!(entry["version"], *version, "{json}");
+        assert_eq!(entry["registry"], "lifecycle", "{json}");
+        assert_eq!(entry["installed"], *installed, "{json}");
+    }
+    Ok(())
+}
+
+fn assert_orphans(json: &Value, expected: &[(&str, &str, &str)]) -> Result<()> {
+    let entries = json.as_array().context("orphans should be an array")?;
+    assert_eq!(entries.len(), expected.len(), "{json}");
+    for (entry, (name, version, registry)) in entries.iter().zip(expected.iter()) {
+        assert_eq!(entry["name"], *name, "{json}");
+        assert_eq!(entry["version"], *version, "{json}");
+        assert_eq!(entry["registry"], *registry, "{json}");
     }
     Ok(())
 }
