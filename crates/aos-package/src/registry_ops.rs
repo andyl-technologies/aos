@@ -4167,6 +4167,14 @@ fn generate_roster_key(
 /// transiently — long enough to derive the public key — and removed
 /// immediately. Resolving the source here doubles as validation that the
 /// configured path or command actually yields a usable key.
+///
+/// The registry must already have a `registries.d` config (created by
+/// `apr registry add`): the recorded `[registry.signing_keys]` entry is the
+/// whole point of this command, and the config file cannot be created here
+/// because it requires the registry URL. A missing config is an error, and
+/// it is checked up front so the key source (which may prompt, e.g. a
+/// secrets-manager command) is never run for a registration that cannot be
+/// recorded.
 fn register_roster_key(
     config: &ApmConfig,
     id: &str,
@@ -4177,6 +4185,20 @@ fn register_roster_key(
 ) -> Result<()> {
     validate_roster_key_id(id)?;
     let registry_name = resolve_registry_name(config, registry)?;
+
+    let config_path = config
+        .scope
+        .config_dir()
+        .join("registries.d")
+        .join(format!("{registry_name}.toml"));
+    if !config_path.exists() {
+        bail!(
+            "registry '{registry_name}' has no config at {}; register the registry first with \
+             `{} add <url>`, then re-run this command",
+            config_path.display(),
+            aos_core::invocation::package_registry_command(),
+        );
+    }
 
     let source = match (key, key_command) {
         (Some(_), Some(_)) => bail!("use only one of --key or --key-command"),
@@ -4192,22 +4214,8 @@ fn register_roster_key(
     let trust_key = derive_trust_key(&registry_name, resolved.path())?;
     let (_registry, _algorithm, public_key) = parse_signing_key(&trust_key)?;
 
-    let config_path = config
-        .scope
-        .config_dir()
-        .join("registries.d")
-        .join(format!("{registry_name}.toml"));
-    let configured = config_path.exists();
-    if configured {
-        state::upsert_signing_key(&config_path, id, &source)?;
-        printer.kv("Config", &config_path.display().to_string());
-    } else {
-        printer.warning(&format!(
-            "registry '{registry_name}' has no config at {}; to use --key-id {id}, add the \
-             source under [registry.signing_keys] in that file.",
-            config_path.display(),
-        ));
-    }
+    state::upsert_signing_key(&config_path, id, &source)?;
+    printer.kv("Config", &config_path.display().to_string());
 
     printer.kv("Key id", id);
     match (source.path(), source.command()) {
@@ -4224,12 +4232,7 @@ fn register_roster_key(
             "registry": registry_name,
             "id": id,
             "source": if source.path().is_some() { "path" } else { "command" },
-            "configured": configured,
-            "config": if configured {
-                Some(config_path.to_string_lossy().to_string())
-            } else {
-                None
-            },
+            "config": config_path.to_string_lossy().to_string(),
             "public_key": trust_key,
             "fingerprint": key_fingerprint(&public_key),
         }));
