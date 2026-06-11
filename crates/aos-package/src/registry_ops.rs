@@ -4526,6 +4526,7 @@ fn register_roster_key(
             "registry": registry_name,
             "id": id,
             "source": if source.path().is_some() { "path" } else { "command" },
+            "configured": true,
             "config": config_path.to_string_lossy().to_string(),
             "public_key": trust_key,
             "fingerprint": key_fingerprint(&public_key),
@@ -4890,7 +4891,12 @@ fn materialize_signing_key_command_with_path(
     command: &str,
     search_path: Option<std::ffi::OsString>,
 ) -> Result<ResolvedSigningKey> {
-    let mut shell = std::process::Command::new("bash");
+    let runtime_path = std::env::var_os("PATH");
+    let shell_program = runtime_path
+        .as_deref()
+        .and_then(|path| executable_on_path("bash", path))
+        .unwrap_or_else(|| PathBuf::from("bash"));
+    let mut shell = std::process::Command::new(shell_program);
     shell
         .arg("-c")
         .arg(command)
@@ -4935,6 +4941,13 @@ fn materialize_signing_key_command_with_path(
         path,
         _materialized: Some(file),
     })
+}
+
+/// Return the first regular executable candidate named `program` on `path`.
+fn executable_on_path(program: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Resolve a configured [`SigningKeySource`] to a path git can open.
@@ -6876,16 +6889,27 @@ mod tests {
     }
 
     #[test]
-    fn signing_key_command_search_path_override_replaces_path() {
-        // An override pointing at an empty directory leaves even `bash`
-        // unresolvable: the override replaces PATH instead of extending it.
+    fn signing_key_command_shell_resolution_survives_path_override() {
+        // The shell itself is resolved from the runtime PATH before the
+        // user command sees the override, so shell builtins still work.
         let tmp = TempDir::new().unwrap();
-        let err = materialize_signing_key_command_with_path(
+        let resolved = materialize_signing_key_command_with_path(
             "printf 'key material'",
             Some(tmp.path().as_os_str().to_os_string()),
         )
+        .unwrap();
+        assert_eq!(fs::read_to_string(resolved.path()).unwrap(), "key material");
+    }
+
+    #[test]
+    fn signing_key_command_search_path_override_replaces_command_path() {
+        let tmp = TempDir::new().unwrap();
+        let err = materialize_signing_key_command_with_path(
+            "cat /definitely/missing",
+            Some(tmp.path().as_os_str().to_os_string()),
+        )
         .unwrap_err();
-        assert!(format!("{err:#}").contains("running signing key command"));
+        assert!(format!("{err:#}").contains("signing key command"));
     }
 
     #[test]
