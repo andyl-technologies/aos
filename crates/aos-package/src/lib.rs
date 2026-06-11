@@ -571,6 +571,9 @@ pub enum RegistryCommand {
         /// Previous version in the version chain
         #[arg(long)]
         previous: Option<String>,
+        /// Source derivation or source store path to record for this package
+        #[arg(long = "source-drv")]
+        source_drv: Option<String>,
         /// Pre-compiled image store path (repeatable, paired with --image-format)
         #[arg(long = "image")]
         images: Vec<String>,
@@ -1701,6 +1704,7 @@ async fn run_registry(
             maintainer,
             sysroot,
             previous,
+            source_drv,
             images,
             image_formats,
             no_commit,
@@ -1721,6 +1725,7 @@ async fn run_registry(
                 maintainer.as_deref(),
                 *sysroot,
                 previous.as_deref(),
+                source_drv.as_deref(),
                 images,
                 image_formats,
                 *no_commit,
