@@ -78,7 +78,10 @@ use clap::{Args, Subcommand};
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
 use sysroot::KernelUpgradeMode;
-use types::{ProfileScope, RegistryUploadAuthConfig, validate_registry_name};
+use types::{
+    ProfileScope, RegistryUploadAuthConfig, validate_branch_name, validate_channel_name,
+    validate_commit_hash, validate_git_ref_name, validate_registry_name,
+};
 
 /// Environment-variable documentation appended to `apm`/`apr` long help.
 pub const ENVIRONMENT_HELP: &str = "Environment:
@@ -2101,6 +2104,63 @@ fn print_local_registries(local: &[registry_ops::LocalRegistry], printer: &Print
 /// (with at most one tracking field and optional `[registry.signing]`),
 /// pinning the `--trust-key` if given, then syncing the initial clone unless
 /// `--no-clone` was passed. A failed initial sync is non-fatal.
+struct RegistryAddConfigToml<'a> {
+    name: &'a str,
+    url: &'a str,
+    priority: u32,
+    commit: Option<&'a str>,
+    branch: Option<&'a str>,
+    channel: Option<&'a str>,
+    tag: Option<&'a str>,
+    version: Option<&'a str>,
+    trusted_key: Option<&'a security::TrustedKey>,
+    no_verify: bool,
+}
+
+fn registry_add_config_toml(config: RegistryAddConfigToml<'_>) -> Result<String> {
+    let mut registry = toml::map::Map::new();
+    registry.insert("name".into(), toml::Value::String(config.name.to_string()));
+    registry.insert("url".into(), toml::Value::String(config.url.to_string()));
+    registry.insert(
+        "priority".into(),
+        toml::Value::Integer(config.priority.into()),
+    );
+    registry.insert("enabled".into(), toml::Value::Boolean(true));
+
+    if let Some(commit) = config.commit {
+        registry.insert("commit".into(), toml::Value::String(commit.to_string()));
+    } else if let Some(branch) = config.branch {
+        registry.insert("branch".into(), toml::Value::String(branch.to_string()));
+    } else if let Some(channel) = config.channel {
+        registry.insert("channel".into(), toml::Value::String(channel.to_string()));
+    } else if let Some(tag) = config.tag {
+        registry.insert("tag".into(), toml::Value::String(tag.to_string()));
+    } else if let Some(version) = config.version {
+        registry.insert("version".into(), toml::Value::String(version.to_string()));
+    }
+
+    if let Some(key) = config.trusted_key {
+        let mut signing = toml::map::Map::new();
+        signing.insert("required".into(), toml::Value::Boolean(true));
+        signing.insert(
+            "public_key".into(),
+            toml::Value::String(format!(
+                "{}:{}:{}",
+                key.registry, key.algorithm, key.public_key
+            )),
+        );
+        registry.insert("signing".into(), toml::Value::Table(signing));
+    } else if config.no_verify {
+        let mut signing = toml::map::Map::new();
+        signing.insert("required".into(), toml::Value::Boolean(false));
+        registry.insert("signing".into(), toml::Value::Table(signing));
+    }
+
+    let mut root = toml::map::Map::new();
+    root.insert("registry".into(), toml::Value::Table(registry));
+    Ok(toml::to_string_pretty(&toml::Value::Table(root))?)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn registry_add(
     config: &config::ApmConfig,
@@ -2131,10 +2191,22 @@ async fn registry_add(
         );
     }
 
+    if let Some(c) = commit {
+        validate_commit_hash(c)?;
+    }
     // Validate version constraint if provided.
     if let Some(v) = version {
         semver::VersionReq::parse(v)
             .map_err(|e| anyhow::anyhow!("invalid version constraint '{}': {}", v, e))?;
+    }
+    if let Some(b) = branch {
+        validate_branch_name(b)?;
+    }
+    if let Some(c) = channel {
+        validate_channel_name(c)?;
+    }
+    if let Some(t) = tag {
+        validate_git_ref_name(t)?;
     }
     let trusted_key = trust_key
         .map(|key| {
@@ -2166,17 +2238,9 @@ async fn registry_add(
         .with_context(|| format!("creating {}", registries_dir.display()))?;
 
     let toml_path = registries_dir.join(format!("{name}.toml"));
-    let mut toml_content = format!(
-        r#"[registry]
-name = "{name}"
-url = "{url}"
-priority = {priority}
-enabled = true
-"#,
-    );
 
     let tracking = if let Some(c) = commit {
-        format!("commit:{}", &c[..c.len().min(12)])
+        format!("commit:{}", c.chars().take(12).collect::<String>())
     } else if let Some(b) = branch {
         format!("branch:{b}")
     } else if let Some(c) = channel {
@@ -2189,35 +2253,27 @@ enabled = true
         "default".to_string()
     };
 
-    // Add tracking mode field if specified.
-    if let Some(c) = commit {
-        toml_content.push_str(&format!("commit = \"{c}\"\n"));
-        printer.kv("Tracking", &tracking);
-    } else if let Some(b) = branch {
-        toml_content.push_str(&format!("branch = \"{b}\"\n"));
-        printer.kv("Tracking", &tracking);
-    } else if let Some(c) = channel {
-        toml_content.push_str(&format!("channel = \"{c}\"\n"));
-        printer.kv("Tracking", &tracking);
-    } else if let Some(t) = tag {
-        toml_content.push_str(&format!("tag = \"{t}\"\n"));
-        printer.kv("Tracking", &tracking);
-    } else if let Some(v) = version {
-        toml_content.push_str(&format!("version = \"{v}\"\n"));
+    if tracking != "default" {
         printer.kv("Tracking", &tracking);
     }
-    if let Some(key) = &trusted_key {
-        toml_content.push_str(&format!(
-            "\n[registry.signing]\nrequired = true\npublic_key = \"{}:{}:{}\"\n",
-            key.registry, key.algorithm, key.public_key,
-        ));
-    } else if no_verify {
+    if no_verify && trusted_key.is_none() {
         // Verification is fail-closed by default; the explicit opt-out is
         // recorded in the config so the choice is visible and auditable.
-        toml_content.push_str("\n[registry.signing]\nrequired = false\n");
         printer.kv("Signing", "verification disabled (--no-verify)");
     }
 
+    let toml_content = registry_add_config_toml(RegistryAddConfigToml {
+        name: &name,
+        url,
+        priority,
+        commit,
+        branch,
+        channel,
+        tag,
+        version,
+        trusted_key: trusted_key.as_ref(),
+        no_verify,
+    })?;
     fs::write(&toml_path, &toml_content)
         .with_context(|| format!("writing {}", toml_path.display()))?;
     if let Some(key) = &trusted_key {
@@ -2641,6 +2697,37 @@ mod tests {
         assert!(content.contains("name = \"core\""));
         assert!(content.contains("https://registry.aos.dev/core"));
         assert!(content.contains("priority = 500"));
+    }
+
+    #[test]
+    fn registry_add_config_toml_escapes_url_and_tracking_fields() {
+        let content = registry_add_config_toml(RegistryAddConfigToml {
+            name: "quoted-url",
+            url: "file:///tmp/registry with \"quotes\"\nand newline",
+            priority: 750,
+            commit: None,
+            branch: Some("feature/quoted-url"),
+            channel: None,
+            tag: None,
+            version: None,
+            trusted_key: None,
+            no_verify: true,
+        })
+        .unwrap();
+
+        let parsed: types::RegistryFile = toml::from_str(&content).unwrap();
+        assert_eq!(parsed.registry.name, "quoted-url");
+        assert_eq!(
+            parsed.registry.url,
+            "file:///tmp/registry with \"quotes\"\nand newline"
+        );
+        assert_eq!(parsed.registry.priority, 750);
+        assert!(parsed.registry.enabled);
+        assert_eq!(
+            parsed.registry.branch.as_deref(),
+            Some("feature/quoted-url")
+        );
+        assert_eq!(parsed.registry.signing.unwrap().required, false);
     }
 
     #[tokio::test]

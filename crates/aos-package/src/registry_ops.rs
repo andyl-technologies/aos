@@ -72,8 +72,9 @@ use crate::security::{
 use crate::sshkey;
 use crate::types::{
     CacheEntry, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
-    SigningKeySource, SigningKeySpec, package_name_bucket, validate_package_name,
-    validate_platform_name, validate_registry_name,
+    SigningKeySource, SigningKeySpec, package_name_bucket, validate_branch_name,
+    validate_channel_name, validate_git_ref_name, validate_package_name, validate_platform_name,
+    validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
@@ -913,9 +914,7 @@ fn initial_keys_roster(
     };
 
     let trust_key_id = trust_key_id.unwrap_or("initial");
-    if trust_key_id.trim().is_empty() {
-        bail!("--trust-key-id cannot be empty when --trust-key is provided");
-    }
+    validate_roster_key_id(trust_key_id)?;
 
     let (key_registry, _algorithm, _public_key) = parse_signing_key(trust_key)?;
     if key_registry != registry_name {
@@ -951,8 +950,9 @@ fn initial_keys_roster(
 /// Fails when the registry directory already exists; when `--trust-key` is
 /// given without a signing key (clients verify head-commit signatures from
 /// first contact, so a seeded roster requires a signed root commit); when
-/// no git commit identity is configured; when the trust key belongs to a
-/// different registry; or when a git invocation or file write fails.
+/// no git commit identity is configured; when the trust key id is invalid;
+/// when the trust key belongs to a different registry; or when a git
+/// invocation or file write fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn create(
     config: &ApmConfig,
@@ -970,6 +970,8 @@ pub async fn create(
     if dir.exists() {
         bail!("registry '{name}' already exists at {}", dir.display());
     }
+
+    let roster = initial_keys_roster(name, trust_key, trust_key_id)?;
 
     // A registry seeded with a trust roster must start with a signed
     // commit: clients verify head-commit signatures from first contact,
@@ -1007,7 +1009,6 @@ description = ""
 "#
     );
     std::fs::write(dir.join("registry.toml"), &registry_toml)?;
-    let roster = initial_keys_roster(name, trust_key, trust_key_id)?;
     keys::write_keys_toml(&dir, &roster)?;
 
     let signing_key = if key.is_some() || key_id.is_some() {
@@ -3118,9 +3119,9 @@ fn git_log_entries(dir: &Path, package: Option<&str>, n: u32) -> Result<Vec<serd
 ///
 /// # Errors
 ///
-/// Fails when the registry cannot be resolved or when the underlying git
-/// command fails (e.g. deleting an unmerged branch or switching with a
-/// dirty working tree).
+/// Fails when the registry cannot be resolved, a branch name is not safe to
+/// use as a Git ref, or when the underlying git command fails (e.g. deleting
+/// an unmerged branch or switching with a dirty working tree).
 pub async fn run_branch(
     config: &ApmConfig,
     command: &BranchCommand,
@@ -3140,8 +3141,9 @@ pub async fn run_branch(
             Ok(())
         }
         BranchCommand::Create { name, registry } => {
+            validate_branch_name(name)?;
             let dir = registry_dir(config, registry.as_deref())?;
-            git(&dir, &["branch", name])?;
+            git(&dir, &["branch", "--", name])?;
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
                     "action": "create",
@@ -3155,8 +3157,9 @@ pub async fn run_branch(
             Ok(())
         }
         BranchCommand::Switch { name, registry } => {
+            validate_branch_name(name)?;
             let dir = registry_dir(config, registry.as_deref())?;
-            git(&dir, &["checkout", name])?;
+            git(&dir, &["switch", "--", name])?;
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
                     "action": "switch",
@@ -3170,8 +3173,9 @@ pub async fn run_branch(
             Ok(())
         }
         BranchCommand::Delete { name, registry } => {
+            validate_branch_name(name)?;
             let dir = registry_dir(config, registry.as_deref())?;
-            git(&dir, &["branch", "-d", name])?;
+            git(&dir, &["branch", "-d", "--", name])?;
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
                     "action": "delete",
@@ -5275,8 +5279,9 @@ async fn channel_status(
 ///
 /// # Errors
 ///
-/// Fails when no remote or upstream is configured for the branch, or when
-/// the remote rejects the push.
+/// Fails when a supplied branch name is not safe to use as a Git ref, when
+/// no remote or upstream is configured for the branch, or when the remote
+/// rejects the push.
 pub async fn push(
     config: &ApmConfig,
     branch: Option<&str>,
@@ -5287,6 +5292,9 @@ pub async fn push(
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
     let current = current_git_branch(&dir)?;
+    if let Some(branch) = branch {
+        validate_branch_name(branch)?;
+    }
     let pushed_branch = branch
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| current.clone());
@@ -5374,7 +5382,8 @@ pub async fn pull(
 ///
 /// # Errors
 ///
-/// Fails when the branch does not exist or the merge conflicts.
+/// Fails when the branch name is not safe to use as a Git ref, when the
+/// branch does not exist, or when the merge conflicts.
 pub async fn merge(
     config: &ApmConfig,
     branch: &str,
@@ -5384,6 +5393,7 @@ pub async fn merge(
     printer: &Printer,
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
+    validate_branch_name(branch)?;
 
     let mut args = vec!["merge"];
     if no_ff {
@@ -5392,6 +5402,7 @@ pub async fn merge(
     if squash {
         args.push("--squash");
     }
+    args.push("--");
     args.push(branch);
 
     let output = git(&dir, &args)?;
@@ -6222,8 +6233,9 @@ fn channel_advance_dir(
 ///
 /// # Errors
 ///
-/// Fails when the signing key cannot be resolved, when the tag already
-/// exists, or when git tag signing fails.
+/// Fails when the tag name is not a safe Git refname, when the signing key
+/// cannot be resolved, when the tag already exists, or when git tag signing
+/// fails.
 pub async fn tag(
     config: &ApmConfig,
     name: &str,
@@ -6233,6 +6245,7 @@ pub async fn tag(
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    validate_git_ref_name(name)?;
     let registry_name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&registry_name);
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
@@ -6276,8 +6289,9 @@ pub async fn tag(
 ///
 /// # Errors
 ///
-/// Fails when no tag name is given, when the tag cannot be resolved, when
-/// the signing key cannot be resolved, or when git tag signing fails.
+/// Fails when no tag name is given, when the tag name is not a safe Git
+/// refname, when the tag cannot be resolved, when the signing key cannot be
+/// resolved, or when git tag signing fails.
 pub async fn sign(
     config: &ApmConfig,
     tag: Option<&str>,
@@ -6291,6 +6305,7 @@ pub async fn sign(
     let tag_name = tag.ok_or_else(|| {
         anyhow::anyhow!("`apr sign` now signs tag objects; pass the existing tag name to re-sign")
     })?;
+    validate_git_ref_name(tag_name)?;
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
     let previous_tag_object = git(&dir, &["rev-parse", &format!("{tag_name}^{{tag}}")])
         .with_context(|| format!("resolving existing tag object for '{tag_name}'"))?;
@@ -6322,17 +6337,6 @@ pub async fn sign(
     }
     printer.success(&format!("Re-signed tag '{tag_name}'."));
 
-    Ok(())
-}
-
-fn validate_channel_name(channel_name: &str) -> Result<()> {
-    if channel_name.is_empty()
-        || channel_name.contains('/')
-        || channel_name.starts_with('-')
-        || channel_name.contains("..")
-    {
-        bail!("channel name must be a single non-empty ref segment");
-    }
     Ok(())
 }
 
@@ -6525,6 +6529,7 @@ fn sign_tag(
     signing_key: &str,
     force: bool,
 ) -> Result<()> {
+    validate_git_ref_name(tag_name)?;
     let message = message.unwrap_or("AOS registry release");
     ensure_commit_identity(dir)?;
     let signing_key_config = format!("user.signingkey={signing_key}");
@@ -6540,9 +6545,10 @@ fn sign_tag(
         command.arg("-f");
     }
     command
-        .arg(tag_name)
         .arg("-m")
         .arg(message)
+        .arg("--")
+        .arg(tag_name)
         .arg(target)
         .current_dir(dir);
 
@@ -6670,6 +6676,17 @@ mod tests {
     fn initial_keys_roster_rejects_key_id_without_key() {
         let err = initial_keys_roster("aos-core", None, Some("2026a")).unwrap_err();
         assert!(format!("{err:#}").contains("--trust-key-id requires --trust-key"));
+    }
+
+    #[test]
+    fn initial_keys_roster_rejects_invalid_key_id() {
+        let err = initial_keys_roster(
+            "aos-core",
+            Some("aos-core:Ed25519:YWJjZA=="),
+            Some("bad/id"),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("key id"));
     }
 
     #[test]
