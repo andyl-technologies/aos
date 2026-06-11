@@ -3027,16 +3027,95 @@ in {
         "upgradable list names static release package"
       assert_file_contains /tmp/static-release-upgradable-v2.out "2.0.0" \
         "upgradable list reports static release v2"
-      NAR_GETS_BEFORE_UPGRADE=$(cache_nar_http_get_count)
-      $APM upgrade static-closure --yes > /tmp/static-release-upgrade-v2.out 2>&1 || {
-        cat /tmp/static-release-upgrade-v2.out
-        fail "apm upgrade downloads anonymous v2 closure from uploaded origin"
+
+      echo "==> Consumer: JSON dry-run upgrade reports anonymous v2 closure without downloading"
+      NAR_GETS_BEFORE_UPGRADE_DRY_RUN=$(cache_nar_http_get_count)
+      $APM --json upgrade static-closure --dry-run \
+        > /tmp/static-release-upgrade-v2-dry-run-json.out 2>&1 || {
+        cat /tmp/static-release-upgrade-v2-dry-run-json.out
+        fail "apm --json upgrade --dry-run plans anonymous v2 closure from uploaded origin"
       }
-      cat /tmp/static-release-upgrade-v2.out
-      assert_file_contains /tmp/static-release-upgrade-v2.out "Downloading 2 NAR" \
-        "apm upgrade downloads root and anonymous v2 dependency NARs"
-      assert_file_contains /tmp/static-release-upgrade-v2.out "Upgraded 1 package" \
-        "apm upgrade activates static release v2"
+      if ${pkgs.jq}/bin/jq -e --arg root "$ROOT_V2_STORE" --arg leaf "$LEAF_V2_STORE" \
+        '[.downloads.paths[].store_path] as $downloaded_paths
+        | .action == "upgrade"
+          and .status == "planned"
+          and .dry_run == true
+          and .generation == null
+          and .requested == ["static-closure"]
+          and .downloads.planned == 2
+          and .downloads.downloaded == 0
+          and .downloads.imported == 0
+          and (.upgrades | length == 1)
+          and .upgrades[0].name == "static-closure"
+          and .upgrades[0].old_version == "1.0.0"
+          and .upgrades[0].new_version == "2.0.0"
+          and .upgrades[0].new_store_path == $root
+          and ($downloaded_paths | index($root) != null)
+          and ($downloaded_paths | index($leaf) != null)' \
+        /tmp/static-release-upgrade-v2-dry-run-json.out >/dev/null; then
+        pass "apm --json upgrade --dry-run reports anonymous v2 closure"
+      else
+        cat /tmp/static-release-upgrade-v2-dry-run-json.out
+        fail "apm --json upgrade --dry-run reports anonymous v2 closure"
+      fi
+      assert_file_not_contains /tmp/static-release-upgrade-v2-dry-run-json.out "Downloading" \
+        "apm --json upgrade --dry-run emits clean JSON while planning"
+      if [ "$(cache_nar_http_get_count)" = "$NAR_GETS_BEFORE_UPGRADE_DRY_RUN" ]; then
+        pass "json upgrade dry-run fetches no v2 release NAR bodies"
+      else
+        cat /tmp/static-release-http.log || true
+        fail "json upgrade dry-run should not fetch v2 release NAR bodies"
+      fi
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "json upgrade dry-run leaves NAR cache empty"
+      else
+        fail "json upgrade dry-run should not cache release NARs"
+      fi
+      assert_store_missing "$ROOT_V2_STORE" "closure-root-v2"
+      assert_store_missing "$LEAF_V2_STORE" "closure-leaf-v2"
+      assert_store_missing "$ROOT_V2_SOURCE_STORE" "closure-root-source-v2"
+      if [ "$(generation_count)" = "1" ]; then
+        pass "json upgrade dry-run creates no new profile generation"
+      else
+        fail "json upgrade dry-run should not create a profile generation"
+      fi
+
+      echo "==> Consumer: JSON upgrade from uploaded static origin downloads anonymous v2 closure"
+      NAR_GETS_BEFORE_UPGRADE=$(cache_nar_http_get_count)
+      $APM --json upgrade static-closure --yes \
+        > /tmp/static-release-upgrade-v2-json.out 2>&1 || {
+        cat /tmp/static-release-upgrade-v2-json.out
+        fail "apm --json upgrade downloads anonymous v2 closure from uploaded origin"
+      }
+      if ${pkgs.jq}/bin/jq -e --arg root "$ROOT_V2_STORE" --arg leaf "$LEAF_V2_STORE" \
+        '[.downloads.paths[].store_path] as $downloaded_paths
+        | .action == "upgrade"
+          and .status == "upgraded"
+          and .dry_run == false
+          and .generation == 2
+          and .requested == ["static-closure"]
+          and .downloads.planned == 2
+          and .downloads.downloaded == 2
+          and .downloads.imported == 2
+          and (.upgrades | length == 1)
+          and .upgrades[0].name == "static-closure"
+          and .upgrades[0].old_version == "1.0.0"
+          and .upgrades[0].new_version == "2.0.0"
+          and .upgrades[0].new_store_path == $root
+          and ($downloaded_paths | index($root) != null)
+          and ($downloaded_paths | index($leaf) != null)' \
+        /tmp/static-release-upgrade-v2-json.out >/dev/null; then
+        pass "apm --json upgrade reports downloaded anonymous v2 closure"
+      else
+        cat /tmp/static-release-upgrade-v2-json.out
+        fail "apm --json upgrade reports downloaded anonymous v2 closure"
+      fi
+      assert_file_not_contains /tmp/static-release-upgrade-v2-json.out "Downloading" \
+        "apm --json upgrade emits clean JSON while downloading"
+      assert_file_not_contains /tmp/static-release-upgrade-v2-json.out "Importing packages" \
+        "apm --json upgrade emits clean JSON while importing"
+      assert_file_not_contains /tmp/static-release-upgrade-v2-json.out "Updating profile" \
+        "apm --json upgrade emits clean JSON while switching profile"
       EXPECTED_NAR_GETS_AFTER_UPGRADE=$((NAR_GETS_BEFORE_UPGRADE + 2))
       if [ "$(cache_nar_http_get_count)" = "$EXPECTED_NAR_GETS_AFTER_UPGRADE" ]; then
         pass "upgrade fetches exactly two v2 release NAR bodies"
