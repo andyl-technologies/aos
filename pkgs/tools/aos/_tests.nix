@@ -342,6 +342,18 @@ in {
           "$work/apr-create-invalid-registry-name.out"
         test ! -e "$data/apm/escaped-create"
 
+        invalid_bootstrap_key="invalid-bootstrap:Ed25519:bWlzbWF0Y2g="
+        if run_clean ${self}/bin/apr create invalid-bootstrap \
+          --trust-key "$invalid_bootstrap_key" \
+          --trust-key-id bad/id \
+          > "$work/apr-create-invalid-trust-key-id.out" 2>&1; then
+          cat "$work/apr-create-invalid-trust-key-id.out"
+          exit 1
+        fi
+        grep -q "key id" \
+          "$work/apr-create-invalid-trust-key-id.out"
+        test ! -e "$data/apm/registries/invalid-bootstrap"
+
         if run_clean ${self}/bin/apm registry add --no-verify "file://$work" \
           --name ../escaped-add \
           > "$work/apm-add-invalid-registry-name.out" 2>&1; then

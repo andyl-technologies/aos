@@ -2121,7 +2121,10 @@ fn registry_add_config_toml(config: RegistryAddConfigToml<'_>) -> Result<String>
     let mut registry = toml::map::Map::new();
     registry.insert("name".into(), toml::Value::String(config.name.to_string()));
     registry.insert("url".into(), toml::Value::String(config.url.to_string()));
-    registry.insert("priority".into(), toml::Value::Integer(config.priority.into()));
+    registry.insert(
+        "priority".into(),
+        toml::Value::Integer(config.priority.into()),
+    );
     registry.insert("enabled".into(), toml::Value::Boolean(true));
 
     if let Some(commit) = config.commit {
@@ -2720,7 +2723,10 @@ mod tests {
         );
         assert_eq!(parsed.registry.priority, 750);
         assert!(parsed.registry.enabled);
-        assert_eq!(parsed.registry.branch.as_deref(), Some("feature/quoted-url"));
+        assert_eq!(
+            parsed.registry.branch.as_deref(),
+            Some("feature/quoted-url")
+        );
         assert_eq!(parsed.registry.signing.unwrap().required, false);
     }
 
