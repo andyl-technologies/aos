@@ -277,6 +277,41 @@
     program = "sourceful";
     outputName = "sourceful";
   };
+  sourceClosureRuntime = mkProfileTool {
+    pname = "sourceclosure";
+    version = "1.0.0";
+  };
+  sourceClosureSourceDep = mkProfileTool {
+    pname = "sourceclosure-source-helper";
+    version = "1.0.0";
+    program = "source-helper";
+  };
+  sourceClosureSourceRoot = pkgs.mkDerivation {
+    pname = "sourceclosure-source";
+    version = "1.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    runtimeDeps = [
+      sourceClosureSourceDep
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'helper_output="$(${sourceClosureSourceDep}/bin/source-helper)"' \
+            'printf "sourceclosure source 1.0.0 via %s\n" "$helper_output"' \
+            > "$out/bin/sourceclosure-source"
+          chmod +x "$out/bin/sourceclosure-source"
+        '';
+      }
+    ];
+  };
   realIdempotentDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -378,6 +413,9 @@
       sourcefulV2
       sourcefulSourceV1
       sourcefulSourceV2
+      sourceClosureRuntime
+      sourceClosureSourceDep
+      sourceClosureSourceRoot
     ];
   sourceVerifyAltDeps =
     fixtures.commonDeps
@@ -4634,6 +4672,9 @@ in {
       SOURCE_V2_STORE="${sourcefulV2}"
       SOURCE_V1_SRC_STORE="${sourcefulSourceV1}"
       SOURCE_V2_SRC_STORE="${sourcefulSourceV2}"
+      SOURCE_CLOSURE_STORE="${sourceClosureRuntime}"
+      SOURCE_CLOSURE_SRC_STORE="${sourceClosureSourceRoot}"
+      SOURCE_CLOSURE_DEP_STORE="${sourceClosureSourceDep}"
       SURFACE_HASH=$(basename "$SURFACE_STORE" | cut -d- -f1)
       LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
       UPGRADE_V1_HASH=$(basename "$UPGRADE_V1_STORE" | cut -d- -f1)
@@ -4642,6 +4683,9 @@ in {
       SOURCE_V2_HASH=$(basename "$SOURCE_V2_STORE" | cut -d- -f1)
       SOURCE_V1_SRC_HASH=$(basename "$SOURCE_V1_SRC_STORE" | cut -d- -f1)
       SOURCE_V2_SRC_HASH=$(basename "$SOURCE_V2_SRC_STORE" | cut -d- -f1)
+      SOURCE_CLOSURE_HASH=$(basename "$SOURCE_CLOSURE_STORE" | cut -d- -f1)
+      SOURCE_CLOSURE_SRC_HASH=$(basename "$SOURCE_CLOSURE_SRC_STORE" | cut -d- -f1)
+      SOURCE_CLOSURE_DEP_HASH=$(basename "$SOURCE_CLOSURE_DEP_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/surfaceuser"
       SURFACE_BIN="$PROFILE/current/bin/surfacepkg"
       LEAF_BIN="$PROFILE/current/bin/surface-leaf"
@@ -4798,6 +4842,25 @@ in {
           "apr publish sourceful $version reports explicit source metadata"
       }
 
+      publish_sourceclosure() {
+        $APR publish "$SOURCE_CLOSURE_STORE" \
+          --name sourceclosure \
+          --version 1.0.0 \
+          --description "Source closure command fixture" \
+          --license MIT \
+          --maintainer surface@example.invalid \
+          --source-drv "$SOURCE_CLOSURE_SRC_STORE" \
+          --registry surface-reg \
+          --no-commit > /tmp/surface-publish-sourceclosure.out 2>&1 || {
+          cat /tmp/surface-publish-sourceclosure.out
+          fail "apr publish sourceclosure succeeds"
+          return 1
+        }
+        cat /tmp/surface-publish-sourceclosure.out
+        assert_file_contains /tmp/surface-publish-sourceclosure.out "$SOURCE_CLOSURE_SRC_STORE" \
+          "apr publish sourceclosure reports explicit source metadata"
+      }
+
       generate_surface_cache() {
         label="$1"
         $APR cache generate \
@@ -4855,6 +4918,9 @@ in {
       assert_store_valid "$SOURCE_V2_STORE" "sourceful-v2"
       assert_store_valid "$SOURCE_V1_SRC_STORE" "sourceful-source-v1"
       assert_store_valid "$SOURCE_V2_SRC_STORE" "sourceful-source-v2"
+      assert_store_valid "$SOURCE_CLOSURE_STORE" "sourceclosure-runtime"
+      assert_store_valid "$SOURCE_CLOSURE_SRC_STORE" "sourceclosure-source-root"
+      assert_store_valid "$SOURCE_CLOSURE_DEP_STORE" "sourceclosure-source-helper"
       nix-store -q --references "$SURFACE_STORE" > /tmp/surface-refs.out
       assert_file_contains /tmp/surface-refs.out "$LEAF_STORE" \
         "surfacepkg has a real Nix reference to surface-leaf"
@@ -4867,6 +4933,7 @@ in {
       publish_surface_package
       publish_upgradeface 1.0.0 "$UPGRADE_V1_STORE" v1
       publish_sourceful 1.0.0 "$SOURCE_V1_STORE" "$SOURCE_V1_SRC_STORE" v1
+      publish_sourceclosure
       assert_file_contains "$REG_DIR/packages/s/surfacepkg.toml" \
         "$SURFACE_HASH" "published surfacepkg metadata records store hash"
       assert_file_contains "$REG_DIR/packages/s/surface-leaf.toml" \
@@ -4875,8 +4942,13 @@ in {
         "$SOURCE_V1_HASH" "published sourceful metadata records store hash"
       assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
         "$SOURCE_V1_SRC_STORE" "published sourceful metadata records distinct source path"
+      assert_file_contains "$REG_DIR/packages/s/sourceclosure.toml" \
+        "$SOURCE_CLOSURE_SRC_STORE" "published sourceclosure metadata records source root"
       assert_file_contains "$REG_DIR/closures/$SURFACE_HASH" \
         "$LEAF_HASH" "published surfacepkg closure records dependency"
+      nix-store -q --references "$SOURCE_CLOSURE_SRC_STORE" > /tmp/surface-sourceclosure-refs.out
+      assert_file_contains /tmp/surface-sourceclosure-refs.out "$SOURCE_CLOSURE_DEP_STORE" \
+        "sourceclosure source root has a real source-only dependency reference"
 
       generate_surface_cache initial
       assert_file_exists "/tmp/surface-cache/$SURFACE_HASH.narinfo" \
@@ -4889,6 +4961,12 @@ in {
         "static cache has sourceful v1 narinfo"
       assert_file_exists "/tmp/surface-cache/$SOURCE_V1_SRC_HASH.narinfo" \
         "static cache has sourceful v1 source narinfo"
+      assert_file_exists "/tmp/surface-cache/$SOURCE_CLOSURE_HASH.narinfo" \
+        "static cache has sourceclosure runtime narinfo"
+      assert_file_exists "/tmp/surface-cache/$SOURCE_CLOSURE_SRC_HASH.narinfo" \
+        "static cache has sourceclosure source root narinfo"
+      assert_file_exists "/tmp/surface-cache/$SOURCE_CLOSURE_DEP_HASH.narinfo" \
+        "static cache has sourceclosure source-only dependency narinfo"
       assert_file_contains "$REG_DIR/registry.toml" \
         "http://127.0.0.1:18105" "registry records command-surface cache URL"
 
@@ -4927,6 +5005,8 @@ in {
       delete_store_path "$UPGRADE_V1_STORE" "upgradeface-v1"
       delete_store_path "$SOURCE_V1_STORE" "sourceful-v1"
       delete_store_path "$SOURCE_V1_SRC_STORE" "sourceful-source-v1"
+      delete_store_path "$SOURCE_CLOSURE_SRC_STORE" "sourceclosure-source-root"
+      delete_store_path "$SOURCE_CLOSURE_DEP_STORE" "sourceclosure-source-helper"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -5130,6 +5210,24 @@ in {
       run_fail source-fetch "$APM" source surfacepkg --fetch
       assert_file_contains /tmp/surface-source-fetch.out "no source derivation recorded" \
         "apm source --fetch reports missing source drv"
+      assert_store_missing "$SOURCE_CLOSURE_SRC_STORE" \
+        "sourceclosure source root before explicit fetch"
+      assert_store_missing "$SOURCE_CLOSURE_DEP_STORE" \
+        "sourceclosure source-only dependency before explicit fetch"
+      run_ok sourceclosure-source "$APM" source sourceclosure
+      assert_file_contains /tmp/surface-sourceclosure-source.out "$SOURCE_CLOSURE_SRC_STORE" \
+        "apm source reports registry candidate source closure root"
+      run_ok sourceclosure-fetch "$APM" source sourceclosure --fetch
+      assert_file_contains /tmp/surface-sourceclosure-fetch.out "Downloading 2 NAR" \
+        "apm source --fetch downloads source root and source-only dependency"
+      assert_file_contains /tmp/surface-sourceclosure-fetch.out "Source realised: $SOURCE_CLOSURE_SRC_STORE" \
+        "apm source --fetch realises registry candidate source closure root"
+      assert_store_valid "$SOURCE_CLOSURE_SRC_STORE" "sourceclosure-source-root"
+      assert_store_valid "$SOURCE_CLOSURE_DEP_STORE" "sourceclosure-source-helper"
+      "$SOURCE_CLOSURE_SRC_STORE/bin/sourceclosure-source" > /tmp/surface-sourceclosure-run.out
+      assert_file_contains /tmp/surface-sourceclosure-run.out \
+        "^sourceclosure source 1.0.0 via sourceclosure-source-helper 1.0.0$" \
+        "fetched source closure executes with its source-only dependency"
       run_ok source-sourceful "$APM" source sourceful
       assert_file_contains /tmp/surface-source-sourceful.out "$SOURCE_V1_SRC_STORE" \
         "apm source reports sourceful v1 source path"
