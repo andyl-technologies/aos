@@ -6,6 +6,9 @@ use anyhow::Result;
 use rand::Rng;
 
 /// Configuration for retry behavior.
+///
+/// The default is 3 attempts with a 1 second initial delay, a 2x
+/// backoff factor, a 30 second delay cap, and jitter enabled.
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
     /// Maximum number of attempts (including the first).
@@ -16,7 +19,9 @@ pub struct RetryConfig {
     pub max_delay: Duration,
     /// Multiplier applied to the delay after each attempt.
     pub backoff_factor: f64,
-    /// Whether to add random jitter to delays.
+    /// Whether to add random jitter to delays. When enabled, each
+    /// delay is drawn uniformly from `0..=computed_backoff` to avoid
+    /// thundering-herd retries.
     pub jitter: bool,
 }
 
@@ -44,6 +49,14 @@ pub enum ErrorClass {
 }
 
 /// Classify an error based on HTTP status and error type.
+///
+/// If `status` is provided it takes precedence: 429 is
+/// [`ErrorClass::RateLimit`], other 4xx are [`ErrorClass::Permanent`],
+/// and 5xx are [`ErrorClass::Transient`]. Otherwise the error chain is
+/// inspected: reqwest timeouts/connect failures and I/O errors are
+/// transient, and a reqwest error carrying a status is classified by
+/// that status. Unknown errors default to transient so they get
+/// retried.
 pub fn classify_error(status: Option<u16>, error: &anyhow::Error) -> ErrorClass {
     if let Some(status) = status {
         return classify_status(status);
@@ -71,6 +84,7 @@ pub fn classify_error(status: Option<u16>, error: &anyhow::Error) -> ErrorClass 
     ErrorClass::Transient
 }
 
+/// Classify a bare HTTP status code into an [`ErrorClass`].
 fn classify_status(status: u16) -> ErrorClass {
     match status {
         429 => ErrorClass::RateLimit,
@@ -88,6 +102,12 @@ fn classify_status(status: u16) -> ErrorClass {
 ///
 /// For rate-limit errors (429), the delay is either the Retry-After value
 /// (if extractable from the error) or the computed backoff delay.
+///
+/// # Errors
+///
+/// Returns the operation's error immediately if it is classified as
+/// [`ErrorClass::Permanent`], or the last error observed once
+/// `max_attempts` retryable failures have occurred.
 pub async fn with_retry<F, Fut, T>(config: &RetryConfig, operation: F) -> Result<T>
 where
     F: Fn() -> Fut,
@@ -142,9 +162,15 @@ where
 
 /// Execute an async operation with retry logic and HTTP status classification.
 ///
-/// Similar to `with_retry` but accepts an operation that returns
+/// Similar to [`with_retry`] but accepts an operation that returns
 /// `(Option<u16>, Result<T>)` where the first element is the HTTP status
 /// code for error classification.
+///
+/// # Errors
+///
+/// Returns the operation's error immediately if the status/error is
+/// classified as [`ErrorClass::Permanent`], or the last error observed
+/// once `max_attempts` retryable failures have occurred.
 pub async fn with_retry_status<F, Fut, T>(config: &RetryConfig, operation: F) -> Result<T>
 where
     F: Fn() -> Fut,
@@ -191,11 +217,17 @@ where
 
 /// Compute the delay for a retry attempt.
 ///
+/// `attempt` is zero-based: attempt 0 yields the initial delay,
+/// attempt 1 the initial delay times the backoff factor, and so on,
+/// clamped to `max_delay` (with jitter applied if configured).
+///
 /// Used by the transfer engine's manual retry loop.
 pub fn compute_retry_delay(config: &RetryConfig, attempt: u32) -> Duration {
     compute_delay(config, attempt)
 }
 
+/// Exponential backoff: `initial_delay * backoff_factor^attempt`,
+/// clamped to `max_delay`, optionally jittered over `0..=delay`.
 fn compute_delay(config: &RetryConfig, attempt: u32) -> Duration {
     let base = config.initial_delay.as_secs_f64() * config.backoff_factor.powi(attempt as i32);
     let clamped = base.min(config.max_delay.as_secs_f64());

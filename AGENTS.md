@@ -124,6 +124,43 @@ Tokio).
   handling — propagate with `?`, return `Result`, and model errors with proper
   types. (Tests and examples may use them where a panic is the intended signal.)
 
+### Rust documentation standard
+
+The concrete bar for "docs.rs quality" in this workspace:
+
+- **Crate level**: `lib.rs` / `main.rs` carries a `//!` overview — what the
+  crate does, a map of its modules, and how the pieces fit together.
+- **Module level**: every `.rs` file carries a `//!` header naming what the
+  module owns and its key concepts. Modules that own an on-disk or wire
+  format (TOML schemas, narinfo, state JSON, pack layouts) show the format in
+  a fenced example block.
+- **Every public item** gets `///` rustdoc: a one-sentence third-person
+  summary line, then detail paragraphs only where behavior is non-obvious.
+  Public struct fields are documented wherever their meaning isn't
+  self-evident — schema/config structs are data contracts and their field
+  docs matter most.
+- **`# Errors` on every public fn returning `Result`**, describing the
+  conditions that produce errors. **`# Panics`** wherever a panic is
+  reachable.
+- **Tag every fenced block** in docs: ` ```text `, ` ```toml `, ` ```no_run `,
+  or ` ```ignore `. Untagged blocks become doctests that compile and run in
+  the hermetic `pkgs.aos` build — a format example with an untagged fence is
+  a build failure. Add runnable `# Examples` only when they compile against
+  public API alone; prefer `no_run`.
+- **Clap derive caveat**: doc comments on `#[derive(Parser/Subcommand/Args)]`
+  containers and their fields become `--help` output. Do not add container
+  `///` docs (document the surrounding module instead), and treat field doc
+  edits as user-facing CLI changes — keep them short, imperative, accurate.
+- **Private items**: document non-obvious helpers briefly; don't pad
+  trivial one-liners.
+- **Intra-doc links** (`` [`Item`] ``) only to items that exist and are
+  visible from the linking item — links from public docs to private items
+  warn. Prefer ASCII punctuation in comments.
+- Documenting existing code is a **comments-only** activity: never reorder,
+  rename, or reformat code in a docs pass. If a doc claim contradicts the
+  code, fix the doc to match observed behavior and flag the discrepancy in
+  the PR rather than changing the code.
+
 ## Testing
 
 - `nix-build -A checks.eval` — pure evaluation checks

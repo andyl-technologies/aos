@@ -1,3 +1,11 @@
+//! The `aos cache pull` operation: download closure paths from a cache.
+//!
+//! Pull resolves installables to store paths, enumerates their closure,
+//! and for every path missing from the local store fetches the narinfo
+//! and compressed NAR from the [`CacheBackend`], then imports it via
+//! `nix-store --import` (see [`streaming_import`]). Downloads honour an
+//! optional shared bandwidth limit and a concurrency cap.
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -14,6 +22,28 @@ use crate::bandwidth;
 use crate::compress::streaming_import;
 use crate::resolve::resolve_installables;
 
+/// Downloads and imports all closure paths missing from the local store.
+///
+/// The pipeline is:
+///
+/// 1. Resolve `installables` / `file` / `attr` / `expr` to store paths.
+/// 2. Enumerate the combined closure and check local validity.
+/// 3. For each missing path: fetch narinfo, download the compressed NAR,
+///    and import it with `nix-store --import`.
+///
+/// `jobs` caps concurrent downloads (a value of `0` is treated as `1`);
+/// `max_bandwidth` accepts a human-readable rate such as `"100MB/s"`
+/// (see [`bandwidth::parse_bandwidth`]) and `None` means unlimited. With
+/// `dry_run` the missing paths are printed and nothing is downloaded.
+///
+/// A path that imports but fails post-import validation only produces a
+/// warning; the pull continues with the remaining paths.
+///
+/// # Errors
+///
+/// Returns an error if installable resolution, closure enumeration,
+/// local validity checks, bandwidth parsing, a narinfo or NAR fetch, or
+/// a `nix-store --import` invocation fails.
 pub async fn run_pull(
     printer: &Printer,
     backend: &dyn CacheBackend,

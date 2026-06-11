@@ -1,3 +1,13 @@
+//! Arguments for `aos token` — server-side provisioning-token management.
+//!
+//! `TokenCmd` defines the lifecycle operations on provisioning tokens
+//! (`create`, `list`, `revoke`, `rotate`). These run against a local
+//! `aos serve` instance over its trusted bootstrap Unix socket, so no
+//! authentication flags are needed.
+//!
+//! Doc comments here are clap `--help` text; the implementation lives in
+//! `commands::token`.
+
 use clap::Subcommand;
 
 #[derive(Subcommand)]

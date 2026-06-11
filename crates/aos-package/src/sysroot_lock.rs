@@ -20,8 +20,11 @@ use crate::types::ProfileScope;
 /// Parsed components of a Nix store path reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreRef {
+    /// The store-path hash (everything before the first hyphen).
     pub hash: String,
+    /// Package name (may itself contain hyphens).
     pub name: String,
+    /// Version string; empty when the basename has no version component.
     pub version: String,
 }
 
@@ -100,10 +103,15 @@ pub fn parse_store_ref(reference: &str) -> Option<StoreRef> {
 /// different store paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SysrootLockViolation {
+    /// The conflicting package name.
     pub name: String,
+    /// Version of the package in the sysroot's closure.
     pub sysroot_version: String,
+    /// Store-path hash in the sysroot's closure.
     pub sysroot_hash: String,
+    /// Version of the package in the to-be-installed closure.
     pub package_version: String,
+    /// Store-path hash in the to-be-installed closure.
     pub package_hash: String,
 }
 
@@ -219,7 +227,9 @@ impl IgnoreSysrootLock {
 /// Build the registry lookup table: `store_path_hash -> (name, version, store_path)`.
 ///
 /// This is used by `check_sysroot_lock` to resolve reference hashes to
-/// package names and versions.
+/// package names and versions. Failures to load the registry caches are
+/// swallowed and yield an empty lookup (the lock check then finds no
+/// violations).
 pub fn build_registry_lookup(config: &ApmConfig) -> HashMap<String, (String, String, String)> {
     let reg_configs = config.enabled_registries();
     let cache_dir = config.cache_path();
@@ -279,8 +289,9 @@ pub fn build_registry_lookup(config: &ApmConfig) -> HashMap<String, (String, Str
 
 /// Get the current sysroot's reference list from the system generation state.
 ///
-/// Returns `None` if there is no active sysroot or the sysroot package
-/// cannot be found in any registry.
+/// Returns `(references, sysroot package name, sysroot version)`, or `None`
+/// if there is no active sysroot or the sysroot package cannot be found in
+/// any registry.
 pub fn get_sysroot_references(config: &ApmConfig) -> Option<(Vec<String>, String, String)> {
     let profile_path = ProfileScope::System.profile_path();
     let state = sysroot::load_generation_state_pub(&profile_path).ok()?;

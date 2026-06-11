@@ -1,3 +1,22 @@
+//! Eviction policy: TTL expiry, closure scoring, and budget enforcement.
+//!
+//! These primitives decide *which GC roots to drop* when a view outgrows
+//! its retention policy; actually reclaiming store space is left to a
+//! later `nix-store --gc`. Three mechanisms are provided:
+//!
+//! - **TTL expiry** ([`expire_ttl_roots`]) — removes roots whose metadata
+//!   `expires_at` has passed.
+//! - **Score-based eviction** ([`score_candidates`],
+//!   [`evict_until_budget`]) — ranks roots by `age_days * unique_size`,
+//!   where *unique size* counts only closure paths not shared with any
+//!   other root, then evicts highest-score-first until the view fits its
+//!   `max_store_size` budget.
+//! - **Source LRU** ([`evict_source_lru`]) — caps the number of `src/`
+//!   roots, dropping the least recently accessed first.
+//!
+//! Access recency comes from the metadata maintained by
+//! [`crate::access::update_access`].
+
 use std::collections::HashSet;
 use std::fs;
 
@@ -9,27 +28,47 @@ use crate::views::ViewManager;
 /// Information about a push root for eviction scoring.
 #[derive(Debug)]
 pub struct RootInfo {
+    /// Store hash (GC root symlink name).
     pub hash: String,
+    /// Full store path the root points at.
     pub store_path: String,
+    /// Unix timestamp of the last access (falls back to `pushed_at`, then 0).
     pub last_accessed: i64,
+    /// Number of times the path's narinfo has been served.
     pub access_count: u64,
+    /// Whether the metadata marks this as an explicitly pushed root
+    /// (`is_root`), as opposed to a closure member rooted alongside it.
     pub is_root: bool,
 }
 
 /// Eviction candidate with computed score.
 #[derive(Debug)]
 pub struct EvictionCandidate {
+    /// Store hash of the candidate root.
     pub hash: String,
+    /// Full store path of the candidate root.
     pub store_path: String,
+    /// Total NAR size (bytes) of closure paths unique to this root.
     pub unique_size: u64,
+    /// Days since the root was last accessed.
     pub age_days: f64,
+    /// Eviction score: `age_days * unique_size`. Higher = evict first.
     pub score: f64,
+    /// Closure paths reclaimable only by evicting this root.
     pub unique_paths: Vec<String>,
 }
 
-/// Run TTL-based expiry for a view. Removes GC root symlinks and metadata
-/// files for paths whose `expires_at` has passed.
-/// Returns the list of expired hashes.
+/// Runs TTL-based expiry for a view.
+///
+/// Removes GC root symlinks and metadata files (in both `bin/` and `src/`)
+/// for paths whose metadata `expires_at` has passed, and returns the list
+/// of expired hashes. Roots without metadata or without an `expires_at`
+/// field are kept forever.
+///
+/// # Errors
+///
+/// Returns an error if the system clock is before the Unix epoch, or if a
+/// root directory or metadata file cannot be read or parsed.
 pub fn expire_ttl_roots(views: &ViewManager, view: &str) -> Result<Vec<String>> {
     let mut expired = Vec::new();
     let now = std::time::SystemTime::now()
@@ -82,7 +121,15 @@ pub fn expire_ttl_roots(views: &ViewManager, view: &str) -> Result<Vec<String>> 
     Ok(expired)
 }
 
-/// Scan all roots in a view and load their metadata.
+/// Scans all `bin/` roots in a view and loads their metadata.
+///
+/// Roots with no metadata file get zeroed access fields. Returns an empty
+/// list if the view has no `bin/` GC root directory.
+///
+/// # Errors
+///
+/// Returns an error if the root directory cannot be listed, a symlink
+/// cannot be read, or an existing metadata file cannot be read or parsed.
 pub fn scan_roots(views: &ViewManager, view: &str) -> Result<Vec<RootInfo>> {
     let mut roots = Vec::new();
     let gcroot_dir = views.root().join("gcroots").join(view).join("bin");
@@ -139,7 +186,16 @@ pub fn scan_roots(views: &ViewManager, view: &str) -> Result<Vec<RootInfo>> {
     Ok(roots)
 }
 
-/// Compute the runtime closure of a store path from the Nix SQLite DB.
+/// Computes the runtime closure of a store path from the Nix SQLite DB.
+///
+/// Performs a breadth-first walk over the `Refs` table starting at
+/// `store_path` (the result includes the path itself). Paths missing from
+/// the database are included in the closure but not expanded further.
+///
+/// # Errors
+///
+/// Currently infallible in practice (DB lookup failures are treated as
+/// leaf paths), but returns `Result` for interface stability.
 pub fn compute_closure(store: &NixStore, store_path: &str) -> Result<HashSet<String>> {
     let mut closure = HashSet::new();
     let mut queue = vec![store_path.to_string()];
@@ -160,8 +216,11 @@ pub fn compute_closure(store: &NixStore, store_path: &str) -> Result<HashSet<Str
     Ok(closure)
 }
 
-/// Compute the unique paths for a root: paths in its closure that are NOT
+/// Computes the unique paths for a root: paths in its closure that are NOT
 /// in any other root's closure.
+///
+/// Evicting the root makes exactly these paths reclaimable by GC; shared
+/// paths remain pinned by the other roots.
 pub fn compute_unique(
     root_closure: &HashSet<String>,
     all_other_closures: &HashSet<String>,
@@ -172,8 +231,19 @@ pub fn compute_unique(
         .collect()
 }
 
-/// Score eviction candidates and return them sorted by score (highest first).
-/// Score = age_days * unique_size_bytes. Higher = evict first.
+/// Scores eviction candidates and returns them sorted by score
+/// (highest first).
+///
+/// Score = `age_days * unique_size_bytes`, so large roots that have not
+/// been accessed in a long time are evicted first. Only roots marked
+/// `is_root = true` are scored; if none are marked, every root is treated
+/// as a candidate. Unique sizes are computed by diffing each root's
+/// closure against the union of all other candidates' closures.
+///
+/// # Errors
+///
+/// Returns an error if the system clock is before the Unix epoch or a
+/// closure computation fails.
 pub fn score_candidates(store: &NixStore, roots: &[RootInfo]) -> Result<Vec<EvictionCandidate>> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -243,8 +313,19 @@ pub fn score_candidates(store: &NixStore, roots: &[RootInfo]) -> Result<Vec<Evic
     Ok(results)
 }
 
-/// Evict least-recently-accessed source roots when they exceed a count limit.
-/// Returns the list of evicted source hashes.
+/// Evicts least-recently-accessed source roots when they exceed a count
+/// limit.
+///
+/// If the view holds more than `max_sources` roots in the `src/`
+/// namespace, the oldest (by `last_accessed`, falling back to `pushed_at`)
+/// are removed until the count fits. Returns the list of evicted source
+/// hashes; with `dry_run` set, the same list is returned but nothing is
+/// deleted.
+///
+/// # Errors
+///
+/// Returns an error if the source root directory or a metadata file cannot
+/// be read or parsed.
 pub fn evict_source_lru(
     views: &ViewManager,
     view: &str,
@@ -314,8 +395,19 @@ pub fn evict_source_lru(
     Ok(evicted)
 }
 
-/// Evict roots until the view is under the given max size (bytes).
-/// Returns the list of evicted root hashes.
+/// Evicts roots until the view is under the given max size (bytes).
+///
+/// The view's current size is approximated as the sum of the root paths'
+/// NAR sizes; if it already fits, nothing happens. Otherwise candidates
+/// from [`score_candidates`] are evicted highest-score-first — removing
+/// both the candidate's root and the roots of its unique closure paths —
+/// until the running total drops under `max_size`. Returns the evicted
+/// candidates; with `dry_run` set, the same selection is returned but no
+/// files are removed.
+///
+/// # Errors
+///
+/// Returns an error if scanning roots or scoring candidates fails.
 pub fn evict_until_budget(
     store: &NixStore,
     views: &ViewManager,

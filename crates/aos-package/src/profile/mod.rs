@@ -1,3 +1,25 @@
+//! Profile and generation management — apm's installed-state model.
+//!
+//! A *profile* (one per [`ProfileScope`]: system or per-user) is a directory
+//! of immutable, numbered *generations*. Every mutating command (install,
+//! remove, upgrade) creates a fresh `gen-N/` rather than editing in place;
+//! the `current` symlink names the active generation and is repointed
+//! atomically, which is what makes installs transactional and rollback a
+//! pure pointer switch.
+//!
+//! Each generation holds:
+//!
+//! - `usr/<hash> -> <store path>` — GC-root symlinks for installed package
+//!   outputs (these keep the paths alive across `nix-store --gc`);
+//! - `src/<hash> -> <drv path>` — GC roots for source derivations;
+//! - `meta/<hash>.json` — a snapshot of the per-package metadata at the time
+//!   the generation was created;
+//! - a merged FHS tree built by [`merge`].
+//!
+//! `state.json` at the profile root persists the current-generation and
+//! next-generation counters. Submodules: [`meta`] for per-package metadata,
+//! [`merge`] for the merged `bin/`, `lib/`, ... symlink tree.
+
 pub mod merge;
 pub mod meta;
 
@@ -29,20 +51,26 @@ use super::types::ProfileScope;
 /// └── ...
 /// ```
 pub struct Profile {
+    /// Root directory of the profile.
     pub path: PathBuf,
+    /// Whether this is the system profile or a per-user profile.
     pub scope: ProfileScope,
 }
 
 /// A single generation within a profile.
 pub struct Generation {
+    /// The generation number (`gen-N`).
     pub number: u32,
+    /// Absolute path of the `gen-N/` directory.
     pub path: PathBuf,
 }
 
 /// Profile state persisted in state.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileState {
+    /// Number of the active generation (0 = none activated yet).
     pub current_generation: u32,
+    /// Number the next created generation will receive.
     pub next_generation: u32,
 }
 
@@ -66,6 +94,11 @@ impl Profile {
     ///   - `profile_path/`
     ///   - `profile_path/meta/`
     ///   - `profile_path/state.json` (with default counters)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directories or the initial `state.json`
+    /// cannot be created (typically a permission failure).
     pub fn open(scope: ProfileScope) -> Result<Self> {
         Self::open_at(scope.profile_path(), scope)
     }
@@ -103,6 +136,11 @@ impl Profile {
     }
 
     /// Open a profile at a specific path (useful for testing).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directories or the initial `state.json`
+    /// cannot be created.
     pub fn open_at(path: PathBuf, scope: ProfileScope) -> Result<Self> {
         // Create profile directory and meta/ subdirectory.
         std::fs::create_dir_all(path.join("meta"))
@@ -124,6 +162,11 @@ impl Profile {
     ///
     /// Returns `None` if no generation has been activated yet (i.e. the
     /// `current` symlink does not exist).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the symlink cannot be read or its target does
+    /// not match the `gen-N` naming pattern.
     pub fn current_generation(&self) -> Result<Option<Generation>> {
         let current = self.current_path();
         if !current.symlink_metadata().is_ok() {
@@ -149,6 +192,12 @@ impl Profile {
     }
 
     /// List all generations, sorted by number ascending.
+    ///
+    /// A missing profile directory yields an empty list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the profile directory exists but cannot be read.
     pub fn list_generations(&self) -> Result<Vec<Generation>> {
         let mut gens = Vec::new();
 
@@ -179,6 +228,10 @@ impl Profile {
     }
 
     /// Load state.json.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `state.json` cannot be read or parsed.
     pub fn state(&self) -> Result<ProfileState> {
         let state_path = self.path.join("state.json");
         let data = std::fs::read_to_string(&state_path)
@@ -194,6 +247,11 @@ impl Profile {
     /// 2. Create `gen-N/` directory
     /// 3. Increment `next_generation` and save state
     /// 4. Return the new `Generation`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `state.json` cannot be read/written or the
+    /// generation directory cannot be created.
     pub fn new_generation(&self) -> Result<Generation> {
         let mut state = self.state()?;
         let gen_number = state.next_generation;
@@ -216,6 +274,11 @@ impl Profile {
     ///
     /// Uses temp symlink + rename for atomicity.  Also updates
     /// `current_generation` in state.json.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the symlink cannot be created or renamed into
+    /// place, or if `state.json` cannot be updated.
     pub fn switch_to(&self, generation: &Generation) -> Result<()> {
         use std::os::unix::fs::symlink;
 
@@ -251,6 +314,11 @@ impl Profile {
     ///
     /// Never removes the current generation, even if it falls outside the
     /// latest `keep` window.  Returns the list of removed generations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the generations cannot be listed or a generation
+    /// directory cannot be deleted.
     pub fn prune_generations(&self, keep: u32) -> Result<Vec<Generation>> {
         let all = self.list_generations()?;
         let current = self.current_generation()?;
@@ -306,6 +374,11 @@ impl Generation {
     /// List all `usr/{hash}` roots in this generation.
     ///
     /// Returns `Vec<(hash, symlink_target_path)>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `usr/` directory or one of its symlinks
+    /// cannot be read (a missing directory yields an empty list).
     pub fn roots(&self) -> Result<Vec<(String, PathBuf)>> {
         read_root_dir(&self.path.join("usr"))
     }
@@ -313,6 +386,11 @@ impl Generation {
     /// List all `src/{hash}` roots in this generation.
     ///
     /// Returns `Vec<(hash, symlink_target_path)>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `src/` directory or one of its symlinks
+    /// cannot be read (a missing directory yields an empty list).
     pub fn source_roots(&self) -> Result<Vec<(String, PathBuf)>> {
         read_root_dir(&self.path.join("src"))
     }

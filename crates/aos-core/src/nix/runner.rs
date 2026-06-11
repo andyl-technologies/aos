@@ -1,3 +1,21 @@
+//! Project-rooted wrapper around the Nix CLI tools.
+//!
+//! [`NixRunner`] is the high-level entry point used by `aos build`,
+//! `aos test`, and friends. On construction it verifies that
+//! `nix-build` is on `PATH` and locates the project root (the directory
+//! containing `default.nix`) via `AOS_ROOT`, an upward walk from the
+//! working directory, or the binary's own location. Every subsequent
+//! operation -- build, evaluate, instantiate, garbage-collect, repl --
+//! runs against that root.
+//!
+//! Verbosity shapes how subprocess output is handled: at `verbose >= 2`
+//! the child's stderr streams live to the terminal, at `verbose >= 3`
+//! the exact command line is echoed, and otherwise stderr is captured
+//! and replayed only on failure (suppressed entirely in quiet mode).
+//! Failures are reported as [`AosError::NixBuild`] /
+//! [`AosError::NixNotFound`] / [`AosError::RootNotFound`] so callers
+//! can map them to the standard exit codes.
+
 use std::env;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -17,8 +35,14 @@ pub struct NixRunner {
 }
 
 impl NixRunner {
-    /// Create a new `NixRunner`, locating the project root and verifying that
+    /// Creates a new `NixRunner`, locating the project root and verifying that
     /// the `nix-build` binary is available.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixNotFound`] if `nix-build` is not on
+    /// `PATH`, or [`AosError::RootNotFound`] if no `default.nix` can be
+    /// located (see `find_root` for the search order).
     pub fn new(verbose: u8, quiet: bool) -> Result<Self> {
         // Verify nix is available.
         which("nix-build").map_err(|_| AosError::NixNotFound)?;
@@ -32,7 +56,8 @@ impl NixRunner {
         })
     }
 
-    /// Return the project root path.
+    /// Returns the project root path (the directory containing
+    /// `default.nix`).
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -41,9 +66,17 @@ impl NixRunner {
     // Public high-level operations
     // ------------------------------------------------------------------
 
-    /// Run `nix-build default.nix -A <attr>` and return the resulting store
+    /// Runs `nix-build default.nix -A <attr>` and returns the resulting store
     /// path.  An optional `out_link` places the result symlink at the given
-    /// path instead of the default `./result`.
+    /// path; when `None`, `--no-out-link` is passed so no symlink is created.
+    ///
+    /// For multi-output attributes the last printed path is returned;
+    /// use [`build_all`](Self::build_all) to collect every path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if `nix-build` exits non-zero, or
+    /// another error if it cannot be spawned or prints no output.
     pub fn build(&self, attr: &str, out_link: Option<&str>) -> Result<PathBuf> {
         self.build_inner(attr, out_link, None)
     }
@@ -52,6 +85,10 @@ impl NixRunner {
     /// `nix-build` so derivations within this build run in parallel up
     /// to `n` at a time. Used by `aos test` to drive the test layer at
     /// host parallelism without depending on system-wide `nix.conf`.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`build`](Self::build).
     pub fn build_with_max_jobs(
         &self,
         attr: &str,
@@ -96,9 +133,14 @@ impl NixRunner {
         Ok(path)
     }
 
-    /// Run `nix-build -E <expr>` and return the resulting store path.
+    /// Runs `nix-build -E <expr>` and returns the resulting store path.
     /// The expression is responsible for any imports it needs (e.g.
     /// `(import /path/to/. {}).foo.bar`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if `nix-build` exits non-zero, or
+    /// another error if it cannot be spawned or prints no output.
     pub fn build_expr(&self, expr: &str) -> Result<PathBuf> {
         let args: Vec<String> = vec![
             "-E".to_string(),
@@ -117,8 +159,14 @@ impl NixRunner {
         Ok(path)
     }
 
-    /// Build an attribute that evaluates to a set / list and return all
-    /// resulting store paths.
+    /// Builds an attribute that evaluates to a set / list and returns all
+    /// resulting store paths (one per non-empty line of `nix-build`
+    /// output).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if `nix-build` exits non-zero, or
+    /// another error if it cannot be spawned.
     pub fn build_all(&self, attr: &str) -> Result<Vec<PathBuf>> {
         let args: Vec<String> = vec![
             self.default_nix().to_string_lossy().to_string(),
@@ -138,7 +186,14 @@ impl NixRunner {
         Ok(paths)
     }
 
-    /// Evaluate a Nix expression to JSON via `nix-instantiate --eval --strict --json`.
+    /// Evaluates an attribute of `default.nix` to JSON via
+    /// `nix-instantiate --eval --strict --json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if evaluation fails, or another
+    /// error if `nix-instantiate` cannot be spawned or its output is
+    /// not valid JSON.
     pub fn eval_json(&self, attr: &str) -> Result<serde_json::Value> {
         let args: Vec<String> = vec![
             "--eval".to_string(),
@@ -158,7 +213,14 @@ impl NixRunner {
         Ok(value)
     }
 
-    /// Evaluate an arbitrary Nix expression to JSON.
+    /// Evaluates an arbitrary Nix expression to JSON via
+    /// `nix-instantiate --eval --strict --json -E <expr>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if evaluation fails, or another
+    /// error if `nix-instantiate` cannot be spawned or its output is
+    /// not valid JSON.
     pub fn eval_expr_json(&self, expr: &str) -> Result<serde_json::Value> {
         let args: Vec<String> = vec![
             "--eval".to_string(),
@@ -176,7 +238,14 @@ impl NixRunner {
         Ok(value)
     }
 
-    /// Evaluate a Nix expression to a string.
+    /// Evaluates an attribute of `default.nix` to a string, stripping the
+    /// surrounding quotes that `nix-instantiate --eval` adds to string
+    /// results.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if evaluation fails, or another
+    /// error if `nix-instantiate` cannot be spawned.
     pub fn eval_str(&self, attr: &str) -> Result<String> {
         let args: Vec<String> = vec![
             "--eval".to_string(),
@@ -194,7 +263,13 @@ impl NixRunner {
         Ok(unquoted)
     }
 
-    /// Query the Nix store for information about a store path.
+    /// Queries the Nix store about a store path, running
+    /// `nix-store <args>... <path>` and returning raw stdout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if `nix-store` exits non-zero, or
+    /// another error if it cannot be spawned.
     pub fn store_query(&self, path: &Path, args: &[&str]) -> Result<String> {
         let mut full_args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
         full_args.push(path.to_string_lossy().to_string());
@@ -203,7 +278,14 @@ impl NixRunner {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Instantiate (but do not build) a derivation, returning the .drv path.
+    /// Instantiates (but does not build) a derivation from `default.nix`,
+    /// returning the `.drv` path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if instantiation fails, or
+    /// another error if `nix-instantiate` cannot be spawned or prints
+    /// no output.
     pub fn instantiate(&self, attr: &str) -> Result<PathBuf> {
         let args: Vec<String> = vec![
             self.default_nix().to_string_lossy().to_string(),
@@ -222,8 +304,15 @@ impl NixRunner {
         Ok(path)
     }
 
-    /// Run garbage collection, optionally deleting only generations older than
-    /// a given duration (e.g. "7d").
+    /// Runs garbage collection via `nix-collect-garbage`, optionally
+    /// deleting only generations older than a given duration (e.g. `"7d"`).
+    /// When `older_than` is `None`, `-d` is passed to delete all old
+    /// generations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if `nix-collect-garbage` exits
+    /// non-zero, or another error if it cannot be spawned.
     pub fn collect_garbage(&self, older_than: Option<&str>) -> Result<()> {
         let mut args: Vec<String> = Vec::new();
         if let Some(age) = older_than {
@@ -237,7 +326,13 @@ impl NixRunner {
         Ok(())
     }
 
-    /// List system generations via `nix-env --list-generations`.
+    /// Lists system generations via `nix-env --list-generations` against
+    /// the `/nix/var/nix/profiles/system` profile, returning raw stdout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if `nix-env` exits non-zero, or
+    /// another error if it cannot be spawned.
     pub fn list_generations(&self) -> Result<String> {
         let args: Vec<String> = vec![
             "--list-generations".to_string(),
@@ -249,7 +344,16 @@ impl NixRunner {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Execute into a `nix repl` session, loading `default.nix`.
+    /// Runs an interactive `nix repl` session loading the given Nix file,
+    /// blocking until the user exits the repl.
+    ///
+    /// Unlike the other operations, the child inherits the terminal
+    /// directly (no output capture).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nix` cannot be started or the repl exits
+    /// with a non-zero status.
     pub fn repl(&self, nix_file: &Path) -> Result<()> {
         let status = Command::new("nix")
             .args(["repl", "--file"])

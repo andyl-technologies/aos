@@ -1,10 +1,31 @@
+//! Installable resolution: CLI arguments to concrete store paths.
+//!
+//! Cache operations accept several spellings for "the thing to act on":
+//! bare package names (resolved as `pkgs.<name>` per the AOS convention),
+//! explicit `-A` attributes, raw `--expr` Nix expressions, and direct
+//! store paths. [`resolve_installables`] normalises all of them to built
+//! store paths, building through the Nix CLI where necessary.
+
 use std::path::Path;
 
 use anyhow::Result;
 
 use aos_core::nix::NixCli;
 
-/// Resolve installable arguments to store paths.
+/// Resolves installable arguments to built store paths.
+///
+/// The selectors are tried in priority order:
+///
+/// 1. `expr` — instantiated and realised as a raw Nix expression.
+/// 2. `attr` — built from `file` (default `./default.nix`).
+/// 3. `installables` — each entry is either a direct store path (used
+///    as-is; see `is_direct_store_path` below) or a bare package name
+///    built as `pkgs.<name>` from `file`.
+///
+/// # Errors
+///
+/// Returns an error if a build or instantiation fails, or if no
+/// installables were specified at all.
 pub fn resolve_installables(
     nix: &NixCli,
     installables: &[String],

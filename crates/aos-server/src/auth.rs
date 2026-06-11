@@ -1,3 +1,23 @@
+//! JWT authentication and the OAuth2-style token exchange endpoint.
+//!
+//! Authentication is two-tiered:
+//!
+//! 1. Clients hold a long-lived **provisioning token** (created over the
+//!    bootstrap socket, persisted by [`crate::tokens::TokenStore`]).
+//! 2. They exchange it at `POST /oauth2/token`
+//!    ([`oauth2_token_handler`]) for a short-lived **HS256 JWT** carrying
+//!    the authorized views and permissions as [`Claims`].
+//!
+//! Handlers consume the JWT through two axum extractors:
+//!
+//! - [`AuthClaims`] — requires a valid `Authorization: Bearer` JWT,
+//!   rejecting with `401` otherwise. Used by mutating endpoints (upload,
+//!   build, gc).
+//! - [`AuthResult`] — allows requests without credentials to proceed as
+//!   [`AuthResult::Anonymous`], for GET endpoints on views configured with
+//!   `anonymous_read = true`. A *present but invalid* token is still
+//!   rejected with `401`.
+
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,9 +38,9 @@ use crate::tokens::TokenRecord;
 /// JWT claims embedded in access tokens.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    /// Token ID (UUID).
+    /// Token ID (UUID) of the provisioning token the JWT was minted from.
     pub sub: String,
-    /// Authorized views.
+    /// Authorized views. The wildcard entry `"*"` grants every view.
     pub views: HashSet<String>,
     /// Granted permissions, e.g. `["read", "build"]`.
     pub permissions: HashSet<String>,
@@ -31,18 +51,29 @@ pub struct Claims {
 }
 
 impl Claims {
-    /// Check if the claims authorize access to the given view.
+    /// Returns `true` if the claims authorize access to the given view,
+    /// either by exact name or via the `"*"` wildcard.
     pub fn has_view(&self, view: &str) -> bool {
         self.views.contains(view) || self.views.contains("*")
     }
 
-    /// Check if the claims include a specific permission.
+    /// Returns `true` if the claims include the given permission
+    /// (e.g. `"read"`, `"build"`).
     pub fn has_permission(&self, perm: &str) -> bool {
         self.permissions.contains(perm)
     }
 }
 
-/// Create a signed JWT access token from a validated provisioning token record.
+/// Creates a signed JWT access token from a validated provisioning token
+/// record.
+///
+/// The token is signed with HS256 using `secret`, copies the record's views
+/// and permissions into the claims, and expires `ttl_secs` seconds from now.
+///
+/// # Errors
+///
+/// Returns an error if the system clock is before the Unix epoch or JWT
+/// encoding fails.
 pub fn create_access_token(
     secret: &[u8],
     token_record: &TokenRecord,
@@ -70,7 +101,17 @@ pub fn create_access_token(
     Ok(token)
 }
 
-/// Decode JWT claims from an `Authorization: Bearer ...` header value.
+/// Decodes and validates JWT claims from an `Authorization: Bearer ...`
+/// header value.
+///
+/// The token signature is verified with HS256 against `secret` and the
+/// `exp` claim is enforced.
+///
+/// # Errors
+///
+/// Returns an error if the header does not start with `Bearer `, the
+/// signature is invalid, the token is expired, or the claims cannot be
+/// deserialized.
 pub fn claims_from_bearer_header(auth_header: &str, secret: &[u8]) -> Result<Claims> {
     let token = auth_header
         .strip_prefix("Bearer ")
@@ -163,10 +204,18 @@ struct TokenResponse {
     scope: String,
 }
 
-/// `POST /oauth2/token` — exchange a provisioning secret for a JWT access token.
+/// `POST /oauth2/token` — exchanges a provisioning secret for a JWT access
+/// token.
 ///
-/// The caller authenticates with `Authorization: Bearer {provisioning-secret}`.
-/// On success a short-lived JWT is returned.
+/// The caller authenticates with `Authorization: Bearer {provisioning-secret}`
+/// (the plaintext returned at token creation, *not* a JWT). On success the
+/// response is a `200` JSON body in the OAuth2 token-response shape:
+/// `access_token`, `token_type` (`"Bearer"`), `expires_in` (seconds, from
+/// `[oauth2] access_token_ttl`), and `scope` (space-joined permissions).
+///
+/// Responds `401` if the header is missing/malformed or the provisioning
+/// secret is unknown, revoked, or expired, and `500` if the token store
+/// lookup or JWT creation fails.
 pub async fn oauth2_token_handler(
     State(state): State<Arc<AppState>>,
     parts: axum::http::Request<axum::body::Body>,

@@ -1,21 +1,61 @@
+//! Parsing and rendering of `.narinfo` metadata files.
+//!
+//! In a Nix binary cache, each store path is described by a `.narinfo`
+//! file -- a simple `Key: value` text document recording where the NAR
+//! lives (`URL`, `Compression`), its hashes and sizes (`NarHash`,
+//! `NarSize`, `FileHash`, `FileSize`), its `References` and `Deriver`,
+//! and any `Sig` signatures. [`parse`] and [`format`](fn@format)
+//! round-trip that format through the [`NarInfo`] struct, which is
+//! shared between the cache server and the client.
+//!
+//! The module also hosts the small store-path helpers [`store_hash`]
+//! and [`basename`] used throughout the NAR code.
+
 use anyhow::{Context, Result};
 
 /// Parsed narinfo data — shared between server and cache client.
+///
+/// Field names mirror the keys of the narinfo text format. Path-valued
+/// fields (`store_path`, `references`, `deriver`) may hold either full
+/// store paths or bare basenames depending on the producer; the text
+/// format conventionally uses a full path for `StorePath` and basenames
+/// for `References` and `Deriver`.
 #[derive(Debug, Clone)]
 pub struct NarInfo {
+    /// The store path this narinfo describes (`StorePath`).
     pub store_path: String,
+    /// Cache-relative URL of the NAR file (`URL`), e.g. `nar/<hash>.nar.zst`.
     pub url: String,
+    /// Compression applied to the NAR file (`Compression`), e.g. `none`,
+    /// `zstd`, or `xz`. Defaults to `none` when absent.
     pub compression: String,
+    /// Hash of the compressed NAR file as stored (`FileHash`).
     pub file_hash: Option<String>,
+    /// Size in bytes of the compressed NAR file (`FileSize`).
     pub file_size: Option<u64>,
+    /// Hash of the uncompressed NAR (`NarHash`).
     pub nar_hash: String,
+    /// Size in bytes of the uncompressed NAR (`NarSize`).
     pub nar_size: u64,
+    /// Store paths referenced by this path (`References`).
     pub references: Vec<String>,
+    /// The deriver `.drv` that produced this path, if known (`Deriver`).
     pub deriver: Option<String>,
+    /// `name:base64` Ed25519 signatures (`Sig`), one per line.
     pub signatures: Vec<String>,
 }
 
-/// Parse a narinfo text response into a NarInfo struct.
+/// Parses a narinfo text document into a [`NarInfo`].
+///
+/// Blank lines and unknown keys are ignored, so the parser is forwards
+/// compatible with fields this crate does not model. An empty `Deriver`
+/// value is treated as absent.
+///
+/// # Errors
+///
+/// Returns an error if any of the required fields -- `StorePath`,
+/// `URL`, `NarHash`, or `NarSize` -- is missing (or, for `NarSize`,
+/// not a valid integer).
 pub fn parse(text: &str) -> Result<NarInfo> {
     let mut store_path = None;
     let mut url = None;
@@ -74,7 +114,11 @@ pub fn parse(text: &str) -> Result<NarInfo> {
     })
 }
 
-/// Format a NarInfo into the standard narinfo text format.
+/// Formats a [`NarInfo`] into the standard narinfo text format.
+///
+/// Optional fields (`FileHash`, `FileSize`, `References`, `Deriver`)
+/// are omitted when unset or empty; each signature is emitted as its
+/// own `Sig:` line. The output round-trips through [`parse`].
 pub fn format(info: &NarInfo) -> String {
     let mut out = String::with_capacity(512);
 
@@ -109,20 +153,34 @@ pub fn format(info: &NarInfo) -> String {
 
 /// Parameters for constructing a NarInfo from path metadata and compressed NAR
 /// metadata.
+///
+/// The first group of fields comes from the store's path info
+/// (`nix-store` queries or the Nix DB); the second group describes the
+/// compressed NAR artifact as it will be stored in the cache.
 pub struct PathInfoParams<'a> {
+    /// The store path being described.
     pub path: &'a str,
+    /// Hash of the uncompressed NAR.
     pub nar_hash: &'a str,
+    /// Size in bytes of the uncompressed NAR.
     pub nar_size: u64,
+    /// Store paths referenced by `path`.
     pub references: &'a [String],
+    /// The deriver `.drv` path, if known.
     pub deriver: Option<&'a str>,
+    /// Pre-existing `name:base64` signatures to carry over.
     pub signatures: &'a [String],
+    /// Hash of the compressed NAR file.
     pub file_hash: &'a str,
+    /// Size in bytes of the compressed NAR file.
     pub file_size: u64,
+    /// Compression name (`none`, `zstd`, `xz`).
     pub compression: &'a str,
+    /// Cache-relative URL where the NAR file is served.
     pub nar_url: &'a str,
 }
 
-/// Generate a NarInfo from PathInfo metadata + compressed NAR metadata.
+/// Builds a [`NarInfo`] from path metadata plus compressed NAR metadata.
 pub fn from_path_info(params: &PathInfoParams<'_>) -> NarInfo {
     NarInfo {
         store_path: params.path.to_string(),
@@ -138,15 +196,18 @@ pub fn from_path_info(params: &PathInfoParams<'_>) -> NarInfo {
     }
 }
 
-/// Extract the hash portion from a store path (or basename).
-/// E.g., "/nix/store/abc123-foo-1.0" → "abc123"
-/// E.g., "abc123-foo-1.0" → "abc123"
+/// Extracts the hash portion from a store path (or basename): the part
+/// of the last path component before the first `-`.
+///
+/// E.g. `/nix/store/abc123-foo-1.0` -> `abc123`, and
+/// `abc123-foo-1.0` -> `abc123`.
 pub fn store_hash(path: &str) -> &str {
     let name = basename(path);
     name.split('-').next().unwrap_or(name)
 }
 
-/// Extract the basename (last path component) from a store path.
+/// Extracts the basename (last `/`-separated component) from a store
+/// path; returns the input unchanged when it contains no `/`.
 pub fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }

@@ -1,3 +1,21 @@
+//! Read-only query commands: `apm search`, `show`, `list`, and `orphans`.
+//!
+//! All commands open the profile read-only and the registry caches for the
+//! current platform; nothing here mutates state, so they work for
+//! unprivileged callers.
+//!
+//! - **`search`**: substring match over names (and descriptions, unless
+//!   `--names-only`) across enabled registries, or over the installed set
+//!   with `--installed`.
+//! - **`show`**: detailed metadata for one package, including dependency
+//!   names, sysroot containment, and sysroot-lock violations. An installed
+//!   package missing from every registry is still shown from profile
+//!   metadata, marked unavailable.
+//! - **`list`**: package table with `installed` / `upgradable` / `held` /
+//!   `unavailable` status flags and the corresponding filters.
+//! - **`orphans`**: installed packages whose source registry has been
+//!   removed from the configuration entirely.
+
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, bail};
@@ -16,6 +34,16 @@ use aos_core::output::{OutputMode, Printer};
 // ---------------------------------------------------------------------------
 
 /// Search package names and descriptions across all registries.
+///
+/// Matching is case-insensitive substring search; `names_only` restricts it
+/// to names, `installed_only` searches the installed set instead, and
+/// `registry_filter` limits the search to one registry. Duplicate names are
+/// deduplicated with the highest-priority registry winning.
+///
+/// # Errors
+///
+/// Returns an error if the registry caches or (with `installed_only`)
+/// profile metadata cannot be loaded.
 pub async fn search(
     config: &ApmConfig,
     pattern: &str,
@@ -90,6 +118,8 @@ pub async fn search(
     Ok(())
 }
 
+/// `apm search --installed`: match the pattern against installed packages,
+/// pulling descriptions from the source registry when still available.
 async fn search_installed(
     config: &ApmConfig,
     registries: &RegistrySet,
@@ -152,6 +182,8 @@ async fn search_installed(
     Ok(())
 }
 
+/// Description of an installed package from its source registry, or a
+/// placeholder when the registry no longer offers that store path.
 fn installed_description(
     registries: &RegistrySet,
     registry_name: &str,
@@ -170,6 +202,17 @@ fn installed_description(
 // ---------------------------------------------------------------------------
 
 /// Display detailed information about a package.
+///
+/// Resolution order: the named registry (with `registry_filter`) or the
+/// highest-priority registry providing the package; if no registry has it
+/// but it is installed, the entry is rendered from profile metadata and
+/// marked unavailable.
+///
+/// # Errors
+///
+/// Returns an error if registry caches or profile metadata cannot be
+/// loaded, the filter names an unknown registry, or the package is neither
+/// in a registry nor installed.
 pub async fn show(
     config: &ApmConfig,
     package: &str,
@@ -206,6 +249,9 @@ pub async fn show(
     }
 }
 
+/// Render `apm show` for a package backed by a registry entry, including
+/// install state, dependency names, sysroot info, and (when installed)
+/// sysroot-lock violations.
 fn show_registry_package(
     config: &ApmConfig,
     reg: &Registry,
@@ -302,6 +348,9 @@ fn show_registry_package(
     Ok(())
 }
 
+/// Render `apm show` for an installed package no registry offers anymore,
+/// using profile metadata and the live store's reference graph for
+/// dependency names.
 async fn show_installed_unavailable(
     installed: &InstalledMeta,
     meta_list: &[InstalledMeta],
@@ -350,6 +399,9 @@ async fn show_installed_unavailable(
     Ok(())
 }
 
+/// Dependency display names for an installed package: direct store
+/// references mapped to installed package names, falling back to the raw
+/// store-path hash for unknown references.
 async fn installed_dependency_names(
     installed: &InstalledMeta,
     meta_list: &[InstalledMeta],
@@ -374,6 +426,8 @@ async fn installed_dependency_names(
         .collect())
 }
 
+/// Find an installed package by APM name, optionally restricted to one
+/// source registry.
 fn find_installed_package<'a>(
     meta_list: &'a [InstalledMeta],
     package: &str,
@@ -395,6 +449,18 @@ fn find_installed_package<'a>(
 // ---------------------------------------------------------------------------
 
 /// List packages across registries with optional filters.
+///
+/// Each entry shows `name/registry version [status]`, where status combines
+/// `installed`, `upgradable: <version>`, `held`, sysroot-lock violations,
+/// and `unavailable` (installed but no longer in its registry). The default
+/// available-package view deduplicates names by registry priority; the
+/// filtered views (`installed_only`, `upgradable_only`, `held_only`) do not,
+/// so state on lower-priority registries stays visible.
+///
+/// # Errors
+///
+/// Returns an error if the registry caches or profile metadata cannot be
+/// loaded.
 pub async fn list(
     config: &ApmConfig,
     installed_only: bool,
@@ -704,6 +770,8 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     RegistrySet::load(&cache_dir, &enabled, &platform)
 }
 
+/// Index installed packages by `(name, source registry)` — the same name
+/// may be installed from multiple registries with distinct store paths.
 fn installed_by_source(meta_list: &[InstalledMeta]) -> HashMap<(String, String), &InstalledMeta> {
     meta_list
         .iter()
@@ -714,6 +782,9 @@ fn installed_by_source(meta_list: &[InstalledMeta]) -> HashMap<(String, String),
         .collect()
 }
 
+/// Whether an explicitly installed package differs from the registry
+/// candidate by store-path hash (i.e. an upgrade is available). Implicit
+/// (dependency-only) installs are never reported as upgradable.
 fn is_upgradable_installed_root(installed: &InstalledMeta, registry_meta: &PackageMeta) -> bool {
     let Some(apm) = installed.apm.as_ref() else {
         return false;

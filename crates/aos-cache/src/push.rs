@@ -1,3 +1,16 @@
+//! The `aos cache push` operation: upload closure paths to a cache.
+//!
+//! Push resolves installables to store paths, enumerates their closure,
+//! asks the [`CacheBackend`] which paths it is missing, and uploads each
+//! missing path as a compressed NAR plus a `.narinfo` metadata file.
+//!
+//! For AOS servers (backends where [`CacheBackend::supports_pack`] is
+//! true), small NARs are accumulated into *packs* — concatenated
+//! `nix-store --export` streams uploaded in one request — to amortise
+//! per-request overhead. Paths are uploaded in dependency order
+//! (references before referrers) so the server can import each entry as
+//! it arrives.
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -17,6 +30,35 @@ use crate::bandwidth;
 use crate::compress::{compression_ext, compression_name, streaming_compress, streaming_export};
 use crate::resolve::resolve_installables;
 
+/// Uploads all closure paths missing from the cache.
+///
+/// The pipeline is:
+///
+/// 1. Resolve `installables` / `file` / `attr` / `expr` to store paths.
+/// 2. Enumerate the combined closure, gather path metadata, and order it
+///    so references come before referrers.
+/// 3. Query the backend for missing paths (in chunks of 500 hashes).
+/// 4. For each missing path: compress the NAR (`compression` is `zstd`,
+///    `xz`, or `none`; `compression_level` is passed to the compressor),
+///    generate the narinfo, and upload.
+///
+/// On backends that support packs (the AOS server), NARs whose
+/// compressed size is below `batch_threshold` (a human-readable size
+/// such as `"1MB"`) are batched into a single pack upload; larger NARs
+/// flush the pending batch first so dependency order is preserved, then
+/// upload as a single-entry pack. Other backends receive individual
+/// `put_nar` / `put_narinfo` uploads.
+///
+/// `jobs` caps concurrent uploads (a value of `0` is treated as `1`);
+/// `max_bandwidth` accepts a rate such as `"100MB/s"` and `None` means
+/// unlimited. With `dry_run` the missing paths and their NAR sizes are
+/// printed and nothing is uploaded.
+///
+/// # Errors
+///
+/// Returns an error if installable resolution, closure enumeration,
+/// metadata gathering, threshold or bandwidth parsing, compression, or
+/// any backend upload or query fails.
 pub async fn run_push(
     printer: &Printer,
     backend: &dyn CacheBackend,
@@ -215,6 +257,12 @@ pub async fn run_push(
     Ok(())
 }
 
+/// Uploads a batch of pack entries and registers their narinfos.
+///
+/// No-op when `pack_paths` is empty, so callers can flush
+/// unconditionally. The narinfo puts are issued after the pack upload —
+/// on the AOS server they are no-ops anyway (narinfo is synthesised
+/// server-side once the pack import registers the paths).
 async fn upload_pack_entries(
     backend: &dyn CacheBackend,
     pack_paths: &[PackPath],
@@ -232,6 +280,14 @@ async fn upload_pack_entries(
     Ok(())
 }
 
+/// Topologically sorts path infos so references precede their referrers.
+///
+/// `nix-store --import` on the receiving side rejects a path whose
+/// references are not yet valid, so upload order matters. This is Kahn's
+/// algorithm over the in-closure reference edges; references outside the
+/// set and self-references are ignored. If a cycle prevents a complete
+/// ordering (which should not happen for a valid closure), the leftover
+/// paths are appended in their original order rather than dropped.
 fn order_path_infos_for_import(infos: &mut Vec<PathInfo>) {
     let index_by_path: HashMap<&str, usize> = infos
         .iter()

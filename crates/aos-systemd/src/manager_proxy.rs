@@ -21,12 +21,20 @@ use zbus::zvariant::OwnedObjectPath;
     default_path = "/org/freedesktop/systemd1"
 )]
 pub trait Manager {
+    /// Opt this API-bus peer into receiving manager signals
+    /// (`JobNew`/`JobRemoved`/`Reloading`); without it systemd sends none.
     fn subscribe(&self) -> zbus::Result<()>;
+    /// Undo [`subscribe`](Self::subscribe); signals stop flowing.
     fn unsubscribe(&self) -> zbus::Result<()>;
 
+    /// Enqueue a start job for `name`; returns the job object path.
+    /// `mode` is a systemd job mode (`"replace"`, `"isolate"`, ...).
     fn start_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    /// Enqueue a stop job for `name`; returns the job object path.
     fn stop_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    /// Enqueue a restart job for `name`; returns the job object path.
     fn restart_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    /// Enqueue a reload job for `name`; returns the job object path.
     fn reload_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
 
     /// `Manager.Reload()` — the D-Bus equivalent of `systemctl daemon-reload`.
@@ -40,21 +48,32 @@ pub trait Manager {
     #[zbus(no_reply)]
     fn reexecute(&self) -> zbus::Result<()>;
 
+    /// Clear the "failed" state of all units (`systemctl reset-failed`).
     fn reset_failed(&self) -> zbus::Result<()>;
+    /// Clear the "failed" state of a single unit.
     fn reset_failed_unit(&self, name: &str) -> zbus::Result<()>;
 
+    /// Resolve a unit name to its object path; fails with `NoSuchUnit`
+    /// if the unit is not currently loaded.
     fn get_unit(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
+    /// List units filtered by active states and shell-glob name patterns;
+    /// empty slices mean "no filter".
     fn list_units_by_patterns(
         &self,
         states: &[&str],
         patterns: &[&str],
     ) -> zbus::Result<Vec<ListUnitsEntry>>;
 
+    /// Queue a reboot (`systemctl reboot`); returns once queued, not when
+    /// the reboot happens.
     fn reboot(&self) -> zbus::Result<()>;
 
+    /// `JobNew` signal: a job was enqueued.
     #[zbus(signal)]
     fn job_new(&self, id: u32, job: OwnedObjectPath, unit: String) -> zbus::Result<()>;
 
+    /// `JobRemoved` signal: a job finished; `result` is its terminal
+    /// label (`"done"`, `"failed"`, `"timeout"`, ...).
     #[zbus(signal)]
     fn job_removed(
         &self,
@@ -64,6 +83,8 @@ pub trait Manager {
         result: String,
     ) -> zbus::Result<()>;
 
+    /// `Reloading` signal: emitted with `active = true` when a daemon
+    /// reload begins and `false` when it completes.
     #[zbus(signal)]
     fn reloading(&self, active: bool) -> zbus::Result<()>;
 }
@@ -75,14 +96,19 @@ pub trait Manager {
     default_service = "org.freedesktop.systemd1"
 )]
 pub trait Unit {
+    /// High-level activation state (`"active"`, `"failed"`, ...).
     #[zbus(property)]
     fn active_state(&self) -> zbus::Result<String>;
+    /// Low-level, unit-type-specific state (`"running"`, `"auto-restart"`, ...).
     #[zbus(property)]
     fn sub_state(&self) -> zbus::Result<String>;
+    /// Whether the unit file was loaded (`"loaded"`, `"not-found"`, ...).
     #[zbus(property)]
     fn load_state(&self) -> zbus::Result<String>;
+    /// Install state of the unit file (`"enabled"`, `"masked"`, ...).
     #[zbus(property)]
     fn unit_file_state(&self) -> zbus::Result<String>;
+    /// Filesystem path of the unit's fragment (its main unit file).
     #[zbus(property)]
     fn fragment_path(&self) -> zbus::Result<String>;
 }
@@ -93,6 +119,7 @@ pub trait Unit {
     default_service = "org.freedesktop.systemd1"
 )]
 pub trait Service {
+    /// Exit status (or signal number) of the service's main process.
     #[zbus(property)]
     fn exec_main_status(&self) -> zbus::Result<i32>;
 }
@@ -101,14 +128,24 @@ pub trait Service {
 /// `(ssssssouso)`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
 pub struct ListUnitsEntry {
+    /// Unit name, including the type suffix (e.g. `sshd.service`).
     pub name: String,
+    /// Human-readable description from the unit file.
     pub description: String,
+    /// Load state (`"loaded"`, `"not-found"`, `"masked"`, ...).
     pub load_state: String,
+    /// Activation state (`"active"`, `"failed"`, `"activating"`, ...).
     pub active_state: String,
+    /// Unit-type-specific sub-state (`"running"`, `"auto-restart"`, ...).
     pub sub_state: String,
+    /// Name of the unit this one follows (alias targets); empty if none.
     pub followed: String,
+    /// D-Bus object path of the unit.
     pub object_path: OwnedObjectPath,
+    /// Numeric id of the queued job for this unit, or 0 if none.
     pub job_id: u32,
+    /// Type of the queued job (`"start"`, `"stop"`, ...); empty if none.
     pub job_type: String,
+    /// D-Bus object path of the queued job; `/` if none.
     pub job_object_path: OwnedObjectPath,
 }

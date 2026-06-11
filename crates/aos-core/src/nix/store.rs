@@ -1,3 +1,17 @@
+//! Per-path wrappers around the classic `nix-*` command-line tools.
+//!
+//! [`NixCli`] shells out to `nix-instantiate`, `nix-build`, and
+//! `nix-store` for instantiation, realisation, closure queries, path
+//! metadata, validity checks, and NAR dump/export/import. Unlike
+//! [`NixRunner`](crate::nix::NixRunner) it has no notion of a project
+//! root: every operation takes explicit file paths, attributes, or
+//! store paths, making it suitable for cache and package-manager code
+//! that operates on arbitrary stores.
+//!
+//! All subprocesses inherit the `AOS_ROOT`-derived environment from
+//! [`aos_nix_env`], so they target the AOS store layout when
+//! `AOS_ROOT` is set and the canonical `/nix/store` otherwise.
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -9,11 +23,19 @@ use super::env::aos_nix_env;
 /// Metadata for a store path, from nix-store queries or Nix DB.
 #[derive(Debug, Clone)]
 pub struct PathInfo {
+    /// The store path itself.
     pub path: String,
+    /// Hash of the path's uncompressed NAR serialisation.
     pub nar_hash: String,
+    /// Size in bytes of the uncompressed NAR serialisation.
     pub nar_size: u64,
+    /// Store paths referenced by this path.
     pub references: Vec<String>,
+    /// The deriver `.drv` path, if known.
     pub deriver: Option<String>,
+    /// `name:base64` signatures attached to the path (empty when the
+    /// metadata came from plain `nix-store -q` queries, which do not
+    /// expose signatures).
     pub signatures: Vec<String>,
 }
 
@@ -26,11 +48,21 @@ pub struct NixCli {
 }
 
 impl NixCli {
+    /// Creates a wrapper with the given verbosity level; `verbose > 0`
+    /// adds `--show-trace` to evaluation commands.
     pub fn new(verbose: u8) -> Self {
         Self { verbose }
     }
 
-    /// Instantiate an attribute from a file -> .drv path.
+    /// Instantiates an attribute from a Nix file, returning the `.drv` path.
+    ///
+    /// Runs `nix-instantiate -f <file> -A <attr>`; the child's stderr is
+    /// passed through to the terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nix-instantiate` cannot be spawned, exits
+    /// non-zero, or prints non-UTF-8 output.
     pub fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         let mut cmd = Command::new("nix-instantiate");
         cmd.envs(aos_nix_env())
@@ -55,7 +87,15 @@ impl NixCli {
         Ok(PathBuf::from(drv))
     }
 
-    /// Instantiate a raw expression -> .drv path.
+    /// Instantiates a raw Nix expression, returning the `.drv` path.
+    ///
+    /// Runs `nix-instantiate -E <expr>`; the expression must be
+    /// self-contained (responsible for its own imports).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nix-instantiate` cannot be spawned, exits
+    /// non-zero, or prints non-UTF-8 output.
     pub fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
         let mut cmd = Command::new("nix-instantiate");
         cmd.envs(aos_nix_env()).arg("-E").arg(expr);
@@ -76,7 +116,15 @@ impl NixCli {
         Ok(PathBuf::from(drv))
     }
 
-    /// Build a derivation from a file + attribute -> store path.
+    /// Builds an attribute from a Nix file, returning the output store path.
+    ///
+    /// Runs `nix-build <file> -A <attr> --no-out-link`, so no `result`
+    /// symlink is created.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nix-build` cannot be spawned, exits
+    /// non-zero (i.e. the build failed), or prints non-UTF-8 output.
     pub fn build(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         let mut cmd = Command::new("nix-build");
         cmd.envs(aos_nix_env())
@@ -101,7 +149,13 @@ impl NixCli {
         Ok(PathBuf::from(path))
     }
 
-    /// Build a .drv directly -> output store path.
+    /// Realises a `.drv` directly via `nix-store --realise`, returning
+    /// the output store path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nix-store` cannot be spawned, the
+    /// realisation fails, or the output is not UTF-8.
     pub fn realise(&self, drv: &str) -> Result<String> {
         let output = Command::new("nix-store")
             .envs(aos_nix_env())
@@ -119,7 +173,13 @@ impl NixCli {
         Ok(path)
     }
 
-    /// Get recursive closure of a store path.
+    /// Returns the recursive closure of a store path (the path itself
+    /// plus everything it transitively references), via `nix-store -qR`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nix-store` cannot be spawned, the query
+    /// fails (e.g. the path is not valid), or the output is not UTF-8.
     pub fn closure(&self, path: &str) -> Result<Vec<String>> {
         let output = Command::new("nix-store")
             .envs(aos_nix_env())
@@ -138,7 +198,18 @@ impl NixCli {
             .collect())
     }
 
-    /// Query metadata for a store path via CLI commands.
+    /// Queries metadata for a store path via individual `nix-store -q`
+    /// commands (`--hash`, `--size`, `--references`, `--deriver`).
+    ///
+    /// A deriver of `unknown-deriver` is mapped to `None`, and
+    /// signatures are always empty (the classic CLI does not expose
+    /// them).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any of the underlying queries fails (e.g.
+    /// the path is not valid in the store) or the reported size is not
+    /// a valid integer.
     pub fn path_info(&self, store_path: &str) -> Result<PathInfo> {
         let hash = run_nix_store_query(store_path, "--hash")?;
         let size_str = run_nix_store_query(store_path, "--size")?;
@@ -171,12 +242,24 @@ impl NixCli {
         })
     }
 
-    /// Batch path_info for multiple paths via CLI queries.
+    /// Queries [`path_info`](Self::path_info) for multiple paths.
+    ///
+    /// Paths are queried sequentially; results preserve the input order.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error encountered; later paths are not queried.
     pub fn path_info_batch(&self, paths: &[&str]) -> Result<Vec<PathInfo>> {
         paths.iter().map(|p| self.path_info(p)).collect()
     }
 
-    /// Check if a store path is valid locally.
+    /// Checks whether a store path is valid (registered) in the local
+    /// store, via `nix-store --check-validity`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if `nix-store` cannot be spawned; an
+    /// invalid path yields `Ok(false)`.
     pub fn is_valid(&self, path: &str) -> Result<bool> {
         let status = Command::new("nix-store")
             .envs(aos_nix_env())
@@ -188,7 +271,16 @@ impl NixCli {
         Ok(status.success())
     }
 
-    /// Spawn `nix-store --dump <path>` with piped stdout.
+    /// Spawns `nix-store --dump <path>` with piped stdout, producing a
+    /// bare NAR stream.
+    ///
+    /// The caller owns the returned [`Child`] and must read its stdout
+    /// and `wait` on it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the process cannot be spawned. A dump
+    /// failure surfaces later through the child's exit status.
     #[allow(dead_code)] // public API
     pub fn nar_dump(&self, path: &str) -> Result<Child> {
         Command::new("nix-store")
@@ -200,7 +292,17 @@ impl NixCli {
             .with_context(|| format!("spawning nix-store --dump {path}"))
     }
 
-    /// Spawn `nix-store --export <path>` with piped stdout.
+    /// Spawns `nix-store --export <path>` with piped stdout, producing
+    /// an export stream (NAR plus metadata trailer; see
+    /// [`crate::nar::export`]).
+    ///
+    /// The caller owns the returned [`Child`] and must read its stdout
+    /// and `wait` on it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the process cannot be spawned. An export
+    /// failure surfaces later through the child's exit status.
     #[allow(dead_code)] // public API
     pub fn nar_export(&self, path: &str) -> Result<Child> {
         Command::new("nix-store")
@@ -212,7 +314,18 @@ impl NixCli {
             .with_context(|| format!("spawning nix-store --export {path}"))
     }
 
-    /// Pipe data to `nix-store --import` stdin, return imported paths.
+    /// Pipes an export stream to `nix-store --import` and returns the
+    /// imported store paths.
+    ///
+    /// The data must be a framed import stream as produced by
+    /// `nix-store --export` (or
+    /// [`ExportTrailer::write_import_stream`](crate::nar::export::ExportTrailer::write_import_stream)).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the process cannot be spawned, the data
+    /// cannot be written to its stdin, the import fails, or the output
+    /// is not UTF-8.
     #[allow(dead_code)] // public API
     pub fn nar_import(&self, mut data: impl Read) -> Result<Vec<String>> {
         let mut child = Command::new("nix-store")
@@ -249,7 +362,8 @@ impl NixCli {
     }
 }
 
-/// Run a single `nix-store -q <flag> <path>` query.
+/// Runs a single `nix-store -q <flag> <path>` query and returns its
+/// trimmed stdout. Stderr is discarded; failures map to an error.
 fn run_nix_store_query(path: &str, flag: &str) -> Result<String> {
     let output = Command::new("nix-store")
         .envs(aos_nix_env())

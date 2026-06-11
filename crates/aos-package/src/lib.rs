@@ -1,3 +1,44 @@
+//! The AOS package manager: the `apm` and `apr` command surfaces.
+//!
+//! This crate implements both halves of the AOS package tooling:
+//!
+//! - **`apm` (consumer)** — installs, upgrades, and removes packages from
+//!   configured registries. The clap tree is [`PackageCommand`], dispatched by
+//!   [`run`].
+//! - **`apr` (producer)** — authors and publishes registries: package
+//!   entries, signing-key rosters, channels, static caches, and releases. The
+//!   clap tree is [`RegistryCommand`], reachable as `apm registry ...` or via
+//!   the `apr` binary alias.
+//!
+//! # Profile scopes
+//!
+//! Every operation runs in one of two [`types::ProfileScope`]s:
+//!
+//! - **User** — the default. State lives under per-user paths
+//!   (`/var/lib/profiles/per-user/$USER/`, XDG config/data/cache dirs) and no
+//!   special privileges are required.
+//! - **System** — selected by `--system` on `install`, `upgrade`, and
+//!   `rollback`. Operates on the system sysroot under
+//!   `/var/lib/profiles/system/` with numbered generations, activation
+//!   scripts, and kernel/boot-loader handling (see [`sysroot`]).
+//!
+//! # Module map
+//!
+//! - [`install`] / [`remove`] / [`upgrade`] / [`rollback`] — user-scope
+//!   profile mutations (resolve, download, verify, import, generation switch).
+//! - [`sysroot`] — system-scope generations, activation, and kernel upgrade
+//!   modes; also hosts the hidden `activate-{pre,post}-etc-swap` reconciler.
+//! - [`update`] / [`query`] / [`deps`] / [`hold`] / [`clean`] / [`verify`] /
+//!   [`source`] — registry sync and read-only or maintenance commands.
+//! - [`registry`] / [`registry_ops`] — registry data model and the `apr`
+//!   producer operations (publish, keys, channels, caches, releases).
+//! - [`config`] / [`types`] — configuration loading and the on-disk data
+//!   contracts (registry TOML, generation state JSON, profile paths).
+//! - [`security`] / [`sysroot_lock`] — signature verification, trusted-key
+//!   storage, and the sysroot-lock divergence check.
+//! - [`profile`] / [`store`] / [`download`] — profile generations, the local
+//!   store, and the NAR download engine.
+
 pub mod clean;
 pub mod config;
 pub mod deps;
@@ -272,6 +313,7 @@ pub enum PackageCommand {
     /// Manage registries
     #[command(after_long_help = ENVIRONMENT_HELP)]
     Registry {
+        /// The registry operation to run
         #[command(subcommand)]
         command: RegistryCommand,
     },
@@ -283,8 +325,10 @@ pub enum PackageCommand {
     /// race-free plan path for the post-swap phase.
     #[command(name = "activate-pre-etc-swap", hide = true)]
     ActivatePreEtcSwap {
+        /// Generation number being activated
         #[arg(long = "gen")]
         generation: u32,
+        /// Path to the candidate /etc overlay to diff against live /etc
         #[arg(long)]
         candidate_etc: PathBuf,
     },
@@ -295,6 +339,7 @@ pub enum PackageCommand {
     /// `/etc`, applies reload/restart/start actions, and runs the health gate.
     #[command(name = "activate-post-etc-swap", hide = true)]
     ActivatePostEtcSwap {
+        /// Path to the pre-swap plan file printed by activate-pre-etc-swap
         #[arg(long)]
         plan: PathBuf,
     },
@@ -307,6 +352,7 @@ pub enum PackageCommand {
     /// config, so `run()` dispatches it before `ApmConfig::load`.
     #[command(name = "_test-systemd-client", hide = true)]
     TestSystemdClient {
+        /// The systemd client operation to exercise
         #[command(subcommand)]
         op: TestSystemdClientOp,
     },
@@ -318,33 +364,59 @@ pub enum PackageCommand {
 #[derive(Subcommand)]
 pub enum TestSystemdClientOp {
     /// Start a unit (mode "replace") and wait for its job to settle.
-    Start { unit: String },
+    Start {
+        /// Unit name (e.g. "foo.service")
+        unit: String,
+    },
     /// Stop a unit and wait for its job to settle.
-    Stop { unit: String },
+    Stop {
+        /// Unit name (e.g. "foo.service")
+        unit: String,
+    },
     /// Restart a unit and wait for its job to settle.
-    Restart { unit: String },
+    Restart {
+        /// Unit name (e.g. "foo.service")
+        unit: String,
+    },
     /// Reload a unit (runs `ExecReload=`) and wait for its job to settle.
-    Reload { unit: String },
+    Reload {
+        /// Unit name (e.g. "foo.service")
+        unit: String,
+    },
     /// Start a unit in "isolate" mode and wait for its job to settle.
-    Isolate { unit: String },
+    Isolate {
+        /// Unit name (e.g. "rescue.target")
+        unit: String,
+    },
     /// `Manager.Reload()` — the D-Bus equivalent of `systemctl daemon-reload`.
     DaemonReload,
     /// Clear the failed state of a single unit (`--unit`) or all units.
     ResetFailed {
+        /// Unit whose failed state to clear (all units if omitted)
         #[arg(long)]
         unit: Option<String>,
     },
     /// Whether a unit's `ActiveState == "active"`.
-    IsActive { unit: String },
+    IsActive {
+        /// Unit name (e.g. "foo.service")
+        unit: String,
+    },
     /// List units matching an optional glob `--pattern` / `--state` filter.
     ListUnits {
+        /// Glob pattern to match unit names against
         #[arg(long)]
         pattern: Option<String>,
+        /// Filter by ActiveState (e.g. "active", "failed")
         #[arg(long)]
         state: Option<String>,
     },
     /// Read a single `org.freedesktop.systemd1.Unit` property.
-    Property { unit: String, name: String },
+    Property {
+        /// Unit name (e.g. "foo.service")
+        unit: String,
+        /// Property name (e.g. "ActiveState")
+        name: String,
+    },
     /// Scan for failed (and failed-and-auto-restarting) units.
     FailedUnits,
     /// Drain late `JobRemoved` signals until the bus goes quiet.
@@ -443,11 +515,13 @@ pub enum RegistryCommand {
     },
     /// Manage trusted registry signing keys
     Trust {
+        /// The trust-store operation to run
         #[command(subcommand)]
         command: TrustCommand,
     },
     /// Manage the committed registry keys.toml roster
     Keys {
+        /// The keys.toml roster operation to run
         #[command(subcommand)]
         command: KeysCommand,
     },
@@ -623,6 +697,7 @@ pub enum RegistryCommand {
     },
     /// Branch operations
     Branch {
+        /// The branch operation to run
         #[command(subcommand)]
         command: BranchCommand,
     },
@@ -666,16 +741,19 @@ pub enum RegistryCommand {
     },
     /// Channel rollout operations
     Channel {
+        /// The channel operation to run
         #[command(subcommand)]
         command: ChannelCommand,
     },
     /// Static Nix-cache operations
     Cache {
+        /// The cache operation to run
         #[command(subcommand)]
         command: CacheCommand,
     },
     /// Static git-origin upload operations
     Origin {
+        /// The origin operation to run
         #[command(subcommand)]
         command: OriginCommand,
     },
@@ -1099,10 +1177,21 @@ pub struct CacheUploadAuthArgs {
 }
 
 impl CacheUploadAuthArgs {
+    /// Convert these CLI flags into backend [`aos_cache::AuthOptions`],
+    /// without any configuration-file defaults.
+    ///
+    /// Equivalent to [`Self::auth_options_with_config`] with `None`.
     pub fn auth_options(&self) -> aos_cache::AuthOptions {
         self.auth_options_with_config(None)
     }
 
+    /// Convert these CLI flags into backend [`aos_cache::AuthOptions`],
+    /// layered over optional `[registry.upload_auth]` config defaults.
+    ///
+    /// Config values (when present) seed the result; any flag the user set on
+    /// the command line (or via its env binding) overrides the corresponding
+    /// config value. `ssh_ask_pass` is OR-ed, and the cache view falls back to
+    /// `"default"` when neither source sets it.
     pub fn auth_options_with_config(
         &self,
         config: Option<&RegistryUploadAuthConfig>,
@@ -1153,7 +1242,10 @@ impl CacheUploadAuthArgs {
     }
 }
 
-/// Convert mutually-exclusive kernel mode flags into a `KernelUpgradeMode`.
+/// Convert mutually-exclusive kernel mode flags into a [`KernelUpgradeMode`].
+///
+/// Clap's `kernel_mode` arg group guarantees at most one flag is set; with
+/// none set the default [`KernelUpgradeMode::Advisory`] is returned.
 fn parse_kernel_mode(kexec: bool, reboot: bool, live: bool) -> KernelUpgradeMode {
     if kexec {
         KernelUpgradeMode::Kexec
@@ -1167,6 +1259,21 @@ fn parse_kernel_mode(kexec: bool, reboot: bool, live: bool) -> KernelUpgradeMode
 }
 
 /// Main entry point for `aos package` / `apm`.
+///
+/// Loads the [`config::ApmConfig`] for the scope implied by the command
+/// (`--system` selects [`ProfileScope::System`]) and dispatches to the
+/// matching module. The hidden `_test-systemd-client` and
+/// `activate-{pre,post}-etc-swap` subcommands are dispatched *before* config
+/// loading; the activate pair terminates the process directly via
+/// `std::process::exit` so its 0/1/2 exit-code contract reaches the caller
+/// unflattened.
+///
+/// # Errors
+///
+/// Returns an error when configuration loading fails or when the dispatched
+/// subcommand fails (resolution, download, verification, activation,
+/// registry operations, ...). User cancellation at a confirmation prompt is
+/// reported as [`aos_core::error::AosError::UserCancelled`].
 pub async fn run(
     command: &PackageCommand,
     dry_run: bool,
@@ -1411,6 +1518,10 @@ pub async fn run(
 // Registry subcommands
 // ---------------------------------------------------------------------------
 
+/// Dispatch an `apm registry` / `apr` subcommand to its handler.
+///
+/// The consumer-facing lifecycle commands (`list`, `add`, `remove`) are
+/// implemented in this module; everything else delegates to [`registry_ops`].
 async fn run_registry(
     config: &config::ApmConfig,
     command: &RegistryCommand,
@@ -1764,6 +1875,9 @@ async fn run_registry(
     }
 }
 
+/// `apr list` — print every configured registry (name, URL, priority,
+/// transport, tracking mode, package count, sync state), plus any local
+/// authoring clones that have no `registries.d/` entry.
 async fn registry_list(config: &config::ApmConfig, printer: &Printer) -> Result<()> {
     let configured_names: Vec<&str> = config
         .registries
@@ -1898,6 +2012,10 @@ fn print_local_registries(local: &[registry_ops::LocalRegistry], printer: &Print
     ));
 }
 
+/// `apr add` — register a registry by writing `registries.d/<name>.toml`
+/// (with at most one tracking field and optional `[registry.signing]`),
+/// pinning the `--trust-key` if given, then syncing the initial clone unless
+/// `--no-clone` was passed. A failed initial sync is non-fatal.
 #[allow(clippy::too_many_arguments)]
 async fn registry_add(
     config: &config::ApmConfig,
@@ -2034,6 +2152,12 @@ enabled = true
     Ok(())
 }
 
+/// `apr remove` — delete a registry's config file, metadata cache, local
+/// clone (unless `--keep-local`), and pinned trusted keys.
+///
+/// Refuses to delete an authoring clone with uncommitted or unpushed work
+/// unless `--force` is passed. Installed packages are deliberately left
+/// untouched; they become orphans visible via `apm orphans`.
 async fn registry_remove(
     config: &config::ApmConfig,
     name: &str,
@@ -2108,6 +2232,8 @@ async fn registry_remove(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Derive a registry name from its URL: the last path segment with any
+/// trailing `/` or `.git` stripped, filtered to `[A-Za-z0-9_-]`.
 fn derive_registry_name(url: &str) -> String {
     let cleaned = url.trim_end_matches('/').trim_end_matches(".git");
     let name = cleaned.rsplit('/').next().unwrap_or("unknown");
@@ -2116,6 +2242,9 @@ fn derive_registry_name(url: &str) -> String {
         .collect::<String>()
 }
 
+/// Count package TOML files in a registry's sharded `packages/` directory
+/// (`packages/<first-letter>/<name>.toml`). Unreadable directories count as
+/// zero rather than erroring — this only feeds informational output.
 fn count_packages_in_dir(dir: &std::path::Path) -> usize {
     let Ok(entries) = fs::read_dir(dir) else {
         return 0;

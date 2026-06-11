@@ -1,3 +1,19 @@
+//! `aos serve` — run the AOS HTTP binary cache server.
+//!
+//! This module is the daemon bootstrap; the request handling itself
+//! lives in the `aos-server` crate. Startup sequence: install the
+//! stderr tracing subscriber (`crate::logging`), load the TOML config,
+//! open the Nix store and token databases, initialise the view
+//! directories, recover builds left in-flight by a previous crash, load
+//! the narinfo signing key, spawn the bootstrap Unix-socket listener
+//! (for `aos token`), and finally accept connections.
+//!
+//! The listener serves HTTP/1.1 and HTTP/2 on one port — TLS with ALPN
+//! when `tls.enabled` (generating a self-signed certificate if none is
+//! configured), cleartext h2c otherwise. On SIGTERM/SIGINT the server
+//! drains: in-flight builds get up to 75 seconds to finish before
+//! connections are shut down gracefully.
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,6 +25,16 @@ use aos_core::output::Printer;
 use aos_server::{self, bootstrap, build, config, drain, routes, sign, store, tls, tokens, views};
 
 /// `aos serve` — start the HTTP binary cache server.
+///
+/// Runs until a shutdown signal is received and the drain completes.
+///
+/// # Errors
+///
+/// Returns an error if startup fails: unreadable configuration, store or
+/// token database cannot be opened, view directories cannot be created,
+/// TLS material cannot be loaded or generated, or the listen address
+/// cannot be bound. Per-connection errors after startup are logged, not
+/// returned.
 pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
     // Install a stderr tracing subscriber so aos-server's request
     // instrumentation (`tracing::info!` in routes.rs etc.) reaches

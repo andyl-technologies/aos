@@ -1,7 +1,18 @@
 //! `apm verify` and `apm source` commands.
 //!
-//! - `verify <pkg>`: compare the installed NAR hash against the registry.
-//! - `source <pkg>`: show/fetch/verify the source derivation.
+//! - `verify <pkg>`: compare the installed NAR hash against the registry
+//!   entry for the *installed* store path (not the latest candidate, which
+//!   may differ after a rollback) — detects on-disk tampering.
+//! - `source <pkg>`: inspect a package's source provenance. Every registry
+//!   package records the derivation it was built from (`source_drv`) and the
+//!   hash of that source (`source_nar_hash`). The command can print those
+//!   fields, realise the derivation locally (`--fetch`), or rebuild from
+//!   source and compare the rebuilt NAR hash against the installed binary
+//!   (`--verify`) for reproducibility auditing.
+//!
+//! Source metadata for installed packages is preferred from the profile's
+//! own [`ApmMeta`](crate::types::ApmMeta) record (which survives registry
+//! churn), falling back to the registry entry matched by store-path hash.
 
 use std::process::Stdio;
 
@@ -21,6 +32,7 @@ use aos_core::output::{OutputMode, Printer};
 // Platform detection (shared helper)
 // ---------------------------------------------------------------------------
 
+/// Nix platform string for the running binary, defaulting to x86_64-linux.
 fn current_platform() -> &'static str {
     if cfg!(target_arch = "x86_64") {
         "x86_64-linux"
@@ -42,6 +54,14 @@ fn current_platform() -> &'static str {
 /// 3. Run `nix-store --dump` on the installed store path.
 /// 4. Hash the NAR content with SHA-256.
 /// 5. Compare against the registry's `nar_hash`.
+///
+/// # Errors
+///
+/// Returns [`AosError::PackageNotFound`] if `package` is not installed, an
+/// error if the installed store-path hash cannot be matched in its
+/// registry, a hash-mismatch error if the on-disk contents have been
+/// modified, or any failure from loading registries / running
+/// `nix-store --dump`.
 pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     printer.header(&format!("Verifying package '{package}'..."));
 
@@ -108,6 +128,12 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
     }
 }
 
+/// Look up the registry entry matching the *installed* store path of a
+/// package (by store-path hash, in the registry recorded at install time).
+///
+/// This deliberately avoids `RegistrySet::resolve`, which returns the
+/// latest candidate — after a rollback the installed version may be older
+/// than the registry's newest entry.
 fn resolve_installed_package_meta<'a>(
     reg_set: &'a RegistrySet,
     package: &str,
@@ -133,6 +159,8 @@ fn resolve_installed_package_meta<'a>(
         })
 }
 
+/// Source provenance for an installed package: where it came from and the
+/// derivation that produced it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceMetadata {
     registry_name: String,
@@ -140,6 +168,9 @@ struct SourceMetadata {
     source_nar_hash: String,
 }
 
+/// Resolve a package's source metadata, preferring the profile's own
+/// `ApmMeta` record (set at install time) and falling back to the registry
+/// entry matched by installed store-path hash.
 fn resolve_installed_source_metadata(
     reg_set: &RegistrySet,
     package: &str,
@@ -179,6 +210,18 @@ fn resolve_installed_source_metadata(
 /// - `--fetch`: Download the source derivation NAR.
 /// - `--verify`: Rebuild from source and compare hash.
 /// - (default, no flags): Print the `source_drv` field.
+///
+/// For `--verify` the expected hash is the freshly dumped NAR hash of the
+/// *installed* store path, so the comparison is rebuild-vs-installed rather
+/// than rebuild-vs-registry.
+///
+/// # Errors
+///
+/// Returns [`AosError::PackageNotFound`] if the package is neither
+/// installed nor in any enabled registry (or, with `--verify`, not
+/// installed), an error if the package records no source derivation, if
+/// `nix-store --realise`/`--dump` fails, or if the rebuilt hash does not
+/// match the installed binary.
 pub async fn run_source(
     config: &ApmConfig,
     package: &str,
@@ -401,6 +444,7 @@ pub async fn run_source(
     Ok(())
 }
 
+/// Find the profile metadata entry whose APM name matches `package`.
 fn find_installed_package<'a>(
     installed: &'a [InstalledMeta],
     package: &str,

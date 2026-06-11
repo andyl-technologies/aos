@@ -1,3 +1,14 @@
+//! Arguments for `aos package` (a.k.a. `apm`) — the package manager.
+//!
+//! `PackageArgs` wraps the `PackageCommand` subcommand tree defined in
+//! the `aos-package` crate (install, remove, registry operations, ...)
+//! and adds the global `--dry-run` and `--yes` flags. Invoking the
+//! binary as `apm` or `apr` routes here implicitly (see the multicall
+//! dispatch in `main.rs`).
+//!
+//! Doc comments here are clap `--help` text; the implementation lives in
+//! `commands::package`, which delegates to `aos_package::run`.
+
 use clap::Args;
 
 // Re-export command enums from the package library crate so clap can use them.

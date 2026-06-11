@@ -1,24 +1,45 @@
+//! On-disk caching of the documentation index.
+//!
+//! Building a [`DocIndex`] requires walking and parsing every `.nix` file in
+//! the repository (and optionally evaluating the module system), so the
+//! result is cached as JSON between runs. Local repositories cache in-tree
+//! (`<root>/.aos-doc-cache.json`); remote/flake sources cache under
+//! `~/.cache/aos/doc/` keyed by a source hash.
+//!
+//! Staleness is detected with a cheap mtime scan: the cache is invalid as
+//! soon as any `.nix` file under `lib/`, `modules/`, or `pkgs/` is newer
+//! than the index's `built_at` timestamp (see [`is_cache_valid`]).
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use crate::model::DocIndex;
 
-/// Return the cache file path for a local source root.
+/// Returns the cache file path for a local source root.
 ///
 /// For local repos: `<root>/.aos-doc-cache.json`
 pub fn cache_path_for_local(root: &Path) -> PathBuf {
     root.join(".aos-doc-cache.json")
 }
 
-/// Return the cache file path for a remote/flake source, keyed by a hash.
+/// Returns the cache file path for a remote/flake source, keyed by a hash.
 ///
-/// Location: `~/.cache/aos/doc/<hash>.json`
+/// Location: `~/.cache/aos/doc/<hash>.json` (honoring `XDG_CACHE_HOME`).
+/// Returns `None` if neither `XDG_CACHE_HOME` nor `HOME` is set.
 pub fn cache_path_for_remote(source_hash: &str) -> Option<PathBuf> {
     dirs_cache().map(|base| base.join(format!("{source_hash}.json")))
 }
 
-/// Load a cached `DocIndex` from disk, if the file exists.
+/// Loads a cached [`DocIndex`] from disk, if the file exists.
+///
+/// Returns `Ok(None)` when `cache_file` is not a regular file, so a missing
+/// cache is not an error.
+///
+/// # Errors
+///
+/// Returns an error if the file exists but cannot be read, or if its
+/// contents are not a valid JSON-serialized [`DocIndex`].
 pub fn load_cache(cache_file: &Path) -> Result<Option<DocIndex>> {
     if !cache_file.is_file() {
         return Ok(None);
@@ -33,7 +54,12 @@ pub fn load_cache(cache_file: &Path) -> Result<Option<DocIndex>> {
     Ok(Some(index))
 }
 
-/// Save a `DocIndex` to disk as JSON.
+/// Saves a [`DocIndex`] to disk as JSON, creating parent directories.
+///
+/// # Errors
+///
+/// Returns an error if the parent directory cannot be created, if the index
+/// fails to serialize, or if the file cannot be written.
 pub fn save_cache(cache_file: &Path, index: &DocIndex) -> Result<()> {
     // Ensure parent directory exists (relevant for remote cache paths).
     if let Some(parent) = cache_file.parent() {
@@ -48,10 +74,12 @@ pub fn save_cache(cache_file: &Path, index: &DocIndex) -> Result<()> {
     Ok(())
 }
 
-/// Check whether a cached index is still valid.
+/// Checks whether a cached index is still valid.
 ///
-/// The cache is considered stale if any `.nix` file under the root has an
-/// mtime newer than the index's `built_at` timestamp.
+/// The cache is considered stale if any `.nix` file under the root's
+/// `lib/`, `modules/`, or `pkgs/` directories has an mtime newer than the
+/// index's `built_at` timestamp. Directories that cannot be read are
+/// treated as unchanged, so I/O problems never force a rebuild loop.
 pub fn is_cache_valid(root: &Path, index: &DocIndex) -> bool {
     let built_at = index.built_at;
 
@@ -65,7 +93,7 @@ pub fn is_cache_valid(root: &Path, index: &DocIndex) -> bool {
     true
 }
 
-/// Recursively check if any `.nix` file in `dir` has an mtime after `cutoff` (unix secs).
+/// Recursively checks if any `.nix` file in `dir` has an mtime after `cutoff` (unix secs).
 fn has_newer_nix_file(dir: &Path, cutoff: u64) -> bool {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -100,7 +128,7 @@ fn has_newer_nix_file(dir: &Path, cutoff: u64) -> bool {
     false
 }
 
-/// Return `~/.cache/aos/doc/` (XDG-style).
+/// Returns the base cache directory, `~/.cache/aos/doc/` (XDG-style).
 fn dirs_cache() -> Option<PathBuf> {
     // Respect XDG_CACHE_HOME if set, otherwise use ~/.cache.
     let base = std::env::var_os("XDG_CACHE_HOME")
