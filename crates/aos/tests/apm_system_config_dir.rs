@@ -465,6 +465,68 @@ fn system_config_dir_override_supports_apm_registry_lifecycle() -> Result<()> {
 }
 
 #[test]
+fn user_registry_shadowing_system_registry_is_not_silently_removed() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let system_registries_dir = system_dir.join("registries.d");
+    let user_registries_dir = home.join(".config/apm/registries.d");
+    fs::create_dir_all(&system_registries_dir)?;
+    fs::create_dir_all(&user_registries_dir)?;
+
+    let system_config = system_registries_dir.join("sysreg.toml");
+    let user_config = user_registries_dir.join("sysreg.toml");
+    fs::write(
+        &system_config,
+        "[registry]\nname = \"sysreg\"\nurl = \"https://registry.example/system\"\npriority = 100\n",
+    )?;
+    fs::write(
+        &user_config,
+        "[registry]\nname = \"sysreg\"\nurl = \"https://registry.example/user\"\npriority = 900\n",
+    )?;
+
+    let listed = run_aos_package_json(&home, &system_dir, &["--json", "registry", "list"], "list")?;
+    let registries = listed
+        .as_array()
+        .context("registry list JSON should be an array")?;
+    assert_eq!(
+        registries.len(),
+        1,
+        "user registry should shadow the same-name system registry: {listed}"
+    );
+    assert_eq!(registries[0]["name"], "sysreg");
+    assert_eq!(registries[0]["url"], "https://registry.example/user");
+    assert_eq!(registries[0]["priority"], 900);
+
+    let output = run_aos_package_output(&home, &system_dir, &["registry", "remove", "sysreg"])?;
+    assert!(
+        !output.status.success(),
+        "registry remove should reject a user shadow whose system fallback would remain:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("also exists in system config"),
+        "remove error should explain that the system fallback would remain:\n{text}"
+    );
+    assert!(
+        user_config.exists(),
+        "failed shadowed remove should leave the user registry config in place"
+    );
+    assert!(
+        system_config.exists(),
+        "failed shadowed remove should leave the system registry config in place"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn relative_system_config_dir_override_is_ignored() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let home = tmp.path().join("home");
