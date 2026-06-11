@@ -2534,7 +2534,7 @@ async fn registry_remove(
     // unprivileged `apr` invocation may not have, and gating a config delete on
     // installed-package state conflates the two tools. Any packages still
     // installed from this registry become orphans; `apm orphans` surfaces them.
-    let toml_path = config.registry_config_path_for_update(name);
+    let toml_path = registry_config_path_for_removal(config, name)?;
     let toml_existed = toml_path.exists();
 
     if toml_path.exists() {
@@ -2733,6 +2733,46 @@ fn count_packages_in_dir(dir: &std::path::Path) -> usize {
         }
     }
     count
+}
+
+/// Return the registry config file that `registry remove` should delete.
+///
+/// Removing a user-level config has different semantics than updating it:
+/// when a same-name system config exists underneath, deleting only the user
+/// layer would make the registry reappear from the fallback. Treat that as an
+/// ambiguous removal instead of reporting success for a registry that remains
+/// visible.
+fn registry_config_path_for_removal(config: &config::ApmConfig, name: &str) -> Result<PathBuf> {
+    let primary = config
+        .scope
+        .config_dir()
+        .join("registries.d")
+        .join(format!("{name}.toml"));
+    if config.scope != ProfileScope::User {
+        return Ok(primary);
+    }
+
+    let fallback = ProfileScope::System
+        .config_dir()
+        .join("registries.d")
+        .join(format!("{name}.toml"));
+    if primary.exists() && fallback.exists() {
+        return Err(AosError::RegistryError {
+            message: format!(
+                "registry '{name}' also exists in system config at {}; refusing to remove only \
+                 the user config at {} because the system registry would remain visible",
+                fallback.display(),
+                primary.display(),
+            ),
+        }
+        .into());
+    }
+
+    if primary.exists() || !fallback.exists() {
+        Ok(primary)
+    } else {
+        Ok(fallback)
+    }
 }
 
 #[cfg(test)]
