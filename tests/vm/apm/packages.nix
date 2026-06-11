@@ -5156,6 +5156,22 @@ in {
           and .installed_store_path == $store
           and (.source_nar_hash | startswith("sha256-"))' \
         /tmp/surface-source-sourceful-show-drv-json.out >/dev/null
+      run_ok source-sourceful-fetch-json-missing "$APM" --json source sourceful --fetch
+      "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
+        '.package == "sourceful"
+          and .registry == "surface-reg"
+          and .source_drv == $source
+          and .installed == true
+          and .installed_store_path == $store
+          and .realised_path == $source
+          and (.source_nar_hash | startswith("sha256-"))' \
+        /tmp/surface-source-sourceful-fetch-json-missing.out >/dev/null
+      assert_file_not_contains /tmp/surface-source-sourceful-fetch-json-missing.out "Fetching source" \
+        "apm --json source --fetch emits clean JSON while downloading source"
+      assert_store_valid "$SOURCE_V1_SRC_STORE" "sourceful-source-v1-json-fetch"
+      delete_store_path "$SOURCE_V1_SRC_STORE" "sourceful-source-v1-after-json-fetch"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
       run_ok source-sourceful-fetch "$APM" source sourceful --fetch
       assert_file_contains /tmp/surface-source-sourceful-fetch.out "Downloading 1 NAR" \
         "apm source --fetch downloads missing sourceful v1 source NAR"
