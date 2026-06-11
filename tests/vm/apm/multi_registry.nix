@@ -715,6 +715,129 @@ in {
         fail "apm --json list --installed keeps both duplicate sources visible"
       fi
 
+      $APM --json hold priority-tool \
+        > /tmp/priority-client-hold-high-tool.json 2>&1 || {
+        cat /tmp/priority-client-hold-high-tool.json
+        fail "apm --json hold selects explicit duplicate-name package"
+      }
+      if ${jqBin} -e --arg store "$HIGH_STORE" '
+        .action == "hold"
+        and .status == "held"
+        and .name == "priority-tool"
+        and .registry == "high-priority"
+        and .store_path == $store
+        and .held == true
+      ' /tmp/priority-client-hold-high-tool.json >/dev/null; then
+        pass "duplicate-name hold selects the explicit high-priority package"
+      else
+        cat /tmp/priority-client-hold-high-tool.json
+        fail "duplicate-name hold should not hold the automatic low-priority dependency"
+      fi
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
+        '"held": false' "duplicate-name hold leaves low dependency unheld"
+      assert_file_contains "$CURRENT_PROFILE/meta/$HIGH_HASH.json" \
+        '"held": true' "duplicate-name hold marks high explicit package held"
+      $APM --json held > /tmp/priority-client-held-high-tool.json 2>&1 || {
+        cat /tmp/priority-client-held-high-tool.json
+        fail "apm --json held reports explicit duplicate-name hold"
+      }
+      if ${jqBin} -e --arg store "$HIGH_STORE" '
+        length == 1
+        and .[0].name == "priority-tool"
+        and .[0].registry == "high-priority"
+        and .[0].store_path == $store
+      ' /tmp/priority-client-held-high-tool.json >/dev/null; then
+        pass "held list reports only the high-priority duplicate"
+      else
+        cat /tmp/priority-client-held-high-tool.json
+        fail "held list should not include the automatic low-priority dependency"
+      fi
+
+      $APM --json reinstall priority-tool --dry-run \
+        > /tmp/priority-client-reinstall-high-tool-dry-run.json 2>&1 || {
+        cat /tmp/priority-client-reinstall-high-tool-dry-run.json
+        fail "apm --json reinstall --dry-run preserves explicit duplicate source"
+      }
+      if ${jqBin} -e --arg store "$HIGH_STORE" '
+        .action == "reinstall"
+        and .status == "planned"
+        and .dry_run == true
+        and (.roots | length == 1)
+        and .roots[0].name == "priority-tool"
+        and .roots[0].registry == "high-priority"
+        and .roots[0].store_path == $store
+      ' /tmp/priority-client-reinstall-high-tool-dry-run.json >/dev/null; then
+        pass "duplicate-name reinstall dry-run preserves explicit high-priority source"
+      else
+        cat /tmp/priority-client-reinstall-high-tool-dry-run.json
+        fail "duplicate-name reinstall dry-run should not select low-priority dependency"
+      fi
+
+      $APM --json reinstall priority-tool --yes \
+        > /tmp/priority-client-reinstall-high-tool.json 2>&1 || {
+        cat /tmp/priority-client-reinstall-high-tool.json
+        fail "apm --json reinstall preserves explicit duplicate source"
+      }
+      if ${jqBin} -e --arg store "$HIGH_STORE" '
+        .action == "reinstall"
+        and .status == "reinstalled"
+        and .dry_run == false
+        and (.roots | length == 1)
+        and .roots[0].registry == "high-priority"
+        and .roots[0].store_path == $store
+      ' /tmp/priority-client-reinstall-high-tool.json >/dev/null; then
+        pass "duplicate-name reinstall preserves explicit high-priority source"
+      else
+        cat /tmp/priority-client-reinstall-high-tool.json
+        fail "duplicate-name reinstall should not switch to low-priority dependency"
+      fi
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
+        '"explicit": false' "duplicate-name reinstall keeps low dependency automatic"
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
+        '"held": false' "duplicate-name reinstall keeps low dependency unheld"
+      assert_file_contains "$CURRENT_PROFILE/meta/$HIGH_HASH.json" \
+        '"explicit": true' "duplicate-name reinstall keeps high package explicit"
+      assert_file_contains "$CURRENT_PROFILE/meta/$HIGH_HASH.json" \
+        '"held": true' "duplicate-name reinstall preserves high package hold"
+      "$PROFILE_TOOL" > /tmp/priority-tool-after-reinstall-high.out
+      assert_file_contains /tmp/priority-tool-after-reinstall-high.out \
+        "priority-tool 2.0.0 from high-priority" \
+        "duplicate-name reinstall keeps high-priority executable active"
+
+      $APM --json unhold priority-tool \
+        > /tmp/priority-client-unhold-high-tool.json 2>&1 || {
+        cat /tmp/priority-client-unhold-high-tool.json
+        fail "apm --json unhold selects explicit duplicate-name package"
+      }
+      if ${jqBin} -e --arg store "$HIGH_STORE" '
+        .action == "unhold"
+        and .status == "unheld"
+        and .name == "priority-tool"
+        and .registry == "high-priority"
+        and .store_path == $store
+        and .held == false
+      ' /tmp/priority-client-unhold-high-tool.json >/dev/null; then
+        pass "duplicate-name unhold selects the explicit high-priority package"
+      else
+        cat /tmp/priority-client-unhold-high-tool.json
+        fail "duplicate-name unhold should not target the automatic low-priority dependency"
+      fi
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
+        '"held": false' "duplicate-name unhold leaves low dependency unheld"
+      assert_file_contains "$CURRENT_PROFILE/meta/$HIGH_HASH.json" \
+        '"held": false' "duplicate-name unhold clears high explicit package hold"
+      $APM --json held > /tmp/priority-client-held-after-unhold.json 2>&1 || {
+        cat /tmp/priority-client-held-after-unhold.json
+        fail "apm --json held reports no duplicate holds after unhold"
+      }
+      if ${jqBin} -e 'length == 0' \
+        /tmp/priority-client-held-after-unhold.json >/dev/null; then
+        pass "held list is empty after duplicate-name unhold"
+      else
+        cat /tmp/priority-client-held-after-unhold.json
+        fail "held list should be empty after duplicate-name unhold"
+      fi
+
       $APM --json remove priority-tool --dry-run \
         > /tmp/priority-client-remove-high-tool-dry-run.json 2>&1 || {
         cat /tmp/priority-client-remove-high-tool-dry-run.json
