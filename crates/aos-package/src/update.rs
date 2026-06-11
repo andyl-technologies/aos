@@ -4,11 +4,13 @@
 //! single named one) and stores it in the local cache.  Registry update now
 //! uses git-native sync for both dumb-HTTP and native git origins.
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 
 use crate::config::ApmConfig;
 use crate::registry::{git, state};
-use crate::types::{TrackingMode, Transport};
+use crate::types::{ProfileScope, TrackingMode, Transport};
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
 use serde_json::json;
@@ -176,10 +178,9 @@ pub async fn run(
         match result {
             Ok(sync_result) => {
                 // Save state back to the registry config file.
-                let state_path = config_dir
-                    .join("registries.d")
-                    .join(format!("{}.toml", reg_config.name));
-                if state_path.exists() {
+                if let Some(state_path) =
+                    writable_state_path(&config_dir, config.scope, &reg_config.name)
+                {
                     state::save_state(&state_path, &current_state).with_context(|| {
                         format!("saving state for registry '{}'", reg_config.name)
                     })?;
@@ -250,6 +251,7 @@ pub async fn run(
             })
             .count();
         printer.json(&json!({
+            "action": "update",
             "registry": registry_filter,
             "updated": updated,
             "registries": json_registries,
@@ -257,4 +259,43 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Resolve the config file that should receive updated registry state.
+///
+/// User-scope configs layer `$XDG_CONFIG_HOME/apm` over the system config
+/// directory. A system-provisioned registry may not have a user-level TOML
+/// file at all; when the fallback file is writable, persist state there so
+/// non-AOS fixture deployments using `APM_SYSTEM_CONFIG_DIR` keep anti-
+/// rollback and last-commit state across invocations. Read-only system
+/// configs preserve the historical behavior: sync succeeds, but state is not
+/// written.
+fn writable_state_path(
+    config_dir: &std::path::Path,
+    scope: ProfileScope,
+    name: &str,
+) -> Option<PathBuf> {
+    let primary = config_dir.join("registries.d").join(format!("{name}.toml"));
+    if primary.exists() {
+        return Some(primary);
+    }
+
+    if scope != ProfileScope::User {
+        return None;
+    }
+
+    let fallback = ProfileScope::System
+        .config_dir()
+        .join("registries.d")
+        .join(format!("{name}.toml"));
+    if fallback.exists()
+        && std::fs::OpenOptions::new()
+            .write(true)
+            .open(&fallback)
+            .is_ok()
+    {
+        Some(fallback)
+    } else {
+        None
+    }
 }
