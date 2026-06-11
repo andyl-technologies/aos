@@ -2582,6 +2582,17 @@ in {
             and .last_commit == $head
             and .packages == 1' \
           "$work/aos-package-registry-add-host-subtree-client.json" >/dev/null
+        run_clean ${self}/bin/aos --json package registry list \
+          > "$work/aos-package-registry-list-host-subtree-client.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$subtree_commit" \
+          'length == 1
+            and .[0].name == "host-subtree-client"
+            and .[0].enabled == true
+            and .[0].status == "enabled"
+            and .[0].packages == 1
+            and .[0].last_commit == $head' \
+          "$work/aos-package-registry-list-host-subtree-client.json" >/dev/null
         run_clean ${self}/bin/aos --json package search hostsubtree \
           --registry host-subtree-client > "$work/aos-package-search-host-subtree-client.json"
         ${pkgs.jq}/bin/jq -e \
@@ -2611,6 +2622,91 @@ in {
           > "$work/aos-package-host-subtree-run.out"
         grep -q "host leaf package executed" \
           "$work/aos-package-host-subtree-run.out"
+        run_clean ${self}/bin/aos --json package show hostsubtree \
+          --registry host-subtree-client > "$work/aos-package-show-host-subtree.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_leaf_store" \
+          '.name == "hostsubtree"
+            and .registry == "host-subtree-client"
+            and .version == "1.0.0"
+            and .installed == true
+            and .store_path == $store
+            and .description == "Host aos package subtree fixture"' \
+          "$work/aos-package-show-host-subtree.json" >/dev/null
+        run_clean ${self}/bin/aos --json package list --installed \
+          --registry host-subtree-client > "$work/aos-package-list-installed-host-subtree.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostsubtree"
+            and .[0].registry == "host-subtree-client"
+            and .[0].version == "1.0.0"
+            and .[0].status == "installed"' \
+          "$work/aos-package-list-installed-host-subtree.json" >/dev/null
+        run_clean ${self}/bin/aos --json package files hostsubtree \
+          > "$work/aos-package-files-host-subtree.json"
+        ${pkgs.jq}/bin/jq -e \
+          'index("bin/host-leaf-tool") != null
+            and index("share/host-leaf/payload.txt") != null' \
+          "$work/aos-package-files-host-subtree.json" >/dev/null
+        run_clean ${self}/bin/aos --json package verify hostsubtree \
+          > "$work/aos-package-verify-host-subtree.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_leaf_store" \
+          '.package == "hostsubtree"
+            and .registry == "host-subtree-client"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and .verified == true
+            and (.expected_nar_hash | startswith("sha256-"))
+            and (.actual_nar_hash | startswith("sha256:"))' \
+          "$work/aos-package-verify-host-subtree.json" >/dev/null
+        run_clean ${self}/bin/aos --json package --yes remove hostsubtree \
+          > "$work/aos-package-remove-host-subtree.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_leaf_store" \
+          '.action == "remove"
+            and .status == "removed"
+            and .requested == ["hostsubtree"]
+            and .autoremove == false
+            and .dry_run == false
+            and .generation == 2
+            and .removed == 1
+            and .explicit_removed == 1
+            and .orphan_removed == 0
+            and (.packages | length == 1)
+            and .packages[0].name == "hostsubtree"
+            and .packages[0].registry == "host-subtree-client"
+            and .packages[0].version == "1.0.0"
+            and .packages[0].store_path == $store
+            and .orphans == []' \
+          "$work/aos-package-remove-host-subtree.json" >/dev/null
+        run_clean ${self}/bin/aos --json package list --installed \
+          --registry host-subtree-client > "$work/aos-package-list-installed-host-subtree-removed.json"
+        ${pkgs.jq}/bin/jq -e 'length == 0' \
+          "$work/aos-package-list-installed-host-subtree-removed.json" >/dev/null
+        if test -e "$profile/current/bin/host-leaf-tool"; then
+          "$profile/current/bin/host-leaf-tool"
+          exit 1
+        fi
+        run_clean ${self}/bin/aos --json package registry remove host-subtree-client \
+          > "$work/aos-package-registry-remove-host-subtree-client.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$config/apm/registries.d/host-subtree-client.toml" \
+          --arg local_path "$data/apm/registries/host-subtree-client" \
+          '.action == "registry_remove"
+            and .status == "removed"
+            and .registry == "host-subtree-client"
+            and .name == "host-subtree-client"
+            and .keep_local == false
+            and .force == false
+            and .config == $config_path
+            and .config_removed == true
+            and .local == $local_path
+            and .local_removed == true
+            and .cache_removed == true
+            and .trusted_keys_removed == false' \
+          "$work/aos-package-registry-remove-host-subtree-client.json" >/dev/null
+        run_clean ${self}/bin/aos --json package registry list \
+          > "$work/aos-package-registry-list-after-host-subtree-remove.json"
+        ${pkgs.jq}/bin/jq -e 'length == 0' \
+          "$work/aos-package-registry-list-after-host-subtree-remove.json" >/dev/null
         assert_default_profile_absent
         rm -rf "$profile_root"
         home="$subtree_main_home"
@@ -2804,6 +2900,7 @@ in {
         fi
         grep -q "git merge -- feature/hostmerge-conflict failed" \
           "$work/apr-merge-host-merge-conflict.out"
+        grep -q "CONFLICT" "$work/apr-merge-host-merge-conflict.out"
         test "$(git -C "$merge_reg" rev-parse HEAD)" = "$merge_before_conflict"
         git -C "$merge_reg" status --porcelain \
           > "$work/git-status-host-merge-conflict.out"
