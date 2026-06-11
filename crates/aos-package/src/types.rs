@@ -45,6 +45,9 @@ const APM_STATE_DIR: &str = "/var/lib/apm";
 /// Default system-wide APM configuration directory.
 const DEFAULT_APM_SYSTEM_CONFIG_DIR: &str = "/etc/apm";
 
+/// Environment override for the AOS root filesystem.
+const AOS_ROOT_ENV: &str = "AOS_ROOT";
+
 /// Validate a registry name before using it as an on-disk path component.
 ///
 /// Registry names are used for files under `registries.d/`, local clone
@@ -322,6 +325,32 @@ fn apm_system_config_dir() -> &'static Path {
     DIR.get_or_init(|| {
         let value = std::env::var("APM_SYSTEM_CONFIG_DIR").ok();
         resolve_system_config_dir(value.as_deref())
+    })
+}
+
+/// Resolve system-wide APM state from `$AOS_ROOT`.
+///
+/// With no root override, system state stays at [`APM_STATE_DIR`]
+/// (`/var/lib/apm`). When `$AOS_ROOT` is a non-empty absolute path, system
+/// state is rooted under `<AOS_ROOT>/var/lib/apm`, matching the existing
+/// rootfs override used for Nix store and profile integration tests.
+fn resolve_apm_state_dir(root: Option<&str>) -> PathBuf {
+    if let Some(root) = root {
+        let path = PathBuf::from(root);
+        if !root.is_empty() && path.is_absolute() {
+            return path.join("var/lib/apm");
+        }
+    }
+
+    PathBuf::from(APM_STATE_DIR)
+}
+
+/// The system-wide APM state directory, honoring `$AOS_ROOT`.
+fn apm_state_dir() -> &'static Path {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let value = std::env::var(AOS_ROOT_ENV).ok();
+        resolve_apm_state_dir(value.as_deref())
     })
 }
 
@@ -1082,7 +1111,7 @@ impl ProfileScope {
     pub fn cache_path(&self) -> PathBuf {
         match self {
             ProfileScope::User => xdg_data_home().join("apm/remote"),
-            ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("remote"),
+            ProfileScope::System => apm_state_dir().join("remote"),
         }
     }
 
@@ -1090,7 +1119,7 @@ impl ProfileScope {
     pub fn nar_cache_path(&self) -> PathBuf {
         match self {
             ProfileScope::User => xdg_cache_home().join("apm"),
-            ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("cache"),
+            ProfileScope::System => apm_state_dir().join("cache"),
         }
     }
 
@@ -1106,7 +1135,7 @@ impl ProfileScope {
     pub fn registries_path(&self) -> PathBuf {
         match self {
             ProfileScope::User => xdg_data_home().join("apm/registries"),
-            ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("registries"),
+            ProfileScope::System => apm_state_dir().join("registries"),
         }
     }
 
@@ -1123,7 +1152,7 @@ impl ProfileScope {
             ],
             ProfileScope::System => vec![
                 apm_system_config_dir().join("trusted-keys.d"),
-                PathBuf::from(APM_STATE_DIR).join("trusted-keys.d"),
+                apm_state_dir().join("trusted-keys.d"),
             ],
         }
     }
@@ -1549,6 +1578,14 @@ mod tests {
     }
 
     #[test]
+    fn system_state_dir_honors_absolute_aos_root() {
+        assert_eq!(
+            resolve_apm_state_dir(Some("/tmp/aos-fixture")),
+            PathBuf::from("/tmp/aos-fixture/var/lib/apm"),
+        );
+    }
+
+    #[test]
     fn profile_base_honors_absolute_override() {
         assert_eq!(
             resolve_profiles_base(Some("/tmp/aos-profiles")),
@@ -1562,10 +1599,23 @@ mod tests {
     }
 
     #[test]
+    fn system_state_dir_falls_back_when_aos_root_unset() {
+        assert_eq!(resolve_apm_state_dir(None), PathBuf::from("/var/lib/apm"));
+    }
+
+    #[test]
     fn system_config_dir_ignores_relative_override() {
         assert_eq!(
             resolve_system_config_dir(Some("relative/apm")),
             PathBuf::from("/etc/apm"),
+        );
+    }
+
+    #[test]
+    fn system_state_dir_ignores_relative_aos_root() {
+        assert_eq!(
+            resolve_apm_state_dir(Some("relative/root")),
+            PathBuf::from("/var/lib/apm"),
         );
     }
 
@@ -1582,6 +1632,14 @@ mod tests {
         assert_eq!(
             resolve_system_config_dir(Some("")),
             PathBuf::from("/etc/apm")
+        );
+    }
+
+    #[test]
+    fn system_state_dir_ignores_empty_aos_root() {
+        assert_eq!(
+            resolve_apm_state_dir(Some("")),
+            PathBuf::from("/var/lib/apm")
         );
     }
 
