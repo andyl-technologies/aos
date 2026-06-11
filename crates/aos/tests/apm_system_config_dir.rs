@@ -66,6 +66,110 @@ fn system_config_dir_override_redirects_trusted_keys_and_registries() -> Result<
 }
 
 #[test]
+fn system_config_dir_override_masks_system_trust_anchor_on_user_remove() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let system_trust_dir = system_dir.join("trusted-keys.d");
+    let user_key = home.join(".config/apm/trusted-keys.d/core.pub");
+    let system_key = system_trust_dir.join("core.pub");
+    let key_line = "core:Ed25519:YWJjZA==";
+    fs::create_dir_all(&system_trust_dir)?;
+    fs::write(&system_key, format!("{key_line}\n"))?;
+
+    let listed = run_apr_json(
+        &home,
+        &system_dir,
+        &["--json", "trust", "list", "core"],
+        "trust list",
+    )?;
+    let entries = listed
+        .as_array()
+        .context("trust list JSON should be an array")?;
+    assert_eq!(entries.len(), 1, "{listed}");
+    let keys = entries[0]["keys"]
+        .as_array()
+        .context("trust list entry should contain a keys array")?;
+    assert_eq!(keys.len(), 1, "{listed}");
+    assert_eq!(keys[0]["source"], "PreInstalled");
+
+    let removed = run_apr_json(
+        &home,
+        &system_dir,
+        &["--json", "trust", "remove", "core"],
+        "trust remove",
+    )?;
+    assert_eq!(removed["action"], "trust_remove");
+    assert_eq!(removed["status"], "removed");
+    assert_eq!(removed["registry"], "core");
+    assert_eq!(removed["removed"], true);
+    assert_eq!(
+        fs::read_to_string(&system_key)?,
+        format!("{key_line}\n"),
+        "user-scope trust remove should not delete the system trust anchor"
+    );
+    assert_eq!(
+        fs::read_to_string(&user_key)?,
+        format!("# revoked: {key_line}\n"),
+        "user-scope trust remove should mask the system anchor from the user layer"
+    );
+
+    let listed = run_apr_json(
+        &home,
+        &system_dir,
+        &["--json", "trust", "list", "core"],
+        "trust list",
+    )?;
+    let entries = listed
+        .as_array()
+        .context("trust list JSON should be an array")?;
+    let keys = entries[0]["keys"]
+        .as_array()
+        .context("trust list entry should contain a keys array")?;
+    assert!(
+        keys.is_empty(),
+        "masked system trust anchor should not remain visible: {listed}"
+    );
+
+    let pinned = run_apr_json(
+        &home,
+        &system_dir,
+        &["--json", "trust", "pin", "core", key_line],
+        "trust pin",
+    )?;
+    assert_eq!(pinned["action"], "trust_pin");
+    assert_eq!(pinned["status"], "pinned");
+    assert_eq!(pinned["source"], "Tofu");
+    assert_eq!(
+        fs::read_to_string(&user_key)?,
+        format!("{key_line}\n"),
+        "pinning the same key explicitly should drop the user revocation"
+    );
+    assert_eq!(
+        fs::read_to_string(&system_key)?,
+        format!("{key_line}\n"),
+        "trust pin should also leave the system trust anchor untouched"
+    );
+
+    let listed = run_apr_json(
+        &home,
+        &system_dir,
+        &["--json", "trust", "list", "core"],
+        "trust list",
+    )?;
+    let entries = listed
+        .as_array()
+        .context("trust list JSON should be an array")?;
+    let keys = entries[0]["keys"]
+        .as_array()
+        .context("trust list entry should contain a keys array")?;
+    assert_eq!(keys.len(), 1, "{listed}");
+    assert_eq!(keys[0]["source"], "Tofu");
+
+    Ok(())
+}
+
+#[test]
 fn system_config_dir_override_supports_apr_maintainer_config_lifecycle() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let home = tmp.path().join("home");
@@ -284,6 +388,104 @@ fn system_config_dir_override_prefers_user_shadow_for_registry_mutations() -> Re
     assert!(
         !system.contains("enabled = false"),
         "system fallback config should stay enabled when user config shadows it:\n{system}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn read_only_system_registry_can_be_toggled_with_user_override() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let system_config = system_dir.join("registries.d/readonly.toml");
+    let user_config = home.join(".config/apm/registries.d/readonly.toml");
+
+    fs::create_dir_all(system_config.parent().context("system config parent")?)?;
+    fs::write(
+        &system_config,
+        "[registry]\nname = \"readonly\"\nurl = \"https://registry.example/readonly\"\npriority = 500\n",
+    )?;
+    let mut perms = fs::metadata(&system_config)?.permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&system_config, perms)?;
+
+    let disabled = run_aos_package_json(
+        &home,
+        &system_dir,
+        &["--json", "registry", "disable", "readonly"],
+        "disable",
+    )?;
+    assert_eq!(disabled["action"], "registry_disable");
+    assert_eq!(disabled["status"], "disabled");
+    assert_eq!(disabled["registry"], "readonly");
+    assert_eq!(disabled["enabled"], false);
+    assert_eq!(disabled["previous_enabled"], true);
+    assert_eq!(
+        disabled["config"],
+        user_config.to_string_lossy().to_string(),
+        "registry disable should create a user override when the system config is read-only"
+    );
+    let user = fs::read_to_string(&user_config)?;
+    let system = fs::read_to_string(&system_config)?;
+    assert!(user.contains("enabled = false"), "{user}");
+    assert!(
+        user.contains("url = \"https://registry.example/readonly\""),
+        "{user}"
+    );
+    assert!(user.contains("priority = 500"), "{user}");
+    assert!(
+        !system.contains("enabled = false"),
+        "read-only system config should stay untouched by user disable:\n{system}"
+    );
+
+    let enabled = run_aos_package_json(
+        &home,
+        &system_dir,
+        &["--json", "registry", "enable", "readonly"],
+        "enable",
+    )?;
+    assert_eq!(enabled["action"], "registry_enable");
+    assert_eq!(enabled["status"], "enabled");
+    assert_eq!(enabled["registry"], "readonly");
+    assert_eq!(enabled["enabled"], true);
+    assert_eq!(enabled["previous_enabled"], false);
+    assert_eq!(
+        enabled["config"],
+        user_config.to_string_lossy().to_string(),
+        "registry enable should update the existing user override"
+    );
+    let user = fs::read_to_string(&user_config)?;
+    let system = fs::read_to_string(&system_config)?;
+    assert!(user.contains("enabled = true"), "{user}");
+    assert!(
+        !system.contains("enabled = true"),
+        "read-only system config should stay untouched by user enable:\n{system}"
+    );
+
+    let output = run_aos_package_output(&home, &system_dir, &["registry", "remove", "readonly"])?;
+    assert!(
+        !output.status.success(),
+        "registry remove should reject removing only the user override for a read-only system registry:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("also exists in system config"),
+        "remove error should explain that the system registry would remain:\n{text}"
+    );
+    assert!(
+        user_config.exists(),
+        "failed remove should keep the user override"
+    );
+    assert!(
+        system_config.exists(),
+        "failed remove should keep the system registry config"
     );
 
     Ok(())
