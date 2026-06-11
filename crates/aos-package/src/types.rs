@@ -45,6 +45,32 @@ const APM_STATE_DIR: &str = "/var/lib/apm";
 /// Default system-wide APM configuration directory.
 const DEFAULT_APM_SYSTEM_CONFIG_DIR: &str = "/etc/apm";
 
+/// Validate a registry name before using it as an on-disk path component.
+///
+/// Registry names are used for files under `registries.d/`, local clone
+/// directories, metadata caches, and trusted-key pins. Keep the accepted
+/// syntax intentionally small so command-line input and hand-written config
+/// cannot escape those directories.
+///
+/// # Errors
+///
+/// Returns an error when `name` is empty or contains any byte outside ASCII
+/// letters, digits, `-`, and `_`.
+pub fn validate_registry_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("registry name must not be empty");
+    }
+
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        bail!("invalid registry name '{name}': use only ASCII letters, digits, '-' and '_'");
+    }
+
+    Ok(())
+}
+
 /// Resolve the system-wide APM configuration directory from a raw
 /// environment value.
 ///
@@ -1036,6 +1062,28 @@ pub struct SystemGenerationState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_name_validation_accepts_path_safe_names() {
+        for name in ["core", "aos-core", "aos_core", "AOS2026_core-1"] {
+            validate_registry_name(name).unwrap();
+        }
+    }
+
+    #[test]
+    fn registry_name_validation_rejects_path_like_names() {
+        for name in [
+            "",
+            "../escape",
+            "aos/core",
+            "aos.core",
+            "aos core",
+            "caf\u{00e9}",
+        ] {
+            let err = validate_registry_name(name).unwrap_err();
+            assert!(err.to_string().contains("registry name"));
+        }
+    }
 
     #[test]
     fn xdg_honors_absolute_override() {

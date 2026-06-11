@@ -20,6 +20,7 @@ use anyhow::{Context, Result};
 
 use super::types::{
     ApmConfFile, ApmSettings, ProfileScope, RegistryConfig, RegistryFile, RegistryState,
+    validate_registry_name,
 };
 
 /// Loaded APM configuration for the current session.
@@ -173,6 +174,8 @@ impl ApmConfig {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let rf: RegistryFile =
             toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+        validate_registry_name(&rf.registry.name)
+            .with_context(|| format!("validating registry name in {}", path.display()))?;
 
         let config = RegistryConfig {
             name: rf.registry.name,
@@ -330,6 +333,24 @@ priority = 400
         // Sorted by priority descending
         assert_eq!(registries[0].0.name, "aos-core");
         assert_eq!(registries[1].0.name, "aos-extra");
+    }
+
+    #[test]
+    fn load_registries_rejects_path_like_names() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "registries.d/escape.toml",
+            r#"
+[registry]
+name = "../escape"
+url = "https://registry.aos.dev/core"
+priority = 500
+"#,
+        );
+
+        let err = ApmConfig::load_registries(tmp.path(), None).unwrap_err();
+        assert!(err.to_string().contains("validating registry name"));
     }
 
     #[test]
