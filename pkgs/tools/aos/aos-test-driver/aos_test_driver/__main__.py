@@ -121,13 +121,19 @@ def _dump_serial_logs(machines: list[Machine]) -> None:
         path = Path(m.serial_log_path)
         if not path.exists():
             continue
-        sys.stderr.write(f"\n--- {m.name} serial log ---\n")
+        _write_stderr_bytes(f"\n--- {m.name} serial log ---\n".encode())
         try:
-            sys.stderr.buffer.write(path.read_bytes())
-            sys.stderr.flush()
+            _write_stderr_bytes(path.read_bytes())
         except OSError as e:
-            sys.stderr.write(f"(could not read {path}: {e})\n")
-        sys.stderr.write(f"--- end {m.name} serial log ---\n\n")
+            _write_stderr_bytes(f"(could not read {path}: {e})\n".encode())
+        _write_stderr_bytes(f"--- end {m.name} serial log ---\n\n".encode())
+
+
+def _write_stderr_bytes(data: bytes) -> None:
+    """Write raw diagnostic bytes to stderr without text-buffer reordering."""
+    sys.stderr.flush()
+    sys.stderr.buffer.write(data)
+    sys.stderr.buffer.flush()
 
 
 # Default budget for the agent-readiness handshake — strictly the time
