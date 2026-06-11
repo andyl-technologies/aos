@@ -149,11 +149,21 @@ in {
         default_profile="/var/lib/profiles/per-user/unknown"
         cache_server_pid=""
         install_cache_server_pid=""
+        failed_line=""
+        failed_command=""
         cat > "$nix_conf/nix.conf" << NIXCONF
         experimental-features = nix-command
         sandbox = false
         substituters =
         NIXCONF
+
+        record_failure() {
+          status=$?
+          failed_line="$1"
+          failed_command="$2"
+          return "$status"
+        }
+        trap 'record_failure "$LINENO" "$BASH_COMMAND"' ERR
 
         dump_recent_work_files() {
           if ! test -d "$work"; then
@@ -170,6 +180,9 @@ in {
           status=$?
           if test "$status" -ne 0; then
             printf '\nhost APR/APM command-surface workflow failed with exit %s\n' "$status" >&2
+            if test -n "$failed_line"; then
+              printf 'Failed near line %s: %s\n' "$failed_line" "$failed_command" >&2
+            fi
             dump_recent_work_files
           fi
           if test -n "$cache_server_pid"; then
