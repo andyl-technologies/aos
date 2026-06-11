@@ -214,6 +214,82 @@ fn system_config_dir_override_supports_apr_maintainer_config_lifecycle() -> Resu
 }
 
 #[test]
+fn system_config_dir_override_prefers_user_shadow_for_registry_mutations() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let system_config = system_dir.join("registries.d/shadow.toml");
+    let user_config = home.join(".config/apm/registries.d/shadow.toml");
+
+    fs::create_dir_all(system_config.parent().context("system config parent")?)?;
+    fs::write(
+        &system_config,
+        "[registry]\nname = \"shadow\"\nurl = \"https://registry.example/system\"\npriority = 100\n",
+    )?;
+    fs::create_dir_all(user_config.parent().context("user config parent")?)?;
+    fs::write(
+        &user_config,
+        "[registry]\nname = \"shadow\"\nurl = \"https://registry.example/user\"\npriority = 900\n",
+    )?;
+
+    let upload_dir = tmp.path().join("shadow-upload");
+    let upload_url = format!("file://{}", upload_dir.display());
+    let origin_config = run_apr_json(
+        &home,
+        &system_dir,
+        &[
+            "--json",
+            "origin",
+            "config",
+            "--registry",
+            "shadow",
+            "--upload-url",
+            upload_url.as_str(),
+        ],
+        "origin config",
+    )?;
+    assert_eq!(origin_config["action"], "origin_config");
+    assert_eq!(
+        origin_config["config"],
+        user_config.to_string_lossy().to_string(),
+        "apr origin config should mutate the user config that shadows system config"
+    );
+    let user = fs::read_to_string(&user_config)?;
+    let system = fs::read_to_string(&system_config)?;
+    assert!(user.contains("[registry.upload_auth]"), "{user}");
+    assert!(
+        user.contains(&format!("upload_urls = [\"{upload_url}\"]")),
+        "{user}"
+    );
+    assert!(
+        !system.contains("[registry.upload_auth]"),
+        "system fallback config should stay untouched when user config shadows it:\n{system}"
+    );
+
+    let disabled = run_aos_package_json(
+        &home,
+        &system_dir,
+        &["--json", "registry", "disable", "shadow"],
+        "disable",
+    )?;
+    assert_eq!(disabled["action"], "registry_disable");
+    assert_eq!(
+        disabled["config"],
+        user_config.to_string_lossy().to_string(),
+        "registry disable should mutate the user config that shadows system config"
+    );
+    let user = fs::read_to_string(&user_config)?;
+    let system = fs::read_to_string(&system_config)?;
+    assert!(user.contains("enabled = false"), "{user}");
+    assert!(
+        !system.contains("enabled = false"),
+        "system fallback config should stay enabled when user config shadows it:\n{system}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn system_config_dir_override_supports_apm_system_registry_add() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let home = tmp.path().join("home");
