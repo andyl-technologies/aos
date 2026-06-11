@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
+use aos_package::security::parse_signing_key;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -381,6 +382,178 @@ async fn apr_add_authoring_clone_supports_release_upload_workflow() -> Result<()
     assert_eq!(entries[0]["registry"], "origin-default-reg");
     assert_eq!(entries[0]["version"], "1.0.0");
 
+    write_fixture_package_version(&maintainer_registry, "1.1.0")?;
+    git_stdout(
+        &maintainer_registry,
+        &["add", "packages/f/fixture-tool.toml"],
+        "staging fixture package update",
+    )?;
+    git_stdout(
+        &maintainer_registry,
+        &["commit", "-m", "publish fixture package update"],
+        "committing fixture package update",
+    )?;
+    let release = run_apr(
+        &maintainer_home,
+        &[
+            "release",
+            "1.1.0",
+            "--registry",
+            "origin-default-reg",
+            "--key",
+            release_key.to_str().context("release key path utf-8")?,
+            "--upload-url",
+            &upload_url,
+        ],
+    )?;
+    assert!(
+        release.contains("Released origin-default-reg 1.1.0"),
+        "{release}"
+    );
+
+    let updated = run_aos_package_json(
+        &consumer_home,
+        &consumer_system_dir,
+        &["--json", "update", "--registry", "origin-default-reg"],
+        "update uploaded origin",
+    )?;
+    assert_eq!(updated["action"], "update");
+    assert_eq!(updated["registry"], "origin-default-reg");
+    assert_eq!(updated["updated"], 1, "{updated}");
+    let registries = updated["registries"]
+        .as_array()
+        .context("update JSON should contain registries array")?;
+    assert_eq!(registries.len(), 1, "{updated}");
+    assert_eq!(registries[0]["registry"], "origin-default-reg");
+    assert_eq!(registries[0]["status"], "updated");
+    assert_eq!(registries[0]["packages"], 1, "{updated}");
+    assert_eq!(registries[0]["updated"], 1, "{updated}");
+
+    let listed = run_aos_package_json(
+        &consumer_home,
+        &consumer_system_dir,
+        &["--json", "list", "--registry", "origin-default-reg"],
+        "list after uploaded origin update",
+    )?;
+    let entries = listed
+        .as_array()
+        .context("updated package list JSON should be an array")?;
+    assert_eq!(entries.len(), 1, "{listed}");
+    assert_eq!(entries[0]["name"], "fixture-tool");
+    assert_eq!(entries[0]["registry"], "origin-default-reg");
+    assert_eq!(entries[0]["version"], "1.1.0");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apr_release_channel_upload_supports_verified_consumer_sync() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let maintainer_home = tmp.path().join("maintainer-home");
+    let consumer_home = tmp.path().join("consumer-home");
+    let consumer_system_dir = tmp.path().join("consumer-etc-apm");
+    if !git_supports_sha256(&maintainer_home)? {
+        eprintln!("skipping signed channel e2e: git cannot initialize a sha256 repository");
+        return Ok(());
+    }
+
+    let key_output = run_apr(
+        &maintainer_home,
+        &["keys", "generate", "initial", "--registry", "signed-reg"],
+    )?;
+    let trust_key = extract_public_key(&key_output)?;
+    let key_path = maintainer_home.join(".config/apm/keys/signed-reg-initial.key");
+
+    run_apr(
+        &maintainer_home,
+        &[
+            "create",
+            "signed-reg",
+            "--trust-key",
+            &trust_key,
+            "--key",
+            key_path.to_str().context("initial key path utf-8")?,
+        ],
+    )?;
+
+    let maintainer_registry = registry_dir(&maintainer_home, "signed-reg");
+    write_fixture_package(&maintainer_registry)?;
+    configure_fixture_git_signing(&maintainer_registry, &key_path)?;
+    git_stdout(
+        &maintainer_registry,
+        &["add", "packages/f/fixture-tool.toml"],
+        "staging signed fixture package",
+    )?;
+    git_stdout(
+        &maintainer_registry,
+        &["commit", "-m", "publish signed fixture package metadata"],
+        "committing signed fixture package",
+    )?;
+
+    let upload_dir = tmp.path().join("signed-reg-upload");
+    let upload_url = format!("file://{}", upload_dir.display());
+    let release = run_apr(
+        &maintainer_home,
+        &[
+            "release",
+            "1.0.0",
+            "--registry",
+            "signed-reg",
+            "--key",
+            key_path.to_str().context("release key path utf-8")?,
+            "--channel",
+            "stable",
+            "--init-channel",
+            "--upload-url",
+            &upload_url,
+        ],
+    )?;
+    assert!(release.contains("Released signed-reg 1.0.0"), "{release}");
+    assert!(
+        upload_dir.join("channels/stable/00").exists(),
+        "uploaded signed channel is missing a partition in {}",
+        upload_dir.display(),
+    );
+
+    let server = StaticHttpServer::spawn(upload_dir.clone()).await?;
+    let added = run_aos_package_json(
+        &consumer_home,
+        &consumer_system_dir,
+        &[
+            "--json",
+            "registry",
+            "add",
+            &server.base_url(),
+            "--trust-key",
+            &trust_key,
+            "--name",
+            "signed-reg",
+            "--channel",
+            "stable",
+        ],
+        "verified channel registry add",
+    )?;
+    assert_eq!(added["action"], "registry_add");
+    assert_eq!(added["registry"], "signed-reg");
+    assert_eq!(added["synced"], true, "{added}");
+    assert_eq!(added["packages"], 1, "{added}");
+    assert_eq!(added["signing_required"], true, "{added}");
+    assert_eq!(added["trusted_key_pinned"], true, "{added}");
+
+    let listed = run_aos_package_json(
+        &consumer_home,
+        &consumer_system_dir,
+        &["--json", "list", "--registry", "signed-reg"],
+        "verified channel list",
+    )?;
+    let entries = listed
+        .as_array()
+        .context("signed package list JSON should be an array")?;
+    assert_eq!(entries.len(), 1, "{listed}");
+    assert_eq!(entries[0]["name"], "fixture-tool");
+    assert_eq!(entries[0]["registry"], "signed-reg");
+    assert_eq!(entries[0]["version"], "1.0.0");
+
     Ok(())
 }
 
@@ -411,11 +584,15 @@ fn registry_dir(home: &Path, name: &str) -> std::path::PathBuf {
 }
 
 fn write_fixture_package(registry: &Path) -> Result<()> {
+    write_fixture_package_version(registry, "1.0.0")
+}
+
+fn write_fixture_package_version(registry: &Path, version: &str) -> Result<()> {
     let package_dir = registry.join("packages/f");
     fs::create_dir_all(&package_dir)?;
     fs::write(
         package_dir.join("fixture-tool.toml"),
-        fixture_package_toml("fixture-tool", "1.0.0"),
+        fixture_package_toml("fixture-tool", version),
     )?;
     Ok(())
 }
@@ -489,6 +666,50 @@ fn configure_fixture_git_identity(registry: &Path) -> Result<()> {
         "disabling fixture commit signing",
     )?;
     Ok(())
+}
+
+fn configure_fixture_git_signing(registry: &Path, key_path: &Path) -> Result<()> {
+    git_stdout(
+        registry,
+        &["config", "user.name", "Registry Test"],
+        "configuring fixture git user",
+    )?;
+    git_stdout(
+        registry,
+        &["config", "user.email", "registry@example.com"],
+        "configuring fixture git email",
+    )?;
+    git_stdout(
+        registry,
+        &["config", "gpg.format", "ssh"],
+        "configuring fixture git ssh signing",
+    )?;
+    git_stdout(
+        registry,
+        &[
+            "config",
+            "user.signingkey",
+            key_path.to_str().context("signing key path utf-8")?,
+        ],
+        "configuring fixture git signing key",
+    )?;
+    git_stdout(
+        registry,
+        &["config", "commit.gpgsign", "true"],
+        "enabling fixture commit signing",
+    )?;
+    Ok(())
+}
+
+fn extract_public_key(output: &str) -> Result<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let value = line.split_whitespace().last()?;
+            parse_signing_key(value).ok().map(|_| value.to_string())
+        })
+        .next()
+        .with_context(|| format!("no public key line in output:\n{output}"))
 }
 
 fn git_stdout(cwd: &Path, args: &[&str], context: &str) -> Result<String> {
