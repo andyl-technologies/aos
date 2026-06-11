@@ -1282,17 +1282,20 @@ in {
           "$work/apr-channel-status-v2.json" >/dev/null
 
         upload_root="$work/uploaded-origin"
+        upload_root_mirror="$work/uploaded-origin-mirror"
         run_clean ${self}/bin/apr --json origin upload \
           --registry host-reg \
           --cache-dir "$cache_root/cache" \
           --upload-url "file://$upload_root" \
+          --upload-url "file://$upload_root_mirror" \
           > "$work/apr-origin-upload.json"
         ${pkgs.jq}/bin/jq -e \
           --arg upload_url "file://$upload_root" \
+          --arg upload_url_mirror "file://$upload_root_mirror" \
           --arg cache_dir "$cache_root/cache" \
           '.action == "origin_upload"
             and .registry == "host-reg"
-            and .upload_urls == [$upload_url]
+            and .upload_urls == [$upload_url, $upload_url_mirror]
             and .cache_dir == $cache_dir
             and .files > 0
             and .bytes > 0
@@ -1307,6 +1310,15 @@ in {
         test -f "$upload_root/channels/canary/00"
         test -f "$upload_root/$pkg_hash.narinfo"
         test -f "$upload_root/nar/$pkg_hash-hostpkg.nar"
+        test -f "$upload_root_mirror/HEAD"
+        test -f "$upload_root_mirror/info/refs"
+        test -f "$upload_root_mirror/releases/1/0/0/objects/info/packs"
+        test -f "$upload_root_mirror/releases/2/0/0/objects/info/packs"
+        find "$upload_root_mirror/releases/2/0/0/objects/pack" -name 'pack-*.pack' | grep -q .
+        test -f "$upload_root_mirror/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
+        test -f "$upload_root_mirror/channels/canary/00"
+        test -f "$upload_root_mirror/$pkg_hash.narinfo"
+        test -f "$upload_root_mirror/nar/$pkg_hash-hostpkg.nar"
         assert_no_profile
 
         cat > "$work/host-build-leaf.sh" << 'SCRIPT'
