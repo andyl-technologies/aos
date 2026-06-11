@@ -828,6 +828,7 @@ pub enum RegistryCommand {
         #[arg(long = "cache-priority", default_value = "40")]
         cache_priority: u32,
         /// Backend URL to upload the static origin to; repeat for multiple destinations
+        /// (default: the upload_urls persisted by `origin config`)
         #[arg(long = "upload-url")]
         upload_urls: Vec<String>,
         /// Authentication and backend-specific upload options
@@ -1105,7 +1106,8 @@ pub enum CacheCommand {
         #[arg(long)]
         cache_url: Option<String>,
         /// Backend URL to upload generated files to; repeat for multiple destinations
-        /// (file://, s3://, sftp://, http://)
+        /// (file://, s3://, sftp://, http://; default: the upload_urls persisted by
+        /// `origin config`)
         #[arg(long = "upload-url")]
         upload_urls: Vec<String>,
         /// Authentication and backend-specific upload options
@@ -1129,7 +1131,8 @@ pub enum OriginCommand {
     /// Upload the dumb-HTTP git origin surface to one or more destinations
     Upload {
         /// Backend URL to upload static origin files to; repeat for multiple destinations
-        /// (file://, s3://, sftp://, http://)
+        /// (file://, s3://, sftp://, http://; default: the upload_urls persisted by
+        /// `origin config`)
         #[arg(long = "upload-url")]
         upload_urls: Vec<String>,
         /// Optional generated static Nix-cache directory to upload beside the git origin
@@ -1142,6 +1145,82 @@ pub enum OriginCommand {
         #[arg(long)]
         registry: Option<String>,
     },
+    /// Show or persist producer upload defaults ([registry.upload_auth]) for `origin upload`, `cache generate`, and `release`
+    Config {
+        /// Default backend URL to upload to; repeat for multiple destinations,
+        /// replaces the stored list (file://, s3://, sftp://, http://)
+        #[arg(long = "upload-url")]
+        upload_urls: Vec<String>,
+        /// AOS provisioning token for AOS cache backends
+        #[arg(long)]
+        token: Option<String>,
+        /// AOS cache view
+        #[arg(long)]
+        view: Option<String>,
+        /// Basic auth username for generic HTTP caches
+        #[arg(long)]
+        http_user: Option<String>,
+        /// Basic auth password for generic HTTP caches
+        #[arg(long)]
+        http_password: Option<String>,
+        /// Arbitrary HTTP header (repeatable, replaces the stored list)
+        #[arg(long)]
+        header: Vec<String>,
+        /// AWS region
+        #[arg(long)]
+        s3_region: Option<String>,
+        /// AWS credentials profile name
+        #[arg(long)]
+        s3_profile: Option<String>,
+        /// Custom S3-compatible endpoint (MinIO, B2, etc.)
+        #[arg(long)]
+        s3_endpoint: Option<String>,
+        /// Path to SSH private key
+        #[arg(long)]
+        ssh_key: Option<String>,
+        /// SSH password
+        #[arg(long)]
+        ssh_password: Option<String>,
+        /// Always prompt for the SSH password interactively
+        #[arg(long)]
+        ssh_ask_pass: bool,
+        /// Remove a stored setting (repeatable)
+        #[arg(long, value_name = "FIELD", value_enum)]
+        unset: Vec<UploadConfigField>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// A `[registry.upload_auth]` field name accepted by
+/// `apr origin config --unset`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum UploadConfigField {
+    /// The stored default upload destinations.
+    UploadUrls,
+    /// The AOS provisioning token.
+    Token,
+    /// The AOS cache view.
+    View,
+    /// The HTTP basic-auth username.
+    HttpUser,
+    /// The HTTP basic-auth password.
+    HttpPassword,
+    /// The stored extra HTTP headers.
+    Headers,
+    /// The AWS region.
+    S3Region,
+    /// The AWS credentials profile name.
+    S3Profile,
+    /// The custom S3-compatible endpoint.
+    S3Endpoint,
+    /// The SSH private key path.
+    SshKey,
+    /// The SSH password.
+    SshPassword,
+    /// The interactive SSH password prompt flag.
+    SshAskPass,
 }
 
 /// Authentication flags for registry static-cache uploads.
@@ -2606,6 +2685,7 @@ mod tests {
     #[test]
     fn cache_upload_auth_args_merge_config_defaults_and_overrides() {
         let config = RegistryUploadAuthConfig {
+            upload_urls: Vec::new(),
             token: Some("config-token".into()),
             view: Some("prod".into()),
             http_user: Some("config-user".into()),

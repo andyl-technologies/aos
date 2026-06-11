@@ -51,6 +51,7 @@ use anyhow::{Context, Result, bail};
 use aos_cache::AuthOptions;
 use aos_core::nar::info as narinfo;
 use aos_core::nix::aos_nix_env;
+use clap::ValueEnum as _;
 use serde_json::Value;
 
 use aos_core::output::{OutputMode, Printer};
@@ -70,11 +71,12 @@ use crate::security::{
 };
 use crate::sshkey;
 use crate::types::{
-    CacheEntry, RegistryConfig, RegistryRootConfig, SigningKeySource, SigningKeySpec,
+    CacheEntry, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
+    SigningKeySource, SigningKeySpec,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
-    TrustCommand,
+    TrustCommand, UploadConfigField,
 };
 
 // ---------------------------------------------------------------------------
@@ -3262,9 +3264,11 @@ pub async fn run_channel(
 ///
 /// `generate` renders the registry's published store paths into a static
 /// cache directory (narinfos plus compressed NARs, signed with `--key`
-/// when given), optionally uploads it to each `--upload-url`, and with
-/// `--cache-url` upserts the `[[caches]]` pointer in `registry.toml`,
-/// committing the pointer change unless `--no-commit` is set.
+/// when given), optionally uploads it to each `--upload-url` (falling back
+/// to the `upload_urls` persisted by `apr origin config` when no flag is
+/// given), and with `--cache-url` upserts the `[[caches]]` pointer in
+/// `registry.toml`, committing the pointer change unless `--no-commit` is
+/// set.
 ///
 /// # Errors
 ///
@@ -3288,6 +3292,7 @@ pub async fn run_cache(
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
+            let upload_urls = resolve_upload_urls(config, &registry_name, upload_urls);
             let report =
                 nixcache::generate_static_cache(&dir, output, key.as_deref(), *priority, printer)
                     .await?;
@@ -3302,7 +3307,7 @@ pub async fn run_cache(
             if !upload_urls.is_empty() {
                 let auth = auth
                     .auth_options_with_config(registry_upload_auth_config(config, &registry_name));
-                nixcache::upload_static_cache_to_all(output, upload_urls, &auth, printer).await?;
+                nixcache::upload_static_cache_to_all(output, &upload_urls, &auth, printer).await?;
             }
 
             let mut cache_pointer_updated = false;
@@ -3346,12 +3351,18 @@ pub async fn run_cache(
 ///
 /// `upload` refreshes the static object store indexes and uploads the
 /// registry's git origin files (objects, packs, refs, channel payloads)
-/// to each `--upload-url` so consumers can sync from a plain file server.
+/// to each destination — the `--upload-url` flags, or the persisted
+/// `upload_urls` defaults when no flag is given — so consumers can sync
+/// from a plain file server. `config` shows or persists those producer
+/// upload defaults (destinations and backend auth) in the registry's
+/// `[registry.upload_auth]` section.
 ///
 /// # Errors
 ///
-/// Fails when no `--upload-url` is given, or when the object-store refresh
-/// or any upload fails.
+/// Fails when `upload` has no destination (neither `--upload-url` flags
+/// nor persisted defaults), when the object-store refresh or any upload
+/// fails, when `config` both sets and unsets the same field, or when
+/// `config` cannot read, parse, or rewrite the registry config file.
 pub async fn run_origin(
     config: &ApmConfig,
     command: &OriginCommand,
@@ -3364,10 +3375,15 @@ pub async fn run_origin(
             auth,
             registry,
         } => {
-            if upload_urls.is_empty() {
-                bail!("at least one --upload-url is required");
-            }
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let upload_urls = resolve_upload_urls(config, &registry_name, upload_urls);
+            if upload_urls.is_empty() {
+                bail!(
+                    "no upload destination: pass --upload-url <url> or persist defaults with \
+                     `{} origin config --upload-url <url>`",
+                    aos_core::invocation::package_registry_command(),
+                );
+            }
             let dir = config.scope.registries_path().join(&registry_name);
             refresh_registry_object_store(&dir)
                 .context("refreshing static git origin before upload")?;
@@ -3376,7 +3392,7 @@ pub async fn run_origin(
             let report = static_upload::upload_static_origin_to_all(
                 &dir,
                 cache_dir.as_deref(),
-                upload_urls,
+                &upload_urls,
                 &auth,
                 printer,
             )
@@ -3400,6 +3416,284 @@ pub async fn run_origin(
             }
             Ok(())
         }
+        OriginCommand::Config {
+            upload_urls,
+            token,
+            view,
+            http_user,
+            http_password,
+            header,
+            s3_region,
+            s3_profile,
+            s3_endpoint,
+            ssh_key,
+            ssh_password,
+            ssh_ask_pass,
+            unset,
+            registry,
+        } => {
+            let updates = UploadConfigUpdates {
+                upload_urls,
+                token: token.as_deref(),
+                view: view.as_deref(),
+                http_user: http_user.as_deref(),
+                http_password: http_password.as_deref(),
+                headers: header,
+                s3_region: s3_region.as_deref(),
+                s3_profile: s3_profile.as_deref(),
+                s3_endpoint: s3_endpoint.as_deref(),
+                ssh_key: ssh_key.as_deref(),
+                ssh_password: ssh_password.as_deref(),
+                ssh_ask_pass: *ssh_ask_pass,
+            };
+            origin_config(config, &updates, unset, registry.as_deref(), printer)
+        }
+    }
+}
+
+/// The `apr origin config` setter flags, grouped so [`origin_config`] can
+/// treat "no flag given" uniformly across scalar, list, and boolean fields.
+struct UploadConfigUpdates<'a> {
+    /// Replacement default destinations; empty means "not given".
+    upload_urls: &'a [String],
+    token: Option<&'a str>,
+    view: Option<&'a str>,
+    http_user: Option<&'a str>,
+    http_password: Option<&'a str>,
+    /// Replacement extra HTTP headers; empty means "not given".
+    headers: &'a [String],
+    s3_region: Option<&'a str>,
+    s3_profile: Option<&'a str>,
+    s3_endpoint: Option<&'a str>,
+    ssh_key: Option<&'a str>,
+    ssh_password: Option<&'a str>,
+    /// `--ssh-ask-pass` was passed; `false` means "leave unchanged".
+    ssh_ask_pass: bool,
+}
+
+impl UploadConfigUpdates<'_> {
+    /// Whether any setter flag was given at all.
+    fn is_empty(&self) -> bool {
+        self.upload_urls.is_empty()
+            && self.token.is_none()
+            && self.view.is_none()
+            && self.http_user.is_none()
+            && self.http_password.is_none()
+            && self.headers.is_empty()
+            && self.s3_region.is_none()
+            && self.s3_profile.is_none()
+            && self.s3_endpoint.is_none()
+            && self.ssh_key.is_none()
+            && self.ssh_password.is_none()
+            && !self.ssh_ask_pass
+    }
+
+    /// Whether the setter for `field` was given (used to refuse a
+    /// simultaneous `--unset` of the same field).
+    fn sets(&self, field: UploadConfigField) -> bool {
+        match field {
+            UploadConfigField::UploadUrls => !self.upload_urls.is_empty(),
+            UploadConfigField::Token => self.token.is_some(),
+            UploadConfigField::View => self.view.is_some(),
+            UploadConfigField::HttpUser => self.http_user.is_some(),
+            UploadConfigField::HttpPassword => self.http_password.is_some(),
+            UploadConfigField::Headers => !self.headers.is_empty(),
+            UploadConfigField::S3Region => self.s3_region.is_some(),
+            UploadConfigField::S3Profile => self.s3_profile.is_some(),
+            UploadConfigField::S3Endpoint => self.s3_endpoint.is_some(),
+            UploadConfigField::SshKey => self.ssh_key.is_some(),
+            UploadConfigField::SshPassword => self.ssh_password.is_some(),
+            UploadConfigField::SshAskPass => self.ssh_ask_pass,
+        }
+    }
+
+    /// Apply every given setter onto `upload`.
+    fn apply(&self, upload: &mut RegistryUploadAuthConfig) {
+        if !self.upload_urls.is_empty() {
+            upload.upload_urls = self.upload_urls.to_vec();
+        }
+        if let Some(token) = self.token {
+            upload.token = Some(token.to_string());
+        }
+        if let Some(view) = self.view {
+            upload.view = Some(view.to_string());
+        }
+        if let Some(http_user) = self.http_user {
+            upload.http_user = Some(http_user.to_string());
+        }
+        if let Some(http_password) = self.http_password {
+            upload.http_password = Some(http_password.to_string());
+        }
+        if !self.headers.is_empty() {
+            upload.headers = self.headers.to_vec();
+        }
+        if let Some(s3_region) = self.s3_region {
+            upload.s3_region = Some(s3_region.to_string());
+        }
+        if let Some(s3_profile) = self.s3_profile {
+            upload.s3_profile = Some(s3_profile.to_string());
+        }
+        if let Some(s3_endpoint) = self.s3_endpoint {
+            upload.s3_endpoint = Some(s3_endpoint.to_string());
+        }
+        if let Some(ssh_key) = self.ssh_key {
+            upload.ssh_key = Some(ssh_key.to_string());
+        }
+        if let Some(ssh_password) = self.ssh_password {
+            upload.ssh_password = Some(ssh_password.to_string());
+        }
+        if self.ssh_ask_pass {
+            upload.ssh_ask_pass = true;
+        }
+    }
+}
+
+/// Clear `field` on `upload` (the `--unset` half of `apr origin config`).
+fn unset_upload_config_field(upload: &mut RegistryUploadAuthConfig, field: UploadConfigField) {
+    match field {
+        UploadConfigField::UploadUrls => upload.upload_urls.clear(),
+        UploadConfigField::Token => upload.token = None,
+        UploadConfigField::View => upload.view = None,
+        UploadConfigField::HttpUser => upload.http_user = None,
+        UploadConfigField::HttpPassword => upload.http_password = None,
+        UploadConfigField::Headers => upload.headers.clear(),
+        UploadConfigField::S3Region => upload.s3_region = None,
+        UploadConfigField::S3Profile => upload.s3_profile = None,
+        UploadConfigField::S3Endpoint => upload.s3_endpoint = None,
+        UploadConfigField::SshKey => upload.ssh_key = None,
+        UploadConfigField::SshPassword => upload.ssh_password = None,
+        UploadConfigField::SshAskPass => upload.ssh_ask_pass = false,
+    }
+}
+
+/// `apr origin config` — shows or persists the producer upload defaults in
+/// the registry's `[registry.upload_auth]` section.
+///
+/// With no setter or `--unset` flag, prints the currently persisted
+/// defaults. Otherwise each given setter replaces the stored value (lists
+/// — `--upload-url`, `--header` — are replaced wholesale, not appended),
+/// each `--unset FIELD` clears the stored value, and the section is
+/// rewritten in place, preserving every other field of the config file.
+/// Unsetting the last stored field removes the whole section.
+///
+/// Unlike the flags on `origin upload`/`cache generate`/`release`, the
+/// setters here read nothing from the environment: only values given
+/// explicitly on the command line are persisted.
+///
+/// # Errors
+///
+/// Fails when the same field is both set and `--unset` in one invocation;
+/// when the registry has no `registries.d` config to record into (created
+/// by `apr add`); or when the config file cannot be read, parsed, or
+/// rewritten.
+fn origin_config(
+    config: &ApmConfig,
+    updates: &UploadConfigUpdates<'_>,
+    unset: &[UploadConfigField],
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    let registry_name = resolve_registry_name(config, registry)?;
+    let config_path = config
+        .scope
+        .config_dir()
+        .join("registries.d")
+        .join(format!("{registry_name}.toml"));
+    if !config_path.exists() {
+        bail!(
+            "registry '{registry_name}' has no config at {}; register the registry first with \
+             `{} add <url>`, then re-run this command",
+            config_path.display(),
+            aos_core::invocation::package_registry_command(),
+        );
+    }
+
+    let content = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("reading {}", config_path.display()))?;
+    let rf: RegistryFile =
+        toml::from_str(&content).with_context(|| format!("parsing {}", config_path.display()))?;
+    let mut upload = rf.registry.upload_auth.unwrap_or_default();
+
+    if updates.is_empty() && unset.is_empty() {
+        print_upload_config(&registry_name, &config_path, &upload, printer);
+        return Ok(());
+    }
+
+    for field in unset {
+        if updates.sets(*field) {
+            bail!(
+                "cannot both set and --unset '{}' in the same invocation",
+                field.to_possible_value().map_or_else(
+                    || format!("{field:?}"),
+                    |value| value.get_name().to_string(),
+                ),
+            );
+        }
+        unset_upload_config_field(&mut upload, *field);
+    }
+    updates.apply(&mut upload);
+
+    state::save_upload_auth(&config_path, &upload)?;
+    printer.success(&format!(
+        "Updated upload defaults for registry '{registry_name}'.",
+    ));
+    print_upload_config(&registry_name, &config_path, &upload, printer);
+    Ok(())
+}
+
+/// Print the persisted upload defaults, as key/value lines or JSON.
+fn print_upload_config(
+    registry_name: &str,
+    config_path: &Path,
+    upload: &RegistryUploadAuthConfig,
+    printer: &Printer,
+) {
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "origin_config",
+            "registry": registry_name,
+            "config": config_path.display().to_string(),
+            "upload_auth": upload,
+        }));
+        return;
+    }
+
+    printer.kv("Config", &config_path.display().to_string());
+    if *upload == RegistryUploadAuthConfig::default() {
+        printer.info("No upload defaults configured.");
+        return;
+    }
+    if !upload.upload_urls.is_empty() {
+        printer.kv("Upload URLs", &upload.upload_urls.join(", "));
+    }
+    let scalar_fields = [
+        ("Token", &upload.token),
+        ("View", &upload.view),
+        ("HTTP user", &upload.http_user),
+        ("HTTP password", &upload.http_password),
+    ];
+    for (label, value) in scalar_fields {
+        if let Some(value) = value {
+            printer.kv(label, value);
+        }
+    }
+    if !upload.headers.is_empty() {
+        printer.kv("Headers", &upload.headers.join(", "));
+    }
+    let scalar_fields = [
+        ("S3 region", &upload.s3_region),
+        ("S3 profile", &upload.s3_profile),
+        ("S3 endpoint", &upload.s3_endpoint),
+        ("SSH key", &upload.ssh_key),
+        ("SSH password", &upload.ssh_password),
+    ];
+    for (label, value) in scalar_fields {
+        if let Some(value) = value {
+            printer.kv(label, value);
+        }
+    }
+    if upload.ssh_ask_pass {
+        printer.kv("SSH ask pass", "true");
     }
 }
 
@@ -4453,6 +4747,22 @@ fn registry_upload_auth_config<'a>(
         .and_then(|(registry, _state)| registry.upload_auth.as_ref())
 }
 
+/// Resolve upload destinations: `--upload-url` flags when given, otherwise
+/// the `upload_urls` persisted in `[registry.upload_auth]` by
+/// `apr origin config`.
+fn resolve_upload_urls(
+    config: &ApmConfig,
+    registry_name: &str,
+    flag_urls: &[String],
+) -> Vec<String> {
+    if !flag_urls.is_empty() {
+        return flag_urls.to_vec();
+    }
+    registry_upload_auth_config(config, registry_name)
+        .map(|upload| upload.upload_urls.clone())
+        .unwrap_or_default()
+}
+
 /// Parse a `registry:Algorithm:<base64>` line into a [`TrustedKey`] pinned
 /// via TOFU, verifying it belongs to `expected_registry`.
 fn trusted_key_from_line(expected_registry: &str, key: &str) -> Result<TrustedKey> {
@@ -5247,7 +5557,7 @@ pub async fn release(
         cache_key: cache_key.map(Path::to_path_buf),
         cache_url: cache_url.map(ToString::to_string),
         cache_priority,
-        upload_urls: upload_urls.to_vec(),
+        upload_urls: resolve_upload_urls(config, &registry_name, upload_urls),
         upload_auth,
         dry_run,
         resume,
@@ -6311,6 +6621,28 @@ mod tests {
         let err = initial_keys_roster("aos-core", Some("other:Ed25519:YWJjZA=="), Some("2026a"))
             .unwrap_err();
         assert!(format!("{err:#}").contains("expected 'aos-core'"));
+    }
+
+    #[test]
+    fn resolve_upload_urls_prefers_flags_over_persisted_defaults() {
+        let upload_auth = RegistryUploadAuthConfig {
+            upload_urls: vec!["s3://persisted/".to_string()],
+            ..RegistryUploadAuthConfig::default()
+        };
+        let config = ApmConfig {
+            settings: ApmSettings::default(),
+            registries: vec![(test_registry_config("aos-core", Some(upload_auth)), None)],
+            scope: ProfileScope::User,
+        };
+
+        let flags = vec!["s3://flag/".to_string()];
+        assert_eq!(resolve_upload_urls(&config, "aos-core", &flags), flags);
+        assert_eq!(
+            resolve_upload_urls(&config, "aos-core", &[]),
+            vec!["s3://persisted/".to_string()],
+        );
+        // A registry with no persisted defaults resolves to no destinations.
+        assert!(resolve_upload_urls(&config, "other", &[]).is_empty());
     }
 
     #[test]

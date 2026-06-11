@@ -543,6 +543,11 @@ key paths for `apr tag --key-id`, `apr sign --key-id`, and
 available for one-off signing and is mutually exclusive with `--key-id`.
 `[registry.upload_auth]` values are used as defaults; env/CLI values override
 them; `view` falls back to `"default"` if neither config nor env/CLI sets it.
+Its `upload_urls` list provides the default destinations for
+`apr origin upload`, `apr cache generate`, and `apr release` when no
+`--upload-url` flag is given. The section is managed by `apr origin config`:
+setter flags replace stored values, `--unset <field>` clears them, and a bare
+`apr origin config` shows what is stored — no hand-editing required.
 
 ```toml
 [registry.signing_keys]
@@ -550,6 +555,7 @@ initial = "/run/secrets/acme_registry_initial"
 next = "/run/secrets/acme_registry_next"
 
 [registry.upload_auth]
+upload_urls = ["s3://registry-bucket/"]
 token = "..."
 view = "prod"
 http_user = "cache-user"
