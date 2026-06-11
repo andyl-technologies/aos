@@ -1624,6 +1624,72 @@ in {
           --no-clone > "$work/apm-add-host-keyadd-config.out" 2>&1
         grep -q "apm update --registry host-keyadd" \
           "$work/apm-add-host-keyadd-config.out"
+        ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
+          -f "$work/host-keyadd-external-key"
+        run_clean ${self}/bin/apr --json keys register external \
+          --registry host-keyadd \
+          --key-command "${pkgs.coreutils}/bin/cat $work/host-keyadd-external-key" \
+          > "$work/apr-keys-register-external.json"
+        host_keyadd_external=$(${pkgs.jq}/bin/jq -r '.public_key' \
+          "$work/apr-keys-register-external.json")
+        ${pkgs.jq}/bin/jq -e \
+          --arg key "$host_keyadd_external" \
+          --arg config_path "$config/apm/registries.d/host-keyadd.toml" \
+          '.action == "keys_register"
+            and .status == "registered"
+            and .registry == "host-keyadd"
+            and .id == "external"
+            and .source == "command"
+            and .configured == true
+            and .config == $config_path
+            and .public_key == $key
+            and (.fingerprint | length > 0)' \
+          "$work/apr-keys-register-external.json" >/dev/null
+        grep -q '"external" = { command = "' \
+          "$config/apm/registries.d/host-keyadd.toml"
+        run_clean ${self}/bin/apr keys add external "$host_keyadd_external" \
+          --registry host-keyadd \
+          --key "$work/host-install-release-key" \
+          > "$work/apr-keys-add-external.out" 2>&1
+        grep -q "Added active signing key 'external'" \
+          "$work/apr-keys-add-external.out"
+        run_clean ${self}/bin/apr --json keys list --registry host-keyadd \
+          > "$work/apr-keys-list-host-keyadd-external.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg initial "$keyadd_initial_trust_key" \
+          --arg external "$host_keyadd_external" \
+          '.registry == "host-keyadd"
+            and (.active | any(.id == "initial" and .key == $initial))
+            and (.active | any(.id == "external" and .key == $external))
+            and .revoked == []' \
+          "$work/apr-keys-list-host-keyadd-external.json" >/dev/null
+        run_clean ${self}/bin/apr --json release 0.1.0 \
+          --registry host-keyadd \
+          --store-path "$install_leaf_store" \
+          --name hostexternal \
+          --description "Host external key-command release fixture" \
+          --license MIT \
+          --maintainer host@example.invalid \
+          --key-id external \
+          > "$work/apr-release-host-keyadd-external.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "release"
+            and .status == "released"
+            and .registry == "host-keyadd"
+            and .version == "0.1.0"
+            and .dry_run == false
+            and .cache == null
+            and .cache_pointer_updated == false
+            and .uploaded_files == null
+            and (.full_pack | startswith("pack-") and endswith(".pack"))' \
+          "$work/apr-release-host-keyadd-external.json" >/dev/null
+        test -f "$keyadd_reg/packages/h/hostexternal.toml"
+        git -C "$keyadd_reg" rev-parse --verify '0.1.0^{tag}' \
+          > "$work/apr-release-host-keyadd-external-tag.out"
+        git -C "$keyadd_reg" cat-file -p 0.1.0 \
+          > "$work/apr-release-host-keyadd-external-tag-object.out"
+        grep -q "BEGIN SSH SIGNATURE" \
+          "$work/apr-release-host-keyadd-external-tag-object.out"
         run_clean ${self}/bin/apr keys generate next \
           --registry host-keyadd \
           --add \

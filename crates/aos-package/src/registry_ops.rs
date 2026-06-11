@@ -4103,7 +4103,8 @@ fn register_roster_key(
         .config_dir()
         .join("registries.d")
         .join(format!("{registry_name}.toml"));
-    if config_path.exists() {
+    let configured = config_path.exists();
+    if configured {
         state::upsert_signing_key(&config_path, id, &source)?;
         printer.kv("Config", &config_path.display().to_string());
     } else {
@@ -4122,6 +4123,24 @@ fn register_roster_key(
     }
     printer.kv("Public key", &trust_key);
     printer.kv("Fingerprint", &key_fingerprint(&public_key));
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "keys_register",
+            "status": "registered",
+            "registry": registry_name,
+            "id": id,
+            "source": if source.path().is_some() { "path" } else { "command" },
+            "configured": configured,
+            "config": if configured {
+                Some(config_path.to_string_lossy().to_string())
+            } else {
+                None
+            },
+            "public_key": trust_key,
+            "fingerprint": key_fingerprint(&public_key),
+        }));
+        return Ok(());
+    }
     printer.info(&format!(
         "Hand the public key to an active maintainer to add it:\n  {} keys add {id} {trust_key} --registry {registry_name}",
         aos_core::invocation::package_registry_command(),
@@ -4441,14 +4460,14 @@ fn create_ephemeral_key_file() -> Result<tempfile::NamedTempFile> {
     }
 }
 
-/// Run a signing-key command via `sh -c` and materialize its stdout into a
+/// Run a signing-key command via `bash -c` and materialize its stdout into a
 /// private temporary file that `git`/`ssh-keygen` can open.
 ///
 /// The command must print the unencrypted OpenSSH private key to stdout. The
 /// returned [`ResolvedSigningKey`] owns the temporary file; the key is removed
 /// from disk as soon as it is dropped.
 fn materialize_signing_key_command(command: &str) -> Result<ResolvedSigningKey> {
-    let output = std::process::Command::new("sh")
+    let output = std::process::Command::new("bash")
         .arg("-c")
         .arg(command)
         .stdin(std::process::Stdio::null())
