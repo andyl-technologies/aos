@@ -129,7 +129,7 @@ name = "{registry_name}"
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn apr_cache_generate_cli_supports_apm_install_and_execution() -> Result<()> {
+async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> Result<()> {
     if std::env::var_os(REAL_NIX_CACHE_TEST_ENV).is_none() {
         eprintln!(
             "skipping apm install static-cache e2e: set {REAL_NIX_CACHE_TEST_ENV}=1 to run real nix-store fixture"
@@ -143,9 +143,13 @@ async fn apr_cache_generate_cli_supports_apm_install_and_execution() -> Result<(
     }
 
     let tmp = tempfile::TempDir::new()?;
-    let aos_root = tmp.path().join("aos-root");
-    prepare_aos_root(&aos_root)?;
-    let Some(store_path) = executable_store_path_fixture(tmp.path(), &aos_root)? else {
+    let producer_aos_root = tmp.path().join("producer-aos-root");
+    let consumer_aos_root = tmp.path().join("consumer-aos-root");
+    prepare_aos_root(&producer_aos_root)?;
+    prepare_aos_root(&consumer_aos_root)?;
+    let Some(store_path_v1) =
+        executable_store_path_fixture(tmp.path(), &producer_aos_root, "1.0.0")?
+    else {
         eprintln!("skipping apm install static-cache e2e: nix or nix-store is unavailable");
         return Ok(());
     };
@@ -154,13 +158,17 @@ async fn apr_cache_generate_cli_supports_apm_install_and_execution() -> Result<(
     let consumer_home = tmp.path().join("consumer-home");
     let profile_root = tmp.path().join("profiles");
     let registry_name = "cli-install-cache";
-    run_apr_with_aos_root(&maintainer_home, &aos_root, &["create", registry_name])?;
+    run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &["create", registry_name],
+    )?;
     let registry_dir = registry_dir(&maintainer_home, registry_name);
     configure_fixture_git_identity(&registry_dir)?;
     fs::create_dir_all(registry_dir.join("packages/f"))?;
     fs::write(
         registry_dir.join("packages/f/fixture-tool.toml"),
-        package_toml_with_name("fixture-tool", "1.0.0", &store_path),
+        package_toml_with_name("fixture-tool", "1.0.0", &store_path_v1),
     )?;
     git_stdout(
         &registry_dir,
@@ -177,7 +185,7 @@ async fn apr_cache_generate_cli_supports_apm_install_and_execution() -> Result<(
     let cache_server = StaticHttpServer::spawn(cache_output.clone()).await?;
     run_apr_with_aos_root(
         &maintainer_home,
-        &aos_root,
+        &producer_aos_root,
         &[
             "cache",
             "generate",
@@ -195,13 +203,13 @@ async fn apr_cache_generate_cli_supports_apm_install_and_execution() -> Result<(
     let release_key = maintainer_home.join(".config/apm/keys/cli-install-cache-release.key");
     run_apr_with_aos_root(
         &maintainer_home,
-        &aos_root,
+        &producer_aos_root,
         &["keys", "generate", "release", "--registry", registry_name],
     )?;
     let upload_dir = tmp.path().join("origin-upload");
     run_apr_with_aos_root(
         &maintainer_home,
-        &aos_root,
+        &producer_aos_root,
         &[
             "release",
             "1.0.0",
@@ -214,14 +222,10 @@ async fn apr_cache_generate_cli_supports_apm_install_and_execution() -> Result<(
         ],
     )?;
 
-    // The producer used this isolated store to build the cache. Remove it
-    // before the consumer install so apm must fetch and import the NAR.
-    reset_aos_root(&aos_root)?;
-
     let origin_server = StaticHttpServer::spawn(upload_dir.clone()).await?;
     let added = run_aos_package_json_with_env(
         &consumer_home,
-        &aos_root,
+        &consumer_aos_root,
         &profile_root,
         &[
             "--json",
@@ -242,7 +246,7 @@ async fn apr_cache_generate_cli_supports_apm_install_and_execution() -> Result<(
 
     let installed = run_aos_package_json_with_env(
         &consumer_home,
-        &aos_root,
+        &consumer_aos_root,
         &profile_root,
         &[
             "--json",
@@ -259,39 +263,14 @@ async fn apr_cache_generate_cli_supports_apm_install_and_execution() -> Result<(
     assert_eq!(installed["downloads"]["downloaded"], 1, "{installed}");
     assert_eq!(installed["downloads"]["imported"], 1, "{installed}");
 
-    let profile_bin = profile_root
-        .join("per-user")
-        .join(std::env::var("USER").unwrap_or_else(|_| String::from("unknown")))
-        .join("current/bin/fixture-tool");
-    assert!(
-        profile_bin.exists(),
-        "installed profile executable is missing at {}",
-        profile_bin.display(),
-    );
-    let profile_bin_dir = profile_bin
-        .parent()
-        .context("installed profile executable should have a parent directory")?;
-    let executed = Command::new("sh")
-        .arg("-c")
-        .arg("fixture-tool")
-        .env("PATH", profile_bin_dir)
-        .output()
-        .with_context(|| format!("executing {}", profile_bin.display()))?;
-    if !executed.status.success() {
-        bail!(
-            "installed fixture failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&executed.stdout),
-            String::from_utf8_lossy(&executed.stderr),
-        );
-    }
     assert_eq!(
-        String::from_utf8_lossy(&executed.stdout),
+        run_profile_tool(&profile_root, "fixture-tool")?,
         "fixture-tool 1.0.0\n"
     );
 
     let listed = run_aos_package_json_with_env(
         &consumer_home,
-        &aos_root,
+        &consumer_aos_root,
         &profile_root,
         &["--json", "list", "--installed", "--registry", registry_name],
         "list installed",
@@ -302,6 +281,154 @@ async fn apr_cache_generate_cli_supports_apm_install_and_execution() -> Result<(
     assert_eq!(entries.len(), 1, "{listed}");
     assert_eq!(entries[0]["name"], "fixture-tool");
     assert_eq!(entries[0]["version"], "1.0.0");
+    assert!(
+        entries[0]["status"]
+            .as_str()
+            .is_some_and(|status| status.contains("installed")),
+        "{listed}",
+    );
+
+    let Some(store_path_v2) =
+        executable_store_path_fixture(tmp.path(), &producer_aos_root, "2.0.0")?
+    else {
+        eprintln!("skipping apm install static-cache e2e: nix or nix-store is unavailable");
+        return Ok(());
+    };
+    fs::write(
+        registry_dir.join("packages/f/fixture-tool.toml"),
+        package_toml_with_name("fixture-tool", "2.0.0", &store_path_v2),
+    )?;
+    git_stdout(
+        &registry_dir,
+        &["add", "packages/f/fixture-tool.toml"],
+        "staging upgraded fixture package",
+    )?;
+    git_stdout(
+        &registry_dir,
+        &["commit", "-m", "publish upgraded fixture package"],
+        "committing upgraded fixture package",
+    )?;
+    run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &[
+            "cache",
+            "generate",
+            "--registry",
+            registry_name,
+            "--output",
+            cache_output.to_str().context("cache output path utf-8")?,
+            "--cache-url",
+            &cache_server.base_url(),
+            "--priority",
+            "37",
+        ],
+    )?;
+    run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &[
+            "release",
+            "2.0.0",
+            "--registry",
+            registry_name,
+            "--key",
+            release_key.to_str().context("release key path utf-8")?,
+            "--upload-url",
+            &format!("file://{}", upload_dir.display()),
+        ],
+    )?;
+
+    let updated = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "update", "--registry", registry_name],
+        "update upgraded origin",
+    )?;
+    assert_eq!(updated["action"], "update");
+    assert_eq!(updated["registry"], registry_name);
+    assert_eq!(updated["updated"], 1, "{updated}");
+
+    let held = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "hold", "fixture-tool"],
+        "hold before upgrade",
+    )?;
+    assert_eq!(held["action"], "hold");
+    assert_eq!(held["status"], "held", "{held}");
+    assert_eq!(held["package"], "fixture-tool");
+    assert_eq!(held["version"], "1.0.0");
+    assert_eq!(held["held"], true);
+
+    let held_back = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "--yes", "upgrade", "fixture-tool"],
+        "upgrade while held",
+    )?;
+    assert_eq!(held_back["action"], "upgrade");
+    assert_eq!(held_back["status"], "held_back", "{held_back}");
+    assert_eq!(held_back["upgraded"], 0, "{held_back}");
+    assert_eq!(held_back["downloads"]["downloaded"], 0, "{held_back}");
+    assert_eq!(held_back["downloads"]["imported"], 0, "{held_back}");
+    assert_eq!(held_back["held_back"][0]["name"], "fixture-tool");
+    assert_eq!(held_back["held_back"][0]["old_version"], "1.0.0");
+    assert_eq!(held_back["held_back"][0]["new_version"], "2.0.0");
+    assert_eq!(
+        run_profile_tool(&profile_root, "fixture-tool")?,
+        "fixture-tool 1.0.0\n"
+    );
+
+    let unheld = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "unhold", "fixture-tool"],
+        "unhold before upgrade",
+    )?;
+    assert_eq!(unheld["action"], "unhold");
+    assert_eq!(unheld["status"], "unheld", "{unheld}");
+    assert_eq!(unheld["package"], "fixture-tool");
+    assert_eq!(unheld["version"], "1.0.0");
+    assert_eq!(unheld["held"], false);
+
+    let upgraded = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "--yes", "upgrade", "fixture-tool"],
+        "upgrade",
+    )?;
+    assert_eq!(upgraded["action"], "upgrade");
+    assert_eq!(upgraded["status"], "upgraded", "{upgraded}");
+    assert_eq!(upgraded["upgraded"], 1, "{upgraded}");
+    assert_eq!(upgraded["downloads"]["downloaded"], 1, "{upgraded}");
+    assert_eq!(upgraded["downloads"]["imported"], 1, "{upgraded}");
+    assert_eq!(upgraded["upgrades"][0]["name"], "fixture-tool");
+    assert_eq!(upgraded["upgrades"][0]["old_version"], "1.0.0");
+    assert_eq!(upgraded["upgrades"][0]["new_version"], "2.0.0");
+    assert_eq!(
+        run_profile_tool(&profile_root, "fixture-tool")?,
+        "fixture-tool 2.0.0\n"
+    );
+
+    let listed = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "list", "--installed", "--registry", registry_name],
+        "list installed after upgrade",
+    )?;
+    let entries = listed
+        .as_array()
+        .context("upgraded package list JSON should be an array")?;
+    assert_eq!(entries.len(), 1, "{listed}");
+    assert_eq!(entries[0]["name"], "fixture-tool");
+    assert_eq!(entries[0]["version"], "2.0.0");
     assert!(
         entries[0]["status"]
             .as_str()
@@ -428,15 +555,19 @@ fn registry_dir(home: &Path, name: &str) -> PathBuf {
     home.join(".local/share/apm/registries").join(name)
 }
 
-fn executable_store_path_fixture(root: &Path, aos_root: &Path) -> Result<Option<String>> {
+fn executable_store_path_fixture(
+    root: &Path,
+    aos_root: &Path,
+    version: &str,
+) -> Result<Option<String>> {
     if command_missing("nix") || command_missing("nix-store") {
         return Ok(None);
     }
 
-    let source = root.join("fixture-tool-1.0.0");
+    let source = root.join(format!("fixture-tool-{version}"));
     fs::create_dir_all(source.join("bin"))?;
     let script = source.join("bin/fixture-tool");
-    fs::write(&script, "printf 'fixture-tool 1.0.0\\n'\n")?;
+    fs::write(&script, format!("printf 'fixture-tool {version}\\n'\n"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -466,13 +597,6 @@ fn prepare_aos_root(aos_root: &Path) -> Result<()> {
     fs::create_dir_all(aos_root.join("var/nix/log/nix"))?;
     initialize_nix_store(aos_root)?;
     Ok(())
-}
-
-fn reset_aos_root(aos_root: &Path) -> Result<()> {
-    if aos_root.exists() {
-        fs::remove_dir_all(aos_root).with_context(|| format!("removing {}", aos_root.display()))?;
-    }
-    prepare_aos_root(aos_root)
 }
 
 fn nix_command_env(aos_root: &Path) -> Vec<(&'static str, String)> {
@@ -507,6 +631,36 @@ fn initialize_nix_store(aos_root: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn run_profile_tool(profile_root: &Path, command: &str) -> Result<String> {
+    let profile_bin = profile_root
+        .join("per-user")
+        .join(std::env::var("USER").unwrap_or_else(|_| String::from("unknown")))
+        .join("current/bin")
+        .join(command);
+    assert!(
+        profile_bin.exists(),
+        "installed profile executable is missing at {}",
+        profile_bin.display(),
+    );
+    let profile_bin_dir = profile_bin
+        .parent()
+        .context("installed profile executable should have a parent directory")?;
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .env("PATH", profile_bin_dir)
+        .output()
+        .with_context(|| format!("executing {}", profile_bin.display()))?;
+    if !output.status.success() {
+        bail!(
+            "installed fixture failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn run_apr_with_aos_root(home: &Path, aos_root: &Path, args: &[&str]) -> Result<String> {
