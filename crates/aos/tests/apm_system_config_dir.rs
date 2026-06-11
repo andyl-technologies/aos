@@ -10,6 +10,7 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use aos_package::sshkey::Ed25519Keypair;
 use serde_json::Value;
 
 #[test]
@@ -151,6 +152,62 @@ fn system_config_dir_override_supports_apr_maintainer_config_lifecycle() -> Resu
     assert!(
         !home.join(".config/apm/registries.d/sysreg.toml").exists(),
         "apr keys generate should not create a user config shadow file"
+    );
+
+    let external_key = Ed25519Keypair::from_seed([51_u8; 32]);
+    let external_key_path = home.join("external-release.key");
+    fs::write(
+        &external_key_path,
+        external_key.to_openssh_private_key("external-release"),
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&external_key_path, fs::Permissions::from_mode(0o600))?;
+    }
+    let registered = run_apr_json(
+        &home,
+        &system_dir,
+        &[
+            "--json",
+            "keys",
+            "register",
+            "external",
+            "--registry",
+            "sysreg",
+            "--key",
+            external_key_path
+                .to_str()
+                .context("external key path must be UTF-8")?,
+        ],
+        "keys register",
+    )?;
+    assert_eq!(registered["action"], "keys_register");
+    assert_eq!(registered["status"], "registered");
+    assert_eq!(registered["registry"], "sysreg");
+    assert_eq!(registered["id"], "external");
+    assert_eq!(registered["source"], "path");
+    assert_eq!(registered["configured"], true);
+    assert_eq!(
+        registered["config"],
+        system_config.to_string_lossy().to_string(),
+        "apr keys register should record key-id resolution in the redirected system config"
+    );
+    assert_eq!(
+        registered["public_key"],
+        external_key.trust_key_line("sysreg")
+    );
+    let config = fs::read_to_string(&system_config)?;
+    assert!(
+        config.contains(&format!(
+            "\"external\" = \"{}\"",
+            external_key_path.display()
+        )),
+        "{config}"
+    );
+    assert!(
+        !home.join(".config/apm/registries.d/sysreg.toml").exists(),
+        "apr keys register should not create a user config shadow file"
     );
 
     Ok(())
