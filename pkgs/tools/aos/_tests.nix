@@ -1500,6 +1500,19 @@ in {
         install_reg="$data/apm/registries/host-install-channel"
         git -C "$install_reg" config user.name "Host Command Test"
         git -C "$install_reg" config user.email "host-command@example.invalid"
+        run_clean ${self}/bin/apm --json registry add --no-verify --no-clone "file://$install_reg" \
+          --name host-install-channel \
+          > "$work/apm-add-host-install-author-config.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$config/apm/registries.d/host-install-channel.toml" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-install-channel"
+            and .clone == false
+            and .synced == false
+            and .config == $config_path
+            and .verification_disabled == true' \
+          "$work/apm-add-host-install-author-config.json" >/dev/null
         run_clean ${self}/bin/apr --json publish "$install_leaf_store" \
           --name hostleaf \
           --version 1.0.0 \
@@ -1558,18 +1571,51 @@ in {
             and (.head | length == 64)' \
           "$work/apr-publish-host-install.json" >/dev/null
         grep -q "$install_leaf_hash" "$install_reg/closures/$install_hash"
+        install_default_upload="file://$work/install-static-cache-upload/cache"
+        install_default_upload_mirror="file://$work/install-static-cache-upload/cache-mirror"
+        run_clean ${self}/bin/apr --json origin config \
+          --registry host-install-channel \
+          --upload-url "$install_default_upload" \
+          --upload-url "$install_default_upload_mirror" \
+          --header "X-Test-Workflow: host-install" \
+          > "$work/apr-origin-config-host-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg upload_url "$install_default_upload" \
+          --arg upload_url_mirror "$install_default_upload_mirror" \
+          --arg config_path "$config/apm/registries.d/host-install-channel.toml" \
+          '.action == "origin_config"
+            and .registry == "host-install-channel"
+            and .config == $config_path
+            and .upload_auth.upload_urls == [$upload_url, $upload_url_mirror]
+            and .upload_auth.headers == ["X-Test-Workflow: host-install"]' \
+          "$work/apr-origin-config-host-install.json" >/dev/null
+        grep -q '\[registry.upload_auth\]' \
+          "$config/apm/registries.d/host-install-channel.toml"
+        grep -q 'upload_urls = \[' \
+          "$config/apm/registries.d/host-install-channel.toml"
+        run_clean ${self}/bin/apr --json origin config \
+          --registry host-install-channel \
+          > "$work/apr-origin-config-host-install-show.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg upload_url "$install_default_upload" \
+          --arg upload_url_mirror "$install_default_upload_mirror" \
+          '.action == "origin_config"
+            and .registry == "host-install-channel"
+            and .upload_auth.upload_urls == [$upload_url, $upload_url_mirror]
+            and .upload_auth.headers == ["X-Test-Workflow: host-install"]' \
+          "$work/apr-origin-config-host-install-show.json" >/dev/null
         run_clean ${self}/bin/apr --json cache generate \
           --registry host-install-channel \
           --output "$work/install-static-cache-output/cache" \
           --key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
-          --upload-url "file://$work/install-static-cache-upload/cache" \
           --priority 77 \
           --no-commit > "$work/apr-cache-host-install.json"
         ${pkgs.jq}/bin/jq -e \
           --arg output "$work/install-static-cache-output/cache" \
           --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
-          --arg upload_url "file://$work/install-static-cache-upload/cache" \
+          --arg upload_url "$install_default_upload" \
+          --arg upload_url_mirror "$install_default_upload_mirror" \
           '.action == "cache_generate"
             and .registry == "host-install-channel"
             and .output_dir == $output
@@ -1578,7 +1624,7 @@ in {
             and .nars >= 2
             and .cache_url == $cache_url
             and .priority == 77
-            and .upload_urls == [$upload_url]
+            and .upload_urls == [$upload_url, $upload_url_mirror]
             and .uploaded == true
             and .cache_pointer_updated == true
             and .committed == false' \
@@ -1597,6 +1643,10 @@ in {
         grep -q '^Sig: hostcache:' \
           "$work/install-static-cache-upload/cache/$install_hash.narinfo"
         find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
+        test -f "$work/install-static-cache-upload/cache-mirror/nix-cache-info"
+        test -f "$work/install-static-cache-upload/cache-mirror/$install_leaf_hash.narinfo"
+        test -f "$work/install-static-cache-upload/cache-mirror/$install_hash.narinfo"
+        find "$work/install-static-cache-upload/cache-mirror/nar" -type f | grep -q .
         git -C "$install_reg" add -A
         git -C "$install_reg" \
           -c gpg.format=ssh \
@@ -1611,13 +1661,13 @@ in {
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --cache-priority 77 \
-          --upload-url "file://$work/install-static-cache-upload/cache" \
           --channel stable \
           --init-channel > "$work/apr-release-host-install-v1.json"
         ${pkgs.jq}/bin/jq -e \
           --arg cache "$work/install-release-cache/cache" \
           --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
-          --arg upload_url "file://$work/install-static-cache-upload/cache" \
+          --arg upload_url "$install_default_upload" \
+          --arg upload_url_mirror "$install_default_upload_mirror" \
           '.action == "release"
             and .status == "released"
             and .registry == "host-install-channel"
@@ -1627,7 +1677,7 @@ in {
             and .cache_url == $cache_url
             and .cache_priority == 77
             and .cache_pointer_updated == false
-            and .upload_urls == [$upload_url]
+            and .upload_urls == [$upload_url, $upload_url_mirror]
             and .channel.name == "stable"
             and .channel.action == "init"
             and .channel.touched_partitions == 256
@@ -1662,6 +1712,29 @@ in {
         test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
         find "$work/install-static-cache-upload/cache/releases/1/0/0/objects/pack" \
           -name 'pack-*.pack' | grep -q .
+        test -f "$work/install-static-cache-upload/cache-mirror/HEAD"
+        test -f "$work/install-static-cache-upload/cache-mirror/info/refs"
+        test -f "$work/install-static-cache-upload/cache-mirror/releases/1/0/0/objects/info/packs"
+        test -f "$work/install-static-cache-upload/cache-mirror/channels/stable/00"
+        test -f "$work/install-static-cache-upload/cache-mirror/$install_leaf_hash.narinfo"
+        test -f "$work/install-static-cache-upload/cache-mirror/$install_hash.narinfo"
+        find "$work/install-static-cache-upload/cache-mirror/releases/1/0/0/objects/pack" \
+          -name 'pack-*.pack' | grep -q .
+        run_clean ${self}/bin/apr --json origin upload \
+          --registry host-install-channel \
+          --cache-dir "$work/install-release-cache/cache" \
+          > "$work/apr-origin-upload-host-install-defaults.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg upload_url "$install_default_upload" \
+          --arg upload_url_mirror "$install_default_upload_mirror" \
+          --arg cache_dir "$work/install-release-cache/cache" \
+          '.action == "origin_upload"
+            and .registry == "host-install-channel"
+            and .upload_urls == [$upload_url, $upload_url_mirror]
+            and .cache_dir == $cache_dir
+            and .files > 0
+            and .bytes > 0' \
+          "$work/apr-origin-upload-host-install-defaults.json" >/dev/null
         install_origin="$work/host-install-origin.git"
         git init --bare --object-format=sha256 "$install_origin" \
           > "$work/git-init-host-install-origin.out" 2>&1
@@ -2888,13 +2961,13 @@ in {
           --output "$work/install-static-cache-output/cache" \
           --key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
-          --upload-url "file://$work/install-static-cache-upload/cache" \
           --priority 77 \
           --no-commit > "$work/apr-cache-host-install-v2.json"
         ${pkgs.jq}/bin/jq -e \
           --arg output "$work/install-static-cache-output/cache" \
           --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
-          --arg upload_url "file://$work/install-static-cache-upload/cache" \
+          --arg upload_url "$install_default_upload" \
+          --arg upload_url_mirror "$install_default_upload_mirror" \
           '.action == "cache_generate"
             and .registry == "host-install-channel"
             and .output_dir == $output
@@ -2903,7 +2976,7 @@ in {
             and .nars >= 4
             and .cache_url == $cache_url
             and .priority == 77
-            and .upload_urls == [$upload_url]
+            and .upload_urls == [$upload_url, $upload_url_mirror]
             and .uploaded == true
             and .cache_pointer_updated == false
             and .committed == false' \
@@ -2930,6 +3003,13 @@ in {
         grep -q '^Sig: hostcache:' \
           "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
         find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
+        test -f "$work/install-static-cache-upload/cache-mirror/$install_leaf_hash_v2.narinfo"
+        test -f "$work/install-static-cache-upload/cache-mirror/$install_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache-mirror/$install_leaf_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache-mirror/$install_hash_v2.narinfo"
+        find "$work/install-static-cache-upload/cache-mirror/nar" -type f | grep -q .
         git -C "$install_reg" add -A
         git -C "$install_reg" \
           -c gpg.format=ssh \
@@ -2944,13 +3024,13 @@ in {
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --cache-priority 77 \
-          --upload-url "file://$work/install-static-cache-upload/cache" \
           --channel stable \
           --count 256 > "$work/apr-release-host-install-v2.json"
         ${pkgs.jq}/bin/jq -e \
           --arg cache "$work/install-release-cache-v2/cache" \
           --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
-          --arg upload_url "file://$work/install-static-cache-upload/cache" \
+          --arg upload_url "$install_default_upload" \
+          --arg upload_url_mirror "$install_default_upload_mirror" \
           '.action == "release"
             and .status == "released"
             and .registry == "host-install-channel"
@@ -2960,7 +3040,7 @@ in {
             and .cache_url == $cache_url
             and .cache_priority == 77
             and .cache_pointer_updated == false
-            and .upload_urls == [$upload_url]
+            and .upload_urls == [$upload_url, $upload_url_mirror]
             and .channel.name == "stable"
             and .channel.action == "advance"
             and .channel.count == 256
@@ -2986,6 +3066,10 @@ in {
         test -f "$work/install-static-cache-upload/cache/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
         grep -q "BEGIN SSH SIGNATURE" \
           "$work/install-static-cache-upload/cache/channels/stable/00"
+        test -f "$work/install-static-cache-upload/cache-mirror/releases/2/0/0/objects/info/packs"
+        test -f "$work/install-static-cache-upload/cache-mirror/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
+        grep -q "BEGIN SSH SIGNATURE" \
+          "$work/install-static-cache-upload/cache-mirror/channels/stable/00"
 
         home="$static_channel_home"
         config="$static_channel_config"
