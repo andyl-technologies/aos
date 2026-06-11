@@ -149,11 +149,21 @@ in {
         default_profile="/var/lib/profiles/per-user/unknown"
         cache_server_pid=""
         install_cache_server_pid=""
+        failed_line=""
+        failed_command=""
         cat > "$nix_conf/nix.conf" << NIXCONF
         experimental-features = nix-command
         sandbox = false
         substituters =
         NIXCONF
+
+        record_failure() {
+          status=$?
+          failed_line="$1"
+          failed_command="$2"
+          return "$status"
+        }
+        trap 'record_failure "$LINENO" "$BASH_COMMAND"' ERR
 
         dump_recent_work_files() {
           if ! test -d "$work"; then
@@ -170,6 +180,9 @@ in {
           status=$?
           if test "$status" -ne 0; then
             printf '\nhost APR/APM command-surface workflow failed with exit %s\n' "$status" >&2
+            if test -n "$failed_line"; then
+              printf 'Failed near line %s: %s\n' "$failed_line" "$failed_command" >&2
+            fi
             dump_recent_work_files
           fi
           if test -n "$cache_server_pid"; then
@@ -1222,6 +1235,52 @@ in {
         git -C "$reg" rev-parse --verify '2.0.0^{tag}' > "$work/release-v2-tag-object.out"
         git -C "$reg" cat-file -p 2.0.0 > "$work/release-v2-tag.out"
         grep -q "BEGIN SSH SIGNATURE" "$work/release-v2-tag.out"
+
+        run_clean ${self}/bin/apr --json packages --registry host-reg --outdated \
+          > "$work/apr-packages-outdated.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostpkg"
+            and .[0].version == "2.0.0"' \
+          "$work/apr-packages-outdated.json" >/dev/null
+        run_clean ${self}/bin/apr packages --registry host-reg --outdated \
+          > "$work/apr-packages-outdated.out" 2>&1
+        grep -q "hostpkg 2.0.0" "$work/apr-packages-outdated.out"
+        run_clean ${self}/bin/apr --json packages --registry host-reg --outdated \
+          --platform x86_64-linux > "$work/apr-packages-outdated-x86_64.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostpkg"
+            and .[0].version == "2.0.0"' \
+          "$work/apr-packages-outdated-x86_64.json" >/dev/null
+        run_clean ${self}/bin/apr --json packages --registry host-reg --outdated \
+          --platform aarch64-linux > "$work/apr-packages-outdated-aarch64.json"
+        ${pkgs.jq}/bin/jq -e 'length == 0' \
+          "$work/apr-packages-outdated-aarch64.json" >/dev/null
+        run_clean ${self}/bin/apr --json show hostpkg --registry host-reg \
+          --version 1.0.0 > "$work/apr-show-hostpkg-v1.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package.name == "hostpkg"
+            and (.versions | length == 1)
+            and .versions[0].version == "1.0.0"
+            and .versions[0].platforms."x86_64-linux".store_path == "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hostpkg-1.0.0"' \
+          "$work/apr-show-hostpkg-v1.json" >/dev/null
+        run_clean ${self}/bin/apr --json show hostpkg --registry host-reg \
+          --version 2.0.0 > "$work/apr-show-hostpkg-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package.name == "hostpkg"
+            and (.versions | length == 1)
+            and .versions[0].version == "2.0.0"
+            and .versions[0].platforms."x86_64-linux".store_path == "/nix/store/cccccccccccccccccccccccccccccccc-hostpkg-2.0.0"' \
+          "$work/apr-show-hostpkg-v2.json" >/dev/null
+        if run_clean ${self}/bin/apr --json show hostpkg --registry host-reg \
+          --version 9.9.9 > "$work/apr-show-hostpkg-missing-version.json" 2>&1; then
+          cat "$work/apr-show-hostpkg-missing-version.json"
+          exit 1
+        fi
+        ${pkgs.jq}/bin/jq -e \
+          '.error | contains("does not contain version")' \
+          "$work/apr-show-hostpkg-missing-version.json" >/dev/null
 
         run_clean ${self}/bin/apr --json channel init canary 1.0.0 \
           --registry host-reg \
@@ -3791,6 +3850,457 @@ in {
           --registry host-install-commit > "$work/apm-upgradable-host-install-commit.json"
         ${pkgs.jq}/bin/jq -e 'length == 0' \
           "$work/apm-upgradable-host-install-commit.json" >/dev/null
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$main_home"
+        config="$main_config"
+        data="$main_data"
+        cache="$main_cache"
+        profile_root="$main_profile_root"
+        profile="$main_profile"
+
+        main_home="$home"
+        main_config="$config"
+        main_data="$data"
+        main_cache="$cache"
+        main_profile_root="$profile_root"
+        main_profile="$profile"
+        home="$work/provider-switch-home"
+        config="$work/provider-switch-config"
+        data="$work/provider-switch-share"
+        cache="$work/provider-switch-cache"
+        profile_root="$work/provider-switch-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm --json registry add --no-verify "file://$install_origin" \
+          --name host-install-low \
+          --commit "$install_remote_v1_commit" \
+          --priority 100 > "$work/apm-add-host-install-low.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg commit "$install_remote_v1_commit" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-install-low"
+            and .priority == 100
+            and .enabled == true
+            and .synced == true
+            and .last_commit == $commit
+            and .packages == 2' \
+          "$work/apm-add-host-install-low.json" >/dev/null
+        run_clean ${self}/bin/apm --json registry add --no-verify "file://$install_origin" \
+          --name host-install-high \
+          --branch stable \
+          --priority 900 > "$work/apm-add-host-install-high.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-install-high"
+            and .priority == 900
+            and .enabled == true
+            and .synced == true
+            and (.last_commit | length == 64)
+            and .packages == 2' \
+          "$work/apm-add-host-install-high.json" >/dev/null
+        run_clean ${self}/bin/apm --json search hostinstall \
+          > "$work/apm-search-provider-priority.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-high"
+            and .[0].version == "2.0.0"' \
+          "$work/apm-search-provider-priority.json" >/dev/null
+        run_clean ${self}/bin/apm --json policy hostinstall \
+          > "$work/apm-policy-provider-priority-before-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package == "hostinstall"
+            and .installed == null
+            and .candidate == "2.0.0"
+            and (.versions | length == 2)
+            and .versions[0].version == "2.0.0"
+            and .versions[0].registry == "host-install-high"
+            and .versions[0].priority == 900
+            and .versions[0].installed == false
+            and .versions[1].version == "1.0.0"
+            and .versions[1].registry == "host-install-low"
+            and .versions[1].priority == 100
+            and .versions[1].installed == false
+            and .unavailable_installed == []' \
+          "$work/apm-policy-provider-priority-before-install.json" >/dev/null
+        run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-install-low \
+          --yes > "$work/apm-install-host-install-low.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall"]
+            and .generation == 1
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-low"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+            and .downloads.planned == 0
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-install-host-install-low.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-provider-low-run.out"
+        grep -q "host leaf package executed" \
+          "$work/host-install-provider-low-run.out"
+        grep -q "host install package executed" \
+          "$work/host-install-provider-low-run.out"
+        if grep -q "v2 executed" "$work/host-install-provider-low-run.out"; then
+          cat "$work/host-install-provider-low-run.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json policy hostinstall \
+          > "$work/apm-policy-provider-priority-low-installed.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package == "hostinstall"
+            and .installed == "1.0.0"
+            and .candidate == "2.0.0"
+            and (.versions | length == 2)
+            and .versions[0].version == "2.0.0"
+            and .versions[0].registry == "host-install-high"
+            and .versions[0].installed == false
+            and .versions[1].version == "1.0.0"
+            and .versions[1].registry == "host-install-low"
+            and .versions[1].installed == true
+            and .unavailable_installed == []' \
+          "$work/apm-policy-provider-priority-low-installed.json" >/dev/null
+        run_clean ${self}/bin/apm --json upgrade hostinstall --dry-run \
+          > "$work/apm-upgrade-provider-low-dry-run.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "upgrade"
+            and .status == "current"
+            and .requested == ["hostinstall"]
+            and .exclude == []
+            and .dry_run == true
+            and .generation == null
+            and .upgraded == 0
+            and .held_back == []
+            and .upgrades == []
+            and .downloads.planned == 0
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-upgrade-provider-low-dry-run.json" >/dev/null
+        run_clean ${self}/bin/apm --json reinstall hostinstall --dry-run \
+          > "$work/apm-reinstall-provider-low-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+          '.action == "reinstall"
+            and .status == "planned"
+            and .requested == ["hostinstall"]
+            and .reinstall == true
+            and .dry_run == true
+            and .generation == null
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-low"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.downloads.planned >= 2)
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-reinstall-provider-low-dry-run.json" >/dev/null
+        run_clean ${self}/bin/apm --json reinstall hostinstall --yes \
+          > "$work/apm-reinstall-provider-low.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+          '.action == "reinstall"
+            and .status == "reinstalled"
+            and .requested == ["hostinstall"]
+            and .reinstall == true
+            and .dry_run == false
+            and .generation == 2
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-low"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.downloads.planned >= 2)
+            and (.downloads.downloaded >= 2)
+            and (.downloads.imported >= 2)' \
+          "$work/apm-reinstall-provider-low.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-provider-low-after-reinstall.out"
+        grep -q "host leaf package executed" \
+          "$work/host-install-provider-low-after-reinstall.out"
+        grep -q "host install package executed" \
+          "$work/host-install-provider-low-after-reinstall.out"
+        if grep -q "v2 executed" "$work/host-install-provider-low-after-reinstall.out"; then
+          cat "$work/host-install-provider-low-after-reinstall.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-install-high \
+          --yes > "$work/apm-install-provider-switch-high.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall"]
+            and .generation == 3
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-high"
+            and .roots[0].version == "2.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+            and .downloads.planned == 0
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-install-provider-switch-high.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-provider-high-run.out"
+        grep -q "host leaf package v2 executed" \
+          "$work/host-install-provider-high-run.out"
+        grep -q "host install package v2 executed" \
+          "$work/host-install-provider-high-run.out"
+        run_clean ${self}/bin/apm --json list --installed \
+          > "$work/apm-installed-provider-switch-high.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 2
+            and all(.[]; .registry == "host-install-high")
+            and any(.[]; .name == "hostinstall"
+              and .version == "2.0.0"
+              and .status == "installed")
+            and any(.[]; .name == "hostleaf"
+              and .version == "2.0.0"
+              and .status == "installed")' \
+          "$work/apm-installed-provider-switch-high.json" >/dev/null
+        run_clean ${self}/bin/apm --json autoremove --dry-run \
+          > "$work/apm-autoremove-provider-switch-high.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "autoremove"
+            and .status == "current"
+            and .requested == []
+            and .autoremove == true
+            and .dry_run == false
+            and .generation == null
+            and .removed == 0
+            and .explicit_removed == 0
+            and .orphan_removed == 0
+            and .packages == []
+            and .orphans == []' \
+          "$work/apm-autoremove-provider-switch-high.json" >/dev/null
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$main_home"
+        config="$main_config"
+        data="$main_data"
+        cache="$main_cache"
+        profile_root="$main_profile_root"
+        profile="$main_profile"
+
+        main_home="$home"
+        main_config="$config"
+        main_data="$data"
+        main_cache="$cache"
+        main_profile_root="$profile_root"
+        main_profile="$profile"
+        home="$work/provider-explicit-dep-home"
+        config="$work/provider-explicit-dep-config"
+        data="$work/provider-explicit-dep-share"
+        cache="$work/provider-explicit-dep-cache"
+        profile_root="$work/provider-explicit-dep-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm --json registry add --no-verify "file://$install_origin" \
+          --name host-explicit-low \
+          --commit "$install_remote_v1_commit" \
+          --priority 100 > "$work/apm-add-host-explicit-low.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg commit "$install_remote_v1_commit" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-explicit-low"
+            and .priority == 100
+            and .enabled == true
+            and .synced == true
+            and .last_commit == $commit
+            and .packages == 2' \
+          "$work/apm-add-host-explicit-low.json" >/dev/null
+        run_clean ${self}/bin/apm --json registry add --no-verify "file://$install_origin" \
+          --name host-explicit-high \
+          --branch stable \
+          --priority 900 > "$work/apm-add-host-explicit-high.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-explicit-high"
+            and .priority == 900
+            and .enabled == true
+            and .synced == true
+            and (.last_commit | length == 64)
+            and .packages == 2' \
+          "$work/apm-add-host-explicit-high.json" >/dev/null
+        run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-explicit-low \
+          --yes > "$work/apm-install-host-explicit-low.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall"]
+            and .generation == 1
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-explicit-low"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))' \
+          "$work/apm-install-host-explicit-low.json" >/dev/null
+        ${pkgs.jq}/bin/jq -e \
+          '.apm.name == "hostleaf" and .apm.explicit == false' \
+          "$profile/meta/$install_leaf_hash.json" >/dev/null
+        run_clean ${self}/bin/apm --json install hostleaf \
+          --registry host-explicit-low \
+          --yes > "$work/apm-promote-host-explicit-leaf.json"
+        ${pkgs.jq}/bin/jq -e --arg leaf "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostleaf"]
+            and .generation == 2
+            and (.roots | length == 1)
+            and .roots[0].name == "hostleaf"
+            and .roots[0].registry == "host-explicit-low"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $leaf
+            and .roots[0].explicit == true
+            and (.closure | length == 1)
+            and .closure[0].name == "hostleaf"
+            and .closure[0].store_path == $leaf
+            and .closure[0].explicit == true' \
+          "$work/apm-promote-host-explicit-leaf.json" >/dev/null
+        ${pkgs.jq}/bin/jq -e \
+          '.apm.name == "hostleaf" and .apm.explicit == true' \
+          "$profile/meta/$install_leaf_hash.json" >/dev/null
+        run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-explicit-high \
+          --yes > "$work/apm-switch-host-explicit-parent-high.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall"]
+            and .generation == 3
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-explicit-high"
+            and .roots[0].version == "2.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))' \
+          "$work/apm-switch-host-explicit-parent-high.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-explicit-parent-high-run.out"
+        grep -q "host leaf package v2 executed" \
+          "$work/host-explicit-parent-high-run.out"
+        grep -q "host install package v2 executed" \
+          "$work/host-explicit-parent-high-run.out"
+        run_clean ${self}/bin/apm --json list --installed \
+          > "$work/apm-installed-host-explicit-provider-switch.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 3
+            and any(.[]; .name == "hostinstall"
+              and .registry == "host-explicit-high"
+              and .version == "2.0.0"
+              and .status == "installed")
+            and any(.[]; .name == "hostleaf"
+              and .registry == "host-explicit-high"
+              and .version == "2.0.0"
+              and .status == "installed")
+            and any(.[]; .name == "hostleaf"
+              and .registry == "host-explicit-low"
+              and .version == "1.0.0"
+              and .status == "installed")' \
+          "$work/apm-installed-host-explicit-provider-switch.json" >/dev/null
+        run_clean ${self}/bin/apm --json remove hostinstall --autoremove --dry-run \
+          > "$work/apm-remove-host-explicit-parent-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '.action == "remove"
+            and .status == "planned"
+            and .requested == ["hostinstall"]
+            and .autoremove == true
+            and .dry_run == true
+            and .generation == null
+            and .removed == 2
+            and .explicit_removed == 1
+            and .orphan_removed == 1
+            and (.packages | length == 1)
+            and .packages[0].name == "hostinstall"
+            and .packages[0].registry == "host-explicit-high"
+            and .packages[0].version == "2.0.0"
+            and .packages[0].store_path == $store
+            and .packages[0].explicit == true
+            and (.orphans | length == 1)
+            and .orphans[0].name == "hostleaf"
+            and .orphans[0].registry == "host-explicit-high"
+            and .orphans[0].version == "2.0.0"
+            and .orphans[0].store_path == $leaf
+            and .orphans[0].explicit == false' \
+          "$work/apm-remove-host-explicit-parent-dry-run.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-explicit-parent-after-remove-dry-run.out"
+        grep -q "host leaf package v2 executed" \
+          "$work/host-explicit-parent-after-remove-dry-run.out"
+        grep -q "host install package v2 executed" \
+          "$work/host-explicit-parent-after-remove-dry-run.out"
+        run_clean ${self}/bin/apm --json remove hostinstall --autoremove --yes \
+          > "$work/apm-remove-host-explicit-parent.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '.action == "remove"
+            and .status == "removed"
+            and .requested == ["hostinstall"]
+            and .autoremove == true
+            and .dry_run == false
+            and .generation == 4
+            and .removed == 2
+            and .explicit_removed == 1
+            and .orphan_removed == 1
+            and (.packages | length == 1)
+            and .packages[0].name == "hostinstall"
+            and .packages[0].registry == "host-explicit-high"
+            and .packages[0].version == "2.0.0"
+            and .packages[0].store_path == $store
+            and (.orphans | length == 1)
+            and .orphans[0].name == "hostleaf"
+            and .orphans[0].registry == "host-explicit-high"
+            and .orphans[0].version == "2.0.0"
+            and .orphans[0].store_path == $leaf' \
+          "$work/apm-remove-host-explicit-parent.json" >/dev/null
+        run_clean ${self}/bin/apm --json list --installed \
+          > "$work/apm-installed-host-explicit-after-parent-remove.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostleaf"
+            and .[0].registry == "host-explicit-low"
+            and .[0].version == "1.0.0"
+            and .[0].status == "installed"' \
+          "$work/apm-installed-host-explicit-after-parent-remove.json" >/dev/null
+        "$profile/current/bin/host-leaf-tool" \
+          > "$work/host-explicit-leaf-after-parent-remove.out"
+        grep -q "host leaf package executed" \
+          "$work/host-explicit-leaf-after-parent-remove.out"
+        if grep -q "v2 executed" "$work/host-explicit-leaf-after-parent-remove.out"; then
+          cat "$work/host-explicit-leaf-after-parent-remove.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json autoremove --dry-run \
+          > "$work/apm-autoremove-host-explicit-after-parent-remove.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "autoremove"
+            and .status == "current"
+            and .requested == []
+            and .autoremove == true
+            and .dry_run == false
+            and .generation == null
+            and .removed == 0
+            and .explicit_removed == 0
+            and .orphan_removed == 0
+            and .packages == []
+            and .orphans == []' \
+          "$work/apm-autoremove-host-explicit-after-parent-remove.json" >/dev/null
         assert_default_profile_absent
         rm -rf "$profile_root"
         home="$main_home"

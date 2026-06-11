@@ -16,7 +16,7 @@
 //!    compressed download hash and the NAR hash, and import into the store.
 //!    `--download-only` stops here.
 //! 4. **Switch generations** — create the next profile generation, carry
-//!    forward GC roots from the previous one (minus replaced packages),
+//!    forward GC roots from the previous one (minus obsolete closure members),
 //!    write per-path [`InstalledMeta`] records (explicit/held flags are
 //!    preserved across reinstalls), build the merged FHS tree, and atomically
 //!    switch the profile's `current` link.
@@ -41,7 +41,7 @@ use super::profile::meta::{
 };
 use super::registry::{RegistrySet, store_path_hash};
 use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_closure, resolve_multiple};
-use super::store::{create_gc_roots, filter_missing, import_nar};
+use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::{verify_download_hash, verify_nar_hash};
@@ -373,11 +373,14 @@ pub async fn run(
     let prev_gen = profile.current_generation()?;
     let new_gen = profile.new_generation()?;
     let explicit_names: HashSet<&str> = packages.iter().map(|s| s.as_str()).collect();
-    let replaced_store_hashes = installed_store_hashes_for_names(&installed, &explicit_names);
+    let obsolete_hashes =
+        obsolete_installed_hashes_after_install(&installed, &explicit_names, &closures)
+            .await
+            .context("computing post-install profile roots")?;
 
     // Copy existing roots from the previous generation (if any).
     if let Some(ref prev) = prev_gen {
-        copy_roots_except_hashes(prev, &new_gen, &replaced_store_hashes)?;
+        copy_roots_except_hashes(prev, &new_gen, &obsolete_hashes)?;
     }
 
     // Create GC roots for all closure members.
@@ -396,7 +399,7 @@ pub async fn run(
     create_gc_roots(&new_gen.path, &unique_for_roots)?;
 
     // Write metadata -- explicit packages get explicit=true, deps get explicit=false.
-    for hash in &replaced_store_hashes {
+    for hash in &obsolete_hashes {
         delete_meta(&profile, hash)?;
     }
     let now = std::time::SystemTime::now()
@@ -841,23 +844,65 @@ async fn ensure_narinfo_references_present(resolved: &[ResolvedDownload]) -> Res
     );
 }
 
-/// Store-path hashes (runtime output and source derivation) of the installed
-/// packages being replaced, so their old GC roots are not carried into the
-/// new generation.
-fn installed_store_hashes_for_names(
+/// Store-path hashes no longer needed after an install or reinstall.
+///
+/// The new closure is always needed. Live closures of unrelated explicit
+/// packages are also needed so their shared implicit dependencies remain
+/// rooted. Other APM-installed entries can be dropped from the next
+/// generation.
+async fn obsolete_installed_hashes_after_install(
     installed: &[InstalledMeta],
-    package_names: &HashSet<&str>,
+    explicit_names: &HashSet<&str>,
+    closures: &[ResolvedClosure],
+) -> Result<HashSet<String>> {
+    let mut needed = HashSet::new();
+    for closure in closures {
+        for meta in &closure.closure {
+            needed.insert(store_path_hash(&meta.store_path).to_string());
+            if !meta.source_drv.is_empty() {
+                needed.insert(store_path_hash(&meta.source_drv).to_string());
+            }
+        }
+    }
+
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+        if !apm.explicit || explicit_names.contains(apm.name.as_str()) {
+            continue;
+        }
+
+        for path in closure_paths(&meta.store_path)
+            .await
+            .with_context(|| format!("querying closure for installed package {}", apm.name))?
+        {
+            needed.insert(store_path_hash(&path).to_string());
+        }
+        if !apm.source_drv.is_empty() {
+            needed.insert(store_path_hash(&apm.source_drv).to_string());
+        }
+    }
+
+    Ok(obsolete_installed_hashes(installed, &needed))
+}
+
+fn obsolete_installed_hashes(
+    installed: &[InstalledMeta],
+    needed_hashes: &HashSet<String>,
 ) -> HashSet<String> {
     let mut hashes = HashSet::new();
     for meta in installed {
         let Some(apm) = meta.apm.as_ref() else {
             continue;
         };
-        if !package_names.contains(apm.name.as_str()) {
+
+        let hash = store_path_hash(&meta.store_path).to_string();
+        if needed_hashes.contains(&hash) {
             continue;
         }
 
-        hashes.insert(store_path_hash(&meta.store_path).to_string());
+        hashes.insert(hash);
         if !apm.source_drv.is_empty() {
             hashes.insert(store_path_hash(&apm.source_drv).to_string());
         }
@@ -1497,29 +1542,39 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn installed_store_hashes_for_names_selects_replaced_runtime_and_source_roots() {
-        let mut switch_tool = sample_installed(
+    fn obsolete_installed_hashes_drops_entries_outside_needed_set() {
+        let mut old_switch_tool = sample_installed(
             "switch-tool",
             "1.0.0",
             "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-switch-tool-1.0.0",
         );
-        switch_tool.apm.as_mut().unwrap().source_drv =
+        old_switch_tool.apm.as_mut().unwrap().source_drv =
             "/nix/store/cccccccccccccccccccccccccccccccc-switch-tool-src.drv".to_string();
 
         let installed = vec![
-            switch_tool,
+            sample_installed(
+                "switch-lib",
+                "1.0.0",
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-switch-lib-1.0.0",
+            ),
+            old_switch_tool,
             sample_installed(
                 "kept-tool",
                 "1.0.0",
-                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-kept-tool-1.0.0",
+                "/nix/store/dddddddddddddddddddddddddddddddd-kept-tool-1.0.0",
             ),
         ];
-        let names = HashSet::from(["switch-tool"]);
-        let hashes = installed_store_hashes_for_names(&installed, &names);
+        let needed = HashSet::from([
+            "dddddddddddddddddddddddddddddddd".to_string(),
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+        ]);
+        let hashes = obsolete_installed_hashes(&installed, &needed);
 
         assert!(hashes.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        assert!(hashes.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
         assert!(hashes.contains("cccccccccccccccccccccccccccccccc"));
-        assert!(!hashes.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        assert!(!hashes.contains("dddddddddddddddddddddddddddddddd"));
+        assert!(!hashes.contains("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
     }
 
     #[test]
