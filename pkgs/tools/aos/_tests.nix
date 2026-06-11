@@ -156,6 +156,9 @@ in {
         sandbox = false
         substituters =
         NIXCONF
+        # Keep harness tracing out of command output files that intentionally
+        # capture stderr with 2>&1.
+        exec 3>&2
 
         record_failure() {
           status=$?
@@ -196,7 +199,32 @@ in {
         }
         trap cleanup EXIT
 
+        print_command() {
+          if test "$#" -eq 0; then
+            printf '<empty>\n'
+            return
+          fi
+          printf '%s' "$1"
+          shift
+          for arg in "$@"; do
+            printf ' %s' "$arg"
+          done
+          printf '\n'
+        }
+
+        log_command() {
+          {
+            printf '>>> '
+            print_command "$@"
+          } >&3
+          {
+            printf '>>> '
+            print_command "$@"
+          } >> "$work/commands.log"
+        }
+
         run_clean() {
+          log_command "$@"
           env -i \
             HOME="$home" \
             XDG_CONFIG_HOME="$config" \
@@ -218,6 +246,7 @@ in {
         }
 
         run_without_git_identity() {
+          log_command "$@"
           env -i \
             HOME="$home" \
             XDG_CONFIG_HOME="$config" \
@@ -6842,6 +6871,9 @@ in {
           sandbox = false
           substituters =
           NIXCONF
+          # Keep harness tracing out of command output files that intentionally
+          # capture stderr with 2>&1.
+          exec 3>&2
 
           dump_recent_work_files() {
             if ! test -d "$work"; then
@@ -6867,7 +6899,32 @@ in {
           }
           trap cleanup EXIT
 
+          print_command() {
+            if test "$#" -eq 0; then
+              printf '<empty>\n'
+              return
+            fi
+            printf '%s' "$1"
+            shift
+            for arg in "$@"; do
+              printf ' %s' "$arg"
+            done
+            printf '\n'
+          }
+
+          log_command() {
+            {
+              printf '>>> '
+              print_command "$@"
+            } >&3
+            {
+              printf '>>> '
+              print_command "$@"
+            } >> "$work/commands.log"
+          }
+
           run_clean() {
+            log_command "$@"
             env -i \
               HOME="$home" \
               XDG_CONFIG_HOME="$config" \
