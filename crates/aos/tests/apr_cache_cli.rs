@@ -9,6 +9,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
+#[path = "support/git_ssh.rs"]
+mod git_ssh;
+
 const REAL_NIX_CACHE_TEST_ENV: &str = "AOS_PACKAGE_TEST_REAL_NIX_CACHE";
 
 #[test]
@@ -664,14 +667,19 @@ fn run_profile_tool(profile_root: &Path, command: &str) -> Result<String> {
 }
 
 fn run_apr_with_aos_root(home: &Path, aos_root: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_apr"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_apr"));
+    command
         .env("HOME", home)
         .envs(nix_command_env(aos_root))
+        .env("USER", "registry-test")
+        .env("LOGNAME", "registry-test")
         .env("GIT_AUTHOR_NAME", "Registry Test")
         .env("GIT_AUTHOR_EMAIL", "registry@example.com")
         .env("GIT_COMMITTER_NAME", "Registry Test")
         .env("GIT_COMMITTER_EMAIL", "registry@example.com")
-        .args(args)
+        .args(args);
+    git_ssh::apply_git_ssh_program_env(&mut command);
+    let output = command
         .output()
         .with_context(|| format!("running apr {}", args.join(" ")))?;
     if !output.status.success() {
