@@ -2357,6 +2357,188 @@ in {
         fi
         assert_no_profile
 
+        disabled_home="$home"
+        disabled_config_root="$config"
+        disabled_data="$data"
+        disabled_cache="$cache"
+        disabled_profile_root="$profile_root"
+        disabled_profile="$profile"
+        home="$work/disabled-home"
+        config="$work/disabled-config"
+        data="$work/disabled-share"
+        cache="$work/disabled-cache"
+        profile_root="$work/disabled-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
+          --name host-install-disabled \
+          --branch stable > "$work/apm-add-host-install-disabled.out" 2>&1
+        grep -q "Registry 'host-install-disabled' added" \
+          "$work/apm-add-host-install-disabled.out"
+        run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-install-disabled \
+          --yes > "$work/apm-install-host-install-disabled.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall"]
+            and .generation == 1
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-disabled"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+            and (.downloads.planned >= 2)
+            and (.downloads.downloaded >= 2)
+            and (.downloads.imported >= 2)' \
+          "$work/apm-install-host-install-disabled.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-disabled-before-disable.out"
+        grep -q "host leaf package executed" \
+          "$work/host-install-disabled-before-disable.out"
+        grep -q "host install package executed" \
+          "$work/host-install-disabled-before-disable.out"
+        disabled_registry_config="$config/apm/registries.d/host-install-disabled.toml"
+        ${pkgs.python3}/bin/python3 -c \
+          'from pathlib import Path; import sys; path = Path(sys.argv[1]); content = path.read_text(); content.index("enabled = true"); path.write_text(content.replace("enabled = true", "enabled = false", 1))' \
+          "$disabled_registry_config"
+        grep -q 'enabled = false' "$disabled_registry_config"
+        run_clean ${self}/bin/apm --json registry list \
+          > "$work/apm-registry-list-disabled.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "host-install-disabled"
+            and .[0].enabled == false
+            and .[0].status == "disabled"
+            and .[0].packages == 2' \
+          "$work/apm-registry-list-disabled.json" >/dev/null
+        run_clean ${self}/bin/apm --json search hostinstall \
+          --registry host-install-disabled > "$work/apm-search-disabled.json"
+        ${pkgs.jq}/bin/jq -e 'length == 0' \
+          "$work/apm-search-disabled.json" >/dev/null
+        run_clean ${self}/bin/apm --json search hostinstall --installed \
+          --registry host-install-disabled > "$work/apm-search-installed-disabled.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-disabled"
+            and .[0].version == "1.0.0"
+            and .[0].description == "installed package unavailable in registry"' \
+          "$work/apm-search-installed-disabled.json" >/dev/null
+        run_clean ${self}/bin/apm --json list --installed \
+          --registry host-install-disabled > "$work/apm-list-installed-disabled.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 2
+            and any(.[]; .name == "hostinstall"
+              and .registry == "host-install-disabled"
+              and .version == "1.0.0"
+              and (.status | contains("installed"))
+              and (.status | contains("unavailable")))
+            and any(.[]; .name == "hostleaf"
+              and .registry == "host-install-disabled"
+              and .version == "1.0.0"
+              and (.status | contains("installed"))
+              and (.status | contains("unavailable")))' \
+          "$work/apm-list-installed-disabled.json" >/dev/null
+        run_clean ${self}/bin/apm --json policy hostinstall \
+          > "$work/apm-policy-disabled.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package == "hostinstall"
+            and .installed == "1.0.0"
+            and .candidate == null
+            and .versions == []
+            and (.unavailable_installed | length == 1)
+            and .unavailable_installed[0].version == "1.0.0"
+            and .unavailable_installed[0].registry == "host-install-disabled"' \
+          "$work/apm-policy-disabled.json" >/dev/null
+        run_clean ${self}/bin/apm --json source hostinstall --show-drv \
+          > "$work/apm-source-disabled.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg source "$install_drv" \
+          --arg store "$install_store" \
+          '.package == "hostinstall"
+            and .registry == "host-install-disabled"
+            and .source_drv == $source
+            and .installed == true
+            and .installed_store_path == $store' \
+          "$work/apm-source-disabled.json" >/dev/null
+        run_clean ${self}/bin/apm --json depends hostinstall \
+          > "$work/apm-depends-disabled.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg app "$install_hash" \
+          --arg leaf "$install_leaf_hash" \
+          '.package == "hostinstall"
+            and .registry == "host-install-disabled"
+            and .installed == true
+            and .tree.name == "hostinstall"
+            and .tree.store_hash == $app
+            and (.tree.children | any(.name == "hostleaf"
+              and .version == "1.0.0"
+              and .store_hash == $leaf))
+            and .unique_store_paths >= 2' \
+          "$work/apm-depends-disabled.json" >/dev/null
+        run_clean ${self}/bin/apm --json rdepends hostleaf \
+          > "$work/apm-rdepends-disabled.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg leaf "$install_leaf_hash" \
+          '.package == "hostleaf"
+            and .target_versions == "1.0.0"
+            and (.target_hashes | index($leaf) != null)
+            and (.dependents | any(.name == "hostinstall"
+              and .version == "1.0.0"))' \
+          "$work/apm-rdepends-disabled.json" >/dev/null
+        run_clean ${self}/bin/apm --json orphans \
+          > "$work/apm-orphans-disabled.json"
+        ${pkgs.jq}/bin/jq -e 'length == 0' \
+          "$work/apm-orphans-disabled.json" >/dev/null
+        run_clean ${self}/bin/apm --json upgrade --dry-run \
+          > "$work/apm-upgrade-disabled-dry-run.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "upgrade"
+            and .status == "current"
+            and .requested == []
+            and .exclude == []
+            and .dry_run == true
+            and .generation == null
+            and .upgraded == 0
+            and .held_back == []
+            and .upgrades == []
+            and .downloads.planned == 0
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-upgrade-disabled-dry-run.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-disabled-after-queries.out"
+        grep -q "host leaf package executed" \
+          "$work/host-install-disabled-after-queries.out"
+        grep -q "host install package executed" \
+          "$work/host-install-disabled-after-queries.out"
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$disabled_home"
+        config="$disabled_config_root"
+        data="$disabled_data"
+        cache="$disabled_cache"
+        profile_root="$disabled_profile_root"
+        profile="$disabled_profile"
+        nix_store --delete --ignore-liveness "$install_store" \
+          > "$work/nix-delete-host-install-after-disabled.out" 2>&1
+        nix_store --delete --ignore-liveness "$install_leaf_store" \
+          > "$work/nix-delete-host-leaf-after-disabled.out" 2>&1
+        if nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-after-disabled-delete.out" 2>&1; then
+          cat "$work/nix-valid-host-install-after-disabled-delete.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-after-disabled-delete.out" 2>&1; then
+          cat "$work/nix-valid-host-leaf-after-disabled-delete.out"
+          exit 1
+        fi
+        assert_no_profile
+
         run_clean ${self}/bin/apm --json install hostinstall \
           --registry host-install-client \
           --dry-run > "$work/apm-install-host-install-dry-run.json"
@@ -4009,6 +4191,125 @@ in {
           exit 1
         }
         assert_default_profile_absent
+
+        auto_home="$home"
+        auto_config="$config"
+        auto_data="$data"
+        auto_cache="$cache"
+        auto_profile_root="$profile_root"
+        auto_profile="$profile"
+        home="$work/auto-autoremove-home"
+        config="$work/auto-autoremove-config"
+        data="$work/auto-autoremove-share"
+        cache="$work/auto-autoremove-cache"
+        profile_root="$work/auto-autoremove-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config/apm" "$data" "$cache" "$profile_root"
+        cat > "$config/apm/apm.conf" << 'EOF'
+        [settings]
+        assume_yes = true
+        auto_autoremove = true
+        EOF
+        run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
+          --name host-install-auto-remove \
+          --branch stable > "$work/apm-add-host-install-auto-remove.out" 2>&1
+        grep -q "Registry 'host-install-auto-remove' added" \
+          "$work/apm-add-host-install-auto-remove.out"
+        run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-install-auto-remove \
+          --yes > "$work/apm-install-host-install-auto-remove.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall"]
+            and .generation == 1
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-auto-remove"
+            and .roots[0].version == "2.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+            and (.downloads.planned >= 2)
+            and (.downloads.downloaded >= 2)
+            and (.downloads.imported >= 2)' \
+          "$work/apm-install-host-install-auto-remove.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-auto-remove-before-remove.out"
+        grep -q "host leaf package v2 executed" \
+          "$work/host-install-auto-remove-before-remove.out"
+        grep -q "host install package v2 executed" \
+          "$work/host-install-auto-remove-before-remove.out"
+        run_clean ${self}/bin/apm --json remove hostinstall --dry-run \
+          > "$work/apm-remove-host-install-auto-remove-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '.action == "remove"
+            and .status == "planned"
+            and .requested == ["hostinstall"]
+            and .autoremove == true
+            and .dry_run == true
+            and .generation == null
+            and .removed == 2
+            and .explicit_removed == 1
+            and .orphan_removed == 1
+            and (.packages | length == 1)
+            and .packages[0].name == "hostinstall"
+            and .packages[0].version == "2.0.0"
+            and .packages[0].registry == "host-install-auto-remove"
+            and .packages[0].store_path == $store
+            and .packages[0].explicit == true
+            and (.orphans | length == 1)
+            and .orphans[0].name == "hostleaf"
+            and .orphans[0].version == "2.0.0"
+            and .orphans[0].registry == "host-install-auto-remove"
+            and .orphans[0].store_path == $leaf
+            and .orphans[0].explicit == false' \
+          "$work/apm-remove-host-install-auto-remove-dry-run.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-auto-remove-after-dry-run.out"
+        grep -q "host leaf package v2 executed" \
+          "$work/host-install-auto-remove-after-dry-run.out"
+        grep -q "host install package v2 executed" \
+          "$work/host-install-auto-remove-after-dry-run.out"
+        test "$(profile_generation_count)" = "1"
+        run_clean ${self}/bin/apm --json remove hostinstall \
+          > "$work/apm-remove-host-install-auto-remove.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '.action == "remove"
+            and .status == "removed"
+            and .requested == ["hostinstall"]
+            and .autoremove == true
+            and .dry_run == false
+            and .generation == 2
+            and .removed == 2
+            and .explicit_removed == 1
+            and .orphan_removed == 1
+            and (.packages | length == 1)
+            and .packages[0].name == "hostinstall"
+            and .packages[0].version == "2.0.0"
+            and .packages[0].registry == "host-install-auto-remove"
+            and .packages[0].store_path == $store
+            and .packages[0].explicit == true
+            and (.orphans | length == 1)
+            and .orphans[0].name == "hostleaf"
+            and .orphans[0].version == "2.0.0"
+            and .orphans[0].registry == "host-install-auto-remove"
+            and .orphans[0].store_path == $leaf
+            and .orphans[0].explicit == false' \
+          "$work/apm-remove-host-install-auto-remove.json" >/dev/null
+        run_clean ${self}/bin/apm --json list --installed \
+          --registry host-install-auto-remove > "$work/apm-installed-auto-remove-empty.json"
+        ${pkgs.jq}/bin/jq -e 'length == 0' \
+          "$work/apm-installed-auto-remove-empty.json" >/dev/null
+        test "$(profile_generation_count)" = "2"
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$auto_home"
+        config="$auto_config"
+        data="$auto_data"
+        cache="$auto_cache"
+        profile_root="$auto_profile_root"
+        profile="$auto_profile"
 
         if nix_store --check-validity "$install_store_v2" \
           > "$work/nix-valid-host-install-v2-before-orphan.out" 2>&1; then
