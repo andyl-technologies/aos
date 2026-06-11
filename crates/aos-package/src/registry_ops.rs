@@ -5298,8 +5298,9 @@ async fn channel_status(
 /// to `origin`.
 ///
 /// Runs as a network transport, so the host git configuration (credential
-/// helpers, proxies) stays visible. `--set-upstream` passes `-u origin`;
-/// `--force` force-pushes.
+/// helpers, proxies) stays visible. `--set-upstream` passes `-u origin`
+/// with the selected branch, using the current branch when `--branch` is not
+/// supplied; `--force` force-pushes.
 ///
 /// # Errors
 ///
@@ -5326,16 +5327,16 @@ pub async fn push(
     let mut args = vec!["push"];
     if set_upstream {
         args.push("-u");
-        args.push("origin");
     }
     if force {
         args.push("--force");
     }
     if let Some(b) = branch {
-        if !set_upstream {
-            args.push("origin");
-        }
+        args.push("origin");
         args.push(b);
+    } else if set_upstream {
+        args.push("origin");
+        args.push(&current);
     }
 
     let output = git_transport(&dir, &args)?;
