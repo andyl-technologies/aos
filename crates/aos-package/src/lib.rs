@@ -2534,7 +2534,7 @@ async fn registry_remove(
     // unprivileged `apr` invocation may not have, and gating a config delete on
     // installed-package state conflates the two tools. Any packages still
     // installed from this registry become orphans; `apm orphans` surfaces them.
-    let toml_path = removable_registry_config_path(config.scope, name);
+    let toml_path = config.registry_config_path_for_update(name);
     let toml_existed = toml_path.exists();
 
     if toml_path.exists() {
@@ -2604,7 +2604,7 @@ async fn registry_set_enabled(
                 message: format!("registry '{name}' not found"),
             })?;
 
-    let toml_path = removable_registry_config_path(config.scope, name);
+    let toml_path = config.registry_config_path_for_update(name);
     let previous_enabled = reg_config.enabled;
     write_registry_enabled(&toml_path, reg_config, state.as_ref(), enabled)?;
 
@@ -2702,35 +2702,6 @@ fn derive_registry_name(url: &str) -> String {
     name.chars()
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
         .collect::<String>()
-}
-
-/// Resolve the registry config file that `registry remove` should delete.
-///
-/// User-scope configuration layers `$XDG_CONFIG_HOME/apm` over the system
-/// config directory. When a registry is supplied only by the fallback system
-/// config, removing the non-existent user file leaves the registry visible on
-/// the next invocation. Prefer the user file when it exists; otherwise target
-/// the fallback system file when it is writable so fixture deployments using
-/// `APM_SYSTEM_CONFIG_DIR` can remove their effective registry entry without
-/// turning read-only system registries into failing deletion attempts.
-fn removable_registry_config_path(scope: ProfileScope, name: &str) -> PathBuf {
-    let primary = scope
-        .config_dir()
-        .join("registries.d")
-        .join(format!("{name}.toml"));
-    if primary.exists() || scope != ProfileScope::User {
-        return primary;
-    }
-
-    let fallback = ProfileScope::System
-        .config_dir()
-        .join("registries.d")
-        .join(format!("{name}.toml"));
-    if fallback.exists() && fs::OpenOptions::new().write(true).open(&fallback).is_ok() {
-        fallback
-    } else {
-        primary
-    }
 }
 
 /// Count package TOML files in a registry's sharded `packages/` directory

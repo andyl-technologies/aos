@@ -3668,11 +3668,7 @@ fn origin_config(
     printer: &Printer,
 ) -> Result<()> {
     let registry_name = resolve_registry_name(config, registry)?;
-    let config_path = config
-        .scope
-        .config_dir()
-        .join("registries.d")
-        .join(format!("{registry_name}.toml"));
+    let config_path = config.registry_config_path_for_update(&registry_name);
     if !config_path.exists() {
         bail!(
             "registry '{registry_name}' has no config at {}; register the registry first with \
@@ -4437,11 +4433,7 @@ fn generate_roster_key(
     let key_path_str = key_path.display().to_string();
 
     // Record the private key path so `--key-id <id>` resolves (§2.6).
-    let config_path = config
-        .scope
-        .config_dir()
-        .join("registries.d")
-        .join(format!("{registry_name}.toml"));
+    let config_path = config.registry_config_path_for_update(&registry_name);
     let configured = config_path.exists();
     if configured {
         state::upsert_signing_key(
@@ -4560,11 +4552,7 @@ fn register_roster_key(
     validate_roster_key_id(id)?;
     let registry_name = resolve_registry_name(config, registry)?;
 
-    let config_path = config
-        .scope
-        .config_dir()
-        .join("registries.d")
-        .join(format!("{registry_name}.toml"));
+    let config_path = config.registry_config_path_for_update(&registry_name);
     if !config_path.exists() {
         bail!(
             "registry '{registry_name}' has no config at {}; register the registry first with \
