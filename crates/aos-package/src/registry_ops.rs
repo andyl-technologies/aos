@@ -1094,8 +1094,9 @@ description = ""
 /// Package name, version, and platform are parsed from the store path
 /// basename and can each be overridden. `--image`/`--image-format` pairs
 /// attach disk-image artifacts to the platform entry, `--sysroot` marks
-/// the package as a system root, and `--previous` records the predecessor
-/// version for delta upgrades.
+/// the package as a system root, `--previous` records the predecessor
+/// version for delta upgrades, and `--source-drv` records explicit source
+/// provenance for prebuilt binaries whose deriver is not visible to Nix.
 ///
 /// # Errors
 ///
@@ -1123,6 +1124,7 @@ pub async fn publish(
     maintainer: Option<&str>,
     sysroot: bool,
     previous: Option<&str>,
+    source_drv: Option<&str>,
     image_paths: &[String],
     image_formats: &[String],
     no_commit: bool,
@@ -1157,7 +1159,14 @@ pub async fn publish(
 
     printer.step(1, 4, "Introspecting store path...");
     let info = introspect_store_path(store_path)?;
-    let source_info = introspect_deriver(&info.path)?;
+    let source_info = if let Some(source_drv) = source_drv {
+        Some(
+            introspect_store_path(source_drv)
+                .with_context(|| format!("introspecting source derivation {source_drv}"))?,
+        )
+    } else {
+        introspect_deriver(&info.path)?
+    };
 
     // Introspect image store paths if provided.
     let mut image_infos: Vec<(String, StorePathInfo)> = Vec::new();
@@ -5623,6 +5632,7 @@ pub async fn release(
                 maintainer,
                 sysroot,
                 previous,
+                None,
                 image_paths,
                 image_formats,
                 false,
