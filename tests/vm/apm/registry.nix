@@ -3920,6 +3920,22 @@ in {
         fail "first maintainer commits remote package"
       }
       cat /tmp/branch-remote-added-commit.out
+      $APR --json diff --registry test-reg --remote --stat \
+        > /tmp/branch-primary-ahead-diff.json 2>&1 || {
+        cat /tmp/branch-primary-ahead-diff.json
+        fail "apr diff --remote reports local commit ahead of upstream"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        '.remote == true
+          and .stat == true
+          and .clean == false
+          and (.changed_files | any(.status == "A" and .path == "packages/r/remote-added.toml"))
+          and (.output | contains("packages/r/remote-added.toml"))' \
+        /tmp/branch-primary-ahead-diff.json >/dev/null || {
+        cat /tmp/branch-primary-ahead-diff.json
+        fail "apr --json diff --remote reports unpushed maintainer package"
+      }
+      pass "apr --json diff --remote reports unpushed maintainer package"
       $APR push --registry test-reg --branch "$DEFAULT_BRANCH" \
         > /tmp/branch-remote-added-push.out 2>&1 || {
         cat /tmp/branch-remote-added-push.out
