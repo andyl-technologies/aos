@@ -217,6 +217,23 @@ in {
             "$@"
         }
 
+        run_without_git_identity() {
+          env -i \
+            HOME="$home" \
+            XDG_CONFIG_HOME="$config" \
+            XDG_DATA_HOME="$data" \
+            XDG_CACHE_HOME="$cache" \
+            AOS_PROFILE_ROOT="$profile_root" \
+            AOS_ROOT="$aos_root" \
+            AOS_NIX_STORE_DIR="$store_dir" \
+            AOS_NIX_STATE_DIR="$state_dir" \
+            NIX_REMOTE="" \
+            NIX_CONF_DIR="$nix_conf" \
+            GIT_CONFIG_NOSYSTEM=1 \
+            PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
+            "$@"
+        }
+
         assert_path_absent() {
           path="$1"
           if test -e "$path"; then
@@ -1188,7 +1205,7 @@ in {
         initial_tag_object=$(git -C "$reg" rev-parse '1.0.0^{tag}')
         initial_tag_commit=$(git -C "$reg" rev-parse '1.0.0^{commit}')
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/release-key-next"
-        run_clean ${self}/bin/apr --json sign 1.0.0 \
+        run_without_git_identity ${self}/bin/apr --json sign 1.0.0 \
           --registry host-reg \
           --key "$work/release-key-next" \
           > "$work/apr-sign.json"
@@ -1799,6 +1816,25 @@ in {
             and .upload_auth.upload_urls == [$upload_url, $upload_url_mirror]
             and .upload_auth.headers == ["X-Test-Workflow: host-install"]' \
           "$work/apr-origin-config-host-install-show.json" >/dev/null
+        run_clean ${self}/bin/apr --json origin config \
+          --registry host-install-channel \
+          --unset headers \
+          > "$work/apr-origin-config-host-install-unset-headers.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg upload_url "$install_default_upload" \
+          --arg upload_url_mirror "$install_default_upload_mirror" \
+          '.action == "origin_config"
+            and .registry == "host-install-channel"
+            and .upload_auth.upload_urls == [$upload_url, $upload_url_mirror]
+            and .upload_auth.headers == []' \
+          "$work/apr-origin-config-host-install-unset-headers.json" >/dev/null
+        if grep -q '^headers = ' \
+          "$config/apm/registries.d/host-install-channel.toml"; then
+          cat "$config/apm/registries.d/host-install-channel.toml"
+          exit 1
+        fi
+        grep -q 'upload_urls = \[' \
+          "$config/apm/registries.d/host-install-channel.toml"
         run_clean ${self}/bin/apr --json cache generate \
           --registry host-install-channel \
           --output "$work/install-static-cache-output/cache" \
@@ -2389,13 +2425,52 @@ in {
           > "$work/apm-search-host-image-channel.out" 2>&1
         grep -q "hostsysroot/host-image-channel 1.0.0" \
           "$work/apm-search-host-image-channel.out"
-        run_clean ${self}/bin/apm install hostsysroot \
+        run_clean ${self}/bin/apm --json install hostsysroot \
+          --registry host-image-channel \
+          --image qcow2 \
+          --output "$work/hostsysroot-dry-run.qcow2" \
+          --dry-run > "$work/apm-install-host-sysroot-image-dry-run.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$sysroot_image_store" \
+          --arg output "$work/hostsysroot-dry-run.qcow2" \
+          '.action == "image_download"
+            and .status == "planned"
+            and .package == "hostsysroot"
+            and .version == "1.0.0"
+            and .format == "qcow2"
+            and .store_path == $store
+            and .output == $output
+            and .dry_run == true
+            and .downloads.planned == 1
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-install-host-sysroot-image-dry-run.json" >/dev/null
+        test ! -e "$work/hostsysroot-dry-run.qcow2"
+        if nix_store --check-validity "$sysroot_image_store" \
+          > "$work/nix-valid-host-sysroot-image-after-dry-run.out" 2>&1; then
+          cat "$work/nix-valid-host-sysroot-image-after-dry-run.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json install hostsysroot \
           --registry host-image-channel \
           --image qcow2 \
           --output "$work/hostsysroot-downloaded.qcow2" \
-          --yes > "$work/apm-install-host-sysroot-image.out" 2>&1
-        grep -q "Image hostsysroot 1.0.0 (qcow2) written to" \
-          "$work/apm-install-host-sysroot-image.out"
+          --yes > "$work/apm-install-host-sysroot-image.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$sysroot_image_store" \
+          --arg output "$work/hostsysroot-downloaded.qcow2" \
+          '.action == "image_download"
+            and .status == "downloaded"
+            and .package == "hostsysroot"
+            and .version == "1.0.0"
+            and .format == "qcow2"
+            and .store_path == $store
+            and .output == $output
+            and .dry_run == false
+            and .downloads.planned == 1
+            and .downloads.downloaded == 1
+            and .downloads.imported == 1' \
+          "$work/apm-install-host-sysroot-image.json" >/dev/null
         grep -q "host sysroot image qcow2 fixture" \
           "$work/hostsysroot-downloaded.qcow2"
         grep -q "boot-marker=hostsysroot" \
