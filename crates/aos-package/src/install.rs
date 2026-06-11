@@ -33,6 +33,7 @@ use super::config::ApmConfig;
 use super::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     fetch_narinfos, order_resolved_downloads, reference_store_path, resolve_mirror,
+    resolved_downloads_json,
 };
 use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
@@ -146,7 +147,7 @@ pub async fn run(
                 download_only,
                 no_deps,
                 false,
-                0,
+                &[],
                 0,
                 0,
                 None,
@@ -267,7 +268,7 @@ pub async fn run(
                 download_only,
                 no_deps,
                 true,
-                resolved.len(),
+                &resolved,
                 0,
                 0,
                 None,
@@ -318,7 +319,7 @@ pub async fn run(
                     download_only,
                     no_deps,
                     false,
-                    resolved.len(),
+                    &resolved,
                     downloaded_count,
                     0,
                     None,
@@ -356,7 +357,7 @@ pub async fn run(
                     download_only,
                     no_deps,
                     false,
-                    0,
+                    &[],
                     0,
                     0,
                     None,
@@ -488,7 +489,7 @@ pub async fn run(
             download_only,
             no_deps,
             false,
-            resolved.len(),
+            &resolved,
             downloaded_count,
             imported_count,
             Some(new_gen.number),
@@ -521,7 +522,7 @@ fn install_result_json(
     download_only: bool,
     no_deps: bool,
     dry_run: bool,
-    resolved_downloads: usize,
+    resolved_downloads: &[ResolvedDownload],
     downloaded: usize,
     imported: usize,
     generation: Option<u32>,
@@ -538,9 +539,10 @@ fn install_result_json(
         "roots": install_roots_json(closures),
         "closure": install_closure_json(packages, closures),
         "downloads": {
-            "planned": resolved_downloads,
+            "planned": resolved_downloads.len(),
             "downloaded": downloaded,
             "imported": imported,
+            "paths": resolved_downloads_json(resolved_downloads),
         },
     })
 }
