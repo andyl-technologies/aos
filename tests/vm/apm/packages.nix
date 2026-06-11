@@ -400,6 +400,7 @@
     ++ [
       pkgs.findutils
       pkgs.iproute2
+      pkgs.jq
       pkgs.python3
       pkgs.zstd
       installBasicTool
@@ -2393,7 +2394,7 @@ in {
       export HOME=/tmp/readd-consumer
       export USER=readduser
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/readd-origin.git \
+      $APM registry add --no-verify file:///tmp/readd-origin.git \
         --name readd-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/readd-registry-add.out 2>&1 || {
         cat /tmp/readd-registry-add.out
@@ -2419,9 +2420,26 @@ in {
 
       echo "==> Consumer: disable registry without orphaning installed package"
       REG_CONFIG="$HOME/.config/apm/registries.d/readd-reg.toml"
-      python3 -c 'from pathlib import Path; p = Path("/tmp/readd-consumer/.config/apm/registries.d/readd-reg.toml"); text = p.read_text(); assert "enabled = true" in text, "registry config was not enabled before disable"; p.write_text(text.replace("enabled = true", "enabled = false", 1))'
+      $APM --json registry disable readd-reg > /tmp/readd-registry-disable.json 2>&1 || {
+        cat /tmp/readd-registry-disable.json
+        fail "apm registry disable readd-reg succeeds"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        --arg config "$REG_CONFIG" \
+        '.action == "registry_disable"
+          and .status == "disabled"
+          and .registry == "readd-reg"
+          and .enabled == false
+          and .previous_enabled == true
+          and .changed == true
+          and .config == $config
+          and .packages == 1' \
+        /tmp/readd-registry-disable.json >/dev/null || {
+        cat /tmp/readd-registry-disable.json
+        fail "apm --json registry disable reports disabled registry"
+      }
       assert_file_contains "$REG_CONFIG" "enabled = false" \
-        "registry config can be disabled by maintainer policy"
+        "apm registry disable persists disabled state"
       run_ok list-disabled "$APM" registry list
       assert_file_contains /tmp/readd-list-disabled.out "disabled" \
         "apm registry list reports disabled registry state"
@@ -2451,9 +2469,47 @@ in {
         "installed executable still runs while registry is disabled"
 
       echo "==> Consumer: re-enable registry and verify installed package"
-      python3 -c 'from pathlib import Path; p = Path("/tmp/readd-consumer/.config/apm/registries.d/readd-reg.toml"); text = p.read_text(); assert "enabled = false" in text, "registry config was not disabled before re-enable"; p.write_text(text.replace("enabled = false", "enabled = true", 1))'
+      $APM --json registry enable readd-reg > /tmp/readd-registry-enable.json 2>&1 || {
+        cat /tmp/readd-registry-enable.json
+        fail "apm registry enable readd-reg succeeds"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        --arg config "$REG_CONFIG" \
+        '.action == "registry_enable"
+          and .status == "enabled"
+          and .registry == "readd-reg"
+          and .enabled == true
+          and .previous_enabled == false
+          and .changed == true
+          and .config == $config
+          and .packages == 1' \
+        /tmp/readd-registry-enable.json >/dev/null || {
+        cat /tmp/readd-registry-enable.json
+        fail "apm --json registry enable reports enabled registry"
+      }
       assert_file_contains "$REG_CONFIG" "enabled = true" \
-        "registry config can be re-enabled"
+        "apm registry enable persists enabled state"
+      run_ok update-reenabled "$APM" --json update --registry readd-reg
+      ${pkgs.jq}/bin/jq -e \
+        '.registry == "readd-reg"
+          and (.registries | length == 1)
+          and .registries[0].registry == "readd-reg"
+          and (.registries[0].status == "updated" or .registries[0].status == "current")
+          and .registries[0].packages == 1' \
+        /tmp/readd-update-reenabled.out >/dev/null || {
+        cat /tmp/readd-update-reenabled.out
+        fail "apm --json update works after registry re-enable"
+      }
+      run_ok search-reenabled "$APM" --json search readd-tool --registry readd-reg
+      ${pkgs.jq}/bin/jq -e \
+        'length == 1
+          and .[0].name == "readd-tool"
+          and .[0].registry == "readd-reg"
+          and .[0].version == "1.0.0"' \
+        /tmp/readd-search-reenabled.out >/dev/null || {
+        cat /tmp/readd-search-reenabled.out
+        fail "apm --json search finds package after registry re-enable"
+      }
       run_ok verify-before-remove "$APM" verify readd-tool
       assert_file_contains /tmp/readd-verify-before-remove.out "integrity verified" \
         "apm verify validates readd-tool after registry re-enable"
@@ -2487,7 +2543,7 @@ in {
         "orphaned verify error points at missing source registry"
 
       echo "==> Consumer: re-add registry and verify package recovery"
-      $APM registry add file:///tmp/readd-origin.git \
+      $APM registry add --no-verify file:///tmp/readd-origin.git \
         --name readd-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/readd-registry-readd.out 2>&1 || {
         cat /tmp/readd-registry-readd.out
@@ -5241,7 +5297,7 @@ in {
           and .upgrades[0].old_version == "1.0.0"
           and .upgrades[0].new_version == "2.0.0"
           and .upgrades[0].new_store_path == $store
-          and .downloads.planned == 0
+          and .downloads.planned == 1
           and .downloads.downloaded == 0
           and .downloads.imported == 0' \
         /tmp/surface-full-upgrade-dry-run.out >/dev/null || {
@@ -5408,6 +5464,123 @@ in {
       run_ok gc-help "$APM" gc --help
       assert_file_contains /tmp/surface-gc-help.out "garbage collection" \
         "apm gc command surface is present without mutating the VM store"
+
+      echo "==> Consumer: disable and re-enable registry with real installed packages"
+      SURFACE_REG_CONFIG="$APM_CONFIG/registries.d/surface-reg.toml"
+      $APM --json registry disable surface-reg > /tmp/surface-registry-disable.json 2>&1 || {
+        cat /tmp/surface-registry-disable.json
+        fail "apm registry disable succeeds for command-surface registry"
+      }
+      "$JQ" -e \
+        --arg config "$SURFACE_REG_CONFIG" \
+        '.action == "registry_disable"
+          and .status == "disabled"
+          and .registry == "surface-reg"
+          and .enabled == false
+          and .previous_enabled == true
+          and .changed == true
+          and .config == $config
+          and .packages >= 4' \
+        /tmp/surface-registry-disable.json >/dev/null || {
+        cat /tmp/surface-registry-disable.json
+        fail "apm --json registry disable reports command-surface registry state"
+      }
+      pass "apm --json registry disable reports command-surface registry state"
+      assert_file_contains "$SURFACE_REG_CONFIG" "enabled = false" \
+        "apm registry disable persists command-surface disabled state"
+      $APM --json registry disable surface-reg > /tmp/surface-registry-disable-again.json 2>&1 || {
+        cat /tmp/surface-registry-disable-again.json
+        fail "apm registry disable is idempotent for command-surface registry"
+      }
+      "$JQ" -e \
+        --arg config "$SURFACE_REG_CONFIG" \
+        '.action == "registry_disable"
+          and .status == "unchanged"
+          and .registry == "surface-reg"
+          and .enabled == false
+          and .previous_enabled == false
+          and .changed == false
+          and .config == $config
+          and .packages >= 4' \
+        /tmp/surface-registry-disable-again.json >/dev/null || {
+        cat /tmp/surface-registry-disable-again.json
+        fail "idempotent apm --json registry disable reports unchanged state"
+      }
+      pass "idempotent apm --json registry disable reports unchanged state"
+      run_ok registry-list-disabled "$APM" registry list
+      assert_file_contains /tmp/surface-registry-list-disabled.out "disabled" \
+        "apm registry list reports command-surface registry disabled"
+      run_ok search-disabled "$APM" --json search surfacepkg --registry surface-reg
+      "$JQ" -e 'length == 0' /tmp/surface-search-disabled.out >/dev/null || {
+        cat /tmp/surface-search-disabled.out
+        fail "disabled registry search hides registry packages"
+      }
+      run_ok search-installed-disabled "$APM" --json search surfacepkg --installed --registry surface-reg
+      "$JQ" -e \
+        'length == 1
+          and .[0].name == "surfacepkg"
+          and .[0].registry == "surface-reg"
+          and .[0].version == "1.0.0"
+          and .[0].description == "installed package unavailable in registry"' \
+        /tmp/surface-search-installed-disabled.out >/dev/null || {
+        cat /tmp/surface-search-installed-disabled.out
+        fail "disabled registry installed search uses profile metadata"
+      }
+      pass "disabled registry installed search uses profile metadata"
+      if $APM --json update --registry surface-reg > /tmp/surface-update-disabled.json 2>&1; then
+        cat /tmp/surface-update-disabled.json
+        fail "apm update should reject disabled command-surface registry"
+      else
+        pass "apm update rejects disabled command-surface registry"
+      fi
+      assert_file_contains /tmp/surface-update-disabled.json "registry 'surface-reg' is not enabled" \
+        "disabled registry update failure names disabled registry"
+      run_ok orphans-disabled "$APM" orphans
+      assert_file_contains /tmp/surface-orphans-disabled.out "No orphaned packages" \
+        "disabled configured registry does not orphan command-surface packages"
+      "$SURFACE_BIN" > /tmp/surface-run-while-disabled.out
+      assert_file_contains /tmp/surface-run-while-disabled.out "^surfacepkg 1.0.0 via surface-leaf 1.0.0$" \
+        "installed surfacepkg executable still runs while registry is disabled"
+
+      $APM --json registry enable surface-reg > /tmp/surface-registry-enable.json 2>&1 || {
+        cat /tmp/surface-registry-enable.json
+        fail "apm registry enable succeeds for command-surface registry"
+      }
+      "$JQ" -e \
+        --arg config "$SURFACE_REG_CONFIG" \
+        '.action == "registry_enable"
+          and .status == "enabled"
+          and .registry == "surface-reg"
+          and .enabled == true
+          and .previous_enabled == false
+          and .changed == true
+          and .config == $config
+          and .packages >= 4' \
+        /tmp/surface-registry-enable.json >/dev/null || {
+        cat /tmp/surface-registry-enable.json
+        fail "apm --json registry enable reports command-surface registry state"
+      }
+      pass "apm --json registry enable reports command-surface registry state"
+      assert_file_contains "$SURFACE_REG_CONFIG" "enabled = true" \
+        "apm registry enable persists command-surface enabled state"
+      $APM --json update --registry surface-reg > /tmp/surface-update-reenabled.json 2>&1 || {
+        cat /tmp/surface-update-reenabled.json
+        fail "apm update succeeds after command-surface registry re-enable"
+      }
+      "$JQ" -e \
+        '.registry == "surface-reg"
+          and (.registries | length == 1)
+          and .registries[0].registry == "surface-reg"
+          and (.registries[0].status == "updated" or .registries[0].status == "current")
+          and .registries[0].packages >= 4' \
+        /tmp/surface-update-reenabled.json >/dev/null || {
+        cat /tmp/surface-update-reenabled.json
+        fail "apm --json update reports re-enabled command-surface registry"
+      }
+      pass "apm --json update reports re-enabled command-surface registry"
+      run_ok verify-after-registry-enable "$APM" verify surfacepkg
+      assert_file_contains /tmp/surface-verify-after-registry-enable.out "integrity verified" \
+        "apm verify validates package after registry re-enable"
 
       run_ok orphans-none "$APM" orphans
       assert_file_contains /tmp/surface-orphans-none.out "No orphaned packages" \
