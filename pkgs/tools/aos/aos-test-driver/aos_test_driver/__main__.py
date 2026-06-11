@@ -33,6 +33,15 @@ log: logging.Logger = logging.getLogger(__name__)
 NAME_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _configure_stdio() -> None:
+    """Keep driver/test output visible while Nix is still running the check."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True, write_through=True)
+        except (AttributeError, ValueError):
+            pass
+
+
 def _load_manifest(path: Path) -> dict[str, Any]:
     with open(path) as f:
         manifest: Any = json.load(f)
@@ -208,6 +217,8 @@ def _wait_system_ready(machines: list[Machine], timeout: float) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio()
+
     parser = argparse.ArgumentParser(prog="aos-test-driver")
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--test", required=True, type=Path)

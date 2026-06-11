@@ -60,8 +60,9 @@ mkDerivation {
         # not build time.
         cat > "$out/bin/aos-test-driver" <<SHIMEND
         #!${bash}/bin/bash
+        export PYTHONUNBUFFERED=1
         export PYTHONPATH="$out/lib/aos-test-driver\''${PYTHONPATH:+:\''${PYTHONPATH}}"
-        exec ${python3}/bin/python3 -m aos_test_driver "\''$@"
+        exec ${python3}/bin/python3 -u -m aos_test_driver "\''$@"
         SHIMEND
         chmod +x "$out/bin/aos-test-driver"
       '';
