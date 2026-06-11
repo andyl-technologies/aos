@@ -20,7 +20,10 @@
   # Every external tool the aos/apm/apr binaries shell out to by bare name
   # (resolved via $PATH). The wrappers below set PATH to exactly this, so the
   # binaries are hermetic — their behavior never depends on the caller's
-  # environment:
+  # environment. The caller's original PATH is stashed in AOS_HOST_PATH first:
+  # user-supplied commands (e.g. `apr keys register --key-command`, which
+  # typically invokes a host secret manager) run with that PATH restored, while
+  # every internal shell-out keeps the hermetic one. Tools:
   #   git           registry, pack, and object-store operations
   #   gnupg         gpg: git shells out to it to create and verify OpenPGP
   #                 signatures on commits and tags; with the hermetic PATH set
@@ -87,6 +90,7 @@ in
           for name in aos apm apr; do
             cat > $out/bin/$name << 'WRAPPER'
       #!${bash}/bin/bash
+      export AOS_HOST_PATH="''${AOS_HOST_PATH-$PATH}"
       export PATH="@PATH@"
       exec "@SELF@" "$@"
       WRAPPER

@@ -4563,11 +4563,32 @@ fn create_ephemeral_key_file() -> Result<tempfile::NamedTempFile> {
 /// The command must print the unencrypted OpenSSH private key to stdout. The
 /// returned [`ResolvedSigningKey`] owns the temporary file; the key is removed
 /// from disk as soon as it is dropped.
+///
+/// The `aos`/`apm`/`apr` wrapper scripts replace `PATH` with a minimal
+/// hermetic tool set and stash the caller's original value in
+/// `AOS_HOST_PATH`. A key command is user-supplied and expects the user's
+/// own environment (secret managers like `op`, filters like `jq`), so when
+/// `AOS_HOST_PATH` is present the command runs with the caller's `PATH`
+/// restored verbatim.
 fn materialize_signing_key_command(command: &str) -> Result<ResolvedSigningKey> {
-    let output = std::process::Command::new("bash")
+    materialize_signing_key_command_with_path(command, std::env::var_os("AOS_HOST_PATH"))
+}
+
+/// [`materialize_signing_key_command`] with an explicit `PATH` override for
+/// the spawned `bash -c` process; `None` inherits this process's `PATH`.
+fn materialize_signing_key_command_with_path(
+    command: &str,
+    search_path: Option<std::ffi::OsString>,
+) -> Result<ResolvedSigningKey> {
+    let mut shell = std::process::Command::new("bash");
+    shell
         .arg("-c")
         .arg(command)
-        .stdin(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null());
+    if let Some(search_path) = search_path {
+        shell.env("PATH", search_path);
+    }
+    let output = shell
         .output()
         .with_context(|| format!("running signing key command `{command}`"))?;
     if !output.status.success() {
@@ -6508,6 +6529,31 @@ mod tests {
         });
         let err = resolve_signing_key_source("initial", &source).unwrap_err();
         assert!(format!("{err:#}").contains("signing key command"));
+    }
+
+    #[test]
+    fn signing_key_command_runs_with_search_path_override() {
+        // Passing the current PATH through the override exercises the same
+        // code path the wrappers trigger via AOS_HOST_PATH.
+        let resolved = materialize_signing_key_command_with_path(
+            "printf 'key material'",
+            std::env::var_os("PATH"),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(resolved.path()).unwrap(), "key material");
+    }
+
+    #[test]
+    fn signing_key_command_search_path_override_replaces_path() {
+        // An override pointing at an empty directory leaves even `bash`
+        // unresolvable: the override replaces PATH instead of extending it.
+        let tmp = TempDir::new().unwrap();
+        let err = materialize_signing_key_command_with_path(
+            "printf 'key material'",
+            Some(tmp.path().as_os_str().to_os_string()),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("running signing key command"));
     }
 
     #[test]
