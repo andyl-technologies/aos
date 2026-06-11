@@ -770,19 +770,23 @@ fn commit_staged_registry(dir: &Path, message: &str, signing_key: Option<&str>) 
     match signing_key {
         Some(key) => {
             let signing_key_config = format!("user.signingkey={key}");
-            git(
-                dir,
-                &[
-                    "-c",
-                    "gpg.format=ssh",
-                    "-c",
-                    &signing_key_config,
-                    "commit",
-                    "-S",
-                    "-m",
-                    message,
-                ],
-            )?;
+            let mut command = gitcmd::hermetic();
+            command.arg("-c").arg("gpg.format=ssh");
+            gitcmd::add_ssh_program_config(&mut command);
+            command
+                .arg("-c")
+                .arg(signing_key_config)
+                .arg("commit")
+                .arg("-S")
+                .arg("-m")
+                .arg(message)
+                .current_dir(dir);
+            let output = command
+                .output()
+                .with_context(|| format!("signing registry commit in {}", dir.display()))?;
+            if !output.status.success() {
+                bail!("git commit -S failed: {}", git_failure_details(&output));
+            }
         }
         None => {
             git(dir, &["commit", "-m", message])?;
@@ -4615,7 +4619,7 @@ fn register_roster_key(
 /// `ssh-ed25519 <base64> [comment]`; the base64 field is exactly the SSH
 /// wire-format blob that the trust line carries.
 fn derive_trust_key(registry_name: &str, key_path: &str) -> Result<String> {
-    let output = std::process::Command::new("ssh-keygen")
+    let output = gitcmd::ssh_keygen()
         .arg("-y")
         .arg("-f")
         .arg(key_path)
@@ -6559,9 +6563,9 @@ fn sign_tag(
     ensure_commit_identity(dir)?;
     let signing_key_config = format!("user.signingkey={signing_key}");
     let mut command = gitcmd::hermetic();
+    command.arg("-c").arg("gpg.format=ssh");
+    gitcmd::add_ssh_program_config(&mut command);
     command
-        .arg("-c")
-        .arg("gpg.format=ssh")
         .arg("-c")
         .arg(signing_key_config)
         .arg("tag")
