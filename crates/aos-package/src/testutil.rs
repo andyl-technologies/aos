@@ -16,10 +16,9 @@ use std::process::Command;
 /// Build a git command that ignores global and system configuration and
 /// carries a fixed author/committer identity.
 pub(crate) fn git_command(dir: &Path) -> Command {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::gitcmd::hermetic();
+    crate::gitcmd::add_ssh_program_config(&mut cmd);
     cmd.current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env("GIT_AUTHOR_NAME", "AOS Test")
         .env("GIT_AUTHOR_EMAIL", "test@example.com")
         .env("GIT_COMMITTER_NAME", "AOS Test")

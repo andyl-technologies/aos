@@ -545,13 +545,16 @@ pub fn verify_commit_signature(
     let signers_path = signers_file.path();
 
     // Configure git to use SSH signing verification with our signers file.
-    let output = crate::gitcmd::hermetic()
-        .args([
-            "-c",
-            &format!("gpg.ssh.allowedSignersFile={}", signers_path.display()),
-            "verify-commit",
-            commit,
-        ])
+    let mut command = crate::gitcmd::hermetic();
+    crate::gitcmd::add_ssh_program_config(&mut command);
+    let output = command
+        .arg("-c")
+        .arg(format!(
+            "gpg.ssh.allowedSignersFile={}",
+            signers_path.display()
+        ))
+        .arg("verify-commit")
+        .arg(commit)
         .current_dir(repo_path)
         .output()
         .context("running git verify-commit")?;
@@ -575,13 +578,16 @@ pub fn verify_tag_signature(repo_path: &Path, tag: &str, trusted_keys: &[String]
     let signers_file = write_allowed_signers(trusted_keys)?;
     let signers_path = signers_file.path();
 
-    let output = crate::gitcmd::hermetic()
-        .args([
-            "-c",
-            &format!("gpg.ssh.allowedSignersFile={}", signers_path.display()),
-            "verify-tag",
-            tag,
-        ])
+    let mut command = crate::gitcmd::hermetic();
+    crate::gitcmd::add_ssh_program_config(&mut command);
+    let output = command
+        .arg("-c")
+        .arg(format!(
+            "gpg.ssh.allowedSignersFile={}",
+            signers_path.display()
+        ))
+        .arg("verify-tag")
+        .arg(tag)
         .current_dir(repo_path)
         .output()
         .context("running git verify-tag")?;

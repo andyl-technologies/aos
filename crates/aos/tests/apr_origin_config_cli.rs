@@ -921,7 +921,6 @@ fn run_aos_package_json(
         .env("APM_SYSTEM_CONFIG_DIR", system_dir)
         .arg("package")
         .args(args);
-    git_ssh::apply_git_ssh_program_env(&mut command);
     let output = command
         .output()
         .with_context(|| format!("running aos package {action}"))?;
@@ -952,7 +951,6 @@ fn apr_command(home: &Path) -> Command {
         .env("GIT_AUTHOR_EMAIL", "registry@example.com")
         .env("GIT_COMMITTER_NAME", "Registry Test")
         .env("GIT_COMMITTER_EMAIL", "registry@example.com");
-    git_ssh::apply_git_ssh_program_env(&mut cmd);
     cmd
 }
 
