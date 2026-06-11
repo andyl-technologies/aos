@@ -4452,15 +4452,6 @@ in {
         return 1
       }
 
-      record_source_metadata() {
-        toml="$REG_DIR/packages/s/source-alt.toml"
-        python3 -c 'from pathlib import Path; import sys; p = Path(sys.argv[1]); store = sys.argv[2]; text = p.read_text(); marker = "nar_hash = \""; pos = text.rfind(marker); assert pos >= 0, "nar_hash not found"; start = pos + len(marker); end = text.find("\"", start); nar_hash = text[start:end]; text = text.replace("source_drv = \"\"", f"source_drv = \"{store}\"", 1); text = text.replace("source_nar_hash = \"\"", f"source_nar_hash = \"{nar_hash}\"", 1); p.write_text(text)' "$toml" "$SOURCE_STORE" > /tmp/source-alt-record-source.out 2>&1 || {
-          cat /tmp/source-alt-record-source.out
-          fail "record source metadata for alternate-state source package"
-          return 1
-        }
-      }
-
       run_ok() {
         label="$1"
         shift
@@ -4485,17 +4476,21 @@ in {
         --description "Alternate-state source verification fixture" \
         --license MIT \
         --maintainer source-alt@example.invalid \
+        --source-drv "$SOURCE_STORE" \
         --registry source-alt-reg \
         --no-commit > /tmp/source-alt-publish.out 2>&1 || {
         cat /tmp/source-alt-publish.out
         fail "apr publish source-alt succeeds"
       }
       cat /tmp/source-alt-publish.out
-      record_source_metadata
+      assert_file_contains /tmp/source-alt-publish.out "$SOURCE_STORE" \
+        "apr publish reports explicit source metadata"
       assert_file_contains "$REG_DIR/packages/s/source-alt.toml" \
         "$SOURCE_HASH" "published metadata records source-alt store hash"
       assert_file_contains "$REG_DIR/packages/s/source-alt.toml" \
         "$SOURCE_STORE" "published metadata records source drv path"
+      assert_file_contains "$REG_DIR/packages/s/source-alt.toml" \
+        'source_nar_hash = "sha256-' "published metadata records source NAR hash"
 
       $APR cache generate \
         --registry source-alt-reg \
@@ -4533,7 +4528,7 @@ in {
       mkdir -p "$HOME"
       APM_CONFIG="$HOME/.config/apm"
 
-      $APM registry add file:///tmp/source-alt-origin.git \
+      $APM registry add --no-verify file:///tmp/source-alt-origin.git \
         --name source-alt-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/source-alt-registry-add.out 2>&1 || {
         cat /tmp/source-alt-registry-add.out
@@ -4780,17 +4775,6 @@ in {
         cat "/tmp/surface-publish-upgradeface-$label.out"
       }
 
-      record_source_metadata() {
-        store="$1"
-        label="$2"
-        toml="$REG_DIR/packages/s/sourceful.toml"
-        python3 -c 'from pathlib import Path; import sys; p = Path(sys.argv[1]); store = sys.argv[2]; text = p.read_text(); marker = "nar_hash = \""; pos = text.rfind(marker); assert pos >= 0, "nar_hash not found"; start = pos + len(marker); end = text.find("\"", start); nar_hash = text[start:end]; text = text.replace("source_drv = \"\"", f"source_drv = \"{store}\"", 1); text = text.replace("source_nar_hash = \"\"", f"source_nar_hash = \"{nar_hash}\"", 1); p.write_text(text)' "$toml" "$store" > "/tmp/surface-record-source-$label.out" 2>&1 || {
-          cat "/tmp/surface-record-source-$label.out"
-          fail "record source metadata for sourceful $label"
-          return 1
-        }
-      }
-
       publish_sourceful() {
         version="$1"
         store="$2"
@@ -4802,6 +4786,7 @@ in {
           --description "Source derivation command fixture" \
           --license MIT \
           --maintainer surface@example.invalid \
+          --source-drv "$source_store" \
           --registry surface-reg \
           --no-commit > "/tmp/surface-publish-sourceful-$label.out" 2>&1 || {
           cat "/tmp/surface-publish-sourceful-$label.out"
@@ -4809,7 +4794,8 @@ in {
           return 1
         }
         cat "/tmp/surface-publish-sourceful-$label.out"
-        record_source_metadata "$source_store" "$label"
+        assert_file_contains "/tmp/surface-publish-sourceful-$label.out" "$source_store" \
+          "apr publish sourceful $version reports explicit source metadata"
       }
 
       generate_surface_cache() {
