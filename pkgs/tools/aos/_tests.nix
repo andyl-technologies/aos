@@ -301,6 +301,21 @@ in {
             and (.stderr | type == "string")' \
           "$work/apm-gc-alt-store.json" >/dev/null
 
+        invalid_config="$work/invalid-config"
+        mkdir -p "$invalid_config/apm"
+        cat > "$invalid_config/apm/apm.conf" << 'EOF'
+        [settings]
+        parallel_downloads = 0
+        EOF
+        if run_clean ${pkgs.coreutils}/bin/env \
+          XDG_CONFIG_HOME="$invalid_config" \
+          ${self}/bin/apm --json gc > "$work/apm-invalid-parallel-downloads.out" 2>&1; then
+          cat "$work/apm-invalid-parallel-downloads.out"
+          exit 1
+        fi
+        grep -q "parallel_downloads must be at least 1" \
+          "$work/apm-invalid-parallel-downloads.out"
+
         reg="$data/apm/registries/host-reg"
         run_clean ${self}/bin/apr --json create host-reg > "$work/apr-create.json"
         ${pkgs.jq}/bin/jq -e --arg reg "$reg" \
@@ -360,10 +375,23 @@ in {
         grep -q "local authoring clone" "$work/apm-registry-remove-dirty.out"
         grep -q "uncommitted changes" "$work/apm-registry-remove-dirty.out"
         test -f "$remove_dirty/maintainer-notes.txt"
-        run_clean ${self}/bin/apr remove remove-dirty --force \
-          > "$work/apr-remove-dirty-force.out" 2>&1
-        grep -q "Registry 'remove-dirty' removed" \
-          "$work/apr-remove-dirty-force.out"
+        run_clean ${self}/bin/apr --json remove remove-dirty --force \
+          > "$work/apr-remove-dirty-force.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg local_path "$remove_dirty" \
+          '.action == "registry_remove"
+            and .status == "removed"
+            and .registry == "remove-dirty"
+            and .name == "remove-dirty"
+            and .keep_local == false
+            and .force == true
+            and .config_removed == false
+            and .local == $local_path
+            and .local_removed == true
+            and .cache_removed == false
+            and .trusted_keys_removed == false
+            and .orphan_command == "apm orphans"' \
+          "$work/apr-remove-dirty-force.json" >/dev/null
         test ! -e "$remove_dirty"
 
         remove_unpushed_origin="$work/remove-unpushed-origin.git"
@@ -5992,6 +6020,64 @@ in {
         test "$(profile_generation_count)" = "2"
         assert_default_profile_absent
         rm -rf "$profile_root"
+        home="$auto_home"
+        config="$auto_config"
+        data="$auto_data"
+        cache="$auto_cache"
+        profile_root="$auto_profile_root"
+        profile="$auto_profile"
+
+        bad_parallel_home="$work/bad-parallel-home"
+        bad_parallel_config="$work/bad-parallel-config"
+        bad_parallel_data="$work/bad-parallel-share"
+        bad_parallel_cache="$work/bad-parallel-cache"
+        bad_parallel_profile_root="$work/bad-parallel-profiles"
+        home="$bad_parallel_home"
+        config="$bad_parallel_config"
+        data="$bad_parallel_data"
+        cache="$bad_parallel_cache"
+        profile_root="$bad_parallel_profile_root"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
+          --name bad-parallel-reg \
+          --branch stable > "$work/apm-add-bad-parallel-reg.out" 2>&1
+        grep -q "Registry 'bad-parallel-reg' added" \
+          "$work/apm-add-bad-parallel-reg.out"
+        cat > "$config/apm/apm.conf" << 'EOF'
+        [settings]
+        parallel_downloads = 0
+        EOF
+        if nix_store --check-validity "$install_store_v2" \
+          > "$work/nix-valid-host-install-v2-before-bad-parallel.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$install_store_v2" \
+            > "$work/nix-delete-host-install-v2-before-bad-parallel.out" 2>&1
+        fi
+        if nix_store --check-validity "$install_leaf_store_v2" \
+          > "$work/nix-valid-host-leaf-v2-before-bad-parallel.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$install_leaf_store_v2" \
+            > "$work/nix-delete-host-leaf-v2-before-bad-parallel.out" 2>&1
+        fi
+        set +e
+        run_clean ${pkgs.coreutils}/bin/timeout 10s \
+          ${self}/bin/apm --json install hostinstall \
+          --registry bad-parallel-reg \
+          --yes > "$work/apm-install-bad-parallel.json" 2>&1
+        bad_parallel_status=$?
+        set -e
+        if test "$bad_parallel_status" = "0"; then
+          cat "$work/apm-install-bad-parallel.json"
+          exit 1
+        fi
+        if test "$bad_parallel_status" = "124"; then
+          echo "apm install hung with parallel_downloads = 0"
+          cat "$work/apm-install-bad-parallel.json"
+          exit 1
+        fi
+        grep -q "parallel_downloads must be at least 1" \
+          "$work/apm-install-bad-parallel.json"
+        assert_default_profile_absent
+
         home="$auto_home"
         config="$auto_config"
         data="$auto_data"
