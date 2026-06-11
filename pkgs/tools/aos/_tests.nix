@@ -700,6 +700,47 @@ in {
           "$work/apr-status-clean.json" >/dev/null
         run_clean ${self}/bin/apr --json packages --registry host-reg > "$work/apr-packages-empty.json"
         ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apr-packages-empty.json" >/dev/null
+        mkdir -p "$reg/packages/e"
+        cat > "$reg/packages/e/escaped-package.toml" << 'EOF'
+        [package]
+        name = "../escaped-package"
+        description = "Invalid hand-written package metadata"
+        license = "MIT"
+        maintainer = "host@example.invalid"
+        EOF
+        if run_clean ${self}/bin/apr packages --registry host-reg \
+          > "$work/apr-packages-invalid-package-name.out" 2>&1; then
+          cat "$work/apr-packages-invalid-package-name.out"
+          exit 1
+        fi
+        grep -q "invalid package name" \
+          "$work/apr-packages-invalid-package-name.out"
+        ${pkgs.coreutils}/bin/rm -f "$reg/packages/e/escaped-package.toml"
+        invalid_package="../../escaped-package"
+        printf '%s\n' "must stay put" > "$reg/escaped-package.toml"
+        if run_clean ${self}/bin/apr show "$invalid_package" \
+          --registry host-reg > "$work/apr-show-invalid-package-name.out" 2>&1; then
+          cat "$work/apr-show-invalid-package-name.out"
+          exit 1
+        fi
+        grep -q "invalid package name" \
+          "$work/apr-show-invalid-package-name.out"
+        if run_clean ${self}/bin/apr log --package "$invalid_package" \
+          --registry host-reg > "$work/apr-log-invalid-package-name.out" 2>&1; then
+          cat "$work/apr-log-invalid-package-name.out"
+          exit 1
+        fi
+        grep -q "invalid package name" \
+          "$work/apr-log-invalid-package-name.out"
+        if run_clean ${self}/bin/apr unpublish "$invalid_package" \
+          --registry host-reg \
+          --no-commit > "$work/apr-unpublish-invalid-package-name.out" 2>&1; then
+          cat "$work/apr-unpublish-invalid-package-name.out"
+          exit 1
+        fi
+        grep -q "invalid package name" \
+          "$work/apr-unpublish-invalid-package-name.out"
+        grep -qx "must stay put" "$reg/escaped-package.toml"
         pkg_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         mkdir -p "$reg/packages/h" "$reg/closures"
         printf '%s\n' \
@@ -1768,6 +1809,16 @@ in {
             and .config == $config_path
             and .verification_disabled == true' \
           "$work/apm-add-host-install-author-config.json" >/dev/null
+        if run_clean ${self}/bin/apr publish "$install_store" \
+          --name ../../escaped-publish \
+          --registry host-install-channel \
+          --no-commit > "$work/apr-publish-invalid-package-name.out" 2>&1; then
+          cat "$work/apr-publish-invalid-package-name.out"
+          exit 1
+        fi
+        grep -q "invalid package name" \
+          "$work/apr-publish-invalid-package-name.out"
+        test ! -e "$install_reg/escaped-publish.toml"
         run_clean ${self}/bin/apr --json publish "$install_leaf_store" \
           --name hostleaf \
           --version 1.0.0 \

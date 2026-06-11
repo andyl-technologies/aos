@@ -34,10 +34,10 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-use crate::types::{PackageMeta, SysrootImageEntry};
+use crate::types::{PackageMeta, SysrootImageEntry, package_name_bucket, validate_package_name};
 
 // ---------------------------------------------------------------------------
 // Package TOML schema (registry format)
@@ -187,23 +187,22 @@ pub(crate) fn parse_registry_matching(
             if toml_path.extension().map(|e| e == "toml").unwrap_or(false) {
                 let content = std::fs::read_to_string(&toml_path)
                     .with_context(|| format!("reading {}", toml_path.display()))?;
-                match parse_package_toml_versions(&content, platform) {
-                    Ok(mut metas) => {
-                        if let Some(req) = version_req {
-                            metas.retain(|meta| version_matches_req(&meta.version, req));
-                        }
-                        if metas.is_empty() {
-                            continue;
-                        }
-                        if let Some(meta) = newest_version(&metas) {
-                            packages.insert(meta.name.clone(), meta);
-                        }
-                        all_versions.extend(metas);
-                    }
-                    Err(e) => {
-                        return Err(e.context(format!("parsing {}", toml_path.display())));
-                    }
+                let toml = parse_package_toml_document(&content)
+                    .with_context(|| format!("parsing {}", toml_path.display()))?;
+                validate_package_layout(&toml_path, &toml.package.name).with_context(|| {
+                    format!("validating package layout for {}", toml_path.display())
+                })?;
+                let mut metas = package_metas_for_platform(&toml, platform);
+                if let Some(req) = version_req {
+                    metas.retain(|meta| version_matches_req(&meta.version, req));
                 }
+                if metas.is_empty() {
+                    continue;
+                }
+                if let Some(meta) = newest_version(&metas) {
+                    packages.insert(meta.name.clone(), meta);
+                }
+                all_versions.extend(metas);
             }
         }
     }
@@ -223,10 +222,58 @@ pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<Packag
     Ok(newest_version(&metas))
 }
 
+/// Validate one package TOML file's declared name and shard path.
+///
+/// Returns the declared package name so callers that already need the name do
+/// not have to duplicate the schema lookup.
+///
+/// # Errors
+///
+/// Returns an error if the TOML is invalid, the package name is not path-safe,
+/// or the file does not live at `packages/<bucket>/<name>.toml`.
+pub fn validate_package_file_layout(path: &Path, content: &str) -> Result<String> {
+    let toml = parse_package_toml_document(content)?;
+    validate_package_layout(path, &toml.package.name)?;
+    Ok(toml.package.name)
+}
+
+fn parse_package_toml_document(content: &str) -> Result<PackageToml> {
+    let toml: PackageToml = toml::from_str(content).context("invalid package TOML")?;
+    validate_package_name(&toml.package.name)?;
+    Ok(toml)
+}
+
+fn validate_package_layout(path: &Path, package_name: &str) -> Result<()> {
+    let expected_file = format!("{package_name}.toml");
+    let actual_file = path.file_name().and_then(|name| name.to_str());
+    if actual_file != Some(expected_file.as_str()) {
+        bail!(
+            "package file name does not match package name '{package_name}': expected {expected_file}"
+        );
+    }
+
+    let expected_bucket = package_name_bucket(package_name);
+    let actual_bucket = path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str());
+    if actual_bucket != Some(expected_bucket.as_str()) {
+        bail!(
+            "package bucket does not match package name '{package_name}': expected {expected_bucket}"
+        );
+    }
+
+    Ok(())
+}
+
 /// Parse a package TOML file into one [`PackageMeta`] per version that has an
 /// entry for `platform`.
 fn parse_package_toml_versions(content: &str, platform: &str) -> Result<Vec<PackageMeta>> {
-    let toml: PackageToml = toml::from_str(content).context("invalid package TOML")?;
+    let toml = parse_package_toml_document(content)?;
+    Ok(package_metas_for_platform(&toml, platform))
+}
+
+fn package_metas_for_platform(toml: &PackageToml, platform: &str) -> Vec<PackageMeta> {
     let mut metas = Vec::new();
 
     for ver in &toml.versions {
@@ -264,7 +311,7 @@ fn parse_package_toml_versions(content: &str, platform: &str) -> Result<Vec<Pack
         }
     }
 
-    Ok(metas)
+    metas
 }
 
 /// Select the newest version among parsed package metas.
@@ -488,6 +535,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_package_toml_rejects_path_like_package_name() {
+        let content = CURL_TOML.replace("name = \"curl\"", "name = \"../curl\"");
+        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
+        assert!(err.to_string().contains("package name"));
+    }
+
+    #[test]
     fn parse_package_toml_selects_newest_semver_version() {
         let meta = parse_package_toml(MULTI_VERSION_TOML, "x86_64-linux")
             .unwrap()
@@ -581,6 +635,28 @@ mod tests {
         assert!(packages.contains_key("zlib"));
         assert!(index.contains_key("h7j3k8l2m9n4")); // curl hash
         assert!(index.contains_key("r4q1m2kp8v3x")); // zlib hash
+    }
+
+    #[test]
+    fn parse_registry_rejects_package_file_name_mismatch() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let packages_dir = tmp.path().join("packages").join("c");
+        std::fs::create_dir_all(&packages_dir).unwrap();
+        std::fs::write(packages_dir.join("not-curl.toml"), CURL_TOML).unwrap();
+
+        let err = parse_registry(tmp.path(), "x86_64-linux").unwrap_err();
+        assert!(format!("{err:#}").contains("package file name"));
+    }
+
+    #[test]
+    fn parse_registry_rejects_package_bucket_mismatch() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let packages_dir = tmp.path().join("packages").join("z");
+        std::fs::create_dir_all(&packages_dir).unwrap();
+        std::fs::write(packages_dir.join("curl.toml"), CURL_TOML).unwrap();
+
+        let err = parse_registry(tmp.path(), "x86_64-linux").unwrap_err();
+        assert!(format!("{err:#}").contains("package bucket"));
     }
 
     #[test]

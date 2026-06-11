@@ -71,6 +71,53 @@ pub fn validate_registry_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a package name before using it in registry package paths.
+///
+/// Package names are used as filenames under
+/// `packages/<first-letter>/<name>.toml` and are commonly derived from Nix
+/// store path names. Accept the ASCII path-safe characters Nix permits in
+/// store path names, require an alphanumeric leading character so bucketing
+/// stays stable, and reject anything that could be interpreted as a path,
+/// shell word, or TOML delimiter.
+///
+/// # Errors
+///
+/// Returns an error when `name` is empty, starts with a non-alphanumeric
+/// character, or contains any byte outside ASCII letters, digits, `+`, `.`,
+/// `_`, `=`, and `-`.
+pub fn validate_package_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("package name must not be empty");
+    }
+
+    if !name
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphanumeric())
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '.' | '_' | '=' | '-'))
+    {
+        bail!(
+            "invalid package name '{name}': use only ASCII letters, digits, '+', '.', '_', '=' and '-', starting with a letter or digit"
+        );
+    }
+
+    Ok(())
+}
+
+/// Return the registry package bucket for a validated package name.
+///
+/// Package metadata files live under `packages/<bucket>/<name>.toml`, where
+/// the bucket is the lowercase first ASCII character of the package name.
+/// Call [`validate_package_name`] before using this for path construction.
+pub fn package_name_bucket(name: &str) -> String {
+    name.chars()
+        .next()
+        .map(|ch| ch.to_ascii_lowercase().to_string())
+        .unwrap_or_else(|| "_".to_string())
+}
+
 /// Resolve the system-wide APM configuration directory from a raw
 /// environment value.
 ///
@@ -1083,6 +1130,47 @@ mod tests {
             let err = validate_registry_name(name).unwrap_err();
             assert!(err.to_string().contains("registry name"));
         }
+    }
+
+    #[test]
+    fn package_name_validation_accepts_nix_path_safe_names() {
+        for name in [
+            "curl",
+            "python3.12",
+            "libc++",
+            "gcc-wrapper",
+            "openssl_static",
+            "drv-debug=true",
+        ] {
+            validate_package_name(name).unwrap();
+        }
+    }
+
+    #[test]
+    fn package_name_validation_rejects_path_like_names() {
+        for name in [
+            "",
+            "../escape",
+            ".hidden",
+            "a/b",
+            "a\\b",
+            "a b",
+            "bad:name",
+            "drv?debug=true",
+            "\"bad\"",
+            "caf\u{00e9}",
+        ] {
+            let err = validate_package_name(name).unwrap_err();
+            assert!(err.to_string().contains("package name"));
+        }
+    }
+
+    #[test]
+    fn package_name_bucket_uses_lowercase_first_character() {
+        assert_eq!(package_name_bucket("curl"), "c");
+        assert_eq!(package_name_bucket("Zlib"), "z");
+        assert_eq!(package_name_bucket("7zip"), "7");
+        assert_eq!(package_name_bucket(""), "_");
     }
 
     #[test]

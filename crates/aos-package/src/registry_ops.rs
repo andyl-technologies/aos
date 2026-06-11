@@ -72,7 +72,8 @@ use crate::security::{
 use crate::sshkey;
 use crate::types::{
     CacheEntry, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
-    SigningKeySource, SigningKeySpec, validate_registry_name,
+    SigningKeySource, SigningKeySpec, package_name_bucket, validate_package_name,
+    validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
@@ -392,11 +393,7 @@ fn parse_store_path(store_path: &str) -> (String, String) {
 
 /// Get the first letter of a name for directory bucketing.
 fn first_letter(name: &str) -> String {
-    name.chars()
-        .next()
-        .unwrap_or('_')
-        .to_lowercase()
-        .to_string()
+    package_name_bucket(name)
 }
 
 /// Get the default platform string.
@@ -1077,10 +1074,11 @@ description = ""
 ///
 /// # Errors
 ///
-/// Fails when the registry has no writable authoring clone, when
-/// `--image` and `--image-format` are not given in pairs, when the
-/// `nix path-info`/`nix-store` queries fail for the store path, or when a
-/// file write, the commit, or the object-store refresh fails.
+/// Fails when the registry has no writable authoring clone, when the
+/// package name is not safe for registry package paths, when `--image` and
+/// `--image-format` are not given in pairs, when the `nix path-info` /
+/// `nix-store` queries fail for the store path, or when a file write, the
+/// commit, or the object-store refresh fails.
 ///
 /// # Panics
 ///
@@ -1111,6 +1109,9 @@ pub async fn publish(
     let name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&name);
     ensure_writable_registry_clone(&name, &dir)?;
+    if let Some(name) = name_override {
+        validate_package_name(name)?;
+    }
     let signing_key = if key.is_some() || key_id.is_some() {
         Some(resolve_producer_signing_key(
             config, &dir, &name, key, key_id,
@@ -1142,6 +1143,7 @@ pub async fn publish(
     let (parsed_name, parsed_version) = parse_store_path(&info.path);
     let pkg_name = name_override.unwrap_or(&parsed_name);
     let pkg_version = version_override.unwrap_or(&parsed_version);
+    validate_package_name(pkg_name)?;
     let platform = platform_override
         .map(|s| s.to_string())
         .unwrap_or_else(default_platform);
@@ -1520,9 +1522,10 @@ fn build_package_toml(
 ///
 /// # Errors
 ///
-/// Fails when the package, the requested version, or the requested
-/// platform does not exist in the registry, or when a file write, the
-/// commit, or the object-store refresh fails.
+/// Fails when the package name is not safe for registry package paths, when
+/// the package, the requested version, or the requested platform does not
+/// exist in the registry, or when a file write, the commit, or the
+/// object-store refresh fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn unpublish(
     config: &ApmConfig,
@@ -1536,6 +1539,7 @@ pub async fn unpublish(
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    validate_package_name(package)?;
     let dir = registry_dir(config, registry)?;
     let registry_name = resolve_registry_name(config, registry)?;
     let signing_key = if key.is_some() || key_id.is_some() {
@@ -1773,8 +1777,9 @@ fn package_toml_with_versions(
 ///
 /// # Errors
 ///
-/// Fails when the package file does not exist in the registry, cannot be
-/// parsed, or does not contain the requested version.
+/// Fails when the package name is not safe for registry package paths, when
+/// the package file does not exist in the registry, cannot be parsed, or
+/// does not contain the requested version.
 pub async fn show(
     config: &ApmConfig,
     package: &str,
@@ -1783,6 +1788,7 @@ pub async fn show(
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    validate_package_name(package)?;
     let dir = registry_dir(config, registry)?;
     let letter = first_letter(package);
     let toml_path = dir
@@ -1921,12 +1927,9 @@ pub async fn packages(
             let path = entry.path();
             if path.extension().map(|e| e == "toml").unwrap_or(false) {
                 let content = std::fs::read_to_string(&path)?;
+                let name = crate::registry::parse::validate_package_file_layout(&path, &content)
+                    .with_context(|| format!("validating {}", path.display()))?;
                 let toml_val: toml::Value = toml::from_str(&content)?;
-                let name = toml_val
-                    .get("package")
-                    .and_then(|p| p.get("name"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
                 let versions = matching_package_versions(&toml_val, platform);
                 if outdated && versions.len() < 2 {
                     continue;
@@ -1934,7 +1937,7 @@ pub async fn packages(
                 let Some(version) = latest_version_string(&versions) else {
                     continue;
                 };
-                pkgs.push((name.to_string(), version));
+                pkgs.push((name, version));
             }
         }
     }
@@ -1988,8 +1991,9 @@ struct RegistryVerifyStoreEntry {
 ///
 /// # Errors
 ///
-/// Fails when a `--package` filter matches no package, when `--fix` cannot
-/// recompute a closure, or when any verification error was found.
+/// Fails when a `--package` filter is not a safe package name or matches no
+/// package, when `--fix` cannot recompute a closure, or when any
+/// verification error was found.
 pub async fn verify(
     config: &ApmConfig,
     package: Option<&str>,
@@ -2001,6 +2005,9 @@ pub async fn verify(
     let dir = config.scope.registries_path().join(&registry_name);
     let packages_dir = dir.join("packages");
     let closures_dir = dir.join("closures");
+    if let Some(package) = package {
+        validate_package_name(package)?;
+    }
 
     let mut errors = 0u32;
     let mut checked = 0u32;
@@ -2043,12 +2050,18 @@ pub async fn verify(
                                 errors += 1;
                                 continue;
                             }
+                            let pkg_name =
+                                match crate::registry::parse::validate_package_file_layout(
+                                    &path, &content,
+                                ) {
+                                    Ok(name) => name,
+                                    Err(e) => {
+                                        printer.warning(&format!("{}: {e}", path.display()));
+                                        errors += 1;
+                                        continue;
+                                    }
+                                };
                             // Extract store hashes from all version/platform entries.
-                            let pkg_name = val
-                                .get("package")
-                                .and_then(|p| p.get("name"))
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("unknown");
                             if let Some(versions) = val.get("versions").and_then(|v| v.as_array()) {
                                 for ver in versions {
                                     if let Some(platforms) =
@@ -2062,7 +2075,7 @@ pub async fn verify(
                                                 all_store_entries.push(RegistryVerifyStoreEntry {
                                                     store_hash: hash.clone(),
                                                     store_path: sp.to_string(),
-                                                    package_name: pkg_name.to_string(),
+                                                    package_name: pkg_name.clone(),
                                                 });
                                                 let refs: Vec<String> = plat_val
                                                     .get("references")
@@ -2344,9 +2357,10 @@ fn git_ref_exists(dir: &Path, reference: &str) -> Result<bool> {
 ///
 /// # Errors
 ///
-/// Fails when `--jobs` is zero, when entries are missing and `--fix` was
-/// not given (or pruned nothing), or when reading registry metadata or
-/// running the validation tasks fails.
+/// Fails when a `--package` filter is not a safe package name, when
+/// `--jobs` is zero, when entries are missing and `--fix` was not given
+/// (or pruned nothing), or when reading registry metadata or running the
+/// validation tasks fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn validate(
     config: &ApmConfig,
@@ -2359,6 +2373,9 @@ pub async fn validate(
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
     let mirrors = resolve_mirrors(&dir);
+    if let Some(package) = package {
+        validate_package_name(package)?;
+    }
     if jobs == 0 {
         bail!("--jobs must be greater than zero");
     }
@@ -2964,7 +2981,8 @@ pub async fn status(config: &ApmConfig, registry: Option<&str>, printer: &Printe
 ///
 /// # Errors
 ///
-/// Fails when the registry cannot be resolved or git fails.
+/// Fails when the registry cannot be resolved, the package filter is not a
+/// safe package name, or git fails.
 pub async fn log(
     config: &ApmConfig,
     package: Option<&str>,
@@ -2979,6 +2997,7 @@ pub async fn log(
 
     let path_filter;
     if let Some(pkg) = package {
+        validate_package_name(pkg)?;
         let letter = first_letter(pkg);
         path_filter = format!("packages/{letter}/{pkg}.toml");
         args.push("--");
@@ -3064,6 +3083,7 @@ fn git_log_entries(dir: &Path, package: Option<&str>, n: u32) -> Result<Vec<serd
 
     let path_filter;
     if let Some(pkg) = package {
+        validate_package_name(pkg)?;
         let letter = first_letter(pkg);
         path_filter = format!("packages/{letter}/{pkg}.toml");
         args.push("--");
