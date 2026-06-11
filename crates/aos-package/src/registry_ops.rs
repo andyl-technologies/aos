@@ -5733,16 +5733,34 @@ pub async fn tag(
     let registry_name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&registry_name);
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+    let tag_message = message.unwrap_or("AOS registry release");
 
     sign_tag(
         &dir,
         name,
         "HEAD",
-        message.or(Some("AOS registry release")),
+        Some(tag_message),
         signing_key.path(),
         false,
     )?;
     refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after tag")?;
+
+    if printer.mode() == OutputMode::Json {
+        let tag_object = git(&dir, &["rev-parse", &format!("{name}^{{tag}}")])
+            .with_context(|| format!("resolving tag object for '{name}'"))?;
+        let target = git(&dir, &["rev-parse", &format!("{name}^{{commit}}")])
+            .with_context(|| format!("resolving tag target for '{name}'"))?;
+        printer.json(&serde_json::json!({
+            "action": "tag",
+            "status": "tagged",
+            "registry": registry_name,
+            "tag": name,
+            "message": tag_message,
+            "target": target,
+            "tag_object": tag_object,
+        }));
+        return Ok(());
+    }
 
     printer.success(&format!("Created signed tag '{name}'."));
     Ok(())
@@ -5771,6 +5789,8 @@ pub async fn sign(
         anyhow::anyhow!("`apr sign` now signs tag objects; pass the existing tag name to re-sign")
     })?;
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+    let previous_tag_object = git(&dir, &["rev-parse", &format!("{tag_name}^{{tag}}")])
+        .with_context(|| format!("resolving existing tag object for '{tag_name}'"))?;
     let target = git(&dir, &["rev-list", "-n", "1", tag_name])
         .with_context(|| format!("resolving tag '{tag_name}' target commit"))?;
 
@@ -5783,6 +5803,20 @@ pub async fn sign(
         true,
     )?;
     refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after sign")?;
+    if printer.mode() == OutputMode::Json {
+        let tag_object = git(&dir, &["rev-parse", &format!("{tag_name}^{{tag}}")])
+            .with_context(|| format!("resolving re-signed tag object for '{tag_name}'"))?;
+        printer.json(&serde_json::json!({
+            "action": "sign",
+            "status": "signed",
+            "registry": registry_name,
+            "tag": tag_name,
+            "target": target,
+            "previous_tag_object": previous_tag_object,
+            "tag_object": tag_object,
+        }));
+        return Ok(());
+    }
     printer.success(&format!("Re-signed tag '{tag_name}'."));
 
     Ok(())

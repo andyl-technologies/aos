@@ -999,6 +999,41 @@ in {
         fi
 
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/release-key"
+        manual_tag_head=$(git -C "$reg" rev-parse HEAD)
+        run_clean ${self}/bin/apr --json tag manual-checkpoint \
+          --registry host-reg \
+          --message "manual checkpoint before release" \
+          --key "$work/release-key" \
+          > "$work/apr-tag-manual-checkpoint.json"
+        manual_tag_object=$(git -C "$reg" rev-parse 'manual-checkpoint^{tag}')
+        manual_tag_commit=$(git -C "$reg" rev-parse 'manual-checkpoint^{commit}')
+        test "$manual_tag_commit" = "$manual_tag_head"
+        ${pkgs.jq}/bin/jq -e \
+          --arg target "$manual_tag_head" \
+          --arg object "$manual_tag_object" \
+          '.action == "tag"
+            and .status == "tagged"
+            and .registry == "host-reg"
+            and .tag == "manual-checkpoint"
+            and .message == "manual checkpoint before release"
+            and .target == $target
+            and .tag_object == $object' \
+          "$work/apr-tag-manual-checkpoint.json" >/dev/null
+        git -C "$reg" cat-file -p manual-checkpoint \
+          > "$work/apr-tag-manual-checkpoint.out"
+        grep -q "manual checkpoint before release" \
+          "$work/apr-tag-manual-checkpoint.out"
+        grep -q "BEGIN SSH SIGNATURE" \
+          "$work/apr-tag-manual-checkpoint.out"
+        grep -q "refs/tags/manual-checkpoint" "$reg/.git/info/refs"
+        run_clean ${self}/bin/apr status --registry host-reg \
+          > "$work/apr-status-after-manual-tag.out" 2>&1
+        if grep -q '[^[:space:]]' "$work/apr-status-after-manual-tag.out"; then
+          cat "$work/apr-status-after-manual-tag.out"
+          exit 1
+        fi
+        assert_no_profile
+
         run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-reg \
           --key "$work/release-key" \
@@ -1088,15 +1123,26 @@ in {
         initial_tag_object=$(git -C "$reg" rev-parse '1.0.0^{tag}')
         initial_tag_commit=$(git -C "$reg" rev-parse '1.0.0^{commit}')
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/release-key-next"
-        run_clean ${self}/bin/apr sign 1.0.0 \
+        run_clean ${self}/bin/apr --json sign 1.0.0 \
           --registry host-reg \
           --key "$work/release-key-next" \
-          > "$work/apr-sign.out" 2>&1
-        grep -q "Re-signed tag '1.0.0'" "$work/apr-sign.out"
+          > "$work/apr-sign.json"
         resigned_tag_object=$(git -C "$reg" rev-parse '1.0.0^{tag}')
         resigned_tag_commit=$(git -C "$reg" rev-parse '1.0.0^{commit}')
         test "$resigned_tag_commit" = "$initial_tag_commit"
         test "$resigned_tag_object" != "$initial_tag_object"
+        ${pkgs.jq}/bin/jq -e \
+          --arg target "$initial_tag_commit" \
+          --arg previous "$initial_tag_object" \
+          --arg object "$resigned_tag_object" \
+          '.action == "sign"
+            and .status == "signed"
+            and .registry == "host-reg"
+            and .tag == "1.0.0"
+            and .target == $target
+            and .previous_tag_object == $previous
+            and .tag_object == $object' \
+          "$work/apr-sign.json" >/dev/null
         git -C "$reg" cat-file -p 1.0.0 > "$work/release-tag-resigned.out"
         grep -q "BEGIN SSH SIGNATURE" "$work/release-tag-resigned.out"
         assert_no_profile
