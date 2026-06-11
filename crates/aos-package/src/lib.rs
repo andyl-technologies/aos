@@ -516,6 +516,16 @@ pub enum RegistryCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Enable a configured registry
+    Enable {
+        /// Registry name
+        name: String,
+    },
+    /// Disable a configured registry without removing its config or cache
+    Disable {
+        /// Registry name
+        name: String,
+    },
     /// Manage trusted registry signing keys
     Trust {
         /// The trust-store operation to run
@@ -1652,6 +1662,12 @@ async fn run_registry(
             keep_local,
             force,
         } => registry_remove(config, name, *keep_local, *force, printer).await,
+        RegistryCommand::Enable { name } => {
+            registry_set_enabled(config, name, true, printer).await
+        }
+        RegistryCommand::Disable { name } => {
+            registry_set_enabled(config, name, false, printer).await
+        }
         RegistryCommand::Trust { command } => registry_ops::run_trust(config, command, printer),
         RegistryCommand::Keys { command } => registry_ops::run_keys(config, command, printer),
         RegistryCommand::Create {
@@ -2480,6 +2496,108 @@ async fn registry_remove(
         aos_core::invocation::package_manager_command()
     ));
 
+    Ok(())
+}
+
+/// `apm registry enable|disable` — toggle whether a registry participates in
+/// resolution and updates, while keeping its config, local clone, cache, and
+/// trusted keys intact.
+async fn registry_set_enabled(
+    config: &config::ApmConfig,
+    name: &str,
+    enabled: bool,
+    printer: &Printer,
+) -> Result<()> {
+    validate_registry_name(name)?;
+    let (reg_config, state) = config
+        .find_registry(name)
+        .ok_or_else(|| AosError::RegistryError {
+            message: format!("registry '{name}' not found"),
+        })?;
+
+    let toml_path = removable_registry_config_path(config.scope, name);
+    let previous_enabled = reg_config.enabled;
+    write_registry_enabled(&toml_path, reg_config, state.as_ref(), enabled)?;
+
+    let action = if enabled {
+        "registry_enable"
+    } else {
+        "registry_disable"
+    };
+    let status = if previous_enabled == enabled {
+        "unchanged"
+    } else if enabled {
+        "enabled"
+    } else {
+        "disabled"
+    };
+
+    if printer.mode() == OutputMode::Json {
+        let packages_dir = config.cache_path().join(name).join("packages");
+        printer.json(&serde_json::json!({
+            "action": action,
+            "status": status,
+            "registry": name,
+            "name": name,
+            "enabled": enabled,
+            "previous_enabled": previous_enabled,
+            "changed": previous_enabled != enabled,
+            "config": toml_path.to_string_lossy(),
+            "packages": count_packages_in_dir(&packages_dir),
+        }));
+        return Ok(());
+    }
+
+    match (enabled, previous_enabled == enabled) {
+        (true, true) => printer.info(&format!("Registry '{name}' is already enabled.")),
+        (true, false) => printer.success(&format!("Registry '{name}' enabled.")),
+        (false, true) => printer.info(&format!("Registry '{name}' is already disabled.")),
+        (false, false) => printer.success(&format!("Registry '{name}' disabled.")),
+    }
+
+    Ok(())
+}
+
+/// Persist a registry's `enabled` flag, preserving the rest of its config.
+fn write_registry_enabled(
+    path: &std::path::Path,
+    reg_config: &types::RegistryConfig,
+    state: Option<&types::RegistryState>,
+    enabled: bool,
+) -> Result<()> {
+    if path.exists() {
+        let content =
+            fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut value: toml::Value =
+            toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+        let registry = value
+            .get_mut("registry")
+            .and_then(toml::Value::as_table_mut)
+            .ok_or_else(|| anyhow::anyhow!("{}: missing [registry] table", path.display()))?;
+        registry.insert("enabled".into(), toml::Value::Boolean(enabled));
+        let rendered = toml::to_string_pretty(&value)?;
+        fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
+        return Ok(());
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+
+    let mut reg_config = reg_config.clone();
+    reg_config.enabled = enabled;
+    let mut registry = match toml::Value::try_from(reg_config)? {
+        toml::Value::Table(table) => table,
+        _ => bail!("registry config did not serialize as a TOML table"),
+    };
+    if let Some(state) = state {
+        registry.insert("state".into(), toml::Value::try_from(state)?);
+    }
+    let mut root = toml::map::Map::new();
+    root.insert("registry".into(), toml::Value::Table(registry));
+    let rendered = toml::to_string_pretty(&toml::Value::Table(root))?;
+    fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
