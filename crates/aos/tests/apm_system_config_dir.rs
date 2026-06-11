@@ -66,6 +66,110 @@ fn system_config_dir_override_redirects_trusted_keys_and_registries() -> Result<
 }
 
 #[test]
+fn system_config_dir_override_masks_system_trust_anchor_on_user_remove() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let system_trust_dir = system_dir.join("trusted-keys.d");
+    let user_key = home.join(".config/apm/trusted-keys.d/core.pub");
+    let system_key = system_trust_dir.join("core.pub");
+    let key_line = "core:Ed25519:YWJjZA==";
+    fs::create_dir_all(&system_trust_dir)?;
+    fs::write(&system_key, format!("{key_line}\n"))?;
+
+    let listed = run_apr_json(
+        &home,
+        &system_dir,
+        &["--json", "trust", "list", "core"],
+        "trust list",
+    )?;
+    let entries = listed
+        .as_array()
+        .context("trust list JSON should be an array")?;
+    assert_eq!(entries.len(), 1, "{listed}");
+    let keys = entries[0]["keys"]
+        .as_array()
+        .context("trust list entry should contain a keys array")?;
+    assert_eq!(keys.len(), 1, "{listed}");
+    assert_eq!(keys[0]["source"], "PreInstalled");
+
+    let removed = run_apr_json(
+        &home,
+        &system_dir,
+        &["--json", "trust", "remove", "core"],
+        "trust remove",
+    )?;
+    assert_eq!(removed["action"], "trust_remove");
+    assert_eq!(removed["status"], "removed");
+    assert_eq!(removed["registry"], "core");
+    assert_eq!(removed["removed"], true);
+    assert_eq!(
+        fs::read_to_string(&system_key)?,
+        format!("{key_line}\n"),
+        "user-scope trust remove should not delete the system trust anchor"
+    );
+    assert_eq!(
+        fs::read_to_string(&user_key)?,
+        format!("# revoked: {key_line}\n"),
+        "user-scope trust remove should mask the system anchor from the user layer"
+    );
+
+    let listed = run_apr_json(
+        &home,
+        &system_dir,
+        &["--json", "trust", "list", "core"],
+        "trust list",
+    )?;
+    let entries = listed
+        .as_array()
+        .context("trust list JSON should be an array")?;
+    let keys = entries[0]["keys"]
+        .as_array()
+        .context("trust list entry should contain a keys array")?;
+    assert!(
+        keys.is_empty(),
+        "masked system trust anchor should not remain visible: {listed}"
+    );
+
+    let pinned = run_apr_json(
+        &home,
+        &system_dir,
+        &["--json", "trust", "pin", "core", key_line],
+        "trust pin",
+    )?;
+    assert_eq!(pinned["action"], "trust_pin");
+    assert_eq!(pinned["status"], "pinned");
+    assert_eq!(pinned["source"], "Tofu");
+    assert_eq!(
+        fs::read_to_string(&user_key)?,
+        format!("{key_line}\n"),
+        "pinning the same key explicitly should drop the user revocation"
+    );
+    assert_eq!(
+        fs::read_to_string(&system_key)?,
+        format!("{key_line}\n"),
+        "trust pin should also leave the system trust anchor untouched"
+    );
+
+    let listed = run_apr_json(
+        &home,
+        &system_dir,
+        &["--json", "trust", "list", "core"],
+        "trust list",
+    )?;
+    let entries = listed
+        .as_array()
+        .context("trust list JSON should be an array")?;
+    let keys = entries[0]["keys"]
+        .as_array()
+        .context("trust list entry should contain a keys array")?;
+    assert_eq!(keys.len(), 1, "{listed}");
+    assert_eq!(keys[0]["source"], "Tofu");
+
+    Ok(())
+}
+
+#[test]
 fn system_config_dir_override_supports_apr_maintainer_config_lifecycle() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let home = tmp.path().join("home");
@@ -290,6 +394,228 @@ fn system_config_dir_override_prefers_user_shadow_for_registry_mutations() -> Re
 }
 
 #[test]
+fn read_only_system_registry_can_be_toggled_with_user_override() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let system_config = system_dir.join("registries.d/readonly.toml");
+    let user_config = home.join(".config/apm/registries.d/readonly.toml");
+
+    fs::create_dir_all(system_config.parent().context("system config parent")?)?;
+    fs::write(
+        &system_config,
+        "[registry]\nname = \"readonly\"\nurl = \"https://registry.example/readonly\"\npriority = 500\n",
+    )?;
+    let mut perms = fs::metadata(&system_config)?.permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&system_config, perms)?;
+
+    let disabled = run_aos_package_json(
+        &home,
+        &system_dir,
+        &["--json", "registry", "disable", "readonly"],
+        "disable",
+    )?;
+    assert_eq!(disabled["action"], "registry_disable");
+    assert_eq!(disabled["status"], "disabled");
+    assert_eq!(disabled["registry"], "readonly");
+    assert_eq!(disabled["enabled"], false);
+    assert_eq!(disabled["previous_enabled"], true);
+    assert_eq!(
+        disabled["config"],
+        user_config.to_string_lossy().to_string(),
+        "registry disable should create a user override when the system config is read-only"
+    );
+    let user = fs::read_to_string(&user_config)?;
+    let system = fs::read_to_string(&system_config)?;
+    assert!(user.contains("enabled = false"), "{user}");
+    assert!(
+        user.contains("url = \"https://registry.example/readonly\""),
+        "{user}"
+    );
+    assert!(user.contains("priority = 500"), "{user}");
+    assert!(
+        !system.contains("enabled = false"),
+        "read-only system config should stay untouched by user disable:\n{system}"
+    );
+
+    let enabled = run_aos_package_json(
+        &home,
+        &system_dir,
+        &["--json", "registry", "enable", "readonly"],
+        "enable",
+    )?;
+    assert_eq!(enabled["action"], "registry_enable");
+    assert_eq!(enabled["status"], "enabled");
+    assert_eq!(enabled["registry"], "readonly");
+    assert_eq!(enabled["enabled"], true);
+    assert_eq!(enabled["previous_enabled"], false);
+    assert_eq!(
+        enabled["config"],
+        user_config.to_string_lossy().to_string(),
+        "registry enable should update the existing user override"
+    );
+    let user = fs::read_to_string(&user_config)?;
+    let system = fs::read_to_string(&system_config)?;
+    assert!(user.contains("enabled = true"), "{user}");
+    assert!(
+        !system.contains("enabled = true"),
+        "read-only system config should stay untouched by user enable:\n{system}"
+    );
+
+    let output = run_aos_package_output(&home, &system_dir, &["registry", "remove", "readonly"])?;
+    assert!(
+        !output.status.success(),
+        "registry remove should reject removing only the user override for a read-only system registry:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("also exists in system config"),
+        "remove error should explain that the system registry would remain:\n{text}"
+    );
+    assert!(
+        user_config.exists(),
+        "failed remove should keep the user override"
+    );
+    assert!(
+        system_config.exists(),
+        "failed remove should keep the system registry config"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn read_only_system_registry_update_persists_state_in_user_override() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let registry = tmp.path().join("readonly-update-registry");
+    if !git_supports_sha256(tmp.path())? {
+        eprintln!(
+            "skipping redirected system update e2e: git cannot initialize a sha256 repository"
+        );
+        return Ok(());
+    }
+
+    fs::create_dir_all(registry.join("packages/h"))?;
+    git_ok(
+        &registry,
+        &["init", "--object-format=sha256"],
+        "initializing registry",
+    )?;
+    git_ok(
+        &registry,
+        &["config", "user.name", "Registry Test"],
+        "configuring git user",
+    )?;
+    git_ok(
+        &registry,
+        &["config", "user.email", "registry@example.com"],
+        "configuring git email",
+    )?;
+    git_ok(
+        &registry,
+        &["config", "commit.gpgsign", "false"],
+        "disabling fixture commit signing",
+    )?;
+    fs::write(
+        registry.join("registry.toml"),
+        "[registry]\nname = \"readonly-update\"\n",
+    )?;
+    fs::write(
+        registry.join("packages/h/hello.toml"),
+        r#"[package]
+name = "hello"
+description = "fixture"
+license = "MIT"
+maintainer = "registry@example.com"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/00000000000000000000000000000000-hello-1.0.0"
+nar_hash = "sha256:placeholder"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#,
+    )?;
+    git_ok(&registry, &["add", "."], "staging registry")?;
+    git_ok(
+        &registry,
+        &["commit", "-m", "release hello"],
+        "committing registry",
+    )?;
+    let head = git_stdout(&registry, &["rev-parse", "HEAD"], "reading registry HEAD")?;
+
+    let system_config = system_dir.join("registries.d/readonly-update.toml");
+    let user_config = home.join(".config/apm/registries.d/readonly-update.toml");
+    fs::create_dir_all(system_config.parent().context("system config parent")?)?;
+    fs::write(
+        &system_config,
+        format!(
+            "[registry]\nname = \"readonly-update\"\nurl = \"file://{}\"\npriority = 500\n\n[registry.signing]\nrequired = false\n",
+            registry.display()
+        ),
+    )?;
+    let mut perms = fs::metadata(&system_config)?.permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&system_config, perms)?;
+
+    let updated = run_aos_package_json(
+        &home,
+        &system_dir,
+        &["--json", "update", "--registry", "readonly-update"],
+        "update",
+    )?;
+    assert_eq!(updated["action"], "update");
+    assert_eq!(updated["updated"], 1);
+    let registries = updated["registries"]
+        .as_array()
+        .context("update JSON should contain registries array")?;
+    assert_eq!(registries.len(), 1, "{updated}");
+    assert_eq!(registries[0]["registry"], "readonly-update");
+    assert_eq!(registries[0]["status"], "updated");
+    assert_eq!(registries[0]["commit"], head);
+    assert_eq!(registries[0]["packages"], 1);
+
+    let user = fs::read_to_string(&user_config)?;
+    assert!(
+        user.contains("[registry.state]"),
+        "update should create a user override with sync state:\n{user}"
+    );
+    assert!(
+        user.contains(&format!("last_commit = \"{head}\"")),
+        "user override should persist the synced commit:\n{user}"
+    );
+    assert!(
+        user.contains(&format!("url = \"file://{}\"", registry.display())),
+        "user override should preserve the system registry URL:\n{user}"
+    );
+    assert!(
+        user.contains("required = false"),
+        "user override should preserve the signing opt-out from system config:\n{user}"
+    );
+    let system = fs::read_to_string(&system_config)?;
+    assert!(
+        !system.contains("[registry.state]"),
+        "read-only system config should stay untouched by user update:\n{system}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn system_config_dir_override_supports_apm_system_registry_add() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let home = tmp.path().join("home");
@@ -358,13 +684,17 @@ fn system_config_dir_override_supports_apm_registry_lifecycle() -> Result<()> {
     let home = tmp.path().join("home");
     let system_dir = tmp.path().join("etc-apm");
     let registries_dir = system_dir.join("registries.d");
+    let trust_dir = system_dir.join("trusted-keys.d");
     fs::create_dir_all(&registries_dir)?;
+    fs::create_dir_all(&trust_dir)?;
 
     let system_config = registries_dir.join("sysreg.toml");
+    let system_trust_key = trust_dir.join("sysreg.pub");
     fs::write(
         &system_config,
         "[registry]\nname = \"sysreg\"\nurl = \"https://registry.example/sysreg\"\n",
     )?;
+    fs::write(&system_trust_key, "sysreg:Ed25519:YWJjZA==\n")?;
 
     let registries = run_aos_package(&home, &system_dir, &["registry", "list"])?;
     assert!(
@@ -454,11 +784,81 @@ fn system_config_dir_override_supports_apm_registry_lifecycle() -> Result<()> {
         !home.join(".config/apm/registries.d/sysreg.toml").exists(),
         "registry remove should not create a user config shadow file"
     );
+    assert!(
+        !system_trust_key.exists(),
+        "registry remove should delete the redirected system trust key for the removed system registry"
+    );
+    assert!(
+        !home.join(".config/apm/trusted-keys.d/sysreg.pub").exists(),
+        "registry remove should not replace a deleted system registry trust key with a user revocation file"
+    );
 
     let registries = run_aos_package(&home, &system_dir, &["registry", "list"])?;
     assert!(
         !registries.contains("sysreg"),
         "removed redirected system registry is still listed:\n{registries}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn user_registry_shadowing_system_registry_is_not_silently_removed() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let system_registries_dir = system_dir.join("registries.d");
+    let user_registries_dir = home.join(".config/apm/registries.d");
+    fs::create_dir_all(&system_registries_dir)?;
+    fs::create_dir_all(&user_registries_dir)?;
+
+    let system_config = system_registries_dir.join("sysreg.toml");
+    let user_config = user_registries_dir.join("sysreg.toml");
+    fs::write(
+        &system_config,
+        "[registry]\nname = \"sysreg\"\nurl = \"https://registry.example/system\"\npriority = 100\n",
+    )?;
+    fs::write(
+        &user_config,
+        "[registry]\nname = \"sysreg\"\nurl = \"https://registry.example/user\"\npriority = 900\n",
+    )?;
+
+    let listed = run_aos_package_json(&home, &system_dir, &["--json", "registry", "list"], "list")?;
+    let registries = listed
+        .as_array()
+        .context("registry list JSON should be an array")?;
+    assert_eq!(
+        registries.len(),
+        1,
+        "user registry should shadow the same-name system registry: {listed}"
+    );
+    assert_eq!(registries[0]["name"], "sysreg");
+    assert_eq!(registries[0]["url"], "https://registry.example/user");
+    assert_eq!(registries[0]["priority"], 900);
+
+    let output = run_aos_package_output(&home, &system_dir, &["registry", "remove", "sysreg"])?;
+    assert!(
+        !output.status.success(),
+        "registry remove should reject a user shadow whose system fallback would remain:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("also exists in system config"),
+        "remove error should explain that the system fallback would remain:\n{text}"
+    );
+    assert!(
+        user_config.exists(),
+        "failed shadowed remove should leave the user registry config in place"
+    );
+    assert!(
+        system_config.exists(),
+        "failed shadowed remove should leave the system registry config in place"
     );
 
     Ok(())
@@ -587,4 +987,50 @@ fn run_apr_output(home: &Path, system_dir: &Path, args: &[&str]) -> Result<std::
         .args(args)
         .output()
         .context("running apr")
+}
+
+fn git_supports_sha256(root: &Path) -> Result<bool> {
+    let probe = root.join(".sha256-probe");
+    fs::create_dir_all(&probe)?;
+    match Command::new("git")
+        .args(["init", "--object-format=sha256"])
+        .current_dir(&probe)
+        .output()
+    {
+        Ok(output) => Ok(output.status.success()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).context("running git init --object-format=sha256"),
+    }
+}
+
+fn git_ok(cwd: &Path, args: &[&str], context: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .with_context(|| format!("{context}: git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "{context} failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    Ok(())
+}
+
+fn git_stdout(cwd: &Path, args: &[&str], context: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .with_context(|| format!("{context}: git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "{context} failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

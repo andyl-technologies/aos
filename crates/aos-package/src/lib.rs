@@ -2534,7 +2534,7 @@ async fn registry_remove(
     // unprivileged `apr` invocation may not have, and gating a config delete on
     // installed-package state conflates the two tools. Any packages still
     // installed from this registry become orphans; `apm orphans` surfaces them.
-    let toml_path = config.registry_config_path_for_update(name);
+    let toml_path = registry_config_path_for_removal(config, name)?;
     let toml_existed = toml_path.exists();
 
     if toml_path.exists() {
@@ -2556,7 +2556,8 @@ async fn registry_remove(
         }
     }
 
-    let key_store = security::KeyStore::new(config.scope.trusted_keys_dirs());
+    let key_store =
+        security::KeyStore::new(trusted_key_dirs_for_registry_removal(config, &toml_path));
     let trusted_keys_removed = key_store.remove(name)?;
 
     if printer.mode() == OutputMode::Json {
@@ -2733,6 +2734,71 @@ fn count_packages_in_dir(dir: &std::path::Path) -> usize {
         }
     }
     count
+}
+
+/// Return the registry config file that `registry remove` should delete.
+///
+/// Removing a user-level config has different semantics than updating it:
+/// when a same-name system config exists underneath, deleting only the user
+/// layer would make the registry reappear from the fallback. Treat that as an
+/// ambiguous removal instead of reporting success for a registry that remains
+/// visible.
+fn registry_config_path_for_removal(config: &config::ApmConfig, name: &str) -> Result<PathBuf> {
+    let primary = config
+        .scope
+        .config_dir()
+        .join("registries.d")
+        .join(format!("{name}.toml"));
+    if config.scope != ProfileScope::User {
+        return Ok(primary);
+    }
+
+    let fallback = ProfileScope::System
+        .config_dir()
+        .join("registries.d")
+        .join(format!("{name}.toml"));
+    if primary.exists() && fallback.exists() {
+        return Err(AosError::RegistryError {
+            message: format!(
+                "registry '{name}' also exists in system config at {}; refusing to remove only \
+                 the user config at {} because the system registry would remain visible",
+                fallback.display(),
+                primary.display(),
+            ),
+        }
+        .into());
+    }
+
+    if primary.exists() || !fallback.exists() {
+        Ok(primary)
+    } else {
+        Ok(fallback)
+    }
+}
+
+/// Return the trust-store layer to clean up for a registry removal.
+///
+/// Most user-scope removals should only remove or mask user trust entries.
+/// When user scope is operating on a writable redirected system registry
+/// config, however, the registry itself is being removed from the system layer;
+/// its associated system trust key should be removed from that same layer too.
+fn trusted_key_dirs_for_registry_removal(
+    config: &config::ApmConfig,
+    removed_config_path: &std::path::Path,
+) -> Vec<PathBuf> {
+    if config.scope == ProfileScope::User {
+        if let Some(file_name) = removed_config_path.file_name() {
+            let system_registry_config = ProfileScope::System
+                .config_dir()
+                .join("registries.d")
+                .join(file_name);
+            if removed_config_path == system_registry_config {
+                return ProfileScope::System.trusted_keys_dirs();
+            }
+        }
+    }
+
+    config.scope.trusted_keys_dirs()
 }
 
 #[cfg(test)]
