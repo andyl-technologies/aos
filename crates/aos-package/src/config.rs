@@ -77,6 +77,7 @@ impl ApmConfig {
                 .with_context(|| format!("reading {}", primary_conf.display()))?;
             let conf: ApmConfFile = toml::from_str(&content)
                 .with_context(|| format!("parsing {}", primary_conf.display()))?;
+            Self::validate_settings(&conf.settings, &primary_conf)?;
             return Ok(conf.settings);
         }
 
@@ -87,11 +88,24 @@ impl ApmConfig {
                     .with_context(|| format!("reading {}", fb_conf.display()))?;
                 let conf: ApmConfFile = toml::from_str(&content)
                     .with_context(|| format!("parsing {}", fb_conf.display()))?;
+                Self::validate_settings(&conf.settings, &fb_conf)?;
                 return Ok(conf.settings);
             }
         }
 
         Ok(ApmSettings::default())
+    }
+
+    /// Validate loaded `apm.conf` settings before command dispatch.
+    fn validate_settings(settings: &ApmSettings, source: &Path) -> Result<()> {
+        if settings.parallel_downloads == 0 {
+            anyhow::bail!(
+                "{}: [settings].parallel_downloads must be at least 1",
+                source.display()
+            );
+        }
+
+        Ok(())
     }
 
     /// Scan `registries.d/` directories and parse each `.toml` file.
@@ -266,6 +280,25 @@ parallel_downloads = 2
         let settings = ApmConfig::load_settings(tmp.path(), None).unwrap();
         assert!(!settings.assume_yes);
         assert_eq!(settings.parallel_downloads, 4);
+    }
+
+    #[test]
+    fn load_settings_rejects_zero_parallel_downloads() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "apm.conf",
+            r#"
+[settings]
+parallel_downloads = 0
+"#,
+        );
+
+        let err = ApmConfig::load_settings(tmp.path(), None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("parallel_downloads must be at least 1")
+        );
     }
 
     #[test]
