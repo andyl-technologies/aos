@@ -17,8 +17,8 @@
 //! - **User** — the default. State lives under per-user paths
 //!   (`/var/lib/profiles/per-user/$USER/`, XDG config/data/cache dirs) and no
 //!   special privileges are required.
-//! - **System** — selected by `--system` on `install`, `upgrade`, and
-//!   `rollback`. Operates on the system sysroot under
+//! - **System** — selected by `--system` on `install`, `upgrade`,
+//!   `rollback`, and `registry`. Operates on the system sysroot under
 //!   `/var/lib/profiles/system/` with numbered generations, activation
 //!   scripts, and kernel/boot-loader handling (see [`sysroot`]).
 //!
@@ -316,6 +316,9 @@ pub enum PackageCommand {
     /// Manage registries
     #[command(after_long_help = ENVIRONMENT_HELP)]
     Registry {
+        /// Manage system-wide registries instead of user registries
+        #[arg(long)]
+        system: bool,
         /// The registry operation to run
         #[command(subcommand)]
         command: RegistryCommand,
@@ -428,12 +431,13 @@ pub enum TestSystemdClientOp {
 
 impl PackageCommand {
     /// Returns `true` when the user passed `--system` on a subcommand that
-    /// supports it (Install, Upgrade, Rollback).
+    /// supports it (Install, Upgrade, Rollback, Registry).
     pub fn is_system(&self) -> bool {
         match self {
             PackageCommand::Install { system, .. } => *system,
             PackageCommand::Upgrade { system, .. } => *system,
             PackageCommand::Rollback { system, .. } => *system,
+            PackageCommand::Registry { system, .. } => *system,
             _ => false,
         }
     }
@@ -804,6 +808,9 @@ pub enum RegistryCommand {
         /// Previous version in the version chain when --store-path is used
         #[arg(long)]
         previous: Option<String>,
+        /// Source derivation or source store path when --store-path is used
+        #[arg(long = "source-drv")]
+        source_drv: Option<String>,
         /// Pre-compiled image store path (repeatable, paired with --image-format)
         #[arg(long = "image")]
         images: Vec<String>,
@@ -1601,7 +1608,7 @@ pub async fn run(
                 rollback::run(&config, *generation, dry_run, printer).await
             }
         }
-        PackageCommand::Registry { command } => run_registry(&config, command, printer).await,
+        PackageCommand::Registry { command, .. } => run_registry(&config, command, printer).await,
         // Dispatched by the early-return above, before `ApmConfig::load`.
         PackageCommand::TestSystemdClient { .. } => {
             unreachable!("TestSystemdClient is handled before ApmConfig::load")
@@ -1894,6 +1901,7 @@ async fn run_registry(
             maintainer,
             sysroot,
             previous,
+            source_drv,
             images,
             image_formats,
             message,
@@ -1925,6 +1933,7 @@ async fn run_registry(
                 maintainer.as_deref(),
                 *sysroot,
                 previous.as_deref(),
+                source_drv.as_deref(),
                 images,
                 image_formats,
                 message.as_deref(),
