@@ -118,6 +118,32 @@ pub fn package_name_bucket(name: &str) -> String {
         .unwrap_or_else(|| "_".to_string())
 }
 
+/// Validate a platform/system name before using it as a package TOML key.
+///
+/// Platform names become keys under `[versions.platforms]`, for example
+/// `x86_64-linux` or `aarch64-linux`. Keep the accepted syntax to common Nix
+/// system names so command-line input cannot inject TOML structure or create
+/// ambiguous metadata.
+///
+/// # Errors
+///
+/// Returns an error when `name` is empty or contains any byte outside ASCII
+/// letters, digits, `_`, and `-`.
+pub fn validate_platform_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("platform name must not be empty");
+    }
+
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        bail!("invalid platform name '{name}': use only ASCII letters, digits, '_' and '-'");
+    }
+
+    Ok(())
+}
+
 /// Resolve the system-wide APM configuration directory from a raw
 /// environment value.
 ///
@@ -1162,6 +1188,28 @@ mod tests {
         ] {
             let err = validate_package_name(name).unwrap_err();
             assert!(err.to_string().contains("package name"));
+        }
+    }
+
+    #[test]
+    fn platform_name_validation_accepts_nix_system_names() {
+        for name in ["x86_64-linux", "aarch64-linux", "i686-linux", "wasm32-wasi"] {
+            validate_platform_name(name).unwrap();
+        }
+    }
+
+    #[test]
+    fn platform_name_validation_rejects_toml_or_path_like_names() {
+        for name in [
+            "",
+            "../linux",
+            "x86_64 linux",
+            "x86_64.linux",
+            "x86_64-linux]",
+            "caf\u{00e9}-linux",
+        ] {
+            let err = validate_platform_name(name).unwrap_err();
+            assert!(err.to_string().contains("platform name"));
         }
     }
 
