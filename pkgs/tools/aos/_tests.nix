@@ -2620,6 +2620,148 @@ in {
         profile_root="$subtree_main_profile_root"
         profile="$subtree_main_profile"
 
+        run_clean ${self}/bin/apr create host-merge-review \
+          > "$work/apr-create-host-merge-review.out" 2>&1
+        merge_reg="$data/apm/registries/host-merge-review"
+        git -C "$merge_reg" config user.name "Host Merge Reviewer"
+        git -C "$merge_reg" config user.email "host-merge-reviewer@example.invalid"
+        run_clean ${self}/bin/apr --json publish "$install_leaf_store" \
+          --name hostmergeleaf \
+          --version 1.0.0 \
+          --description "Host merge review base fixture" \
+          --license MIT \
+          --maintainer merge-reviewer@example.invalid \
+          --registry host-merge-review \
+          --message "publish hostmergeleaf base" \
+          > "$work/apr-publish-host-merge-base.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_leaf_store" \
+          '.action == "publish"
+            and .registry == "host-merge-review"
+            and .package == "hostmergeleaf"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and .committed == true
+            and .commit_message == "publish hostmergeleaf base"' \
+          "$work/apr-publish-host-merge-base.json" >/dev/null
+
+        run_clean ${self}/bin/apr branch create feature/hostmerge-no-ff \
+          --registry host-merge-review > "$work/apr-branch-create-host-merge-no-ff.out" 2>&1
+        run_clean ${self}/bin/apr branch switch feature/hostmerge-no-ff \
+          --registry host-merge-review > "$work/apr-branch-switch-host-merge-no-ff.out" 2>&1
+        run_clean ${self}/bin/apr --json publish "$install_store" \
+          --name hostmergeapp \
+          --version 1.0.0 \
+          --description "Host merge review no-ff fixture" \
+          --license MIT \
+          --maintainer merge-reviewer@example.invalid \
+          --registry host-merge-review \
+          --message "publish hostmergeapp feature" \
+          > "$work/apr-publish-host-merge-no-ff.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_store" \
+          '.action == "publish"
+            and .registry == "host-merge-review"
+            and .package == "hostmergeapp"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and .committed == true' \
+          "$work/apr-publish-host-merge-no-ff.json" >/dev/null
+        run_clean ${self}/bin/apr branch switch stable \
+          --registry host-merge-review > "$work/apr-branch-switch-host-merge-stable-before-no-ff.out" 2>&1
+        merge_before_no_ff=$(git -C "$merge_reg" rev-parse HEAD)
+        run_clean ${self}/bin/apr --json merge feature/hostmerge-no-ff \
+          --no-ff \
+          --registry host-merge-review > "$work/apr-merge-host-merge-no-ff.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg before "$merge_before_no_ff" \
+          '.action == "merge"
+            and .branch == "feature/hostmerge-no-ff"
+            and .no_ff == true
+            and .squash == false
+            and .current == "stable"
+            and .head != $before
+            and (.head | length == 64)
+            and (.output | contains("Merge made"))
+            and (.branches | any(.name == "stable" and .current == true))' \
+          "$work/apr-merge-host-merge-no-ff.json" >/dev/null
+        merge_no_ff_parents=$(git -C "$merge_reg" rev-list --parents -n 1 HEAD)
+        set -- $merge_no_ff_parents
+        test "$#" = "3"
+        run_clean ${self}/bin/apr --json show hostmergeapp \
+          --registry host-merge-review > "$work/apr-show-host-merge-no-ff.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package.name == "hostmergeapp"
+            and .versions[0].version == "1.0.0"' \
+          "$work/apr-show-host-merge-no-ff.json" >/dev/null
+        run_clean ${self}/bin/apr branch delete feature/hostmerge-no-ff \
+          --registry host-merge-review > "$work/apr-branch-delete-host-merge-no-ff.out" 2>&1
+
+        run_clean ${self}/bin/apr branch create feature/hostmerge-squash \
+          --registry host-merge-review > "$work/apr-branch-create-host-merge-squash.out" 2>&1
+        run_clean ${self}/bin/apr branch switch feature/hostmerge-squash \
+          --registry host-merge-review > "$work/apr-branch-switch-host-merge-squash.out" 2>&1
+        run_clean ${self}/bin/apr --json publish "$bulk_store" \
+          --name hostmergebulk \
+          --version 1.0.0 \
+          --description "Host merge review squash fixture" \
+          --license MIT \
+          --maintainer merge-reviewer@example.invalid \
+          --registry host-merge-review \
+          --message "publish hostmergebulk feature" \
+          > "$work/apr-publish-host-merge-squash.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$bulk_store" \
+          '.action == "publish"
+            and .registry == "host-merge-review"
+            and .package == "hostmergebulk"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and (.nar_size > 1000000)
+            and .committed == true' \
+          "$work/apr-publish-host-merge-squash.json" >/dev/null
+        run_clean ${self}/bin/apr branch switch stable \
+          --registry host-merge-review > "$work/apr-branch-switch-host-merge-stable-before-squash.out" 2>&1
+        merge_before_squash=$(git -C "$merge_reg" rev-parse HEAD)
+        run_clean ${self}/bin/apr --json merge feature/hostmerge-squash \
+          --squash \
+          --registry host-merge-review > "$work/apr-merge-host-merge-squash.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg before "$merge_before_squash" \
+          '.action == "merge"
+            and .branch == "feature/hostmerge-squash"
+            and .no_ff == false
+            and .squash == true
+            and .current == "stable"
+            and .head == $before
+            and (.output | contains("Squash commit"))
+            and (.branches | any(.name == "stable" and .current == true))' \
+          "$work/apr-merge-host-merge-squash.json" >/dev/null
+        run_clean ${self}/bin/apr --json status \
+          --registry host-merge-review > "$work/apr-status-host-merge-squash.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.clean == false
+            and (.entries | any(.index == "A" and .path == "packages/h/hostmergebulk.toml"))' \
+          "$work/apr-status-host-merge-squash.json" >/dev/null
+        git -C "$merge_reg" commit -m "merge: squash hostmergebulk feature" \
+          > "$work/git-commit-host-merge-squash.out" 2>&1
+        run_clean ${self}/bin/apr --json show hostmergebulk \
+          --registry host-merge-review > "$work/apr-show-host-merge-squash.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package.name == "hostmergebulk"
+            and .versions[0].version == "1.0.0"
+            and .versions[0].platforms."x86_64-linux".nar_size > 1000000' \
+          "$work/apr-show-host-merge-squash.json" >/dev/null
+        run_clean ${self}/bin/apr --json packages \
+          --registry host-merge-review > "$work/apr-packages-host-merge-review.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 3
+            and any(.[]; .name == "hostmergeleaf" and .version == "1.0.0")
+            and any(.[]; .name == "hostmergeapp" and .version == "1.0.0")
+            and any(.[]; .name == "hostmergebulk" and .version == "1.0.0")' \
+          "$work/apr-packages-host-merge-review.json" >/dev/null
+        assert_no_profile
+
         run_clean ${self}/bin/apr create host-direct-release \
           > "$work/apr-create-host-direct-release.out" 2>&1
         direct_reg="$data/apm/registries/host-direct-release"
