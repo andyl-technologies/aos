@@ -365,6 +365,35 @@ in {
           "$work/apm-remove-invalid-registry-name.out"
         test -f "$escaped_remove/sentinel"
 
+        invalid_trust_key="../escaped-trust:Ed25519:bWlzbWF0Y2g="
+        if run_clean ${self}/bin/apr trust pin ../escaped-trust "$invalid_trust_key" \
+          > "$work/apr-trust-pin-invalid-registry-name.out" 2>&1; then
+          cat "$work/apr-trust-pin-invalid-registry-name.out"
+          exit 1
+        fi
+        grep -q "invalid registry name" \
+          "$work/apr-trust-pin-invalid-registry-name.out"
+        test ! -e "$config/apm/escaped-trust.pub"
+
+        if run_clean ${self}/bin/apr trust list ../escaped-trust \
+          > "$work/apr-trust-list-invalid-registry-name.out" 2>&1; then
+          cat "$work/apr-trust-list-invalid-registry-name.out"
+          exit 1
+        fi
+        grep -q "invalid registry name" \
+          "$work/apr-trust-list-invalid-registry-name.out"
+
+        mkdir -p "$config/apm"
+        printf '%s\n' "must stay put" > "$config/apm/escaped-trust.pub"
+        if run_clean ${self}/bin/apr trust remove ../escaped-trust \
+          > "$work/apr-trust-remove-invalid-registry-name.out" 2>&1; then
+          cat "$work/apr-trust-remove-invalid-registry-name.out"
+          exit 1
+        fi
+        grep -q "invalid registry name" \
+          "$work/apr-trust-remove-invalid-registry-name.out"
+        grep -qx "must stay put" "$config/apm/escaped-trust.pub"
+
         reg="$data/apm/registries/host-reg"
         run_clean ${self}/bin/apr --json create host-reg > "$work/apr-create.json"
         ${pkgs.jq}/bin/jq -e --arg reg "$reg" \

@@ -3726,8 +3726,9 @@ fn print_upload_config(
 ///
 /// # Errors
 ///
-/// Fails when the key line does not parse or names a different registry,
-/// or when the trust store cannot be read or written.
+/// Fails when the registry name is not safe for trusted-key path use, the key
+/// line does not parse or names a different registry, or the trust store
+/// cannot be read or written.
 pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) -> Result<()> {
     let store = KeyStore::new(config.scope.trusted_keys_dirs());
     match command {
@@ -3736,6 +3737,7 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
             key,
             replace,
         } => {
+            validate_registry_name(registry)?;
             let trusted = trusted_key_from_line(registry, key)?;
             if *replace {
                 let _ = store.remove(registry)?;
@@ -3763,7 +3765,10 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
         }
         TrustCommand::List { registry } => {
             let registries = match registry {
-                Some(name) => vec![name.clone()],
+                Some(name) => {
+                    validate_registry_name(name)?;
+                    vec![name.clone()]
+                }
                 None => configured_registry_names(config),
             };
             if printer.mode() == OutputMode::Json {
@@ -3810,6 +3815,7 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
             Ok(())
         }
         TrustCommand::Remove { registry } => {
+            validate_registry_name(registry)?;
             let removed = store.remove(registry)?;
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
