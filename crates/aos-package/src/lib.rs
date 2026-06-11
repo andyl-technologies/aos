@@ -448,7 +448,7 @@ pub enum RegistryCommand {
         #[arg(long)]
         remote: Option<String>,
         /// Public trust key to write into committed keys.toml
-        /// (`registry:Ed25519:<base64>`)
+        /// (`<registry>:Ed25519:<base64>`)
         #[arg(long = "trust-key")]
         trust_key: Option<String>,
         /// Identifier for --trust-key inside keys.toml
@@ -489,7 +489,7 @@ pub enum RegistryCommand {
         /// Semver version constraint on tags (mutually exclusive with other tracking flags)
         #[arg(long, group = "tracking")]
         version: Option<String>,
-        /// Trusted registry signing key in `registry:Ed25519:<base64>` form
+        /// Trusted registry signing key in `<registry>:Ed25519:<base64>` form
         #[arg(long = "trust-key", conflicts_with = "no_verify")]
         trust_key: Option<String>,
         /// Disable signature verification for this registry (writes
@@ -885,7 +885,8 @@ pub enum TrustCommand {
     Pin {
         /// Registry name
         registry: String,
-        /// Signing key in registry:Ed25519:<base64> form
+        /// Public key to pin, in <registry>:Ed25519:<base64> form
+        #[arg(value_name = "PUBLIC_KEY")]
         key: String,
         /// Replace existing pinned keys for this registry before pinning
         #[arg(long)]
@@ -916,6 +917,7 @@ pub enum KeysCommand {
     /// Generate a maintainer Ed25519 keypair and register its private key
     Generate {
         /// Stable key id (also names the private key file)
+        #[arg(value_name = "PUBLIC_KEY_ID")]
         id: String,
         /// Also append the public key to committed keys.toml
         #[arg(long)]
@@ -938,12 +940,13 @@ pub enum KeysCommand {
     /// without generating or persisting any key material
     Register {
         /// Stable key id inside keys.toml
+        #[arg(value_name = "PUBLIC_KEY_ID")]
         id: String,
         /// Path to the existing private key file
-        #[arg(long = "key", conflicts_with = "key_command")]
+        #[arg(long = "key", value_name = "PATH", conflicts_with = "key_command")]
         key: Option<String>,
         /// Command, run via `sh -c`, that prints the private key to stdout
-        #[arg(long = "key-command", conflicts_with = "key")]
+        #[arg(long = "key-command", value_name = "COMMAND", conflicts_with = "key")]
         key_command: Option<String>,
         /// Registry to operate on
         #[arg(long)]
@@ -951,9 +954,11 @@ pub enum KeysCommand {
     },
     /// Add an active signing key to committed keys.toml
     Add {
-        /// Stable key id inside keys.toml
+        /// Stable key id for the new public key inside keys.toml
+        #[arg(value_name = "PUBLIC_KEY_ID")]
         id: String,
-        /// Signing key in registry:Ed25519:<base64> form
+        /// Public key to enroll, in <registry>:Ed25519:<base64> form
+        #[arg(value_name = "PUBLIC_KEY")]
         key: String,
         /// Skip creating a git commit
         #[arg(long)]
@@ -971,6 +976,7 @@ pub enum KeysCommand {
     /// Retire an active signing key by moving its id to [[revoked]]
     Retire {
         /// Active key id to retire
+        #[arg(value_name = "PUBLIC_KEY_ID")]
         id: String,
         /// Human-readable retirement reason
         #[arg(long)]
