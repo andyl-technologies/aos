@@ -123,12 +123,64 @@
       }
     ];
   };
+  closureRootSourceTool = pkgs.mkDerivation {
+    pname = "closure-root-source";
+    version = "1.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    runtimeDeps = [
+      closureLeafTool
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'leaf_output="$(${closureLeafTool}/bin/closure-leaf)"' \
+            'printf "closure-root 1.0.0 via %s\n" "$leaf_output"' \
+            > "$out/bin/closure-root"
+          chmod +x "$out/bin/closure-root"
+        '';
+      }
+    ];
+  };
   closureLeafToolV2 = mkRegistryTool {
     pname = "closure-leaf";
     version = "2.0.0";
   };
   closureRootToolV2 = pkgs.mkDerivation {
     pname = "closure-root";
+    version = "2.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    runtimeDeps = [
+      closureLeafToolV2
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'leaf_output="$(${closureLeafToolV2}/bin/closure-leaf)"' \
+            'printf "closure-root 2.0.0 via %s\n" "$leaf_output"' \
+            > "$out/bin/closure-root"
+          chmod +x "$out/bin/closure-root"
+        '';
+      }
+    ];
+  };
+  closureRootSourceToolV2 = pkgs.mkDerivation {
+    pname = "closure-root-source";
     version = "2.0.0";
     src = null;
     buildDeps = [
@@ -2481,8 +2533,10 @@ in {
       ++ [
         closureLeafTool
         closureRootTool
+        closureRootSourceTool
         closureLeafToolV2
         closureRootToolV2
+        closureRootSourceToolV2
       ];
     memory = 2048;
     testScript = ''
@@ -2493,10 +2547,10 @@ in {
 
       LEAF_STORE="${closureLeafTool}"
       ROOT_STORE="${closureRootTool}"
-      ROOT_SOURCE_STORE="$ROOT_STORE"
+      ROOT_SOURCE_STORE="${closureRootSourceTool}"
       LEAF_V2_STORE="${closureLeafToolV2}"
       ROOT_V2_STORE="${closureRootToolV2}"
-      ROOT_V2_SOURCE_STORE="$ROOT_V2_STORE"
+      ROOT_V2_SOURCE_STORE="${closureRootSourceToolV2}"
       LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
       ROOT_HASH=$(basename "$ROOT_STORE" | cut -d- -f1)
       ROOT_SOURCE_HASH=$(basename "$ROOT_SOURCE_STORE" | cut -d- -f1)
@@ -2583,10 +2637,16 @@ in {
       assert_file_contains /tmp/static-release-root-refs.out "$LEAF_STORE" \
         "release root has a real Nix reference to closure-leaf"
 
-      $APR create static-release-reg
+      ssh-keygen -q -t ed25519 -N "" -f /tmp/static-release-key
+      STATIC_RELEASE_PUBLIC=$(cut -d ' ' -f2 < /tmp/static-release-key.pub)
+      STATIC_RELEASE_TRUST_KEY="static-release-reg:Ed25519:$STATIC_RELEASE_PUBLIC"
+      $APR create static-release-reg \
+        --trust-key "$STATIC_RELEASE_TRUST_KEY" \
+        --key /tmp/static-release-key
       REG_DIR="$REG_STORAGE/static-release-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      ssh-keygen -q -t ed25519 -N "" -f /tmp/static-release-key
+      assert_file_contains "$REG_DIR/keys.toml" "$STATIC_RELEASE_TRUST_KEY" \
+        "registry records static release trust key"
       nix --extra-experimental-features nix-command key generate-secret \
         --key-name static-release-cache > /tmp/static-release-cache.sec
       TRUSTED_PUBLIC_KEY=$(nix --extra-experimental-features nix-command \
@@ -2630,6 +2690,8 @@ in {
         "release cache has root narinfo"
       assert_file_exists "/tmp/static-release-cache/$LEAF_HASH.narinfo" \
         "release cache has unpublished dependency narinfo"
+      assert_file_exists "/tmp/static-release-cache/$ROOT_SOURCE_HASH.narinfo" \
+        "release cache has explicit source narinfo"
       assert_file_exists "/tmp/static-release-origin/HEAD" \
         "uploaded static origin has HEAD"
       assert_file_exists "/tmp/static-release-origin/info/refs" \
@@ -2642,12 +2704,17 @@ in {
         "uploaded static origin has root narinfo"
       assert_file_exists "/tmp/static-release-origin/$LEAF_HASH.narinfo" \
         "uploaded static origin has dependency narinfo"
+      assert_file_exists "/tmp/static-release-origin/$ROOT_SOURCE_HASH.narinfo" \
+        "uploaded static origin has source narinfo"
       assert_file_contains "/tmp/static-release-origin/$ROOT_HASH.narinfo" \
         "Sig: static-release-cache:" \
         "uploaded static origin signs root narinfo"
       assert_file_contains "/tmp/static-release-origin/$LEAF_HASH.narinfo" \
         "Sig: static-release-cache:" \
         "uploaded static origin signs dependency narinfo"
+      assert_file_contains "/tmp/static-release-origin/$ROOT_SOURCE_HASH.narinfo" \
+        "Sig: static-release-cache:" \
+        "uploaded static origin signs source narinfo"
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
@@ -2662,6 +2729,7 @@ in {
       fi
 
       echo "==> Stock Nix: copy signed release closure from uploaded origin"
+      delete_store_path "$ROOT_SOURCE_STORE" "closure-root-source-stock-nix"
       delete_store_path "$ROOT_STORE" "closure-root-stock-nix"
       delete_store_path "$LEAF_STORE" "closure-leaf-stock-nix"
       nix --extra-experimental-features nix-command \
@@ -2685,12 +2753,14 @@ in {
       mkdir -p "$HOME"
       $APM registry add http://127.0.0.1:18120 \
         --name static-release-reg \
-        --no-verify \
+        --trust-key "$STATIC_RELEASE_TRUST_KEY" \
         --branch "$DEFAULT_BRANCH" > /tmp/static-release-add.out 2>&1 || {
         cat /tmp/static-release-add.out
         fail "apm registry add syncs uploaded static origin"
       }
       cat /tmp/static-release-add.out
+      assert_file_contains /tmp/static-release-add.out "Signing.*trusted key pinned" \
+        "consumer pins static release registry signing key"
       assert_file_contains "$HOME/.local/share/apm/registries/static-release-reg/registry.toml" \
         "http://127.0.0.1:18120" \
         "consumer synced cache endpoint from uploaded origin"
@@ -2704,6 +2774,7 @@ in {
 
       delete_store_path "$ROOT_STORE" "closure-root"
       delete_store_path "$LEAF_STORE" "closure-leaf"
+      assert_store_missing "$ROOT_SOURCE_STORE" "closure-root-source"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -2730,6 +2801,7 @@ in {
       fi
       assert_store_missing "$ROOT_STORE" "closure-root"
       assert_store_missing "$LEAF_STORE" "closure-leaf"
+      assert_store_missing "$ROOT_SOURCE_STORE" "closure-root-source"
       if [ "$(generation_count)" = "0" ] && [ ! -e "$PROFILE/current" ]; then
         pass "failed no-deps install creates no profile generation"
       else
@@ -2768,6 +2840,7 @@ in {
       fi
       assert_store_missing "$ROOT_STORE" "closure-root"
       assert_store_missing "$LEAF_STORE" "closure-leaf"
+      assert_store_missing "$ROOT_SOURCE_STORE" "closure-root-source"
       if [ "$(generation_count)" = "0" ] && [ ! -e "$PROFILE/current" ]; then
         pass "download-only creates no profile generation"
       else
@@ -2799,6 +2872,7 @@ in {
       fi
       assert_store_valid "$ROOT_STORE" "closure-root"
       assert_store_valid "$LEAF_STORE" "closure-leaf"
+      assert_store_missing "$ROOT_SOURCE_STORE" "closure-root-source"
 
       "$PROFILE/current/bin/closure-root" > /tmp/static-release-run.out
       assert_file_contains /tmp/static-release-run.out \
@@ -2815,16 +2889,20 @@ in {
         fail "apm source --verify validates release-published source provenance"
       }
       cat /tmp/static-release-source-verify.out
+      assert_file_contains /tmp/static-release-source-verify.out "Downloading 1 NAR" \
+        "apm source --verify fetches missing v1 source path"
       assert_file_contains /tmp/static-release-source-verify.out "$ROOT_SOURCE_STORE" \
         "apm source --verify uses v1 release source path"
       assert_file_contains /tmp/static-release-source-verify.out "matches installed binary" \
         "apm source --verify compares v1 release source with installed binary"
+      assert_store_valid "$ROOT_SOURCE_STORE" "closure-root-source"
 
       echo "==> Maintainer: release v2 with a new anonymous closure dependency"
       export HOME=/tmp
       export USER=root
       assert_store_valid "$LEAF_V2_STORE" "closure-leaf-v2"
       assert_store_valid "$ROOT_V2_STORE" "closure-root-v2"
+      assert_store_valid "$ROOT_V2_SOURCE_STORE" "closure-root-source-v2"
       nix-store -q --references "$ROOT_V2_STORE" > /tmp/static-release-root-v2-refs.out
       assert_file_contains /tmp/static-release-root-v2-refs.out "$LEAF_V2_STORE" \
         "release root v2 has a real Nix reference to closure-leaf v2"
@@ -2860,16 +2938,22 @@ in {
         "uploaded static origin has v2 root narinfo"
       assert_file_exists "/tmp/static-release-origin/$LEAF_V2_HASH.narinfo" \
         "uploaded static origin has v2 dependency narinfo"
+      assert_file_exists "/tmp/static-release-origin/$ROOT_V2_SOURCE_HASH.narinfo" \
+        "uploaded static origin has v2 source narinfo"
       assert_file_contains "/tmp/static-release-origin/$ROOT_V2_HASH.narinfo" \
         "Sig: static-release-cache:" \
         "uploaded static origin signs v2 root narinfo"
       assert_file_contains "/tmp/static-release-origin/$LEAF_V2_HASH.narinfo" \
         "Sig: static-release-cache:" \
         "uploaded static origin signs v2 dependency narinfo"
+      assert_file_contains "/tmp/static-release-origin/$ROOT_V2_SOURCE_HASH.narinfo" \
+        "Sig: static-release-cache:" \
+        "uploaded static origin signs v2 source narinfo"
 
       echo "==> Consumer: upgrade from uploaded static origin downloads anonymous v2 closure"
       export HOME=/tmp/static-release-consumer
       export USER=staticreleaseuser
+      delete_store_path "$ROOT_V2_SOURCE_STORE" "closure-root-source-v2"
       delete_store_path "$ROOT_V2_STORE" "closure-root-v2"
       delete_store_path "$LEAF_V2_STORE" "closure-leaf-v2"
       rm -rf "$HOME/.cache/apm"
@@ -2911,6 +2995,7 @@ in {
       fi
       assert_store_valid "$ROOT_V2_STORE" "closure-root-v2"
       assert_store_valid "$LEAF_V2_STORE" "closure-leaf-v2"
+      assert_store_missing "$ROOT_V2_SOURCE_STORE" "closure-root-source-v2"
       "$PROFILE/current/bin/closure-root" > /tmp/static-release-run-v2.out
       assert_file_contains /tmp/static-release-run-v2.out \
         "^closure-root 2.0.0 via closure-leaf 2.0.0$" \
@@ -2931,10 +3016,13 @@ in {
         fail "apm source --verify validates upgraded release source provenance"
       }
       cat /tmp/static-release-source-verify-v2.out
+      assert_file_contains /tmp/static-release-source-verify-v2.out "Downloading 1 NAR" \
+        "apm source --verify fetches missing v2 source path"
       assert_file_contains /tmp/static-release-source-verify-v2.out "$ROOT_V2_SOURCE_STORE" \
         "apm source --verify uses v2 release source path"
       assert_file_contains /tmp/static-release-source-verify-v2.out "matches installed binary" \
         "apm source --verify compares v2 release source with installed binary"
+      assert_store_valid "$ROOT_V2_SOURCE_STORE" "closure-root-source-v2"
 
       kill "$ORIGIN_PID" 2>/dev/null || true
       wait "$ORIGIN_PID" 2>/dev/null || true

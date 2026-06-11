@@ -15,13 +15,18 @@
 //! churn), falling back to the registry entry matched by store-path hash.
 
 use std::process::Stdio;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 
 use super::config::ApmConfig;
+use super::download::{
+    DownloadRequest, default_engine, download_nars, fetch_narinfo_closure, resolve_mirror,
+};
 use super::profile::Profile;
 use super::profile::meta;
 use super::registry::{RegistrySet, store_path_hash};
+use super::store::{filter_missing, import_nar};
 use super::types::{InstalledMeta, PackageMeta};
 use super::verify as hash_verify;
 use aos_core::error::AosError;
@@ -219,9 +224,10 @@ fn resolve_installed_source_metadata(
 ///
 /// Returns [`AosError::PackageNotFound`] if the package is neither
 /// installed nor in any enabled registry (or, with `--verify`, not
-/// installed), an error if the package records no source derivation, if
-/// `nix-store --realise`/`--dump` fails, or if the rebuilt hash does not
-/// match the installed binary.
+/// installed), an error if the package records no source derivation, if the
+/// source path cannot be realised from the local store or registry cache,
+/// if `nix-store --dump` fails, or if the rebuilt hash does not match the
+/// installed binary.
 pub async fn run_source(
     config: &ApmConfig,
     package: &str,
@@ -321,30 +327,13 @@ pub async fn run_source(
 
     let mut realised_path = None;
 
-    // --fetch: realise the source derivation via nix-store.
+    // --fetch: realise the source derivation, using the registry cache if
+    // the source path is not already available locally.
     if fetch {
         printer.header(&format!("Fetching source derivation for '{package}'..."));
         printer.kv("Source drv", &source_drv);
 
-        let output = tokio::process::Command::new("nix-store")
-            .envs(aos_nix_env())
-            .args(["--realise", &source_drv])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .context("running nix-store --realise")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "nix-store --realise failed for {source_drv}: {}",
-                stderr.trim()
-            );
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let path = stdout.trim().to_string();
+        let path = realise_source_path(config, &registry_name, &source_drv, printer).await?;
         if printer.mode() == OutputMode::Json && !verify_source {
             printer.json(&serde_json::json!({
                 "package": package,
@@ -369,24 +358,7 @@ pub async fn run_source(
         let built_path = if let Some(path) = realised_path {
             path
         } else {
-            let output = tokio::process::Command::new("nix-store")
-                .envs(aos_nix_env())
-                .args(["--realise", &source_drv])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .context("running nix-store --realise for source verification")?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!(
-                    "nix-store --realise failed for {source_drv}: {}",
-                    stderr.trim()
-                );
-            }
-
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
+            realise_source_path(config, &registry_name, &source_drv, printer).await?
         };
 
         // Now dump and hash the built output.
@@ -439,6 +411,139 @@ pub async fn run_source(
             ));
             bail!("source verification failed: expected {expected_hash}, got {actual_hash}");
         }
+    }
+
+    Ok(())
+}
+
+/// Realise a source path locally, importing it from the registry cache when
+/// the local Nix store does not already have it.
+async fn realise_source_path(
+    config: &ApmConfig,
+    registry_name: &str,
+    source_drv: &str,
+    printer: &Printer,
+) -> Result<String> {
+    match realise_with_nix_store(source_drv).await {
+        Ok(path) => Ok(path),
+        Err(first_error) => {
+            fetch_source_from_registry_cache(config, registry_name, source_drv, printer)
+                .await
+                .with_context(|| {
+                    format!(
+                        "fetching source path {source_drv} from registry cache after local realisation failed: {first_error}"
+                    )
+                })?;
+            realise_with_nix_store(source_drv)
+                .await
+                .with_context(|| format!("realising fetched source path {source_drv}"))
+        }
+    }
+}
+
+/// Run `nix-store --realise` and return its realised path.
+async fn realise_with_nix_store(source_drv: &str) -> Result<String> {
+    let output = tokio::process::Command::new("nix-store")
+        .envs(aos_nix_env())
+        .args(["--realise", source_drv])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("running nix-store --realise")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "nix-store --realise failed for {source_drv}: {}",
+            stderr.trim()
+        );
+    }
+
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        Ok(source_drv.to_string())
+    } else {
+        Ok(path)
+    }
+}
+
+/// Download and import a recorded source path from the registry's binary cache.
+async fn fetch_source_from_registry_cache(
+    config: &ApmConfig,
+    registry_name: &str,
+    source_drv: &str,
+    printer: &Printer,
+) -> Result<()> {
+    let registry = config
+        .registries
+        .iter()
+        .find(|(registry, _)| registry.name == registry_name)
+        .map(|(registry, _)| registry)
+        .ok_or_else(|| {
+            anyhow::anyhow!("registry '{registry_name}' is not configured for source fetch")
+        })?;
+
+    let mirror_url = resolve_mirror(&config.scope.registries_path(), registry);
+    let request = DownloadRequest {
+        store_path: source_drv.to_string(),
+        mirror_url,
+    };
+
+    let engine = Arc::new(default_engine());
+    let resolved = fetch_narinfo_closure(
+        engine,
+        std::slice::from_ref(&request),
+        config.settings.parallel_downloads,
+        printer,
+    )
+    .await
+    .with_context(|| format!("fetching narinfo closure for source path {source_drv}"))?;
+
+    let missing = filter_missing(
+        &resolved
+            .iter()
+            .map(|item| item.req.store_path.clone())
+            .collect::<Vec<_>>(),
+    )
+    .await?;
+    let missing = missing
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    let resolved = resolved
+        .into_iter()
+        .filter(|item| missing.contains(&item.req.store_path))
+        .collect::<Vec<_>>();
+
+    if resolved.is_empty() {
+        return Ok(());
+    }
+
+    printer.info("Downloading source NAR(s) from registry cache...");
+    let results = download_nars(
+        &resolved,
+        &config.nar_cache_path(),
+        config.settings.parallel_downloads,
+        printer,
+    )
+    .await?;
+
+    for result in &results {
+        hash_verify::verify_download_hash(&result.local_path, &result.download_hash)
+            .with_context(|| format!("verifying download for {}", result.store_path))?;
+        hash_verify::verify_nar_hash(&result.local_path, &result.nar_hash)
+            .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
+    }
+
+    for result in &results {
+        import_nar(
+            &result.local_path,
+            &result.store_path,
+            &result.references,
+            result.deriver.as_deref(),
+        )
+        .await
+        .with_context(|| format!("importing source path {}", result.store_path))?;
     }
 
     Ok(())

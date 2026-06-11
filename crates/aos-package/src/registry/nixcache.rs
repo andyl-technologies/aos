@@ -62,8 +62,8 @@ struct CachePathInfo {
 
 /// Generate a complete static Nix binary cache for a registry's store paths.
 ///
-/// Collects every `store_path` (and sysroot image path) from the registry's
-/// package TOML files, expands each to its full runtime closure with
+/// Collects every `store_path`, `source_drv`, and sysroot image path from
+/// the registry's package TOML files, expands each to its full closure with
 /// `nix-store -qR`, and writes `nix-cache-info`, a zstd NAR, and a narinfo
 /// for every member into `output_dir`. When `key_path` (or the signer's
 /// default configuration) yields a signing key, narinfos are signed.
@@ -406,8 +406,8 @@ fn collect_store_paths_from_dir(dir: &Path, paths: &mut BTreeSet<String>) -> Res
     Ok(())
 }
 
-/// Harvest `store_path` values from every version/platform entry (including
-/// sysroot image entries) of one parsed package TOML document.
+/// Harvest `store_path`, `source_drv`, and sysroot image entries from every
+/// version/platform entry of one parsed package TOML document.
 fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<String>) {
     let Some(versions) = value.get("versions").and_then(TomlValue::as_array) else {
         return;
@@ -418,6 +418,11 @@ fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<Stri
         };
         for platform in platforms.values() {
             if let Some(path) = platform.get("store_path").and_then(TomlValue::as_str) {
+                paths.insert(path.to_string());
+            }
+            if let Some(path) = platform.get("source_drv").and_then(TomlValue::as_str)
+                && !path.is_empty()
+            {
                 paths.insert(path.to_string());
             }
             if let Some(images) = platform.get("images").and_then(TomlValue::as_array) {
@@ -589,7 +594,8 @@ version = "1.0.0"
 store_path = "/nix/store/root111-kernel"
 nar_hash = "sha256:root"
 nar_size = 1
-source_nar_hash = ""
+source_drv = "/nix/store/src111-kernel-source"
+source_nar_hash = "sha256:source"
 references = []
 
 [[versions.platforms.x86_64-linux.images]]
@@ -606,6 +612,7 @@ nar_size = 2
             vec![
                 "/nix/store/img111-system-image".to_string(),
                 "/nix/store/root111-kernel".to_string(),
+                "/nix/store/src111-kernel-source".to_string(),
             ]
         );
     }
