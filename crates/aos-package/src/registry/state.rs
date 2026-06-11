@@ -7,8 +7,9 @@
 //!
 //! Because the rest of the file is user-owned, saving works by textual
 //! section surgery rather than full-file re-serialization: the existing
-//! `[registry.state]` (or `[registry.signing_keys]`) block is located by its
-//! header line and replaced in place, leaving all other bytes untouched.
+//! `[registry.state]` (or `[registry.signing_keys]`,
+//! `[registry.upload_auth]`) block is located by its header line and
+//! replaced in place, leaving all other bytes untouched.
 //!
 //! A fully populated state section looks like:
 //!
@@ -25,7 +26,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::types::{RegistryFile, RegistryState, SigningKeySource};
+use crate::types::{RegistryFile, RegistryState, RegistryUploadAuthConfig, SigningKeySource};
 
 // ---------------------------------------------------------------------------
 // Load / save
@@ -166,6 +167,113 @@ pub fn upsert_signing_key(path: &Path, id: &str, source: &SigningKeySource) -> R
 
     std::fs::write(path, &new_content).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
+}
+
+/// Save/update the `[registry.upload_auth]` section in a registry config
+/// file.
+///
+/// Renders the given producer upload defaults as a fresh section and
+/// replaces the existing one in place (or appends one), preserving every
+/// other user-edited field (mirroring [`upsert_signing_key`]). Unset fields
+/// are omitted from the rendered section, and a fully default `upload`
+/// value removes the section entirely, so unsetting the last stored field
+/// leaves no empty section behind.
+///
+/// # Errors
+///
+/// Returns an error when the config file does not exist, cannot be read, or
+/// cannot be rewritten.
+pub fn save_upload_auth(path: &Path, upload: &RegistryUploadAuthConfig) -> Result<()> {
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+
+    let header = "[registry.upload_auth]";
+    let section = render_upload_auth_section(upload);
+    let new_content = match (find_section(&content, header), section) {
+        (Some(start), section) => {
+            let after_header = start + header.len();
+            let end = content[after_header..]
+                .find("\n[")
+                .map(|pos| after_header + pos)
+                .unwrap_or(content.len());
+            let before = content[..start].trim_end_matches('\n');
+            let after = &content[end..];
+            match section {
+                Some(section) => format!("{before}{section}{after}"),
+                None => format!("{before}\n{after}"),
+            }
+        }
+        (None, Some(section)) => {
+            let trimmed = content.trim_end_matches('\n');
+            format!("{trimmed}{section}")
+        }
+        // Nothing stored and nothing to store — leave the file untouched.
+        (None, None) => return Ok(()),
+    };
+
+    std::fs::write(path, &new_content).with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
+}
+
+/// Render a [`RegistryUploadAuthConfig`] as a `[registry.upload_auth]`
+/// section, with unset fields omitted.
+///
+/// Returns `None` for a fully default value, signalling the caller to drop
+/// the section instead of writing an empty one.
+fn render_upload_auth_section(upload: &RegistryUploadAuthConfig) -> Option<String> {
+    if *upload == RegistryUploadAuthConfig::default() {
+        return None;
+    }
+
+    let mut section = String::from("\n[registry.upload_auth]\n");
+    if !upload.upload_urls.is_empty() {
+        section.push_str(&format!(
+            "upload_urls = {}\n",
+            render_string_array(&upload.upload_urls),
+        ));
+    }
+    let scalar_fields = [
+        ("token", &upload.token),
+        ("view", &upload.view),
+        ("http_user", &upload.http_user),
+        ("http_password", &upload.http_password),
+    ];
+    for (name, value) in scalar_fields {
+        if let Some(value) = value {
+            section.push_str(&format!("{name} = \"{}\"\n", escape_toml_string(value)));
+        }
+    }
+    if !upload.headers.is_empty() {
+        section.push_str(&format!(
+            "headers = {}\n",
+            render_string_array(&upload.headers),
+        ));
+    }
+    let scalar_fields = [
+        ("s3_region", &upload.s3_region),
+        ("s3_profile", &upload.s3_profile),
+        ("s3_endpoint", &upload.s3_endpoint),
+        ("ssh_key", &upload.ssh_key),
+        ("ssh_password", &upload.ssh_password),
+    ];
+    for (name, value) in scalar_fields {
+        if let Some(value) = value {
+            section.push_str(&format!("{name} = \"{}\"\n", escape_toml_string(value)));
+        }
+    }
+    if upload.ssh_ask_pass {
+        section.push_str("ssh_ask_pass = true\n");
+    }
+    Some(section)
+}
+
+/// Render a list of strings as a single-line TOML string array.
+fn render_string_array(values: &[String]) -> String {
+    let items: Vec<String> = values
+        .iter()
+        .map(|value| format!("\"{}\"", escape_toml_string(value)))
+        .collect();
+    format!("[{}]", items.join(", "))
 }
 
 /// Render a [`SigningKeySource`] as the right-hand side of a TOML key entry.
@@ -459,5 +567,108 @@ public_key = "test:Ed25519:abc"
         // The signing section after state should be preserved.
         assert!(content.contains("[registry.signing]"));
         assert!(content.contains("public_key = \"test:Ed25519:abc\""));
+    }
+
+    #[test]
+    fn save_upload_auth_round_trips_and_preserves_other_sections() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("aos-core.toml");
+        fs::write(
+            &path,
+            r#"[registry]
+name = "aos-core"
+url = "https://registry.aos.dev/core"
+
+[registry.signing_keys]
+alice = "/run/secrets/alice"
+
+[registry.state]
+last_commit = "abc123"
+"#,
+        )
+        .unwrap();
+
+        let upload = RegistryUploadAuthConfig {
+            upload_urls: vec!["s3://bucket/".to_string(), "file:///mirror".to_string()],
+            s3_endpoint: Some("https://s3.example".to_string()),
+            ssh_ask_pass: true,
+            ..RegistryUploadAuthConfig::default()
+        };
+        save_upload_auth(&path, &upload).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        // The section lands between the existing user-owned sections,
+        // which are preserved byte for byte.
+        assert!(content.contains("name = \"aos-core\""), "{content}");
+        assert!(
+            content.contains("alice = \"/run/secrets/alice\""),
+            "{content}"
+        );
+        assert!(content.contains("last_commit = \"abc123\""), "{content}");
+
+        let rf: RegistryFile = toml::from_str(&content).unwrap();
+        assert_eq!(rf.registry.upload_auth.unwrap(), upload);
+    }
+
+    #[test]
+    fn save_upload_auth_replaces_existing_section_in_place() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("aos-core.toml");
+        fs::write(
+            &path,
+            r#"[registry]
+name = "aos-core"
+url = "https://registry.aos.dev/core"
+
+[registry.upload_auth]
+upload_urls = ["s3://old/"]
+token = "old-token"
+
+[registry.state]
+last_commit = "abc123"
+"#,
+        )
+        .unwrap();
+
+        let upload = RegistryUploadAuthConfig {
+            upload_urls: vec!["s3://new/".to_string()],
+            ..RegistryUploadAuthConfig::default()
+        };
+        save_upload_auth(&path, &upload).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("s3://old/"), "{content}");
+        assert!(!content.contains("old-token"), "{content}");
+        assert!(content.contains("last_commit = \"abc123\""), "{content}");
+        let rf: RegistryFile = toml::from_str(&content).unwrap();
+        assert_eq!(rf.registry.upload_auth.unwrap(), upload);
+    }
+
+    #[test]
+    fn save_upload_auth_removes_section_when_fully_default() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("aos-core.toml");
+        fs::write(
+            &path,
+            r#"[registry]
+name = "aos-core"
+url = "https://registry.aos.dev/core"
+
+[registry.upload_auth]
+upload_urls = ["s3://bucket/"]
+
+[registry.state]
+last_commit = "abc123"
+"#,
+        )
+        .unwrap();
+
+        save_upload_auth(&path, &RegistryUploadAuthConfig::default()).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("[registry.upload_auth]"), "{content}");
+        assert!(content.contains("last_commit = \"abc123\""), "{content}");
+        let rf: RegistryFile = toml::from_str(&content).unwrap();
+        assert!(rf.registry.upload_auth.is_none());
     }
 }
