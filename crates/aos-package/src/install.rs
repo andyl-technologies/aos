@@ -635,10 +635,25 @@ fn resolve_install_closures(
 
 /// The registry an installed package was originally installed from, if any.
 fn installed_source_registry<'a>(package: &str, installed: &'a [InstalledMeta]) -> Option<&'a str> {
-    installed.iter().find_map(|meta| {
-        let apm = meta.apm.as_ref()?;
-        (apm.name == package).then_some(apm.registry.as_str())
-    })
+    let mut fallback = None;
+
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+        if apm.name != package {
+            continue;
+        }
+
+        if apm.explicit {
+            return Some(apm.registry.as_str());
+        }
+        if fallback.is_none() {
+            fallback = Some(apm.registry.as_str());
+        }
+    }
+
+    fallback
 }
 
 /// Whether the install would be a no-op: every requested root is already
@@ -728,19 +743,26 @@ fn installed_flags_by_hash(installed: &[InstalledMeta]) -> HashMap<&str, Install
 /// Index existing explicit/held flags by package name, so a package whose
 /// store path changed (reinstall from another registry) still keeps them.
 fn installed_flags_by_name(installed: &[InstalledMeta]) -> HashMap<&str, InstalledFlags> {
-    installed
-        .iter()
-        .filter_map(|meta| {
-            let apm = meta.apm.as_ref()?;
-            Some((
-                apm.name.as_str(),
-                InstalledFlags {
-                    explicit: apm.explicit,
-                    held: apm.held,
-                },
-            ))
-        })
-        .collect()
+    let mut flags: HashMap<&str, InstalledFlags> = HashMap::new();
+
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+        let incoming = InstalledFlags {
+            explicit: apm.explicit,
+            held: apm.held,
+        };
+        match flags.get(apm.name.as_str()) {
+            Some(current) if current.explicit => {}
+            Some(_) if !incoming.explicit => {}
+            _ => {
+                flags.insert(apm.name.as_str(), incoming);
+            }
+        }
+    }
+
+    flags
 }
 
 /// `--no-deps`: shrink each closure to just its root package and fix up the
@@ -1364,7 +1386,18 @@ mod tests {
         registry: &str,
         store_path: &str,
     ) -> InstalledMeta {
-        let mut meta = sample_installed(name, version, store_path);
+        sample_installed_from_registry_with_flags(name, version, registry, store_path, true, false)
+    }
+
+    fn sample_installed_from_registry_with_flags(
+        name: &str,
+        version: &str,
+        registry: &str,
+        store_path: &str,
+        explicit: bool,
+        held: bool,
+    ) -> InstalledMeta {
+        let mut meta = sample_installed_with_flags(name, version, store_path, explicit, held);
         meta.apm.as_mut().unwrap().registry = registry.to_string();
         meta
     }
@@ -1435,6 +1468,54 @@ source_nar_hash = ""
         assert_eq!(closures.len(), 1);
         assert_eq!(closures[0].registry_name, "low-priority");
         assert_eq!(closures[0].root.store_path, low_path);
+    }
+
+    #[test]
+    fn reinstall_resolution_prefers_explicit_duplicate_source_registry() {
+        let tmp = TempDir::new().unwrap();
+        let high_path = "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-priority-tool-2.0.0";
+        let low_path = "/nix/store/llllllllllllllllllllllllllllllll-priority-tool-9.0.0";
+        let high_toml = package_toml("priority-tool", "2.0.0", high_path);
+        let low_toml = package_toml("priority-tool", "9.0.0", low_path);
+        let high = crate::registry::tests::make_registry(
+            &tmp,
+            "high-priority",
+            900,
+            &[("priority-tool", high_toml.as_str())],
+        );
+        let low = crate::registry::tests::make_registry(
+            &tmp,
+            "low-priority",
+            100,
+            &[("priority-tool", low_toml.as_str())],
+        );
+        let registries = RegistrySet::new(vec![high, low]);
+        let installed = vec![
+            sample_installed_from_registry_with_flags(
+                "priority-tool",
+                "9.0.0",
+                "low-priority",
+                low_path,
+                false,
+                false,
+            ),
+            sample_installed_from_registry_with_flags(
+                "priority-tool",
+                "2.0.0",
+                "high-priority",
+                high_path,
+                true,
+                true,
+            ),
+        ];
+        let packages = vec!["priority-tool".to_string()];
+
+        let closures =
+            resolve_install_closures(&registries, &packages, None, true, &installed).unwrap();
+
+        assert_eq!(closures.len(), 1);
+        assert_eq!(closures[0].registry_name, "high-priority");
+        assert_eq!(closures[0].root.store_path, high_path);
     }
 
     #[test]
@@ -1524,6 +1605,33 @@ source_nar_hash = ""
 
         let flags = installed_flags_by_name(&installed);
         let entry = flags.get("switch-tool").unwrap();
+        assert!(entry.explicit);
+        assert!(entry.held);
+    }
+
+    #[test]
+    fn installed_flags_by_name_prefers_explicit_duplicate_name() {
+        let installed = vec![
+            sample_installed_from_registry_with_flags(
+                "priority-tool",
+                "9.0.0",
+                "low-priority",
+                "/nix/store/llllllllllllllllllllllllllllllll-priority-tool-9.0.0",
+                false,
+                false,
+            ),
+            sample_installed_from_registry_with_flags(
+                "priority-tool",
+                "2.0.0",
+                "high-priority",
+                "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-priority-tool-2.0.0",
+                true,
+                true,
+            ),
+        ];
+
+        let flags = installed_flags_by_name(&installed);
+        let entry = flags.get("priority-tool").unwrap();
         assert!(entry.explicit);
         assert!(entry.held);
     }

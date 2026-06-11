@@ -6,7 +6,7 @@
 //! [`crate::types::ApmMeta`]), so it survives generation switches and is
 //! visible to `apm list`/`apm held`.
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use super::config::ApmConfig;
 use super::profile::Profile;
@@ -111,15 +111,40 @@ pub async fn run_held(config: &ApmConfig, printer: &Printer) -> Result<()> {
 /// component of the matching package's store path.
 fn find_installed_by_name(profile: &Profile, name: &str) -> Result<(String, InstalledMeta)> {
     let all = meta::list_meta(profile)?;
-    for m in all {
-        if let Some(ref apm) = m.apm {
-            if apm.name == name {
-                let hash = store_path_hash(&m.store_path).to_string();
-                return Ok((hash, m));
-            }
+    select_installed_by_name(all, name)
+}
+
+/// Select the installed entry a name-based hold operation should mutate.
+///
+/// A package name can appear more than once when an explicit root from one
+/// registry shadows an automatic same-name dependency from another registry.
+/// Prefer explicit roots, because `apm hold <name>` is a user-directed
+/// operation on the package they installed. If only automatic entries exist,
+/// preserve the historical behavior and use the first match.
+fn select_installed_by_name(
+    installed: Vec<InstalledMeta>,
+    name: &str,
+) -> Result<(String, InstalledMeta)> {
+    let mut fallback = None;
+
+    for m in installed {
+        let Some(apm) = m.apm.as_ref() else {
+            continue;
+        };
+        if apm.name != name {
+            continue;
+        }
+
+        let hash = store_path_hash(&m.store_path).to_string();
+        if apm.explicit {
+            return Ok((hash, m));
+        }
+        if fallback.is_none() {
+            fallback = Some((hash, m));
         }
     }
-    bail!("package not found: {name}");
+
+    fallback.ok_or_else(|| anyhow::anyhow!("package not found: {name}"))
 }
 
 /// Build the JSON document for a hold/unhold result, degrading gracefully
@@ -162,6 +187,16 @@ mod tests {
     }
 
     fn sample_meta(name: &str, store_path: &str, held: bool) -> InstalledMeta {
+        sample_meta_with_flags(name, store_path, "aos-core", true, held)
+    }
+
+    fn sample_meta_with_flags(
+        name: &str,
+        store_path: &str,
+        registry: &str,
+        explicit: bool,
+        held: bool,
+    ) -> InstalledMeta {
         InstalledMeta {
             store_path: store_path.into(),
             pushed_at: 1707800000,
@@ -173,8 +208,8 @@ mod tests {
             apm: Some(ApmMeta {
                 name: name.into(),
                 version: "1.0".into(),
-                explicit: true,
-                registry: "aos-core".into(),
+                explicit,
+                registry: registry.into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held,
                 source_drv: String::new(),
@@ -201,6 +236,51 @@ mod tests {
 
         let loaded = meta::read_meta(&profile, "abc123").unwrap().unwrap();
         assert!(loaded.apm.as_ref().unwrap().held);
+    }
+
+    #[test]
+    fn hold_selection_prefers_explicit_duplicate_name() {
+        let installed = vec![
+            sample_meta_with_flags(
+                "priority-tool",
+                "/var/lib/store/bbb222-priority-tool-9.0.0",
+                "low-priority",
+                false,
+                false,
+            ),
+            sample_meta_with_flags(
+                "priority-tool",
+                "/var/lib/store/ccc333-priority-tool-2.0.0",
+                "high-priority",
+                true,
+                false,
+            ),
+        ];
+
+        let (hash, selected) = select_installed_by_name(installed, "priority-tool").unwrap();
+
+        assert_eq!(hash, "ccc333");
+        let apm = selected.apm.as_ref().unwrap();
+        assert_eq!(apm.registry, "high-priority");
+        assert!(apm.explicit);
+    }
+
+    #[test]
+    fn hold_selection_keeps_implicit_only_behavior() {
+        let installed = vec![sample_meta_with_flags(
+            "priority-tool",
+            "/var/lib/store/bbb222-priority-tool-9.0.0",
+            "low-priority",
+            false,
+            false,
+        )];
+
+        let (hash, selected) = select_installed_by_name(installed, "priority-tool").unwrap();
+
+        assert_eq!(hash, "bbb222");
+        let apm = selected.apm.as_ref().unwrap();
+        assert_eq!(apm.registry, "low-priority");
+        assert!(!apm.explicit);
     }
 
     #[test]
