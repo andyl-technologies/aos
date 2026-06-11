@@ -3078,6 +3078,110 @@ in {
           'index("bin/host-install-tool") != null and index("share/host-install/payload.txt") != null' \
           "$work/apm-files-host-install-v2.json" >/dev/null
 
+        main_home="$home"
+        main_config="$config"
+        main_data="$data"
+        main_cache="$cache"
+        main_profile_root="$profile_root"
+        main_profile="$profile"
+        home="$work/commit-pin-home"
+        config="$work/commit-pin-config"
+        data="$work/commit-pin-share"
+        cache="$work/commit-pin-cache"
+        profile_root="$work/commit-pin-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
+          --name host-install-commit \
+          --commit "$install_remote_v1_commit" \
+          > "$work/apm-add-host-install-commit.out" 2>&1
+        grep -q "Registry 'host-install-commit' added" \
+          "$work/apm-add-host-install-commit.out"
+        grep -q "commit = \"$install_remote_v1_commit\"" \
+          "$config/apm/registries.d/host-install-commit.toml"
+        run_clean ${self}/bin/apm --json search hostinstall \
+          --registry host-install-commit \
+          > "$work/apm-search-host-install-commit.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-commit"
+            and .[0].version == "1.0.0"' \
+          "$work/apm-search-host-install-commit.json" >/dev/null
+        run_clean ${self}/bin/apm --json update --registry host-install-commit \
+          > "$work/apm-update-host-install-commit-current.json"
+        install_remote_v1_tracking="commit:$(${pkgs.coreutils}/bin/printf '%s' "$install_remote_v1_commit" | ${pkgs.coreutils}/bin/cut -c1-12)"
+        ${pkgs.jq}/bin/jq -e \
+          --arg commit "$install_remote_v1_commit" \
+          --arg tracking "$install_remote_v1_tracking" \
+          '.registry == "host-install-commit"
+            and .updated == 0
+            and (.registries | length == 1)
+            and .registries[0].registry == "host-install-commit"
+            and .registries[0].status == "current"
+            and .registries[0].tracking == $tracking
+            and .registries[0].commit == $commit' \
+          "$work/apm-update-host-install-commit-current.json" >/dev/null
+        if nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-before-commit-pin.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$install_store" \
+            > "$work/nix-delete-host-install-before-commit-pin.out" 2>&1
+        fi
+        if nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-before-commit-pin.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$install_leaf_store" \
+            > "$work/nix-delete-host-leaf-before-commit-pin.out" 2>&1
+        fi
+        if nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-commit-pin-deleted.out" 2>&1; then
+          cat "$work/nix-valid-host-install-commit-pin-deleted.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-commit-pin-deleted.out" 2>&1; then
+          cat "$work/nix-valid-host-leaf-commit-pin-deleted.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-install-commit \
+          --yes > "$work/apm-install-host-install-commit.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall"]
+            and .generation == 1
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-commit"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+            and (.downloads.planned >= 2)
+            and (.downloads.downloaded >= 2)
+            and (.downloads.imported >= 2)' \
+          "$work/apm-install-host-install-commit.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-commit-run.out"
+        grep -q "host leaf package executed" "$work/host-install-commit-run.out"
+        grep -q "host install package executed" "$work/host-install-commit-run.out"
+        if grep -q "v2 executed" "$work/host-install-commit-run.out"; then
+          cat "$work/host-install-commit-run.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json list --upgradable \
+          --registry host-install-commit > "$work/apm-upgradable-host-install-commit.json"
+        ${pkgs.jq}/bin/jq -e 'length == 0' \
+          "$work/apm-upgradable-host-install-commit.json" >/dev/null
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$main_home"
+        config="$main_config"
+        data="$main_data"
+        cache="$main_cache"
+        profile_root="$main_profile_root"
+        profile="$main_profile"
+
         run_clean ${self}/bin/apm rollback --list > "$work/apm-rollback-list-host-install-v2.out" 2>&1
         grep -q "gen-1: .*hostinstall 1.0.0" "$work/apm-rollback-list-host-install-v2.out"
         grep -q "gen-2: .*hostinstall 2.0.0" "$work/apm-rollback-list-host-install-v2.out"
