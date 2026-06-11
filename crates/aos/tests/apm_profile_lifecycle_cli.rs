@@ -35,6 +35,30 @@ fn apm_profile_lifecycle_cli_lists_holds_executes_and_rolls_back() -> Result<()>
         ],
     )?;
 
+    let search = fixture.run_json(
+        &["--json", "search", "alpha", "--registry", "lifecycle"],
+        "search alpha",
+    )?;
+    assert_package_list(&search, &[("alpha", "2.0.0", "")])?;
+
+    let shown = fixture.run_json(
+        &["--json", "show", "alpha", "--registry", "lifecycle"],
+        "show alpha",
+    )?;
+    assert_eq!(shown["name"], "alpha");
+    assert_eq!(shown["version"], "2.0.0");
+    assert_eq!(shown["registry"], "lifecycle");
+    assert_eq!(shown["installed"], true);
+
+    let policy = fixture.run_json(&["--json", "policy", "alpha"], "policy alpha")?;
+    assert_eq!(policy["package"], "alpha");
+    assert_eq!(policy["installed"], "2.0.0");
+    assert_eq!(policy["candidate"], "2.0.0");
+    assert_policy_versions(&policy, &[("2.0.0", true)])?;
+
+    let files = fixture.run_json(&["--json", "files", "alpha"], "files alpha")?;
+    assert_eq!(files, serde_json::json!(["bin/alpha"]));
+
     let held = fixture.run_json(&["--json", "held"], "held before hold")?;
     assert_eq!(
         held.as_array()
@@ -91,6 +115,54 @@ fn apm_profile_lifecycle_cli_lists_holds_executes_and_rolls_back() -> Result<()>
         "list installed after rollback",
     )?;
     assert_package_list(&installed, &[("alpha", "1.0.0", "installed")])?;
+
+    let removed = fixture.run_json(
+        &["--json", "registry", "remove", "lifecycle", "--force"],
+        "registry remove",
+    )?;
+    assert_eq!(removed["action"], "registry_remove");
+    assert_eq!(removed["status"], "removed");
+    assert_eq!(removed["registry"], "lifecycle");
+    assert_eq!(removed["config_removed"], true);
+    assert_eq!(removed["cache_removed"], true);
+    assert!(
+        !fixture
+            .xdg_config
+            .join("apm/registries.d/lifecycle.toml")
+            .exists(),
+        "registry remove should delete the config file"
+    );
+    assert_eq!(fixture.run_profile_command("alpha")?, "alpha 1.0.0\n");
+
+    let orphans = fixture.run_json(&["--json", "orphans"], "orphans")?;
+    assert_orphans(&orphans, &[("alpha", "1.0.0", "lifecycle")])?;
+
+    let installed = fixture.run_json(&["--json", "list", "--installed"], "list orphaned")?;
+    assert_package_list(&installed, &[("alpha", "1.0.0", "unavailable")])?;
+
+    let search_installed = fixture.run_json(
+        &["--json", "search", "--installed", "alpha"],
+        "search installed orphaned",
+    )?;
+    assert_eq!(
+        search_installed[0]["description"], "installed package unavailable in registry",
+        "{search_installed}",
+    );
+
+    let orphan_policy = fixture.run_json(&["--json", "policy", "alpha"], "policy orphaned")?;
+    assert_eq!(orphan_policy["installed"], "1.0.0");
+    assert!(orphan_policy["candidate"].is_null(), "{orphan_policy}");
+    assert_eq!(
+        orphan_policy["versions"]
+            .as_array()
+            .context("policy versions should be an array")?
+            .len(),
+        0
+    );
+    assert_eq!(
+        orphan_policy["unavailable_installed"],
+        serde_json::json!([{"registry": "lifecycle", "version": "1.0.0"}])
+    );
 
     Ok(())
 }
@@ -425,6 +497,30 @@ fn assert_package_list(json: &Value, expected: &[(&str, &str, &str)]) -> Result<
                 "{json}",
             );
         }
+    }
+    Ok(())
+}
+
+fn assert_policy_versions(json: &Value, expected: &[(&str, bool)]) -> Result<()> {
+    let versions = json["versions"]
+        .as_array()
+        .context("policy versions should be an array")?;
+    assert_eq!(versions.len(), expected.len(), "{json}");
+    for (entry, (version, installed)) in versions.iter().zip(expected.iter()) {
+        assert_eq!(entry["version"], *version, "{json}");
+        assert_eq!(entry["registry"], "lifecycle", "{json}");
+        assert_eq!(entry["installed"], *installed, "{json}");
+    }
+    Ok(())
+}
+
+fn assert_orphans(json: &Value, expected: &[(&str, &str, &str)]) -> Result<()> {
+    let entries = json.as_array().context("orphans should be an array")?;
+    assert_eq!(entries.len(), expected.len(), "{json}");
+    for (entry, (name, version, registry)) in entries.iter().zip(expected.iter()) {
+        assert_eq!(entry["name"], *name, "{json}");
+        assert_eq!(entry["version"], *version, "{json}");
+        assert_eq!(entry["registry"], *registry, "{json}");
     }
     Ok(())
 }
