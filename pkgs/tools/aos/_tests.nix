@@ -1150,6 +1150,7 @@ in {
           "$work/apm-system-registry-add.json" >/dev/null
         grep -q 'last_commit = ' "$system_registry_config"
         test -d "$system_registry_cache/packages"
+        test -d "$system_registry_clone"
         test ! -e "$user_shadow_config"
         test ! -e "$data/apm/remote/host-reg-system"
         run_clean ${self}/bin/apm --json registry --system list \
