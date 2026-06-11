@@ -1,10 +1,13 @@
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
+use aos_core::nar::export::ExportTrailer;
+use aos_package::security::parse_signing_key;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -58,9 +61,10 @@ name = "{registry_name}"
         package_toml(&store_path),
     )?;
 
+    let nix_tools = nix_tool_path()?;
     let output = Command::new(env!("CARGO_BIN_EXE_apr"))
         .env("HOME", &home)
-        .env("PATH", path_with_nix_tools_first()?)
+        .env("PATH", &nix_tools.path)
         .args(["cache", "generate", "--registry", registry_name])
         .arg("--output")
         .arg(&output_dir)
@@ -426,6 +430,193 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() -> Result<()> {
+    if !nix_toolchain_available("apr release --store-path signed cache/channel e2e") {
+        return Ok(());
+    }
+
+    let tmp = tempfile::TempDir::new()?;
+    let producer_aos_root = tmp.path().join("producer-aos-root");
+    let consumer_aos_root = tmp.path().join("consumer-aos-root");
+    prepare_aos_root(&producer_aos_root)?;
+    prepare_aos_root(&consumer_aos_root)?;
+    let Some(fixture) = executable_store_path_fixture(tmp.path(), &producer_aos_root, "1.0.0")?
+    else {
+        eprintln!("skipping apr release --store-path e2e: nix-store could not add release fixture");
+        return Ok(());
+    };
+
+    let maintainer_home = tmp.path().join("maintainer-home");
+    let consumer_home = tmp.path().join("consumer-home");
+    let profile_root = tmp.path().join("profiles");
+    let registry_name = "release-store-path-cache";
+
+    let key_output = run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &["keys", "generate", "release", "--registry", registry_name],
+    )?;
+    let trust_key = extract_public_key(&key_output)?;
+    let key_path = maintainer_home.join(format!(".config/apm/keys/{registry_name}-release.key"));
+    run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &[
+            "create",
+            registry_name,
+            "--trust-key",
+            &trust_key,
+            "--key",
+            key_path.to_str().context("release key path utf-8")?,
+        ],
+    )?;
+
+    let cache_output = tmp.path().join("release-cache-output");
+    let cache_server = StaticHttpServer::spawn(cache_output.clone()).await?;
+    let upload_dir = tmp.path().join("release-origin-upload");
+    let upload_url = format!("file://{}", upload_dir.display());
+    let release = run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &[
+            "release",
+            "1.0.0",
+            "--registry",
+            registry_name,
+            "--store-path",
+            &fixture.tool_store_path,
+            "--name",
+            "fixture-tool",
+            "--description",
+            "Release store-path fixture",
+            "--license",
+            "MIT",
+            "--maintainer",
+            "registry@example.com",
+            "--key",
+            key_path.to_str().context("release key path utf-8")?,
+            "--cache-output",
+            cache_output.to_str().context("cache output path utf-8")?,
+            "--cache-url",
+            &cache_server.base_url(),
+            "--cache-priority",
+            "41",
+            "--channel",
+            "stable",
+            "--init-channel",
+            "--upload-url",
+            &upload_url,
+        ],
+    )?;
+    assert!(
+        release.contains("Committed: publish fixture-tool 1.0.0"),
+        "{release}",
+    );
+    assert!(
+        release.contains("Updated registry.toml [[caches]]"),
+        "{release}",
+    );
+    assert!(
+        release.contains("Generated static cache: 2 narinfos, 2 NARs"),
+        "{release}",
+    );
+    assert!(
+        release.contains("Initialized channel 'stable'"),
+        "{release}",
+    );
+    assert!(
+        release.contains("Released release-store-path-cache 1.0.0"),
+        "{release}",
+    );
+    assert_cache_entry_count(&cache_output, 2)?;
+
+    let registry_dir = registry_dir(&maintainer_home, registry_name);
+    let package_toml = fs::read_to_string(registry_dir.join("packages/f/fixture-tool.toml"))?;
+    assert!(
+        package_toml.contains(&format!("store_path = \"{}\"", fixture.tool_store_path)),
+        "{package_toml}",
+    );
+    let helper_hash = store_path_hash(&fixture.helper_store_path)?;
+    assert!(
+        package_toml.contains(&format!("\"{helper_hash}\"")),
+        "published package metadata should record helper reference {helper_hash}:\n{package_toml}",
+    );
+    assert!(
+        fs::read_to_string(registry_dir.join("registry.toml"))?
+            .contains(&format!("url = \"{}\"", cache_server.base_url())),
+        "release should commit the static cache pointer",
+    );
+    assert!(
+        upload_dir.join("channels/stable/00").exists(),
+        "uploaded signed channel is missing a partition in {}",
+        upload_dir.display(),
+    );
+
+    let origin_server = StaticHttpServer::spawn(upload_dir.clone()).await?;
+    let added = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &[
+            "--json",
+            "registry",
+            "add",
+            &origin_server.base_url(),
+            "--trust-key",
+            &trust_key,
+            "--name",
+            registry_name,
+            "--channel",
+            "stable",
+        ],
+        "verified release-store-path registry add",
+    )?;
+    assert_eq!(added["action"], "registry_add");
+    assert_eq!(added["registry"], registry_name);
+    assert_eq!(added["synced"], true, "{added}");
+    assert_eq!(added["packages"], 1, "{added}");
+    assert_eq!(added["signing_required"], true, "{added}");
+    assert_eq!(added["trusted_key_pinned"], true, "{added}");
+
+    let installed = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &[
+            "--json",
+            "--yes",
+            "install",
+            "fixture-tool",
+            "--registry",
+            registry_name,
+        ],
+        "install release-store-path fixture",
+    )?;
+    assert_eq!(installed["action"], "install");
+    assert_eq!(installed["status"], "installed", "{installed}");
+    assert_eq!(installed["downloads"]["downloaded"], 2, "{installed}");
+    assert_eq!(installed["downloads"]["imported"], 2, "{installed}");
+    assert_eq!(
+        run_profile_tool(&profile_root, "fixture-tool")?,
+        "fixture-helper 1.0.0\nfixture-tool 1.0.0\n"
+    );
+
+    let verified = run_aos_package_json_with_env(
+        &consumer_home,
+        &consumer_aos_root,
+        &profile_root,
+        &["--json", "verify", "fixture-tool"],
+        "verify release-store-path fixture",
+    )?;
+    assert_eq!(verified["package"], "fixture-tool");
+    assert_eq!(verified["registry"], registry_name);
+    assert_eq!(verified["version"], "1.0.0");
+    assert_eq!(verified["verified"], true, "{verified}");
+
+    Ok(())
+}
+
 fn only_narinfo(dir: &std::path::Path) -> Result<std::path::PathBuf> {
     let narinfos = fs::read_dir(dir)?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
@@ -486,6 +677,7 @@ fn tiny_store_path_fixture() -> Result<Option<String>> {
         .tempfile()?;
     fs::write(tmp.path(), b"aos apr cache cli fixture\n")?;
     let output = nix_store_command()?
+        .env_remove("LD_LIBRARY_PATH")
         .args(["--add-fixed", "sha256"])
         .arg(tmp.path())
         .output()
@@ -564,6 +756,7 @@ fn registry_dir(home: &Path, name: &str) -> PathBuf {
 
 struct ExecutableFixture {
     tool_store_path: String,
+    helper_store_path: String,
 }
 
 fn executable_store_path_fixture(
@@ -607,7 +800,39 @@ fn executable_store_path_fixture(
     let Some(tool_store_path) = add_path_to_store(aos_root, &source, "tool")? else {
         return Ok(None);
     };
-    Ok(Some(ExecutableFixture { tool_store_path }))
+    register_store_references(
+        aos_root,
+        &tool_store_path,
+        std::slice::from_ref(&helper_store_path),
+    )?;
+    Ok(Some(ExecutableFixture {
+        tool_store_path,
+        helper_store_path,
+    }))
+}
+
+fn extract_public_key(output: &str) -> Result<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let value = line.split_whitespace().last()?;
+            parse_signing_key(value).ok().map(|_| value.to_string())
+        })
+        .next()
+        .with_context(|| {
+            format!("apr keys generate output did not contain a public key:\n{output}")
+        })
+}
+
+fn store_path_hash(store_path: &str) -> Result<String> {
+    let basename = Path::new(store_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("store path should have a valid basename: {store_path}"))?;
+    let (hash, _) = basename
+        .split_once('-')
+        .with_context(|| format!("store path basename should include a hash prefix: {basename}"))?;
+    Ok(hash.to_string())
 }
 
 fn deterministic_payload(len: usize) -> Vec<u8> {
@@ -616,6 +841,7 @@ fn deterministic_payload(len: usize) -> Vec<u8> {
 
 fn add_path_to_store(aos_root: &Path, source: &Path, label: &str) -> Result<Option<String>> {
     let output = nix_store_command()?
+        .env_remove("LD_LIBRARY_PATH")
         .envs(nix_command_env(aos_root))
         .args(["--add"])
         .arg(source)
@@ -633,20 +859,99 @@ fn add_path_to_store(aos_root: &Path, source: &Path, label: &str) -> Result<Opti
     ))
 }
 
+fn register_store_references(
+    aos_root: &Path,
+    store_path: &str,
+    references: &[String],
+) -> Result<()> {
+    let dump = nix_store_command()?
+        .env_remove("LD_LIBRARY_PATH")
+        .envs(nix_command_env(aos_root))
+        .args(["--dump", store_path])
+        .output()
+        .with_context(|| format!("running nix-store --dump {store_path}"))?;
+    if !dump.status.success() {
+        bail!(
+            "nix-store --dump failed for {store_path}: {}",
+            String::from_utf8_lossy(&dump.stderr).trim(),
+        );
+    }
+
+    let deleted = nix_store_command()?
+        .env_remove("LD_LIBRARY_PATH")
+        .envs(nix_command_env(aos_root))
+        .args(["--delete", store_path])
+        .output()
+        .with_context(|| format!("running nix-store --delete {store_path}"))?;
+    if !deleted.status.success() {
+        bail!(
+            "nix-store --delete failed for {store_path}: {}",
+            String::from_utf8_lossy(&deleted.stderr).trim(),
+        );
+    }
+
+    let trailer = ExportTrailer::new(store_path, references.to_vec(), None);
+    let mut child = nix_store_command()?
+        .env_remove("LD_LIBRARY_PATH")
+        .envs(nix_command_env(aos_root))
+        .arg("--import")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawning nix-store --import")?;
+    {
+        let stdin = child.stdin.as_mut().context("nix-store --import stdin")?;
+        trailer
+            .write_import_stream(stdin, &dump.stdout)
+            .context("writing referenced import stream")?;
+        stdin.flush().context("flushing referenced import stream")?;
+    }
+    let imported = child
+        .wait_with_output()
+        .context("waiting for nix-store --import")?;
+    if !imported.status.success() {
+        bail!(
+            "nix-store --import failed for {store_path}: {}",
+            String::from_utf8_lossy(&imported.stderr).trim(),
+        );
+    }
+
+    let refs = nix_store_command()?
+        .env_remove("LD_LIBRARY_PATH")
+        .envs(nix_command_env(aos_root))
+        .args(["-q", "--references", store_path])
+        .output()
+        .with_context(|| format!("running nix-store -q --references {store_path}"))?;
+    if !refs.status.success() {
+        bail!(
+            "nix-store -q --references failed for {store_path}: {}",
+            String::from_utf8_lossy(&refs.stderr).trim(),
+        );
+    }
+    let refs_stdout = String::from_utf8_lossy(&refs.stdout);
+    for reference in references {
+        assert!(
+            refs_stdout.lines().any(|line| line.trim() == reference),
+            "registered references for {store_path} should contain {reference}:\n{refs_stdout}",
+        );
+    }
+    Ok(())
+}
+
 fn prepare_aos_root(aos_root: &Path) -> Result<()> {
-    fs::create_dir_all(aos_root.join("store"))?;
+    fs::create_dir_all(nix_store_dir(aos_root))?;
     fs::create_dir_all(aos_root.join("var/nix/log/nix"))?;
     initialize_nix_store(aos_root)?;
     Ok(())
 }
 
 fn nix_command_env(aos_root: &Path) -> Vec<(&'static str, String)> {
+    let store_dir = nix_store_dir(aos_root);
     vec![
         ("AOS_ROOT", aos_root.display().to_string()),
-        (
-            "NIX_STORE_DIR",
-            aos_root.join("store").display().to_string(),
-        ),
+        ("AOS_NIX_STORE_DIR", store_dir.display().to_string()),
+        ("NIX_STORE_DIR", store_dir.display().to_string()),
         (
             "NIX_STATE_DIR",
             aos_root.join("var/nix").display().to_string(),
@@ -658,8 +963,16 @@ fn nix_command_env(aos_root: &Path) -> Vec<(&'static str, String)> {
     ]
 }
 
+fn nix_store_dir(aos_root: &Path) -> PathBuf {
+    aos_root
+        .parent()
+        .map(|parent| parent.join("shared-store"))
+        .unwrap_or_else(|| aos_root.join("store"))
+}
+
 fn initialize_nix_store(aos_root: &Path) -> Result<()> {
     let output = nix_store_command()?
+        .env_remove("LD_LIBRARY_PATH")
         .envs(nix_command_env(aos_root))
         .arg("--init")
         .output()
@@ -699,6 +1012,7 @@ fn run_profile_tool(profile_root: &Path, command: &str) -> Result<String> {
 }
 
 fn run_apr_with_aos_root(home: &Path, aos_root: &Path, args: &[&str]) -> Result<String> {
+    let nix_tools = nix_tool_path()?;
     let mut command = Command::new(env!("CARGO_BIN_EXE_apr"));
     command
         .env("HOME", home)
@@ -709,7 +1023,7 @@ fn run_apr_with_aos_root(home: &Path, aos_root: &Path, args: &[&str]) -> Result<
         .env("GIT_AUTHOR_EMAIL", "registry@example.com")
         .env("GIT_COMMITTER_NAME", "Registry Test")
         .env("GIT_COMMITTER_EMAIL", "registry@example.com")
-        .env("PATH", path_with_nix_tools_first()?)
+        .env("PATH", &nix_tools.path)
         .args(args);
     let output = command
         .output()
@@ -732,11 +1046,12 @@ fn run_aos_package_json_with_env(
     args: &[&str],
     action: &str,
 ) -> Result<Value> {
+    let nix_tools = nix_tool_path()?;
     let output = Command::new(env!("CARGO_BIN_EXE_aos"))
         .env("HOME", home)
         .envs(nix_command_env(aos_root))
         .env("AOS_PROFILE_ROOT", profile_root)
-        .env("PATH", path_with_nix_tools_first()?)
+        .env("PATH", &nix_tools.path)
         .arg("package")
         .args(args)
         .output()
@@ -819,27 +1134,45 @@ fn nix_store_command() -> Result<Command> {
     Ok(Command::new(path))
 }
 
-fn path_with_nix_tools_first() -> Result<OsString> {
-    let mut paths = Vec::new();
-    for path in [
-        find_working_tool("nix", "AOS_TEST_NIX"),
-        find_working_tool("nix-store", "AOS_TEST_NIX_STORE"),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if let Some(parent) = path.parent() {
-            push_unique_path(&mut paths, parent.to_path_buf());
-        }
+struct NixToolPath {
+    _tmp: tempfile::TempDir,
+    path: OsString,
+}
+
+fn nix_tool_path() -> Result<NixToolPath> {
+    let tmp = tempfile::Builder::new()
+        .prefix("aos-nix-tools-")
+        .tempdir()
+        .context("creating Nix tool wrapper directory")?;
+    let shell = find_shell()?;
+
+    for (command, override_env) in [("nix", "AOS_TEST_NIX"), ("nix-store", "AOS_TEST_NIX_STORE")] {
+        let real = find_working_tool(command, override_env)
+            .with_context(|| format!("no working {command} found"))?;
+        let wrapper = tmp.path().join(command);
+        fs::write(
+            &wrapper,
+            format!(
+                "#!{}\nunset LD_LIBRARY_PATH\nexec \"{}\" \"$@\"\n",
+                shell.display(),
+                real.display(),
+            ),
+        )
+        .with_context(|| format!("writing {}", wrapper.display()))?;
+        make_executable(&wrapper)?;
     }
 
+    let mut paths = vec![tmp.path().to_path_buf()];
     if let Some(current) = std::env::var_os("PATH") {
         for path in std::env::split_paths(&current) {
             push_unique_path(&mut paths, path);
         }
     }
 
-    std::env::join_paths(paths).context("joining PATH with Nix toolchain first")
+    Ok(NixToolPath {
+        _tmp: tmp,
+        path: std::env::join_paths(paths).context("joining PATH with Nix wrappers first")?,
+    })
 }
 
 fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
@@ -872,6 +1205,7 @@ fn find_working_tool(command: &str, override_env: &str) -> Option<PathBuf> {
 
 fn tool_reports_version(candidate: &Path) -> bool {
     Command::new(candidate)
+        .env_remove("LD_LIBRARY_PATH")
         .arg("--version")
         .output()
         .is_ok_and(|output| output.status.success())
