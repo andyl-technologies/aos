@@ -2551,8 +2551,8 @@ async fn registry_set_enabled(
     match (enabled, previous_enabled == enabled) {
         (true, true) => printer.info(&format!("Registry '{name}' is already enabled.")),
         (true, false) => printer.success(&format!("Registry '{name}' enabled.")),
-        (false, true) => printer.success(&format!("Registry '{name}' disabled.")),
-        (false, false) => printer.info(&format!("Registry '{name}' is already disabled.")),
+        (false, true) => printer.info(&format!("Registry '{name}' is already disabled.")),
+        (false, false) => printer.success(&format!("Registry '{name}' disabled.")),
     }
 
     Ok(())
