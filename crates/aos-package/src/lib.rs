@@ -2556,9 +2556,13 @@ async fn registry_remove(
         }
     }
 
-    let key_store =
-        security::KeyStore::new(trusted_key_dirs_for_registry_removal(config, &toml_path));
-    let trusted_keys_removed = key_store.remove(name)?;
+    let trusted_keys_removed = trusted_key_dir_sets_for_registry_removal(config, &toml_path)
+        .into_iter()
+        .try_fold(false, |removed, dirs| {
+            security::KeyStore::new(dirs)
+                .remove(name)
+                .map(|current| removed || current)
+        })?;
 
     if printer.mode() == OutputMode::Json {
         printer.json(&serde_json::json!({
@@ -2776,16 +2780,20 @@ fn registry_config_path_for_removal(config: &config::ApmConfig, name: &str) -> R
     }
 }
 
-/// Return the trust-store layer to clean up for a registry removal.
+/// Return the trust-store layers to clean up for a registry removal.
 ///
-/// Most user-scope removals should only remove or mask user trust entries.
+/// Most user-scope removals should remove or mask user trust entries.
 /// When user scope is operating on a writable redirected system registry
-/// config, however, the registry itself is being removed from the system layer;
-/// its associated system trust key should be removed from that same layer too.
-fn trusted_key_dirs_for_registry_removal(
+/// config, however, the registry itself is being removed from the system layer.
+/// In that case cleanup both layers: any colocated system trust key first,
+/// then user trust pins learned from the system registry during updates. The
+/// order matters because user cleanup masks read-only system anchors that
+/// remain; when the system key is being deleted too, no user revocation marker
+/// should be left behind for it.
+fn trusted_key_dir_sets_for_registry_removal(
     config: &config::ApmConfig,
     removed_config_path: &std::path::Path,
-) -> Vec<PathBuf> {
+) -> Vec<Vec<PathBuf>> {
     if config.scope == ProfileScope::User {
         if let Some(file_name) = removed_config_path.file_name() {
             let system_registry_config = ProfileScope::System
@@ -2793,12 +2801,15 @@ fn trusted_key_dirs_for_registry_removal(
                 .join("registries.d")
                 .join(file_name);
             if removed_config_path == system_registry_config {
-                return ProfileScope::System.trusted_keys_dirs();
+                return vec![
+                    ProfileScope::System.trusted_keys_dirs(),
+                    config.scope.trusted_keys_dirs(),
+                ];
             }
         }
     }
 
-    config.scope.trusted_keys_dirs()
+    vec![config.scope.trusted_keys_dirs()]
 }
 
 #[cfg(test)]
@@ -3011,6 +3022,55 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn registry_remove_user_config_cleans_user_trust_layer() {
+        let tmp = TempDir::new().unwrap();
+        let config = make_config(&tmp, vec![]);
+        let removed_config = ProfileScope::User
+            .config_dir()
+            .join("registries.d")
+            .join("host-reg.toml");
+
+        assert_eq!(
+            trusted_key_dir_sets_for_registry_removal(&config, &removed_config),
+            vec![ProfileScope::User.trusted_keys_dirs()]
+        );
+    }
+
+    #[test]
+    fn registry_remove_redirected_system_config_cleans_both_trust_layers() {
+        let tmp = TempDir::new().unwrap();
+        let config = make_config(&tmp, vec![]);
+        let removed_config = ProfileScope::System
+            .config_dir()
+            .join("registries.d")
+            .join("host-install-channel.toml");
+
+        assert_eq!(
+            trusted_key_dir_sets_for_registry_removal(&config, &removed_config),
+            vec![
+                ProfileScope::System.trusted_keys_dirs(),
+                ProfileScope::User.trusted_keys_dirs()
+            ]
+        );
+    }
+
+    #[test]
+    fn registry_remove_system_scope_cleans_system_trust_layer() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = make_config(&tmp, vec![]);
+        config.scope = ProfileScope::System;
+        let removed_config = ProfileScope::System
+            .config_dir()
+            .join("registries.d")
+            .join("host-install-channel.toml");
+
+        assert_eq!(
+            trusted_key_dir_sets_for_registry_removal(&config, &removed_config),
+            vec![ProfileScope::System.trusted_keys_dirs()]
+        );
     }
 
     #[test]

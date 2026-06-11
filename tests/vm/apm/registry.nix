@@ -2316,6 +2316,12 @@ in {
       cat /tmp/maint-diff-stat.out
       assert_file_contains /tmp/maint-diff-stat.out "registry.toml" \
         "apr diff --stat shows tracked cache pointer update"
+      assert_file_contains /tmp/maint-diff-stat.out "packages/m/maint-git.toml" \
+        "apr diff --stat shows untracked git package metadata"
+      assert_file_contains /tmp/maint-diff-stat.out "packages/m/maint-curl.toml" \
+        "apr diff --stat shows untracked curl package metadata"
+      assert_file_contains /tmp/maint-diff-stat.out "packages/m/maint-runner.toml" \
+        "apr diff --stat shows untracked runner package metadata"
       $APR --json diff --registry maint-reg --stat \
         > /tmp/maint-diff-stat.json 2>&1 || {
         cat /tmp/maint-diff-stat.json
@@ -2326,12 +2332,18 @@ in {
           and .stat == true
           and .clean == false
           and (.changed_files | any(.status == "M" and .path == "registry.toml"))
-          and (.output | contains("registry.toml"))' \
+          and (.changed_files | any(.status == "A" and .path == "packages/m/maint-git.toml" and .untracked == true))
+          and (.changed_files | any(.status == "A" and .path == "packages/m/maint-curl.toml" and .untracked == true))
+          and (.changed_files | any(.status == "A" and .path == "packages/m/maint-runner.toml" and .untracked == true))
+          and (.output | contains("registry.toml"))
+          and (.output | contains("packages/m/maint-git.toml"))
+          and (.output | contains("packages/m/maint-curl.toml"))
+          and (.output | contains("packages/m/maint-runner.toml"))' \
         /tmp/maint-diff-stat.json >/dev/null || {
         cat /tmp/maint-diff-stat.json
-        fail "apr --json diff --stat reports tracked cache pointer update"
+        fail "apr --json diff --stat reports full maintainer changeset"
       }
-      pass "apr --json diff --stat reports tracked cache pointer update"
+      pass "apr --json diff --stat reports full maintainer changeset"
 
       git -C "$REG_DIR" status --short --untracked-files=all \
         > /tmp/changeset.status

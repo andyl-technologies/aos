@@ -143,9 +143,10 @@ in {
         store_dir="$aos_root/store"
         state_dir="$aos_root/var/nix"
         nix_conf="$work/nix-conf"
+        host_bin="$work/host-bin"
         cache_port="18137"
         install_cache_port="18138"
-        mkdir -p "$home" "$config" "$data" "$cache" "$cache/nix" "$system_config" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$state_dir/log/nix" "$nix_conf"
+        mkdir -p "$home" "$config" "$data" "$cache" "$cache/nix" "$system_config" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$state_dir/log/nix" "$nix_conf" "$host_bin"
         profile="$profile_root/per-user/unknown"
         default_profile="/var/lib/profiles/per-user/unknown"
         cache_server_pid=""
@@ -243,7 +244,7 @@ in {
             GIT_AUTHOR_EMAIL="host-command@example.invalid" \
             GIT_COMMITTER_NAME="Host Command Test" \
             GIT_COMMITTER_EMAIL="host-command@example.invalid" \
-            PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
+            PATH="$host_bin:${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
             "$@"
         }
 
@@ -262,7 +263,7 @@ in {
             NIX_REMOTE="" \
             NIX_CONF_DIR="$nix_conf" \
             GIT_CONFIG_NOSYSTEM=1 \
-            PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
+            PATH="$host_bin:${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
             "$@"
         }
 
@@ -1502,6 +1503,83 @@ in {
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and .deltas == []' \
           "$work/apr-release-resume.json" >/dev/null
+        assert_no_profile
+
+        run_clean ${self}/bin/apr create host-resume \
+          > "$work/apr-create-host-resume.out" 2>&1
+        resume_reg="$data/apm/registries/host-resume"
+        git -C "$resume_reg" config user.name "Host Command Test"
+        git -C "$resume_reg" config user.email "host-command@example.invalid"
+        resume_hash="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        mkdir -p "$resume_reg/packages/h" "$resume_reg/closures"
+        printf '%s\n' \
+          '[package]' \
+          'name = "hostresume"' \
+          'description = "Host release resume fixture"' \
+          'license = "MIT"' \
+          'maintainer = "host@example.invalid"' \
+          "" \
+          '[[versions]]' \
+          'version = "1.0.0"' \
+          "" \
+          '[versions.platforms.x86_64-linux]' \
+          "store_path = \"/nix/store/$resume_hash-hostresume-1.0.0\"" \
+          'nar_hash = "sha256-EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE="' \
+          'nar_size = 1234' \
+          'closure_size = 1234' \
+          'source_drv = ""' \
+          'source_nar_hash = ""' \
+          'references = []' \
+          > "$resume_reg/packages/h/hostresume.toml"
+        printf '%s\n' "$resume_hash" > "$resume_reg/closures/$resume_hash"
+        git -C "$resume_reg" add -A
+        run_clean git -C "$resume_reg" commit -m "release: hostresume 1.0.0" \
+          > "$work/git-commit-host-resume.out" 2>&1
+        ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/resume-release-key"
+        if run_clean ${self}/bin/apr --json release 1.0.0 \
+          --registry host-resume \
+          --key "$work/resume-release-key" \
+          --cache-output "$work/resume-cache" \
+          --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
+          > "$work/apr-release-host-resume-interrupted.json" 2>&1; then
+          cat "$work/apr-release-host-resume-interrupted.json"
+          exit 1
+        fi
+        ${pkgs.jq}/bin/jq -e \
+          '.error
+            | contains("nix-store -qR failed")
+            and contains("hostresume-1.0.0")
+            and contains("not in the Nix store")' \
+          "$work/apr-release-host-resume-interrupted.json" >/dev/null
+        git -C "$resume_reg" rev-parse --verify '1.0.0^{tag}' \
+          > "$work/apr-release-host-resume-tag.out"
+        resume_pack_dir="$resume_reg/.git/releases/1/0/0/objects/pack"
+        test "$(find "$resume_pack_dir" -name 'pack-*.pack' | grep -c .)" = "1"
+        if run_clean ${self}/bin/apr --json release 1.0.0 \
+          --registry host-resume \
+          --key "$work/resume-release-key" \
+          > "$work/apr-release-host-resume-without-flag.json" 2>&1; then
+          cat "$work/apr-release-host-resume-without-flag.json"
+          exit 1
+        fi
+        grep -q "pass --resume to reuse it" \
+          "$work/apr-release-host-resume-without-flag.json"
+        run_clean ${self}/bin/apr --json release 1.0.0 \
+          --registry host-resume \
+          --key "$work/resume-release-key" \
+          --resume > "$work/apr-release-host-resume-after-interrupt.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "release"
+            and .status == "released"
+            and .registry == "host-resume"
+            and .version == "1.0.0"
+            and .resume == true
+            and .cache == null
+            and .cache_pointer_updated == false
+            and (.full_pack | startswith("pack-") and endswith(".pack"))
+            and .deltas == []' \
+          "$work/apr-release-host-resume-after-interrupt.json" >/dev/null
+        test "$(find "$resume_pack_dir" -name 'pack-*.pack' | grep -c .)" = "1"
         assert_no_profile
 
         if run_clean ${self}/bin/apr sign --registry host-reg --key "$work/release-key" \
@@ -3029,9 +3107,14 @@ in {
           "$work/apm-add-host-keyadd-config.json" >/dev/null
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
           -f "$work/host-keyadd-external-key"
+        cat > "$host_bin/emit-host-keyadd-key" << EOF
+        #!${pkgs.runtimeShell}
+        exec ${pkgs.coreutils}/bin/cat "$work/host-keyadd-external-key"
+        EOF
+        chmod +x "$host_bin/emit-host-keyadd-key"
         run_clean ${self}/bin/apr --json keys register external \
           --registry host-keyadd \
-          --key-command "${pkgs.coreutils}/bin/cat $work/host-keyadd-external-key" \
+          --key-command "emit-host-keyadd-key" \
           > "$work/apr-keys-register-external.json"
         host_keyadd_external=$(${pkgs.jq}/bin/jq -r '.public_key' \
           "$work/apr-keys-register-external.json")
@@ -3049,6 +3132,8 @@ in {
             and (.fingerprint | length > 0)' \
           "$work/apr-keys-register-external.json" >/dev/null
         grep -q '"external" = { command = "' \
+          "$config/apm/registries.d/host-keyadd.toml"
+        grep -q 'command = "emit-host-keyadd-key"' \
           "$config/apm/registries.d/host-keyadd.toml"
         run_clean ${self}/bin/apr --json keys add external "$host_keyadd_external" \
           --registry host-keyadd \
