@@ -86,6 +86,29 @@ pub struct DownloadResult {
     pub deriver: Option<String>,
 }
 
+/// Render the planned NAR downloads for machine-readable command output.
+///
+/// Package metadata closures can omit anonymous store references that are
+/// discovered only by reading narinfos. This helper exposes the real download
+/// plan so JSON clients can audit exactly which NARs were fetched or reused.
+pub(crate) fn resolved_downloads_json(resolved: &[ResolvedDownload]) -> Vec<serde_json::Value> {
+    resolved
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "store_path": item.narinfo.store_path.as_str(),
+                "nar_hash": item.narinfo.nar_hash.as_str(),
+                "nar_size": item.narinfo.nar_size,
+                "file_hash": item.narinfo.file_hash.as_deref(),
+                "file_size": item.narinfo.file_size,
+                "compression": item.narinfo.compression.as_str(),
+                "url": item.narinfo.url.as_str(),
+                "references": &item.narinfo.references,
+            })
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // URL helpers
 // ---------------------------------------------------------------------------

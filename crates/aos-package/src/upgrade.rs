@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use super::config::ApmConfig;
 use super::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
-    resolve_mirror,
+    resolve_mirror, resolved_downloads_json,
 };
 use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
@@ -121,7 +121,7 @@ pub async fn run(
                 &held_back,
                 dry_run,
                 None,
-                0,
+                &[],
                 0,
                 0,
             ));
@@ -205,8 +205,6 @@ pub async fn run(
     } else {
         Vec::new()
     };
-    let planned_downloads = resolved.len();
-
     if dry_run {
         if json_mode {
             printer.json(&upgrade_result_json(
@@ -217,7 +215,7 @@ pub async fn run(
                 &held_back,
                 true,
                 None,
-                planned_downloads,
+                &resolved,
                 0,
                 0,
             ));
@@ -370,7 +368,7 @@ pub async fn run(
             &held_back,
             false,
             Some(new_gen.number),
-            planned_downloads,
+            &resolved,
             downloaded_count,
             imported_count,
         ));
@@ -564,7 +562,7 @@ fn upgrade_result_json(
     held_back: &[UpgradeCandidate],
     dry_run: bool,
     generation: Option<u32>,
-    planned_downloads: usize,
+    planned_downloads: &[ResolvedDownload],
     downloaded: usize,
     imported: usize,
 ) -> serde_json::Value {
@@ -579,9 +577,10 @@ fn upgrade_result_json(
         "held_back": held_back.iter().map(upgrade_candidate_json).collect::<Vec<_>>(),
         "upgrades": upgrades.iter().map(upgrade_candidate_json).collect::<Vec<_>>(),
         "downloads": {
-            "planned": planned_downloads,
+            "planned": planned_downloads.len(),
             "downloaded": downloaded,
             "imported": imported,
+            "paths": resolved_downloads_json(planned_downloads),
         },
     })
 }
