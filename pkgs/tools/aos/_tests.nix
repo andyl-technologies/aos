@@ -353,6 +353,70 @@ in {
         test ! -e "$config/apm/escaped-add.toml"
         test ! -e "$data/apm/registries/escaped-add"
 
+        if run_clean ${self}/bin/apm registry add --no-verify --no-clone "file://$work" \
+          --name invalid-branch-tracking \
+          --branch feature..bad \
+          > "$work/apm-add-invalid-branch-tracking.out" 2>&1; then
+          cat "$work/apm-add-invalid-branch-tracking.out"
+          exit 1
+        fi
+        grep -q "invalid branch name" \
+          "$work/apm-add-invalid-branch-tracking.out"
+        test ! -e "$config/apm/registries.d/invalid-branch-tracking.toml"
+        test ! -e "$data/apm/registries/invalid-branch-tracking"
+
+        if run_clean ${self}/bin/apm registry add --no-verify --no-clone "file://$work" \
+          --name invalid-tag-tracking \
+          --tag 'release@{1}' \
+          > "$work/apm-add-invalid-tag-tracking.out" 2>&1; then
+          cat "$work/apm-add-invalid-tag-tracking.out"
+          exit 1
+        fi
+        grep -q "invalid git ref name" \
+          "$work/apm-add-invalid-tag-tracking.out"
+        test ! -e "$config/apm/registries.d/invalid-tag-tracking.toml"
+        test ! -e "$data/apm/registries/invalid-tag-tracking"
+
+        if run_clean ${self}/bin/apm registry add --no-verify --no-clone "file://$work" \
+          --name invalid-commit-tracking \
+          --commit main \
+          > "$work/apm-add-invalid-commit-tracking.out" 2>&1; then
+          cat "$work/apm-add-invalid-commit-tracking.out"
+          exit 1
+        fi
+        grep -q "invalid commit hash" \
+          "$work/apm-add-invalid-commit-tracking.out"
+        test ! -e "$config/apm/registries.d/invalid-commit-tracking.toml"
+        test ! -e "$data/apm/registries/invalid-commit-tracking"
+
+        quoted_registry_url="file://$work/registry \"quoted\""
+        run_clean ${self}/bin/apm --json registry add --no-verify --no-clone "$quoted_registry_url" \
+          --name quoted-url-reg \
+          --branch stable \
+          > "$work/apm-add-quoted-url-reg.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg url "$quoted_registry_url" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "quoted-url-reg"
+            and .url == $url
+            and .tracking == "branch:stable"
+            and .clone == false
+            and .verification_disabled == true' \
+          "$work/apm-add-quoted-url-reg.json" >/dev/null
+        run_clean ${self}/bin/apm --json registry list \
+          > "$work/apm-list-quoted-url-reg.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg url "$quoted_registry_url" \
+          'any(.name == "quoted-url-reg"
+            and .url == $url
+            and .tracking == "branch:stable"
+            and .signing_required == false)' \
+          "$work/apm-list-quoted-url-reg.json" >/dev/null
+        run_clean ${self}/bin/apm registry remove quoted-url-reg \
+          > "$work/apm-remove-quoted-url-reg.out" 2>&1
+        test ! -e "$config/apm/registries.d/quoted-url-reg.toml"
+
         escaped_remove="$data/apm/escaped-remove"
         mkdir -p "$escaped_remove"
         printf '%s\n' "must stay put" > "$escaped_remove/sentinel"
@@ -799,34 +863,56 @@ in {
         git -C "$reg" add -A
         git -C "$reg" commit -m "release: hostpkg 1.0.0" > "$work/git-commit-package.out" 2>&1
 
-        run_clean ${self}/bin/apr --json branch create host-json-feature --registry host-reg \
+        run_clean ${self}/bin/apr --json branch create release/host-json-feature --registry host-reg \
           > "$work/apr-branch-create-json.json"
         ${pkgs.jq}/bin/jq -e \
           '.action == "create"
-            and .branch == "host-json-feature"
+            and .branch == "release/host-json-feature"
             and .current == "stable"
-            and (.branches | any(.name == "host-json-feature" and .current == false))
+            and (.branches | any(.name == "release/host-json-feature" and .current == false))
             and (.branches | any(.name == "stable" and .current == true))' \
           "$work/apr-branch-create-json.json" >/dev/null
-        run_clean ${self}/bin/apr --json branch delete host-json-feature --registry host-reg \
+        run_clean ${self}/bin/apr --json branch delete release/host-json-feature --registry host-reg \
           > "$work/apr-branch-delete-json.json"
         ${pkgs.jq}/bin/jq -e \
           '.action == "delete"
-            and .branch == "host-json-feature"
+            and .branch == "release/host-json-feature"
             and .current == "stable"
-            and (.branches | all(.name != "host-json-feature"))
+            and (.branches | all(.name != "release/host-json-feature"))
             and (.branches | any(.name == "stable" and .current == true))' \
           "$work/apr-branch-delete-json.json" >/dev/null
 
-        run_clean ${self}/bin/apr branch create host-feature --registry host-reg > "$work/apr-branch-create.out" 2>&1
-        grep -q "Created branch 'host-feature'" "$work/apr-branch-create.out"
-        run_clean ${self}/bin/apr branch switch host-feature --registry host-reg > "$work/apr-branch-switch.out" 2>&1
-        grep -q "Switched to branch 'host-feature'" "$work/apr-branch-switch.out"
+        if run_clean ${self}/bin/apr branch create --registry host-reg -- -bad-branch \
+          > "$work/apr-branch-create-invalid-option.out" 2>&1; then
+          cat "$work/apr-branch-create-invalid-option.out"
+          exit 1
+        fi
+        grep -q "invalid branch name" "$work/apr-branch-create-invalid-option.out"
+        if git -C "$reg" show-ref --verify --quiet refs/heads/-bad-branch; then
+          exit 1
+        fi
+        if run_clean ${self}/bin/apr branch switch 'feature@{1}' --registry host-reg \
+          > "$work/apr-branch-switch-invalid-refexpr.out" 2>&1; then
+          cat "$work/apr-branch-switch-invalid-refexpr.out"
+          exit 1
+        fi
+        grep -q "invalid branch name" "$work/apr-branch-switch-invalid-refexpr.out"
+        if run_clean ${self}/bin/apr branch delete feature//bad --registry host-reg \
+          > "$work/apr-branch-delete-invalid-path.out" 2>&1; then
+          cat "$work/apr-branch-delete-invalid-path.out"
+          exit 1
+        fi
+        grep -q "invalid branch name" "$work/apr-branch-delete-invalid-path.out"
+
+        run_clean ${self}/bin/apr branch create feature/hostpkg-metadata --registry host-reg > "$work/apr-branch-create.out" 2>&1
+        grep -q "Created branch 'feature/hostpkg-metadata'" "$work/apr-branch-create.out"
+        run_clean ${self}/bin/apr branch switch feature/hostpkg-metadata --registry host-reg > "$work/apr-branch-switch.out" 2>&1
+        grep -q "Switched to branch 'feature/hostpkg-metadata'" "$work/apr-branch-switch.out"
         run_clean ${self}/bin/apr --json branch list --registry host-reg \
           > "$work/apr-branch-list-feature-current.json"
         ${pkgs.jq}/bin/jq -e \
           '.branches
-            | (any(.name == "host-feature" and .current == true)
+            | (any(.name == "feature/hostpkg-metadata" and .current == true)
               and any(.name == "stable" and .current == false))' \
           "$work/apr-branch-list-feature-current.json" >/dev/null
         printf '%s\n' \
@@ -855,19 +941,26 @@ in {
         run_clean ${self}/bin/apr branch switch stable --registry host-reg > "$work/apr-branch-switch-stable.out" 2>&1
         grep -q "Switched to branch 'stable'" "$work/apr-branch-switch-stable.out"
         run_clean ${self}/bin/apr branch list --registry host-reg > "$work/apr-branch-list.out" 2>&1
-        grep -q "host-feature" "$work/apr-branch-list.out"
+        grep -q "feature/hostpkg-metadata" "$work/apr-branch-list.out"
         run_clean ${self}/bin/apr --json branch list --registry host-reg \
           > "$work/apr-branch-list-stable-current.json"
         ${pkgs.jq}/bin/jq -e \
           '.branches
             | (any(.name == "stable" and .current == true)
-              and any(.name == "host-feature" and .current == false))' \
+              and any(.name == "feature/hostpkg-metadata" and .current == false))' \
           "$work/apr-branch-list-stable-current.json" >/dev/null
-        run_clean ${self}/bin/apr --json merge host-feature --registry host-reg \
+        if run_clean ${self}/bin/apr merge feature..bad --registry host-reg \
+          > "$work/apr-merge-invalid-branch-name.out" 2>&1; then
+          cat "$work/apr-merge-invalid-branch-name.out"
+          exit 1
+        fi
+        grep -q "invalid branch name" \
+          "$work/apr-merge-invalid-branch-name.out"
+        run_clean ${self}/bin/apr --json merge feature/hostpkg-metadata --registry host-reg \
           > "$work/apr-merge-feature.json"
         ${pkgs.jq}/bin/jq -e \
           '.action == "merge"
-            and .branch == "host-feature"
+            and .branch == "feature/hostpkg-metadata"
             and .no_ff == false
             and .squash == false
             and .current == "stable"
@@ -875,10 +968,10 @@ in {
             and (.output | contains("Fast-forward"))
             and (.branches | any(.name == "stable" and .current == true))' \
           "$work/apr-merge-feature.json" >/dev/null
-        run_clean ${self}/bin/apr branch delete host-feature --registry host-reg > "$work/apr-branch-delete-feature.out" 2>&1
-        grep -q "Deleted branch 'host-feature'" "$work/apr-branch-delete-feature.out"
+        run_clean ${self}/bin/apr branch delete feature/hostpkg-metadata --registry host-reg > "$work/apr-branch-delete-feature.out" 2>&1
+        grep -q "Deleted branch 'feature/hostpkg-metadata'" "$work/apr-branch-delete-feature.out"
         run_clean ${self}/bin/apr branch list --registry host-reg > "$work/apr-branch-list-after-delete.out" 2>&1
-        if grep -q "host-feature" "$work/apr-branch-list-after-delete.out"; then
+        if grep -q "feature/hostpkg-metadata" "$work/apr-branch-list-after-delete.out"; then
           cat "$work/apr-branch-list-after-delete.out"
           exit 1
         fi
@@ -887,7 +980,7 @@ in {
         ${pkgs.jq}/bin/jq -e \
           '.branches
             | (any(.name == "stable" and .current == true)
-              and all(.name != "host-feature"))' \
+              and all(.name != "feature/hostpkg-metadata"))' \
           "$work/apr-branch-list-after-delete.json" >/dev/null
 
         run_clean ${self}/bin/apr packages --registry host-reg > "$work/apr-packages.out" 2>&1
@@ -937,6 +1030,13 @@ in {
 
         git init --bare --object-format=sha256 "$work/host-origin.git" > "$work/git-init-origin.out" 2>&1
         git -C "$reg" remote add origin "$work/host-origin.git"
+        if run_clean ${self}/bin/apr push --registry host-reg --branch feature..bad \
+          > "$work/apr-push-invalid-branch-name.out" 2>&1; then
+          cat "$work/apr-push-invalid-branch-name.out"
+          exit 1
+        fi
+        grep -q "invalid branch name" \
+          "$work/apr-push-invalid-branch-name.out"
         run_clean ${self}/bin/apr push --registry host-reg --branch stable --set-upstream > "$work/apr-push.out" 2>&1
         grep -q "Pushed." "$work/apr-push.out"
         run_clean ${self}/bin/apr --json push --registry host-reg --branch stable \
@@ -1229,6 +1329,17 @@ in {
 
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/release-key"
         manual_tag_head=$(git -C "$reg" rev-parse HEAD)
+        if run_clean ${self}/bin/apr tag \
+          --registry host-reg \
+          --key "$work/release-key" \
+          -- -bad-tag > "$work/apr-tag-invalid-option.out" 2>&1; then
+          cat "$work/apr-tag-invalid-option.out"
+          exit 1
+        fi
+        grep -q "git ref name" "$work/apr-tag-invalid-option.out"
+        if git -C "$reg" show-ref --verify --quiet refs/tags/-bad-tag; then
+          exit 1
+        fi
         run_clean ${self}/bin/apr --json tag manual-checkpoint \
           --registry host-reg \
           --message "manual checkpoint before release" \
@@ -1348,6 +1459,15 @@ in {
           exit 1
         fi
         grep -q "pass the existing tag name to re-sign" "$work/apr-sign-missing-tag.out"
+
+        if run_clean ${self}/bin/apr sign bad..tag \
+          --registry host-reg \
+          --key "$work/release-key" \
+          > "$work/apr-sign-invalid-refexpr.out" 2>&1; then
+          cat "$work/apr-sign-invalid-refexpr.out"
+          exit 1
+        fi
+        grep -q "git ref name" "$work/apr-sign-invalid-refexpr.out"
 
         initial_tag_object=$(git -C "$reg" rev-parse '1.0.0^{tag}')
         initial_tag_commit=$(git -C "$reg" rev-parse '1.0.0^{commit}')
