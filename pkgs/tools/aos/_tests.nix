@@ -471,14 +471,34 @@ in {
         ${pkgs.jq}/bin/jq -e \
           'length == 1 and .[0].registry == "host-reg" and .[0].keys == []' \
           "$work/apr-trust-list-empty.json" >/dev/null
-        run_clean ${self}/bin/apr trust pin host-reg "$host_key_root" \
-          > "$work/apr-trust-pin-root.out" 2>&1
-        grep -q "Pinned trust key for registry 'host-reg'" \
-          "$work/apr-trust-pin-root.out"
+        run_clean ${self}/bin/apr --json trust pin host-reg "$host_key_root" \
+          > "$work/apr-trust-pin-root.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg key "$host_key_root" \
+          '.action == "trust_pin"
+            and .status == "pinned"
+            and .registry == "host-reg"
+            and .replace == false
+            and .key == $key
+            and .algorithm == "Ed25519"
+            and .source == "Tofu"
+            and (.fingerprint | length > 0)' \
+          "$work/apr-trust-pin-root.json" >/dev/null
         test -f "$trust_file"
         grep -q "$host_key_root" "$trust_file"
-        run_clean ${self}/bin/apr trust pin host-reg "$host_key_backup" \
-          > "$work/apr-trust-pin-backup.out" 2>&1
+        run_clean ${self}/bin/apr --json trust pin host-reg "$host_key_backup" \
+          > "$work/apr-trust-pin-backup.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg key "$host_key_backup" \
+          '.action == "trust_pin"
+            and .status == "pinned"
+            and .registry == "host-reg"
+            and .replace == false
+            and .key == $key
+            and .algorithm == "Ed25519"
+            and .source == "Tofu"
+            and (.fingerprint | length > 0)' \
+          "$work/apr-trust-pin-backup.json" >/dev/null
         test "$(wc -l < "$trust_file")" = "2"
         run_clean ${self}/bin/apr trust list host-reg \
           > "$work/apr-trust-list-pinned.out" 2>&1
@@ -498,19 +518,38 @@ in {
         fi
         grep -q "belongs to registry 'other-reg', expected 'host-reg'" \
           "$work/apr-trust-pin-foreign.out"
-        run_clean ${self}/bin/apr trust pin host-reg "$host_key_canary" --replace \
-          > "$work/apr-trust-replace.out" 2>&1
-        grep -q "Re-pinned trust key for registry 'host-reg'" \
-          "$work/apr-trust-replace.out"
+        run_clean ${self}/bin/apr --json trust pin host-reg "$host_key_canary" --replace \
+          > "$work/apr-trust-replace.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg key "$host_key_canary" \
+          '.action == "trust_pin"
+            and .status == "replaced"
+            and .registry == "host-reg"
+            and .replace == true
+            and .key == $key
+            and .algorithm == "Ed25519"
+            and .source == "Tofu"
+            and (.fingerprint | length > 0)' \
+          "$work/apr-trust-replace.json" >/dev/null
         test "$(wc -l < "$trust_file")" = "1"
         grep -q "$host_key_canary" "$trust_file"
-        run_clean ${self}/bin/apr trust remove host-reg \
-          > "$work/apr-trust-remove.out" 2>&1
-        grep -q "Removed pinned trust keys" "$work/apr-trust-remove.out"
+        run_clean ${self}/bin/apr --json trust remove host-reg \
+          > "$work/apr-trust-remove.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "trust_remove"
+            and .status == "removed"
+            and .registry == "host-reg"
+            and .removed == true' \
+          "$work/apr-trust-remove.json" >/dev/null
         test ! -e "$trust_file"
-        run_clean ${self}/bin/apr trust remove host-reg \
-          > "$work/apr-trust-remove-repeat.out" 2>&1
-        grep -q "No pinned trust keys found" "$work/apr-trust-remove-repeat.out"
+        run_clean ${self}/bin/apr --json trust remove host-reg \
+          > "$work/apr-trust-remove-repeat.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "trust_remove"
+            and .status == "current"
+            and .registry == "host-reg"
+            and .removed == false' \
+          "$work/apr-trust-remove-repeat.json" >/dev/null
         assert_no_profile
 
         run_clean ${self}/bin/apr status --registry host-reg > "$work/apr-status.out" 2>&1
