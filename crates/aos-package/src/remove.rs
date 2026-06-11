@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::profile::Profile;
-use super::profile::merge::build_fhs_tree;
+use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{delete_meta, list_meta, snapshot_profile_meta_to_generation};
 use super::registry::store_path_hash;
 use super::store::closure_paths;
@@ -131,8 +131,7 @@ pub async fn run(
 
     // Step 9: Rebuild FHS tree on the new generation.
     printer.step(2, 3, "Rebuilding file tree...");
-    let roots = new_gen.roots()?;
-    build_fhs_tree(&new_gen, &roots, printer)?;
+    build_generation_fhs_tree(&new_gen, printer)?;
 
     // Step 10: Switch to the new generation.
     profile.switch_to(&new_gen)?;
@@ -251,8 +250,7 @@ pub async fn run_autoremove(
 
     // Step 7: Rebuild FHS tree.
     printer.step(2, 3, "Rebuilding file tree...");
-    let roots = new_gen.roots()?;
-    build_fhs_tree(&new_gen, &roots, printer)?;
+    build_generation_fhs_tree(&new_gen, printer)?;
 
     // Step 8: Switch.
     profile.switch_to(&new_gen)?;

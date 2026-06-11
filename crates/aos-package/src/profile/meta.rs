@@ -148,7 +148,10 @@ fn write_generation_meta(generation: &Generation, hash: &str, meta: &InstalledMe
 }
 
 /// Read one snapshot entry from `gen-N/meta/<hash>.json`, if present.
-fn read_generation_meta(generation: &Generation, hash: &str) -> Result<Option<InstalledMeta>> {
+pub(crate) fn read_generation_meta(
+    generation: &Generation,
+    hash: &str,
+) -> Result<Option<InstalledMeta>> {
     let path = generation.path.join("meta").join(format!("{hash}.json"));
     if !path.exists() {
         return Ok(None);
@@ -296,7 +299,8 @@ pub fn held_packages(profile: &Profile) -> Result<Vec<InstalledMeta>> {
 /// # Errors
 ///
 /// Returns an error if no metadata exists for `hash`, the entry has no
-/// `apm` section, or the file cannot be read or written.
+/// `apm` section, or the profile or current generation metadata cannot be
+/// read or written.
 pub fn set_held(profile: &Profile, hash: &str, held: bool) -> Result<()> {
     let mut meta =
         read_meta(profile, hash)?.with_context(|| format!("no metadata for hash {hash}"))?;
@@ -307,7 +311,18 @@ pub fn set_held(profile: &Profile, hash: &str, held: bool) -> Result<()> {
         bail!("metadata for {hash} has no apm section");
     }
 
-    write_meta(profile, hash, &meta)
+    write_meta(profile, hash, &meta)?;
+
+    if let Some(generation) = profile.current_generation()? {
+        if let Some(mut generation_meta) = read_generation_meta(&generation, hash)? {
+            if let Some(ref mut apm) = generation_meta.apm {
+                apm.held = held;
+                write_generation_meta(&generation, hash, &generation_meta)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -730,6 +745,31 @@ mod tests {
         set_held(&profile, "aaa111", false).unwrap();
         let meta = read_meta(&profile, "aaa111").unwrap().unwrap();
         assert!(!meta.apm.as_ref().unwrap().held);
+    }
+
+    #[test]
+    fn set_held_updates_current_generation_snapshot() {
+        let tmp = TempDir::new().unwrap();
+        let profile = test_profile(&tmp);
+        let generation = profile.new_generation().unwrap();
+        let meta = sample_meta("curl", "core", true, false);
+
+        add_usr_root(&generation, "abc123", &meta.store_path);
+        write_meta(&profile, "abc123", &meta).unwrap();
+        snapshot_profile_meta_to_generation(&profile, &generation).unwrap();
+        profile.switch_to(&generation).unwrap();
+
+        set_held(&profile, "abc123", true).unwrap();
+        let generation_meta = read_generation_meta(&generation, "abc123")
+            .unwrap()
+            .unwrap();
+        assert!(generation_meta.apm.as_ref().unwrap().held);
+
+        set_held(&profile, "abc123", false).unwrap();
+        let generation_meta = read_generation_meta(&generation, "abc123")
+            .unwrap()
+            .unwrap();
+        assert!(!generation_meta.apm.as_ref().unwrap().held);
     }
 
     // 10. set_held on missing hash returns error

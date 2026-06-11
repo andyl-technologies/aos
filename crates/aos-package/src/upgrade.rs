@@ -24,7 +24,7 @@ use super::download::{
     resolve_mirror, resolved_downloads_json,
 };
 use super::profile::Profile;
-use super::profile::merge::build_fhs_tree;
+use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{
     delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
 };
@@ -347,8 +347,7 @@ pub async fn run(
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
 
     // Build FHS tree for the new generation.
-    let roots = new_gen.roots()?;
-    build_fhs_tree(&new_gen, &roots, printer)?;
+    build_generation_fhs_tree(&new_gen, printer)?;
 
     // Atomic switch to the new generation.
     profile.switch_to(&new_gen)?;
@@ -442,19 +441,26 @@ struct InstalledFlags {
 /// Index the explicit/held flags of installed packages by name, so upgraded
 /// entries keep their previous flags.
 fn installed_flags_by_name(installed: &[InstalledMeta]) -> HashMap<&str, InstalledFlags> {
-    installed
-        .iter()
-        .filter_map(|meta| {
-            let apm = meta.apm.as_ref()?;
-            Some((
-                apm.name.as_str(),
-                InstalledFlags {
-                    explicit: apm.explicit,
-                    held: apm.held,
-                },
-            ))
-        })
-        .collect()
+    let mut flags: HashMap<&str, InstalledFlags> = HashMap::new();
+
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+        let incoming = InstalledFlags {
+            explicit: apm.explicit,
+            held: apm.held,
+        };
+        match flags.get(apm.name.as_str()) {
+            Some(current) if current.explicit => {}
+            Some(_) if !incoming.explicit => {}
+            _ => {
+                flags.insert(apm.name.as_str(), incoming);
+            }
+        }
+    }
+
+    flags
 }
 
 /// Compute the set of store-path hashes the profile still needs after the
@@ -1012,6 +1018,33 @@ references = []
         assert!(flags["tool"].held);
         assert!(!flags["runtime"].explicit);
         assert!(!flags["runtime"].held);
+    }
+
+    #[test]
+    fn installed_flags_by_name_prefers_explicit_duplicate_name() {
+        let installed = vec![
+            sample_installed_with_flags(
+                "priority-tool",
+                "2.0.0",
+                "highhash",
+                "high-priority",
+                true,
+                true,
+            ),
+            sample_installed_with_flags(
+                "priority-tool",
+                "9.0.0",
+                "lowhash",
+                "low-priority",
+                false,
+                false,
+            ),
+        ];
+
+        let flags = installed_flags_by_name(&installed);
+        let entry = flags.get("priority-tool").unwrap();
+        assert!(entry.explicit);
+        assert!(entry.held);
     }
 
     #[test]

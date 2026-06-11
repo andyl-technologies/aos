@@ -36,7 +36,7 @@ use super::download::{
     resolved_downloads_json,
 };
 use super::profile::Profile;
-use super::profile::merge::build_fhs_tree;
+use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{
     delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
 };
@@ -459,8 +459,7 @@ pub async fn run(
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
 
     // Build FHS tree for the new generation.
-    let roots = new_gen.roots()?;
-    build_fhs_tree(&new_gen, &roots, printer)?;
+    build_generation_fhs_tree(&new_gen, printer)?;
 
     // Atomic switch to the new generation.
     profile.switch_to(&new_gen)?;
