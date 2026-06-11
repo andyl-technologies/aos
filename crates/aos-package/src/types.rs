@@ -501,6 +501,8 @@ pub struct RegistryState {
     #[serde(default)]
     pub last_commit: Option<String>,
     #[serde(default)]
+    pub last_roster_commit: Option<String>,
+    #[serde(default)]
     pub floor: Option<String>,
     #[serde(default)]
     pub bucket: Option<u8>,
@@ -1233,6 +1235,7 @@ url = "https://registry.aos.dev/core"
 
 [registry.state]
 last_commit = "abc123"
+last_roster_commit = "def456"
 floor = "1.2.0"
 bucket = 10
 retained = ["1.0.0", "1.2.0"]
@@ -1241,6 +1244,7 @@ last_update = "2026-02-13T10:30:00Z"
         let rf: RegistryFile = toml::from_str(toml_str).unwrap();
         let state = rf.registry.state.unwrap();
         assert_eq!(state.last_commit.unwrap(), "abc123");
+        assert_eq!(state.last_roster_commit.unwrap(), "def456");
         assert_eq!(state.floor.unwrap(), "1.2.0");
         assert_eq!(state.bucket.unwrap(), 10);
         assert_eq!(state.retained, vec!["1.0.0", "1.2.0"]);

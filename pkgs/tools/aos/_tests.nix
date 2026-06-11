@@ -2983,6 +2983,9 @@ in {
             --add \
             --key "$work/initial-release-key" \
             > "$work/apr-keys-generate-next.out" 2>&1
+          host_keyresign_next=$(grep -o 'host-keyresign:Ed25519:[A-Za-z0-9+/=]*' \
+            "$work/apr-keys-generate-next.out" | head -1)
+          grep -q "$host_keyresign_next" "$reg/keys.toml"
           run_clean ${self}/bin/apr --json release 1.0.0 \
             --registry host-keyresign \
             --store-path "$store_path" \
@@ -3027,6 +3030,11 @@ in {
           data="$work/new-key-tag-client-share"
           cache="$work/new-key-tag-client-cache"
           profile_root="$work/new-key-tag-client-profiles"
+          new_key_tag_home="$home"
+          new_key_tag_config="$config"
+          new_key_tag_data="$data"
+          new_key_tag_cache="$cache"
+          new_key_tag_profile_root="$profile_root"
           mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
           run_clean ${self}/bin/apm registry add "http://127.0.0.1:$port/host-keyresign/.git" \
             --name host-keyresign \
@@ -3040,12 +3048,22 @@ in {
             > "$work/apm-search-host-keyresign-new-key-tag.out" 2>&1
           grep -q "hostkeyresign/host-keyresign 1.0.0" \
             "$work/apm-search-host-keyresign-new-key-tag.out"
+          new_key_tag_trust_file="$config/apm/trusted-keys.d/host-keyresign.pub"
+          grep -q "$trust_key" "$new_key_tag_trust_file"
+          grep -q "$host_keyresign_next" "$new_key_tag_trust_file"
+          grep -q 'last_roster_commit = "' \
+            "$config/apm/registries.d/host-keyresign.toml"
 
           home="$work/new-key-version-client-home"
           config="$work/new-key-version-client-config"
           data="$work/new-key-version-client-share"
           cache="$work/new-key-version-client-cache"
           profile_root="$work/new-key-version-client-profiles"
+          new_key_version_home="$home"
+          new_key_version_config="$config"
+          new_key_version_data="$data"
+          new_key_version_cache="$cache"
+          new_key_version_profile_root="$profile_root"
           mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
           run_clean ${self}/bin/apm registry add "http://127.0.0.1:$port/host-keyresign/.git" \
             --name host-keyresign \
@@ -3059,6 +3077,11 @@ in {
             > "$work/apm-search-host-keyresign-new-key-version.out" 2>&1
           grep -q "hostkeyresign/host-keyresign 1.0.0" \
             "$work/apm-search-host-keyresign-new-key-version.out"
+          new_key_version_trust_file="$config/apm/trusted-keys.d/host-keyresign.pub"
+          grep -q "$trust_key" "$new_key_version_trust_file"
+          grep -q "$host_keyresign_next" "$new_key_version_trust_file"
+          grep -q 'last_roster_commit = "' \
+            "$config/apm/registries.d/host-keyresign.toml"
 
           home="$producer_home"
           config="$producer_config"
@@ -3086,6 +3109,38 @@ in {
             exit 1
           }
 
+          home="$new_key_tag_home"
+          config="$new_key_tag_config"
+          data="$new_key_tag_data"
+          cache="$new_key_tag_cache"
+          profile_root="$new_key_tag_profile_root"
+          run_clean ${self}/bin/apm update --registry host-keyresign \
+            > "$work/apm-update-host-keyresign-new-key-tag-retired.out" 2>&1
+          grep -q "$trust_key" "$new_key_tag_trust_file"
+          if grep -q "$host_keyresign_next" "$new_key_tag_trust_file"; then
+            cat "$new_key_tag_trust_file"
+            exit 1
+          fi
+
+          home="$new_key_version_home"
+          config="$new_key_version_config"
+          data="$new_key_version_data"
+          cache="$new_key_version_cache"
+          profile_root="$new_key_version_profile_root"
+          run_clean ${self}/bin/apm update --registry host-keyresign \
+            > "$work/apm-update-host-keyresign-new-key-version-retired.out" 2>&1
+          grep -q "$trust_key" "$new_key_version_trust_file"
+          if grep -q "$host_keyresign_next" "$new_key_version_trust_file"; then
+            cat "$new_key_version_trust_file"
+            exit 1
+          fi
+
+          home="$producer_home"
+          config="$producer_config"
+          data="$producer_data"
+          cache="$producer_cache"
+          profile_root="$producer_profile_root"
+
           producer_home="$home"
           producer_config="$config"
           producer_data="$data"
@@ -3110,6 +3165,14 @@ in {
             > "$work/apm-search-host-keyresign-tag.out" 2>&1
           grep -q "hostkeyresign/host-keyresign 1.0.0" \
             "$work/apm-search-host-keyresign-tag.out"
+          tag_trust_file="$config/apm/trusted-keys.d/host-keyresign.pub"
+          grep -q "$trust_key" "$tag_trust_file"
+          if grep -q "$host_keyresign_next" "$tag_trust_file"; then
+            cat "$tag_trust_file"
+            exit 1
+          fi
+          grep -q 'last_roster_commit = "' \
+            "$config/apm/registries.d/host-keyresign.toml"
 
           home="$work/version-client-home"
           config="$work/version-client-config"
@@ -3129,6 +3192,14 @@ in {
             > "$work/apm-search-host-keyresign-version.out" 2>&1
           grep -q "hostkeyresign/host-keyresign 1.0.0" \
             "$work/apm-search-host-keyresign-version.out"
+          version_trust_file="$config/apm/trusted-keys.d/host-keyresign.pub"
+          grep -q "$trust_key" "$version_trust_file"
+          if grep -q "$host_keyresign_next" "$version_trust_file"; then
+            cat "$version_trust_file"
+            exit 1
+          fi
+          grep -q 'last_roster_commit = "' \
+            "$config/apm/registries.d/host-keyresign.toml"
 
           home="$producer_home"
           config="$producer_config"
