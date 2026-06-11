@@ -745,6 +745,19 @@ in {
         grep -q "store_path = \"/nix/store/$pkg_hash-hostpkg-1.0.0\"" "$work/apr-show-raw.out"
         run_clean ${self}/bin/apr verify --registry host-reg > "$work/apr-verify.out" 2>&1
         grep -q "Verified 1 package(s), 1 closure(s), no errors" "$work/apr-verify.out"
+        run_clean ${self}/bin/apr --json verify --registry host-reg \
+          > "$work/apr-verify.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "verify"
+            and .status == "ok"
+            and .registry == "host-reg"
+            and .package == null
+            and .fix == false
+            and .checked == 1
+            and .closures == 1
+            and .repaired == 0
+            and .errors == 0' \
+          "$work/apr-verify.json" >/dev/null
         run_clean ${self}/bin/apr log --registry host-reg --package hostpkg -n 1 > "$work/apr-log-package.out" 2>&1
         grep -q "release: hostpkg 1.0.0" "$work/apr-log-package.out"
         run_clean ${self}/bin/apr --json log --registry host-reg --package hostpkg -n 1 \
@@ -1390,6 +1403,16 @@ in {
         @AOS_COREUTILS@/bin/chmod +x "$out/bin/host-leaf-tool"
         printf '%s\n' "host leaf payload" > "$out/share/host-leaf/payload.txt"
         SCRIPT
+        cat > "$work/host-build-leaf-v11.sh" << 'SCRIPT'
+        set -eu
+        @AOS_COREUTILS@/bin/mkdir -p "$out/bin" "$out/share/host-leaf"
+        {
+          printf '%s\n' '#!@AOS_BASH@/bin/bash'
+          printf '%s\n' 'printf "host leaf package v1.1 executed\n"'
+        } > "$out/bin/host-leaf-tool"
+        @AOS_COREUTILS@/bin/chmod +x "$out/bin/host-leaf-tool"
+        printf '%s\n' "host leaf payload v1.1" > "$out/share/host-leaf/payload.txt"
+        SCRIPT
         cat > "$work/host-build-leaf-v2.sh" << 'SCRIPT'
         set -eu
         @AOS_COREUTILS@/bin/mkdir -p "$out/bin" "$out/share/host-leaf"
@@ -1412,6 +1435,18 @@ in {
         @AOS_COREUTILS@/bin/chmod +x "$out/bin/host-install-tool"
         printf '%s\n' "host install payload" > "$out/share/host-install/payload.txt"
         SCRIPT
+        cat > "$work/host-build-app-v11.sh" << 'SCRIPT'
+        set -eu
+        leaf="$1"
+        @AOS_COREUTILS@/bin/mkdir -p "$out/bin" "$out/share/host-install"
+        {
+          printf '%s\n' '#!@AOS_BASH@/bin/bash'
+          printf '%s\n' "\"$leaf/bin/host-leaf-tool\""
+          printf '%s\n' 'printf "host install package v1.1 executed\n"'
+        } > "$out/bin/host-install-tool"
+        @AOS_COREUTILS@/bin/chmod +x "$out/bin/host-install-tool"
+        printf '%s\n' "host install payload v1.1" > "$out/share/host-install/payload.txt"
+        SCRIPT
         cat > "$work/host-build-app-v2.sh" << 'SCRIPT'
         set -eu
         leaf="$1"
@@ -1424,8 +1459,61 @@ in {
         @AOS_COREUTILS@/bin/chmod +x "$out/bin/host-install-tool"
         printf '%s\n' "host install payload v2" > "$out/share/host-install/payload.txt"
         SCRIPT
+        cat > "$work/host-build-bulk.sh" << 'SCRIPT'
+        set -eu
+        @AOS_COREUTILS@/bin/mkdir -p "$out/bin" "$out/share/host-bulk/data"
+
+        i=1
+        while [ "$i" -le 48 ]; do
+          suffix=$(printf '%02d' "$i")
+          file="$out/share/host-bulk/data/chunk-$suffix.txt"
+          : > "$file"
+          j=1
+          while [ "$j" -le 512 ]; do
+            printf 'hostbulk file=%02d line=%04d payload=abcdefghijklmnopqrstuvwxyz0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ\n' \
+              "$i" "$j" >> "$file"
+            j=$((j + 1))
+          done
+          i=$((i + 1))
+        done
+
+        @AOS_COREUTILS@/bin/cat > "$out/bin/host-bulk-verify" << EOF
+        #!@AOS_BASH@/bin/bash
+        set -eu
+        data="$out/share/host-bulk/data"
+        count=\$(@AOS_FINDUTILS@/bin/find "\$data" -type f -name 'chunk-*.txt' | @AOS_COREUTILS@/bin/wc -l)
+        count=\$(printf '%s' "\$count" | @AOS_COREUTILS@/bin/tr -d ' ')
+        if [ "\$count" != "48" ]; then
+          printf 'expected 48 data files, got %s\n' "\$count" >&2
+          exit 1
+        fi
+        @AOS_GREP@/bin/grep -q 'hostbulk file=01 line=0001' "\$data/chunk-01.txt"
+        @AOS_GREP@/bin/grep -q 'hostbulk file=48 line=0512' "\$data/chunk-48.txt"
+        bytes=\$(@AOS_COREUTILS@/bin/wc -c "\$data"/chunk-*.txt | @AOS_COREUTILS@/bin/tail -n 1 | @AOS_COREUTILS@/bin/tr -dc '0-9')
+        printf 'host bulk package verified %s files %s bytes\n' "\$count" "\$bytes"
+        EOF
+        @AOS_COREUTILS@/bin/chmod +x "$out/bin/host-bulk-verify"
+        SCRIPT
+        cat > "$work/host-build-sysroot.sh" << 'SCRIPT'
+        set -eu
+        @AOS_COREUTILS@/bin/mkdir -p "$out/bin" "$out/etc"
+        {
+          printf '%s\n' '#!@AOS_BASH@/bin/bash'
+          printf '%s\n' 'printf "host sysroot fixture activated\n"'
+        } > "$out/activate"
+        @AOS_COREUTILS@/bin/chmod +x "$out/activate"
+        printf '%s\n' "host sysroot payload" > "$out/etc/host-sysroot-release"
+        SCRIPT
+        cat > "$work/host-build-sysroot-image.sh" << 'SCRIPT'
+        set -eu
+        @AOS_COREUTILS@/bin/mkdir -p "$out"
+        {
+          printf '%s\n' "host sysroot image qcow2 fixture"
+          printf '%s\n' "boot-marker=hostsysroot"
+        } > "$out/hostsysroot.qcow2"
+        SCRIPT
         substitute_fixture_paths() {
-          ${pkgs.python3}/bin/python3 - "$1" '${pkgs.bash}' '${pkgs.coreutils}' << 'PY'
+          ${pkgs.python3}/bin/python3 - "$1" '${pkgs.bash}' '${pkgs.coreutils}' '${pkgs.findutils}' '${pkgs.grep}' << 'PY'
         from pathlib import Path
         import sys
 
@@ -1434,13 +1522,20 @@ in {
             path.read_text()
             .replace("@AOS_BASH@", sys.argv[2])
             .replace("@AOS_COREUTILS@", sys.argv[3])
+            .replace("@AOS_FINDUTILS@", sys.argv[4])
+            .replace("@AOS_GREP@", sys.argv[5])
         )
         PY
         }
         substitute_fixture_paths "$work/host-build-leaf.sh"
+        substitute_fixture_paths "$work/host-build-leaf-v11.sh"
         substitute_fixture_paths "$work/host-build-leaf-v2.sh"
         substitute_fixture_paths "$work/host-build-app-v1.sh"
+        substitute_fixture_paths "$work/host-build-app-v11.sh"
         substitute_fixture_paths "$work/host-build-app-v2.sh"
+        substitute_fixture_paths "$work/host-build-bulk.sh"
+        substitute_fixture_paths "$work/host-build-sysroot.sh"
+        substitute_fixture_paths "$work/host-build-sysroot-image.sh"
         cat > "$work/host-install-fixtures.nix" << 'NIX'
         let
           bash = "@AOS_BASH@/bin/bash";
@@ -1450,6 +1545,12 @@ in {
             inherit system;
             builder = bash;
             args = [ ./host-build-leaf.sh ];
+          };
+          leafV11 = derivation {
+            name = "hostleaf-1.1.0";
+            inherit system;
+            builder = bash;
+            args = [ ./host-build-leaf-v11.sh ];
           };
           leafV2 = derivation {
             name = "hostleaf-2.0.0";
@@ -1466,10 +1567,29 @@ in {
             ];
             inherit leaf;
           };
+          bulk = derivation {
+            name = "hostbulk-1.0.0";
+            inherit system;
+            builder = bash;
+            args = [ ./host-build-bulk.sh ];
+          };
+          sysroot = derivation {
+            name = "hostsysroot-1.0.0";
+            inherit system;
+            builder = bash;
+            args = [ ./host-build-sysroot.sh ];
+          };
+          sysrootImage = derivation {
+            name = "hostsysroot-image-1.0.0";
+            inherit system;
+            builder = bash;
+            args = [ ./host-build-sysroot-image.sh ];
+          };
         in {
           leaf = leafV1;
-          inherit leafV1 leafV2;
+          inherit leafV1 leafV11 leafV2 bulk sysroot sysrootImage;
           appV1 = app "hostinstall-1.0.0" leafV1 ./host-build-app-v1.sh;
+          appV11 = app "hostinstall-1.1.0" leafV11 ./host-build-app-v11.sh;
           appV2 = app "hostinstall-2.0.0" leafV2 ./host-build-app-v2.sh;
         }
         NIX
@@ -1483,6 +1603,18 @@ in {
         install_hash=$(basename "$install_store" | cut -d- -f1)
         install_drv=$(nix_store -q --deriver "$install_store")
         test -e "$install_drv"
+        bulk_store=$(nix_build "$work/host-install-fixtures.nix" -A bulk --no-out-link)
+        bulk_hash=$(basename "$bulk_store" | cut -d- -f1)
+        bulk_drv=$(nix_store -q --deriver "$bulk_store")
+        test -e "$bulk_drv"
+        sysroot_store=$(nix_build "$work/host-install-fixtures.nix" -A sysroot --no-out-link)
+        sysroot_hash=$(basename "$sysroot_store" | cut -d- -f1)
+        sysroot_drv=$(nix_store -q --deriver "$sysroot_store")
+        test -e "$sysroot_drv"
+        sysroot_image_store=$(nix_build "$work/host-install-fixtures.nix" -A sysrootImage --no-out-link)
+        sysroot_image_hash=$(basename "$sysroot_image_store" | cut -d- -f1)
+        sysroot_image_drv=$(nix_store -q --deriver "$sysroot_image_store")
+        test -e "$sysroot_image_drv"
 
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/host-install-release-key"
         install_release_public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/host-install-release-key.pub")
@@ -1570,6 +1702,69 @@ in {
             and .current == "stable"
             and (.head | length == 64)' \
           "$work/apr-publish-host-install.json" >/dev/null
+        run_clean ${self}/bin/apr --json publish "$bulk_store" \
+          --name hostbulk \
+          --version 1.0.0 \
+          --description "Host APM bulk data fixture" \
+          --license MIT \
+          --maintainer host@example.invalid \
+          --registry host-install-channel \
+          --no-commit > "$work/apr-publish-host-bulk.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$bulk_store" \
+          --arg source "$bulk_drv" \
+          '.action == "publish"
+            and .registry == "host-install-channel"
+            and .package == "hostbulk"
+            and .version == "1.0.0"
+            and .platform == "x86_64-linux"
+            and .store_path == $store
+            and (.nar_hash | startswith("sha256-"))
+            and (.nar_size > 1000000)
+            and (.closure_size > 1000000)
+            and .source.store_path == $source
+            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_size > 0)
+            and .sysroot == false
+            and .previous == null
+            and .images == []
+            and .package_file == "packages/h/hostbulk.toml"
+            and (.closure_file | startswith("closures/"))
+            and .committed == false
+            and .commit_message == null
+            and .current == "stable"
+            and (.head | length == 64)' \
+          "$work/apr-publish-host-bulk.json" >/dev/null
+        grep -q "$install_leaf_hash" "$install_reg/closures/$install_hash"
+        run_clean ${self}/bin/apr --json verify \
+          --registry host-install-channel > "$work/apr-verify-host-install-all.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "verify"
+            and .status == "ok"
+            and .registry == "host-install-channel"
+            and .package == null
+            and .fix == false
+            and .checked == 3
+            and .closures == 3
+            and .repaired == 0
+            and .errors == 0' \
+          "$work/apr-verify-host-install-all.json" >/dev/null
+        ${pkgs.coreutils}/bin/rm "$install_reg/closures/$install_hash"
+        run_clean ${self}/bin/apr --json verify \
+          --registry host-install-channel \
+          --package hostinstall \
+          --fix > "$work/apr-verify-host-install-fix.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "verify"
+            and .status == "ok"
+            and .registry == "host-install-channel"
+            and .package == "hostinstall"
+            and .fix == true
+            and .checked == 1
+            and .closures == 1
+            and .repaired == 1
+            and .errors == 0' \
+          "$work/apr-verify-host-install-fix.json" >/dev/null
         grep -q "$install_leaf_hash" "$install_reg/closures/$install_hash"
         install_default_upload="file://$work/install-static-cache-upload/cache"
         install_default_upload_mirror="file://$work/install-static-cache-upload/cache-mirror"
@@ -1619,9 +1814,9 @@ in {
           '.action == "cache_generate"
             and .registry == "host-install-channel"
             and .output_dir == $output
-            and .paths >= 2
-            and .narinfos >= 2
-            and .nars >= 2
+            and .paths >= 3
+            and .narinfos >= 3
+            and .nars >= 3
             and .cache_url == $cache_url
             and .priority == 77
             and .upload_urls == [$upload_url, $upload_url_mirror]
@@ -1631,21 +1826,28 @@ in {
           "$work/apr-cache-host-install.json" >/dev/null
         test -f "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-output/cache/$install_hash.narinfo"
+        test -f "$work/install-static-cache-output/cache/$bulk_hash.narinfo"
         grep -q '^Sig: hostcache:' \
           "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
         grep -q '^Sig: hostcache:' \
           "$work/install-static-cache-output/cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-output/cache/$bulk_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/nix-cache-info"
         test -f "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$bulk_hash.narinfo"
         grep -q '^Sig: hostcache:' \
           "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
         grep -q '^Sig: hostcache:' \
           "$work/install-static-cache-upload/cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$bulk_hash.narinfo"
         find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
         test -f "$work/install-static-cache-upload/cache-mirror/nix-cache-info"
         test -f "$work/install-static-cache-upload/cache-mirror/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache-mirror/$install_hash.narinfo"
+        test -f "$work/install-static-cache-upload/cache-mirror/$bulk_hash.narinfo"
         find "$work/install-static-cache-upload/cache-mirror/nar" -type f | grep -q .
         git -C "$install_reg" add -A
         git -C "$install_reg" \
@@ -1681,9 +1883,9 @@ in {
             and .channel.name == "stable"
             and .channel.action == "init"
             and .channel.touched_partitions == 256
-            and (.cache.paths >= 2)
-            and (.cache.narinfos >= 2)
-            and (.cache.nars >= 2)
+            and (.cache.paths >= 3)
+            and (.cache.narinfos >= 3)
+            and (.cache.nars >= 3)
             and .cache.output_dir == $cache
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and .deltas == []
@@ -1698,10 +1900,13 @@ in {
           "$work/apr-release-host-install-v1-tag-object.out"
         test -f "$work/install-release-cache/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-release-cache/cache/$install_hash.narinfo"
+        test -f "$work/install-release-cache/cache/$bulk_hash.narinfo"
         grep -q '^Sig: hostcache:' \
           "$work/install-release-cache/cache/$install_leaf_hash.narinfo"
         grep -q '^Sig: hostcache:' \
           "$work/install-release-cache/cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-release-cache/cache/$bulk_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/HEAD"
         test -f "$work/install-static-cache-upload/cache/info/refs"
         test -f "$work/install-static-cache-upload/cache/releases/1/0/0/objects/info/packs"
@@ -1710,6 +1915,7 @@ in {
           "$work/install-static-cache-upload/cache/channels/stable/00"
         test -f "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$bulk_hash.narinfo"
         find "$work/install-static-cache-upload/cache/releases/1/0/0/objects/pack" \
           -name 'pack-*.pack' | grep -q .
         test -f "$work/install-static-cache-upload/cache-mirror/HEAD"
@@ -1718,6 +1924,7 @@ in {
         test -f "$work/install-static-cache-upload/cache-mirror/channels/stable/00"
         test -f "$work/install-static-cache-upload/cache-mirror/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache-mirror/$install_hash.narinfo"
+        test -f "$work/install-static-cache-upload/cache-mirror/$bulk_hash.narinfo"
         find "$work/install-static-cache-upload/cache-mirror/releases/1/0/0/objects/pack" \
           -name 'pack-*.pack' | grep -q .
         run_clean ${self}/bin/apr --json origin upload \
@@ -2038,6 +2245,173 @@ in {
         main_cache="$cache"
         main_profile_root="$profile_root"
         main_profile="$profile"
+
+        image_channel_trust_key="host-image-channel:Ed25519:$install_release_public_key"
+        image_cache_url="http://127.0.0.1:$install_cache_port/image-cache"
+        image_upload_url="file://$work/install-static-cache-upload/image-cache"
+        run_clean ${self}/bin/apr create host-image-channel \
+          --trust-key "$image_channel_trust_key" \
+          --trust-key-id channel \
+          --key "$work/host-install-release-key" \
+          > "$work/apr-create-host-image-channel.out" 2>&1
+        image_reg="$data/apm/registries/host-image-channel"
+        git -C "$image_reg" config user.name "Host Command Test"
+        git -C "$image_reg" config user.email "host-command@example.invalid"
+        run_clean ${self}/bin/apr --json publish "$sysroot_store" \
+          --name hostsysroot \
+          --version 1.0.0 \
+          --description "Host sysroot image fixture" \
+          --license MIT \
+          --maintainer host@example.invalid \
+          --sysroot \
+          --image "$sysroot_image_store" \
+          --image-format qcow2 \
+          --registry host-image-channel \
+          --no-commit > "$work/apr-publish-host-sysroot-image.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$sysroot_store" \
+          --arg source "$sysroot_drv" \
+          --arg image "$sysroot_image_store" \
+          '.action == "publish"
+            and .registry == "host-image-channel"
+            and .package == "hostsysroot"
+            and .version == "1.0.0"
+            and .platform == "x86_64-linux"
+            and .store_path == $store
+            and .source.store_path == $source
+            and .sysroot == true
+            and (.images | length == 1)
+            and .images[0].format == "qcow2"
+            and .images[0].store_path == $image
+            and (.images[0].nar_hash | startswith("sha256-"))
+            and (.images[0].nar_size > 0)
+            and .package_file == "packages/h/hostsysroot.toml"
+            and .committed == false' \
+          "$work/apr-publish-host-sysroot-image.json" >/dev/null
+        grep -q '\[\[versions.platforms.x86_64-linux.images\]\]' \
+          "$image_reg/packages/h/hostsysroot.toml"
+        run_clean ${self}/bin/apr --json cache generate \
+          --registry host-image-channel \
+          --output "$work/image-static-cache-output/cache" \
+          --key "$work/host-install-cache-signing-key" \
+          --cache-url "$image_cache_url" \
+          --upload-url "$image_upload_url" \
+          --priority 71 \
+          --no-commit > "$work/apr-cache-host-image-channel.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg output "$work/image-static-cache-output/cache" \
+          --arg cache_url "$image_cache_url" \
+          --arg upload_url "$image_upload_url" \
+          '.action == "cache_generate"
+            and .registry == "host-image-channel"
+            and .output_dir == $output
+            and .paths >= 2
+            and .narinfos >= 2
+            and .nars >= 2
+            and .cache_url == $cache_url
+            and .priority == 71
+            and .upload_urls == [$upload_url]
+            and .uploaded == true
+            and .cache_pointer_updated == true
+            and .committed == false' \
+          "$work/apr-cache-host-image-channel.json" >/dev/null
+        test -f "$work/install-static-cache-upload/image-cache/$sysroot_hash.narinfo"
+        test -f "$work/install-static-cache-upload/image-cache/$sysroot_image_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/image-cache/$sysroot_image_hash.narinfo"
+        git -C "$image_reg" add -A
+        git -C "$image_reg" \
+          -c gpg.format=ssh \
+          -c gpg.ssh.program=${pkgs.openssh}/bin/ssh-keygen \
+          -c user.signingkey="$work/host-install-release-key" \
+          commit -S -m "release: hostsysroot 1.0.0 image" \
+          > "$work/git-commit-host-image-channel.out" 2>&1
+        run_clean ${self}/bin/apr --json release 1.0.0 \
+          --registry host-image-channel \
+          --key "$work/host-install-release-key" \
+          --cache-output "$work/image-release-cache/cache" \
+          --cache-key "$work/host-install-cache-signing-key" \
+          --cache-url "$image_cache_url" \
+          --cache-priority 71 \
+          --upload-url "$image_upload_url" \
+          --channel stable \
+          --init-channel > "$work/apr-release-host-image-channel.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg cache "$work/image-release-cache/cache" \
+          --arg cache_url "$image_cache_url" \
+          --arg upload_url "$image_upload_url" \
+          '.action == "release"
+            and .status == "released"
+            and .registry == "host-image-channel"
+            and .version == "1.0.0"
+            and .cache_output == $cache
+            and .cache_url == $cache_url
+            and .cache_priority == 71
+            and .upload_urls == [$upload_url]
+            and .channel.name == "stable"
+            and .channel.action == "init"
+            and .channel.touched_partitions == 256
+            and (.cache.paths >= 2)
+            and (.cache.narinfos >= 2)
+            and (.cache.nars >= 2)
+            and (.uploaded_files > 0)
+            and (.uploaded_bytes > 0)' \
+          "$work/apr-release-host-image-channel.json" >/dev/null
+        test -f "$work/install-static-cache-upload/image-cache/channels/stable/00"
+        test -f "$work/install-static-cache-upload/image-cache/$sysroot_image_hash.narinfo"
+
+        if nix_store --check-validity "$sysroot_image_store" \
+          > "$work/nix-valid-host-sysroot-image-before-delete.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$sysroot_image_store" \
+            > "$work/nix-delete-host-sysroot-image-before-download.out" 2>&1
+        fi
+        if nix_store --check-validity "$sysroot_image_store" \
+          > "$work/nix-valid-host-sysroot-image-after-delete.out" 2>&1; then
+          cat "$work/nix-valid-host-sysroot-image-after-delete.out"
+          exit 1
+        fi
+        home="$work/image-client-home"
+        config="$work/image-client-config"
+        data="$work/image-client-share"
+        cache="$work/image-client-cache"
+        profile_root="$work/image-client-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm registry add "$image_cache_url" \
+          --name host-image-channel \
+          --channel stable \
+          --trust-key "$image_channel_trust_key" \
+          > "$work/apm-add-host-image-channel.out" 2>&1
+        grep -q "Registry 'host-image-channel' added" \
+          "$work/apm-add-host-image-channel.out"
+        run_clean ${self}/bin/apm search hostsysroot \
+          --registry host-image-channel \
+          > "$work/apm-search-host-image-channel.out" 2>&1
+        grep -q "hostsysroot/host-image-channel 1.0.0" \
+          "$work/apm-search-host-image-channel.out"
+        run_clean ${self}/bin/apm install hostsysroot \
+          --registry host-image-channel \
+          --image qcow2 \
+          --output "$work/hostsysroot-downloaded.qcow2" \
+          --yes > "$work/apm-install-host-sysroot-image.out" 2>&1
+        grep -q "Image hostsysroot 1.0.0 (qcow2) written to" \
+          "$work/apm-install-host-sysroot-image.out"
+        grep -q "host sysroot image qcow2 fixture" \
+          "$work/hostsysroot-downloaded.qcow2"
+        grep -q "boot-marker=hostsysroot" \
+          "$work/hostsysroot-downloaded.qcow2"
+        nix_store --check-validity "$sysroot_image_store" \
+          > "$work/nix-valid-host-sysroot-image-imported.out" 2>&1
+        assert_default_profile_absent
+        assert_no_profile
+        rm -rf "$profile_root"
+        home="$main_home"
+        config="$main_config"
+        data="$main_data"
+        cache="$main_cache"
+        profile_root="$main_profile_root"
+        profile="$main_profile"
+
         home="$work/direct-home"
         config="$work/direct-config"
         data="$work/direct-share"
@@ -2173,6 +2547,86 @@ in {
         static_channel_cache="$cache"
         static_channel_profile_root="$profile_root"
         static_channel_profile="$profile"
+        home="$work/bulk-home"
+        config="$work/bulk-config"
+        data="$work/bulk-share"
+        cache="$work/bulk-cache"
+        profile_root="$work/bulk-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm registry add "http://127.0.0.1:$install_cache_port/cache" \
+          --name host-install-channel \
+          --channel stable \
+          --trust-key "$install_channel_trust_key" \
+          > "$work/apm-add-host-bulk-channel.out" 2>&1
+        grep -q "Registry 'host-install-channel' added" \
+          "$work/apm-add-host-bulk-channel.out"
+        run_clean ${self}/bin/apm search hostbulk \
+          --registry host-install-channel \
+          > "$work/apm-search-host-bulk-channel.out" 2>&1
+        grep -q "hostbulk/host-install-channel 1.0.0" \
+          "$work/apm-search-host-bulk-channel.out"
+        nix_store --delete --ignore-liveness "$bulk_store" \
+          > "$work/nix-delete-host-bulk-channel.out" 2>&1
+        if nix_store --check-validity "$bulk_store" \
+          > "$work/nix-valid-host-bulk-channel-deleted.out" 2>&1; then
+          cat "$work/nix-valid-host-bulk-channel-deleted.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json install hostbulk \
+          --registry host-install-channel \
+          --yes > "$work/apm-install-host-bulk-channel.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$bulk_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostbulk"]
+            and .generation == 1
+            and (.roots | length == 1)
+            and .roots[0].name == "hostbulk"
+            and .roots[0].registry == "host-install-channel"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostbulk" and .store_path == $store and .explicit == true))
+            and (.downloads.planned >= 1)
+            and (.downloads.downloaded >= 1)
+            and (.downloads.imported >= 1)' \
+          "$work/apm-install-host-bulk-channel.json" >/dev/null
+        nix_store --check-validity "$bulk_store" \
+          > "$work/nix-valid-host-bulk-channel-imported.out" 2>&1
+        "$profile/current/bin/host-bulk-verify" \
+          > "$work/host-bulk-channel-run.out"
+        grep -q "host bulk package verified 48 files" \
+          "$work/host-bulk-channel-run.out"
+        run_clean ${self}/bin/apm --json show hostbulk \
+          --registry host-install-channel > "$work/apm-show-host-bulk-channel.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$bulk_store" \
+          '.name == "hostbulk"
+            and .registry == "host-install-channel"
+            and .version == "1.0.0"
+            and .installed == true
+            and .store_path == $store
+            and (.nar_size > 1000000)' \
+          "$work/apm-show-host-bulk-channel.json" >/dev/null
+        run_clean ${self}/bin/apm --json files hostbulk \
+          > "$work/apm-files-host-bulk-channel.json"
+        ${pkgs.jq}/bin/jq -e \
+          'index("bin/host-bulk-verify") != null
+            and index("share/host-bulk/data/chunk-01.txt") != null
+            and index("share/host-bulk/data/chunk-48.txt") != null' \
+          "$work/apm-files-host-bulk-channel.json" >/dev/null
+        run_clean ${self}/bin/apm --json verify hostbulk \
+          > "$work/apm-verify-host-bulk-channel.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$bulk_store" \
+          '.package == "hostbulk"
+            and .registry == "host-install-channel"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and .verified == true
+            and (.expected_nar_hash | startswith("sha256-"))
+            and (.actual_nar_hash | startswith("sha256:"))' \
+          "$work/apm-verify-host-bulk-channel.json" >/dev/null
+        assert_default_profile_absent
+        rm -rf "$profile_root"
         home="$main_home"
         config="$main_config"
         data="$main_data"
@@ -2556,7 +3010,7 @@ in {
             and .[0].name == "host-install-disabled"
             and .[0].enabled == false
             and .[0].status == "disabled"
-            and .[0].packages == 2' \
+            and .[0].packages == 3' \
           "$work/apm-registry-list-disabled.json" >/dev/null
         run_clean ${self}/bin/apm --json search hostinstall \
           --registry host-install-disabled > "$work/apm-search-disabled.json"
@@ -3089,8 +3543,8 @@ in {
             and (.registries | length == 1)
             and .registries[0].registry == "host-install-channel"
             and .registries[0].status == "updated"
-            and .registries[0].packages == 2
-            and .registries[0].updated == 2
+            and .registries[0].packages == 3
+            and .registries[0].updated == 3
             and .registries[0].added == 0
             and .registries[0].removed == 0
             and (.registries[0].commit | length == 64)' \
@@ -3334,6 +3788,374 @@ in {
         profile_root="$main_profile_root"
         profile="$main_profile"
 
+        main_home="$home"
+        main_config="$config"
+        main_data="$data"
+        main_cache="$cache"
+        main_profile_root="$profile_root"
+        main_profile="$profile"
+        home="$work/version-home"
+        config="$work/version-config"
+        data="$work/version-share"
+        cache="$work/version-cache"
+        profile_root="$work/version-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm --json registry add --no-verify "file://$install_origin" \
+          --name host-install-version \
+          --version '^1.0' > "$work/apm-add-host-install-version.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$config/apm/registries.d/host-install-version.toml" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-install-version"
+            and .name == "host-install-version"
+            and .tracking == "version:^1.0"
+            and .clone == true
+            and .synced == true
+            and .packages == 3
+            and .config == $config_path
+            and .verification_disabled == true
+            and (.last_commit | length == 64)' \
+          "$work/apm-add-host-install-version.json" >/dev/null
+        version_config="$config/apm/registries.d/host-install-version.toml"
+        grep -q 'version = "^1.0"' "$version_config"
+        run_clean ${self}/bin/apm search hostinstall \
+          --registry host-install-version \
+          > "$work/apm-search-host-install-version.out" 2>&1
+        grep -q "hostinstall/host-install-version 1.0.0" \
+          "$work/apm-search-host-install-version.out"
+        if grep -q "2.0.0" "$work/apm-search-host-install-version.out"; then
+          cat "$work/apm-search-host-install-version.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-before-version.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$install_store" \
+            > "$work/nix-delete-host-install-before-version.out" 2>&1
+        fi
+        if nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-before-version.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$install_leaf_store" \
+            > "$work/nix-delete-host-leaf-before-version.out" 2>&1
+        fi
+        run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-install-version \
+          --yes > "$work/apm-install-host-install-version.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall"]
+            and .generation == 1
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-version"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+            and (.downloads.planned >= 2)
+            and (.downloads.downloaded >= 2)
+            and (.downloads.imported >= 2)' \
+          "$work/apm-install-host-install-version.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-version-run.out"
+        grep -q "host leaf package executed" "$work/host-install-version-run.out"
+        grep -q "host install package executed" "$work/host-install-version-run.out"
+        if grep -q "v2 executed" "$work/host-install-version-run.out"; then
+          cat "$work/host-install-version-run.out"
+          exit 1
+        fi
+        assert_default_profile_absent
+        version_home="$home"
+        version_config_root="$config"
+        version_data="$data"
+        version_cache="$cache"
+        version_profile_root="$profile_root"
+        version_profile="$profile"
+        home="$main_home"
+        config="$main_config"
+        data="$main_data"
+        cache="$main_cache"
+        profile_root="$main_profile_root"
+        profile="$main_profile"
+
+        install_leaf_store_v11=$(nix_build "$work/host-install-fixtures.nix" -A leafV11 --no-out-link)
+        install_leaf_hash_v11=$(basename "$install_leaf_store_v11" | cut -d- -f1)
+        install_leaf_drv_v11=$(nix_store -q --deriver "$install_leaf_store_v11")
+        test -e "$install_leaf_drv_v11"
+        install_store_v11=$(nix_build "$work/host-install-fixtures.nix" -A appV11 --no-out-link)
+        install_hash_v11=$(basename "$install_store_v11" | cut -d- -f1)
+        install_drv_v11=$(nix_store -q --deriver "$install_store_v11")
+        test -e "$install_drv_v11"
+        run_clean ${self}/bin/apr --json publish "$install_leaf_store_v11" \
+          --name hostleaf \
+          --version 1.1.0 \
+          --description "Host APM dependency fixture v1.1" \
+          --license MIT \
+          --maintainer host@example.invalid \
+          --registry host-install-channel \
+          --no-commit > "$work/apr-publish-host-leaf-v11.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_leaf_store_v11" \
+          --arg source "$install_leaf_drv_v11" \
+          '.action == "publish"
+            and .registry == "host-install-channel"
+            and .package == "hostleaf"
+            and .version == "1.1.0"
+            and .store_path == $store
+            and .source.store_path == $source
+            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_size > 0)
+            and .committed == false' \
+          "$work/apr-publish-host-leaf-v11.json" >/dev/null
+        run_clean ${self}/bin/apr --json publish "$install_store_v11" \
+          --name hostinstall \
+          --version 1.1.0 \
+          --description "Host APM install fixture v1.1" \
+          --license MIT \
+          --maintainer host@example.invalid \
+          --registry host-install-channel \
+          --no-commit > "$work/apr-publish-host-install-v11.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_store_v11" \
+          --arg source "$install_drv_v11" \
+          '.action == "publish"
+            and .registry == "host-install-channel"
+            and .package == "hostinstall"
+            and .version == "1.1.0"
+            and .store_path == $store
+            and .source.store_path == $source
+            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_size > 0)
+            and .committed == false' \
+          "$work/apr-publish-host-install-v11.json" >/dev/null
+        run_clean ${self}/bin/apr --json cache generate \
+          --registry host-install-channel \
+          --output "$work/install-static-cache-output/cache" \
+          --key "$work/host-install-cache-signing-key" \
+          --cache-url "http://127.0.0.1:$install_cache_port/cache" \
+          --priority 77 \
+          --no-commit > "$work/apr-cache-host-install-v11.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg output "$work/install-static-cache-output/cache" \
+          --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
+          --arg upload_url "$install_default_upload" \
+          --arg upload_url_mirror "$install_default_upload_mirror" \
+          '.action == "cache_generate"
+            and .registry == "host-install-channel"
+            and .output_dir == $output
+            and .paths >= 6
+            and .narinfos >= 6
+            and .nars >= 6
+            and .cache_url == $cache_url
+            and .priority == 77
+            and .upload_urls == [$upload_url, $upload_url_mirror]
+            and .uploaded == true
+            and .cache_pointer_updated == false
+            and .committed == false' \
+          "$work/apr-cache-host-install-v11.json" >/dev/null
+        test -f "$work/install-static-cache-output/cache/$install_leaf_hash_v11.narinfo"
+        test -f "$work/install-static-cache-output/cache/$install_hash_v11.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_leaf_hash_v11.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_hash_v11.narinfo"
+        test -f "$work/install-static-cache-upload/cache-mirror/$install_leaf_hash_v11.narinfo"
+        test -f "$work/install-static-cache-upload/cache-mirror/$install_hash_v11.narinfo"
+        git -C "$install_reg" add -A
+        git -C "$install_reg" \
+          -c gpg.format=ssh \
+          -c gpg.ssh.program=${pkgs.openssh}/bin/ssh-keygen \
+          -c user.signingkey="$work/host-install-release-key" \
+          commit -S -m "release: hostinstall 1.1.0" \
+          > "$work/git-commit-host-install-v11.out" 2>&1
+        run_clean ${self}/bin/apr --json release 1.1.0 \
+          --registry host-install-channel \
+          --key "$work/host-install-release-key" \
+          --cache-output "$work/install-release-cache-v11/cache" \
+          --cache-key "$work/host-install-cache-signing-key" \
+          --cache-url "http://127.0.0.1:$install_cache_port/cache" \
+          --cache-priority 77 > "$work/apr-release-host-install-v11.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg cache "$work/install-release-cache-v11/cache" \
+          --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
+          --arg upload_url "$install_default_upload" \
+          --arg upload_url_mirror "$install_default_upload_mirror" \
+          '.action == "release"
+            and .status == "released"
+            and .registry == "host-install-channel"
+            and .version == "1.1.0"
+            and .dry_run == false
+            and .cache_output == $cache
+            and .cache_url == $cache_url
+            and .cache_priority == 77
+            and .cache_pointer_updated == false
+            and .upload_urls == [$upload_url, $upload_url_mirror]
+            and .channel == null
+            and (.cache.paths >= 6)
+            and (.cache.narinfos >= 6)
+            and (.cache.nars >= 6)
+            and .cache.output_dir == $cache
+            and (.full_pack | startswith("pack-") and endswith(".pack"))
+            and (.uploaded_files > 0)
+            and (.uploaded_bytes > 0)' \
+          "$work/apr-release-host-install-v11.json" >/dev/null
+        git -C "$install_reg" rev-parse --verify '1.1.0^{tag}' \
+          > "$work/apr-release-host-install-v11-tag.out"
+        test -f "$work/install-release-cache-v11/cache/$install_leaf_hash_v11.narinfo"
+        test -f "$work/install-release-cache-v11/cache/$install_hash_v11.narinfo"
+        test -f "$work/install-static-cache-upload/cache/releases/1/1/0/objects/info/packs"
+        test -f "$work/install-static-cache-upload/cache-mirror/releases/1/1/0/objects/info/packs"
+        git -C "$install_reg" push origin 1.1.0 \
+          > "$work/git-push-host-install-version-tag.out" 2>&1
+
+        home="$version_home"
+        config="$version_config_root"
+        data="$version_data"
+        cache="$version_cache"
+        profile_root="$version_profile_root"
+        profile="$version_profile"
+        run_clean ${self}/bin/apm --json update --registry host-install-version \
+          > "$work/apm-update-host-install-version-v11.json" 2>&1 || {
+          cat "$work/apm-update-host-install-version-v11.json"
+          exit 1
+        }
+        ${pkgs.jq}/bin/jq -e \
+          '.registry == "host-install-version"
+            and .updated == 1
+            and (.registries | length == 1)
+            and .registries[0].registry == "host-install-version"
+            and .registries[0].status == "updated"
+            and .registries[0].packages == 3
+            and .registries[0].updated == 3
+            and .registries[0].added == 0
+            and .registries[0].removed == 0
+            and (.registries[0].commit | length == 64)' \
+          "$work/apm-update-host-install-version-v11.json" >/dev/null || {
+          cat "$work/apm-update-host-install-version-v11.json"
+          exit 1
+        }
+        run_clean ${self}/bin/apm search hostinstall \
+          --registry host-install-version \
+          > "$work/apm-search-host-install-version-v11.out" 2>&1
+        grep -q "hostinstall/host-install-version 1.1.0" \
+          "$work/apm-search-host-install-version-v11.out"
+        if grep -q "2.0.0" "$work/apm-search-host-install-version-v11.out"; then
+          cat "$work/apm-search-host-install-version-v11.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm list --upgradable \
+          > "$work/apm-upgradable-host-install-version.out" 2>&1 || {
+          cat "$work/apm-upgradable-host-install-version.out"
+          exit 1
+        }
+        grep -q "hostinstall/host-install-version" \
+          "$work/apm-upgradable-host-install-version.out" || {
+          cat "$work/apm-upgradable-host-install-version.out"
+          exit 1
+        }
+        grep -q "upgradable: 1.1.0" \
+          "$work/apm-upgradable-host-install-version.out" || {
+          cat "$work/apm-upgradable-host-install-version.out"
+          exit 1
+        }
+        if grep -q "2.0.0" "$work/apm-upgradable-host-install-version.out"; then
+          cat "$work/apm-upgradable-host-install-version.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json list --upgradable \
+          --registry host-install-version > "$work/apm-upgradable-host-install-version.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-version"
+            and .[0].version == "1.0.0"
+            and (.[0].status | contains("installed"))
+            and (.[0].status | contains("upgradable: 1.1.0"))
+            and (.[0].status | contains("2.0.0") | not)' \
+          "$work/apm-upgradable-host-install-version.json" >/dev/null
+        nix_store --delete --ignore-liveness "$install_store_v11" \
+          > "$work/nix-delete-host-install-version-v11.out" 2>&1
+        nix_store --delete --ignore-liveness "$install_leaf_store_v11" \
+          > "$work/nix-delete-host-leaf-version-v11.out" 2>&1
+        if nix_store --check-validity "$install_store_v11" \
+          > "$work/nix-valid-host-install-version-v11-deleted.out" 2>&1; then
+          cat "$work/nix-valid-host-install-version-v11-deleted.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_leaf_store_v11" \
+          > "$work/nix-valid-host-leaf-version-v11-deleted.out" 2>&1; then
+          cat "$work/nix-valid-host-leaf-version-v11-deleted.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json full-upgrade --yes \
+          > "$work/apm-full-upgrade-host-install-version.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v11" \
+          '.action == "upgrade"
+            and .status == "upgraded"
+            and .requested == []
+            and .exclude == []
+            and .dry_run == false
+            and .generation == 2
+            and .upgraded == 1
+            and .held_back == []
+            and (.upgrades | length == 1)
+            and .upgrades[0].name == "hostinstall"
+            and .upgrades[0].registry == "host-install-version"
+            and .upgrades[0].old_version == "1.0.0"
+            and .upgrades[0].new_version == "1.1.0"
+            and .upgrades[0].new_store_path == $store
+            and (.downloads.planned >= 2)
+            and (.downloads.downloaded >= 2)
+            and (.downloads.imported >= 2)' \
+          "$work/apm-full-upgrade-host-install-version.json" >/dev/null
+        nix_store --check-validity "$install_store_v11" \
+          > "$work/nix-valid-host-install-version-v11-imported.out" 2>&1
+        nix_store --check-validity "$install_leaf_store_v11" \
+          > "$work/nix-valid-host-leaf-version-v11-imported.out" 2>&1
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-version-v11-run.out"
+        grep -q "host leaf package v1.1 executed" \
+          "$work/host-install-version-v11-run.out"
+        grep -q "host install package v1.1 executed" \
+          "$work/host-install-version-v11-run.out"
+        if grep -q "v2 executed" "$work/host-install-version-v11-run.out"; then
+          cat "$work/host-install-version-v11-run.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json list --installed \
+          --registry host-install-version > "$work/apm-list-installed-host-install-version-v11.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 2
+            and any(.[]; .name == "hostinstall"
+              and .registry == "host-install-version"
+              and .version == "1.1.0"
+              and .status == "installed")
+            and any(.[]; .name == "hostleaf"
+              and .registry == "host-install-version"
+              and .version == "1.1.0"
+              and .status == "installed")' \
+          "$work/apm-list-installed-host-install-version-v11.json" >/dev/null
+        run_clean ${self}/bin/apm --json policy hostinstall \
+          > "$work/apm-policy-host-install-version-v11.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package == "hostinstall"
+            and .installed == "1.1.0"
+            and .candidate == "1.1.0"
+            and (.versions | length == 1)
+            and .versions[0].version == "1.1.0"
+            and .versions[0].registry == "host-install-version"
+            and .versions[0].installed == true
+            and .unavailable_installed == []' \
+          "$work/apm-policy-host-install-version-v11.json" >/dev/null
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$main_home"
+        config="$main_config"
+        data="$main_data"
+        cache="$main_cache"
+        profile_root="$main_profile_root"
+        profile="$main_profile"
+
         run_clean ${self}/bin/apm --json update --registry host-install-client \
           > "$work/apm-update-host-install-v2-before-push.json" 2>&1 || {
           cat "$work/apm-update-host-install-v2-before-push.json"
@@ -3347,7 +4169,7 @@ in {
             and .registries[0].registry == "host-install-client"
             and .registries[0].status == "updated"
             and .registries[0].commit == $commit
-            and .registries[0].packages == 2
+            and .registries[0].packages == 3
             and .registries[0].updated == 0
             and .registries[0].added == 0
             and .registries[0].removed == 0' \
@@ -3494,8 +4316,8 @@ in {
             and (.registries | length == 1)
             and .registries[0].registry == "host-install-client"
             and .registries[0].status == "updated"
-            and .registries[0].packages == 2
-            and .registries[0].updated == 2
+            and .registries[0].packages == 3
+            and .registries[0].updated == 3
             and .registries[0].added == 0
             and .registries[0].removed == 0
             and (.registries[0].commit | length == 64)' \
@@ -3852,7 +4674,7 @@ in {
             and .clone == true
             and .synced == true
             and .sync_error == null
-            and .packages == 2
+            and .packages == 3
             and .last_commit == $commit
             and .config == $config_path
             and .signing_required == false
@@ -3969,7 +4791,7 @@ in {
             and .enabled == true
             and .synced == true
             and .last_commit == $commit
-            and .packages == 2' \
+            and .packages == 3' \
           "$work/apm-add-host-install-low.json" >/dev/null
         run_clean ${self}/bin/apm --json registry add --no-verify "file://$install_origin" \
           --name host-install-high \
@@ -3983,7 +4805,7 @@ in {
             and .enabled == true
             and .synced == true
             and (.last_commit | length == 64)
-            and .packages == 2' \
+            and .packages == 3' \
           "$work/apm-add-host-install-high.json" >/dev/null
         run_clean ${self}/bin/apm --json search hostinstall \
           > "$work/apm-search-provider-priority.json"
@@ -4203,7 +5025,7 @@ in {
             and .enabled == true
             and .synced == true
             and .last_commit == $commit
-            and .packages == 2' \
+            and .packages == 3' \
           "$work/apm-add-host-explicit-low.json" >/dev/null
         run_clean ${self}/bin/apm --json registry add --no-verify "file://$install_origin" \
           --name host-explicit-high \
@@ -4217,7 +5039,7 @@ in {
             and .enabled == true
             and .synced == true
             and (.last_commit | length == 64)
-            and .packages == 2' \
+            and .packages == 3' \
           "$work/apm-add-host-explicit-high.json" >/dev/null
         run_clean ${self}/bin/apm --json install hostinstall \
           --registry host-explicit-low \
@@ -5095,6 +5917,21 @@ in {
           > "$work/apr-status-host-install-after-unpublish-v1.out" 2>&1
         grep -q "packages/h/hostinstall.toml" \
           "$work/apr-status-host-install-after-unpublish-v1.out"
+        run_clean ${self}/bin/apr --json unpublish hostinstall 1.1.0 \
+          --registry host-install-channel \
+          --no-commit > "$work/apr-unpublish-host-install-v11.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "unpublish"
+            and .registry == "host-install-channel"
+            and .package == "hostinstall"
+            and .version == "1.1.0"
+            and .platform == null
+            and .status == "updated"
+            and .package_file == "packages/h/hostinstall.toml"
+            and .package_file_removed == false
+            and .committed == false
+            and .commit_message == null' \
+          "$work/apr-unpublish-host-install-v11.json" >/dev/null
         run_clean ${self}/bin/apr --json unpublish hostinstall 2.0.0 \
           --registry host-install-channel \
           --message "retire hostinstall package" \
@@ -5115,6 +5952,7 @@ in {
           "$work/apr-unpublish-host-install-v2.json" >/dev/null
         test ! -e "$install_reg/packages/h/hostinstall.toml"
         test -f "$install_reg/closures/$install_hash"
+        test -f "$install_reg/closures/$install_hash_v11"
         test -f "$install_reg/closures/$install_hash_v2"
         if run_clean ${self}/bin/apr --json show hostinstall \
           --registry host-install-channel > "$work/apr-show-host-install-after-unpublish.json" 2>&1; then
@@ -5164,9 +6002,9 @@ in {
             and .registries[0].registry == "host-install-retired"
             and .registries[0].status == "updated"
             and .registries[0].commit == $head
-            and .registries[0].packages == 1
+            and .registries[0].packages == 2
             and .registries[0].added == 0
-            and .registries[0].updated == 1
+            and .registries[0].updated == 2
             and .registries[0].removed == 1' \
           "$work/apm-update-host-install-retired-after-unpublish.json" >/dev/null || {
           cat "$work/apm-update-host-install-retired-after-unpublish.json"

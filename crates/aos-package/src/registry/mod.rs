@@ -35,17 +35,17 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use super::types::{ClosureMeta, PackageMeta, RegistryConfig};
+use super::types::{ClosureMeta, PackageMeta, RegistryConfig, TrackingMode};
 use closures::load_closures;
-use parse::parse_registry;
+use parse::parse_registry_matching;
 
 /// A loaded registry with all its packages for the current platform.
 #[derive(Debug)]
 pub struct Registry {
     /// The registry configuration this instance was loaded from.
     pub config: RegistryConfig,
-    /// Newest version of every package offered for the loaded platform,
-    /// keyed by package name.
+    /// Newest matching version of every package offered for the loaded
+    /// platform, keyed by package name.
     pub packages: HashMap<String, PackageMeta>,
     /// Reverse index from store path hash to the exact package version that
     /// produced it (covers all versions, not just the newest).
@@ -65,18 +65,25 @@ impl Registry {
     ///
     /// # Errors
     ///
-    /// Returns an error if the `packages/` directory cannot be read or any
-    /// package TOML file inside it fails to parse.
+    /// Returns an error if the registry tracking config is invalid, the
+    /// `packages/` directory cannot be read, or any package TOML file inside
+    /// it fails to parse.
     pub fn load(cache_dir: &Path, config: &RegistryConfig, platform: &str) -> Result<Self> {
         let registry_dir = cache_dir.join(&config.name);
+        let version_req = match config.tracking_mode()? {
+            TrackingMode::Version(req) => Some(req),
+            _ => None,
+        };
         let (packages, hash_index) =
-            parse_registry(&registry_dir, platform).with_context(|| {
-                format!(
-                    "loading registry '{}' from {}",
-                    config.name,
-                    registry_dir.display()
-                )
-            })?;
+            parse_registry_matching(&registry_dir, platform, version_req.as_ref()).with_context(
+                || {
+                    format!(
+                        "loading registry '{}' from {}",
+                        config.name,
+                        registry_dir.display()
+                    )
+                },
+            )?;
 
         let closures = load_closures(&registry_dir).unwrap_or_default();
 
@@ -234,7 +241,7 @@ pub(crate) mod tests {
     use tempfile::TempDir;
 
     use super::closures::{CURL_CLOSURE, ZLIB_CLOSURE};
-    use super::parse::{CURL_TOML, ZLIB_TOML};
+    use super::parse::{CURL_TOML, MULTI_VERSION_TOML, ZLIB_TOML};
 
     /// Helper: create a registry in a temp directory from TOML test fixtures.
     ///
@@ -308,6 +315,39 @@ pub(crate) mod tests {
         let reg = make_registry(&tmp, "test", 500, &[("curl", CURL_TOML)]);
         let meta = reg.get_by_hash("h7j3k8l2m9n4").unwrap();
         assert_eq!(meta.name, "curl");
+    }
+
+    #[test]
+    fn registry_load_applies_version_tracking_constraint() {
+        let tmp = TempDir::new().unwrap();
+        let reg_dir = tmp.path().join("test");
+        let pkg_dir = reg_dir.join("packages").join("t");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("tool.toml"), MULTI_VERSION_TOML).unwrap();
+
+        let config = RegistryConfig {
+            name: "test".to_string(),
+            url: "https://registry.example.com/test".to_string(),
+            priority: 500,
+            enabled: true,
+            commit: None,
+            branch: None,
+            channel: None,
+            tag: None,
+            version: Some("^1.0".to_string()),
+            pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            upload_auth: None,
+            signing_keys: Default::default(),
+            signing: None,
+        };
+
+        let reg = Registry::load(tmp.path(), &config, "x86_64-linux").unwrap();
+
+        assert_eq!(reg.get("tool").unwrap().version, "1.0.0");
+        assert!(reg.get_by_hash("oldhash111111").is_some());
+        assert!(reg.get_by_hash("newhash222222").is_none());
     }
 
     #[test]

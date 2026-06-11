@@ -1993,12 +1993,14 @@ pub async fn verify(
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
-    let dir = registry_dir(config, registry)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
     let packages_dir = dir.join("packages");
     let closures_dir = dir.join("closures");
 
     let mut errors = 0u32;
     let mut checked = 0u32;
+    let mut repaired = 0u32;
 
     // Collect all store path hashes from package TOMLs.
     let mut all_store_entries: Vec<RegistryVerifyStoreEntry> = Vec::new();
@@ -2093,7 +2095,6 @@ pub async fn verify(
     }
 
     if fix {
-        let mut repaired = 0u32;
         let mut seen = HashSet::new();
         for entry in &all_store_entries {
             if seen.insert(entry.store_hash.clone()) {
@@ -2169,7 +2170,9 @@ pub async fn verify(
     }
 
     // Check for orphan closure files (closure files with no matching package).
-    if closures_dir.is_dir() {
+    // A package-scoped verification intentionally ignores closure files for
+    // other packages in the registry.
+    if package.is_none() && closures_dir.is_dir() {
         let known_hashes: std::collections::HashSet<&str> = all_store_entries
             .iter()
             .map(|entry| entry.store_hash.as_str())
@@ -2186,9 +2189,23 @@ pub async fn verify(
     }
 
     if errors == 0 {
-        printer.success(&format!(
-            "Verified {checked} package(s), {closure_checked} closure(s), no errors."
-        ));
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "action": "verify",
+                "status": "ok",
+                "registry": registry_name,
+                "package": package,
+                "fix": fix,
+                "checked": checked,
+                "closures": closure_checked,
+                "repaired": repaired,
+                "errors": 0,
+            }));
+        } else {
+            printer.success(&format!(
+                "Verified {checked} package(s), {closure_checked} closure(s), no errors."
+            ));
+        }
     } else {
         printer.error(&format!(
             "Verified {checked} package(s), {closure_checked} closure(s), {errors} error(s) found."
