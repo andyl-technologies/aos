@@ -73,7 +73,7 @@ use crate::sshkey;
 use crate::types::{
     CacheEntry, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
     SigningKeySource, SigningKeySpec, package_name_bucket, validate_package_name,
-    validate_registry_name,
+    validate_platform_name, validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
@@ -1075,7 +1075,8 @@ description = ""
 /// # Errors
 ///
 /// Fails when the registry has no writable authoring clone, when the
-/// package name is not safe for registry package paths, when `--image` and
+/// package name is not safe for registry package paths, when the platform
+/// name is not safe for package metadata, when `--image` and
 /// `--image-format` are not given in pairs, when the `nix path-info` /
 /// `nix-store` queries fail for the store path, or when a file write, the
 /// commit, or the object-store refresh fails.
@@ -1147,6 +1148,7 @@ pub async fn publish(
     let platform = platform_override
         .map(|s| s.to_string())
         .unwrap_or_else(default_platform);
+    validate_platform_name(&platform)?;
 
     printer.step(2, 4, "Writing package TOML...");
     let letter = first_letter(pkg_name);
@@ -1309,9 +1311,10 @@ fn ensure_writable_registry_clone(name: &str, dir: &Path) -> Result<()> {
 
 /// Build package TOML content, merging with existing content if present.
 ///
-/// A fresh file is rendered directly; an existing file is parsed and the
-/// version/platform entry is upserted, preserving unrelated versions and
-/// platforms. Panics if an existing `versions` array entry is not a table.
+/// A fresh file is rendered through the TOML value serializer; an existing
+/// file is parsed and the version/platform entry is upserted, preserving
+/// unrelated versions and platforms. Panics if an existing `versions` array
+/// entry is not a table.
 #[allow(clippy::too_many_arguments)]
 fn build_package_toml(
     existing: &str,
@@ -1337,56 +1340,37 @@ fn build_package_toml(
     let source_nar_hash = source_info
         .map(|source| source.nar_hash.as_str())
         .unwrap_or_default();
+    let platform_table = package_platform_table(info, image_infos, source_drv, source_nar_hash);
 
     if existing.is_empty() {
-        // Create new TOML.
-        let mut content = format!("[package]\nname = \"{name}\"\ndescription = \"{desc}\"\n");
+        let mut package = toml::map::Map::new();
+        package.insert("name".into(), toml::Value::String(name.to_string()));
+        package.insert("description".into(), toml::Value::String(desc.to_string()));
         if sysroot {
-            content.push_str("sysroot = true\n");
+            package.insert("sysroot".into(), toml::Value::Boolean(true));
         }
         if let Some(hp) = homepage {
-            content.push_str(&format!("homepage = \"{hp}\"\n"));
+            package.insert("homepage".into(), toml::Value::String(hp.to_string()));
         }
-        content.push_str(&format!(
-            "license = \"{lic}\"\nmaintainer = \"{maint}\"\n\n"
-        ));
-        content.push_str(&format!("[[versions]]\nversion = \"{version}\"\n"));
+        package.insert("license".into(), toml::Value::String(lic.to_string()));
+        package.insert("maintainer".into(), toml::Value::String(maint.to_string()));
+
+        let mut version_table = toml::map::Map::new();
+        version_table.insert("version".into(), toml::Value::String(version.to_string()));
         if let Some(prev) = previous {
-            content.push_str(&format!("previous = \"{prev}\"\n"));
+            version_table.insert("previous".into(), toml::Value::String(prev.to_string()));
         }
-        content.push_str(&format!(
-            "\n[versions.platforms.{platform}]\n\
-             store_path = \"{}\"\n\
-             nar_hash = \"{}\"\n\
-             nar_size = {}\n\
-             closure_size = {}\n\
-             source_drv = \"{}\"\n\
-             source_nar_hash = \"{}\"\n\
-             references = [{}]\n",
-            info.path,
-            info.nar_hash,
-            info.nar_size,
-            info.closure_size,
-            source_drv,
-            source_nar_hash,
-            info.references
-                .iter()
-                .map(|r| format!("\"{r}\""))
-                .collect::<Vec<_>>()
-                .join(", "),
-        ));
-        // Append image entries if provided.
-        for (fmt, img_info) in image_infos {
-            content.push_str(&format!(
-                "\n[[versions.platforms.{platform}.images]]\n\
-                 format = \"{fmt}\"\n\
-                 store_path = \"{}\"\n\
-                 nar_hash = \"{}\"\n\
-                 nar_size = {}\n",
-                img_info.path, img_info.nar_hash, img_info.nar_size,
-            ));
-        }
-        Ok(content)
+        let mut platforms = toml::map::Map::new();
+        platforms.insert(platform.to_string(), platform_table);
+        version_table.insert("platforms".into(), toml::Value::Table(platforms));
+
+        let mut root = toml::map::Map::new();
+        root.insert("package".into(), toml::Value::Table(package));
+        root.insert(
+            "versions".into(),
+            toml::Value::Array(vec![toml::Value::Table(version_table)]),
+        );
+        Ok(toml::to_string_pretty(&toml::Value::Table(root))?)
     } else {
         // Parse existing, add/update the version+platform entry.
         let mut toml_val: toml::Value =
@@ -1401,53 +1385,6 @@ fn build_package_toml(
 
         // Ensure versions array exists.
         let versions = toml_val.get_mut("versions").and_then(|v| v.as_array_mut());
-
-        let platform_table = {
-            let mut t = toml::map::Map::new();
-            t.insert("store_path".into(), toml::Value::String(info.path.clone()));
-            t.insert(
-                "nar_hash".into(),
-                toml::Value::String(info.nar_hash.clone()),
-            );
-            t.insert(
-                "nar_size".into(),
-                toml::Value::Integer(info.nar_size as i64),
-            );
-            t.insert(
-                "closure_size".into(),
-                toml::Value::Integer(info.closure_size as i64),
-            );
-            t.insert(
-                "source_drv".into(),
-                toml::Value::String(source_drv.to_string()),
-            );
-            t.insert(
-                "source_nar_hash".into(),
-                toml::Value::String(source_nar_hash.to_string()),
-            );
-            let refs: Vec<toml::Value> = info
-                .references
-                .iter()
-                .map(|r| toml::Value::String(r.clone()))
-                .collect();
-            t.insert("references".into(), toml::Value::Array(refs));
-            // Add images if provided.
-            if !image_infos.is_empty() {
-                let images: Vec<toml::Value> = image_infos
-                    .iter()
-                    .map(|(fmt, img)| {
-                        let mut m = toml::map::Map::new();
-                        m.insert("format".into(), toml::Value::String(fmt.clone()));
-                        m.insert("store_path".into(), toml::Value::String(img.path.clone()));
-                        m.insert("nar_hash".into(), toml::Value::String(img.nar_hash.clone()));
-                        m.insert("nar_size".into(), toml::Value::Integer(img.nar_size as i64));
-                        toml::Value::Table(m)
-                    })
-                    .collect();
-                t.insert("images".into(), toml::Value::Array(images));
-            }
-            toml::Value::Table(t)
-        };
 
         if let Some(versions) = versions {
             // Find existing version entry.
@@ -1507,6 +1444,65 @@ fn build_package_toml(
 
         Ok(toml::to_string_pretty(&toml_val)?)
     }
+}
+
+fn package_platform_table(
+    info: &StorePathInfo,
+    image_infos: &[(String, StorePathInfo)],
+    source_drv: &str,
+    source_nar_hash: &str,
+) -> toml::Value {
+    let mut table = toml::map::Map::new();
+    table.insert("store_path".into(), toml::Value::String(info.path.clone()));
+    table.insert(
+        "nar_hash".into(),
+        toml::Value::String(info.nar_hash.clone()),
+    );
+    table.insert(
+        "nar_size".into(),
+        toml::Value::Integer(info.nar_size as i64),
+    );
+    table.insert(
+        "closure_size".into(),
+        toml::Value::Integer(info.closure_size as i64),
+    );
+    table.insert(
+        "source_drv".into(),
+        toml::Value::String(source_drv.to_string()),
+    );
+    table.insert(
+        "source_nar_hash".into(),
+        toml::Value::String(source_nar_hash.to_string()),
+    );
+    let references = info
+        .references
+        .iter()
+        .map(|reference| toml::Value::String(reference.clone()))
+        .collect::<Vec<_>>();
+    table.insert("references".into(), toml::Value::Array(references));
+
+    if !image_infos.is_empty() {
+        let images = image_infos
+            .iter()
+            .map(|(format, image)| {
+                let mut entry = toml::map::Map::new();
+                entry.insert("format".into(), toml::Value::String(format.clone()));
+                entry.insert("store_path".into(), toml::Value::String(image.path.clone()));
+                entry.insert(
+                    "nar_hash".into(),
+                    toml::Value::String(image.nar_hash.clone()),
+                );
+                entry.insert(
+                    "nar_size".into(),
+                    toml::Value::Integer(image.nar_size as i64),
+                );
+                toml::Value::Table(entry)
+            })
+            .collect::<Vec<_>>();
+        table.insert("images".into(), toml::Value::Array(images));
+    }
+
+    toml::Value::Table(table)
 }
 
 /// `apr unpublish <PACKAGE> [VERSION]` — removes package metadata from the
@@ -7459,6 +7455,73 @@ references = []
         assert!(content.contains("previous = \"2026.03\""));
         assert!(content.contains("format = \"raw\""));
         assert!(content.contains("sha256:ccdd"));
+    }
+
+    #[test]
+    fn build_package_toml_escapes_maintainer_metadata() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-tool-1.0.0".into(),
+            nar_hash: "sha256:aabb".into(),
+            nar_size: 42,
+            references: vec!["ref\"one".into()],
+            closure_size: 84,
+        };
+        let img_info = StorePathInfo {
+            path: "/nix/store/def456-tool-image-1.0.0".into(),
+            nar_hash: "sha256:ccdd".into(),
+            nar_size: 128,
+            references: vec![],
+            closure_size: 0,
+        };
+
+        let content = build_package_toml(
+            "",
+            "tool",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some("Tool with \"quoted\" metadata\nand a second line"),
+            Some("https://example.invalid/tool?feature=\"quotes\""),
+            Some("MIT OR Apache-2.0"),
+            Some("AOS Team <aos@example.invalid>"),
+            false,
+            Some("0.9.0+build\"meta"),
+            &[("raw\"image".to_string(), img_info)],
+            None,
+        )
+        .unwrap();
+
+        let rendered: toml::Value = toml::from_str(&content).unwrap();
+        assert_eq!(
+            rendered
+                .get("package")
+                .and_then(|package| package.get("description"))
+                .and_then(|description| description.as_str()),
+            Some("Tool with \"quoted\" metadata\nand a second line")
+        );
+        assert_eq!(
+            rendered
+                .get("versions")
+                .and_then(|versions| versions.as_array())
+                .and_then(|versions| versions.first())
+                .and_then(|version| version.get("previous"))
+                .and_then(|previous| previous.as_str()),
+            Some("0.9.0+build\"meta")
+        );
+        assert_eq!(
+            rendered
+                .get("versions")
+                .and_then(|versions| versions.as_array())
+                .and_then(|versions| versions.first())
+                .and_then(|version| version.get("platforms"))
+                .and_then(|platforms| platforms.get("x86_64-linux"))
+                .and_then(|platform| platform.get("images"))
+                .and_then(|images| images.as_array())
+                .and_then(|images| images.first())
+                .and_then(|image| image.get("format"))
+                .and_then(|format| format.as_str()),
+            Some("raw\"image")
+        );
     }
 
     #[test]
