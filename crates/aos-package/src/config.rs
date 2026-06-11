@@ -227,6 +227,40 @@ impl ApmConfig {
     pub fn find_registry(&self, name: &str) -> Option<&(RegistryConfig, Option<RegistryState>)> {
         self.registries.iter().find(|(cfg, _)| cfg.name == name)
     }
+
+    /// Return the registry config file to update for `name`.
+    ///
+    /// User-scope configuration layers the user's `registries.d` over the
+    /// system directory. A command that mutates an already effective registry
+    /// must therefore prefer an existing user file, but fall back to an
+    /// existing writable system file when the registry came only from system
+    /// config. If neither file exists, this returns the primary path so
+    /// callers can create it or report a precise missing-config error.
+    pub fn registry_config_path_for_update(&self, name: &str) -> PathBuf {
+        let primary = self
+            .scope
+            .config_dir()
+            .join("registries.d")
+            .join(format!("{name}.toml"));
+        if primary.exists() || self.scope != ProfileScope::User {
+            return primary;
+        }
+
+        let fallback = ProfileScope::System
+            .config_dir()
+            .join("registries.d")
+            .join(format!("{name}.toml"));
+        if fallback.exists()
+            && std::fs::OpenOptions::new()
+                .write(true)
+                .open(&fallback)
+                .is_ok()
+        {
+            fallback
+        } else {
+            primary
+        }
+    }
 }
 
 #[cfg(test)]
