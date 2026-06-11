@@ -13,6 +13,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
+#[path = "support/git_ssh.rs"]
+mod git_ssh;
+
 #[test]
 fn apr_origin_config_requires_registry_config() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
@@ -621,6 +624,110 @@ async fn apr_release_channel_upload_supports_verified_consumer_sync() -> Result<
     assert_eq!(entries[0]["registry"], "signed-reg");
     assert_eq!(entries[0]["version"], "1.1.0");
 
+    let unpublished = run_apr(
+        &maintainer_home,
+        &[
+            "unpublish",
+            "fixture-tool",
+            "--registry",
+            "signed-reg",
+            "--key",
+            key_path.to_str().context("unpublish key path utf-8")?,
+            "--message",
+            "retire signed fixture package",
+        ],
+    )?;
+    assert!(
+        unpublished.contains("Removed package 'fixture-tool' entirely."),
+        "{unpublished}",
+    );
+    assert!(
+        unpublished.contains("Committed: retire signed fixture package"),
+        "{unpublished}",
+    );
+    assert!(
+        !maintainer_registry
+            .join("packages/f/fixture-tool.toml")
+            .exists(),
+        "apr unpublish should remove the package file from the authoring clone",
+    );
+    let commit_message = git_stdout(
+        &maintainer_registry,
+        &["log", "-1", "--pretty=%B"],
+        "checking signed unpublish commit message",
+    )?;
+    assert_eq!(commit_message, "retire signed fixture package");
+
+    let release = run_apr(
+        &maintainer_home,
+        &[
+            "release",
+            "1.2.0",
+            "--registry",
+            "signed-reg",
+            "--key",
+            key_path.to_str().context("release key path utf-8")?,
+            "--channel",
+            "stable",
+            "--count",
+            "256",
+            "--upload-url",
+            &upload_url,
+        ],
+    )?;
+    assert!(release.contains("Released signed-reg 1.2.0"), "{release}");
+    assert!(
+        release.contains("Advanced channel 'stable' 256 partition(s) to 1.2.0"),
+        "{release}",
+    );
+    git_stdout(
+        &maintainer_registry,
+        &["rev-parse", "1.2.0^{tag}"],
+        "checking post-unpublish release tag",
+    )?;
+    assert!(
+        upload_dir
+            .join("releases/1/2/0/objects/info/packs")
+            .exists(),
+        "uploaded origin is missing post-unpublish release pack metadata in {}",
+        upload_dir.display(),
+    );
+
+    let updated = run_aos_package_json(
+        &consumer_home,
+        &consumer_system_dir,
+        &["--json", "update", "--registry", "signed-reg"],
+        "verified channel update after unpublish",
+    )?;
+    assert_eq!(updated["action"], "update");
+    assert_eq!(updated["registry"], "signed-reg");
+    assert_eq!(updated["updated"], 1, "{updated}");
+    let registries = updated["registries"]
+        .as_array()
+        .context("post-unpublish update JSON should contain registries array")?;
+    assert_eq!(registries.len(), 1, "{updated}");
+    assert_eq!(registries[0]["registry"], "signed-reg");
+    assert_eq!(registries[0]["status"], "updated");
+    assert_eq!(registries[0]["packages"], 0, "{updated}");
+    assert_eq!(registries[0]["added"], 0, "{updated}");
+    assert_eq!(registries[0]["updated"], 0, "{updated}");
+    assert_eq!(registries[0]["removed"], 1, "{updated}");
+
+    let listed = run_aos_package_json(
+        &consumer_home,
+        &consumer_system_dir,
+        &["--json", "list", "--registry", "signed-reg"],
+        "verified channel list after unpublish",
+    )?;
+    assert_eq!(
+        listed
+            .as_array()
+            .context("post-unpublish package list JSON should be an array")?
+            .len(),
+        0,
+        "{listed}",
+    );
+
     Ok(())
 }
 
@@ -780,11 +887,16 @@ fn extract_public_key(output: &str) -> Result<String> {
 }
 
 fn git_stdout(cwd: &Path, args: &[&str], context: &str) -> Result<String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(cwd)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("USER", "registry-test")
+        .env("LOGNAME", "registry-test");
+    git_ssh::apply_git_ssh_program_env(&mut command);
+    let output = command
         .output()
         .with_context(|| format!("{context}: git {}", args.join(" ")))?;
     if !output.status.success() {
@@ -803,11 +915,14 @@ fn run_aos_package_json(
     args: &[&str],
     action: &str,
 ) -> Result<Value> {
-    let output = Command::new(env!("CARGO_BIN_EXE_aos"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_aos"));
+    command
         .env("HOME", home)
         .env("APM_SYSTEM_CONFIG_DIR", system_dir)
         .arg("package")
-        .args(args)
+        .args(args);
+    git_ssh::apply_git_ssh_program_env(&mut command);
+    let output = command
         .output()
         .with_context(|| format!("running aos package {action}"))?;
     if !output.status.success() {
@@ -831,10 +946,13 @@ fn run_aos_package_json(
 fn apr_command(home: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_apr"));
     cmd.env("HOME", home)
+        .env("USER", "registry-test")
+        .env("LOGNAME", "registry-test")
         .env("GIT_AUTHOR_NAME", "Registry Test")
         .env("GIT_AUTHOR_EMAIL", "registry@example.com")
         .env("GIT_COMMITTER_NAME", "Registry Test")
         .env("GIT_COMMITTER_EMAIL", "registry@example.com");
+    git_ssh::apply_git_ssh_program_env(&mut cmd);
     cmd
 }
 

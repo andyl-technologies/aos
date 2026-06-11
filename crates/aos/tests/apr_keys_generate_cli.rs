@@ -6,8 +6,11 @@ use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
 use aos_package::registry::keys;
-use aos_package::security::{parse_signing_key, verify_commit_signature};
+use aos_package::security::parse_signing_key;
 use aos_package::sshkey::Ed25519Keypair;
+
+#[path = "support/git_ssh.rs"]
+mod git_ssh;
 
 #[test]
 fn apr_keys_generate_creates_key_material_and_config() -> Result<()> {
@@ -71,7 +74,7 @@ fn apr_keys_generate_creates_key_material_and_config() -> Result<()> {
         ],
     )?;
     let registry_dir = home.join(".local/share/apm/registries/core2");
-    assert!(verify_commit_signature(
+    assert!(git_ssh::verify_commit_signature(
         &registry_dir,
         "HEAD",
         &[carol_key],
@@ -113,7 +116,7 @@ fn apr_keys_generate_add_appends_to_roster_with_signed_commit() -> Result<()> {
         vec!["initial", "second"],
     );
     // The enrolling commit is signed by the existing maintainer key.
-    assert!(verify_commit_signature(
+    assert!(git_ssh::verify_commit_signature(
         &registry_dir,
         "HEAD",
         &[initial.0.clone()],
@@ -223,10 +226,13 @@ fn init_registry(
 fn apr_command(home: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_apr"));
     cmd.env("HOME", home)
+        .env("USER", "registry-test")
+        .env("LOGNAME", "registry-test")
         .env("GIT_AUTHOR_NAME", "Registry Test")
         .env("GIT_AUTHOR_EMAIL", "registry@example.com")
         .env("GIT_COMMITTER_NAME", "Registry Test")
         .env("GIT_COMMITTER_EMAIL", "registry@example.com");
+    git_ssh::apply_git_ssh_program_env(&mut cmd);
     cmd
 }
 
@@ -259,15 +265,20 @@ fn run_apr_err(home: &Path, args: &[&str]) -> Result<Output> {
 
 /// Run a fixture git command insulated from the host's git configuration.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("USER", "registry-test")
+        .env("LOGNAME", "registry-test")
         .env("GIT_AUTHOR_NAME", "Registry Test")
         .env("GIT_AUTHOR_EMAIL", "registry@example.com")
         .env("GIT_COMMITTER_NAME", "Registry Test")
         .env("GIT_COMMITTER_EMAIL", "registry@example.com")
         .args(args)
-        .current_dir(dir)
+        .current_dir(dir);
+    git_ssh::apply_git_ssh_program_env(&mut command);
+    let output = command
         .output()
         .with_context(|| format!("running git {}", args.join(" ")))?;
     if !output.status.success() {

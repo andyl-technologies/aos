@@ -282,6 +282,85 @@ fn apm_profile_lifecycle_cli_autoremoves_dependency_roots() -> Result<()> {
 
 #[cfg(unix)]
 #[test]
+fn apm_profile_lifecycle_cli_full_upgrades_and_executes_new_generation() -> Result<()> {
+    let fixture = LifecycleFixture::new()?;
+    fixture.write_registry_cache()?;
+    fixture.write_upgrade_profile()?;
+    fixture.write_nix_store_check_validity_stub()?;
+
+    assert_eq!(fixture.current_generation()?, "gen-1");
+    assert_eq!(fixture.run_profile_command("alpha")?, "alpha 1.0.0\n");
+
+    let excluded = fixture.run_json(
+        &["--json", "upgrade", "--exclude", "alpha"],
+        "upgrade excluding alpha",
+    )?;
+    assert_eq!(excluded["action"], "upgrade");
+    assert_eq!(excluded["status"], "held_back", "{excluded}");
+    assert_eq!(excluded["upgraded"], 0, "{excluded}");
+    assert_eq!(excluded["held_back"][0]["name"], "alpha");
+    assert_eq!(excluded["held_back"][0]["old_version"], "1.0.0");
+    assert_eq!(excluded["held_back"][0]["new_version"], "2.0.0");
+    assert_eq!(fixture.current_generation()?, "gen-1");
+    assert_eq!(fixture.run_profile_command("alpha")?, "alpha 1.0.0\n");
+
+    let upgraded = fixture.run_json(&["--json", "--yes", "full-upgrade"], "full-upgrade")?;
+    assert_eq!(upgraded["action"], "upgrade");
+    assert_eq!(upgraded["status"], "upgraded", "{upgraded}");
+    assert_eq!(upgraded["requested"], serde_json::json!([]));
+    assert_eq!(upgraded["exclude"], serde_json::json!([]));
+    assert_eq!(upgraded["upgraded"], 1, "{upgraded}");
+    assert_eq!(upgraded["generation"], 2, "{upgraded}");
+    assert_eq!(upgraded["downloads"]["planned"], 0, "{upgraded}");
+    assert_eq!(upgraded["downloads"]["downloaded"], 0, "{upgraded}");
+    assert_eq!(upgraded["downloads"]["imported"], 0, "{upgraded}");
+    assert_eq!(upgraded["upgrades"][0]["name"], "alpha");
+    assert_eq!(upgraded["upgrades"][0]["old_version"], "1.0.0");
+    assert_eq!(upgraded["upgrades"][0]["new_version"], "2.0.0");
+    assert_eq!(
+        upgraded["upgrades"][0]["new_store_hash"],
+        fixture.packages.alpha_v2.hash,
+    );
+
+    assert_eq!(fixture.current_generation()?, "gen-2");
+    assert_eq!(fixture.run_profile_command("alpha")?, "alpha 2.0.0\n");
+    assert!(
+        !fixture
+            .profile
+            .join("meta")
+            .join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json")
+            .exists(),
+        "full-upgrade should remove obsolete alpha 1.0.0 metadata"
+    );
+    assert!(
+        fixture
+            .profile
+            .join("meta")
+            .join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json")
+            .exists(),
+        "full-upgrade should write alpha 2.0.0 metadata"
+    );
+
+    let installed = fixture.run_json(
+        &["--json", "list", "--installed", "--registry", "lifecycle"],
+        "list installed after full-upgrade",
+    )?;
+    assert_package_list(&installed, &[("alpha", "2.0.0", "installed")])?;
+    let nix_store_calls = fs::read_to_string(fixture.nix_store_stub_log())
+        .context("reading nix-store stub call log")?;
+    assert!(
+        nix_store_calls.contains(&format!(
+            "--check-validity {}",
+            fixture.packages.alpha_v2.store_path.display()
+        )),
+        "full-upgrade should check the upgraded store path for validity:\n{nix_store_calls}",
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn apm_registry_dependency_cli_uses_precomputed_closures() -> Result<()> {
     let fixture = LifecycleFixture::new()?;
     fixture.write_registry_cache()?;
@@ -315,6 +394,7 @@ struct LifecycleFixture {
     profile_root: PathBuf,
     system_config: PathBuf,
     profile: PathBuf,
+    tools_dir: PathBuf,
     packages: LifecyclePackages,
 }
 
@@ -343,6 +423,7 @@ impl LifecycleFixture {
         let profile_root = tmp.path().join("profiles");
         let system_config = tmp.path().join("etc-apm");
         let profile = profile_root.join("per-user/apmtest");
+        let tools_dir = tmp.path().join("tools");
         let store = tmp.path().join("store");
 
         let packages = LifecyclePackages {
@@ -376,6 +457,7 @@ impl LifecycleFixture {
             profile_root,
             system_config,
             profile,
+            tools_dir,
             packages,
         })
     }
@@ -469,6 +551,81 @@ impl LifecycleFixture {
         Ok(())
     }
 
+    fn write_upgrade_profile(&self) -> Result<()> {
+        fs::create_dir_all(self.profile.join("meta"))?;
+        fs::write(
+            self.profile.join("state.json"),
+            r#"{"current_generation":1,"next_generation":2}"#,
+        )?;
+
+        self.write_store_command(&self.packages.alpha_v1)?;
+        self.write_store_command(&self.packages.alpha_v2)?;
+
+        self.write_generation(1, &[&self.packages.alpha_v1])?;
+        replace_symlink(Path::new("gen-1"), &self.profile.join("current"))?;
+        self.write_root_meta(&self.packages.alpha_v1, false)?;
+
+        Ok(())
+    }
+
+    fn write_nix_store_check_validity_stub(&self) -> Result<()> {
+        let shell = find_shell()?;
+
+        fs::create_dir_all(&self.tools_dir)?;
+        fs::write(
+            self.nix_store_valid_paths(),
+            format!(
+                "{}\n{}\n{}\n{}\n",
+                self.packages.alpha_v1.store_path.display(),
+                self.packages.alpha_v2.store_path.display(),
+                self.packages.beta.store_path.display(),
+                self.packages.beta_helper.store_path.display(),
+            ),
+        )?;
+        let script = self.tools_dir.join("nix-store");
+        fs::write(
+            &script,
+            format!(
+                r#"#!{}
+log="${{APM_NIX_STORE_STUB_LOG:?}}"
+valid_paths="${{APM_NIX_STORE_STUB_VALID_PATHS:?}}"
+printf '%s\n' "$*" >> "$log"
+
+if [ "$1" = "--check-validity" ]; then
+  shift
+  for store_path in "$@"; do
+    found=0
+    while IFS= read -r valid_path; do
+      if [ "$store_path" = "$valid_path" ]; then
+        found=1
+        break
+      fi
+    done < "$valid_paths"
+    if [ "$found" != 1 ]; then
+      printf '%s\n' "missing $store_path" >> "$log"
+      exit 1
+    fi
+  done
+  exit 0
+fi
+printf '%s\n' "unexpected nix-store invocation: $*" >&2
+exit 64
+"#,
+                shell.display(),
+            ),
+        )?;
+        make_executable(&script)?;
+        Ok(())
+    }
+
+    fn nix_store_valid_paths(&self) -> PathBuf {
+        self.tools_dir.join("nix-store-valid-paths")
+    }
+
+    fn nix_store_stub_log(&self) -> PathBuf {
+        self.tools_dir.join("nix-store-calls.log")
+    }
+
     fn write_store_command(&self, package: &PackageFixture) -> Result<()> {
         let bin = package.store_path.join("bin");
         fs::create_dir_all(&bin)?;
@@ -526,14 +683,16 @@ impl LifecycleFixture {
 
     fn run_json(&self, args: &[&str], action: &str) -> Result<Value> {
         let output = self
-            .package_command(args)
+            .package_command(args)?
             .output()
             .with_context(|| format!("running aos package {action}"))?;
         if !output.status.success() {
+            let nix_store_calls = fs::read_to_string(self.nix_store_stub_log()).unwrap_or_default();
             bail!(
-                "aos package {action} failed:\nstdout:\n{}\nstderr:\n{}",
+                "aos package {action} failed:\nstdout:\n{}\nstderr:\n{}\nnix-store calls:\n{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
+                nix_store_calls,
             );
         }
         assert!(
@@ -545,7 +704,7 @@ impl LifecycleFixture {
             .with_context(|| format!("parsing aos package {action} JSON from stdout"))
     }
 
-    fn package_command(&self, args: &[&str]) -> Command {
+    fn package_command(&self, args: &[&str]) -> Result<Command> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_aos"));
         command
             .env("HOME", &self.home)
@@ -555,16 +714,22 @@ impl LifecycleFixture {
             .env("XDG_CACHE_HOME", &self.xdg_cache)
             .env("AOS_PROFILE_ROOT", &self.profile_root)
             .env("APM_SYSTEM_CONFIG_DIR", &self.system_config)
+            .env("APM_NIX_STORE_STUB_LOG", self.nix_store_stub_log())
+            .env(
+                "APM_NIX_STORE_STUB_VALID_PATHS",
+                self.nix_store_valid_paths(),
+            )
+            .env("PATH", path_with_prefix_first(&self.tools_dir)?)
             .arg("package")
             .args(args);
-        command
+        Ok(command)
     }
 
     fn run_profile_command(&self, command: &str) -> Result<String> {
         let output = Command::new("sh")
             .arg("-c")
             .arg(command)
-            .env("PATH", path_with_profile_bin_first(&self.current_bin())?)
+            .env("PATH", path_with_prefix_first(&self.current_bin())?)
             .output()
             .with_context(|| format!("running profile command {command}"))?;
         if !output.status.success() {
@@ -777,12 +942,23 @@ fn assert_root_names(json: &Value, expected: &[(&str, &str)]) -> Result<()> {
     Ok(())
 }
 
-fn path_with_profile_bin_first(profile_bin: &Path) -> Result<std::ffi::OsString> {
-    let mut paths = vec![profile_bin.to_path_buf()];
+fn path_with_prefix_first(prefix: &Path) -> Result<std::ffi::OsString> {
+    let mut paths = vec![prefix.to_path_buf()];
     if let Some(current) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&current));
     }
     std::env::join_paths(paths).context("joining PATH for profile command")
+}
+
+fn find_shell() -> Result<PathBuf> {
+    let path = std::env::var_os("PATH").context("PATH must be set to locate sh")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join("sh");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    bail!("sh not found in PATH");
 }
 
 #[cfg(unix)]

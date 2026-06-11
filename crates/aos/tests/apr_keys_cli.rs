@@ -4,8 +4,10 @@ use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
 use aos_package::registry::keys;
-use aos_package::security::verify_commit_signature;
 use aos_package::sshkey::Ed25519Keypair;
+
+#[path = "support/git_ssh.rs"]
+mod git_ssh;
 
 #[test]
 fn apr_keys_cli_manages_committed_roster() -> Result<()> {
@@ -64,12 +66,12 @@ fn apr_keys_cli_manages_committed_roster() -> Result<()> {
     );
     assert_eq!(git(&registry_dir, &["rev-list", "--count", "HEAD"])?, "2");
     // The enrolling commit is signed by the existing maintainer key.
-    assert!(verify_commit_signature(
+    assert!(git_ssh::verify_commit_signature(
         &registry_dir,
         "HEAD",
         &[initial.trust_key.clone()],
     )?);
-    assert!(!verify_commit_signature(
+    assert!(!git_ssh::verify_commit_signature(
         &registry_dir,
         "HEAD",
         &[next.trust_key.clone()],
@@ -121,7 +123,7 @@ fn apr_keys_cli_manages_committed_roster() -> Result<()> {
         Some("planned rotation")
     );
     assert_eq!(git(&registry_dir, &["rev-list", "--count", "HEAD"])?, "3");
-    assert!(verify_commit_signature(
+    assert!(git_ssh::verify_commit_signature(
         &registry_dir,
         "HEAD",
         &[next.trust_key.clone()],
@@ -296,7 +298,7 @@ fn apr_create_with_trust_key_requires_and_signs_initial_commit() -> Result<()> {
         ],
     )?;
     let registry_dir = home.join(".local/share/apm/registries").join("fresh");
-    assert!(verify_commit_signature(
+    assert!(git_ssh::verify_commit_signature(
         &registry_dir,
         "HEAD",
         &[key.trust_key.clone()],
@@ -437,24 +439,32 @@ fn run_apr_err(home: &Path, args: &[&str]) -> Result<Output> {
 fn apr_command(home: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_apr"));
     cmd.env("HOME", home)
+        .env("USER", "registry-test")
+        .env("LOGNAME", "registry-test")
         .env("GIT_AUTHOR_NAME", "Registry Test")
         .env("GIT_AUTHOR_EMAIL", "registry@example.com")
         .env("GIT_COMMITTER_NAME", "Registry Test")
         .env("GIT_COMMITTER_EMAIL", "registry@example.com");
+    git_ssh::apply_git_ssh_program_env(&mut cmd);
     cmd
 }
 
 /// Run a fixture git command insulated from the host's git configuration.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("USER", "registry-test")
+        .env("LOGNAME", "registry-test")
         .env("GIT_AUTHOR_NAME", "Registry Test")
         .env("GIT_AUTHOR_EMAIL", "registry@example.com")
         .env("GIT_COMMITTER_NAME", "Registry Test")
         .env("GIT_COMMITTER_EMAIL", "registry@example.com")
         .args(args)
-        .current_dir(dir)
+        .current_dir(dir);
+    git_ssh::apply_git_ssh_program_env(&mut command);
+    let output = command
         .output()
         .with_context(|| format!("running git {}", args.join(" ")))?;
     if !output.status.success() {
