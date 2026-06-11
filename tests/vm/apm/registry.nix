@@ -2818,8 +2818,9 @@ in {
         cat /tmp/static-release-download-only-json.out
         fail "apm --json install --download-only downloads anonymous release closure"
       }
-      ${pkgs.jq}/bin/jq -e --arg root "$ROOT_STORE" --arg leaf "$LEAF_STORE" \
-        '.action == "install"
+      if ${pkgs.jq}/bin/jq -e --arg root "$ROOT_STORE" --arg leaf "$LEAF_STORE" \
+        '[.downloads.paths[].store_path] as $downloaded_paths
+        | .action == "install"
           and .status == "downloaded"
           and .download_only == true
           and .dry_run == false
@@ -2830,12 +2831,14 @@ in {
           and (.roots | length == 1)
           and .roots[0].name == "static-closure"
           and (.closure | length == 1)
-          and ([.downloads.paths[].store_path] | index($root) != null and index($leaf) != null)' \
-        /tmp/static-release-download-only-json.out >/dev/null || {
+          and ($downloaded_paths | index($root) != null)
+          and ($downloaded_paths | index($leaf) != null)' \
+        /tmp/static-release-download-only-json.out >/dev/null; then
+        pass "apm --json install --download-only reports downloaded anonymous closure"
+      else
         cat /tmp/static-release-download-only-json.out
         fail "apm --json install --download-only reports downloaded anonymous closure"
-      }
-      pass "apm --json install --download-only reports downloaded anonymous closure"
+      fi
       assert_file_not_contains /tmp/static-release-download-only-json.out "Downloading" \
         "apm --json install --download-only emits clean JSON while downloading"
       if [ "$(cache_nar_count)" = "2" ]; then
