@@ -133,31 +133,7 @@ pub async fn run(
     // Step 5: Print upgrade summary.
     print_upgrade_summary(&to_upgrade, &held_back, printer);
 
-    if dry_run {
-        if json_mode {
-            printer.json(&upgrade_result_json(
-                "planned",
-                packages,
-                exclude,
-                &to_upgrade,
-                &held_back,
-                true,
-                None,
-                0,
-                0,
-                0,
-            ));
-        }
-        printer.info("Dry run -- no changes made.");
-        return Ok(());
-    }
-
-    // Step 6: Prompt for confirmation (unless --yes).
-    if !yes && !config.settings.assume_yes {
-        confirm(printer)?;
-    }
-
-    // Step 7: Resolve new closures for each upgraded package.
+    // Step 6: Resolve new closures for each upgraded package.
     printer.step(3, 7, "Resolving dependencies...");
     let mut all_new_metas: Vec<PackageMeta> = Vec::new();
     let mut upgrade_closures: Vec<(String, Vec<PackageMeta>)> = Vec::new();
@@ -215,25 +191,53 @@ pub async fn run(
         .filter(|m| missing_set.contains(m.store_path.as_str()))
         .collect();
 
-    // Download missing NARs.
-    let mut planned_downloads = 0usize;
-    let mut downloaded_count = 0usize;
-    let mut imported_count = 0usize;
-    if !to_download.is_empty() {
-        printer.step(4, 7, "Downloading packages...");
-
+    let resolved: Vec<ResolvedDownload> = if !to_download.is_empty() {
+        printer.step(4, 7, "Planning downloads...");
         let requests = build_download_requests(&upgrade_closures, &to_download, config)?;
         let engine = std::sync::Arc::new(default_engine());
-        let resolved: Vec<ResolvedDownload> = fetch_narinfo_closure(
+        fetch_narinfo_closure(
             std::sync::Arc::clone(&engine),
             &requests,
             config.settings.parallel_downloads,
             printer,
         )
-        .await?;
-        planned_downloads = resolved.len();
-        let cache_dir = config.nar_cache_path();
+        .await?
+    } else {
+        Vec::new()
+    };
+    let planned_downloads = resolved.len();
 
+    if dry_run {
+        if json_mode {
+            printer.json(&upgrade_result_json(
+                "planned",
+                packages,
+                exclude,
+                &to_upgrade,
+                &held_back,
+                true,
+                None,
+                planned_downloads,
+                0,
+                0,
+            ));
+        }
+        printer.info("Dry run -- no changes made.");
+        return Ok(());
+    }
+
+    // Step 7: Prompt for confirmation (unless --yes).
+    if !yes && !config.settings.assume_yes {
+        confirm(printer)?;
+    }
+
+    // Download missing NARs.
+    let mut downloaded_count = 0usize;
+    let mut imported_count = 0usize;
+    if !resolved.is_empty() {
+        printer.step(4, 7, "Downloading packages...");
+
+        let cache_dir = config.nar_cache_path();
         let results = download_nars(
             &resolved,
             &cache_dir,
