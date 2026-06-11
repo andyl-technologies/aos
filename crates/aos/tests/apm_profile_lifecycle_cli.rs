@@ -280,6 +280,32 @@ fn apm_profile_lifecycle_cli_autoremoves_dependency_roots() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn apm_registry_dependency_cli_uses_precomputed_closures() -> Result<()> {
+    let fixture = LifecycleFixture::new()?;
+    fixture.write_registry_cache()?;
+    fixture.write_dependency_closures()?;
+
+    let depends = fixture.run_json(&["--json", "depends", "beta"], "depends beta")?;
+    assert_eq!(depends["package"], "beta");
+    assert_eq!(depends["registry"], "lifecycle");
+    assert_eq!(depends["installed"], false);
+    assert_eq!(depends["unique_store_paths"], 2);
+    assert_dependency_tree(&depends["tree"], "beta", "1.0.0", &["beta-helper"])?;
+
+    fixture.write_profile()?;
+    let rdepends = fixture.run_json(
+        &["--json", "rdepends", "beta-helper"],
+        "rdepends beta-helper",
+    )?;
+    assert_eq!(rdepends["package"], "beta-helper");
+    assert_eq!(rdepends["target_versions"], "1.0.0");
+    assert_package_list(&rdepends["dependents"], &[("beta", "1.0.0", "")])?;
+
+    Ok(())
+}
+
 struct LifecycleFixture {
     _tmp: tempfile::TempDir,
     home: PathBuf,
@@ -375,6 +401,25 @@ impl LifecycleFixture {
         fs::write(
             registry_cache.join("packages/b/beta-helper.toml"),
             package_toml("beta-helper", &[&self.packages.beta_helper]),
+        )?;
+        Ok(())
+    }
+
+    fn write_dependency_closures(&self) -> Result<()> {
+        let closures_dir = self.xdg_data.join("apm/remote/lifecycle/closures");
+        fs::create_dir_all(&closures_dir)?;
+        fs::write(
+            closures_dir.join(self.packages.beta.hash),
+            format!(
+                "{} {}\n{}\n",
+                self.packages.beta.hash,
+                self.packages.beta_helper.hash,
+                self.packages.beta_helper.hash
+            ),
+        )?;
+        fs::write(
+            closures_dir.join(self.packages.beta_helper.hash),
+            format!("{}\n", self.packages.beta_helper.hash),
         )?;
         Ok(())
     }
@@ -683,6 +728,24 @@ fn assert_orphans(json: &Value, expected: &[(&str, &str, &str)]) -> Result<()> {
         assert_eq!(entry["name"], *name, "{json}");
         assert_eq!(entry["version"], *version, "{json}");
         assert_eq!(entry["registry"], *registry, "{json}");
+    }
+    Ok(())
+}
+
+fn assert_dependency_tree(
+    json: &Value,
+    name: &str,
+    version: &str,
+    child_names: &[&str],
+) -> Result<()> {
+    assert_eq!(json["name"], name, "{json}");
+    assert_eq!(json["version"], version, "{json}");
+    let children = json["children"]
+        .as_array()
+        .context("dependency tree children should be an array")?;
+    assert_eq!(children.len(), child_names.len(), "{json}");
+    for (child, expected_name) in children.iter().zip(child_names.iter()) {
+        assert_eq!(child["name"], *expected_name, "{json}");
     }
     Ok(())
 }
