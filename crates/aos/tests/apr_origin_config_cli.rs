@@ -188,7 +188,7 @@ fn apr_origin_upload_falls_back_to_persisted_upload_urls() -> Result<()> {
 }
 
 #[test]
-fn apr_add_preserves_authoring_clone_for_maintainers() -> Result<()> {
+fn apr_add_authoring_clone_supports_release_upload_workflow() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let seed_home = tmp.path().join("seed-home");
     let maintainer_home = tmp.path().join("maintainer-home");
@@ -269,6 +269,59 @@ fn apr_add_preserves_authoring_clone_for_maintainers() -> Result<()> {
         &maintainer_home,
         &["status", "--registry", "origin-default-reg"],
     )?;
+    run_apr(
+        &maintainer_home,
+        &[
+            "keys",
+            "generate",
+            "release",
+            "--registry",
+            "origin-default-reg",
+        ],
+    )?;
+    let release_key = maintainer_home.join(".config/apm/keys/origin-default-reg-release.key");
+    assert!(
+        release_key.exists(),
+        "apr keys generate should write {}",
+        release_key.display(),
+    );
+
+    let upload_dir = tmp.path().join("origin-default-upload");
+    let upload_url = format!("file://{}", upload_dir.display());
+    let release = run_apr(
+        &maintainer_home,
+        &[
+            "release",
+            "1.0.0",
+            "--registry",
+            "origin-default-reg",
+            "--key",
+            release_key.to_str().context("release key path utf-8")?,
+            "--upload-url",
+            &upload_url,
+        ],
+    )?;
+    assert!(
+        release.contains("Released origin-default-reg 1.0.0"),
+        "{release}"
+    );
+    git_stdout(
+        &maintainer_registry,
+        &["rev-parse", "1.0.0^{tag}"],
+        "checking release tag",
+    )?;
+    assert!(
+        upload_dir.join("HEAD").exists(),
+        "uploaded origin is missing HEAD in {}",
+        upload_dir.display(),
+    );
+    assert!(
+        upload_dir
+            .join("releases/1/0/0/objects/info/packs")
+            .exists(),
+        "uploaded origin is missing release pack metadata in {}",
+        upload_dir.display(),
+    );
 
     Ok(())
 }

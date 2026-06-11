@@ -137,6 +137,7 @@ in {
         config="$work/config"
         data="$work/share"
         cache="$work/cache"
+        system_config="$work/system-config"
         profile_root="$work/profiles"
         aos_root="$work/aos-root"
         store_dir="$aos_root/store"
@@ -144,7 +145,7 @@ in {
         nix_conf="$work/nix-conf"
         cache_port="18137"
         install_cache_port="18138"
-        mkdir -p "$home" "$config" "$data" "$cache" "$cache/nix" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$state_dir/log/nix" "$nix_conf"
+        mkdir -p "$home" "$config" "$data" "$cache" "$cache/nix" "$system_config" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$state_dir/log/nix" "$nix_conf"
         profile="$profile_root/per-user/unknown"
         default_profile="/var/lib/profiles/per-user/unknown"
         cache_server_pid=""
@@ -230,6 +231,7 @@ in {
             XDG_CONFIG_HOME="$config" \
             XDG_DATA_HOME="$data" \
             XDG_CACHE_HOME="$cache" \
+            APM_SYSTEM_CONFIG_DIR="$system_config" \
             AOS_PROFILE_ROOT="$profile_root" \
             AOS_ROOT="$aos_root" \
             AOS_NIX_STORE_DIR="$store_dir" \
@@ -252,6 +254,7 @@ in {
             XDG_CONFIG_HOME="$config" \
             XDG_DATA_HOME="$data" \
             XDG_CACHE_HOME="$cache" \
+            APM_SYSTEM_CONFIG_DIR="$system_config" \
             AOS_PROFILE_ROOT="$profile_root" \
             AOS_ROOT="$aos_root" \
             AOS_NIX_STORE_DIR="$store_dir" \
@@ -278,6 +281,13 @@ in {
 
         assert_default_profile_absent() {
           assert_path_absent "$default_profile"
+        }
+
+        assert_default_system_config_unused() {
+          if ${pkgs.findutils}/bin/find "$system_config" -mindepth 1 -print -quit | ${pkgs.grep}/bin/grep -q .; then
+            ${pkgs.findutils}/bin/find "$system_config" -mindepth 1 -maxdepth 3 -print
+            exit 1
+          fi
         }
 
         profile_generation_count() {
@@ -7599,6 +7609,7 @@ in {
         grep -q "host install package v2 executed" \
           "$work/host-install-retired-after-unpublish-run.out"
         assert_default_profile_absent
+        assert_default_system_config_unused
 
         mkdir -p "$out"
         echo "PASS" > "$out/result"
