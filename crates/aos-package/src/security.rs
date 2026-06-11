@@ -239,16 +239,20 @@ impl KeyStore {
 
         let active_lines: Vec<String> = active.iter().map(TrustedKey::key_line).collect();
 
-        // Keys previously pinned in the writable file (key lines only).
+        // Keys previously pinned or masked in the writable file.
         let path = dir.join(format!("{registry}.pub"));
         let mut previously_pinned: Vec<String> = Vec::new();
+        let mut previously_masked: Vec<String> = Vec::new();
         if let Ok(content) = fs::read_to_string(&path) {
             for line in content
                 .lines()
                 .map(str::trim)
                 .filter(|line| !line.is_empty())
             {
-                if parse_revoked_line(line).is_some() {
+                if let Some(excluded) = parse_revoked_line(line) {
+                    if !previously_masked.contains(&excluded) {
+                        previously_masked.push(excluded);
+                    }
                     continue;
                 }
                 if let Ok((reg, algo, pubkey)) = parse_signing_key(line)
@@ -292,6 +296,10 @@ impl KeyStore {
             .iter()
             .filter(|line| !active_lines.contains(line))
             .count();
+        let newly_masked = masked
+            .iter()
+            .filter(|line| !previously_masked.contains(line))
+            .count();
 
         let mut lines = active_lines;
         for excluded in &masked {
@@ -308,7 +316,7 @@ impl KeyStore {
         Ok(KeySyncReport {
             pinned,
             unpinned,
-            masked: masked.len(),
+            masked: newly_masked,
         })
     }
 
@@ -398,7 +406,7 @@ pub struct KeySyncReport {
     pub pinned: usize,
     /// Previously pinned keys removed from the writable store.
     pub unpinned: usize,
-    /// Read-only anchor keys masked with `# revoked:` exclusion lines.
+    /// Read-only anchor keys newly masked with `# revoked:` exclusion lines.
     pub masked: usize,
 }
 
@@ -1209,6 +1217,12 @@ mod tests {
         let keys = store.lookup_all("core");
         let lines: Vec<String> = keys.iter().map(TrustedKey::key_line).collect();
         assert_eq!(lines, vec!["core:Ed25519:BBBB".to_string()]);
+        let masked_content = fs::read_to_string(writable.join("core.pub")).unwrap();
+
+        let report = store.sync_registry_keys("core", &active).unwrap();
+        assert!(report.is_noop(), "{report:?}");
+        let repeat_content = fs::read_to_string(writable.join("core.pub")).unwrap();
+        assert_eq!(repeat_content, masked_content);
 
         // Re-enrolling A drops its exclusion and reports the pin.
         let active = vec![
