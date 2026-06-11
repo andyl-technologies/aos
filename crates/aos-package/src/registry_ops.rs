@@ -6978,6 +6978,35 @@ mod tests {
     }
 
     #[test]
+    fn signing_key_command_finds_host_path_helpers() {
+        let tmp = TempDir::new().unwrap();
+        let helper = tmp.path().join("emit-signing-key");
+        let shell = std::env::var_os("PATH")
+            .and_then(|path| executable_on_path("bash", &path))
+            .unwrap_or_else(|| PathBuf::from("bash"));
+        fs::write(
+            &helper,
+            format!("#!{}\nprintf 'host key material'\n", shell.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let resolved = materialize_signing_key_command_with_path(
+            "emit-signing-key",
+            Some(tmp.path().as_os_str().to_os_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(resolved.path()).unwrap(),
+            "host key material"
+        );
+    }
+
+    #[test]
     fn signing_key_command_shell_resolution_survives_path_override() {
         // The shell itself is resolved from the runtime PATH before the
         // user command sees the override, so shell builtins still work.
