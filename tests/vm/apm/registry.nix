@@ -2531,6 +2531,7 @@ in {
     rootfsDeps =
       maintainerWorkflowDeps
       ++ [
+        pkgs.jq
         closureLeafTool
         closureRootTool
         closureRootSourceTool
@@ -2807,6 +2808,58 @@ in {
       else
         fail "failed no-deps install should not create a profile generation"
       fi
+
+      echo "==> Consumer: JSON download-only fetches anonymous closure without importing"
+      NAR_GETS_BEFORE_JSON_DOWNLOAD_ONLY=$(cache_nar_http_get_count)
+      $APM --json install static-closure \
+        --registry static-release-reg \
+        --download-only \
+        --yes > /tmp/static-release-download-only-json.out 2>&1 || {
+        cat /tmp/static-release-download-only-json.out
+        fail "apm --json install --download-only downloads anonymous release closure"
+      }
+      ${pkgs.jq}/bin/jq -e --arg root "$ROOT_STORE" --arg leaf "$LEAF_STORE" \
+        '.action == "install"
+          and .status == "downloaded"
+          and .download_only == true
+          and .dry_run == false
+          and .generation == null
+          and .downloads.planned == 2
+          and .downloads.downloaded == 2
+          and .downloads.imported == 0
+          and (.roots | length == 1)
+          and .roots[0].name == "static-closure"
+          and (.closure | length == 1)
+          and ([.downloads.paths[].store_path] | index($root) != null and index($leaf) != null)' \
+        /tmp/static-release-download-only-json.out >/dev/null || {
+        cat /tmp/static-release-download-only-json.out
+        fail "apm --json install --download-only reports downloaded anonymous closure"
+      }
+      pass "apm --json install --download-only reports downloaded anonymous closure"
+      assert_file_not_contains /tmp/static-release-download-only-json.out "Downloading" \
+        "apm --json install --download-only emits clean JSON while downloading"
+      if [ "$(cache_nar_count)" = "2" ]; then
+        pass "json download-only leaves root and dependency NARs in user cache"
+      else
+        fail "json download-only should cache exactly two release NARs"
+      fi
+      EXPECTED_NAR_GETS_AFTER_JSON_DOWNLOAD_ONLY=$((NAR_GETS_BEFORE_JSON_DOWNLOAD_ONLY + 2))
+      if [ "$(cache_nar_http_get_count)" = "$EXPECTED_NAR_GETS_AFTER_JSON_DOWNLOAD_ONLY" ]; then
+        pass "json download-only fetches exactly two release NAR bodies"
+      else
+        cat /tmp/static-release-http.log || true
+        fail "json download-only should fetch exactly two release NAR bodies"
+      fi
+      assert_store_missing "$ROOT_STORE" "closure-root"
+      assert_store_missing "$LEAF_STORE" "closure-leaf"
+      assert_store_missing "$ROOT_SOURCE_STORE" "closure-root-source"
+      if [ "$(generation_count)" = "0" ] && [ ! -e "$PROFILE/current" ]; then
+        pass "json download-only creates no profile generation"
+      else
+        fail "json download-only should not create a profile generation"
+      fi
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
 
       echo "==> Consumer: download-only fetches anonymous closure without importing"
       NAR_GETS_BEFORE_DOWNLOAD_ONLY=$(cache_nar_http_get_count)
