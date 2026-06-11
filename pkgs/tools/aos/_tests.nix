@@ -217,6 +217,23 @@ in {
             "$@"
         }
 
+        run_without_git_identity() {
+          env -i \
+            HOME="$home" \
+            XDG_CONFIG_HOME="$config" \
+            XDG_DATA_HOME="$data" \
+            XDG_CACHE_HOME="$cache" \
+            AOS_PROFILE_ROOT="$profile_root" \
+            AOS_ROOT="$aos_root" \
+            AOS_NIX_STORE_DIR="$store_dir" \
+            AOS_NIX_STATE_DIR="$state_dir" \
+            NIX_REMOTE="" \
+            NIX_CONF_DIR="$nix_conf" \
+            GIT_CONFIG_NOSYSTEM=1 \
+            PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
+            "$@"
+        }
+
         assert_path_absent() {
           path="$1"
           if test -e "$path"; then
@@ -1188,7 +1205,7 @@ in {
         initial_tag_object=$(git -C "$reg" rev-parse '1.0.0^{tag}')
         initial_tag_commit=$(git -C "$reg" rev-parse '1.0.0^{commit}')
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/release-key-next"
-        run_clean ${self}/bin/apr --json sign 1.0.0 \
+        run_without_git_identity ${self}/bin/apr --json sign 1.0.0 \
           --registry host-reg \
           --key "$work/release-key-next" \
           > "$work/apr-sign.json"
