@@ -492,6 +492,130 @@ fn read_only_system_registry_can_be_toggled_with_user_override() -> Result<()> {
 }
 
 #[test]
+fn read_only_system_registry_update_persists_state_in_user_override() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let registry = tmp.path().join("readonly-update-registry");
+    if !git_supports_sha256(tmp.path())? {
+        eprintln!(
+            "skipping redirected system update e2e: git cannot initialize a sha256 repository"
+        );
+        return Ok(());
+    }
+
+    fs::create_dir_all(registry.join("packages/h"))?;
+    git_ok(
+        &registry,
+        &["init", "--object-format=sha256"],
+        "initializing registry",
+    )?;
+    git_ok(
+        &registry,
+        &["config", "user.name", "Registry Test"],
+        "configuring git user",
+    )?;
+    git_ok(
+        &registry,
+        &["config", "user.email", "registry@example.com"],
+        "configuring git email",
+    )?;
+    git_ok(
+        &registry,
+        &["config", "commit.gpgsign", "false"],
+        "disabling fixture commit signing",
+    )?;
+    fs::write(
+        registry.join("registry.toml"),
+        "[registry]\nname = \"readonly-update\"\n",
+    )?;
+    fs::write(
+        registry.join("packages/h/hello.toml"),
+        r#"[package]
+name = "hello"
+description = "fixture"
+license = "MIT"
+maintainer = "registry@example.com"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/00000000000000000000000000000000-hello-1.0.0"
+nar_hash = "sha256:placeholder"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#,
+    )?;
+    git_ok(&registry, &["add", "."], "staging registry")?;
+    git_ok(
+        &registry,
+        &["commit", "-m", "release hello"],
+        "committing registry",
+    )?;
+    let head = git_stdout(&registry, &["rev-parse", "HEAD"], "reading registry HEAD")?;
+
+    let system_config = system_dir.join("registries.d/readonly-update.toml");
+    let user_config = home.join(".config/apm/registries.d/readonly-update.toml");
+    fs::create_dir_all(system_config.parent().context("system config parent")?)?;
+    fs::write(
+        &system_config,
+        format!(
+            "[registry]\nname = \"readonly-update\"\nurl = \"file://{}\"\npriority = 500\n\n[registry.signing]\nrequired = false\n",
+            registry.display()
+        ),
+    )?;
+    let mut perms = fs::metadata(&system_config)?.permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&system_config, perms)?;
+
+    let updated = run_aos_package_json(
+        &home,
+        &system_dir,
+        &["--json", "update", "--registry", "readonly-update"],
+        "update",
+    )?;
+    assert_eq!(updated["action"], "update");
+    assert_eq!(updated["updated"], 1);
+    let registries = updated["registries"]
+        .as_array()
+        .context("update JSON should contain registries array")?;
+    assert_eq!(registries.len(), 1, "{updated}");
+    assert_eq!(registries[0]["registry"], "readonly-update");
+    assert_eq!(registries[0]["status"], "updated");
+    assert_eq!(registries[0]["commit"], head);
+    assert_eq!(registries[0]["packages"], 1);
+
+    let user = fs::read_to_string(&user_config)?;
+    assert!(
+        user.contains("[registry.state]"),
+        "update should create a user override with sync state:\n{user}"
+    );
+    assert!(
+        user.contains(&format!("last_commit = \"{head}\"")),
+        "user override should persist the synced commit:\n{user}"
+    );
+    assert!(
+        user.contains(&format!("url = \"file://{}\"", registry.display())),
+        "user override should preserve the system registry URL:\n{user}"
+    );
+    assert!(
+        user.contains("required = false"),
+        "user override should preserve the signing opt-out from system config:\n{user}"
+    );
+    let system = fs::read_to_string(&system_config)?;
+    assert!(
+        !system.contains("[registry.state]"),
+        "read-only system config should stay untouched by user update:\n{system}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn system_config_dir_override_supports_apm_system_registry_add() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let home = tmp.path().join("home");
@@ -863,4 +987,50 @@ fn run_apr_output(home: &Path, system_dir: &Path, args: &[&str]) -> Result<std::
         .args(args)
         .output()
         .context("running apr")
+}
+
+fn git_supports_sha256(root: &Path) -> Result<bool> {
+    let probe = root.join(".sha256-probe");
+    fs::create_dir_all(&probe)?;
+    match Command::new("git")
+        .args(["init", "--object-format=sha256"])
+        .current_dir(&probe)
+        .output()
+    {
+        Ok(output) => Ok(output.status.success()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).context("running git init --object-format=sha256"),
+    }
+}
+
+fn git_ok(cwd: &Path, args: &[&str], context: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .with_context(|| format!("{context}: git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "{context} failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    Ok(())
+}
+
+fn git_stdout(cwd: &Path, args: &[&str], context: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .with_context(|| format!("{context}: git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "{context} failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
