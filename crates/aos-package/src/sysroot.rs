@@ -53,7 +53,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 use aos_systemd::{FailedUnitsReport, JobResult, SystemdClient};
 
 use crate::config::ApmConfig;
@@ -760,7 +760,27 @@ async fn download_image(
     printer.kv("Output", output_path);
 
     if dry_run {
-        printer.info("Dry run -- no download.");
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "action": "image_download",
+                "status": "planned",
+                "package": &meta.name,
+                "version": &meta.version,
+                "format": format,
+                "store_path": &img.store_path,
+                "nar_hash": &img.nar_hash,
+                "nar_size": img.nar_size,
+                "output": output_path,
+                "dry_run": true,
+                "downloads": {
+                    "planned": 1,
+                    "downloaded": 0,
+                    "imported": 0,
+                },
+            }));
+        } else {
+            printer.info("Dry run -- no download.");
+        }
         return Ok(());
     }
 
@@ -834,10 +854,30 @@ async fn download_image(
             .with_context(|| format!("copying image to {output_path}"))?;
     }
 
-    printer.success(&format!(
-        "Image {} {} ({}) written to {}.",
-        meta.name, meta.version, format, output_path,
-    ));
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "image_download",
+            "status": "downloaded",
+            "package": &meta.name,
+            "version": &meta.version,
+            "format": format,
+            "store_path": &img.store_path,
+            "nar_hash": &img.nar_hash,
+            "nar_size": img.nar_size,
+            "output": output_path,
+            "dry_run": false,
+            "downloads": {
+                "planned": resolved.len(),
+                "downloaded": results.len(),
+                "imported": results.len(),
+            },
+        }));
+    } else {
+        printer.success(&format!(
+            "Image {} {} ({}) written to {}.",
+            meta.name, meta.version, format, output_path,
+        ));
+    }
 
     Ok(())
 }
