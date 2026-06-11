@@ -71,6 +71,9 @@ pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
     if let Some(ref commit) = state.last_commit {
         state_lines.push_str(&format!("last_commit = \"{commit}\"\n"));
     }
+    if let Some(ref commit) = state.last_roster_commit {
+        state_lines.push_str(&format!("last_roster_commit = \"{commit}\"\n"));
+    }
     if let Some(ref floor) = state.floor {
         state_lines.push_str(&format!("floor = \"{}\"\n", escape_toml_string(floor)));
     }
@@ -301,6 +304,7 @@ public_key = "aos-core:Ed25519:base64keyhere"
 
         let state = RegistryState {
             last_commit: Some("deadbeef".into()),
+            last_roster_commit: Some("feedface".into()),
             floor: Some("1.4.2".into()),
             bucket: Some(183),
             retained: vec!["1.0.0".into(), "1.4.0".into(), "1.4.2".into()],
@@ -314,6 +318,7 @@ public_key = "aos-core:Ed25519:base64keyhere"
         assert!(content.contains("public_key"));
         assert!(content.contains("[registry.state]"));
         assert!(content.contains("last_commit = \"deadbeef\""));
+        assert!(content.contains("last_roster_commit = \"feedface\""));
         assert!(content.contains("floor = \"1.4.2\""));
         assert!(content.contains("bucket = 183"));
         assert!(content.contains("retained = [\"1.0.0\", \"1.4.0\", \"1.4.2\"]"));
@@ -321,6 +326,7 @@ public_key = "aos-core:Ed25519:base64keyhere"
         // Verify it round-trips through load_state.
         let loaded = load_state(&path).unwrap().unwrap();
         assert_eq!(loaded.last_commit.unwrap(), "deadbeef");
+        assert_eq!(loaded.last_roster_commit.unwrap(), "feedface");
         assert_eq!(loaded.floor.unwrap(), "1.4.2");
         assert_eq!(loaded.bucket.unwrap(), 183);
         assert_eq!(loaded.retained, vec!["1.0.0", "1.4.0", "1.4.2"]);
@@ -345,6 +351,7 @@ last_update = "2026-01-01T00:00:00Z"
 
         let state = RegistryState {
             last_commit: Some("new_commit".into()),
+            last_roster_commit: Some("new_roster_commit".into()),
             floor: Some("1.4.2".into()),
             bucket: Some(183),
             retained: vec!["1.4.2".into()],
@@ -355,6 +362,7 @@ last_update = "2026-01-01T00:00:00Z"
         let content = fs::read_to_string(&path).unwrap();
         assert!(!content.contains("old_commit"));
         assert!(content.contains("new_commit"));
+        assert!(content.contains("new_roster_commit"));
         assert!(content.contains("floor = \"1.4.2\""));
         assert!(content.contains("bucket = 183"));
 
@@ -364,6 +372,7 @@ last_update = "2026-01-01T00:00:00Z"
 
         let loaded = load_state(&path).unwrap().unwrap();
         assert_eq!(loaded.last_commit.unwrap(), "new_commit");
+        assert_eq!(loaded.last_roster_commit.unwrap(), "new_roster_commit");
         assert_eq!(loaded.floor.unwrap(), "1.4.2");
         assert_eq!(loaded.bucket.unwrap(), 183);
         assert_eq!(loaded.retained, vec!["1.4.2"]);

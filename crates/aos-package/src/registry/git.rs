@@ -92,14 +92,12 @@ impl std::fmt::Display for GitVersion {
 ///
 /// Full flow:
 /// 1. Ensure local bare git repo exists; assemble the trusted key set
-/// 2. Fetch refs (tag pin, branch tracking, or default)
-/// 3. Determine the new HEAD commit (channel mode verifies the partition
-///    tag chain against the trusted set)
-/// 4. Verify the head commit signature against the trusted set
-/// 5. Enforce fast-forward from last known commit
-/// 6. Pin the verified head's `keys.toml` roster into the writable
-///    trusted-key store (channel mode then re-verifies the tag chain
-///    against the post-pin set)
+/// 2. Fetch refs (tag pin, branch tracking, channel data, or default)
+/// 3. Verify and fast-forward the current roster head
+/// 4. Pin the roster's `keys.toml` into the writable trusted-key store
+/// 5. Resolve and verify the selected release commit/tag/channel against
+///    the post-roster trusted set
+/// 6. Enforce fast-forward from last known selected commit
 /// 7. Extract package TOML files into the cache directory
 ///
 /// Verification is fail-closed: a registry config without a
@@ -167,34 +165,95 @@ pub async fn sync_git(
     }
 
     // Step 2: Fetch refs.
-    if matches!(tracking_mode, TrackingMode::Channel(_)) {
-        if let Err(err) = fetch_refs(&repo_dir, &git_url, tracking_mode).await {
-            return Err(channel_refresh_error(
-                config,
-                state,
-                "fetching git refs",
-                err,
-            ));
+    let fetch_roster_head = enforcing && uses_remote_head_roster(tracking_mode);
+    let fetched_roster_head = if matches!(tracking_mode, TrackingMode::Channel(_)) {
+        match fetch_refs(&repo_dir, &git_url, tracking_mode, fetch_roster_head).await {
+            Ok(fetched_roster_head) => fetched_roster_head,
+            Err(err) => {
+                return Err(channel_refresh_error(
+                    config,
+                    state,
+                    "fetching git refs",
+                    err,
+                ));
+            }
         }
     } else {
-        fetch_refs(&repo_dir, &git_url, tracking_mode).await?;
+        fetch_refs(&repo_dir, &git_url, tracking_mode, fetch_roster_head).await?
+    };
+
+    let channel_roster_head = if let TrackingMode::Channel(channel_name) = tracking_mode {
+        if !fetched_roster_head {
+            Some(resolve_ref_to_commit(
+                &repo_dir,
+                &format!("refs/remotes/origin/{channel_name}"),
+            )
+            .await?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Step 3: Resolve the current roster head separately from the selected
+    // release. Tag, version, and channel tracking may keep package contents
+    // pinned to an old release while trust metadata continues to advance on
+    // the registry head.
+    let pre_resolved_head = if matches!(tracking_mode, TrackingMode::Channel(_)) {
+        None
+    } else {
+        Some(resolve_fetch_head(&repo_dir, tracking_mode).await?)
+    };
+    let roster_commit = if fetched_roster_head {
+        resolve_origin_head(&repo_dir).await?
+    } else if let Some(commit) = channel_roster_head {
+        commit
+    } else {
+        pre_resolved_head
+            .as_ref()
+            .map(|head| head.commit.clone())
+            .unwrap_or_default()
+    };
+
+    // Step 4: Pin the verified roster. The roster cursor has its own
+    // anti-rollback state because selected release commits can remain fixed
+    // under tag/version/channel tracking.
+    let mut post_pin_trusted_keys = trusted_keys.clone();
+    if enforcing {
+        verify_head_commit(&repo_dir, &roster_commit, &trusted_keys)?;
+        let previous_roster_commit = state
+            .last_roster_commit
+            .as_ref()
+            .or(state.last_commit.as_ref());
+        if let Some(old_commit) = previous_roster_commit {
+            enforce_fast_forward(&repo_dir, old_commit, &roster_commit).await?;
+        }
+        if let Some(report) = apply_roster(&key_store, config, &repo_dir, &roster_commit)? {
+            if !report.is_noop() {
+                printer.info(&format!(
+                    "Registry '{}': trust roster updated ({} pinned, {} unpinned, {} masked)",
+                    config.name, report.pinned, report.unpinned, report.masked,
+                ));
+            }
+            post_pin_trusted_keys = assemble_trusted_set(&key_store, config);
+        }
     }
 
-    // Step 3: Determine the new HEAD commit.
+    // Step 5: Determine the selected release commit.
     let mut record_successful_freshness = true;
-    let mut channel_resolution: Option<(semver::Version, String)> = None;
     let resolved_head = if let TrackingMode::Channel(channel_name) = tracking_mode {
         match resolve_channel_head(
             config,
             &git_url,
             channel_name,
             &repo_dir,
-            &trusted_keys,
+            &post_pin_trusted_keys,
             state,
         )
         .await
         {
-            Ok((resolved, channel_oid)) => {
+            Ok((resolved, _channel_oid)) => {
                 record_successful_freshness = channel_success_freshness_at(
                     config,
                     state,
@@ -202,7 +261,6 @@ pub async fn sync_git(
                     &resolved.semver,
                     unix_now_secs(),
                 )?;
-                channel_resolution = Some((resolved.semver, channel_oid));
                 ResolvedHead {
                     commit: resolved.commit,
                     release_tag: None,
@@ -218,7 +276,10 @@ pub async fn sync_git(
             }
         }
     } else {
-        resolve_fetch_head(&repo_dir, tracking_mode).await?
+        let Some(resolved) = pre_resolved_head else {
+            bail!("internal error: non-channel tracking did not resolve before roster pinning");
+        };
+        resolved
     };
     let ResolvedHead {
         commit: new_commit,
@@ -235,46 +296,24 @@ pub async fn sync_git(
         fetch::resolve_objects(&repo_dir, &git_url, &target, &retained_before, printer).await?;
     }
 
-    // Step 4: Verify the head commit signature against the trusted set.
+    // Verify the selected release commit. When the selected commit is also
+    // the roster commit, the pre-pin signature check above is the continuity
+    // check that authorizes the roster update; otherwise releases are checked
+    // against the freshly pinned roster.
     if enforcing {
-        verify_head_commit(&repo_dir, &new_commit, &trusted_keys)?;
+        let selected_trusted_keys = if new_commit == roster_commit {
+            &trusted_keys
+        } else {
+            &post_pin_trusted_keys
+        };
+        verify_head_commit(&repo_dir, &new_commit, selected_trusted_keys)?;
     }
 
-    // Step 5: Enforce fast-forward.
+    // Step 6: Enforce selected-release fast-forward.
     if let Some(ref old_commit) = state.last_commit {
         enforce_fast_forward(&repo_dir, old_commit, &new_commit).await?;
     }
 
-    // Step 6: Pin the verified head's trust roster. This runs only after
-    // both the signature and fast-forward checks pass, so the writable
-    // store never changes on a failed sync.
-    let mut post_pin_trusted_keys = trusted_keys.clone();
-    if enforcing && let Some(report) = apply_roster(&key_store, config, &repo_dir, &new_commit)? {
-        if !report.is_noop() {
-            printer.info(&format!(
-                "Registry '{}': trust roster updated ({} pinned, {} unpinned, {} masked)",
-                config.name, report.pinned, report.unpinned, report.masked,
-            ));
-        }
-        post_pin_trusted_keys = assemble_trusted_set(&key_store, config);
-        // The roster may have rotated keys; the resolved channel chain
-        // must verify against the post-pin set, not only the bootstrap
-        // set.
-        if let (TrackingMode::Channel(channel_name), Some((semver, channel_oid))) =
-            (tracking_mode, &channel_resolution)
-        {
-            verify::verify_tag_chain(
-                &repo_dir,
-                channel_oid,
-                channel_name,
-                &semver.to_string(),
-                &post_pin_trusted_keys,
-            )
-            .with_context(|| {
-                format!("re-verifying channel '{channel_name}' against the updated trust roster")
-            })?;
-        }
-    }
     if enforcing && let Some(release_tag) = release_tag.as_deref() {
         verify_release_tag(&repo_dir, release_tag, &post_pin_trusted_keys)?;
     }
@@ -323,6 +362,9 @@ pub async fn sync_git(
     }
     prune_unretained_release_dirs(&repo_dir, &state.retained).await?;
     state.last_commit = Some(new_commit.clone());
+    if enforcing {
+        state.last_roster_commit = Some(roster_commit);
+    }
     if record_successful_freshness {
         state.last_update = Some(chrono_now());
     }
@@ -640,7 +682,12 @@ async fn ensure_repo(repo_dir: &Path, _url: &str) -> Result<()> {
 }
 
 /// Run `git fetch` with the appropriate refspec based on tracking mode.
-async fn fetch_refs(repo_dir: &Path, url: &str, tracking_mode: &TrackingMode) -> Result<()> {
+async fn fetch_refs(
+    repo_dir: &Path,
+    url: &str,
+    tracking_mode: &TrackingMode,
+    fetch_roster_head: bool,
+) -> Result<bool> {
     let mut args = vec!["fetch".to_string(), url.to_string()];
 
     match tracking_mode {
@@ -688,7 +735,58 @@ async fn fetch_refs(repo_dir: &Path, url: &str, tracking_mode: &TrackingMode) ->
         bail!("git fetch failed: {}", stderr.trim());
     }
 
-    Ok(())
+    if fetch_roster_head {
+        fetch_origin_head(repo_dir, url).await
+    } else {
+        Ok(false)
+    }
+}
+
+async fn fetch_origin_head(repo_dir: &Path, url: &str) -> Result<bool> {
+    let output = gitcmd::transport_async()
+        .args(["fetch", url, "HEAD:refs/remotes/origin/HEAD", "--force"])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .with_context(|| format!("fetching remote roster head from {url}"))?;
+
+    if output.status.success() {
+        return Ok(true);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("couldn't find remote ref HEAD")
+        || stderr.contains("couldn't find remote ref")
+        || stderr.contains("could not find remote ref HEAD")
+    {
+        return Ok(false);
+    }
+    bail!("git fetch remote HEAD failed: {}", stderr.trim());
+}
+
+fn uses_remote_head_roster(tracking_mode: &TrackingMode) -> bool {
+    matches!(
+        tracking_mode,
+        TrackingMode::Tag(_) | TrackingMode::Version(_) | TrackingMode::Channel(_)
+    )
+}
+
+async fn resolve_origin_head(repo_dir: &Path) -> Result<String> {
+    let output = gitcmd::hermetic_async()
+        .args(["rev-parse", "refs/remotes/origin/HEAD"])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .context("resolving remote roster head")?;
+
+    if !output.status.success() {
+        bail!(
+            "git rev-parse refs/remotes/origin/HEAD failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Resolve the authenticated commit to use after fetching.
@@ -1932,6 +2030,7 @@ mod tests {
             &repo_dir,
             &origin_dir.to_string_lossy(),
             &TrackingMode::Default,
+            false,
         )
         .await
         .unwrap();
