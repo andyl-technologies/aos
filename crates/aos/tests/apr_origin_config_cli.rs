@@ -13,6 +13,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
+#[path = "support/git_ssh.rs"]
+mod git_ssh;
+
 #[test]
 fn apr_origin_config_requires_registry_config() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
@@ -706,7 +709,9 @@ async fn apr_release_channel_upload_supports_verified_consumer_sync() -> Result<
     assert_eq!(registries[0]["registry"], "signed-reg");
     assert_eq!(registries[0]["status"], "updated");
     assert_eq!(registries[0]["packages"], 0, "{updated}");
-    assert_eq!(registries[0]["updated"], 1, "{updated}");
+    assert_eq!(registries[0]["added"], 0, "{updated}");
+    assert_eq!(registries[0]["updated"], 0, "{updated}");
+    assert_eq!(registries[0]["removed"], 1, "{updated}");
 
     let listed = run_aos_package_json(
         &consumer_home,
@@ -882,11 +887,16 @@ fn extract_public_key(output: &str) -> Result<String> {
 }
 
 fn git_stdout(cwd: &Path, args: &[&str], context: &str) -> Result<String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(cwd)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("USER", "registry-test")
+        .env("LOGNAME", "registry-test");
+    git_ssh::apply_git_ssh_program_env(&mut command);
+    let output = command
         .output()
         .with_context(|| format!("{context}: git {}", args.join(" ")))?;
     if !output.status.success() {
@@ -905,11 +915,14 @@ fn run_aos_package_json(
     args: &[&str],
     action: &str,
 ) -> Result<Value> {
-    let output = Command::new(env!("CARGO_BIN_EXE_aos"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_aos"));
+    command
         .env("HOME", home)
         .env("APM_SYSTEM_CONFIG_DIR", system_dir)
         .arg("package")
-        .args(args)
+        .args(args);
+    git_ssh::apply_git_ssh_program_env(&mut command);
+    let output = command
         .output()
         .with_context(|| format!("running aos package {action}"))?;
     if !output.status.success() {
@@ -933,10 +946,13 @@ fn run_aos_package_json(
 fn apr_command(home: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_apr"));
     cmd.env("HOME", home)
+        .env("USER", "registry-test")
+        .env("LOGNAME", "registry-test")
         .env("GIT_AUTHOR_NAME", "Registry Test")
         .env("GIT_AUTHOR_EMAIL", "registry@example.com")
         .env("GIT_COMMITTER_NAME", "Registry Test")
         .env("GIT_COMMITTER_EMAIL", "registry@example.com");
+    git_ssh::apply_git_ssh_program_env(&mut cmd);
     cmd
 }
 
