@@ -4186,9 +4186,30 @@ in {
         grep -q "host install package executed" \
           "$work/host-install-disabled-before-disable.out"
         disabled_registry_config="$config/apm/registries.d/host-install-disabled.toml"
-        ${pkgs.python3}/bin/python3 -c \
-          'from pathlib import Path; import sys; path = Path(sys.argv[1]); content = path.read_text(); content.index("enabled = true"); path.write_text(content.replace("enabled = true", "enabled = false", 1))' \
-          "$disabled_registry_config"
+        run_clean ${self}/bin/aos --json package registry disable host-install-disabled \
+          > "$work/apm-registry-disable-host-install-disabled.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$disabled_registry_config" \
+          '.action == "registry_disable"
+            and .status == "disabled"
+            and .registry == "host-install-disabled"
+            and .enabled == false
+            and .previous_enabled == true
+            and .changed == true
+            and .config == $config_path
+            and .packages == 3' \
+          "$work/apm-registry-disable-host-install-disabled.json" >/dev/null
+        run_clean ${self}/bin/apm --json registry disable host-install-disabled \
+          > "$work/apm-registry-disable-host-install-disabled-again.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "registry_disable"
+            and .status == "unchanged"
+            and .registry == "host-install-disabled"
+            and .enabled == false
+            and .previous_enabled == false
+            and .changed == false
+            and .packages == 3' \
+          "$work/apm-registry-disable-host-install-disabled-again.json" >/dev/null
         grep -q 'enabled = false' "$disabled_registry_config"
         run_clean ${self}/bin/apm --json registry list \
           > "$work/apm-registry-list-disabled.json"
@@ -4294,6 +4315,44 @@ in {
             and .downloads.downloaded == 0
             and .downloads.imported == 0' \
           "$work/apm-upgrade-disabled-dry-run.json" >/dev/null
+        if run_clean ${self}/bin/apm --json update --registry host-install-disabled \
+          > "$work/apm-update-disabled-registry.out" 2>&1; then
+          cat "$work/apm-update-disabled-registry.out"
+          exit 1
+        fi
+        grep -q "registry 'host-install-disabled' is not enabled" \
+          "$work/apm-update-disabled-registry.out"
+        run_clean ${self}/bin/aos --json package registry enable host-install-disabled \
+          > "$work/apm-registry-enable-host-install-disabled.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$disabled_registry_config" \
+          '.action == "registry_enable"
+            and .status == "enabled"
+            and .registry == "host-install-disabled"
+            and .enabled == true
+            and .previous_enabled == false
+            and .changed == true
+            and .config == $config_path
+            and .packages == 3' \
+          "$work/apm-registry-enable-host-install-disabled.json" >/dev/null
+        grep -q 'enabled = true' "$disabled_registry_config"
+        run_clean ${self}/bin/apm --json update --registry host-install-disabled \
+          > "$work/apm-update-reenabled-registry.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.registry == "host-install-disabled"
+            and (.registries | length == 1)
+            and .registries[0].registry == "host-install-disabled"
+            and (.registries[0].status == "updated" or .registries[0].status == "current")
+            and .registries[0].packages == 3' \
+          "$work/apm-update-reenabled-registry.json" >/dev/null
+        run_clean ${self}/bin/apm --json search hostinstall \
+          --registry host-install-disabled > "$work/apm-search-reenabled.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-disabled"
+            and .[0].version == "1.0.0"' \
+          "$work/apm-search-reenabled.json" >/dev/null
         "$profile/current/bin/host-install-tool" \
           > "$work/host-install-disabled-after-queries.out"
         grep -q "host leaf package executed" \
