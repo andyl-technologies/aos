@@ -4045,7 +4045,8 @@ fn generate_roster_key(
         .config_dir()
         .join("registries.d")
         .join(format!("{registry_name}.toml"));
-    if config_path.exists() {
+    let configured = config_path.exists();
+    if configured {
         state::upsert_signing_key(
             &config_path,
             id,
@@ -4068,6 +4069,7 @@ fn generate_roster_key(
         &key_fingerprint(&keypair.public_key_base64()),
     );
 
+    let mut committed = false;
     if add {
         let dir = config.scope.registries_path().join(&registry_name);
         let mut roster = load_committed_roster(&dir)?;
@@ -4098,9 +4100,30 @@ fn generate_roster_key(
             &format!("registry: add signing key {id}"),
             commit_key.as_ref().map(|k| k.path()),
         )?;
+        committed = !no_commit;
         printer.success(&format!(
             "Added active signing key '{id}' to registry '{registry_name}'."
         ));
+    }
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "keys_generate",
+            "status": "generated",
+            "registry": registry_name,
+            "id": id,
+            "private_key": key_path_str,
+            "public_key": trust_key,
+            "fingerprint": key_fingerprint(&keypair.public_key_base64()),
+            "configured": configured,
+            "config": if configured {
+                Some(config_path.to_string_lossy().to_string())
+            } else {
+                None
+            },
+            "added": add,
+            "committed": committed,
+        }));
     }
 
     Ok(())
