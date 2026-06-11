@@ -14,6 +14,7 @@
 //! alternates ([`write_alternates`]).
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -134,7 +135,25 @@ pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
         unpack_pack(&git_dir, &pack).with_context(|| format!("unpacking {}", pack.display()))?;
     }
 
-    let objects = run_git_dir(&git_dir, &["rev-list", "--objects", "--all"])?;
+    let missing = missing_loose_objects(&git_dir)?;
+    for oid in &missing {
+        write_loose_object(&git_dir, oid)
+            .with_context(|| format!("materializing loose git object {oid}"))?;
+    }
+
+    let missing = missing_loose_objects(&git_dir)?;
+    if !missing.is_empty() {
+        bail!(
+            "reachable objects are not present loose in root store: {}",
+            missing.join(", "),
+        );
+    }
+
+    Ok(())
+}
+
+fn missing_loose_objects(git_dir: &Path) -> Result<Vec<String>> {
+    let objects = run_git_dir(git_dir, &["rev-list", "--objects", "--all"])?;
     let mut missing = Vec::new();
     for line in objects.lines() {
         let Some(oid) = line.split_whitespace().next() else {
@@ -146,13 +165,71 @@ pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
         }
     }
 
-    if !missing.is_empty() {
+    Ok(missing)
+}
+
+fn write_loose_object(git_dir: &Path, oid: &str) -> Result<()> {
+    let object_type = run_git_dir(git_dir, &["cat-file", "-t", oid])?;
+    match object_type.as_str() {
+        "blob" | "commit" | "tag" | "tree" => {}
+        other => bail!("unsupported git object type '{other}' for {oid}"),
+    }
+
+    let object = gitcmd::hermetic()
+        .arg("--git-dir")
+        .arg(git_dir)
+        .arg("cat-file")
+        .arg(&object_type)
+        .arg(oid)
+        .output()
+        .with_context(|| format!("reading git object {oid}"))?;
+    if !object.status.success() {
         bail!(
-            "reachable objects are not present loose in root store: {}",
-            missing.join(", "),
+            "git cat-file {} {oid} failed: {}",
+            object_type,
+            String::from_utf8_lossy(&object.stderr).trim(),
         );
     }
 
+    let objects_dir = git_dir.join("objects");
+    let tmp = tempfile::Builder::new()
+        .prefix(".hash-object-")
+        .tempdir_in(&objects_dir)
+        .with_context(|| format!("creating temporary object dir in {}", objects_dir.display()))?;
+    let mut child = gitcmd::hermetic()
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(["hash-object", "-w", "-t", &object_type, "--stdin"])
+        .env("GIT_OBJECT_DIRECTORY", tmp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("running git hash-object")?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("opening git hash-object stdin")?;
+    stdin
+        .write_all(&object.stdout)
+        .context("writing git object to hash-object")?;
+    drop(stdin);
+
+    let output = child
+        .wait_with_output()
+        .context("waiting for git hash-object")?;
+    if !output.status.success() {
+        bail!(
+            "git hash-object failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+
+    let written = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if written != oid {
+        bail!("git hash-object wrote {written}, expected {oid}");
+    }
+    merge_loose_objects(tmp.path(), &objects_dir)?;
     Ok(())
 }
 
@@ -272,15 +349,25 @@ fn run_git_dir(repo: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Unpack one pack file into the repository's loose-object store
-/// (`git unpack-objects -r`).
+/// Unpack one pack file into the repository's loose-object store.
+///
+/// `git unpack-objects` skips objects that already exist in the repository,
+/// including objects that exist only in a pack. To force loose copies for
+/// dumb-HTTP serving, unpack into a temporary object directory first and then
+/// merge the loose object files into the root object store.
 fn unpack_pack(repo: &Path, pack: &Path) -> Result<()> {
     let pack_file = fs::File::open(pack).with_context(|| format!("opening {}", pack.display()))?;
+    let objects_dir = repo.join("objects");
+    let tmp = tempfile::Builder::new()
+        .prefix(".unpack-objects-")
+        .tempdir_in(&objects_dir)
+        .with_context(|| format!("creating temporary object dir in {}", objects_dir.display()))?;
     let output = gitcmd::hermetic()
         .arg("--git-dir")
         .arg(repo)
         .arg("unpack-objects")
         .arg("-r")
+        .env("GIT_OBJECT_DIRECTORY", tmp.path())
         .stdin(Stdio::from(pack_file))
         .output()
         .context("running git unpack-objects")?;
@@ -292,6 +379,42 @@ fn unpack_pack(repo: &Path, pack: &Path) -> Result<()> {
         );
     }
 
+    merge_loose_objects(tmp.path(), &objects_dir)?;
+    Ok(())
+}
+
+/// Copy loose objects from a temporary object directory into `objects_dir`.
+fn merge_loose_objects(src_objects: &Path, objects_dir: &Path) -> Result<()> {
+    for fanout in
+        fs::read_dir(src_objects).with_context(|| format!("reading {}", src_objects.display()))?
+    {
+        let fanout = fanout?;
+        if !fanout.file_type()?.is_dir() {
+            continue;
+        }
+        let fanout_name = fanout.file_name();
+        let fanout_name = fanout_name.to_string_lossy();
+        if fanout_name.len() != 2 || !fanout_name.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue;
+        }
+        let dest_fanout = objects_dir.join(fanout_name.as_ref());
+        fs::create_dir_all(&dest_fanout)
+            .with_context(|| format!("creating {}", dest_fanout.display()))?;
+        for object in fs::read_dir(fanout.path())
+            .with_context(|| format!("reading {}", fanout.path().display()))?
+        {
+            let object = object?;
+            if !object.file_type()?.is_file() {
+                continue;
+            }
+            let dest = dest_fanout.join(object.file_name());
+            if dest.exists() {
+                continue;
+            }
+            fs::copy(object.path(), &dest)
+                .with_context(|| format!("copying loose object to {}", dest.display()))?;
+        }
+    }
     Ok(())
 }
 
@@ -429,6 +552,66 @@ mod tests {
         let dir = repo.join("releases/1/2/3/objects");
         assert!(dir.join("info").is_dir());
         assert!(dir.join("pack").is_dir());
+    }
+
+    #[test]
+    fn ensure_loose_completeness_materializes_packed_reachable_objects() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo.git");
+        let work = tmp.path().join("work");
+        init_bare_sha256(&repo, "stable").unwrap();
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join("registry.toml"), "[registry]\nname = \"test\"\n").unwrap();
+
+        let add = crate::testutil::git_command(tmp.path())
+            .arg("--git-dir")
+            .arg(&repo)
+            .arg("--work-tree")
+            .arg(&work)
+            .args(["add", "registry.toml"])
+            .status()
+            .unwrap();
+        assert!(add.success());
+        let commit = crate::testutil::git_command(tmp.path())
+            .arg("--git-dir")
+            .arg(&repo)
+            .arg("--work-tree")
+            .arg(&work)
+            .args(["commit", "-m", "init"])
+            .status()
+            .unwrap();
+        assert!(commit.success());
+
+        run_git_dir(&repo, &["repack", "-ad"]).unwrap();
+        run_git_dir(&repo, &["prune-packed"]).unwrap();
+
+        let oids = run_git_dir(&repo, &["rev-list", "--objects", "--all"])
+            .unwrap()
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(!oids.is_empty());
+        assert!(
+            oids.iter().any(|oid| {
+                !repo
+                    .join("objects")
+                    .join(loose_object_path(oid).unwrap())
+                    .exists()
+            }),
+            "test setup should leave at least one reachable object packed only",
+        );
+
+        ensure_loose_completeness(&repo).unwrap();
+
+        for oid in oids {
+            assert!(
+                repo.join("objects")
+                    .join(loose_object_path(&oid).unwrap())
+                    .exists(),
+                "{oid} should have a root loose object copy",
+            );
+        }
     }
 
     #[test]
