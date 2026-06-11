@@ -2282,6 +2282,138 @@ in {
         main_profile_root="$profile_root"
         main_profile="$profile"
 
+        system_provisioned_config="$work/system-provisioned-etc-apm"
+        mkdir -p "$system_provisioned_config/registries.d"
+        cat > "$system_provisioned_config/registries.d/host-install-channel.toml" << EOF
+        [registry]
+        name = "host-install-channel"
+        url = "file://$install_origin"
+        priority = 650
+        enabled = true
+        branch = "stable"
+
+        [registry.signing]
+        required = true
+        public_key = "$install_channel_trust_key"
+        EOF
+        home="$work/system-provisioned-home"
+        config="$work/system-provisioned-config"
+        data="$work/system-provisioned-share"
+        cache="$work/system-provisioned-cache"
+        profile_root="$work/system-provisioned-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${pkgs.coreutils}/bin/env \
+          APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
+          ${self}/bin/apm --json registry list \
+          > "$work/apm-system-provisioned-registry-list-before-update.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg url "file://$install_origin" \
+          'length == 1
+            and .[0].name == "host-install-channel"
+            and .[0].url == $url
+            and .[0].priority == 650
+            and .[0].tracking == "branch:stable"
+            and .[0].packages == 0
+            and .[0].last_commit == null
+            and .[0].signing_required == true' \
+          "$work/apm-system-provisioned-registry-list-before-update.json" >/dev/null
+        test ! -e "$config/apm/registries.d/host-install-channel.toml"
+        run_clean ${pkgs.coreutils}/bin/env \
+          APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
+          ${self}/bin/apm --json update --registry host-install-channel \
+          > "$work/apm-system-provisioned-update.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$install_remote_v1_commit" \
+          '.action == "update"
+            and .registry == "host-install-channel"
+            and .updated == 1
+            and .registries[0].registry == "host-install-channel"
+            and .registries[0].status == "updated"
+            and .registries[0].tracking == "branch:stable"
+            and .registries[0].commit == $head
+            and .registries[0].packages >= 3
+            and .registries[0].added >= 3
+            and .registries[0].updated == 0
+            and .registries[0].removed == 0' \
+          "$work/apm-system-provisioned-update.json" >/dev/null
+        grep -q "last_commit = \"$install_remote_v1_commit\"" \
+          "$system_provisioned_config/registries.d/host-install-channel.toml"
+        grep -q "last_update = \"" \
+          "$system_provisioned_config/registries.d/host-install-channel.toml"
+        grep -q "$install_channel_trust_key" \
+          "$config/apm/trusted-keys.d/host-install-channel.pub"
+        test ! -e "$config/apm/registries.d/host-install-channel.toml"
+        run_clean ${pkgs.coreutils}/bin/env \
+          APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
+          ${self}/bin/apm search hostinstall \
+          --registry host-install-channel \
+          > "$work/apm-system-provisioned-search.out" 2>&1
+        grep -q "hostinstall/host-install-channel 1.0.0" \
+          "$work/apm-system-provisioned-search.out"
+        if nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-system-provisioned-install-before-delete.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$install_store" \
+            > "$work/nix-delete-system-provisioned-install-before-download.out" 2>&1
+        fi
+        if nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-system-provisioned-leaf-before-delete.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$install_leaf_store" \
+            > "$work/nix-delete-system-provisioned-leaf-before-download.out" 2>&1
+        fi
+        run_clean ${pkgs.coreutils}/bin/env \
+          APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
+          ${self}/bin/apm --json install hostinstall \
+          --registry host-install-channel \
+          --yes > "$work/apm-system-provisioned-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_store" \
+          --arg leaf "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall"]
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-channel"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf))
+            and (.downloads.planned >= 2)
+            and (.downloads.downloaded >= 2)
+            and (.downloads.imported >= 2)' \
+          "$work/apm-system-provisioned-install.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/system-provisioned-host-install-run.out"
+        grep -q "host leaf package executed" \
+          "$work/system-provisioned-host-install-run.out"
+        grep -q "host install package executed" \
+          "$work/system-provisioned-host-install-run.out"
+        run_clean ${pkgs.coreutils}/bin/env \
+          APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
+          ${self}/bin/apm --json registry list \
+          > "$work/apm-system-provisioned-registry-list-after-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$install_remote_v1_commit" \
+          'length == 1
+            and .[0].name == "host-install-channel"
+            and .[0].packages >= 3
+            and .[0].tracking == "branch:stable"
+            and .[0].signing_required == true
+            and .[0].last_commit == $head' \
+          "$work/apm-system-provisioned-registry-list-after-install.json" >/dev/null
+        grep -q '\[registry.state\]' \
+          "$system_provisioned_config/registries.d/host-install-channel.toml"
+        grep -q "last_commit = \"$install_remote_v1_commit\"" \
+          "$system_provisioned_config/registries.d/host-install-channel.toml"
+        test ! -e "$config/apm/registries.d/host-install-channel.toml"
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$main_home"
+        config="$main_config"
+        data="$main_data"
+        cache="$main_cache"
+        profile_root="$main_profile_root"
+        profile="$main_profile"
+
         image_channel_trust_key="host-image-channel:Ed25519:$install_release_public_key"
         image_cache_url="http://127.0.0.1:$install_cache_port/image-cache"
         image_upload_url="file://$work/install-static-cache-upload/image-cache"
