@@ -1884,6 +1884,41 @@ in {
 
         run_clean ${self}/bin/apm --json install hostinstall \
           --registry host-install-client \
+          --dry-run > "$work/apm-install-host-install-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+          '.action == "install"
+            and .status == "planned"
+            and .requested == ["hostinstall"]
+            and .reinstall == false
+            and .download_only == false
+            and .no_deps == false
+            and .dry_run == true
+            and .generation == null
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-client"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+            and (.downloads.planned >= 2)
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-install-host-install-dry-run.json" >/dev/null
+        if nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-after-install-dry-run.out" 2>&1; then
+          cat "$work/nix-valid-host-install-after-install-dry-run.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-after-install-dry-run.out" 2>&1; then
+          cat "$work/nix-valid-host-leaf-after-install-dry-run.out"
+          exit 1
+        fi
+        assert_no_profile
+
+        run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-install-client \
           --download-only \
           --yes > "$work/apm-download-only-host-install.json"
         ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
@@ -2631,6 +2666,78 @@ in {
           cat "$work/nix-valid-host-leaf-v2-deleted.out"
           exit 1
         fi
+
+        run_clean ${self}/bin/apm --json upgrade hostinstall --dry-run \
+          > "$work/apm-upgrade-host-install-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+          '.action == "upgrade"
+            and .status == "planned"
+            and .requested == ["hostinstall"]
+            and .exclude == []
+            and .dry_run == true
+            and .generation == null
+            and .upgraded == 1
+            and .held_back == []
+            and (.upgrades | length == 1)
+            and .upgrades[0].name == "hostinstall"
+            and .upgrades[0].registry == "host-install-client"
+            and .upgrades[0].old_version == "1.0.0"
+            and .upgrades[0].new_version == "2.0.0"
+            and .upgrades[0].new_store_path == $store
+            and (.downloads.planned >= 2)
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-upgrade-host-install-dry-run.json" >/dev/null
+        if nix_store --check-validity "$install_store_v2" \
+          > "$work/nix-valid-host-install-v2-after-upgrade-dry-run.out" 2>&1; then
+          cat "$work/nix-valid-host-install-v2-after-upgrade-dry-run.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_leaf_store_v2" \
+          > "$work/nix-valid-host-leaf-v2-after-upgrade-dry-run.out" 2>&1; then
+          cat "$work/nix-valid-host-leaf-v2-after-upgrade-dry-run.out"
+          exit 1
+        fi
+        "$profile/current/bin/host-install-tool" > "$work/host-install-after-upgrade-dry-run.out"
+        grep -q "host leaf package executed" "$work/host-install-after-upgrade-dry-run.out"
+        grep -q "host install package executed" "$work/host-install-after-upgrade-dry-run.out"
+        assert_default_profile_absent
+
+        run_clean ${self}/bin/apm --json full-upgrade --dry-run \
+          > "$work/apm-full-upgrade-host-install-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+          '.action == "upgrade"
+            and .status == "planned"
+            and .requested == []
+            and .exclude == []
+            and .dry_run == true
+            and .generation == null
+            and .upgraded == 1
+            and .held_back == []
+            and (.upgrades | length == 1)
+            and .upgrades[0].name == "hostinstall"
+            and .upgrades[0].registry == "host-install-client"
+            and .upgrades[0].old_version == "1.0.0"
+            and .upgrades[0].new_version == "2.0.0"
+            and .upgrades[0].new_store_path == $store
+            and (.downloads.planned >= 2)
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-full-upgrade-host-install-dry-run.json" >/dev/null
+        if nix_store --check-validity "$install_store_v2" \
+          > "$work/nix-valid-host-install-v2-after-full-upgrade-dry-run.out" 2>&1; then
+          cat "$work/nix-valid-host-install-v2-after-full-upgrade-dry-run.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_leaf_store_v2" \
+          > "$work/nix-valid-host-leaf-v2-after-full-upgrade-dry-run.out" 2>&1; then
+          cat "$work/nix-valid-host-leaf-v2-after-full-upgrade-dry-run.out"
+          exit 1
+        fi
+        "$profile/current/bin/host-install-tool" > "$work/host-install-after-full-upgrade-dry-run.out"
+        grep -q "host leaf package executed" "$work/host-install-after-full-upgrade-dry-run.out"
+        grep -q "host install package executed" "$work/host-install-after-full-upgrade-dry-run.out"
+        assert_default_profile_absent
 
         run_clean ${self}/bin/apm --json upgrade hostinstall --yes \
           > "$work/apm-upgrade-host-install.json"
