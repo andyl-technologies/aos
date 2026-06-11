@@ -86,6 +86,7 @@
               fputc('x', stderr);
             }
             fputc('\n', stderr);
+            fputs("rpc build fixture: eof-tail-without-newline", stderr);
 
             if (snprintf(bin_dir, sizeof(bin_dir), "%s/bin", out) >= (int)sizeof(bin_dir) ||
                 snprintf(exe_path, sizeof(exe_path), "%s/rpc-build-log-fixture", bin_dir) >= (int)sizeof(exe_path)) {
@@ -557,6 +558,8 @@ in {
           { echo "FAIL: real build stream missing carriage-return log"; FAIL=1; }
         ${grepBin} -q 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' /tmp/build-real.sse || \
           { echo "FAIL: real build stream missing delimiter-free log chunk"; FAIL=1; }
+        ${grepBin} -q 'rpc build fixture: eof-tail-without-newline' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing unterminated EOF log tail"; FAIL=1; }
 
         BUILD_OUT=$(NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_ROOT/var/nix" \
           ${nixStoreBin} -q --outputs "$BUILD_DRV")
@@ -583,6 +586,8 @@ in {
           { echo "FAIL: replay stream missing log event"; FAIL=1; }
         ${grepBin} -q '^event: complete$' /tmp/build-replay.sse || \
           { echo "FAIL: replay stream missing complete event"; FAIL=1; }
+        ${grepBin} -q 'rpc build fixture: eof-tail-without-newline' /tmp/build-replay.sse || \
+          { echo "FAIL: replay stream missing unterminated EOF log tail"; FAIL=1; }
 
         echo "==> Test: Build rejects non-existent derivation"
         HTTP_CODE=$(${curlBin} -s -o /tmp/build-resp.json -w '%{http_code}' \
