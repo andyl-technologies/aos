@@ -2420,23 +2420,29 @@ in {
 
       echo "==> Consumer: disable registry without orphaning installed package"
       REG_CONFIG="$HOME/.config/apm/registries.d/readd-reg.toml"
-      $APM --json registry disable readd-reg > /tmp/readd-registry-disable.json 2>&1 || {
-        cat /tmp/readd-registry-disable.json
+      $APM registry disable readd-reg > /tmp/readd-registry-disable.out 2>&1 || {
+        cat /tmp/readd-registry-disable.out
         fail "apm registry disable readd-reg succeeds"
+      }
+      assert_file_contains /tmp/readd-registry-disable.out "Registry 'readd-reg' disabled" \
+        "apm registry disable reports newly disabled registry"
+      $APM --json registry disable readd-reg > /tmp/readd-registry-disable-again.json 2>&1 || {
+        cat /tmp/readd-registry-disable-again.json
+        fail "apm registry disable readd-reg is idempotent"
       }
       ${pkgs.jq}/bin/jq -e \
         --arg config "$REG_CONFIG" \
         '.action == "registry_disable"
-          and .status == "disabled"
+          and .status == "unchanged"
           and .registry == "readd-reg"
           and .enabled == false
-          and .previous_enabled == true
-          and .changed == true
+          and .previous_enabled == false
+          and .changed == false
           and .config == $config
           and .packages == 1' \
-        /tmp/readd-registry-disable.json >/dev/null || {
-        cat /tmp/readd-registry-disable.json
-        fail "apm --json registry disable reports disabled registry"
+        /tmp/readd-registry-disable-again.json >/dev/null || {
+        cat /tmp/readd-registry-disable-again.json
+        fail "apm --json registry disable reports unchanged disabled registry"
       }
       assert_file_contains "$REG_CONFIG" "enabled = false" \
         "apm registry disable persists disabled state"
@@ -2469,23 +2475,29 @@ in {
         "installed executable still runs while registry is disabled"
 
       echo "==> Consumer: re-enable registry and verify installed package"
-      $APM --json registry enable readd-reg > /tmp/readd-registry-enable.json 2>&1 || {
-        cat /tmp/readd-registry-enable.json
+      $APM registry enable readd-reg > /tmp/readd-registry-enable.out 2>&1 || {
+        cat /tmp/readd-registry-enable.out
         fail "apm registry enable readd-reg succeeds"
+      }
+      assert_file_contains /tmp/readd-registry-enable.out "Registry 'readd-reg' enabled" \
+        "apm registry enable reports newly enabled registry"
+      $APM --json registry enable readd-reg > /tmp/readd-registry-enable-again.json 2>&1 || {
+        cat /tmp/readd-registry-enable-again.json
+        fail "apm registry enable readd-reg is idempotent"
       }
       ${pkgs.jq}/bin/jq -e \
         --arg config "$REG_CONFIG" \
         '.action == "registry_enable"
-          and .status == "enabled"
+          and .status == "unchanged"
           and .registry == "readd-reg"
           and .enabled == true
-          and .previous_enabled == false
-          and .changed == true
+          and .previous_enabled == true
+          and .changed == false
           and .config == $config
           and .packages == 1' \
-        /tmp/readd-registry-enable.json >/dev/null || {
-        cat /tmp/readd-registry-enable.json
-        fail "apm --json registry enable reports enabled registry"
+        /tmp/readd-registry-enable-again.json >/dev/null || {
+        cat /tmp/readd-registry-enable-again.json
+        fail "apm --json registry enable reports unchanged enabled registry"
       }
       assert_file_contains "$REG_CONFIG" "enabled = true" \
         "apm registry enable persists enabled state"
@@ -5507,6 +5519,9 @@ in {
         fail "idempotent apm --json registry disable reports unchanged state"
       }
       pass "idempotent apm --json registry disable reports unchanged state"
+      run_ok registry-disable-text-again "$APM" registry disable surface-reg
+      assert_file_contains /tmp/surface-registry-disable-text-again.out "already disabled" \
+        "idempotent text-mode registry disable reports unchanged state"
       run_ok registry-list-disabled "$APM" registry list
       assert_file_contains /tmp/surface-registry-list-disabled.out "disabled" \
         "apm registry list reports command-surface registry disabled"
@@ -5563,6 +5578,9 @@ in {
       pass "apm --json registry enable reports command-surface registry state"
       assert_file_contains "$SURFACE_REG_CONFIG" "enabled = true" \
         "apm registry enable persists command-surface enabled state"
+      run_ok registry-enable-text-again "$APM" registry enable surface-reg
+      assert_file_contains /tmp/surface-registry-enable-text-again.out "already enabled" \
+        "idempotent text-mode registry enable reports unchanged state"
       $APM --json update --registry surface-reg > /tmp/surface-update-reenabled.json 2>&1 || {
         cat /tmp/surface-update-reenabled.json
         fail "apm update succeeds after command-surface registry re-enable"
