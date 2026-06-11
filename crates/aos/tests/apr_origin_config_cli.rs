@@ -2,10 +2,15 @@
 //! upload-default fallback used by `apr origin upload`.
 
 use std::fs;
-use std::path::Path;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
+use serde_json::Value;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinHandle;
 
 #[test]
 fn apr_origin_config_requires_registry_config() -> Result<()> {
@@ -187,11 +192,13 @@ fn apr_origin_upload_falls_back_to_persisted_upload_urls() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn apr_add_authoring_clone_supports_release_upload_workflow() -> Result<()> {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apr_add_authoring_clone_supports_release_upload_workflow() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let seed_home = tmp.path().join("seed-home");
     let maintainer_home = tmp.path().join("maintainer-home");
+    let consumer_home = tmp.path().join("consumer-home");
+    let consumer_system_dir = tmp.path().join("consumer-etc-apm");
     if !git_supports_sha256(&seed_home)? {
         eprintln!(
             "skipping apr add authoring clone e2e: git cannot initialize a sha256 repository"
@@ -265,6 +272,20 @@ fn apr_add_authoring_clone_supports_release_upload_workflow() -> Result<()> {
         "checking maintainer clone branch",
     )?;
     assert_eq!(branch, default_branch);
+
+    write_fixture_package(&maintainer_registry)?;
+    configure_fixture_git_identity(&maintainer_registry)?;
+    git_stdout(
+        &maintainer_registry,
+        &["add", "packages/f/fixture-tool.toml"],
+        "staging fixture package",
+    )?;
+    git_stdout(
+        &maintainer_registry,
+        &["commit", "-m", "publish fixture package metadata"],
+        "committing fixture package",
+    )?;
+
     run_apr(
         &maintainer_home,
         &["status", "--registry", "origin-default-reg"],
@@ -323,6 +344,43 @@ fn apr_add_authoring_clone_supports_release_upload_workflow() -> Result<()> {
         upload_dir.display(),
     );
 
+    let server = StaticHttpServer::spawn(upload_dir.clone()).await?;
+    let uploaded_origin_url = server.base_url();
+    let added = run_aos_package_json(
+        &consumer_home,
+        &consumer_system_dir,
+        &[
+            "--json",
+            "registry",
+            "add",
+            &uploaded_origin_url,
+            "--no-verify",
+            "--name",
+            "origin-default-reg",
+            "--branch",
+            &default_branch,
+        ],
+        "registry add",
+    )?;
+    assert_eq!(added["action"], "registry_add");
+    assert_eq!(added["registry"], "origin-default-reg");
+    assert_eq!(added["synced"], true, "{added}");
+    assert_eq!(added["packages"], 1, "{added}");
+
+    let listed = run_aos_package_json(
+        &consumer_home,
+        &consumer_system_dir,
+        &["--json", "list", "--registry", "origin-default-reg"],
+        "list",
+    )?;
+    let entries = listed
+        .as_array()
+        .context("package list JSON should be an array")?;
+    assert_eq!(entries.len(), 1, "{listed}");
+    assert_eq!(entries[0]["name"], "fixture-tool");
+    assert_eq!(entries[0]["registry"], "origin-default-reg");
+    assert_eq!(entries[0]["version"], "1.0.0");
+
     Ok(())
 }
 
@@ -352,10 +410,93 @@ fn registry_dir(home: &Path, name: &str) -> std::path::PathBuf {
     home.join(".local/share/apm/registries").join(name)
 }
 
+fn write_fixture_package(registry: &Path) -> Result<()> {
+    let package_dir = registry.join("packages/f");
+    fs::create_dir_all(&package_dir)?;
+    fs::write(
+        package_dir.join("fixture-tool.toml"),
+        fixture_package_toml("fixture-tool", "1.0.0"),
+    )?;
+    Ok(())
+}
+
+fn fixture_package_toml(name: &str, version: &str) -> String {
+    let platform = current_platform();
+    let mut toml = format!(
+        r#"[package]
+name = "{name}"
+description = "Maintainer workflow fixture"
+license = "MIT"
+maintainer = "registry@example.com"
+
+[[versions]]
+version = "{version}"
+
+{}
+"#,
+        fixture_platform_toml("x86_64-linux", name, version),
+    );
+    if platform != "x86_64-linux" {
+        toml.push('\n');
+        toml.push_str(&fixture_platform_toml(&platform, name, version));
+    }
+    toml
+}
+
+fn fixture_platform_toml(platform: &str, name: &str, version: &str) -> String {
+    format!(
+        r#"[versions.platforms.{platform}]
+store_path = "/nix/store/00000000000000000000000000000000-{name}-{version}"
+nar_hash = "sha256:placeholder"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#,
+    )
+}
+
+fn current_platform() -> String {
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        "arm" => "armv7l",
+        other => other,
+    };
+    let os = match std::env::consts::OS {
+        "linux" => "linux",
+        "macos" => "darwin",
+        other => other,
+    };
+    format!("{arch}-{os}")
+}
+
+fn configure_fixture_git_identity(registry: &Path) -> Result<()> {
+    git_stdout(
+        registry,
+        &["config", "user.name", "Registry Test"],
+        "configuring fixture git user",
+    )?;
+    git_stdout(
+        registry,
+        &["config", "user.email", "registry@example.com"],
+        "configuring fixture git email",
+    )?;
+    git_stdout(
+        registry,
+        &["config", "commit.gpgsign", "false"],
+        "disabling fixture commit signing",
+    )?;
+    Ok(())
+}
+
 fn git_stdout(cwd: &Path, args: &[&str], context: &str) -> Result<String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(cwd)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .output()
         .with_context(|| format!("{context}: git {}", args.join(" ")))?;
     if !output.status.success() {
@@ -366,6 +507,35 @@ fn git_stdout(cwd: &Path, args: &[&str], context: &str) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn run_aos_package_json(
+    home: &Path,
+    system_dir: &Path,
+    args: &[&str],
+    action: &str,
+) -> Result<Value> {
+    let output = Command::new(env!("CARGO_BIN_EXE_aos"))
+        .env("HOME", home)
+        .env("APM_SYSTEM_CONFIG_DIR", system_dir)
+        .arg("package")
+        .args(args)
+        .output()
+        .with_context(|| format!("running aos package {action}"))?;
+    if !output.status.success() {
+        bail!(
+            "aos package {action} failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    assert!(
+        String::from_utf8_lossy(&output.stderr).is_empty(),
+        "JSON aos package {action} should keep stderr clean:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("parsing aos package {action} JSON from stdout"))
 }
 
 /// Spawn `apr` against an isolated `HOME`, with a committer identity in the
@@ -413,4 +583,133 @@ fn output_text(output: &Output) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     )
+}
+
+struct StaticHttpServer {
+    addr: SocketAddr,
+    task: JoinHandle<()>,
+}
+
+impl StaticHttpServer {
+    async fn spawn(root: PathBuf) -> Result<Self> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .context("binding static fixture HTTP server")?;
+        let addr = listener.local_addr().context("reading listener address")?;
+        let task = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let root = root.clone();
+                tokio::spawn(async move {
+                    let _ = serve_one(stream, root).await;
+                });
+            }
+        });
+        Ok(Self { addr, task })
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://{}/", self.addr)
+    }
+}
+
+impl Drop for StaticHttpServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn serve_one(mut stream: TcpStream, root: PathBuf) -> Result<()> {
+    let mut buf = vec![0_u8; 8192];
+    let n = stream.read(&mut buf).await.context("reading request")?;
+    if n == 0 {
+        return Ok(());
+    }
+    let request = String::from_utf8_lossy(&buf[..n]);
+    let Some(line) = request.lines().next() else {
+        return Ok(());
+    };
+    let mut parts = line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let target = parts.next().unwrap_or("/");
+    if method != "GET" && method != "HEAD" {
+        write_response(&mut stream, 405, "Method Not Allowed", b"").await?;
+        return Ok(());
+    }
+
+    let path = safe_path(&root, target)?;
+    let Ok(metadata) = tokio::fs::metadata(&path).await else {
+        write_response(&mut stream, 404, "Not Found", b"").await?;
+        return Ok(());
+    };
+    if metadata.is_dir() {
+        write_response(&mut stream, 403, "Forbidden", b"").await?;
+        return Ok(());
+    }
+
+    let body = if method == "HEAD" {
+        Vec::new()
+    } else {
+        tokio::fs::read(&path)
+            .await
+            .with_context(|| format!("reading {}", path.display()))?
+    };
+    let length = if method == "HEAD" {
+        metadata.len() as usize
+    } else {
+        body.len()
+    };
+    write_response_with_length(&mut stream, 200, "OK", length, &body).await?;
+    Ok(())
+}
+
+fn safe_path(root: &Path, target: &str) -> Result<PathBuf> {
+    let path = target
+        .split_once('?')
+        .map(|(path, _)| path)
+        .unwrap_or(target);
+    let mut out = root.to_path_buf();
+    for component in path.trim_start_matches('/').split('/') {
+        if component.is_empty() {
+            continue;
+        }
+        if component == "." || component == ".." || component.contains('\\') {
+            bail!("unsafe request path {target}");
+        }
+        out.push(component);
+    }
+    Ok(out)
+}
+
+async fn write_response(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    body: &[u8],
+) -> Result<()> {
+    write_response_with_length(stream, status, reason, body.len(), body).await
+}
+
+async fn write_response_with_length(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    length: usize,
+    body: &[u8],
+) -> Result<()> {
+    stream
+        .write_all(
+            format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .context("writing response headers")?;
+    if !body.is_empty() {
+        stream
+            .write_all(body)
+            .await
+            .context("writing response body")?;
+    }
+    Ok(())
 }
