@@ -1682,11 +1682,27 @@ in {
           --key "$work/host-install-release-key" \
           > "$work/apr-create-host-keyadd.out" 2>&1
         keyadd_reg="$data/apm/registries/host-keyadd"
-        run_clean ${self}/bin/apm registry add --no-verify "file://$keyadd_reg" \
+        run_clean ${self}/bin/apm --json registry add --no-verify "file://$keyadd_reg" \
           --name host-keyadd \
-          --no-clone > "$work/apm-add-host-keyadd-config.out" 2>&1
-        grep -q "apm update --registry host-keyadd" \
-          "$work/apm-add-host-keyadd-config.out"
+          --no-clone > "$work/apm-add-host-keyadd-config.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg url "file://$keyadd_reg" \
+          --arg config_path "$config/apm/registries.d/host-keyadd.toml" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-keyadd"
+            and .name == "host-keyadd"
+            and .url == $url
+            and .priority == 500
+            and .enabled == true
+            and .tracking == "default"
+            and .clone == false
+            and .synced == false
+            and .config == $config_path
+            and .signing_required == false
+            and .verification_disabled == true
+            and .trusted_key_pinned == false' \
+          "$work/apm-add-host-keyadd-config.json" >/dev/null
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
           -f "$work/host-keyadd-external-key"
         run_clean ${self}/bin/apr --json keys register external \
@@ -3135,12 +3151,34 @@ in {
         profile_root="$work/commit-pin-profiles"
         profile="$profile_root/per-user/unknown"
         mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
-        run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
+        install_remote_v1_tracking="commit:$(${pkgs.coreutils}/bin/printf '%s' "$install_remote_v1_commit" | ${pkgs.coreutils}/bin/cut -c1-12)"
+        run_clean ${self}/bin/apm --json registry add --no-verify "file://$install_origin" \
           --name host-install-commit \
           --commit "$install_remote_v1_commit" \
-          > "$work/apm-add-host-install-commit.out" 2>&1
-        grep -q "Registry 'host-install-commit' added" \
-          "$work/apm-add-host-install-commit.out"
+          > "$work/apm-add-host-install-commit.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg url "file://$install_origin" \
+          --arg commit "$install_remote_v1_commit" \
+          --arg tracking "$install_remote_v1_tracking" \
+          --arg config_path "$config/apm/registries.d/host-install-commit.toml" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-install-commit"
+            and .name == "host-install-commit"
+            and .url == $url
+            and .priority == 500
+            and .enabled == true
+            and .tracking == $tracking
+            and .clone == true
+            and .synced == true
+            and .sync_error == null
+            and .packages == 2
+            and .last_commit == $commit
+            and .config == $config_path
+            and .signing_required == false
+            and .verification_disabled == true
+            and .trusted_key_pinned == false' \
+          "$work/apm-add-host-install-commit.json" >/dev/null
         grep -q "commit = \"$install_remote_v1_commit\"" \
           "$config/apm/registries.d/host-install-commit.toml"
         run_clean ${self}/bin/apm --json search hostinstall \
@@ -3154,7 +3192,6 @@ in {
           "$work/apm-search-host-install-commit.json" >/dev/null
         run_clean ${self}/bin/apm --json update --registry host-install-commit \
           > "$work/apm-update-host-install-commit-current.json"
-        install_remote_v1_tracking="commit:$(${pkgs.coreutils}/bin/printf '%s' "$install_remote_v1_commit" | ${pkgs.coreutils}/bin/cut -c1-12)"
         ${pkgs.jq}/bin/jq -e \
           --arg commit "$install_remote_v1_commit" \
           --arg tracking "$install_remote_v1_tracking" \
@@ -3680,11 +3717,25 @@ in {
           > "$work/apm-orphans-before-registry-remove.json"
         ${pkgs.jq}/bin/jq -e 'length == 0' \
           "$work/apm-orphans-before-registry-remove.json" >/dev/null
-        run_clean ${self}/bin/apm registry remove orphan-reg \
-          > "$work/apm-registry-remove-orphan-reg.out" 2>&1
-        grep -q "Registry 'orphan-reg' removed" \
-          "$work/apm-registry-remove-orphan-reg.out"
-        grep -q "now orphaned" "$work/apm-registry-remove-orphan-reg.out"
+        run_clean ${self}/bin/apm --json registry remove orphan-reg \
+          > "$work/apm-registry-remove-orphan-reg.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$config/apm/registries.d/orphan-reg.toml" \
+          --arg local_path "$data/apm/registries/orphan-reg" \
+          '.action == "registry_remove"
+            and .status == "removed"
+            and .registry == "orphan-reg"
+            and .name == "orphan-reg"
+            and .keep_local == false
+            and .force == false
+            and .config == $config_path
+            and .config_removed == true
+            and .local == $local_path
+            and .local_removed == true
+            and .cache_removed == true
+            and .trusted_keys_removed == false
+            and .orphan_command == "apm orphans"' \
+          "$work/apm-registry-remove-orphan-reg.json" >/dev/null
         test ! -e "$config/apm/registries.d/orphan-reg.toml"
         test ! -e "$data/apm/registries/orphan-reg"
         test ! -e "$data/apm/remote/orphan-reg"
