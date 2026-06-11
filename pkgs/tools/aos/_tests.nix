@@ -1990,6 +1990,39 @@ in {
         grep -q "host leaf package executed" "$work/host-leaf-run.out"
         assert_default_profile_absent
 
+        run_clean ${self}/bin/apm --json search hostinstall --installed \
+          --registry host-install-client > "$work/apm-search-installed-host-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-client"
+            and .[0].version == "1.0.0"' \
+          "$work/apm-search-installed-host-install.json" >/dev/null
+        run_clean ${self}/bin/apm --json list --installed \
+          --registry host-install-client > "$work/apm-list-installed-host-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 2
+            and any(.[]; .name == "hostinstall"
+              and .registry == "host-install-client"
+              and .version == "1.0.0"
+              and .status == "installed")
+            and any(.[]; .name == "hostleaf"
+              and .registry == "host-install-client"
+              and .version == "1.0.0"
+              and .status == "installed")' \
+          "$work/apm-list-installed-host-install.json" >/dev/null
+        run_clean ${self}/bin/apm --json show hostinstall \
+          --registry host-install-client > "$work/apm-show-installed-host-install.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+          '.name == "hostinstall"
+            and .registry == "host-install-client"
+            and .version == "1.0.0"
+            and .installed == true
+            and .store_path == $store
+            and (.dependencies | index("hostleaf") != null)' \
+          "$work/apm-show-installed-host-install.json" >/dev/null
+        assert_default_profile_absent
+
         run_clean ${self}/bin/apm verify hostinstall > "$work/apm-verify-host-install.out" 2>&1
         grep -q "integrity verified" "$work/apm-verify-host-install.out"
         run_clean ${self}/bin/apm --json verify hostinstall > "$work/apm-verify-host-install.json"
@@ -2651,6 +2684,29 @@ in {
           cat "$work/apm-upgradable-host-install.out"
           exit 1
         }
+        run_clean ${self}/bin/apm --json list --upgradable \
+          --registry host-install-client > "$work/apm-upgradable-host-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-client"
+            and .[0].version == "1.0.0"
+            and (.[0].status | contains("installed"))
+            and (.[0].status | contains("upgradable: 2.0.0"))' \
+          "$work/apm-upgradable-host-install.json" >/dev/null
+        run_clean ${self}/bin/apm --json policy hostinstall \
+          > "$work/apm-policy-host-install-upgradable.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package == "hostinstall"
+            and .installed == "1.0.0"
+            and .candidate == "2.0.0"
+            and (.versions | length == 1)
+            and .versions[0].version == "2.0.0"
+            and .versions[0].registry == "host-install-client"
+            and .versions[0].installed == false
+            and (.unavailable_installed | any(.version == "1.0.0"
+              and .registry == "host-install-client"))' \
+          "$work/apm-policy-host-install-upgradable.json" >/dev/null
 
         nix_store --delete --ignore-liveness "$install_store_v2" \
           > "$work/nix-delete-host-install-v2.out" 2>&1
@@ -2767,6 +2823,58 @@ in {
         "$profile/current/bin/host-install-tool" > "$work/host-install-v2-run.out"
         grep -q "host leaf package v2 executed" "$work/host-install-v2-run.out"
         grep -q "host install package v2 executed" "$work/host-install-v2-run.out"
+        assert_default_profile_absent
+
+        run_clean ${self}/bin/apm --json list --installed \
+          --registry host-install-client > "$work/apm-list-installed-host-install-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 2
+            and any(.[]; .name == "hostinstall"
+              and .registry == "host-install-client"
+              and .version == "2.0.0"
+              and .status == "installed")
+            and any(.[]; .name == "hostleaf"
+              and .registry == "host-install-client"
+              and .version == "2.0.0"
+              and .status == "installed")' \
+          "$work/apm-list-installed-host-install-v2.json" >/dev/null
+        run_clean ${self}/bin/apm --json policy hostinstall \
+          > "$work/apm-policy-host-install-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package == "hostinstall"
+            and .installed == "2.0.0"
+            and .candidate == "2.0.0"
+            and (.versions | length == 1)
+            and .versions[0].version == "2.0.0"
+            and .versions[0].registry == "host-install-client"
+            and .versions[0].installed == true
+            and .unavailable_installed == []' \
+          "$work/apm-policy-host-install-v2.json" >/dev/null
+        run_clean ${self}/bin/apm --json depends hostinstall \
+          > "$work/apm-depends-host-install-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg app "$install_hash_v2" \
+          --arg leaf "$install_leaf_hash_v2" \
+          '.package == "hostinstall"
+            and .registry == "host-install-client"
+            and .installed == true
+            and .tree.name == "hostinstall"
+            and .tree.store_hash == $app
+            and (.tree.children | any(.name == "hostleaf"
+              and .version == "2.0.0"
+              and .store_hash == $leaf))
+            and .unique_store_paths >= 2' \
+          "$work/apm-depends-host-install-v2.json" >/dev/null
+        run_clean ${self}/bin/apm --json rdepends hostleaf \
+          > "$work/apm-rdepends-host-leaf-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg leaf "$install_leaf_hash_v2" \
+          '.package == "hostleaf"
+            and .target_versions == "2.0.0"
+            and (.target_hashes | index($leaf) != null)
+            and (.dependents | any(.name == "hostinstall"
+              and .version == "2.0.0"))' \
+          "$work/apm-rdepends-host-leaf-v2.json" >/dev/null
         assert_default_profile_absent
 
         run_clean ${self}/bin/apm verify hostinstall > "$work/apm-verify-host-install-v2.out" 2>&1
@@ -2945,6 +3053,16 @@ in {
             and .[0].registry == "host-install-client"
             and .[0].store_path == $store' \
           "$work/apm-held-host-install.json" >/dev/null
+        run_clean ${self}/bin/apm --json list --held \
+          --registry host-install-client > "$work/apm-list-held-host-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-client"
+            and .[0].version == "2.0.0"
+            and (.[0].status | contains("installed"))
+            and (.[0].status | contains("held"))' \
+          "$work/apm-list-held-host-install.json" >/dev/null
 
         run_clean ${self}/bin/apm --json reinstall hostinstall --dry-run \
           > "$work/apm-reinstall-held-host-install-dry-run.json"
