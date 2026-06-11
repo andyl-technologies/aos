@@ -84,6 +84,10 @@
     version = "2.0.0";
     origin = "high-priority";
   };
+  priorityHighUpgradeTool = mkPriorityTool {
+    version = "2.1.0";
+    origin = "high-priority";
+  };
   mkSameVersionTool = origin:
     pkgs.mkDerivation {
       pname = "same-version-tool";
@@ -208,6 +212,7 @@
       pkgs.zstd
       priorityLowTool
       priorityHighTool
+      priorityHighUpgradeTool
       priorityLowClient
       sameVersionLowTool
       sameVersionHighTool
@@ -255,6 +260,15 @@ in {
         fi
       }
 
+      maintainer_apr() {
+        HOME=/tmp \
+        USER=root \
+        XDG_CONFIG_HOME=/tmp/.config \
+        XDG_DATA_HOME=/tmp/.local/share \
+        XDG_CACHE_HOME=/tmp/.cache \
+          "$APR" "$@"
+      }
+
       publish_priority_registry() {
         registry="$1"
         store_path="$2"
@@ -262,9 +276,9 @@ in {
         cache_dir="$4"
         cache_url="$5"
 
-        $APR create "$registry"
+        maintainer_apr create "$registry"
         reg_dir="$REG_STORAGE/$registry"
-        $APR publish "$store_path" \
+        maintainer_apr publish "$store_path" \
           --name priority-tool \
           --version "$version" \
           --description "Priority-selected package from $registry" \
@@ -272,7 +286,7 @@ in {
           --maintainer priority@example.invalid \
           --registry "$registry" \
           --no-commit
-        $APR cache generate \
+        maintainer_apr cache generate \
           --registry "$registry" \
           --output "$cache_dir" \
           --cache-url "$cache_url" \
@@ -286,6 +300,34 @@ in {
         git -C "$reg_dir" push origin "$branch"
       }
 
+      publish_priority_tool_update() {
+        registry="$1"
+        store_path="$2"
+        version="$3"
+        cache_dir="$4"
+        cache_url="$5"
+
+        reg_dir="$REG_STORAGE/$registry"
+        maintainer_apr publish "$store_path" \
+          --name priority-tool \
+          --version "$version" \
+          --description "Priority-selected package from $registry" \
+          --license MIT \
+          --maintainer priority@example.invalid \
+          --registry "$registry" \
+          --no-commit
+        maintainer_apr cache generate \
+          --registry "$registry" \
+          --output "$cache_dir" \
+          --cache-url "$cache_url" \
+          --priority 45 \
+          --no-commit
+        git -C "$reg_dir" add -A
+        git -C "$reg_dir" commit -m "release: priority-tool $version"
+        branch=$(git -C "$reg_dir" symbolic-ref --short HEAD)
+        git -C "$reg_dir" push origin "$branch"
+      }
+
       publish_priority_client() {
         registry="$1"
         store_path="$2"
@@ -293,7 +335,7 @@ in {
         cache_url="$4"
 
         reg_dir="$REG_STORAGE/$registry"
-        $APR publish "$store_path" \
+        maintainer_apr publish "$store_path" \
           --name priority-client \
           --version 1.0.0 \
           --description "Client package depending on $registry priority-tool" \
@@ -301,7 +343,7 @@ in {
           --maintainer priority@example.invalid \
           --registry "$registry" \
           --no-commit
-        $APR cache generate \
+        maintainer_apr cache generate \
           --registry "$registry" \
           --output "$cache_dir" \
           --cache-url "$cache_url" \
@@ -320,7 +362,7 @@ in {
         cache_url="$4"
 
         reg_dir="$REG_STORAGE/$registry"
-        $APR publish "$store_path" \
+        maintainer_apr publish "$store_path" \
           --name same-version-tool \
           --version 1.0.0 \
           --description "Same-version package from $registry" \
@@ -328,7 +370,7 @@ in {
           --maintainer priority@example.invalid \
           --registry "$registry" \
           --no-commit
-        $APR cache generate \
+        maintainer_apr cache generate \
           --registry "$registry" \
           --output "$cache_dir" \
           --cache-url "$cache_url" \
@@ -347,7 +389,7 @@ in {
         cache_url="$4"
 
         reg_dir="$REG_STORAGE/$registry"
-        $APR publish "$store_path" \
+        maintainer_apr publish "$store_path" \
           --name switch-tool \
           --version 1.0.0 \
           --description "Source-switch package from $registry" \
@@ -355,7 +397,7 @@ in {
           --maintainer priority@example.invalid \
           --registry "$registry" \
           --no-commit
-        $APR cache generate \
+        maintainer_apr cache generate \
           --registry "$registry" \
           --output "$cache_dir" \
           --cache-url "$cache_url" \
@@ -369,6 +411,7 @@ in {
 
       LOW_STORE="${priorityLowTool}"
       HIGH_STORE="${priorityHighTool}"
+      HIGH_UPGRADE_STORE="${priorityHighUpgradeTool}"
       LOW_CLIENT_STORE="${priorityLowClient}"
       SAME_LOW_STORE="${sameVersionLowTool}"
       SAME_HIGH_STORE="${sameVersionHighTool}"
@@ -376,6 +419,7 @@ in {
       SWITCH_HIGH_STORE="${switchHighTool}"
       LOW_HASH=$(basename "$LOW_STORE" | cut -d- -f1)
       HIGH_HASH=$(basename "$HIGH_STORE" | cut -d- -f1)
+      HIGH_UPGRADE_HASH=$(basename "$HIGH_UPGRADE_STORE" | cut -d- -f1)
       LOW_CLIENT_HASH=$(basename "$LOW_CLIENT_STORE" | cut -d- -f1)
       SAME_LOW_HASH=$(basename "$SAME_LOW_STORE" | cut -d- -f1)
       SAME_HIGH_HASH=$(basename "$SAME_HIGH_STORE" | cut -d- -f1)
@@ -838,12 +882,131 @@ in {
         fail "held list should be empty after duplicate-name unhold"
       fi
 
+      CONSUMER_HOME="$HOME"
+      CONSUMER_USER="$USER"
+      CONSUMER_APM_CONFIG="$APM_CONFIG"
+      export HOME=/tmp
+      export USER=root
+      APM_CONFIG="$HOME/.config/apm"
+      publish_priority_tool_update high-priority "$HIGH_UPGRADE_STORE" 2.1.0 \
+        /tmp/high-priority-cache http://127.0.0.1:18102
+      export HOME="$CONSUMER_HOME"
+      export USER="$CONSUMER_USER"
+      APM_CONFIG="$CONSUMER_APM_CONFIG"
+      assert_file_exists "/tmp/high-priority-cache/$HIGH_UPGRADE_HASH.narinfo" \
+        "high priority cache has upgraded duplicate narinfo"
+      delete_store_path "$HIGH_UPGRADE_STORE" "high-priority-tool-upgrade"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM --json update --registry high-priority \
+        > /tmp/priority-client-update-high-upgrade.json 2>&1 || {
+        cat /tmp/priority-client-update-high-upgrade.json
+        fail "apm --json update fetches upgraded duplicate registry metadata"
+      }
+      if ${jqBin} -e '
+        .registry == "high-priority"
+        and .updated == 1
+        and (.registries | length == 1)
+        and .registries[0].registry == "high-priority"
+        and .registries[0].status == "updated"
+        and .registries[0].packages == 3
+        and .registries[0].updated >= 1
+        and (.registries[0].commit | length == 64)
+      ' /tmp/priority-client-update-high-upgrade.json >/dev/null; then
+        pass "apm --json update reports upgraded high-priority duplicate"
+      else
+        cat /tmp/priority-client-update-high-upgrade.json
+        fail "apm --json update should report upgraded high-priority duplicate"
+      fi
+      $APM list --upgradable --registry high-priority \
+        > /tmp/priority-client-upgradable-high-tool.out 2>&1 || {
+        cat /tmp/priority-client-upgradable-high-tool.out
+        fail "apm list --upgradable reports upgraded explicit duplicate"
+      }
+      assert_file_contains /tmp/priority-client-upgradable-high-tool.out \
+        "priority-tool/high-priority 2.0.0" \
+        "upgradable duplicate list keeps installed high-priority source"
+      assert_file_contains /tmp/priority-client-upgradable-high-tool.out \
+        "upgradable: 2.1.0" \
+        "upgradable duplicate list reports upgraded high-priority version"
+      $APM --json upgrade priority-tool --dry-run \
+        > /tmp/priority-client-upgrade-high-tool-dry-run.json 2>&1 || {
+        cat /tmp/priority-client-upgrade-high-tool-dry-run.json
+        fail "apm --json upgrade --dry-run plans explicit duplicate upgrade"
+      }
+      if ${jqBin} -e \
+        --arg old_hash "$HIGH_HASH" \
+        --arg new_store "$HIGH_UPGRADE_STORE" \
+        '.action == "upgrade"
+          and .status == "planned"
+          and .dry_run == true
+          and .upgraded == 1
+          and (.upgrades | length == 1)
+          and .upgrades[0].name == "priority-tool"
+          and .upgrades[0].registry == "high-priority"
+          and .upgrades[0].old_store_hash == $old_hash
+          and .upgrades[0].new_version == "2.1.0"
+          and .upgrades[0].new_store_path == $new_store
+          and .downloads.planned >= 1
+          and (.downloads.paths
+            | map(select(.store_path == $new_store))
+            | length == 1)' \
+        /tmp/priority-client-upgrade-high-tool-dry-run.json >/dev/null; then
+        pass "duplicate-name upgrade dry-run selects explicit high-priority root"
+      else
+        cat /tmp/priority-client-upgrade-high-tool-dry-run.json
+        fail "duplicate-name upgrade dry-run should not target low-priority dependency"
+      fi
+      $APM --json upgrade priority-tool --yes \
+        > /tmp/priority-client-upgrade-high-tool.json 2>&1 || {
+        cat /tmp/priority-client-upgrade-high-tool.json
+        fail "apm --json upgrade preserves explicit duplicate source"
+      }
+      if ${jqBin} -e \
+        --arg old_hash "$HIGH_HASH" \
+        --arg new_store "$HIGH_UPGRADE_STORE" \
+        '.action == "upgrade"
+          and .status == "upgraded"
+          and .dry_run == false
+          and .upgraded == 1
+          and (.upgrades | length == 1)
+          and .upgrades[0].registry == "high-priority"
+          and .upgrades[0].old_store_hash == $old_hash
+          and .upgrades[0].new_store_path == $new_store
+          and .downloads.downloaded >= 1
+          and .downloads.imported >= 1' \
+        /tmp/priority-client-upgrade-high-tool.json >/dev/null; then
+        pass "duplicate-name upgrade preserves explicit high-priority source"
+      else
+        cat /tmp/priority-client-upgrade-high-tool.json
+        fail "duplicate-name upgrade should preserve explicit high-priority source"
+      fi
+      assert_store_valid "$HIGH_UPGRADE_STORE" "upgraded high priority duplicate"
+      if [ -e "$CURRENT_PROFILE/meta/$HIGH_HASH.json" ]; then
+        cat "$CURRENT_PROFILE/meta/$HIGH_HASH.json"
+        fail "duplicate-name upgrade should delete old high-priority metadata"
+      else
+        pass "duplicate-name upgrade deletes old high-priority metadata"
+      fi
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
+        '"explicit": false' "duplicate-name upgrade keeps low dependency automatic"
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
+        '"held": false' "duplicate-name upgrade keeps low dependency unheld"
+      assert_file_contains "$CURRENT_PROFILE/meta/$HIGH_UPGRADE_HASH.json" \
+        '"explicit": true' "duplicate-name upgrade keeps high package explicit"
+      assert_file_contains "$CURRENT_PROFILE/meta/$HIGH_UPGRADE_HASH.json" \
+        '"held": false' "duplicate-name upgrade keeps high package unheld"
+      "$PROFILE_TOOL" > /tmp/priority-tool-after-upgrade-high.out
+      assert_file_contains /tmp/priority-tool-after-upgrade-high.out \
+        "priority-tool 2.1.0 from high-priority" \
+        "duplicate-name upgrade activates high-priority executable"
+
       $APM --json remove priority-tool --dry-run \
         > /tmp/priority-client-remove-high-tool-dry-run.json 2>&1 || {
         cat /tmp/priority-client-remove-high-tool-dry-run.json
         fail "apm --json remove --dry-run plans duplicate-name explicit removal"
       }
-      if ${jqBin} -e --arg store "$HIGH_STORE" '
+      if ${jqBin} -e --arg store "$HIGH_UPGRADE_STORE" '
         .action == "remove"
         and .status == "planned"
         and .requested == ["priority-tool"]
@@ -869,7 +1032,7 @@ in {
         cat /tmp/priority-client-remove-high-tool.json
         fail "apm --json remove deletes duplicate-name explicit package"
       }
-      if ${jqBin} -e --arg store "$HIGH_STORE" '
+      if ${jqBin} -e --arg store "$HIGH_UPGRADE_STORE" '
         .action == "remove"
         and .status == "removed"
         and .dry_run == false
@@ -891,15 +1054,15 @@ in {
       else
         fail "duplicate-name remove should preserve low-priority dependency root"
       fi
-      if [ -L "$CURRENT_PROFILE/usr/$HIGH_HASH" ]; then
+      if [ -L "$CURRENT_PROFILE/usr/$HIGH_UPGRADE_HASH" ]; then
         fail "duplicate-name remove should drop high-priority explicit root"
       else
         pass "duplicate-name remove drops high-priority explicit root"
       fi
       assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
         '"explicit": false' "duplicate-name remove preserves low dependency metadata"
-      if [ -e "$CURRENT_PROFILE/meta/$HIGH_HASH.json" ]; then
-        cat "$CURRENT_PROFILE/meta/$HIGH_HASH.json"
+      if [ -e "$CURRENT_PROFILE/meta/$HIGH_UPGRADE_HASH.json" ]; then
+        cat "$CURRENT_PROFILE/meta/$HIGH_UPGRADE_HASH.json"
         fail "duplicate-name remove should delete high-priority metadata"
       else
         pass "duplicate-name remove deletes high-priority metadata"
