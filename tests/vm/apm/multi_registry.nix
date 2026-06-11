@@ -835,6 +835,8 @@ in {
         cat /tmp/priority-client-reinstall-high-tool.json
         fail "duplicate-name reinstall should not switch to low-priority dependency"
       fi
+      PRE_UPGRADE_DUPLICATE_GENERATION=$(${jqBin} -r '.generation' \
+        /tmp/priority-client-reinstall-high-tool.json)
       assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
         '"explicit": false' "duplicate-name reinstall keeps low dependency automatic"
       assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
@@ -981,6 +983,8 @@ in {
         cat /tmp/priority-client-upgrade-high-tool.json
         fail "duplicate-name upgrade should preserve explicit high-priority source"
       fi
+      UPGRADED_DUPLICATE_GENERATION=$(${jqBin} -r '.generation' \
+        /tmp/priority-client-upgrade-high-tool.json)
       assert_store_valid "$HIGH_UPGRADE_STORE" "upgraded high priority duplicate"
       if [ -e "$CURRENT_PROFILE/meta/$HIGH_HASH.json" ]; then
         cat "$CURRENT_PROFILE/meta/$HIGH_HASH.json"
@@ -1000,6 +1004,94 @@ in {
       assert_file_contains /tmp/priority-tool-after-upgrade-high.out \
         "priority-tool 2.1.0 from high-priority" \
         "duplicate-name upgrade activates high-priority executable"
+
+      $APM --json rollback --generation "$PRE_UPGRADE_DUPLICATE_GENERATION" \
+        > /tmp/priority-client-rollback-pre-upgrade.json 2>&1 || {
+        cat /tmp/priority-client-rollback-pre-upgrade.json
+        fail "apm --json rollback restores pre-upgrade duplicate generation"
+      }
+      if ${jqBin} -e \
+        --argjson from "$UPGRADED_DUPLICATE_GENERATION" \
+        --argjson to "$PRE_UPGRADE_DUPLICATE_GENERATION" \
+        --arg restored_store "$HIGH_STORE" \
+        --arg removed_store "$HIGH_UPGRADE_STORE" \
+        '.action == "rollback"
+          and .status == "rolled_back"
+          and .from_generation == $from
+          and .to_generation == $to
+          and .generation == $to
+          and (.restored
+            | map(select(.store_path == $restored_store))
+            | length == 1)
+          and (.removed
+            | map(select(.store_path == $removed_store))
+            | length == 1)' \
+        /tmp/priority-client-rollback-pre-upgrade.json >/dev/null; then
+        pass "duplicate-name rollback restores pre-upgrade high-priority root"
+      else
+        cat /tmp/priority-client-rollback-pre-upgrade.json
+        fail "duplicate-name rollback should switch back to the pre-upgrade root"
+      fi
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
+        '"explicit": false' "duplicate-name rollback keeps low dependency automatic"
+      assert_file_contains "$CURRENT_PROFILE/meta/$HIGH_HASH.json" \
+        '"explicit": true' "duplicate-name rollback restores old high package explicit"
+      assert_file_contains "$CURRENT_PROFILE/meta/$HIGH_HASH.json" \
+        '"held": false' "duplicate-name rollback preserves old high package unheld"
+      if [ -e "$CURRENT_PROFILE/meta/$HIGH_UPGRADE_HASH.json" ]; then
+        cat "$CURRENT_PROFILE/meta/$HIGH_UPGRADE_HASH.json"
+        fail "duplicate-name rollback should remove upgraded high metadata from current generation"
+      else
+        pass "duplicate-name rollback removes upgraded high metadata from current generation"
+      fi
+      "$PROFILE_TOOL" > /tmp/priority-tool-after-rollback-high.out
+      assert_file_contains /tmp/priority-tool-after-rollback-high.out \
+        "priority-tool 2.0.0 from high-priority" \
+        "duplicate-name rollback reactivates pre-upgrade high-priority executable"
+
+      $APM --json rollback --generation "$UPGRADED_DUPLICATE_GENERATION" \
+        > /tmp/priority-client-rollback-upgraded.json 2>&1 || {
+        cat /tmp/priority-client-rollback-upgraded.json
+        fail "apm --json rollback restores upgraded duplicate generation"
+      }
+      if ${jqBin} -e \
+        --argjson from "$PRE_UPGRADE_DUPLICATE_GENERATION" \
+        --argjson to "$UPGRADED_DUPLICATE_GENERATION" \
+        --arg restored_store "$HIGH_UPGRADE_STORE" \
+        --arg removed_store "$HIGH_STORE" \
+        '.action == "rollback"
+          and .status == "rolled_back"
+          and .from_generation == $from
+          and .to_generation == $to
+          and .generation == $to
+          and (.restored
+            | map(select(.store_path == $restored_store))
+            | length == 1)
+          and (.removed
+            | map(select(.store_path == $removed_store))
+            | length == 1)' \
+        /tmp/priority-client-rollback-upgraded.json >/dev/null; then
+        pass "duplicate-name rollback restores upgraded high-priority root"
+      else
+        cat /tmp/priority-client-rollback-upgraded.json
+        fail "duplicate-name rollback should switch forward to the upgraded root"
+      fi
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
+        '"explicit": false' "duplicate-name roll-forward keeps low dependency automatic"
+      assert_file_contains "$CURRENT_PROFILE/meta/$HIGH_UPGRADE_HASH.json" \
+        '"explicit": true' "duplicate-name roll-forward restores upgraded high package explicit"
+      assert_file_contains "$CURRENT_PROFILE/meta/$HIGH_UPGRADE_HASH.json" \
+        '"held": false' "duplicate-name roll-forward preserves upgraded high package unheld"
+      if [ -e "$CURRENT_PROFILE/meta/$HIGH_HASH.json" ]; then
+        cat "$CURRENT_PROFILE/meta/$HIGH_HASH.json"
+        fail "duplicate-name roll-forward should remove old high metadata from current generation"
+      else
+        pass "duplicate-name roll-forward removes old high metadata from current generation"
+      fi
+      "$PROFILE_TOOL" > /tmp/priority-tool-after-roll-forward-high.out
+      assert_file_contains /tmp/priority-tool-after-roll-forward-high.out \
+        "priority-tool 2.1.0 from high-priority" \
+        "duplicate-name roll-forward reactivates upgraded high-priority executable"
 
       $APM --json remove priority-tool --dry-run \
         > /tmp/priority-client-remove-high-tool-dry-run.json 2>&1 || {
