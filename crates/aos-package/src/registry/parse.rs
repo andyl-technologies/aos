@@ -146,6 +146,23 @@ pub fn parse_registry(
     dir: &Path,
     platform: &str,
 ) -> Result<(HashMap<String, PackageMeta>, HashMap<String, PackageMeta>)> {
+    parse_registry_matching(dir, platform, None)
+}
+
+/// Parse a registry directory, retaining only versions matched by `version_req`.
+///
+/// A missing `packages/` directory yields empty maps; packages with no entry
+/// for `platform` or no version matching `version_req` are skipped silently.
+///
+/// # Errors
+///
+/// Returns an error if a directory cannot be read or any package TOML file
+/// fails to parse.
+pub(crate) fn parse_registry_matching(
+    dir: &Path,
+    platform: &str,
+    version_req: Option<&semver::VersionReq>,
+) -> Result<(HashMap<String, PackageMeta>, HashMap<String, PackageMeta>)> {
     let packages_dir = dir.join("packages");
     let mut packages = HashMap::new();
     let mut all_versions = Vec::new();
@@ -171,14 +188,17 @@ pub fn parse_registry(
                 let content = std::fs::read_to_string(&toml_path)
                     .with_context(|| format!("reading {}", toml_path.display()))?;
                 match parse_package_toml_versions(&content, platform) {
-                    Ok(metas) if !metas.is_empty() => {
+                    Ok(mut metas) => {
+                        if let Some(req) = version_req {
+                            metas.retain(|meta| version_matches_req(&meta.version, req));
+                        }
+                        if metas.is_empty() {
+                            continue;
+                        }
                         if let Some(meta) = newest_version(&metas) {
                             packages.insert(meta.name.clone(), meta);
                         }
                         all_versions.extend(metas);
-                    }
-                    Ok(_) => {
-                        // No entry for this platform -- skip
                     }
                     Err(e) => {
                         return Err(e.context(format!("parsing {}", toml_path.display())));
@@ -253,6 +273,13 @@ fn newest_version(metas: &[PackageMeta]) -> Option<PackageMeta> {
         .iter()
         .max_by(|left, right| compare_registry_versions(&left.version, &right.version))
         .cloned()
+}
+
+fn version_matches_req(version: &str, req: &semver::VersionReq) -> bool {
+    match semver::Version::parse(version) {
+        Ok(version) => req.matches(&version),
+        Err(_) => false,
+    }
 }
 
 /// Order two version strings: semver pairs compare semantically, a semver
@@ -346,7 +373,7 @@ references = []
 "#;
 
 #[cfg(test)]
-const MULTI_VERSION_TOML: &str = r#"
+pub(crate) const MULTI_VERSION_TOML: &str = r#"
 [package]
 name = "tool"
 description = "Multi-version package"
@@ -517,6 +544,22 @@ mod tests {
 
         assert_eq!(index.get("oldhash111111").unwrap().version, "1.0.0");
         assert_eq!(index.get("newhash222222").unwrap().version, "2.0.0");
+    }
+
+    #[test]
+    fn parse_registry_filters_versions_by_semver_constraint() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let packages_dir = tmp.path().join("packages").join("t");
+        std::fs::create_dir_all(&packages_dir).unwrap();
+        std::fs::write(packages_dir.join("tool.toml"), MULTI_VERSION_TOML).unwrap();
+
+        let req = semver::VersionReq::parse("^1.0").unwrap();
+        let (packages, index) =
+            parse_registry_matching(tmp.path(), "x86_64-linux", Some(&req)).unwrap();
+
+        assert_eq!(packages.get("tool").unwrap().version, "1.0.0");
+        assert!(index.contains_key("oldhash111111"));
+        assert!(!index.contains_key("newhash222222"));
     }
 
     #[test]
