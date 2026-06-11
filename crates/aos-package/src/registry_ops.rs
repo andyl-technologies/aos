@@ -157,8 +157,11 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            git_failure_details(&output)
+        );
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -177,8 +180,11 @@ fn git_transport(dir: &Path, args: &[&str]) -> Result<String> {
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            git_failure_details(&output)
+        );
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -193,11 +199,29 @@ fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            git_failure_details(&output)
+        );
     }
 
     Ok(output.stdout)
+}
+
+/// Render the useful part of a failed Git invocation.
+fn git_failure_details(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => output.status.to_string(),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (false, false) => format!("{stdout}\n{stderr}"),
+    }
 }
 
 /// Build a `nix`/`nix-store` command with the AOS Nix environment applied.
