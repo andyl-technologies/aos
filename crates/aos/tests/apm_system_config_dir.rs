@@ -65,6 +65,69 @@ fn system_config_dir_override_redirects_trusted_keys_and_registries() -> Result<
 }
 
 #[test]
+fn system_config_dir_override_supports_apm_system_registry_add() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let origin = tmp.path().join("origin.git");
+    fs::create_dir_all(&origin)?;
+
+    let url = format!("file://{}", origin.display());
+    let system_config = system_dir.join("registries.d/sysreg.toml");
+    let added = run_aos_package_json(
+        &home,
+        &system_dir,
+        &[
+            "--json",
+            "registry",
+            "--system",
+            "add",
+            "--no-verify",
+            "--no-clone",
+            url.as_str(),
+            "--name",
+            "sysreg",
+            "--priority",
+            "701",
+        ],
+        "add",
+    )?;
+    assert_eq!(added["action"], "registry_add");
+    assert_eq!(added["status"], "added");
+    assert_eq!(added["registry"], "sysreg");
+    assert_eq!(added["name"], "sysreg");
+    assert_eq!(added["url"], url);
+    assert_eq!(added["priority"], 701);
+    assert_eq!(added["enabled"], true);
+    assert_eq!(added["tracking"], "default");
+    assert_eq!(added["clone"], false);
+    assert_eq!(added["synced"], false);
+    assert_eq!(added["verification_disabled"], true);
+    assert_eq!(
+        added["config"],
+        system_config.to_string_lossy().to_string(),
+        "registry --system add should write the redirected system config"
+    );
+
+    let config = fs::read_to_string(&system_config)?;
+    assert!(config.contains("name = \"sysreg\""), "{config}");
+    assert!(config.contains(&format!("url = \"{url}\"")), "{config}");
+    assert!(config.contains("priority = 701"), "{config}");
+    assert!(
+        !home.join(".config/apm/registries.d/sysreg.toml").exists(),
+        "registry --system add should not create a user config shadow file"
+    );
+
+    let registries = run_aos_package(&home, &system_dir, &["registry", "list"])?;
+    assert!(
+        registries.contains("sysreg"),
+        "user-scope registry list did not see redirected system registry:\n{registries}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn system_config_dir_override_supports_apm_registry_lifecycle() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let home = tmp.path().join("home");
