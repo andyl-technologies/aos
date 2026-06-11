@@ -1125,6 +1125,99 @@ in {
             and (.base | length > 0)' \
           "$work/apr-diff-remote.json" >/dev/null
 
+        system_registry_config="$system_config/registries.d/host-reg-system.toml"
+        user_shadow_config="$config/apm/registries.d/host-reg-system.toml"
+        system_registry_cache="$aos_root/var/lib/apm/remote/host-reg-system"
+        system_registry_clone="$aos_root/var/lib/apm/registries/host-reg-system"
+        run_clean ${self}/bin/apm --json registry --system add \
+          --no-verify "file://$work/host-origin.git" \
+          --name host-reg-system \
+          --branch stable \
+          --priority 777 > "$work/apm-system-registry-add.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$system_registry_config" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-reg-system"
+            and .priority == 777
+            and .tracking == "branch:stable"
+            and .clone == true
+            and .synced == true
+            and .verification_disabled == true
+            and .config == $config_path
+            and .packages == 1
+            and (.last_commit | length == 64)' \
+          "$work/apm-system-registry-add.json" >/dev/null
+        grep -q 'last_commit = ' "$system_registry_config"
+        test -d "$system_registry_cache/packages"
+        test -d "$system_registry_clone"
+        test ! -e "$user_shadow_config"
+        test ! -e "$data/apm/remote/host-reg-system"
+        run_clean ${self}/bin/apm --json registry --system list \
+          > "$work/apm-system-registry-list.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "host-reg-system"
+            and .[0].priority == 777
+            and .[0].enabled == true
+            and .[0].packages == 1
+            and .[0].tracking == "branch:stable"' \
+          "$work/apm-system-registry-list.json" >/dev/null
+        run_clean ${self}/bin/apm --json registry --system disable host-reg-system \
+          > "$work/apm-system-registry-disable.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$system_registry_config" \
+          '.action == "registry_disable"
+            and .status == "disabled"
+            and .registry == "host-reg-system"
+            and .enabled == false
+            and .previous_enabled == true
+            and .changed == true
+            and .config == $config_path' \
+          "$work/apm-system-registry-disable.json" >/dev/null
+        grep -q 'enabled = false' "$system_registry_config"
+        if run_clean ${self}/bin/apm update --registry host-reg-system \
+          > "$work/apm-system-registry-update-disabled.out" 2>&1; then
+          cat "$work/apm-system-registry-update-disabled.out"
+          exit 1
+        fi
+        grep -q "registry 'host-reg-system' is not enabled" \
+          "$work/apm-system-registry-update-disabled.out"
+        run_clean ${self}/bin/apm --json registry --system enable host-reg-system \
+          > "$work/apm-system-registry-enable.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$system_registry_config" \
+          '.action == "registry_enable"
+            and .status == "enabled"
+            and .registry == "host-reg-system"
+            and .enabled == true
+            and .previous_enabled == false
+            and .changed == true
+            and .config == $config_path' \
+          "$work/apm-system-registry-enable.json" >/dev/null
+        grep -q 'enabled = true' "$system_registry_config"
+        run_clean ${self}/bin/apm --json registry --system remove host-reg-system \
+          > "$work/apm-system-registry-remove.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$system_registry_config" \
+          --arg local_path "$system_registry_clone" \
+          '.action == "registry_remove"
+            and .status == "removed"
+            and .registry == "host-reg-system"
+            and .keep_local == false
+            and .config == $config_path
+            and .config_removed == true
+            and .local == $local_path
+            and .local_removed == true
+            and .cache_removed == true' \
+          "$work/apm-system-registry-remove.json" >/dev/null
+        test ! -e "$system_registry_config"
+        test ! -e "$system_registry_cache"
+        test ! -e "$system_registry_clone"
+        test ! -e "$user_shadow_config"
+        ${pkgs.coreutils}/bin/rmdir "$system_config/registries.d"
+        assert_no_profile
+
         run_clean ${self}/bin/apm registry add --no-verify "file://$reg" --name host-reg-client > "$work/apm-registry-add.out" 2>&1
         grep -q "Registry 'host-reg-client' added" "$work/apm-registry-add.out"
         run_clean ${self}/bin/apm registry list > "$work/apm-registry-list.out" 2>&1

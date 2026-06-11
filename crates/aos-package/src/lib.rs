@@ -91,7 +91,10 @@ pub const ENVIRONMENT_HELP: &str = "Environment:
                          including registries.d and trusted-keys.d, in both
                          the user and system profile scopes. Must be an
                          absolute path; intended for development on non-AOS
-                         hosts.";
+                         hosts.
+  AOS_ROOT               Override the AOS root filesystem. System-scope APM
+                         state is written under <AOS_ROOT>/var/lib/apm, and
+                         Nix commands use the AOS_ROOT-relative store.";
 
 /// Clap subcommand enum for `aos package` / `apm`.
 #[derive(Subcommand)]
