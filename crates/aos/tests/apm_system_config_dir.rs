@@ -65,6 +65,98 @@ fn system_config_dir_override_redirects_trusted_keys_and_registries() -> Result<
 }
 
 #[test]
+fn system_config_dir_override_supports_apr_maintainer_config_lifecycle() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let registries_dir = system_dir.join("registries.d");
+    fs::create_dir_all(&registries_dir)?;
+
+    let system_config = registries_dir.join("sysreg.toml");
+    fs::write(
+        &system_config,
+        "[registry]\nname = \"sysreg\"\nurl = \"https://registry.example/sysreg\"\n",
+    )?;
+
+    let upload_dir = tmp.path().join("upload");
+    let upload_url = format!("file://{}", upload_dir.display());
+    let origin_config = run_apr_json(
+        &home,
+        &system_dir,
+        &[
+            "--json",
+            "origin",
+            "config",
+            "--registry",
+            "sysreg",
+            "--upload-url",
+            upload_url.as_str(),
+        ],
+        "origin config",
+    )?;
+    assert_eq!(origin_config["action"], "origin_config");
+    assert_eq!(origin_config["registry"], "sysreg");
+    assert_eq!(
+        origin_config["config"],
+        system_config.to_string_lossy().to_string(),
+        "apr origin config should rewrite the effective redirected system config"
+    );
+    assert_eq!(origin_config["upload_auth"]["upload_urls"][0], upload_url);
+    let config = fs::read_to_string(&system_config)?;
+    assert!(config.contains("[registry.upload_auth]"), "{config}");
+    assert!(
+        config.contains(&format!("upload_urls = [\"{upload_url}\"]")),
+        "{config}"
+    );
+    assert!(
+        !home.join(".config/apm/registries.d/sysreg.toml").exists(),
+        "apr origin config should not create a user config shadow file"
+    );
+
+    let key = run_apr_json(
+        &home,
+        &system_dir,
+        &[
+            "--json",
+            "keys",
+            "generate",
+            "release",
+            "--registry",
+            "sysreg",
+        ],
+        "keys generate",
+    )?;
+    assert_eq!(key["action"], "keys_generate");
+    assert_eq!(key["status"], "generated");
+    assert_eq!(key["registry"], "sysreg");
+    assert_eq!(key["id"], "release");
+    assert_eq!(key["configured"], true);
+    assert_eq!(
+        key["config"],
+        system_config.to_string_lossy().to_string(),
+        "apr keys generate should record key-id resolution in the redirected system config"
+    );
+    let private_key = home.join(".config/apm/keys/sysreg-release.key");
+    assert!(
+        private_key.exists(),
+        "apr keys generate should write the private key under user config at {}",
+        private_key.display()
+    );
+    let config = fs::read_to_string(&system_config)?;
+    assert!(config.contains("[registry.signing_keys]"), "{config}");
+    assert!(
+        config.contains(&format!("\"release\" = \"{}\"", private_key.display())),
+        "{config}"
+    );
+    assert!(
+        !home.join(".config/apm/registries.d/sysreg.toml").exists(),
+        "apr keys generate should not create a user config shadow file"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn system_config_dir_override_supports_apm_system_registry_add() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let home = tmp.path().join("home");
@@ -318,12 +410,27 @@ fn run_aos_package_output(
     command.output().context("running aos package")
 }
 
+fn run_apr_json(home: &Path, system_dir: &Path, args: &[&str], action: &str) -> Result<Value> {
+    let output =
+        run_apr_output(home, system_dir, args).with_context(|| format!("running apr {action}"))?;
+    if !output.status.success() {
+        bail!(
+            "apr {action} failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    assert!(
+        String::from_utf8_lossy(&output.stderr).is_empty(),
+        "JSON apr {action} should keep stderr clean:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("parsing apr {action} JSON from stdout"))
+}
+
 fn run_apr(home: &Path, system_dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_apr"))
-        .env("HOME", home)
-        .env("APM_SYSTEM_CONFIG_DIR", system_dir)
-        .args(args)
-        .output()
+    let output = run_apr_output(home, system_dir, args)
         .with_context(|| format!("running apr {}", args.join(" ")))?;
     if !output.status.success() {
         bail!(
@@ -338,4 +445,13 @@ fn run_apr(home: &Path, system_dir: &Path, args: &[&str]) -> Result<String> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     ))
+}
+
+fn run_apr_output(home: &Path, system_dir: &Path, args: &[&str]) -> Result<std::process::Output> {
+    Command::new(env!("CARGO_BIN_EXE_apr"))
+        .env("HOME", home)
+        .env("APM_SYSTEM_CONFIG_DIR", system_dir)
+        .args(args)
+        .output()
+        .context("running apr")
 }
