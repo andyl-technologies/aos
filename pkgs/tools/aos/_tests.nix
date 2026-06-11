@@ -6122,6 +6122,61 @@ in {
             and (.expected_nar_hash | startswith("sha256-"))
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/apm-verify-orphan-reattached.json" >/dev/null
+        run_clean ${self}/bin/apm --json registry remove orphan-reg --keep-local \
+          > "$work/apm-registry-remove-orphan-reg-keep-local.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$config/apm/registries.d/orphan-reg.toml" \
+          --arg local_path "$data/apm/registries/orphan-reg" \
+          '.action == "registry_remove"
+            and .status == "removed"
+            and .registry == "orphan-reg"
+            and .name == "orphan-reg"
+            and .keep_local == true
+            and .force == false
+            and .config == $config_path
+            and .config_removed == true
+            and .local == $local_path
+            and .local_removed == false
+            and .cache_removed == false
+            and .trusted_keys_removed == false
+            and .orphan_command == "apm orphans"' \
+          "$work/apm-registry-remove-orphan-reg-keep-local.json" >/dev/null
+        test ! -e "$config/apm/registries.d/orphan-reg.toml"
+        test -d "$data/apm/registries/orphan-reg"
+        test -d "$data/apm/remote/orphan-reg"
+        run_clean ${self}/bin/apm --json orphans \
+          > "$work/apm-orphans-after-registry-keep-local-remove.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 2
+            and any(.[]; .name == "hostinstall"
+              and .version == "2.0.0"
+              and .registry == "orphan-reg"
+              and .explicit == true)
+            and any(.[]; .name == "hostleaf"
+              and .version == "2.0.0"
+              and .registry == "orphan-reg"
+              and .explicit == false)' \
+          "$work/apm-orphans-after-registry-keep-local-remove.json" >/dev/null
+        run_clean ${self}/bin/apm --json registry add --no-verify "file://$install_origin" \
+          --name orphan-reg \
+          --branch stable > "$work/apm-registry-reattach-orphan-reg-after-keep-local.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$config/apm/registries.d/orphan-reg.toml" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "orphan-reg"
+            and .name == "orphan-reg"
+            and .tracking == "branch:stable"
+            and .clone == true
+            and .synced == true
+            and .verification_disabled == true
+            and .config == $config_path
+            and .packages >= 3' \
+          "$work/apm-registry-reattach-orphan-reg-after-keep-local.json" >/dev/null
+        run_clean ${self}/bin/apm --json orphans \
+          > "$work/apm-orphans-after-keep-local-reattach.json"
+        ${pkgs.jq}/bin/jq -e 'length == 0' \
+          "$work/apm-orphans-after-keep-local-reattach.json" >/dev/null
         assert_default_profile_absent
 
         home="$main_home"
