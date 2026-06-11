@@ -154,8 +154,8 @@ store_path = "{store_path}"
 nar_hash = "sha256:placeholder"
 nar_size = 1
 closure_size = 1
-source_drv = "{store_path}.drv"
-source_nar_hash = "sha256:placeholder"
+source_drv = ""
+source_nar_hash = ""
 references = []
 "#,
     )
