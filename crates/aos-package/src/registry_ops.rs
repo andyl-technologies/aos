@@ -3653,6 +3653,17 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
                 &format!("registry: add signing key {id}"),
                 commit_key.as_ref().map(|k| k.path()),
             )?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "keys_add",
+                    "status": "added",
+                    "registry": registry_name,
+                    "id": id,
+                    "key": key,
+                    "committed": !*no_commit,
+                }));
+                return Ok(());
+            }
             printer.success(&format!(
                 "Added active signing key '{id}' to registry '{registry_name}'."
             ));
@@ -3722,6 +3733,20 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
                 print_resign_plan(&plan, printer);
             } else if let Some(vouch_key) = signer.as_ref().map(|k| k.path()) {
                 execute_retirement_resign(&dir, &plan, vouch_key, printer)?;
+            }
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "keys_retire",
+                    "status": "retired",
+                    "registry": registry_name,
+                    "id": id,
+                    "reason": reason.as_deref(),
+                    "vouched_by": vouching_id,
+                    "committed": !*no_commit,
+                    "resigned": !*no_resign,
+                    "resign_plan": resign_plan_json(&plan),
+                }));
+                return Ok(());
             }
             printer.success(&format!(
                 "Retired signing key '{id}' from registry '{registry_name}' (vouched by '{vouching_id}')."
@@ -3884,6 +3909,29 @@ fn print_resign_plan(plan: &ResignPlan, printer: &Printer) {
     }
 }
 
+fn resign_plan_json(plan: &ResignPlan) -> serde_json::Value {
+    let partitions = plan
+        .affected_partitions
+        .iter()
+        .map(|(channel, bucket, version)| {
+            serde_json::json!({
+                "channel": channel,
+                "bucket": *bucket,
+                "bucket_hex": channel::bucket_hex(*bucket),
+                "version": version.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "release_tags": plan
+            .affected_releases
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "channel_partitions": partitions,
+    })
+}
+
 /// Extract a signed tag's original message, dropping the SSH signature
 /// block git appends to the payload.
 fn tag_message_without_signature(payload: &str) -> Option<String> {
@@ -3997,7 +4045,8 @@ fn generate_roster_key(
         .config_dir()
         .join("registries.d")
         .join(format!("{registry_name}.toml"));
-    if config_path.exists() {
+    let configured = config_path.exists();
+    if configured {
         state::upsert_signing_key(
             &config_path,
             id,
@@ -4020,6 +4069,7 @@ fn generate_roster_key(
         &key_fingerprint(&keypair.public_key_base64()),
     );
 
+    let mut committed = false;
     if add {
         let dir = config.scope.registries_path().join(&registry_name);
         let mut roster = load_committed_roster(&dir)?;
@@ -4050,9 +4100,30 @@ fn generate_roster_key(
             &format!("registry: add signing key {id}"),
             commit_key.as_ref().map(|k| k.path()),
         )?;
+        committed = !no_commit;
         printer.success(&format!(
             "Added active signing key '{id}' to registry '{registry_name}'."
         ));
+    }
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "keys_generate",
+            "status": "generated",
+            "registry": registry_name,
+            "id": id,
+            "private_key": key_path_str,
+            "public_key": trust_key,
+            "fingerprint": key_fingerprint(&keypair.public_key_base64()),
+            "configured": configured,
+            "config": if configured {
+                Some(config_path.to_string_lossy().to_string())
+            } else {
+                None
+            },
+            "added": add,
+            "committed": committed,
+        }));
     }
 
     Ok(())
@@ -4103,7 +4174,8 @@ fn register_roster_key(
         .config_dir()
         .join("registries.d")
         .join(format!("{registry_name}.toml"));
-    if config_path.exists() {
+    let configured = config_path.exists();
+    if configured {
         state::upsert_signing_key(&config_path, id, &source)?;
         printer.kv("Config", &config_path.display().to_string());
     } else {
@@ -4122,6 +4194,24 @@ fn register_roster_key(
     }
     printer.kv("Public key", &trust_key);
     printer.kv("Fingerprint", &key_fingerprint(&public_key));
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "keys_register",
+            "status": "registered",
+            "registry": registry_name,
+            "id": id,
+            "source": if source.path().is_some() { "path" } else { "command" },
+            "configured": configured,
+            "config": if configured {
+                Some(config_path.to_string_lossy().to_string())
+            } else {
+                None
+            },
+            "public_key": trust_key,
+            "fingerprint": key_fingerprint(&public_key),
+        }));
+        return Ok(());
+    }
     printer.info(&format!(
         "Hand the public key to an active maintainer to add it:\n  {} keys add {id} {trust_key} --registry {registry_name}",
         aos_core::invocation::package_registry_command(),
@@ -4441,14 +4531,14 @@ fn create_ephemeral_key_file() -> Result<tempfile::NamedTempFile> {
     }
 }
 
-/// Run a signing-key command via `sh -c` and materialize its stdout into a
+/// Run a signing-key command via `bash -c` and materialize its stdout into a
 /// private temporary file that `git`/`ssh-keygen` can open.
 ///
 /// The command must print the unencrypted OpenSSH private key to stdout. The
 /// returned [`ResolvedSigningKey`] owns the temporary file; the key is removed
 /// from disk as soon as it is dropped.
 fn materialize_signing_key_command(command: &str) -> Result<ResolvedSigningKey> {
-    let output = std::process::Command::new("sh")
+    let output = std::process::Command::new("bash")
         .arg("-c")
         .arg(command)
         .stdin(std::process::Stdio::null())
@@ -5733,16 +5823,34 @@ pub async fn tag(
     let registry_name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&registry_name);
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+    let tag_message = message.unwrap_or("AOS registry release");
 
     sign_tag(
         &dir,
         name,
         "HEAD",
-        message.or(Some("AOS registry release")),
+        Some(tag_message),
         signing_key.path(),
         false,
     )?;
     refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after tag")?;
+
+    if printer.mode() == OutputMode::Json {
+        let tag_object = git(&dir, &["rev-parse", &format!("{name}^{{tag}}")])
+            .with_context(|| format!("resolving tag object for '{name}'"))?;
+        let target = git(&dir, &["rev-parse", &format!("{name}^{{commit}}")])
+            .with_context(|| format!("resolving tag target for '{name}'"))?;
+        printer.json(&serde_json::json!({
+            "action": "tag",
+            "status": "tagged",
+            "registry": registry_name,
+            "tag": name,
+            "message": tag_message,
+            "target": target,
+            "tag_object": tag_object,
+        }));
+        return Ok(());
+    }
 
     printer.success(&format!("Created signed tag '{name}'."));
     Ok(())
@@ -5771,6 +5879,8 @@ pub async fn sign(
         anyhow::anyhow!("`apr sign` now signs tag objects; pass the existing tag name to re-sign")
     })?;
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+    let previous_tag_object = git(&dir, &["rev-parse", &format!("{tag_name}^{{tag}}")])
+        .with_context(|| format!("resolving existing tag object for '{tag_name}'"))?;
     let target = git(&dir, &["rev-list", "-n", "1", tag_name])
         .with_context(|| format!("resolving tag '{tag_name}' target commit"))?;
 
@@ -5783,6 +5893,20 @@ pub async fn sign(
         true,
     )?;
     refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after sign")?;
+    if printer.mode() == OutputMode::Json {
+        let tag_object = git(&dir, &["rev-parse", &format!("{tag_name}^{{tag}}")])
+            .with_context(|| format!("resolving re-signed tag object for '{tag_name}'"))?;
+        printer.json(&serde_json::json!({
+            "action": "sign",
+            "status": "signed",
+            "registry": registry_name,
+            "tag": tag_name,
+            "target": target,
+            "previous_tag_object": previous_tag_object,
+            "tag_object": tag_object,
+        }));
+        return Ok(());
+    }
     printer.success(&format!("Re-signed tag '{tag_name}'."));
 
     Ok(())

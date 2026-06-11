@@ -999,6 +999,41 @@ in {
         fi
 
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/release-key"
+        manual_tag_head=$(git -C "$reg" rev-parse HEAD)
+        run_clean ${self}/bin/apr --json tag manual-checkpoint \
+          --registry host-reg \
+          --message "manual checkpoint before release" \
+          --key "$work/release-key" \
+          > "$work/apr-tag-manual-checkpoint.json"
+        manual_tag_object=$(git -C "$reg" rev-parse 'manual-checkpoint^{tag}')
+        manual_tag_commit=$(git -C "$reg" rev-parse 'manual-checkpoint^{commit}')
+        test "$manual_tag_commit" = "$manual_tag_head"
+        ${pkgs.jq}/bin/jq -e \
+          --arg target "$manual_tag_head" \
+          --arg object "$manual_tag_object" \
+          '.action == "tag"
+            and .status == "tagged"
+            and .registry == "host-reg"
+            and .tag == "manual-checkpoint"
+            and .message == "manual checkpoint before release"
+            and .target == $target
+            and .tag_object == $object' \
+          "$work/apr-tag-manual-checkpoint.json" >/dev/null
+        git -C "$reg" cat-file -p manual-checkpoint \
+          > "$work/apr-tag-manual-checkpoint.out"
+        grep -q "manual checkpoint before release" \
+          "$work/apr-tag-manual-checkpoint.out"
+        grep -q "BEGIN SSH SIGNATURE" \
+          "$work/apr-tag-manual-checkpoint.out"
+        grep -q "refs/tags/manual-checkpoint" "$reg/.git/info/refs"
+        run_clean ${self}/bin/apr status --registry host-reg \
+          > "$work/apr-status-after-manual-tag.out" 2>&1
+        if grep -q '[^[:space:]]' "$work/apr-status-after-manual-tag.out"; then
+          cat "$work/apr-status-after-manual-tag.out"
+          exit 1
+        fi
+        assert_no_profile
+
         run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-reg \
           --key "$work/release-key" \
@@ -1088,15 +1123,26 @@ in {
         initial_tag_object=$(git -C "$reg" rev-parse '1.0.0^{tag}')
         initial_tag_commit=$(git -C "$reg" rev-parse '1.0.0^{commit}')
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/release-key-next"
-        run_clean ${self}/bin/apr sign 1.0.0 \
+        run_clean ${self}/bin/apr --json sign 1.0.0 \
           --registry host-reg \
           --key "$work/release-key-next" \
-          > "$work/apr-sign.out" 2>&1
-        grep -q "Re-signed tag '1.0.0'" "$work/apr-sign.out"
+          > "$work/apr-sign.json"
         resigned_tag_object=$(git -C "$reg" rev-parse '1.0.0^{tag}')
         resigned_tag_commit=$(git -C "$reg" rev-parse '1.0.0^{commit}')
         test "$resigned_tag_commit" = "$initial_tag_commit"
         test "$resigned_tag_object" != "$initial_tag_object"
+        ${pkgs.jq}/bin/jq -e \
+          --arg target "$initial_tag_commit" \
+          --arg previous "$initial_tag_object" \
+          --arg object "$resigned_tag_object" \
+          '.action == "sign"
+            and .status == "signed"
+            and .registry == "host-reg"
+            and .tag == "1.0.0"
+            and .target == $target
+            and .previous_tag_object == $previous
+            and .tag_object == $object' \
+          "$work/apr-sign.json" >/dev/null
         git -C "$reg" cat-file -p 1.0.0 > "$work/release-tag-resigned.out"
         grep -q "BEGIN SSH SIGNATURE" "$work/release-tag-resigned.out"
         assert_no_profile
@@ -1578,14 +1624,103 @@ in {
           --no-clone > "$work/apm-add-host-keyadd-config.out" 2>&1
         grep -q "apm update --registry host-keyadd" \
           "$work/apm-add-host-keyadd-config.out"
-        run_clean ${self}/bin/apr keys generate next \
+        ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
+          -f "$work/host-keyadd-external-key"
+        run_clean ${self}/bin/apr --json keys register external \
+          --registry host-keyadd \
+          --key-command "${pkgs.coreutils}/bin/cat $work/host-keyadd-external-key" \
+          > "$work/apr-keys-register-external.json"
+        host_keyadd_external=$(${pkgs.jq}/bin/jq -r '.public_key' \
+          "$work/apr-keys-register-external.json")
+        ${pkgs.jq}/bin/jq -e \
+          --arg key "$host_keyadd_external" \
+          --arg config_path "$config/apm/registries.d/host-keyadd.toml" \
+          '.action == "keys_register"
+            and .status == "registered"
+            and .registry == "host-keyadd"
+            and .id == "external"
+            and .source == "command"
+            and .configured == true
+            and .config == $config_path
+            and .public_key == $key
+            and (.fingerprint | length > 0)' \
+          "$work/apr-keys-register-external.json" >/dev/null
+        grep -q '"external" = { command = "' \
+          "$config/apm/registries.d/host-keyadd.toml"
+        run_clean ${self}/bin/apr --json keys add external "$host_keyadd_external" \
+          --registry host-keyadd \
+          --key "$work/host-install-release-key" \
+          > "$work/apr-keys-add-external.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg key "$host_keyadd_external" \
+          '.action == "keys_add"
+            and .status == "added"
+            and .registry == "host-keyadd"
+            and .id == "external"
+            and .key == $key
+            and .committed == true' \
+          "$work/apr-keys-add-external.json" >/dev/null
+        run_clean ${self}/bin/apr --json keys list --registry host-keyadd \
+          > "$work/apr-keys-list-host-keyadd-external.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg initial "$keyadd_initial_trust_key" \
+          --arg external "$host_keyadd_external" \
+          '.registry == "host-keyadd"
+            and (.active | any(.id == "initial" and .key == $initial))
+            and (.active | any(.id == "external" and .key == $external))
+            and .revoked == []' \
+          "$work/apr-keys-list-host-keyadd-external.json" >/dev/null
+        run_clean ${self}/bin/apr --json release 0.1.0 \
+          --registry host-keyadd \
+          --store-path "$install_leaf_store" \
+          --name hostexternal \
+          --description "Host external key-command release fixture" \
+          --license MIT \
+          --maintainer host@example.invalid \
+          --key-id external \
+          > "$work/apr-release-host-keyadd-external.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "release"
+            and .status == "released"
+            and .registry == "host-keyadd"
+            and .version == "0.1.0"
+            and .dry_run == false
+            and .cache == null
+            and .cache_pointer_updated == false
+            and .uploaded_files == null
+            and (.full_pack | startswith("pack-") and endswith(".pack"))' \
+          "$work/apr-release-host-keyadd-external.json" >/dev/null
+        test -f "$keyadd_reg/packages/h/hostexternal.toml"
+        git -C "$keyadd_reg" rev-parse --verify '0.1.0^{tag}' \
+          > "$work/apr-release-host-keyadd-external-tag.out"
+        git -C "$keyadd_reg" cat-file -p 0.1.0 \
+          > "$work/apr-release-host-keyadd-external-tag-object.out"
+        grep -q "BEGIN SSH SIGNATURE" \
+          "$work/apr-release-host-keyadd-external-tag-object.out"
+        run_clean ${self}/bin/apr --json keys generate next \
           --registry host-keyadd \
           --add \
           --key "$work/host-install-release-key" \
-          > "$work/apr-keys-generate-add-next.out" 2>&1
-        host_keyadd_next=$(grep -o 'host-keyadd:Ed25519:[A-Za-z0-9+/=]*' \
-          "$work/apr-keys-generate-add-next.out" | head -1)
+          > "$work/apr-keys-generate-add-next.json"
+        host_keyadd_next=$(${pkgs.jq}/bin/jq -r '.public_key' \
+          "$work/apr-keys-generate-add-next.json")
         host_keyadd_next_path="$config/apm/keys/host-keyadd-next.key"
+        ${pkgs.jq}/bin/jq -e \
+          --arg key "$host_keyadd_next" \
+          --arg key_path "$host_keyadd_next_path" \
+          --arg config_path "$config/apm/registries.d/host-keyadd.toml" \
+          '.action == "keys_generate"
+            and .status == "generated"
+            and .registry == "host-keyadd"
+            and .id == "next"
+            and .private_key == $key_path
+            and .public_key == $key
+            and .configured == true
+            and .config == $config_path
+            and .added == true
+            and .committed == true
+            and (.fingerprint | length > 0)' \
+          "$work/apr-keys-generate-add-next.json" >/dev/null
         test -f "$host_keyadd_next_path"
         grep -q "$host_keyadd_next" "$keyadd_reg/keys.toml"
         grep -q 'id = "next"' "$keyadd_reg/keys.toml"
@@ -1631,18 +1766,25 @@ in {
           > "$work/apr-release-host-keyadd-tag-object.out"
         grep -q "BEGIN SSH SIGNATURE" \
           "$work/apr-release-host-keyadd-tag-object.out"
-        run_clean ${self}/bin/apr keys retire next \
+        run_clean ${self}/bin/apr --json keys retire next \
           --registry host-keyadd \
           --vouched-by initial \
           --reason "manual rotation" \
           --key "$work/host-install-release-key" \
-          --no-resign > "$work/apr-keys-retire-next-no-resign.out" 2>&1
-        grep -q "Skipped re-signing (--no-resign). Affected tags:" \
-          "$work/apr-keys-retire-next-no-resign.out"
-        grep -q "release tag 1.0.0" \
-          "$work/apr-keys-retire-next-no-resign.out"
-        grep -q "Retired signing key 'next'" \
-          "$work/apr-keys-retire-next-no-resign.out"
+          --no-resign > "$work/apr-keys-retire-next-no-resign.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "keys_retire"
+            and .status == "retired"
+            and .registry == "host-keyadd"
+            and .id == "next"
+            and .reason == "manual rotation"
+            and .vouched_by == "initial"
+            and .committed == true
+            and .resigned == false
+            and (.resign_plan.release_tags | index("1.0.0") != null)
+            and (.resign_plan.release_tags | index("0.1.0") == null)
+            and .resign_plan.channel_partitions == []' \
+          "$work/apr-keys-retire-next-no-resign.json" >/dev/null
         git -C "$keyadd_reg" log --oneline -1 \
           > "$work/git-log-host-keyadd-retire-next.out"
         grep -q "registry: retire signing key next" \
@@ -1988,6 +2130,39 @@ in {
         grep -q "host install package executed" "$work/host-install-run.out"
         "$profile/current/bin/host-leaf-tool" > "$work/host-leaf-run.out"
         grep -q "host leaf package executed" "$work/host-leaf-run.out"
+        assert_default_profile_absent
+
+        run_clean ${self}/bin/apm --json search hostinstall --installed \
+          --registry host-install-client > "$work/apm-search-installed-host-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-client"
+            and .[0].version == "1.0.0"' \
+          "$work/apm-search-installed-host-install.json" >/dev/null
+        run_clean ${self}/bin/apm --json list --installed \
+          --registry host-install-client > "$work/apm-list-installed-host-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 2
+            and any(.[]; .name == "hostinstall"
+              and .registry == "host-install-client"
+              and .version == "1.0.0"
+              and .status == "installed")
+            and any(.[]; .name == "hostleaf"
+              and .registry == "host-install-client"
+              and .version == "1.0.0"
+              and .status == "installed")' \
+          "$work/apm-list-installed-host-install.json" >/dev/null
+        run_clean ${self}/bin/apm --json show hostinstall \
+          --registry host-install-client > "$work/apm-show-installed-host-install.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+          '.name == "hostinstall"
+            and .registry == "host-install-client"
+            and .version == "1.0.0"
+            and .installed == true
+            and .store_path == $store
+            and (.dependencies | index("hostleaf") != null)' \
+          "$work/apm-show-installed-host-install.json" >/dev/null
         assert_default_profile_absent
 
         run_clean ${self}/bin/apm verify hostinstall > "$work/apm-verify-host-install.out" 2>&1
@@ -2651,6 +2826,29 @@ in {
           cat "$work/apm-upgradable-host-install.out"
           exit 1
         }
+        run_clean ${self}/bin/apm --json list --upgradable \
+          --registry host-install-client > "$work/apm-upgradable-host-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-client"
+            and .[0].version == "1.0.0"
+            and (.[0].status | contains("installed"))
+            and (.[0].status | contains("upgradable: 2.0.0"))' \
+          "$work/apm-upgradable-host-install.json" >/dev/null
+        run_clean ${self}/bin/apm --json policy hostinstall \
+          > "$work/apm-policy-host-install-upgradable.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package == "hostinstall"
+            and .installed == "1.0.0"
+            and .candidate == "2.0.0"
+            and (.versions | length == 1)
+            and .versions[0].version == "2.0.0"
+            and .versions[0].registry == "host-install-client"
+            and .versions[0].installed == false
+            and (.unavailable_installed | any(.version == "1.0.0"
+              and .registry == "host-install-client"))' \
+          "$work/apm-policy-host-install-upgradable.json" >/dev/null
 
         nix_store --delete --ignore-liveness "$install_store_v2" \
           > "$work/nix-delete-host-install-v2.out" 2>&1
@@ -2767,6 +2965,58 @@ in {
         "$profile/current/bin/host-install-tool" > "$work/host-install-v2-run.out"
         grep -q "host leaf package v2 executed" "$work/host-install-v2-run.out"
         grep -q "host install package v2 executed" "$work/host-install-v2-run.out"
+        assert_default_profile_absent
+
+        run_clean ${self}/bin/apm --json list --installed \
+          --registry host-install-client > "$work/apm-list-installed-host-install-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 2
+            and any(.[]; .name == "hostinstall"
+              and .registry == "host-install-client"
+              and .version == "2.0.0"
+              and .status == "installed")
+            and any(.[]; .name == "hostleaf"
+              and .registry == "host-install-client"
+              and .version == "2.0.0"
+              and .status == "installed")' \
+          "$work/apm-list-installed-host-install-v2.json" >/dev/null
+        run_clean ${self}/bin/apm --json policy hostinstall \
+          > "$work/apm-policy-host-install-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package == "hostinstall"
+            and .installed == "2.0.0"
+            and .candidate == "2.0.0"
+            and (.versions | length == 1)
+            and .versions[0].version == "2.0.0"
+            and .versions[0].registry == "host-install-client"
+            and .versions[0].installed == true
+            and .unavailable_installed == []' \
+          "$work/apm-policy-host-install-v2.json" >/dev/null
+        run_clean ${self}/bin/apm --json depends hostinstall \
+          > "$work/apm-depends-host-install-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg app "$install_hash_v2" \
+          --arg leaf "$install_leaf_hash_v2" \
+          '.package == "hostinstall"
+            and .registry == "host-install-client"
+            and .installed == true
+            and .tree.name == "hostinstall"
+            and .tree.store_hash == $app
+            and (.tree.children | any(.name == "hostleaf"
+              and .version == "2.0.0"
+              and .store_hash == $leaf))
+            and .unique_store_paths >= 2' \
+          "$work/apm-depends-host-install-v2.json" >/dev/null
+        run_clean ${self}/bin/apm --json rdepends hostleaf \
+          > "$work/apm-rdepends-host-leaf-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg leaf "$install_leaf_hash_v2" \
+          '.package == "hostleaf"
+            and .target_versions == "2.0.0"
+            and (.target_hashes | index($leaf) != null)
+            and (.dependents | any(.name == "hostinstall"
+              and .version == "2.0.0"))' \
+          "$work/apm-rdepends-host-leaf-v2.json" >/dev/null
         assert_default_profile_absent
 
         run_clean ${self}/bin/apm verify hostinstall > "$work/apm-verify-host-install-v2.out" 2>&1
@@ -2945,6 +3195,51 @@ in {
             and .[0].registry == "host-install-client"
             and .[0].store_path == $store' \
           "$work/apm-held-host-install.json" >/dev/null
+        run_clean ${self}/bin/apm --json list --held \
+          --registry host-install-client > "$work/apm-list-held-host-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-client"
+            and .[0].version == "2.0.0"
+            and (.[0].status | contains("installed"))
+            and (.[0].status | contains("held"))' \
+          "$work/apm-list-held-host-install.json" >/dev/null
+
+        run_clean ${self}/bin/apm --json reinstall hostinstall --dry-run \
+          > "$work/apm-reinstall-held-host-install-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+          '.action == "reinstall"
+            and .status == "planned"
+            and .requested == ["hostinstall"]
+            and .reinstall == true
+            and .download_only == false
+            and .no_deps == false
+            and .dry_run == true
+            and .generation == null
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].version == "2.0.0"
+            and .roots[0].registry == "host-install-client"
+            and .roots[0].store_path == $store
+            and .roots[0].explicit == true
+            and (.downloads.planned >= 2)
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-reinstall-held-host-install-dry-run.json" >/dev/null
+        "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-reinstall-dry-run.out"
+        grep -q "host leaf package v2 executed" "$work/host-install-v2-after-reinstall-dry-run.out"
+        grep -q "host install package v2 executed" "$work/host-install-v2-after-reinstall-dry-run.out"
+        run_clean ${self}/bin/apm --json held > "$work/apm-held-host-install-after-reinstall-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].version == "2.0.0"
+            and .[0].registry == "host-install-client"
+            and .[0].store_path == $store' \
+          "$work/apm-held-host-install-after-reinstall-dry-run.json" >/dev/null
+        test "$(profile_generation_count)" = "3"
+        assert_default_profile_absent
 
         run_clean ${self}/bin/apm --json reinstall hostinstall --yes \
           > "$work/apm-reinstall-held-host-install.json"
@@ -3012,6 +3307,41 @@ in {
           "$work/apm-unhold-host-install.json" >/dev/null
         run_clean ${self}/bin/apm --json held > "$work/apm-held-host-install-after-unhold.json"
         ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apm-held-host-install-after-unhold.json" >/dev/null
+        assert_default_profile_absent
+
+        run_clean ${self}/bin/apm --json remove hostinstall --autoremove --dry-run \
+          > "$work/apm-remove-host-install-autoremove-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '.action == "remove"
+            and .status == "planned"
+            and .requested == ["hostinstall"]
+            and .autoremove == true
+            and .dry_run == true
+            and .generation == null
+            and .removed == 2
+            and .explicit_removed == 1
+            and .orphan_removed == 1
+            and (.packages | length == 1)
+            and .packages[0].name == "hostinstall"
+            and .packages[0].version == "2.0.0"
+            and .packages[0].registry == "host-install-client"
+            and .packages[0].store_path == $store
+            and .packages[0].explicit == true
+            and .packages[0].held == false
+            and (.orphans | length == 1)
+            and .orphans[0].name == "hostleaf"
+            and .orphans[0].version == "2.0.0"
+            and .orphans[0].registry == "host-install-client"
+            and .orphans[0].store_path == $leaf
+            and .orphans[0].explicit == false' \
+          "$work/apm-remove-host-install-autoremove-dry-run.json" >/dev/null
+        "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-remove-dry-run.out"
+        grep -q "host leaf package v2 executed" "$work/host-install-v2-after-remove-dry-run.out"
+        grep -q "host install package v2 executed" "$work/host-install-v2-after-remove-dry-run.out"
+        run_clean ${self}/bin/apm list --installed > "$work/apm-installed-after-remove-dry-run.out" 2>&1
+        grep -q "hostinstall/host-install-client" "$work/apm-installed-after-remove-dry-run.out"
+        grep -q "hostleaf/host-install-client" "$work/apm-installed-after-remove-dry-run.out"
+        test "$(profile_generation_count)" = "4"
         assert_default_profile_absent
 
         run_clean ${self}/bin/apm --json remove hostinstall --yes \
