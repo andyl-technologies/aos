@@ -1,3 +1,29 @@
+//! The narinfo/NAR download pipeline.
+//!
+//! apm fetches packages from binary caches that speak the Nix binary-cache
+//! protocol: for each store path the cache serves
+//! `<base>/<storeHash>.narinfo` (a small key-value document carrying the NAR
+//! URL, compression, file/NAR hashes, sizes, references, and deriver) and
+//! the compressed NAR itself at `<base>/<narinfo URL field>`.
+//!
+//! The pipeline runs in three stages:
+//!
+//! 1. **Mirror resolution** ([`resolve_mirror`]): pick the cache base URL
+//!    for a registry from its `[[caches]]` entries, falling back to the
+//!    registry URL.
+//! 2. **Narinfo fetch** ([`fetch_narinfos`], [`fetch_narinfo_closure`]):
+//!    fetch narinfos in parallel; the closure variant transitively follows
+//!    `References` (skipping paths already valid in the local store) and
+//!    returns the set dependency-first so NARs can be imported in order.
+//! 3. **NAR download** ([`download_nars`]): parallel, semaphore-bounded
+//!    downloads into the NAR cache directory, verifying the compressed
+//!    `FileHash` in flight and reusing already-cached files whose hash still
+//!    checks out.
+//!
+//! Downloaded files land in the cache as `<escaped-nar-hash>.nar.zst`; the
+//! resulting [`DownloadResult`]s carry everything [`crate::store::import_nar`]
+//! needs to synthesize the import trailer.
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,6 +51,7 @@ use aos_net::{HashAlgorithm, TransferEngine, TransferEngineConfig, TransferReque
 /// nar hash) comes from the narinfo fetched in `fetch_narinfos`.
 #[derive(Debug, Clone)]
 pub struct DownloadRequest {
+    /// Full store path of the NAR to download.
     pub store_path: String,
     /// Cache base URL — the prefix shared by `<base>/<storeHash>.narinfo`
     /// and `<base>/<narinfo.url>`. No `/nar` suffix.
@@ -35,13 +62,16 @@ pub struct DownloadRequest {
 /// `fetch_narinfos`; consumed by `download_nars`.
 #[derive(Debug, Clone)]
 pub struct ResolvedDownload {
+    /// The original request (store path + mirror base URL).
     pub req: DownloadRequest,
+    /// The narinfo fetched for the request's store path.
     pub narinfo: NarInfo,
 }
 
 /// Result of a successful download.
 #[derive(Debug, Clone)]
 pub struct DownloadResult {
+    /// Store path the downloaded NAR materializes when imported.
     pub store_path: String,
     /// Path to the downloaded `.nar.zst` in the cache directory.
     pub local_path: PathBuf,
@@ -110,6 +140,11 @@ pub fn resolve_mirror(registries_base: &Path, registry: &RegistryConfig) -> Stri
 ///
 /// Each GET hits `<mirror_url>/<storeHash>.narinfo`. The returned vector
 /// preserves the input order. Fails fast on the first error.
+///
+/// # Errors
+///
+/// Returns an error if any narinfo fetch fails (network error, missing
+/// body, non-UTF-8 body, or unparseable narinfo) or a fetch task panics.
 pub async fn fetch_narinfos(
     engine: Arc<TransferEngine>,
     requests: &[DownloadRequest],
@@ -168,6 +203,14 @@ pub async fn fetch_narinfos(
 /// References are fetched from the same cache mirror as the path that named
 /// them. The returned vector is dependency-first, so callers can import the
 /// downloaded NARs in order.
+///
+/// References whose store paths are already valid locally are not fetched
+/// (checked via `nix-store --check-validity` between BFS waves).
+///
+/// # Errors
+///
+/// Returns an error if a narinfo fetch fails, the local store validity
+/// check fails, or the fetched reference graph contains a cycle.
 pub async fn fetch_narinfo_closure(
     engine: Arc<TransferEngine>,
     requests: &[DownloadRequest],
@@ -220,6 +263,8 @@ pub async fn fetch_narinfo_closure(
     order_narinfo_closure(requests, &fetched)
 }
 
+/// Drop candidate requests whose store paths are already valid locally,
+/// keeping only those that actually need downloading.
 async fn filter_missing_download_requests(
     candidates: Vec<DownloadRequest>,
 ) -> Result<Vec<DownloadRequest>> {
@@ -240,6 +285,7 @@ async fn filter_missing_download_requests(
         .collect())
 }
 
+/// GET and parse a single narinfo document.
 async fn fetch_one_narinfo(
     engine: &TransferEngine,
     url: &str,
@@ -259,6 +305,8 @@ async fn fetch_one_narinfo(
         .with_context(|| format!("parsing narinfo for {} from {url}", req.store_path))
 }
 
+/// Expand a narinfo reference (bare basename or full path) to a full store
+/// path, rooting basenames under the parent path's store directory.
 pub(crate) fn reference_store_path(reference: &str, parent_store_path: &str) -> String {
     if reference.starts_with('/') {
         return reference.to_string();
@@ -271,6 +319,8 @@ pub(crate) fn reference_store_path(reference: &str, parent_store_path: &str) -> 
     format!("{store_dir}/{reference}")
 }
 
+/// Re-order an already-fetched set of narinfos into dependency-first order
+/// rooted at `roots` (used when the caller fetched narinfos itself).
 pub(crate) fn order_resolved_downloads(
     roots: &[DownloadRequest],
     resolved: Vec<ResolvedDownload>,
@@ -285,6 +335,8 @@ pub(crate) fn order_resolved_downloads(
     order_narinfo_closure(roots, &fetched)
 }
 
+/// Topologically sort fetched narinfos so references precede referrers,
+/// starting from each root.
 fn order_narinfo_closure(
     roots: &[DownloadRequest],
     fetched: &HashMap<String, ResolvedDownload>,
@@ -301,6 +353,9 @@ fn order_narinfo_closure(
     Ok(ordered)
 }
 
+/// Depth-first post-order push of one narinfo and its (fetched) references.
+/// `visiting` tracks the current DFS stack so reference cycles are detected
+/// rather than recursing forever; self-references are ignored.
 fn push_narinfo_dependencies_first(
     hash: &str,
     fetched: &HashMap<String, ResolvedDownload>,
@@ -339,6 +394,11 @@ fn push_narinfo_dependencies_first(
 // ---------------------------------------------------------------------------
 
 /// Download a single NAR file with progress reporting and hash verification.
+///
+/// The expected hash for the wire bytes is the narinfo `FileHash`; when the
+/// cache serves an uncompressed NAR (`Compression: none`) without one, the
+/// `NarHash` covers the same bytes and is used instead. A valid cached copy
+/// at `dest` short-circuits the network entirely.
 async fn download_one(
     engine: &TransferEngine,
     resolved: &ResolvedDownload,
@@ -401,6 +461,10 @@ async fn download_one(
     })
 }
 
+/// Reuse a previously downloaded NAR at `dest` if its hash still matches.
+///
+/// Returns `Ok(None)` when the file is absent or stale (a stale file is
+/// deleted so the caller re-downloads it).
 async fn cached_download_result(
     resolved: &ResolvedDownload,
     dest: &Path,
@@ -453,6 +517,16 @@ pub fn default_engine() -> TransferEngine {
 }
 
 /// Download multiple NARs in parallel.
+///
+/// Concurrency is bounded by `parallel`; each NAR lands in `cache_dir`
+/// under a filename derived from its NAR hash, with valid cached files
+/// reused instead of re-downloaded.
+///
+/// # Errors
+///
+/// Returns an error if the cache directory cannot be created, any download
+/// fails (network error, hash mismatch, missing body, write failure), or a
+/// download task panics.
 pub async fn download_nars(
     resolved: &[ResolvedDownload],
     cache_dir: &Path,
@@ -518,12 +592,14 @@ pub async fn download_nars(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Generate a cache filename from a NAR hash.
+/// Generate a cache filename from a NAR hash (path-hostile characters such
+/// as `:`, `/`, `+`, `=` are escaped).
 fn nar_cache_filename(nar_hash: &str) -> String {
     format!("{}.nar.zst", hash_path_fragment(nar_hash))
 }
 
-/// Extract a short label from a store path for progress display.
+/// Extract a short label from a store path for progress display
+/// (`name-version`, with the 32-char hash prefix stripped).
 fn short_label(store_path: &str) -> String {
     store_path
         .rsplit('/')

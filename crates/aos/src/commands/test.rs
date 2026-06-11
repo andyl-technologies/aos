@@ -1,3 +1,17 @@
+//! `aos test` — run the repository's test layers.
+//!
+//! Tests are Nix derivations under the `checks` attribute, grouped into
+//! four layers of increasing cost: `eval` (pure evaluation checks),
+//! `build` (package build checks), `vm` (QEMU VM integration tests), and
+//! `fleet` (multi-VM fleet tests). A subcommand runs one layer
+//! (optionally a single named suite); with no subcommand, all four run
+//! in sequence with a pass/fail summary. Concurrency maps to
+//! `nix-build --max-jobs`, defaulting to the host CPU count.
+//!
+//! `aos test fleet <suite> --interactive` is special: it builds the
+//! suite's `driverInteractive` launcher and `exec`s it, booting the
+//! fleet outside the Nix sandbox with SSH access for debugging.
+
 use std::os::unix::process::CommandExt;
 use std::thread::available_parallelism;
 
@@ -81,6 +95,16 @@ fn nix_string_quote(s: &str) -> String {
 }
 
 /// `aos test [subcommand]` — run test layers.
+///
+/// Runs the selected layer (or all layers when `cmd` is `None`) at the
+/// resolved concurrency.
+///
+/// # Errors
+///
+/// Returns an error if a suite name or SSH key fails validation, if any
+/// test derivation fails to build (i.e. a test fails), or — in the
+/// `--interactive` fleet case — if the launcher cannot be built or
+/// `exec`ed.
 pub fn run(
     nix: &NixRunner,
     printer: &Printer,

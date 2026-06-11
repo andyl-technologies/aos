@@ -1,3 +1,11 @@
+//! `aos why-depends` — explain why one package depends on another.
+//!
+//! Builds both packages, then checks whether the dependency's store path
+//! appears in the package's requisites closure. If it does, the command
+//! lists the dependency's direct referrers within that closure — the
+//! store paths that actually link against it — so the chain can be
+//! traced. If not, it reports that no dependency exists (not an error).
+
 use anyhow::{Context, Result};
 
 use aos_core::nix::NixRunner;
@@ -5,6 +13,12 @@ use aos_core::output::{Printer, create_spinner};
 
 /// `aos why-depends <package> <dependency>` — trace why a package depends on
 /// another.
+///
+/// # Errors
+///
+/// Returns an error if either package fails to build or if the store
+/// queries fail. A package that simply does not depend on the named
+/// dependency is reported as a warning, not an error.
 pub fn run(nix: &NixRunner, printer: &Printer, package: &str, dependency: &str) -> Result<()> {
     let pkg_attr = format!("pkgs.{package}");
     let dep_attr = format!("pkgs.{dependency}");

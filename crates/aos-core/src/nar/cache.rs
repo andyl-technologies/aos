@@ -1,3 +1,20 @@
+//! Static Nix binary-cache layout: NAR URLs, narinfo rendering, and
+//! Ed25519 narinfo signing.
+//!
+//! A static binary cache is just a directory (or HTTP prefix) holding a
+//! `nix-cache-info` file, one `<hash>.narinfo` per store path, and the
+//! NAR files under `nar/`. This module produces all three artifacts:
+//!
+//! - [`nar_url`] / [`hash_path_fragment`] compute the cache-relative
+//!   NAR file name for a store path.
+//! - [`render_static_narinfo`] / [`static_narinfo`] turn a
+//!   [`StaticNarInfoInput`] into a narinfo body, optionally signed.
+//! - [`NarInfoSigner`] signs narinfo fingerprints with a Nix-style
+//!   `name:base64-secret` Ed25519 key, compatible with stock Nix's
+//!   `nix-store --generate-binary-cache-key` output and signature
+//!   verification (including Nix's base32 hash encoding).
+//! - [`nix_cache_info`] renders the `nix-cache-info` body.
+
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
@@ -8,12 +25,16 @@ use super::info::{self, NarInfo, PathInfoParams, basename, store_hash};
 /// Compression setting used in Nix narinfo output and NAR file naming.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NarCompression {
+    /// Uncompressed NAR (`Compression: none`, `.nar`).
     None,
+    /// Zstandard-compressed NAR (`Compression: zstd`, `.nar.zst`).
     Zstd,
+    /// XZ-compressed NAR (`Compression: xz`, `.nar.xz`).
     Xz,
 }
 
 impl NarCompression {
+    /// Returns the value used in the narinfo `Compression:` field.
     pub fn name(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -22,6 +43,8 @@ impl NarCompression {
         }
     }
 
+    /// Returns the file extension (without a leading dot) for NAR files
+    /// with this compression.
     pub fn extension(self) -> &'static str {
         match self {
             Self::None => "nar",
@@ -32,26 +55,51 @@ impl NarCompression {
 }
 
 /// Input for rendering one static Nix binary-cache narinfo file.
+///
+/// `store_path`, `references`, and `deriver` may be full store paths;
+/// rendering re-roots them under the target cache's store dir (for the
+/// `StorePath:` field and signing fingerprint) or reduces them to
+/// basenames (for `References:` and `Deriver:`).
 pub struct StaticNarInfoInput<'a> {
+    /// The store path being published.
     pub store_path: &'a str,
+    /// Hash of the uncompressed NAR.
     pub nar_hash: &'a str,
+    /// Size in bytes of the uncompressed NAR.
     pub nar_size: u64,
+    /// Store paths referenced by `store_path`.
     pub references: &'a [String],
+    /// The deriver `.drv` path, if known.
     pub deriver: Option<&'a str>,
+    /// Pre-existing signatures to carry over verbatim.
     pub signatures: &'a [String],
+    /// Hash of the compressed NAR file as stored in the cache.
     pub file_hash: &'a str,
+    /// Size in bytes of the compressed NAR file.
     pub file_size: u64,
+    /// Compression applied to the stored NAR file.
     pub compression: NarCompression,
 }
 
 /// Optional narinfo signer using a Nix Ed25519 secret key file.
+///
+/// A signer may be deliberately unconfigured (no key), in which case
+/// [`sign`](Self::sign) returns `None` and rendering proceeds without
+/// adding a signature. Keys use Nix's `name:base64-secret` format, as
+/// produced by `nix-store --generate-binary-cache-key`.
 pub struct NarInfoSigner {
     key_data: Option<(String, Vec<u8>)>,
 }
 
 impl NarInfoSigner {
-    /// Load the signing key from a `name:base64-secret` file, or return a
+    /// Loads the signing key from a `name:base64-secret` file, or returns a
     /// no-op signer when `key_file` is `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read, is not in
+    /// `name:base64` form, contains invalid base64, or decodes to fewer
+    /// than 32 bytes of secret material.
     pub fn load(key_file: Option<&Path>) -> Result<Self> {
         let key_data = match key_file {
             Some(path) => {
@@ -64,23 +112,35 @@ impl NarInfoSigner {
         Ok(Self { key_data })
     }
 
-    /// Build a signer directly from `name:base64-secret` content.
+    /// Builds a signer directly from `name:base64-secret` content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the content is not in `name:base64` form,
+    /// contains invalid base64, or decodes to fewer than 32 bytes of
+    /// secret material.
     pub fn from_key_content(content: &str) -> Result<Self> {
         Ok(Self {
             key_data: Some(parse_key_data(content.trim())?),
         })
     }
 
+    /// Returns the key name (the part before `:` in the key file), or
+    /// `None` when the signer is unconfigured.
     pub fn key_name(&self) -> Option<&str> {
         self.key_data.as_ref().map(|(name, _)| name.as_str())
     }
 
+    /// Returns `true` if a signing key is loaded.
     pub fn is_configured(&self) -> bool {
         self.key_data.is_some()
     }
 
-    /// Sign a narinfo fingerprint. Returns `name:base64_sig` or `None` if this
+    /// Signs a narinfo fingerprint. Returns `name:base64_sig` or `None` if this
     /// signer is intentionally unconfigured.
+    ///
+    /// The first 32 bytes of the secret are used as the Ed25519 seed,
+    /// matching Nix's 64-byte (seed + public key) key files.
     pub fn sign(&self, fingerprint: &str) -> Option<String> {
         let (name, secret) = self.key_data.as_ref()?;
         let key_bytes: [u8; 32] = secret.get(..32)?.try_into().ok()?;
@@ -91,7 +151,13 @@ impl NarInfoSigner {
         Some(format!("{name}:{sig_b64}"))
     }
 
-    /// Compute the Nix narinfo fingerprint for signing.
+    /// Computes the Nix narinfo fingerprint for signing:
+    /// `1;<store_path>;<nar_hash>;<nar_size>;<refs,comma,separated>`.
+    ///
+    /// `refs` must be full store paths. The NAR hash is normalised to
+    /// Nix's base32 `sha256:` form (see `nar_hash_for_fingerprint`) so
+    /// the signature verifies against stock Nix regardless of whether
+    /// the caller holds an SRI, hex, or base32 hash.
     pub fn fingerprint(store_path: &str, nar_hash: &str, nar_size: i64, refs: &[String]) -> String {
         let refs_str = refs.join(",");
         let nar_hash = nar_hash_for_fingerprint(nar_hash);
@@ -99,8 +165,16 @@ impl NarInfoSigner {
     }
 }
 
+/// Nix's custom base32 alphabet (omits `e`, `o`, `t`, `u`).
 const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
+/// Normalises a SHA-256 NAR hash to Nix's base32 `sha256:` form for use
+/// in a signing fingerprint.
+///
+/// Accepts SRI (`sha256-<base64>`), hex (`sha256:<64 hex digits>`), or
+/// already-base32 (`sha256:<base32>`) input; anything unrecognised is
+/// returned unchanged so signing degrades gracefully rather than
+/// failing.
 fn nar_hash_for_fingerprint(hash: &str) -> String {
     if let Some(encoded) = hash.strip_prefix("sha256-") {
         if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) {
@@ -129,6 +203,9 @@ fn nar_hash_for_fingerprint(hash: &str) -> String {
     hash.to_string()
 }
 
+/// Encodes bytes in Nix's base32 variant: little-endian bit order,
+/// most-significant digit first, using the [`NIX_BASE32`] alphabet.
+/// Matches `nix hash convert --to nix32`.
 fn encode_nix_base32(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
@@ -149,6 +226,8 @@ fn encode_nix_base32(bytes: &[u8]) -> String {
     out
 }
 
+/// Splits and decodes a `name:base64-secret` key string into its name
+/// and raw secret bytes, validating the minimum 32-byte seed length.
 fn parse_key_data(content: &str) -> Result<(String, Vec<u8>)> {
     let (name, b64) = content
         .split_once(':')
@@ -162,7 +241,11 @@ fn parse_key_data(content: &str) -> Result<(String, Vec<u8>)> {
     Ok((name.to_string(), secret))
 }
 
-/// Build the relative `URL:` path for a static NAR.
+/// Builds the cache-relative `URL:` path for a static NAR, e.g.
+/// `nar/<store-hash>-<nar-hash>.nar.zst`.
+///
+/// The NAR hash is passed through [`hash_path_fragment`] so SRI hashes
+/// containing `/`, `+`, or `=` remain filesystem- and URL-safe.
 pub fn nar_url(store_path: &str, nar_hash: &str, compression: NarCompression) -> String {
     format!(
         "nar/{}-{}.{}",
@@ -172,7 +255,10 @@ pub fn nar_url(store_path: &str, nar_hash: &str, compression: NarCompression) ->
     )
 }
 
-/// Convert a hash string into one filesystem- and URL-path-safe segment.
+/// Converts a hash string into one filesystem- and URL-path-safe segment.
+///
+/// Alphanumerics and `.`/`_`/`-` pass through, `:` becomes `-`, and
+/// every other character (notably base64's `/`, `+`, `=`) becomes `_`.
 pub fn hash_path_fragment(hash: &str) -> String {
     hash.chars()
         .map(|ch| match ch {
@@ -183,7 +269,15 @@ pub fn hash_path_fragment(hash: &str) -> String {
         .collect()
 }
 
-/// Render one static narinfo body.
+/// Renders one static narinfo body for the given input.
+///
+/// The store path, references, and deriver are re-rooted under
+/// `store_dir`: `StorePath:` uses the full re-rooted path while
+/// `References:` and `Deriver:` use basenames, matching stock Nix
+/// binary-cache conventions. When `signer` is configured, a signature
+/// over the [`NarInfoSigner::fingerprint`] of the re-rooted path and
+/// full-path references is appended to any signatures already present
+/// in the input.
 pub fn render_static_narinfo(
     input: &StaticNarInfoInput<'_>,
     store_dir: &str,
@@ -231,7 +325,13 @@ pub fn render_static_narinfo(
     info::format(&info)
 }
 
-/// Build a `NarInfo` value for callers that need structured data.
+/// Builds a structured [`NarInfo`] for callers that need data rather
+/// than text; equivalent to parsing [`render_static_narinfo`] output.
+///
+/// # Panics
+///
+/// Panics if the rendered narinfo fails to parse, which would indicate
+/// a bug in [`render_static_narinfo`] itself.
 pub fn static_narinfo(
     input: &StaticNarInfoInput<'_>,
     store_dir: &str,
@@ -241,7 +341,9 @@ pub fn static_narinfo(
         .expect("rendered static narinfo is parseable")
 }
 
-/// Render a stock Nix `nix-cache-info` file body.
+/// Renders a stock Nix `nix-cache-info` file body advertising
+/// `store_dir`, mass-query support, and the given cache `priority`
+/// (lower numbers are preferred by Nix).
 pub fn nix_cache_info(store_dir: &str, priority: u32) -> String {
     format!("StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: {priority}\n")
 }

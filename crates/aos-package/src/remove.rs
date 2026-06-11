@@ -1,3 +1,17 @@
+//! `apm remove` and `apm autoremove` — uninstall packages.
+//!
+//! Removal never touches the Nix store directly: it creates a new profile
+//! generation whose GC roots omit the removed packages (and their source
+//! derivations), deletes their metadata, rebuilds the merged FHS tree, and
+//! switches atomically. The store paths themselves are reclaimed later by
+//! `apm gc` once no generation roots them; the previous generation remains
+//! available for `apm rollback`.
+//!
+//! An *orphan* is an auto-installed package (`explicit = false`) whose
+//! store-path hash is not in the live closure of any remaining explicit
+//! package. `apm remove --autoremove` removes orphans created by the
+//! removal; `apm autoremove` removes all current orphans.
+
 use std::collections::HashSet;
 use std::io::Write;
 
@@ -30,6 +44,16 @@ pub struct RemoveOutcome {
 /// generation without those packages, rebuilds the FHS merge tree, and
 /// switches to the new generation.  If `auto_remove` is set, also removes
 /// orphaned auto-installed dependencies.
+///
+/// With `dry_run`, the plan is printed and nothing changes; `yes` (or the
+/// `assume_yes` setting) skips the confirmation prompt.
+///
+/// # Errors
+///
+/// Returns an error if there is no current generation, a requested package
+/// is not installed ([`AosError::PackageNotFound`]), the user declines the
+/// prompt ([`AosError::UserCancelled`]), or creating, populating, or
+/// switching to the new generation fails.
 pub async fn run(
     config: &ApmConfig,
     packages: &[String],
@@ -142,6 +166,12 @@ pub async fn run(
 ///
 /// Finds all auto-installed packages (explicit=false) that are no longer
 /// needed by any explicit package, and removes them.
+///
+/// # Errors
+///
+/// Returns an error if there is no current generation, the user declines
+/// the prompt ([`AosError::UserCancelled`]), a live closure query fails, or
+/// creating, populating, or switching to the new generation fails.
 pub async fn run_autoremove(
     config: &ApmConfig,
     dry_run: bool,
@@ -255,6 +285,7 @@ pub async fn run_autoremove(
 // Helper functions
 // ---------------------------------------------------------------------------
 
+/// Build the JSON document for `apm remove`/`autoremove` results.
 fn remove_result_json(
     action: &str,
     status: &str,
@@ -286,6 +317,8 @@ fn remove_result_json(
     })
 }
 
+/// Render one installed entry for JSON output, tolerating missing APM
+/// metadata.
 fn installed_meta_json(meta: &InstalledMeta) -> serde_json::Value {
     let Some(apm) = &meta.apm else {
         return serde_json::json!({
@@ -353,6 +386,8 @@ async fn find_orphans(
     ))
 }
 
+/// Union of the live closures (`nix-store -qR`) of every explicit package
+/// that is not slated for removal — the set of hashes that must stay.
 async fn needed_hashes_for_remaining_explicit(
     installed: &[InstalledMeta],
     pending_remove_hashes: &HashSet<String>,
@@ -383,6 +418,8 @@ async fn needed_hashes_for_remaining_explicit(
     Ok(needed)
 }
 
+/// Select non-explicit entries that are neither already being removed nor
+/// in the needed set.
 fn find_orphans_from_meta(
     installed: &[InstalledMeta],
     pending_remove_hashes: &HashSet<String>,
@@ -400,6 +437,8 @@ fn find_orphans_from_meta(
         .collect()
 }
 
+/// Collect each entry's store-path hash plus its source derivation's hash
+/// (both have GC roots in the generation).
 fn root_hashes_for_installed(installed: &[InstalledMeta]) -> HashSet<String> {
     let mut hashes = HashSet::new();
     for meta in installed {

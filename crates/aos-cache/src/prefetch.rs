@@ -1,3 +1,12 @@
+//! The `aos cache prefetch` operation: cache build sources ahead of time.
+//!
+//! Prefetch walks the *derivation* closure of an installable rather than
+//! its output closure, collecting every fixed-output derivation (the
+//! `fetchurl`-style source downloads; see [`crate::discover`]). Sources
+//! the cache does not already hold are realised — fetched from their
+//! upstream mirrors — and pushed as zstd-compressed NARs, so subsequent
+//! builds can substitute them from the cache instead of the network.
+
 use std::path::Path;
 use std::time::Instant;
 
@@ -12,6 +21,29 @@ use crate::backend::CacheBackend;
 use crate::compress::streaming_compress;
 use crate::discover;
 
+/// Discovers, realises, and pushes the missing sources of a build.
+///
+/// The pipeline is:
+///
+/// 1. Resolve each installable (or `attr` / `expr` when no installables
+///    are given) to a `.drv` and discover its fixed-output derivations.
+/// 2. Query the backend for FOD output paths it is missing (in chunks
+///    of 500 hashes).
+/// 3. Realise each missing FOD, fetching the source from upstream.
+/// 4. Push each realised source to the cache as a zstd-compressed NAR
+///    (level 3) plus its narinfo.
+///
+/// With `dry_run` the missing sources and their URLs are printed and
+/// nothing is fetched. FODs that fail to realise, or whose path info
+/// cannot be read, are skipped with a warning so one dead upstream
+/// mirror does not abort the whole prefetch. The `_jobs` parameter is
+/// currently unused; uploads run sequentially.
+///
+/// # Errors
+///
+/// Returns an error if derivation resolution or FOD discovery fails, if
+/// the cache missing-query fails, or if compressing or uploading a
+/// realised source fails.
 pub async fn run_prefetch(
     printer: &Printer,
     backend: &dyn CacheBackend,

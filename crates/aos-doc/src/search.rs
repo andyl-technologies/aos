@@ -1,9 +1,23 @@
+//! Fuzzy subsequence search over documentation entries.
+//!
+//! Implements a small fzf-style matcher: a query matches an entry when its
+//! characters appear in order (not necessarily contiguously) in the entry's
+//! path, summary, or body. Matches are scored with bonuses for consecutive
+//! characters, word-boundary hits, prefix matches, and exact path-component
+//! matches, with a small penalty per skipped character. Path matches carry
+//! double weight so `head` ranks `functions.lists.head` above an entry that
+//! merely mentions "head" in prose.
+//!
+//! All matching is ASCII case-insensitive; [`fuzzy_search`] is the public
+//! entry point used by both the CLI and the TUI search overlay.
+
 use crate::model::DocEntry;
 
-/// Perform fuzzy subsequence search against all entries.
+/// Performs fuzzy subsequence search against all entries.
 ///
-/// Returns a list of (entry_index, score) pairs sorted by score descending.
-/// Only entries with a positive score are included.
+/// Returns a list of `(entry_index, score)` pairs sorted by score
+/// descending. Only entries with a positive score are included; an empty
+/// query yields no results.
 pub fn fuzzy_search(entries: &[DocEntry], query: &str) -> Vec<(usize, i64)> {
     if query.is_empty() {
         return Vec::new();
@@ -24,8 +38,8 @@ pub fn fuzzy_search(entries: &[DocEntry], query: &str) -> Vec<(usize, i64)> {
     results
 }
 
-/// Score a single entry against a lowercased query.
-/// Searches path (2x weight), summary, and body.
+/// Scores a single entry against a lowercased query.
+/// Searches path (2x weight), summary, and body, taking the best field.
 fn score_entry(entry: &DocEntry, query_lower: &str) -> i64 {
     let path_score = score_path(&entry.path.to_ascii_lowercase(), query_lower) * 2;
     let summary_score = fuzzy_score(&entry.summary.to_ascii_lowercase(), query_lower);
@@ -35,9 +49,9 @@ fn score_entry(entry: &DocEntry, query_lower: &str) -> i64 {
     path_score.max(summary_score).max(body_score)
 }
 
-/// Score a query against a dotted path.
+/// Scores a query against a dotted path.
 /// Scores against both the full path and each individual component,
-/// returning the best score. Adds a bonus for exact component matches.
+/// returning the best score. Adds a +10 bonus for exact component matches.
 fn score_path(path: &str, query: &str) -> i64 {
     let full_score = fuzzy_score(path, query);
 
@@ -57,7 +71,7 @@ fn score_path(path: &str, query: &str) -> i64 {
     full_score.max(component_score)
 }
 
-/// Compute a fuzzy subsequence match score.
+/// Computes a fuzzy subsequence match score.
 ///
 /// Scoring rules:
 /// - Consecutive character matches: +3 per consecutive char
@@ -65,7 +79,9 @@ fn score_path(path: &str, query: &str) -> i64 {
 /// - Prefix match (query matches from position 0): +10
 /// - Gap penalty: -1 per skipped char
 ///
-/// Returns 0 if the query is not a subsequence of the text.
+/// Returns 0 if the query is not a subsequence of the text. The alignment
+/// is found by a greedy left-to-right scan (earliest match positions), so
+/// the score is a fast approximation rather than a globally optimal one.
 fn fuzzy_score(text: &str, query: &str) -> i64 {
     let text_bytes = text.as_bytes();
     let query_bytes = query.as_bytes();
@@ -89,8 +105,8 @@ fn fuzzy_score(text: &str, query: &str) -> i64 {
     compute_score(text_bytes, &positions)
 }
 
-/// Find match positions for the query as a subsequence of text.
-/// Uses a greedy left-to-right scan.
+/// Finds match positions for the query as a subsequence of text.
+/// Uses a greedy left-to-right scan; returns `None` if no alignment exists.
 fn find_match_positions(text: &[u8], query: &[u8]) -> Option<Vec<usize>> {
     let mut positions = Vec::with_capacity(query.len());
     let mut text_idx = 0;
@@ -114,7 +130,7 @@ fn find_match_positions(text: &[u8], query: &[u8]) -> Option<Vec<usize>> {
     Some(positions)
 }
 
-/// Compute score from matched positions.
+/// Computes the score for a fixed set of matched positions.
 fn compute_score(text: &[u8], positions: &[usize]) -> i64 {
     if positions.is_empty() {
         return 0;
@@ -151,7 +167,7 @@ fn compute_score(text: &[u8], positions: &[usize]) -> i64 {
     score
 }
 
-/// Check if position is a word boundary (first char, or preceded by `.`, `_`, `-`).
+/// Checks if a position is a word boundary (first char, or preceded by `.`, `_`, `-`, or a space).
 fn is_word_boundary(text: &[u8], pos: usize) -> bool {
     if pos == 0 {
         return true;

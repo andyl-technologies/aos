@@ -4,6 +4,20 @@
 //! `git+ssh://` URL schemes. Runs `git fetch` directly against a git server,
 //! verifies commit signatures and fast-forward constraints, and extracts
 //! package TOML files into the local registry cache.
+//!
+//! What gets fetched is selected by the registry's [`TrackingMode`]: a
+//! pinned commit, a branch head, a specific tag, the best tag matching a
+//! semver constraint, the remote default branch, or a *channel*. Channel
+//! tracking is the production rollout path: the host's partition object is
+//! fetched from the static origin, its signed channel-tag -> release-tag
+//! chain is verified, and freshness/monotonic-floor rules guard against
+//! frozen or rolled-back channel pointers.
+//!
+//! All modes share the same fail-closed trust model: the new head commit
+//! must be signed by a trusted key, must fast-forward from the last
+//! verified commit, and only then is the head's committed `keys.toml`
+//! roster pinned into the writable trusted-key store (in-band key
+//! rotation). See [`sync_git`] for the full sequence.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -38,19 +52,25 @@ pub struct SyncResult {
     pub packages_removed: usize,
 }
 
+/// A tracking target resolved to a concrete commit, plus the release tag
+/// it came from when the target was tag-shaped.
 struct ResolvedHead {
     commit: String,
     release_tag: Option<String>,
 }
 
+/// Oldest git release with reliable sha256 object-format support.
 const MIN_SHA256_GIT_VERSION: GitVersion = GitVersion {
     major: 2,
     minor: 42,
     patch: 0,
 };
 
+/// Default freshness window (14 days) for channel-tracked registries when
+/// `max_staleness_seconds` is not configured.
 const DEFAULT_CHANNEL_MAX_STALENESS_SECONDS: u64 = 14 * 24 * 60 * 60;
 
+/// Parsed `major.minor.patch` triple from `git --version`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct GitVersion {
     major: u32,
@@ -86,6 +106,21 @@ impl std::fmt::Display for GitVersion {
 /// delivered as a fast-forward in a head commit signed by an
 /// already-trusted key, which gives in-band key rotation its continuity
 /// guarantee.
+///
+/// On success, `state` is updated in place with the new commit, channel
+/// floor/bucket, retained release set, and (when the observation counts as
+/// fresh) the last-update timestamp; the caller persists it.
+///
+/// # Errors
+///
+/// Returns an error when enforcement is on but no trusted key is available,
+/// the local git is not sha256-capable, the origin is not a git-native
+/// registry (or is a legacy bundle-mode origin), fetching or channel
+/// resolution fails (including stale-channel and monotonic-floor
+/// violations), the head commit is not signed by a trusted key, the new
+/// commit is not a fast-forward of the previous one, the head lacks a
+/// usable `keys.toml` roster under enforcement, or extracting the registry
+/// tree into the cache fails.
 pub async fn sync_git(
     config: &RegistryConfig,
     tracking_mode: &TrackingMode,
@@ -479,10 +514,16 @@ fn normalize_git_url(url: &str) -> String {
     }
 }
 
+/// `true` for plain `http(s)://` URLs (dumb-HTTP candidates).
 fn is_plain_http_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
 }
 
+/// Probe an HTTP origin to confirm it serves the git-native dumb-HTTP
+/// layout (`HEAD` and `info/refs`).
+///
+/// Detects the retired bundle-mode registry layout (`bundle-list.toml`)
+/// and fails with a dedicated migration message for it.
 async fn preflight_git_native_http_origin(base_url: &str) -> Result<()> {
     let client = reqwest::Client::new();
     let head_url = join_cache_url(base_url, "HEAD");
@@ -510,6 +551,8 @@ async fn preflight_git_native_http_origin(base_url: &str) -> Result<()> {
     );
 }
 
+/// HEAD-probe a static file URL, retrying with GET when the host rejects
+/// HEAD with 405.
 async fn probe_static_http_status(
     client: &reqwest::Client,
     url: &str,
@@ -531,6 +574,8 @@ async fn probe_static_http_status(
     Ok(response.status())
 }
 
+/// Verify the local git is new enough for sha256 repositories, both by
+/// version number and by actually probing `git init --object-format=sha256`.
 async fn ensure_sha256_capable_git() -> Result<()> {
     let version_output = gitcmd::hermetic_async()
         .arg("--version")
@@ -580,6 +625,7 @@ async fn ensure_sha256_capable_git() -> Result<()> {
     Ok(())
 }
 
+/// Parse `git --version` output (e.g. `git version 2.42.0`).
 fn parse_git_version(output: &str) -> Option<GitVersion> {
     let token = output
         .trim()
@@ -597,6 +643,7 @@ fn parse_git_version(output: &str) -> Option<GitVersion> {
     })
 }
 
+/// Parse the leading digits of a version component (`0-rc1` -> `0`).
 fn parse_leading_u32(part: &str) -> Option<u32> {
     let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
@@ -869,6 +916,12 @@ async fn resolve_channel_head(
     bail!("channel '{channel_name}' has no usable partition")
 }
 
+/// Fetch one channel partition object and verify its signed tag chain.
+///
+/// Returns `Ok(None)` when the partition does not exist (404) or points at
+/// an unknown release tag, so the caller can probe forward to the next
+/// bucket. The raw partition bytes are hashed into the local object store
+/// so the chain verification reads exactly what was served.
 async fn fetch_and_verify_partition(
     base_url: &str,
     channel_name: &str,
@@ -917,6 +970,8 @@ async fn fetch_and_verify_partition(
     .map(|release| Some((release, channel_oid)))
 }
 
+/// Write raw tag-object bytes into the repo with `git hash-object -w -t tag`
+/// and return the resulting object id.
 fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
     let mut child = gitcmd::hermetic()
         .args(["hash-object", "-w", "-t", "tag", "--stdin"])
@@ -944,6 +999,7 @@ fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Map every semver-named tag's *tag object id* to its parsed version.
 async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semver::Version>> {
     let output = gitcmd::hermetic_async()
         .args(["tag", "-l"])
@@ -970,6 +1026,7 @@ async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semve
     Ok(map)
 }
 
+/// Resolve a tag ref to its tag *object* id (not the peeled commit).
 async fn resolve_tag_object(repo_dir: &Path, tag: &str) -> Result<String> {
     let output = gitcmd::hermetic_async()
         .args(["rev-parse", &format!("{tag}^{{tag}}")])
@@ -986,6 +1043,8 @@ async fn resolve_tag_object(repo_dir: &Path, tag: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Delete `releases/<X>/<Y>/<Z>` directories for releases the client no
+/// longer needs as delta bases (everything outside the retained set).
 async fn prune_unretained_release_dirs(repo_dir: &Path, retained: &[String]) -> Result<()> {
     let releases = repo_dir.join("releases");
     if !releases.exists() {
@@ -1152,6 +1211,10 @@ async fn extract_closures(repo_dir: &Path, commit: &str, output_dir: &Path) -> R
     extract_tree_dir(repo_dir, commit, "closures", output_dir).await
 }
 
+/// Replace `output_dir` with the contents of `commit:tree_path/`.
+///
+/// The existing directory is removed first so deletions in the registry
+/// propagate; a tree path absent from the commit leaves an empty directory.
 async fn extract_tree_dir(
     repo_dir: &Path,
     commit: &str,
@@ -1209,6 +1272,7 @@ async fn extract_tree_dir(
     Ok(())
 }
 
+/// `true` when `commit:tree_path` exists (`git cat-file -e`).
 async fn tree_path_exists(repo_dir: &Path, commit: &str, tree_path: &str) -> Result<bool> {
     let output = gitcmd::hermetic_async()
         .args(["cat-file", "-e", &format!("{commit}:{tree_path}")])
@@ -1225,6 +1289,12 @@ async fn tree_path_exists(repo_dir: &Path, commit: &str, tree_path: &str) -> Res
 /// when no cache config is present, and older registries may not have a
 /// committed trust roster. Any stale local copy is removed when the upstream
 /// tree no longer contains the file.
+///
+/// # Errors
+///
+/// Returns an error if the target directory cannot be created, a `git show`
+/// fails for a reason other than the file being absent, or a file cannot be
+/// written or removed.
 pub async fn extract_registry_root(repo_dir: &Path, commit: &str, target_dir: &Path) -> Result<()> {
     tokio::fs::create_dir_all(target_dir)
         .await
@@ -1237,6 +1307,8 @@ pub async fn extract_registry_root(repo_dir: &Path, commit: &str, target_dir: &P
     Ok(())
 }
 
+/// Copy `commit:file` into `target_dir`, removing a stale local copy when
+/// the commit no longer contains the file.
 async fn extract_optional_root_file(
     repo_dir: &Path,
     commit: &str,
@@ -1271,12 +1343,21 @@ async fn extract_optional_root_file(
     Ok(())
 }
 
+/// Heuristically classify `git show` stderr as "path absent from commit".
 fn is_missing_tree_path(stderr: &str, file: &str) -> bool {
     stderr.contains("does not exist")
         || stderr.contains("exists on disk, but not in")
         || stderr.contains(&format!("path '{file}'"))
 }
 
+/// Decide whether a successful channel resolution counts as a fresh
+/// observation (and should update `last_update`).
+///
+/// A first sync or an advanced release is always fresh. An unchanged
+/// release is acceptable only while the previous successful observation is
+/// within the staleness window: a frozen-but-valid channel pointer must not
+/// keep renewing its own freshness forever. A release below the previous
+/// floor is rejected outright.
 fn channel_success_freshness_at(
     config: &RegistryConfig,
     state: &RegistryState,
@@ -1358,6 +1439,8 @@ async fn count_toml_files(dir: &Path) -> usize {
     count
 }
 
+/// Wrap a failed channel refresh error with freshness context (see
+/// [`channel_refresh_error_at`]).
 fn channel_refresh_error(
     config: &RegistryConfig,
     state: &RegistryState,
@@ -1367,6 +1450,9 @@ fn channel_refresh_error(
     channel_refresh_error_at(config, state, phase, err, unix_now_secs())
 }
 
+/// Build the channel refresh failure message, annotating it with the age of
+/// the last successful freshness observation relative to `now_secs` so
+/// operators can tell a transient failure from a dangerously stale channel.
 fn channel_refresh_error_at(
     config: &RegistryConfig,
     state: &RegistryState,
@@ -1415,6 +1501,7 @@ fn channel_refresh_error_at(
     }
 }
 
+/// Current Unix time in seconds (0 if the clock is before the epoch).
 fn unix_now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1446,6 +1533,10 @@ fn chrono_now() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
+/// Parse a strict `YYYY-MM-DDTHH:MM:SSZ` timestamp into Unix seconds.
+///
+/// The inverse of [`chrono_now`]; both deliberately avoid the `chrono`
+/// dependency.
 fn parse_iso8601_utc_secs(input: &str) -> Result<u64> {
     if input.len() != 20
         || !input.ends_with('Z')
@@ -1473,6 +1564,7 @@ fn parse_iso8601_utc_secs(input: &str) -> Result<u64> {
     Ok(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
+/// Parse an all-digit timestamp field, naming it in error messages.
 fn parse_decimal(input: &str, field: &str) -> Result<u64> {
     if input.is_empty() || !input.bytes().all(|b| b.is_ascii_digit()) {
         bail!("timestamp {field} is not numeric");
@@ -1498,6 +1590,8 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     (y, m, d)
 }
 
+/// Convert a calendar date to days since the Unix epoch (inverse of
+/// [`days_to_ymd`]), rejecting out-of-range and pre-epoch dates.
 fn ymd_to_days(year: u64, month: u64, day: u64) -> Result<u64> {
     if !(1..=12).contains(&month) {
         bail!("timestamp month is out of range");
@@ -1527,6 +1621,7 @@ fn ymd_to_days(year: u64, month: u64, day: u64) -> Result<u64> {
     Ok(days as u64)
 }
 
+/// Days in a month, accounting for leap-year February.
 fn days_in_month(year: u64, month: u64) -> u64 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -1537,6 +1632,7 @@ fn days_in_month(year: u64, month: u64) -> u64 {
     }
 }
 
+/// Gregorian leap-year rule.
 fn is_leap_year(year: u64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }

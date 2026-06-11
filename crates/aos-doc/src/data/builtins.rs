@@ -1,23 +1,39 @@
-/// Static documentation for Nix builtins.
-///
-/// Every entry corresponds to a built-in function (or value) provided by the
-/// Nix evaluator.  The data is compile-time constant so it can be referenced
-/// with `&'static` lifetimes throughout the codebase.
+//! Static documentation for Nix builtins.
+//!
+//! Every entry corresponds to a built-in function (or value) provided by
+//! the Nix evaluator.  The data is compile-time constant so it can be
+//! referenced with `&'static` lifetimes throughout the codebase; it is
+//! merged into the doc index as `builtins.<name>` entries by
+//! [`crate::extract::build_index`].
 
+/// Documentation for a single Nix builtin function or value.
+///
+/// Mirrors the fields of [`crate::model::DocEntry`] that apply to builtins,
+/// but with `&'static` data so no allocation is needed until an entry is
+/// actually added to an index.
 pub struct BuiltinDoc {
+    /// Builtin name without the `builtins.` prefix (e.g. `map`).
     pub name: &'static str,
+    /// Informal Haskell-style type signature (e.g. `(a -> b) -> [a] -> [b]`).
     pub type_sig: &'static str,
+    /// One-sentence description.
     pub summary: &'static str,
+    /// Longer markdown description of behavior and edge cases.
     pub body: &'static str,
+    /// `(name, description)` pairs for each parameter, in order.
     pub parameters: &'static [(&'static str, &'static str)],
+    /// Short usage snippets, typically with a `# => result` comment.
     pub examples: &'static [&'static str],
+    /// Names of related builtins.
     pub see_also: &'static [&'static str],
 }
 
+/// Returns the full table of documented Nix builtins.
 pub fn builtins() -> &'static [BuiltinDoc] {
     &BUILTINS
 }
 
+/// The builtin documentation table, sorted alphabetically by name.
 static BUILTINS: [BuiltinDoc; 93] = [
     // ------------------------------------------------------------------
     // abort

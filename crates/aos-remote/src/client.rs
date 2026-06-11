@@ -1,7 +1,16 @@
 //! ConnectRPC client for communicating with the AOS cache server.
 //!
-//! Typed ConnectRPC client backed by the proto definitions in `aos-proto`.
-//! Provides access to all four services: cache, build, GC, and auth.
+//! Defines [`AosClient`], a typed ConnectRPC client backed by the proto
+//! definitions in `aos-proto`. It provides access to all four server
+//! services: cache, build, GC, and auth. A client is scoped to a single
+//! *view* (a named slice of the server's store); the view name is sent
+//! with every request.
+//!
+//! Connections use HTTP/2 with TLS for `https://` URLs (trusting the
+//! platform certificate store, with the bundled webpki roots as a
+//! fallback) and plaintext for `http://`. All user-supplied identifiers
+//! (view names, store hashes, filenames) are validated locally before
+//! being sent, primarily to reject path-traversal sequences.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +29,11 @@ use aos_proto::aos::gc::v1::*;
 ///
 /// Provides access to all four services: cache, build, GC, and auth.
 /// Replaces the ad-hoc REST client in `build.rs`.
+///
+/// Construct one with [`AosClient::connect`] (exchanges a provisioning
+/// token for a JWT) or [`AosClient::connect_with_token`] (reuses an
+/// existing JWT). Every request carries the view name supplied at
+/// construction time.
 pub struct AosClient {
     cache: CacheServiceClient<HttpClient>,
     build_svc: BuildServiceClient<HttpClient>,
@@ -124,6 +138,13 @@ impl AosClient {
     /// This exchanges the provisioning token for a JWT access token
     /// via `AuthService.GetToken`, then configures all service clients
     /// with the JWT as a default `authorization` header.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `base_url` is not a valid `http://` or
+    /// `https://` URL, if `view` is empty or contains path-traversal
+    /// characters, or if the token exchange with the server fails
+    /// (unreachable server, rejected provisioning token).
     pub async fn connect(base_url: &str, view: &str, provisioning_token: &str) -> Result<Self> {
         let base_uri = validate_base_url(base_url)?;
         validate_view(view)?;
@@ -160,6 +181,15 @@ impl AosClient {
     }
 
     /// Connect with an existing JWT token (skip authentication step).
+    ///
+    /// No network traffic happens here; the token is simply installed as
+    /// the default `authorization` header for subsequent requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `base_url` is not a valid `http://` or
+    /// `https://` URL, or if `view` is empty or contains path-traversal
+    /// characters.
     pub fn connect_with_token(base_url: &str, view: &str, jwt_token: &str) -> Result<Self> {
         let base_uri = validate_base_url(base_url)?;
         validate_view(view)?;
@@ -184,6 +214,10 @@ impl AosClient {
     // -----------------------------------------------------------------------
 
     /// Fetch the cache info for the configured view.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `CacheService.GetCacheInfo` RPC fails.
     pub async fn get_cache_info(&self) -> Result<CacheInfo> {
         let resp = self
             .cache
@@ -198,6 +232,12 @@ impl AosClient {
     }
 
     /// Fetch narinfo for a store path hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `store_hash` is not a 32-character
+    /// alphanumeric Nix store hash, or if the `CacheService.GetNarInfo`
+    /// RPC fails.
     pub async fn get_nar_info(&self, store_hash: &str) -> Result<NarInfo> {
         validate_store_hash(store_hash)?;
 
@@ -215,6 +255,13 @@ impl AosClient {
     }
 
     /// Query which store paths are missing on the server.
+    ///
+    /// Returns the subset of `store_paths` that the server does not yet
+    /// have, so callers can upload only what is needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `CacheService.QueryMissing` RPC fails.
     pub async fn query_missing(&self, store_paths: &[String]) -> Result<Vec<String>> {
         let resp = self
             .cache
@@ -232,7 +279,14 @@ impl AosClient {
     /// Upload a single store path as a NAR export via client streaming.
     ///
     /// Chunks are produced lazily via an iterator to avoid buffering the
-    /// entire payload in a separate `Vec`.
+    /// entire payload in a separate `Vec`. Returns the resulting store
+    /// path on the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `store_hash` is not a 32-character
+    /// alphanumeric Nix store hash, or if the streaming
+    /// `CacheService.Upload` RPC fails.
     pub async fn upload(&self, store_hash: &str, nar_data: &[u8]) -> Result<String> {
         validate_store_hash(store_hash)?;
 
@@ -265,7 +319,13 @@ impl AosClient {
     /// Download a NAR file via server streaming.
     ///
     /// `offset` specifies the byte offset to resume from (0 for a fresh
-    /// download).
+    /// download). The full body is buffered in memory and returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `filename` is empty or contains path-traversal
+    /// characters, or if the `CacheService.Download` RPC or its response
+    /// stream fails.
     pub async fn download(&self, filename: &str, offset: i64) -> Result<Vec<u8>> {
         validate_filename(filename)?;
 
@@ -295,7 +355,15 @@ impl AosClient {
 
     /// Upload a pack of multiple store paths via client streaming.
     ///
-    /// Chunks are produced lazily via an iterator.
+    /// Chunks are produced lazily via an iterator. The pack format
+    /// (created by `aos_core::nar::pack`) bundles many small NARs into a
+    /// single stream; the server unpacks it and returns the imported
+    /// store paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the streaming `CacheService.UploadPack` RPC
+    /// fails.
     pub async fn upload_pack(&self, pack_data: &[u8]) -> Result<Vec<String>> {
         const CHUNK_SIZE: usize = 5 * 1024 * 1024;
 
@@ -327,8 +395,16 @@ impl AosClient {
 
     /// Trigger a remote build and return a stream of build events.
     ///
-    /// The callback receives each `BuildEvent` and returns `true` to
-    /// continue or `false` to stop.
+    /// The callback receives each [`BuildEvent`] and returns `true` to
+    /// continue or `false` to stop consuming the stream early (the
+    /// method still returns `Ok`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `BuildService.Build` RPC fails to start
+    /// or if the event stream is interrupted mid-flight. A build that
+    /// fails on the server is reported through an `"error"` event, not
+    /// through this method's `Result`.
     pub async fn build(
         &self,
         drv_path: &str,
@@ -361,6 +437,14 @@ impl AosClient {
     }
 
     /// Trigger a closure build (multiple derivations) and stream events.
+    ///
+    /// Semantics match [`AosClient::build`]: the callback returns `true`
+    /// to keep consuming events, `false` to stop early.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `BuildService.BuildClosure` RPC fails to
+    /// start or if the event stream is interrupted mid-flight.
     pub async fn build_closure(
         &self,
         drvs: &[String],
@@ -395,6 +479,15 @@ impl AosClient {
     // -----------------------------------------------------------------------
 
     /// Trigger garbage collection on the server.
+    ///
+    /// When `dry_run` is set, the server reports what it would remove
+    /// without acting. `collect_store` additionally runs
+    /// `nix-store --gc` after roots are removed, and `max_size` (bytes)
+    /// caps the view's store size by evicting low-score paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `GcService.Collect` RPC fails.
     pub async fn gc(
         &self,
         dry_run: bool,
@@ -421,6 +514,15 @@ impl AosClient {
     // -----------------------------------------------------------------------
 
     /// Exchange a provisioning token for a JWT access token.
+    ///
+    /// [`AosClient::connect`] already performs this exchange; this method
+    /// exists for callers that want a fresh token (e.g. to hand off to
+    /// another process) without reconnecting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `AuthService.GetToken` RPC fails or the
+    /// server rejects the provisioning token.
     pub async fn get_token(&self, provisioning_token: &str) -> Result<TokenResponse> {
         let resp = self
             .auth

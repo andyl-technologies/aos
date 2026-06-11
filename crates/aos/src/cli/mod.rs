@@ -1,3 +1,19 @@
+//! Clap definitions for the `aos` command-line interface.
+//!
+//! `Cli` is the top-level parser (global `--verbose`/`--quiet`/`--json`
+//! flags) and `Commands` enumerates every subcommand. Most subcommands
+//! carry their arguments inline in the `Commands` variant; larger
+//! argument sets live in the sibling modules (`cache`, `package`,
+//! `server`, `test`) and are re-exported here.
+//!
+//! The doc comments on clap enum variants and fields double as the
+//! `--help` text — keep them short, imperative, and user-facing. Do NOT
+//! add doc comments to the `#[derive(Parser)]`/`#[derive(Subcommand)]`
+//! containers themselves: clap applies container docs to the parent
+//! command's `about`/`long_about`, silently changing help output.
+//! Command *implementations* live in the `commands` module, keyed by the
+//! same names.
+
 mod build;
 mod cache;
 mod doc;

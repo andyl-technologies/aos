@@ -36,6 +36,22 @@ pub struct SyncResult {
 // ---------------------------------------------------------------------------
 
 /// Run `apm update` — sync all (or one) registry.
+///
+/// Iterates the enabled registries (or just `registry_filter` when given),
+/// skips registries whose commit-pinned tracking target is already cached,
+/// performs a git-native sync for the rest, and persists the updated sync
+/// state next to each registry's config file.
+///
+/// When syncing all registries, a per-registry failure is reported but does
+/// not abort the remaining syncs; when a single registry was requested, its
+/// failure is propagated.
+///
+/// # Errors
+///
+/// Returns an error if `registry_filter` names a registry that does not
+/// exist or is not enabled, if the filtered registry's tracking config is
+/// invalid or its sync fails (signature verification, network, or git
+/// failures), or if the post-sync state file cannot be written.
 pub async fn run(
     config: &ApmConfig,
     registry_filter: Option<&str>,

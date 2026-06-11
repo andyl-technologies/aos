@@ -1,10 +1,27 @@
+//! Rendering of `.narinfo` responses.
+//!
+//! A narinfo document is the small text record a Nix binary cache serves at
+//! `GET /{view}/{hash}.narinfo`. It describes a store path (NAR hash and
+//! size, references, deriver, signatures) and tells the client where to
+//! download the NAR and how it is compressed.
+//!
+//! [`format_narinfo`] is the single entry point: it takes the path metadata
+//! read from the Nix SQLite database ([`crate::store::DbPathInfo`]), the
+//! configured compression ([`crate::config::CompressionConfig`]), and an
+//! optional [`NarInfoSigner`], and renders the final response body. When
+//! compression is enabled, the `FileHash`/`FileSize` fields (which describe
+//! the *compressed* download) are computed by running the compression
+//! pipeline once via [`crate::compress::compute_file_hash_size`].
+
 use crate::compress::{Compression, compute_file_hash_size};
 use crate::config::CompressionConfig;
 use crate::sign::NarInfoSigner;
 use crate::store::DbPathInfo;
 use aos_core::nar::cache::{NarCompression, StaticNarInfoInput, render_static_narinfo};
 
-/// Resolve compression name from config.
+/// Resolves the configured algorithm name to the narinfo `Compression:` enum.
+///
+/// Unknown algorithm strings fall back to [`NarCompression::None`].
 fn nar_compression(config: &CompressionConfig) -> NarCompression {
     match config.algorithm.as_str() {
         "zstd" => NarCompression::Zstd,
@@ -13,8 +30,10 @@ fn nar_compression(config: &CompressionConfig) -> NarCompression {
     }
 }
 
-/// Resolve narinfo `Compression:` config into the typed `Compression` used
-/// by the compression pipeline.
+/// Resolves the configured algorithm name into the typed [`Compression`]
+/// used by the compression pipeline, carrying the configured level.
+///
+/// Unknown algorithm strings fall back to [`Compression::None`].
 fn compression_from_config(config: &CompressionConfig) -> Compression {
     match config.algorithm.as_str() {
         "zstd" => Compression::Zstd {
@@ -27,7 +46,18 @@ fn compression_from_config(config: &CompressionConfig) -> Compression {
     }
 }
 
-/// Format a DbPathInfo as a Nix narinfo response.
+/// Formats a [`DbPathInfo`] as a Nix `.narinfo` response body.
+///
+/// The rendered document advertises a NAR URL whose extension matches the
+/// configured compression (`.nar`, `.nar.zst`, or `.nar.xz`). `FileHash` and
+/// `FileSize` always describe the bytes the client will actually download:
+/// for uncompressed responses they equal `NarHash`/`NarSize`, while for
+/// zstd/xz the compression pipeline is run once to measure them. If that
+/// measurement fails, the function logs a warning and falls back to the
+/// uncompressed values rather than failing the request.
+///
+/// When `signer` is provided, a fresh `Sig:` line is appended in addition to
+/// any signatures already stored in the database.
 pub fn format_narinfo(
     info: &DbPathInfo,
     store_dir: &str,

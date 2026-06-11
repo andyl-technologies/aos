@@ -18,12 +18,25 @@ use crate::auth::Credential;
 use crate::types::{Method, TransferBody, TransferOutput, TransferRequest, TransferResult};
 
 /// HTTP/HTTPS protocol handler.
+///
+/// Wraps a shared [`reqwest::Client`] (connection-pooled, ALPN
+/// HTTP/1.1 + HTTP/2). Resume is implemented with `Range` request
+/// headers: if the server replies 200 instead of 206, the transfer
+/// silently restarts from the beginning.
 pub struct HttpProtocol {
     client: Client,
 }
 
 impl HttpProtocol {
     /// Create a new HTTP protocol handler.
+    ///
+    /// The internal client keeps up to 8 idle connections per host
+    /// (90 second idle timeout) and uses a 10 second connect timeout.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the underlying TLS backend fails to initialize when
+    /// building the reqwest client.
     pub fn new() -> Self {
         let client = Client::builder()
             .pool_max_idle_per_host(8)
@@ -45,6 +58,8 @@ impl HttpProtocol {
         &self.client
     }
 
+    /// Apply HTTP-header credentials (`Bearer`, `Basic`, `Header`) to
+    /// a request builder. Other credential types are ignored.
     fn apply_auth(
         &self,
         mut builder: reqwest::RequestBuilder,
@@ -131,6 +146,10 @@ impl Protocol for HttpProtocol {
 
 impl HttpProtocol {
     /// GET that returns headers/status + a byte stream (no buffering).
+    ///
+    /// Adds a `Range` header when resuming to an existing output file;
+    /// the returned result's `bytes_transferred` is pre-seeded with the
+    /// resume offset and updated by the caller as chunks arrive.
     async fn do_get_stream(
         &self,
         request: &TransferRequest,
@@ -200,6 +219,9 @@ impl HttpProtocol {
         Ok((result, stream))
     }
 
+    /// Buffering GET: downloads the full body into the request's
+    /// output destination (memory, file with optional resume, or
+    /// callback) before returning.
     async fn do_get(
         &self,
         request: &TransferRequest,
@@ -307,6 +329,9 @@ impl HttpProtocol {
         }
     }
 
+    /// PUT with a bytes or streamed-from-file body. Sets an explicit
+    /// `Content-Length`; `TransferBody::Stream` is rejected on this
+    /// path (the engine handles streamed uploads).
     async fn do_put(
         &self,
         request: &TransferRequest,
@@ -374,6 +399,8 @@ impl HttpProtocol {
         })
     }
 
+    /// POST with a bytes or streamed-from-file body. Mirrors
+    /// [`do_put`](Self::do_put) but uses the POST method.
     async fn do_post(
         &self,
         request: &TransferRequest,
@@ -437,6 +464,9 @@ impl HttpProtocol {
         })
     }
 
+    /// HEAD request. Note that error statuses (4xx/5xx) are returned
+    /// in the result rather than as an `Err`, so callers can probe for
+    /// existence.
     async fn do_head(
         &self,
         request: &TransferRequest,
@@ -469,6 +499,7 @@ impl HttpProtocol {
         })
     }
 
+    /// DELETE request. Fails with an error on 4xx/5xx statuses.
     async fn do_delete(
         &self,
         request: &TransferRequest,
@@ -506,9 +537,11 @@ impl HttpProtocol {
     }
 }
 
-/// Stream a response body to a file.
+/// Stream a response body to a file, creating parent directories.
 ///
 /// If `append` is true, opens the file in append mode for resume.
+/// Returns `offset + bytes_written` so resumed transfers report the
+/// total file size.
 async fn stream_to_file(
     response: reqwest::Response,
     path: &PathBuf,
@@ -553,6 +586,9 @@ async fn stream_to_file(
 }
 
 /// Collect response headers into a Vec of (name, value) pairs.
+///
+/// Header values that are not valid UTF-8 are replaced with an empty
+/// string.
 fn collect_headers(response: &reqwest::Response) -> Vec<(String, String)> {
     response
         .headers()
