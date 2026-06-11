@@ -4887,6 +4887,8 @@ in {
         "static cache has upgradeface v1 narinfo"
       assert_file_exists "/tmp/surface-cache/$SOURCE_V1_HASH.narinfo" \
         "static cache has sourceful v1 narinfo"
+      assert_file_exists "/tmp/surface-cache/$SOURCE_V1_SRC_HASH.narinfo" \
+        "static cache has sourceful v1 source narinfo"
       assert_file_contains "$REG_DIR/registry.toml" \
         "http://127.0.0.1:18105" "registry records command-surface cache URL"
 
@@ -4924,6 +4926,7 @@ in {
       delete_store_path "$LEAF_STORE" "surface-leaf"
       delete_store_path "$UPGRADE_V1_STORE" "upgradeface-v1"
       delete_store_path "$SOURCE_V1_STORE" "sourceful-v1"
+      delete_store_path "$SOURCE_V1_SRC_STORE" "sourceful-source-v1"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -4997,6 +5000,8 @@ in {
         "$SOURCE_V1_SRC_STORE" "sourceful metadata records v1 source root"
       assert_symlink_exists "$PROFILE/current/src/$SOURCE_V1_SRC_HASH" \
         "sourceful v1 source root is active after install"
+      assert_store_missing "$SOURCE_V1_SRC_STORE" \
+        "sourceful v1 source root before explicit fetch"
       assert_file_contains "$PROFILE/meta/$SOURCE_V1_HASH.json" '"explicit": true' \
         "sourceful metadata is explicit"
 
@@ -5151,9 +5156,28 @@ in {
           and .installed_store_path == $store
           and (.source_nar_hash | startswith("sha256-"))' \
         /tmp/surface-source-sourceful-show-drv-json.out >/dev/null
+      run_ok source-sourceful-fetch-json-missing "$APM" --json source sourceful --fetch
+      "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
+        '.package == "sourceful"
+          and .registry == "surface-reg"
+          and .source_drv == $source
+          and .installed == true
+          and .installed_store_path == $store
+          and .realised_path == $source
+          and (.source_nar_hash | startswith("sha256-"))' \
+        /tmp/surface-source-sourceful-fetch-json-missing.out >/dev/null
+      assert_file_not_contains /tmp/surface-source-sourceful-fetch-json-missing.out "Fetching source" \
+        "apm --json source --fetch emits clean JSON while downloading source"
+      assert_store_valid "$SOURCE_V1_SRC_STORE" "sourceful-source-v1-json-fetch"
+      delete_store_path "$SOURCE_V1_SRC_STORE" "sourceful-source-v1-after-json-fetch"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
       run_ok source-sourceful-fetch "$APM" source sourceful --fetch
+      assert_file_contains /tmp/surface-source-sourceful-fetch.out "Downloading 1 NAR" \
+        "apm source --fetch downloads missing sourceful v1 source NAR"
       assert_file_contains /tmp/surface-source-sourceful-fetch.out "Source realised: $SOURCE_V1_SRC_STORE" \
         "apm source --fetch realises sourceful v1 derivation"
+      assert_store_valid "$SOURCE_V1_SRC_STORE" "sourceful-source-v1"
       run_ok source-sourceful-fetch-json "$APM" --json source sourceful --fetch
       "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
         '.package == "sourceful"
@@ -5169,6 +5193,9 @@ in {
         "apm source --verify uses sourceful v1 source path"
       assert_file_contains /tmp/surface-source-sourceful-verify.out "matches installed binary" \
         "apm source --verify compares sourceful rebuild with installed binary"
+      delete_store_path "$SOURCE_V1_SRC_STORE" "sourceful-source-v1-before-json-verify"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
       run_ok source-sourceful-verify-json "$APM" --json source sourceful --verify
       "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
         '.package == "sourceful"
@@ -5181,6 +5208,9 @@ in {
           and (.expected_nar_hash | startswith("sha256:"))
           and (.actual_nar_hash | startswith("sha256:"))' \
         /tmp/surface-source-sourceful-verify-json.out >/dev/null
+      assert_file_not_contains /tmp/surface-source-sourceful-verify-json.out "Rebuilding" \
+        "apm --json source --verify emits clean JSON while downloading source"
+      assert_store_valid "$SOURCE_V1_SRC_STORE" "sourceful-source-v1-json-verify"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
       $APM reinstall sourceful --yes > /tmp/surface-reinstall-sourceful.out 2>&1 || {
@@ -5359,6 +5389,8 @@ in {
       generate_surface_cache source-v2
       assert_file_exists "/tmp/surface-cache/$SOURCE_V2_HASH.narinfo" \
         "static cache has sourceful v2 narinfo"
+      assert_file_exists "/tmp/surface-cache/$SOURCE_V2_SRC_HASH.narinfo" \
+        "static cache has sourceful v2 source narinfo"
       commit_surface_registry "release: command surface sourceful 2.0.0"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
