@@ -99,12 +99,14 @@ Implemented producer behavior:
   It fails closed when a listed store path is absent from the local Nix store,
   can upload the generated files to one or more repeatable `--upload-url`
   destinations through `aos-cache` backends while preserving the generated
-  `nix-cache-info` body, can read producer upload-auth defaults from
-  `[registry.upload_auth]` in the selected `registries.d/<name>.toml` with
-  env/CLI overrides, and can update the committed root `registry.toml`
-  `[[caches]]` pointer.
+  `nix-cache-info` body, can read producer upload defaults (destinations and
+  auth, persisted by `apr origin config`) from `[registry.upload_auth]` in the
+  selected `registries.d/<name>.toml` with env/CLI overrides, and can update
+  the committed root `registry.toml` `[[caches]]` pointer.
 - `apr origin upload` uploads the full dumb-HTTP git origin surface to one or
-  more repeatable backend URLs after refreshing static git indexes. It uploads
+  more repeatable backend URLs (or the `upload_urls` persisted by
+  `apr origin config` when no `--upload-url` is given) after refreshing static
+  git indexes. It uploads
   immutable payloads (`objects/**`, `releases/**`, and optional static-cache
   NAR/narinfo files from `--cache-dir`) before mutable surfaces (`HEAD`,
   `info/refs`, `objects/info/**`, `channels/**`, and `nix-cache-info`) and
