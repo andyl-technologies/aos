@@ -2505,6 +2505,121 @@ in {
         profile_root="$collab_main_profile_root"
         profile="$collab_main_profile"
 
+        subtree_origin="$work/host-subtree-origin.git"
+        git init --bare --object-format=sha256 "$subtree_origin" \
+          > "$work/git-init-host-subtree-origin.out" 2>&1
+        run_clean ${self}/bin/aos --json package registry create host-subtree \
+          --remote "$subtree_origin" \
+          > "$work/aos-package-registry-create-host-subtree.json"
+        subtree_reg="$data/apm/registries/host-subtree"
+        ${pkgs.jq}/bin/jq -e --arg reg "$subtree_reg" \
+          '.action == "create"
+            and .registry == "host-subtree"
+            and .path == $reg
+            and .remote != null
+            and .current == "stable"
+            and (.head | length == 64)' \
+          "$work/aos-package-registry-create-host-subtree.json" >/dev/null
+        git -C "$subtree_reg" config user.name "Host Subtree Maintainer"
+        git -C "$subtree_reg" config user.email "host-subtree@example.invalid"
+        run_clean ${self}/bin/aos --json package registry publish "$install_leaf_store" \
+          --name hostsubtree \
+          --version 1.0.0 \
+          --description "Host aos package subtree fixture" \
+          --license MIT \
+          --maintainer host-subtree@example.invalid \
+          --registry host-subtree \
+          --message "publish hostsubtree via aos package registry" \
+          > "$work/aos-package-registry-publish-host-subtree.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_leaf_store" \
+          '.action == "publish"
+            and .registry == "host-subtree"
+            and .package == "hostsubtree"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and .committed == true
+            and .commit_message == "publish hostsubtree via aos package registry"' \
+          "$work/aos-package-registry-publish-host-subtree.json" >/dev/null
+        subtree_commit=$(git -C "$subtree_reg" rev-parse HEAD)
+        run_clean ${self}/bin/aos --json package registry push \
+          --registry host-subtree \
+          --branch stable \
+          --set-upstream > "$work/aos-package-registry-push-host-subtree.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$subtree_commit" \
+          '.action == "push"
+            and .branch == "stable"
+            and .set_upstream == true
+            and .force == false
+            and .head == $head' \
+          "$work/aos-package-registry-push-host-subtree.json" >/dev/null
+
+        subtree_main_home="$home"
+        subtree_main_config="$config"
+        subtree_main_data="$data"
+        subtree_main_cache="$cache"
+        subtree_main_profile_root="$profile_root"
+        subtree_main_profile="$profile"
+        home="$work/subtree-consumer-home"
+        config="$work/subtree-consumer-config"
+        data="$work/subtree-consumer-share"
+        cache="$work/subtree-consumer-cache"
+        profile_root="$work/subtree-consumer-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/aos --json package registry add --no-verify \
+          "file://$subtree_origin" \
+          --name host-subtree-client \
+          --branch stable > "$work/aos-package-registry-add-host-subtree-client.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$subtree_commit" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-subtree-client"
+            and .tracking == "branch:stable"
+            and .synced == true
+            and .last_commit == $head
+            and .packages == 1' \
+          "$work/aos-package-registry-add-host-subtree-client.json" >/dev/null
+        run_clean ${self}/bin/aos --json package search hostsubtree \
+          --registry host-subtree-client > "$work/aos-package-search-host-subtree-client.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostsubtree"
+            and .[0].version == "1.0.0"
+            and .[0].registry == "host-subtree-client"' \
+          "$work/aos-package-search-host-subtree-client.json" >/dev/null
+        run_clean ${self}/bin/aos --json package --yes install hostsubtree \
+          --registry host-subtree-client > "$work/aos-package-install-host-subtree.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostsubtree"]
+            and .generation == 1
+            and (.roots | length == 1)
+            and .roots[0].name == "hostsubtree"
+            and .roots[0].registry == "host-subtree-client"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | length == 1)
+            and .closure[0].name == "hostsubtree"
+            and .closure[0].store_path == $store
+            and .closure[0].explicit == true' \
+          "$work/aos-package-install-host-subtree.json" >/dev/null
+        "$profile/current/bin/host-leaf-tool" \
+          > "$work/aos-package-host-subtree-run.out"
+        grep -q "host leaf package executed" \
+          "$work/aos-package-host-subtree-run.out"
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$subtree_main_home"
+        config="$subtree_main_config"
+        data="$subtree_main_data"
+        cache="$subtree_main_cache"
+        profile_root="$subtree_main_profile_root"
+        profile="$subtree_main_profile"
+
         run_clean ${self}/bin/apr create host-direct-release \
           > "$work/apr-create-host-direct-release.out" 2>&1
         direct_reg="$data/apm/registries/host-direct-release"
