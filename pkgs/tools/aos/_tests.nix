@@ -1545,8 +1545,12 @@ in {
           cat "$work/apr-release-host-resume-interrupted.json"
           exit 1
         fi
-        grep -Eq "not valid|does not exist|path-info|not in the Nix store" \
-          "$work/apr-release-host-resume-interrupted.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.error
+            | contains("nix-store -qR failed")
+            and contains("hostresume-1.0.0")
+            and contains("not in the Nix store")' \
+          "$work/apr-release-host-resume-interrupted.json" >/dev/null
         git -C "$resume_reg" rev-parse --verify '1.0.0^{tag}' \
           > "$work/apr-release-host-resume-tag.out"
         resume_pack_dir="$resume_reg/.git/releases/1/0/0/objects/pack"
