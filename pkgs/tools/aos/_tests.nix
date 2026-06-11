@@ -3701,7 +3701,8 @@ in {
           --registry host-install-channel \
           --yes > "$work/apm-install-host-install-channel.json"
         ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
-          '.action == "install"
+          '[.downloads.paths[].store_path] as $downloaded_paths
+          | .action == "install"
             and .status == "installed"
             and .requested == ["hostinstall"]
             and .generation == 1
@@ -3714,7 +3715,9 @@ in {
             and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
             and (.downloads.planned >= 2)
             and (.downloads.downloaded >= 2)
-            and (.downloads.imported >= 2)' \
+            and (.downloads.imported >= 2)
+            and ($downloaded_paths | index($store) != null)
+            and ($downloaded_paths | index($leaf) != null)' \
           "$work/apm-install-host-install-channel.json" >/dev/null
         nix_store --check-validity "$install_store" \
           > "$work/nix-valid-host-install-channel-imported.out" 2>&1
@@ -5738,8 +5741,9 @@ in {
 
         run_clean ${self}/bin/apm --json upgrade hostinstall --dry-run \
           > "$work/apm-upgrade-host-install-dry-run.json"
-        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
-          '.action == "upgrade"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '[.downloads.paths[].store_path] as $downloaded_paths
+          | .action == "upgrade"
             and .status == "planned"
             and .requested == ["hostinstall"]
             and .exclude == []
@@ -5755,7 +5759,9 @@ in {
             and .upgrades[0].new_store_path == $store
             and (.downloads.planned >= 2)
             and .downloads.downloaded == 0
-            and .downloads.imported == 0' \
+            and .downloads.imported == 0
+            and ($downloaded_paths | index($store) != null)
+            and ($downloaded_paths | index($leaf) != null)' \
           "$work/apm-upgrade-host-install-dry-run.json" >/dev/null
         if nix_store --check-validity "$install_store_v2" \
           > "$work/nix-valid-host-install-v2-after-upgrade-dry-run.out" 2>&1; then
@@ -5810,8 +5816,9 @@ in {
 
         run_clean ${self}/bin/apm --json upgrade hostinstall --yes \
           > "$work/apm-upgrade-host-install.json"
-        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
-          '.action == "upgrade"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '[.downloads.paths[].store_path] as $downloaded_paths
+          | .action == "upgrade"
             and .status == "upgraded"
             and .requested == ["hostinstall"]
             and .exclude == []
@@ -5827,7 +5834,9 @@ in {
             and .upgrades[0].new_store_path == $store
             and (.downloads.planned >= 2)
             and (.downloads.downloaded >= 2)
-            and (.downloads.imported >= 2)' \
+            and (.downloads.imported >= 2)
+            and ($downloaded_paths | index($store) != null)
+            and ($downloaded_paths | index($leaf) != null)' \
           "$work/apm-upgrade-host-install.json" >/dev/null
         nix_store --check-validity "$install_store_v2" \
           > "$work/nix-valid-host-install-v2-imported.out" 2>&1
