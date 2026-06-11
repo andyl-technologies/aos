@@ -1321,8 +1321,12 @@ in {
 
         install_leaf_store=$(nix_build "$work/host-install-fixtures.nix" -A leaf --no-out-link)
         install_leaf_hash=$(basename "$install_leaf_store" | cut -d- -f1)
+        install_leaf_drv=$(nix_store -q --deriver "$install_leaf_store")
+        test -e "$install_leaf_drv"
         install_store=$(nix_build "$work/host-install-fixtures.nix" -A appV1 --no-out-link)
         install_hash=$(basename "$install_store" | cut -d- -f1)
+        install_drv=$(nix_store -q --deriver "$install_store")
+        test -e "$install_drv"
 
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/host-install-release-key"
         install_release_public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/host-install-release-key.pub")
@@ -1345,6 +1349,7 @@ in {
           --no-commit > "$work/apr-publish-host-leaf.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$install_leaf_store" \
+          --arg source "$install_leaf_drv" \
           '.action == "publish"
             and .registry == "host-install-channel"
             and .package == "hostleaf"
@@ -1353,6 +1358,9 @@ in {
             and .store_path == $store
             and (.nar_hash | startswith("sha256-"))
             and (.closure_size > 0)
+            and .source.store_path == $source
+            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_size > 0)
             and .committed == false' \
           "$work/apr-publish-host-leaf.json" >/dev/null
         run_clean ${self}/bin/apr --json publish "$install_store" \
@@ -1365,6 +1373,7 @@ in {
           --no-commit > "$work/apr-publish-host-install.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$install_store" \
+          --arg source "$install_drv" \
           '.action == "publish"
             and .registry == "host-install-channel"
             and .package == "hostinstall"
@@ -1374,7 +1383,9 @@ in {
             and (.nar_hash | startswith("sha256-"))
             and (.nar_size > 0)
             and (.closure_size > 0)
-            and .source == null
+            and .source.store_path == $source
+            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_size > 0)
             and .sysroot == false
             and .previous == null
             and .images == []
@@ -1824,6 +1835,53 @@ in {
           exit 1
         fi
 
+        run_clean ${self}/bin/apm --json source hostinstall --show-drv \
+          > "$work/apm-source-host-install-preinstall.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg source "$install_drv" \
+          '.package == "hostinstall"
+            and .registry == "host-install-client"
+            and .source_drv == $source
+            and (.source_nar_hash | startswith("sha256-"))
+            and .installed == false
+            and .installed_store_path == null' \
+          "$work/apm-source-host-install-preinstall.json" >/dev/null
+        run_clean ${self}/bin/apm --json source hostinstall --fetch \
+          > "$work/apm-source-host-install-fetch.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg source "$install_drv" \
+          --arg store "$install_store" \
+          '.package == "hostinstall"
+            and .registry == "host-install-client"
+            and .source_drv == $source
+            and (.source_nar_hash | startswith("sha256-"))
+            and .installed == false
+            and .installed_store_path == null
+            and .realised_path == $store' \
+          "$work/apm-source-host-install-fetch.json" >/dev/null
+        nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-source-fetch.out" 2>&1
+        nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-source-fetch.out" 2>&1
+        "$install_store/bin/host-install-tool" \
+          > "$work/host-install-source-fetch-run.out"
+        grep -q "host leaf package executed" "$work/host-install-source-fetch-run.out"
+        grep -q "host install package executed" "$work/host-install-source-fetch-run.out"
+        nix_store --delete --ignore-liveness "$install_store" \
+          > "$work/nix-delete-host-install-after-source-fetch.out" 2>&1
+        nix_store --delete --ignore-liveness "$install_leaf_store" \
+          > "$work/nix-delete-host-leaf-after-source-fetch.out" 2>&1
+        if nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-after-source-fetch-delete.out" 2>&1; then
+          cat "$work/nix-valid-host-install-after-source-fetch-delete.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-after-source-fetch-delete.out" 2>&1; then
+          cat "$work/nix-valid-host-leaf-after-source-fetch-delete.out"
+          exit 1
+        fi
+
         run_clean ${self}/bin/apm --json install hostinstall \
           --registry host-install-client \
           --download-only \
@@ -1910,6 +1968,37 @@ in {
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/apm-verify-host-install.json" >/dev/null
         assert_default_profile_absent
+        run_clean ${self}/bin/apm source hostinstall --show-drv \
+          > "$work/apm-source-host-install.out" 2>&1
+        grep -q "$install_drv" "$work/apm-source-host-install.out"
+        run_clean ${self}/bin/apm --json source hostinstall --show-drv \
+          > "$work/apm-source-host-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg source "$install_drv" \
+          --arg store "$install_store" \
+          '.package == "hostinstall"
+            and .registry == "host-install-client"
+            and .source_drv == $source
+            and (.source_nar_hash | startswith("sha256-"))
+            and .installed == true
+            and .installed_store_path == $store' \
+          "$work/apm-source-host-install.json" >/dev/null
+        run_clean ${self}/bin/apm --json source hostinstall --fetch --verify \
+          > "$work/apm-source-host-install-verify.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg source "$install_drv" \
+          --arg store "$install_store" \
+          '.package == "hostinstall"
+            and .registry == "host-install-client"
+            and .source_drv == $source
+            and (.source_nar_hash | startswith("sha256-"))
+            and .installed == true
+            and .installed_store_path == $store
+            and .built_path == $store
+            and (.expected_nar_hash | startswith("sha256:"))
+            and (.actual_nar_hash | startswith("sha256:"))
+            and .verified == true' \
+          "$work/apm-source-host-install-verify.json" >/dev/null
         run_clean ${self}/bin/apm files hostinstall > "$work/apm-files-host-install.out" 2>&1
         grep -q "bin/host-install-tool" "$work/apm-files-host-install.out"
         run_clean ${self}/bin/apm --json files hostleaf > "$work/apm-files-host-leaf.json"
