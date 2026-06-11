@@ -2103,6 +2103,143 @@ in {
           exit 1
         fi
 
+        promote_home="$home"
+        promote_config="$config"
+        promote_data="$data"
+        promote_cache="$cache"
+        promote_profile_root="$profile_root"
+        promote_profile="$profile"
+        home="$work/promote-home"
+        config="$work/promote-config"
+        data="$work/promote-share"
+        cache="$work/promote-cache"
+        profile_root="$work/promote-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
+          --name host-install-promote \
+          --branch stable > "$work/apm-add-host-install-promote.out" 2>&1
+        grep -q "Registry 'host-install-promote' added" \
+          "$work/apm-add-host-install-promote.out"
+        run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-install-promote \
+          --yes > "$work/apm-install-host-install-promote-base.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall"]
+            and .generation == 1
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-promote"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+            and (.downloads.planned >= 2)
+            and (.downloads.downloaded >= 2)
+            and (.downloads.imported >= 2)' \
+          "$work/apm-install-host-install-promote-base.json" >/dev/null
+        ${pkgs.jq}/bin/jq -e \
+          '.apm.name == "hostleaf" and .apm.explicit == false' \
+          "$profile/meta/$install_leaf_hash.json" >/dev/null
+        run_clean ${self}/bin/apm --json install hostleaf \
+          --registry host-install-promote \
+          --yes > "$work/apm-install-host-leaf-promote.json"
+        ${pkgs.jq}/bin/jq -e --arg leaf "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostleaf"]
+            and .generation == 2
+            and (.roots | length == 1)
+            and .roots[0].name == "hostleaf"
+            and .roots[0].registry == "host-install-promote"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $leaf
+            and .roots[0].explicit == true
+            and (.closure | length == 1)
+            and .closure[0].name == "hostleaf"
+            and .closure[0].store_path == $leaf
+            and .closure[0].explicit == true
+            and .downloads.planned == 0
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-install-host-leaf-promote.json" >/dev/null
+        ${pkgs.jq}/bin/jq -e \
+          '.apm.name == "hostleaf" and .apm.explicit == true' \
+          "$profile/meta/$install_leaf_hash.json" >/dev/null
+        run_clean ${self}/bin/apm --json remove hostinstall --autoremove --dry-run \
+          > "$work/apm-remove-host-install-promote-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+          '.action == "remove"
+            and .status == "planned"
+            and .requested == ["hostinstall"]
+            and .autoremove == true
+            and .dry_run == true
+            and .generation == null
+            and .removed == 1
+            and .explicit_removed == 1
+            and .orphan_removed == 0
+            and (.packages | length == 1)
+            and .packages[0].name == "hostinstall"
+            and .packages[0].store_path == $store
+            and .packages[0].explicit == true
+            and .orphans == []' \
+          "$work/apm-remove-host-install-promote-dry-run.json" >/dev/null
+        run_clean ${self}/bin/apm --json remove hostinstall --autoremove --yes \
+          > "$work/apm-remove-host-install-promote.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+          '.action == "remove"
+            and .status == "removed"
+            and .requested == ["hostinstall"]
+            and .autoremove == true
+            and .dry_run == false
+            and .generation == 3
+            and .removed == 1
+            and .explicit_removed == 1
+            and .orphan_removed == 0
+            and (.packages | length == 1)
+            and .packages[0].name == "hostinstall"
+            and .packages[0].store_path == $store
+            and .orphans == []' \
+          "$work/apm-remove-host-install-promote.json" >/dev/null
+        run_clean ${self}/bin/apm --json list --installed \
+          --registry host-install-promote > "$work/apm-list-host-leaf-promoted.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostleaf"
+            and .[0].registry == "host-install-promote"
+            and .[0].version == "1.0.0"
+            and .[0].status == "installed"' \
+          "$work/apm-list-host-leaf-promoted.json" >/dev/null
+        "$profile/current/bin/host-leaf-tool" \
+          > "$work/host-leaf-promoted-after-app-remove.out"
+        grep -q "host leaf package executed" \
+          "$work/host-leaf-promoted-after-app-remove.out"
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$promote_home"
+        config="$promote_config"
+        data="$promote_data"
+        cache="$promote_cache"
+        profile_root="$promote_profile_root"
+        profile="$promote_profile"
+        nix_store --delete --ignore-liveness "$install_store" \
+          > "$work/nix-delete-host-install-after-promote.out" 2>&1
+        nix_store --delete --ignore-liveness "$install_leaf_store" \
+          > "$work/nix-delete-host-leaf-after-promote.out" 2>&1
+        if nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-after-promote-delete.out" 2>&1; then
+          cat "$work/nix-valid-host-install-after-promote-delete.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-after-promote-delete.out" 2>&1; then
+          cat "$work/nix-valid-host-leaf-after-promote-delete.out"
+          exit 1
+        fi
+        assert_no_profile
+
         run_clean ${self}/bin/apm --json install hostinstall \
           --registry host-install-client \
           --dry-run > "$work/apm-install-host-install-dry-run.json"
@@ -2948,6 +3085,95 @@ in {
             and (.unavailable_installed | any(.version == "1.0.0"
               and .registry == "host-install-client"))' \
           "$work/apm-policy-host-install-upgradable.json" >/dev/null
+
+        run_clean ${self}/bin/apm --json hold hostinstall \
+          > "$work/apm-hold-host-install-before-upgrade.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+          '.action == "hold"
+            and .status == "held"
+            and .package == "hostinstall"
+            and .name == "hostinstall"
+            and .version == "1.0.0"
+            and .registry == "host-install-client"
+            and .store_path == $store
+            and .held == true' \
+          "$work/apm-hold-host-install-before-upgrade.json" >/dev/null
+        run_clean ${self}/bin/apm --json upgrade hostinstall --dry-run \
+          > "$work/apm-upgrade-host-install-held-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+          '.action == "upgrade"
+            and .status == "held_back"
+            and .requested == ["hostinstall"]
+            and .exclude == []
+            and .dry_run == true
+            and .generation == null
+            and .upgraded == 0
+            and .upgrades == []
+            and (.held_back | length == 1)
+            and .held_back[0].name == "hostinstall"
+            and .held_back[0].registry == "host-install-client"
+            and .held_back[0].old_version == "1.0.0"
+            and .held_back[0].new_version == "2.0.0"
+            and .held_back[0].new_store_path == $store
+            and .downloads.planned == 0
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-upgrade-host-install-held-dry-run.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-after-held-upgrade-dry-run.out"
+        grep -q "host leaf package executed" \
+          "$work/host-install-after-held-upgrade-dry-run.out"
+        grep -q "host install package executed" \
+          "$work/host-install-after-held-upgrade-dry-run.out"
+        if grep -q "v2 executed" "$work/host-install-after-held-upgrade-dry-run.out"; then
+          cat "$work/host-install-after-held-upgrade-dry-run.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json unhold hostinstall \
+          > "$work/apm-unhold-host-install-before-upgrade.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+          '.action == "unhold"
+            and .status == "unheld"
+            and .package == "hostinstall"
+            and .name == "hostinstall"
+            and .version == "1.0.0"
+            and .registry == "host-install-client"
+            and .store_path == $store
+            and .held == false' \
+          "$work/apm-unhold-host-install-before-upgrade.json" >/dev/null
+        run_clean ${self}/bin/apm --json upgrade --exclude hostinstall --dry-run \
+          > "$work/apm-upgrade-host-install-excluded-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+          '.action == "upgrade"
+            and .status == "held_back"
+            and .requested == []
+            and .exclude == ["hostinstall"]
+            and .dry_run == true
+            and .generation == null
+            and .upgraded == 0
+            and .upgrades == []
+            and (.held_back | length == 1)
+            and .held_back[0].name == "hostinstall"
+            and .held_back[0].registry == "host-install-client"
+            and .held_back[0].old_version == "1.0.0"
+            and .held_back[0].new_version == "2.0.0"
+            and .held_back[0].new_store_path == $store
+            and .downloads.planned == 0
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-upgrade-host-install-excluded-dry-run.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-after-excluded-upgrade-dry-run.out"
+        grep -q "host leaf package executed" \
+          "$work/host-install-after-excluded-upgrade-dry-run.out"
+        grep -q "host install package executed" \
+          "$work/host-install-after-excluded-upgrade-dry-run.out"
+        if grep -q "v2 executed" "$work/host-install-after-excluded-upgrade-dry-run.out"; then
+          cat "$work/host-install-after-excluded-upgrade-dry-run.out"
+          exit 1
+        fi
+        test "$(profile_generation_count)" = "1"
+        assert_default_profile_absent
 
         nix_store --delete --ignore-liveness "$install_store_v2" \
           > "$work/nix-delete-host-install-v2.out" 2>&1
