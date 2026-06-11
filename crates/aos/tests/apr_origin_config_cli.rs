@@ -187,6 +187,92 @@ fn apr_origin_upload_falls_back_to_persisted_upload_urls() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn apr_add_preserves_authoring_clone_for_maintainers() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let seed_home = tmp.path().join("seed-home");
+    let maintainer_home = tmp.path().join("maintainer-home");
+    if !git_supports_sha256(&seed_home)? {
+        eprintln!(
+            "skipping apr add authoring clone e2e: git cannot initialize a sha256 repository"
+        );
+        return Ok(());
+    }
+
+    run_apr(&seed_home, &["create", "origin-default-reg"])?;
+    let seed_registry = registry_dir(&seed_home, "origin-default-reg");
+    let default_branch = git_stdout(
+        &seed_registry,
+        &["symbolic-ref", "--short", "HEAD"],
+        "reading seed registry branch",
+    )?;
+    let remote = tmp.path().join("origin-default.git");
+    git_stdout(
+        tmp.path(),
+        &[
+            "init",
+            "--bare",
+            "--object-format=sha256",
+            remote.to_str().unwrap_or_default(),
+        ],
+        "initializing bare registry origin",
+    )?;
+    git_stdout(
+        &seed_registry,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().unwrap_or_default(),
+        ],
+        "adding registry origin",
+    )?;
+    git_stdout(
+        &seed_registry,
+        &["push", "origin", &default_branch],
+        "pushing seed registry",
+    )?;
+
+    let remote_url = format!("file://{}", remote.display());
+    run_apr(
+        &maintainer_home,
+        &[
+            "add",
+            "--no-verify",
+            &remote_url,
+            "--name",
+            "origin-default-reg",
+            "--branch",
+            &default_branch,
+        ],
+    )?;
+
+    let maintainer_registry = registry_dir(&maintainer_home, "origin-default-reg");
+    assert!(
+        maintainer_registry.join(".git").is_dir(),
+        "apr add should leave an authoring clone at {}",
+        maintainer_registry.display(),
+    );
+    let inside = git_stdout(
+        &maintainer_registry,
+        &["rev-parse", "--is-inside-work-tree"],
+        "checking maintainer clone worktree",
+    )?;
+    assert_eq!(inside, "true");
+    let branch = git_stdout(
+        &maintainer_registry,
+        &["branch", "--show-current"],
+        "checking maintainer clone branch",
+    )?;
+    assert_eq!(branch, default_branch);
+    run_apr(
+        &maintainer_home,
+        &["status", "--registry", "origin-default-reg"],
+    )?;
+
+    Ok(())
+}
+
 /// Write a minimal user-scope registry config so `--registry core` resolves.
 fn write_registry_config(home: &Path, name: &str) -> Result<()> {
     let dir = home.join(".config/apm/registries.d");
@@ -207,6 +293,26 @@ fn git_supports_sha256(home: &Path) -> Result<bool> {
         .output()
         .context("running git init --object-format=sha256")?;
     Ok(init.status.success())
+}
+
+fn registry_dir(home: &Path, name: &str) -> std::path::PathBuf {
+    home.join(".local/share/apm/registries").join(name)
+}
+
+fn git_stdout(cwd: &Path, args: &[&str], context: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .with_context(|| format!("{context}: git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "{context} failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Spawn `apr` against an isolated `HOME`, with a committer identity in the

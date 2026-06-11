@@ -71,6 +71,7 @@ pub(crate) mod testutil;
 
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
@@ -1672,9 +1673,7 @@ async fn run_registry(
             keep_local,
             force,
         } => registry_remove(config, name, *keep_local, *force, printer).await,
-        RegistryCommand::Enable { name } => {
-            registry_set_enabled(config, name, true, printer).await
-        }
+        RegistryCommand::Enable { name } => registry_set_enabled(config, name, true, printer).await,
         RegistryCommand::Disable { name } => {
             registry_set_enabled(config, name, false, printer).await
         }
@@ -2341,6 +2340,10 @@ async fn registry_add(
 
     printer.success(&format!("Registry '{name}' added."));
 
+    if aos_core::invocation::binary_name() == "apr" {
+        materialize_authoring_clone(config, &name, url, branch, tag, commit, printer)?;
+    }
+
     // Materialise the local clone under the scope's registry-storage directory
     // by syncing now. The config was just written to disk, so reload the scope
     // to pick it up and reuse the regular update path (clone/fetch + state
@@ -2411,6 +2414,77 @@ async fn registry_add(
     }
 
     Ok(())
+}
+
+/// Materializes the writable producer clone used by `apr add`.
+fn materialize_authoring_clone(
+    config: &config::ApmConfig,
+    name: &str,
+    url: &str,
+    branch: Option<&str>,
+    tag: Option<&str>,
+    commit: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    let clone_dir = config.scope.registries_path().join(name);
+    if clone_dir.join(".git").is_dir() {
+        return Ok(());
+    }
+    if clone_dir.exists() {
+        fs::remove_dir_all(&clone_dir).with_context(|| {
+            format!(
+                "removing consumer metadata tree before cloning {}",
+                clone_dir.display()
+            )
+        })?;
+    }
+    if let Some(parent) = clone_dir.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    let mut clone = gitcmd::transport();
+    clone.args(["clone", "--no-checkout", url]);
+    clone.arg(&clone_dir);
+    run_git_command(clone, format!("cloning registry '{name}' from {url}"))?;
+
+    if let Some(branch) = branch {
+        let remote_branch = format!("origin/{branch}");
+        let mut checkout = gitcmd::hermetic();
+        checkout
+            .current_dir(&clone_dir)
+            .args(["checkout", "-B", branch, &remote_branch]);
+        run_git_command(checkout, format!("checking out branch '{branch}'"))?;
+    } else if let Some(tag) = tag {
+        let mut checkout = gitcmd::hermetic();
+        checkout.current_dir(&clone_dir).args(["checkout", tag]);
+        run_git_command(checkout, format!("checking out tag '{tag}'"))?;
+    } else if let Some(commit) = commit {
+        let mut checkout = gitcmd::hermetic();
+        checkout
+            .current_dir(&clone_dir)
+            .args(["checkout", "--detach", commit]);
+        run_git_command(checkout, format!("checking out commit '{commit}'"))?;
+    } else {
+        let mut checkout = gitcmd::hermetic();
+        checkout.current_dir(&clone_dir).arg("checkout");
+        run_git_command(checkout, "checking out remote HEAD")?;
+    }
+
+    printer.info(&format!("Authoring clone ready at {}", clone_dir.display()));
+    Ok(())
+}
+
+fn run_git_command(mut command: Command, context: impl Into<String>) -> Result<()> {
+    let context = context.into();
+    let output = command
+        .output()
+        .with_context(|| format!("running git command while {context}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    bail!("{} failed: {}", context, stderr);
 }
 
 /// `apr remove` — delete a registry's config file, metadata cache, local
@@ -2523,11 +2597,12 @@ async fn registry_set_enabled(
     printer: &Printer,
 ) -> Result<()> {
     validate_registry_name(name)?;
-    let (reg_config, state) = config
-        .find_registry(name)
-        .ok_or_else(|| AosError::RegistryError {
-            message: format!("registry '{name}' not found"),
-        })?;
+    let (reg_config, state) =
+        config
+            .find_registry(name)
+            .ok_or_else(|| AosError::RegistryError {
+                message: format!("registry '{name}' not found"),
+            })?;
 
     let toml_path = removable_registry_config_path(config.scope, name);
     let previous_enabled = reg_config.enabled;

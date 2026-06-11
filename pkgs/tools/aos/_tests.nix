@@ -4390,7 +4390,8 @@ in {
           --registry host-install-client \
           --dry-run > "$work/apm-install-host-install-dry-run.json"
         ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
-          '.action == "install"
+          '[.downloads.paths[].store_path] as $downloaded_paths
+          | .action == "install"
             and .status == "planned"
             and .requested == ["hostinstall"]
             and .reinstall == false
@@ -4407,7 +4408,9 @@ in {
             and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
             and (.downloads.planned >= 2)
             and .downloads.downloaded == 0
-            and .downloads.imported == 0' \
+            and .downloads.imported == 0
+            and ($downloaded_paths | index($store) != null)
+            and ($downloaded_paths | index($leaf) != null)' \
           "$work/apm-install-host-install-dry-run.json" >/dev/null
         if nix_store --check-validity "$install_store" \
           > "$work/nix-valid-host-install-after-install-dry-run.out" 2>&1; then
@@ -4426,7 +4429,8 @@ in {
           --download-only \
           --yes > "$work/apm-download-only-host-install.json"
         ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
-          '.action == "install"
+          '[.downloads.paths[].store_path] as $downloaded_paths
+          | .action == "install"
             and .status == "downloaded"
             and .requested == ["hostinstall"]
             and .reinstall == false
@@ -4443,7 +4447,9 @@ in {
             and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
             and (.downloads.planned >= 2)
             and (.downloads.downloaded >= 2)
-            and .downloads.imported == 0' \
+            and .downloads.imported == 0
+            and ($downloaded_paths | index($store) != null)
+            and ($downloaded_paths | index($leaf) != null)' \
           "$work/apm-download-only-host-install.json" >/dev/null
         find "$cache/apm" -type f | grep -q .
         if nix_store --check-validity "$install_store" \
@@ -4462,7 +4468,8 @@ in {
           --registry host-install-client \
           --yes > "$work/apm-install-host-install.json"
         ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
-          '.action == "install"
+          '[.downloads.paths[].store_path] as $downloaded_paths
+          | .action == "install"
             and .status == "installed"
             and .requested == ["hostinstall"]
             and .reinstall == false
@@ -4481,7 +4488,9 @@ in {
             and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
             and (.downloads.planned >= 2)
             and (.downloads.downloaded >= 2)
-            and (.downloads.imported >= 2)' \
+            and (.downloads.imported >= 2)
+            and ($downloaded_paths | index($store) != null)
+            and ($downloaded_paths | index($leaf) != null)' \
           "$work/apm-install-host-install.json" >/dev/null
         nix_store --check-validity "$install_store" \
           > "$work/nix-valid-host-install-imported.out" 2>&1
@@ -6173,8 +6182,9 @@ in {
           "$work/apm-upgrade-provider-low-dry-run.json" >/dev/null
         run_clean ${self}/bin/apm --json reinstall hostinstall --dry-run \
           > "$work/apm-reinstall-provider-low-dry-run.json"
-        ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
-          '.action == "reinstall"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+          '[.downloads.paths[].store_path] as $downloaded_paths
+          | .action == "reinstall"
             and .status == "planned"
             and .requested == ["hostinstall"]
             and .reinstall == true
@@ -6187,12 +6197,15 @@ in {
             and .roots[0].store_path == $store
             and (.downloads.planned >= 2)
             and .downloads.downloaded == 0
-            and .downloads.imported == 0' \
+            and .downloads.imported == 0
+            and ($downloaded_paths | index($store) != null)
+            and ($downloaded_paths | index($leaf) != null)' \
           "$work/apm-reinstall-provider-low-dry-run.json" >/dev/null
         run_clean ${self}/bin/apm --json reinstall hostinstall --yes \
           > "$work/apm-reinstall-provider-low.json"
-        ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
-          '.action == "reinstall"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+          '[.downloads.paths[].store_path] as $downloaded_paths
+          | .action == "reinstall"
             and .status == "reinstalled"
             and .requested == ["hostinstall"]
             and .reinstall == true
@@ -6205,7 +6218,9 @@ in {
             and .roots[0].store_path == $store
             and (.downloads.planned >= 2)
             and (.downloads.downloaded >= 2)
-            and (.downloads.imported >= 2)' \
+            and (.downloads.imported >= 2)
+            and ($downloaded_paths | index($store) != null)
+            and ($downloaded_paths | index($leaf) != null)' \
           "$work/apm-reinstall-provider-low.json" >/dev/null
         "$profile/current/bin/host-install-tool" \
           > "$work/host-install-provider-low-after-reinstall.out"
@@ -6757,8 +6772,9 @@ in {
 
         run_clean ${self}/bin/apm --json reinstall hostinstall --dry-run \
           > "$work/apm-reinstall-held-host-install-dry-run.json"
-        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
-          '.action == "reinstall"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '[.downloads.paths[].store_path] as $downloaded_paths
+          | .action == "reinstall"
             and .status == "planned"
             and .requested == ["hostinstall"]
             and .reinstall == true
@@ -6774,7 +6790,9 @@ in {
             and .roots[0].explicit == true
             and (.downloads.planned >= 2)
             and .downloads.downloaded == 0
-            and .downloads.imported == 0' \
+            and .downloads.imported == 0
+            and ($downloaded_paths | index($store) != null)
+            and ($downloaded_paths | index($leaf) != null)' \
           "$work/apm-reinstall-held-host-install-dry-run.json" >/dev/null
         "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-reinstall-dry-run.out"
         grep -q "host leaf package v2 executed" "$work/host-install-v2-after-reinstall-dry-run.out"
@@ -6792,8 +6810,9 @@ in {
 
         run_clean ${self}/bin/apm --json reinstall hostinstall --yes \
           > "$work/apm-reinstall-held-host-install.json"
-        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
-          '.action == "reinstall"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '[.downloads.paths[].store_path] as $downloaded_paths
+          | .action == "reinstall"
             and .status == "reinstalled"
             and .requested == ["hostinstall"]
             and .reinstall == true
@@ -6807,9 +6826,11 @@ in {
             and .roots[0].registry == "host-install-client"
             and .roots[0].store_path == $store
             and .roots[0].explicit == true
-            and (.downloads.planned >= 1)
-            and (.downloads.downloaded >= 1)
-            and (.downloads.imported >= 1)' \
+            and (.downloads.planned >= 2)
+            and (.downloads.downloaded >= 2)
+            and (.downloads.imported >= 2)
+            and ($downloaded_paths | index($store) != null)
+            and ($downloaded_paths | index($leaf) != null)' \
           "$work/apm-reinstall-held-host-install.json" >/dev/null
         "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-reinstall.out"
         grep -q "host leaf package v2 executed" "$work/host-install-v2-after-reinstall.out"
