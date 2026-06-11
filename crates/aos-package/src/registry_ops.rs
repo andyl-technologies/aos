@@ -2269,11 +2269,12 @@ pub async fn verify(
 
 /// `apr diff` — shows pending changes in the registry clone.
 ///
-/// By default diffs the working tree against the index. With `--remote`,
-/// diffs the remote tracking base (the configured upstream, then
-/// `origin/<current-branch>`, then `origin/HEAD`) against `HEAD`, showing
-/// committed work that has not been pushed. `--stat` prints a diffstat
-/// instead of the patch.
+/// By default diffs the working tree against the index and lists untracked
+/// files, so newly-published package metadata appears in the maintainer's
+/// changeset before it has been staged. With `--remote`, diffs the remote
+/// tracking base (the configured upstream, then `origin/<current-branch>`,
+/// then `origin/HEAD`) against `HEAD`, showing committed work that has not
+/// been pushed. `--stat` prints a diffstat instead of the patch.
 ///
 /// # Errors
 ///
@@ -2317,13 +2318,16 @@ pub async fn diff(
             args.push("--stat");
         }
         let output = git(&dir, &args)?;
+        let untracked = untracked_diff_entries(&dir)?;
+        let clean = output.is_empty() && untracked.is_empty();
+        let output = diff_output_with_untracked(output, &untracked);
         if printer.mode() == OutputMode::Json {
             printer.json(&serde_json::json!({
                 "remote": false,
                 "base": serde_json::Value::Null,
                 "stat": stat,
-                "clean": output.is_empty(),
-                "changed_files": diff_name_status_entries(&dir, None)?,
+                "clean": clean,
+                "changed_files": diff_name_status_entries_with_untracked(&dir, &untracked)?,
                 "output": output,
             }));
             return Ok(());
@@ -2375,6 +2379,32 @@ fn remote_diff_base(dir: &Path) -> Result<String> {
 fn git_ref_exists(dir: &Path, reference: &str) -> Result<bool> {
     let (exists, _, _) = git_try(dir, &["rev-parse", "--verify", reference])?;
     Ok(exists)
+}
+
+fn untracked_diff_entries(dir: &Path) -> Result<Vec<String>> {
+    let output = git(dir, &["ls-files", "--others", "--exclude-standard"])?;
+    Ok(output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+fn diff_output_with_untracked(mut output: String, untracked: &[String]) -> String {
+    if untracked.is_empty() {
+        return output;
+    }
+
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output.push_str("Untracked files:\n");
+    for path in untracked {
+        output.push_str("  A ");
+        output.push_str(path);
+        output.push('\n');
+    }
+    output.trim_end().to_string()
 }
 
 /// `apr validate` — checks that published artifacts are downloadable from
@@ -3104,6 +3134,21 @@ fn diff_name_status_entries(
             Some(entry)
         })
         .collect())
+}
+
+fn diff_name_status_entries_with_untracked(
+    dir: &Path,
+    untracked: &[String],
+) -> Result<Vec<serde_json::Value>> {
+    let mut entries = diff_name_status_entries(dir, None)?;
+    entries.extend(untracked.iter().map(|path| {
+        serde_json::json!({
+            "status": "A",
+            "path": path,
+            "untracked": true,
+        })
+    }));
+    Ok(entries)
 }
 
 /// Collect structured commit records for JSON output, using ASCII
@@ -6981,22 +7026,19 @@ mod tests {
     fn signing_key_command_finds_host_path_helpers() {
         let tmp = TempDir::new().unwrap();
         let helper = tmp.path().join("emit-signing-key");
-        let shell = std::env::var_os("PATH")
-            .and_then(|path| executable_on_path("bash", &path))
-            .unwrap_or_else(|| PathBuf::from("bash"));
-        fs::write(
-            &helper,
-            format!("#!{}\nprintf 'host key material'\n", shell.display()),
-        )
-        .unwrap();
+        let runtime_path = std::env::var_os("PATH").unwrap();
+        let bash = executable_on_path("bash", &runtime_path).unwrap();
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+            std::os::unix::fs::symlink(bash, &helper).unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            fs::copy(bash, &helper).unwrap();
         }
 
         let resolved = materialize_signing_key_command_with_path(
-            "emit-signing-key",
+            "emit-signing-key -c \"printf 'host key material'\"",
             Some(tmp.path().as_os_str().to_os_string()),
         )
         .unwrap();
