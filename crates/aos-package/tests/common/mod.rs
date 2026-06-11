@@ -4,6 +4,7 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 use aos_core::output::Printer;
@@ -13,6 +14,8 @@ use aos_package::types::{RegistryConfig, RegistryState, SigningConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
+
+static SSH_KEYGEN: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 pub struct RegistryFixture {
     tmp: tempfile::TempDir,
@@ -613,10 +616,79 @@ async fn write_response_with_length(
 /// enables e.g. `commit.gpgsign` with a GPG key must not leak into them.
 fn git_command(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
+    add_ssh_program_config(&mut cmd);
     cmd.current_dir(dir)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null");
     cmd
+}
+
+fn add_ssh_program_config(command: &mut Command) {
+    if let Some(path) = ssh_keygen_path() {
+        command
+            .arg("-c")
+            .arg(format!("gpg.ssh.program={}", path.display()));
+    }
+}
+
+fn ssh_keygen_path() -> Option<&'static Path> {
+    SSH_KEYGEN.get_or_init(find_working_ssh_keygen).as_deref()
+}
+
+fn find_working_ssh_keygen() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("AOS_GIT_SSH_PROGRAM") {
+        candidates.push(PathBuf::from(path));
+    }
+    for env_var in ["AOS_HOST_PATH", "PATH"] {
+        let Some(path) = std::env::var_os(env_var) else {
+            continue;
+        };
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join("ssh-keygen");
+            if !candidates.iter().any(|seen| seen == &candidate) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file() && ssh_keygen_can_sign(candidate))
+}
+
+fn ssh_keygen_can_sign(candidate: &Path) -> bool {
+    let Ok(tmp) = tempfile::TempDir::new() else {
+        return false;
+    };
+    let key = tmp.path().join("key");
+    let Ok(keygen) = Command::new(candidate)
+        .env_remove("LD_LIBRARY_PATH")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "aos-registry", "-f"])
+        .arg(&key)
+        .output()
+    else {
+        return false;
+    };
+    if !keygen.status.success() {
+        return false;
+    }
+
+    let payload = tmp.path().join("payload");
+    if fs::write(&payload, b"aos-registry").is_err() {
+        return false;
+    }
+
+    Command::new(candidate)
+        .env_remove("LD_LIBRARY_PATH")
+        .arg("-Y")
+        .arg("sign")
+        .arg("-f")
+        .arg(&key)
+        .arg("-n")
+        .arg("git")
+        .arg(&payload)
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<()> {
