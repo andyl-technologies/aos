@@ -496,7 +496,13 @@ fn introspect_deriver(store_path: &str) -> Result<Option<StorePathInfo>> {
     }
 
     let deriver = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if deriver.is_empty() || deriver == "unknown-deriver" || !deriver.starts_with("/nix/store/") {
+    let Some(store_dir) = store_dir_from_store_path(store_path) else {
+        return Ok(None);
+    };
+    if deriver.is_empty()
+        || deriver == "unknown-deriver"
+        || store_dir_from_store_path(&deriver) != Some(store_dir)
+    {
         return Ok(None);
     }
     if !Path::new(&deriver).exists() {
@@ -506,6 +512,17 @@ fn introspect_deriver(store_path: &str) -> Result<Option<StorePathInfo>> {
     introspect_store_path(&deriver)
         .with_context(|| format!("introspecting source derivation {deriver}"))
         .map(Some)
+}
+
+/// Return the store directory portion of a Nix store path.
+fn store_dir_from_store_path(path: &str) -> Option<&str> {
+    let (dir, name) = path.trim_end_matches('/').rsplit_once('/')?;
+    let (hash, _) = name.split_once('-')?;
+    if hash.len() == 32 && hash.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        Some(dir)
+    } else {
+        None
+    }
 }
 
 /// Metadata returned by `nix path-info` for a single store path.
@@ -1192,7 +1209,12 @@ pub async fn publish(
             closure_path.clone(),
             dir.join(".gitattributes"),
         ];
-        commit_registry_paths(&dir, msg, &staged_paths, signing_key.as_ref().map(|k| k.path()))?;
+        commit_registry_paths(
+            &dir,
+            msg,
+            &staged_paths,
+            signing_key.as_ref().map(|k| k.path()),
+        )?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after publish")?;
         committed = true;
@@ -6662,6 +6684,25 @@ mod tests {
         assert_eq!(
             select_partitions_for_advance(Some(3), None, &map, &target).unwrap(),
             vec![0, 1, 2],
+        );
+    }
+
+    #[test]
+    fn store_dir_from_store_path_accepts_alternate_stores() {
+        assert_eq!(
+            store_dir_from_store_path("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-curl-8.5.0"),
+            Some("/nix/store"),
+        );
+        assert_eq!(
+            store_dir_from_store_path(
+                "/build/aos-root/store/0123456789abcdfghijklmnpqrsvwxyz-curl-8.5.0.drv",
+            ),
+            Some("/build/aos-root/store"),
+        );
+        assert_eq!(store_dir_from_store_path("unknown-deriver"), None);
+        assert_eq!(
+            store_dir_from_store_path("/nix/store/not-a-store-path"),
+            None
         );
     }
 

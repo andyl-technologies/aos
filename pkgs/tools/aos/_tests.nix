@@ -1321,8 +1321,12 @@ in {
 
         install_leaf_store=$(nix_build "$work/host-install-fixtures.nix" -A leaf --no-out-link)
         install_leaf_hash=$(basename "$install_leaf_store" | cut -d- -f1)
+        install_leaf_drv=$(nix_store -q --deriver "$install_leaf_store")
+        test -e "$install_leaf_drv"
         install_store=$(nix_build "$work/host-install-fixtures.nix" -A appV1 --no-out-link)
         install_hash=$(basename "$install_store" | cut -d- -f1)
+        install_drv=$(nix_store -q --deriver "$install_store")
+        test -e "$install_drv"
 
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/host-install-release-key"
         install_release_public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/host-install-release-key.pub")
@@ -1345,6 +1349,7 @@ in {
           --no-commit > "$work/apr-publish-host-leaf.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$install_leaf_store" \
+          --arg source "$install_leaf_drv" \
           '.action == "publish"
             and .registry == "host-install-channel"
             and .package == "hostleaf"
@@ -1353,6 +1358,9 @@ in {
             and .store_path == $store
             and (.nar_hash | startswith("sha256-"))
             and (.closure_size > 0)
+            and .source.store_path == $source
+            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_size > 0)
             and .committed == false' \
           "$work/apr-publish-host-leaf.json" >/dev/null
         run_clean ${self}/bin/apr --json publish "$install_store" \
@@ -1365,6 +1373,7 @@ in {
           --no-commit > "$work/apr-publish-host-install.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$install_store" \
+          --arg source "$install_drv" \
           '.action == "publish"
             and .registry == "host-install-channel"
             and .package == "hostinstall"
@@ -1374,7 +1383,9 @@ in {
             and (.nar_hash | startswith("sha256-"))
             and (.nar_size > 0)
             and (.closure_size > 0)
-            and .source == null
+            and .source.store_path == $source
+            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_size > 0)
             and .sysroot == false
             and .previous == null
             and .images == []
@@ -1824,6 +1835,53 @@ in {
           exit 1
         fi
 
+        run_clean ${self}/bin/apm --json source hostinstall --show-drv \
+          > "$work/apm-source-host-install-preinstall.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg source "$install_drv" \
+          '.package == "hostinstall"
+            and .registry == "host-install-client"
+            and .source_drv == $source
+            and (.source_nar_hash | startswith("sha256-"))
+            and .installed == false
+            and .installed_store_path == null' \
+          "$work/apm-source-host-install-preinstall.json" >/dev/null
+        run_clean ${self}/bin/apm --json source hostinstall --fetch \
+          > "$work/apm-source-host-install-fetch.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg source "$install_drv" \
+          --arg store "$install_store" \
+          '.package == "hostinstall"
+            and .registry == "host-install-client"
+            and .source_drv == $source
+            and (.source_nar_hash | startswith("sha256-"))
+            and .installed == false
+            and .installed_store_path == null
+            and .realised_path == $store' \
+          "$work/apm-source-host-install-fetch.json" >/dev/null
+        nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-source-fetch.out" 2>&1
+        nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-source-fetch.out" 2>&1
+        "$install_store/bin/host-install-tool" \
+          > "$work/host-install-source-fetch-run.out"
+        grep -q "host leaf package executed" "$work/host-install-source-fetch-run.out"
+        grep -q "host install package executed" "$work/host-install-source-fetch-run.out"
+        nix_store --delete --ignore-liveness "$install_store" \
+          > "$work/nix-delete-host-install-after-source-fetch.out" 2>&1
+        nix_store --delete --ignore-liveness "$install_leaf_store" \
+          > "$work/nix-delete-host-leaf-after-source-fetch.out" 2>&1
+        if nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-after-source-fetch-delete.out" 2>&1; then
+          cat "$work/nix-valid-host-install-after-source-fetch-delete.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-after-source-fetch-delete.out" 2>&1; then
+          cat "$work/nix-valid-host-leaf-after-source-fetch-delete.out"
+          exit 1
+        fi
+
         run_clean ${self}/bin/apm --json install hostinstall \
           --registry host-install-client \
           --download-only \
@@ -1910,6 +1968,37 @@ in {
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/apm-verify-host-install.json" >/dev/null
         assert_default_profile_absent
+        run_clean ${self}/bin/apm source hostinstall --show-drv \
+          > "$work/apm-source-host-install.out" 2>&1
+        grep -q "$install_drv" "$work/apm-source-host-install.out"
+        run_clean ${self}/bin/apm --json source hostinstall --show-drv \
+          > "$work/apm-source-host-install.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg source "$install_drv" \
+          --arg store "$install_store" \
+          '.package == "hostinstall"
+            and .registry == "host-install-client"
+            and .source_drv == $source
+            and (.source_nar_hash | startswith("sha256-"))
+            and .installed == true
+            and .installed_store_path == $store' \
+          "$work/apm-source-host-install.json" >/dev/null
+        run_clean ${self}/bin/apm --json source hostinstall --fetch --verify \
+          > "$work/apm-source-host-install-verify.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg source "$install_drv" \
+          --arg store "$install_store" \
+          '.package == "hostinstall"
+            and .registry == "host-install-client"
+            and .source_drv == $source
+            and (.source_nar_hash | startswith("sha256-"))
+            and .installed == true
+            and .installed_store_path == $store
+            and .built_path == $store
+            and (.expected_nar_hash | startswith("sha256:"))
+            and (.actual_nar_hash | startswith("sha256:"))
+            and .verified == true' \
+          "$work/apm-source-host-install-verify.json" >/dev/null
         run_clean ${self}/bin/apm files hostinstall > "$work/apm-files-host-install.out" 2>&1
         grep -q "bin/host-install-tool" "$work/apm-files-host-install.out"
         run_clean ${self}/bin/apm --json files hostleaf > "$work/apm-files-host-leaf.json"
@@ -1950,24 +2039,54 @@ in {
 
         install_leaf_store_v2=$(nix_build "$work/host-install-fixtures.nix" -A leafV2 --no-out-link)
         install_leaf_hash_v2=$(basename "$install_leaf_store_v2" | cut -d- -f1)
+        install_leaf_drv_v2=$(nix_store -q --deriver "$install_leaf_store_v2")
+        test -e "$install_leaf_drv_v2"
         install_store_v2=$(nix_build "$work/host-install-fixtures.nix" -A appV2 --no-out-link)
         install_hash_v2=$(basename "$install_store_v2" | cut -d- -f1)
-        run_clean ${self}/bin/apr publish "$install_leaf_store_v2" \
+        install_drv_v2=$(nix_store -q --deriver "$install_store_v2")
+        test -e "$install_drv_v2"
+        run_clean ${self}/bin/apr --json publish "$install_leaf_store_v2" \
           --name hostleaf \
           --version 2.0.0 \
           --description "Host APM dependency fixture v2" \
           --license MIT \
           --maintainer host@example.invalid \
           --registry host-install-channel \
-          --no-commit > "$work/apr-publish-host-leaf-v2.out" 2>&1
-        run_clean ${self}/bin/apr publish "$install_store_v2" \
+          --no-commit > "$work/apr-publish-host-leaf-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_leaf_store_v2" \
+          --arg source "$install_leaf_drv_v2" \
+          '.action == "publish"
+            and .registry == "host-install-channel"
+            and .package == "hostleaf"
+            and .version == "2.0.0"
+            and .store_path == $store
+            and .source.store_path == $source
+            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_size > 0)
+            and .committed == false' \
+          "$work/apr-publish-host-leaf-v2.json" >/dev/null
+        run_clean ${self}/bin/apr --json publish "$install_store_v2" \
           --name hostinstall \
           --version 2.0.0 \
           --description "Host APM install fixture v2" \
           --license MIT \
           --maintainer host@example.invalid \
           --registry host-install-channel \
-          --no-commit > "$work/apr-publish-host-install-v2.out" 2>&1
+          --no-commit > "$work/apr-publish-host-install-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_store_v2" \
+          --arg source "$install_drv_v2" \
+          '.action == "publish"
+            and .registry == "host-install-channel"
+            and .package == "hostinstall"
+            and .version == "2.0.0"
+            and .store_path == $store
+            and .source.store_path == $source
+            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_size > 0)
+            and .committed == false' \
+          "$work/apr-publish-host-install-v2.json" >/dev/null
         run_clean ${self}/bin/apr --json cache generate \
           --registry host-install-channel \
           --output "$work/install-static-cache-output/cache" \
@@ -2964,6 +3083,220 @@ in {
               and .registry == "orphan-reg"
               and .explicit == false)' \
           "$work/apm-orphans-after-registry-remove.json" >/dev/null
+        assert_default_profile_absent
+
+        home="$main_home"
+        config="$main_config"
+        data="$main_data"
+        cache="$main_cache"
+        profile_root="$main_profile_root"
+        profile="$main_profile"
+        if nix_store --check-validity "$install_store_v2" \
+          > "$work/nix-valid-host-install-before-unpublish-client.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$install_store_v2" \
+            > "$work/nix-delete-host-install-before-unpublish-client.out" 2>&1
+        fi
+        if nix_store --check-validity "$install_leaf_store_v2" \
+          > "$work/nix-valid-host-leaf-before-unpublish-client.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$install_leaf_store_v2" \
+            > "$work/nix-delete-host-leaf-before-unpublish-client.out" 2>&1
+        fi
+        home="$work/unpublish-home"
+        config="$work/unpublish-config"
+        data="$work/unpublish-share"
+        cache="$work/unpublish-cache"
+        profile_root="$work/unpublish-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
+          --name host-install-retired \
+          --branch stable > "$work/apm-add-host-install-retired.out" 2>&1
+        grep -q "Registry 'host-install-retired' added" \
+          "$work/apm-add-host-install-retired.out"
+        run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-install-retired \
+          --yes > "$work/apm-install-host-install-retired-before-unpublish.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall"]
+            and .generation == 1
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-retired"
+            and .roots[0].version == "2.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+            and (.downloads.planned >= 2)
+            and (.downloads.downloaded >= 2)
+            and (.downloads.imported >= 2)' \
+          "$work/apm-install-host-install-retired-before-unpublish.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-retired-before-unpublish-run.out"
+        grep -q "host leaf package v2 executed" \
+          "$work/host-install-retired-before-unpublish-run.out"
+        grep -q "host install package v2 executed" \
+          "$work/host-install-retired-before-unpublish-run.out"
+        retired_home="$home"
+        retired_config="$config"
+        retired_data="$data"
+        retired_cache="$cache"
+        retired_profile_root="$profile_root"
+        retired_profile="$profile"
+
+        home="$main_home"
+        config="$main_config"
+        data="$main_data"
+        cache="$main_cache"
+        profile_root="$main_profile_root"
+        profile="$main_profile"
+        run_clean ${self}/bin/apr --json unpublish hostinstall 1.0.0 \
+          --registry host-install-channel \
+          --no-commit > "$work/apr-unpublish-host-install-v1.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "unpublish"
+            and .registry == "host-install-channel"
+            and .package == "hostinstall"
+            and .version == "1.0.0"
+            and .platform == null
+            and .status == "updated"
+            and .package_file == "packages/h/hostinstall.toml"
+            and .package_file_removed == false
+            and .committed == false
+            and .commit_message == null' \
+          "$work/apr-unpublish-host-install-v1.json" >/dev/null
+        run_clean ${self}/bin/apr status --registry host-install-channel \
+          > "$work/apr-status-host-install-after-unpublish-v1.out" 2>&1
+        grep -q "packages/h/hostinstall.toml" \
+          "$work/apr-status-host-install-after-unpublish-v1.out"
+        run_clean ${self}/bin/apr --json unpublish hostinstall 2.0.0 \
+          --registry host-install-channel \
+          --message "retire hostinstall package" \
+          --key "$work/host-install-release-key" \
+          > "$work/apr-unpublish-host-install-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "unpublish"
+            and .registry == "host-install-channel"
+            and .package == "hostinstall"
+            and .version == "2.0.0"
+            and .platform == null
+            and .status == "removed"
+            and .package_file == "packages/h/hostinstall.toml"
+            and .package_file_removed == true
+            and .committed == true
+            and .commit_message == "retire hostinstall package"
+            and (.head | length == 64)' \
+          "$work/apr-unpublish-host-install-v2.json" >/dev/null
+        test ! -e "$install_reg/packages/h/hostinstall.toml"
+        test -f "$install_reg/closures/$install_hash"
+        test -f "$install_reg/closures/$install_hash_v2"
+        if run_clean ${self}/bin/apr --json show hostinstall \
+          --registry host-install-channel > "$work/apr-show-host-install-after-unpublish.json" 2>&1; then
+          cat "$work/apr-show-host-install-after-unpublish.json"
+          exit 1
+        fi
+        ${pkgs.jq}/bin/jq -e \
+          --arg message "package 'hostinstall' not found in registry" \
+          '.error | contains($message)' \
+          "$work/apr-show-host-install-after-unpublish.json" >/dev/null
+        run_clean ${self}/bin/apr --json packages --registry host-install-channel \
+          > "$work/apr-packages-after-host-install-unpublish.json"
+        ${pkgs.jq}/bin/jq -e \
+          'all(.[]; .name != "hostinstall")
+            and any(.[]; .name == "hostleaf" and .version == "2.0.0")' \
+          "$work/apr-packages-after-host-install-unpublish.json" >/dev/null
+        unpublish_head=$(git -C "$install_reg" rev-parse HEAD)
+        run_clean ${self}/bin/apr --json push \
+          --registry host-install-channel \
+          --branch stable > "$work/apr-push-host-install-unpublish.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$unpublish_head" \
+          '.action == "push"
+            and .branch == "stable"
+            and .set_upstream == false
+            and .force == false
+            and .head == $head
+            and (.branches | any(.name == "origin/stable" and .remote == true))' \
+          "$work/apr-push-host-install-unpublish.json" >/dev/null
+
+        home="$retired_home"
+        config="$retired_config"
+        data="$retired_data"
+        cache="$retired_cache"
+        profile_root="$retired_profile_root"
+        profile="$retired_profile"
+        run_clean ${self}/bin/apm --json update --registry host-install-retired \
+          > "$work/apm-update-host-install-retired-after-unpublish.json" 2>&1 || {
+          cat "$work/apm-update-host-install-retired-after-unpublish.json"
+          exit 1
+        }
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$unpublish_head" \
+          '.registry == "host-install-retired"
+            and .updated == 1
+            and (.registries | length == 1)
+            and .registries[0].registry == "host-install-retired"
+            and .registries[0].status == "updated"
+            and .registries[0].commit == $head
+            and .registries[0].packages == 1
+            and .registries[0].added == 0
+            and .registries[0].updated == 1
+            and .registries[0].removed == 1' \
+          "$work/apm-update-host-install-retired-after-unpublish.json" >/dev/null || {
+          cat "$work/apm-update-host-install-retired-after-unpublish.json"
+          exit 1
+        }
+        run_clean ${self}/bin/apm --json search hostinstall \
+          --registry host-install-retired \
+          > "$work/apm-search-host-install-retired-after-unpublish.json"
+        ${pkgs.jq}/bin/jq -e 'length == 0' \
+          "$work/apm-search-host-install-retired-after-unpublish.json" >/dev/null
+        run_clean ${self}/bin/apm policy hostinstall \
+          > "$work/apm-policy-host-install-retired-after-unpublish.out" 2>&1
+        grep -q "Installed: 2.0.0" \
+          "$work/apm-policy-host-install-retired-after-unpublish.out"
+        grep -q "Candidate: (none)" \
+          "$work/apm-policy-host-install-retired-after-unpublish.out"
+        grep -q "installed, unavailable" \
+          "$work/apm-policy-host-install-retired-after-unpublish.out"
+        run_clean ${self}/bin/apm --json policy hostinstall \
+          > "$work/apm-policy-host-install-retired-after-unpublish.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package == "hostinstall"
+            and .installed == "2.0.0"
+            and .candidate == null
+            and .versions == []
+            and (.unavailable_installed | length == 1)
+            and .unavailable_installed[0].version == "2.0.0"
+            and .unavailable_installed[0].registry == "host-install-retired"' \
+          "$work/apm-policy-host-install-retired-after-unpublish.json" >/dev/null
+        run_clean ${self}/bin/apm --json search hostinstall --installed \
+          > "$work/apm-search-installed-host-install-retired-after-unpublish.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-retired"
+            and .[0].version == "2.0.0"' \
+          "$work/apm-search-installed-host-install-retired-after-unpublish.json" >/dev/null
+        run_clean ${self}/bin/apm --json source hostinstall --show-drv \
+          > "$work/apm-source-host-install-retired-after-unpublish.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg source "$install_drv_v2" \
+          --arg store "$install_store_v2" \
+          '.package == "hostinstall"
+            and .registry == "host-install-retired"
+            and .source_drv == $source
+            and (.source_nar_hash | startswith("sha256-"))
+            and .installed == true
+            and .installed_store_path == $store' \
+          "$work/apm-source-host-install-retired-after-unpublish.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-retired-after-unpublish-run.out"
+        grep -q "host leaf package v2 executed" \
+          "$work/host-install-retired-after-unpublish-run.out"
+        grep -q "host install package v2 executed" \
+          "$work/host-install-retired-after-unpublish-run.out"
         assert_default_profile_absent
 
         mkdir -p "$out"
