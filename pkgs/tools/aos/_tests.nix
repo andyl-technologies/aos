@@ -1647,12 +1647,19 @@ in {
           "$work/apr-keys-register-external.json" >/dev/null
         grep -q '"external" = { command = "' \
           "$config/apm/registries.d/host-keyadd.toml"
-        run_clean ${self}/bin/apr keys add external "$host_keyadd_external" \
+        run_clean ${self}/bin/apr --json keys add external "$host_keyadd_external" \
           --registry host-keyadd \
           --key "$work/host-install-release-key" \
-          > "$work/apr-keys-add-external.out" 2>&1
-        grep -q "Added active signing key 'external'" \
-          "$work/apr-keys-add-external.out"
+          > "$work/apr-keys-add-external.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg key "$host_keyadd_external" \
+          '.action == "keys_add"
+            and .status == "added"
+            and .registry == "host-keyadd"
+            and .id == "external"
+            and .key == $key
+            and .committed == true' \
+          "$work/apr-keys-add-external.json" >/dev/null
         run_clean ${self}/bin/apr --json keys list --registry host-keyadd \
           > "$work/apr-keys-list-host-keyadd-external.json"
         ${pkgs.jq}/bin/jq -e \
@@ -1743,18 +1750,25 @@ in {
           > "$work/apr-release-host-keyadd-tag-object.out"
         grep -q "BEGIN SSH SIGNATURE" \
           "$work/apr-release-host-keyadd-tag-object.out"
-        run_clean ${self}/bin/apr keys retire next \
+        run_clean ${self}/bin/apr --json keys retire next \
           --registry host-keyadd \
           --vouched-by initial \
           --reason "manual rotation" \
           --key "$work/host-install-release-key" \
-          --no-resign > "$work/apr-keys-retire-next-no-resign.out" 2>&1
-        grep -q "Skipped re-signing (--no-resign). Affected tags:" \
-          "$work/apr-keys-retire-next-no-resign.out"
-        grep -q "release tag 1.0.0" \
-          "$work/apr-keys-retire-next-no-resign.out"
-        grep -q "Retired signing key 'next'" \
-          "$work/apr-keys-retire-next-no-resign.out"
+          --no-resign > "$work/apr-keys-retire-next-no-resign.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "keys_retire"
+            and .status == "retired"
+            and .registry == "host-keyadd"
+            and .id == "next"
+            and .reason == "manual rotation"
+            and .vouched_by == "initial"
+            and .committed == true
+            and .resigned == false
+            and (.resign_plan.release_tags | index("1.0.0") != null)
+            and (.resign_plan.release_tags | index("0.1.0") == null)
+            and .resign_plan.channel_partitions == []' \
+          "$work/apr-keys-retire-next-no-resign.json" >/dev/null
         git -C "$keyadd_reg" log --oneline -1 \
           > "$work/git-log-host-keyadd-retire-next.out"
         grep -q "registry: retire signing key next" \

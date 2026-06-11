@@ -3653,6 +3653,17 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
                 &format!("registry: add signing key {id}"),
                 commit_key.as_ref().map(|k| k.path()),
             )?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "keys_add",
+                    "status": "added",
+                    "registry": registry_name,
+                    "id": id,
+                    "key": key,
+                    "committed": !*no_commit,
+                }));
+                return Ok(());
+            }
             printer.success(&format!(
                 "Added active signing key '{id}' to registry '{registry_name}'."
             ));
@@ -3722,6 +3733,20 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
                 print_resign_plan(&plan, printer);
             } else if let Some(vouch_key) = signer.as_ref().map(|k| k.path()) {
                 execute_retirement_resign(&dir, &plan, vouch_key, printer)?;
+            }
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "keys_retire",
+                    "status": "retired",
+                    "registry": registry_name,
+                    "id": id,
+                    "reason": reason.as_deref(),
+                    "vouched_by": vouching_id,
+                    "committed": !*no_commit,
+                    "resigned": !*no_resign,
+                    "resign_plan": resign_plan_json(&plan),
+                }));
+                return Ok(());
             }
             printer.success(&format!(
                 "Retired signing key '{id}' from registry '{registry_name}' (vouched by '{vouching_id}')."
@@ -3882,6 +3907,29 @@ fn print_resign_plan(plan: &ResignPlan, printer: &Printer) {
             channel::bucket_hex(*bucket),
         ));
     }
+}
+
+fn resign_plan_json(plan: &ResignPlan) -> serde_json::Value {
+    let partitions = plan
+        .affected_partitions
+        .iter()
+        .map(|(channel, bucket, version)| {
+            serde_json::json!({
+                "channel": channel,
+                "bucket": *bucket,
+                "bucket_hex": channel::bucket_hex(*bucket),
+                "version": version.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "release_tags": plan
+            .affected_releases
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "channel_partitions": partitions,
+    })
 }
 
 /// Extract a signed tag's original message, dropping the SSH signature
