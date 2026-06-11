@@ -1416,6 +1416,11 @@ in {
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/host-install-release-key"
         install_release_public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/host-install-release-key.pub")
         install_channel_trust_key="host-install-channel:Ed25519:$install_release_public_key"
+        ${pkgs.python3}/bin/python3 - << 'PY' > "$work/host-install-cache-signing-key"
+        import base64
+
+        print("hostcache:" + base64.b64encode(bytes(range(32))).decode("ascii"))
+        PY
         run_clean ${self}/bin/apr create host-install-channel \
           --trust-key "$install_channel_trust_key" \
           --trust-key-id channel \
@@ -1485,6 +1490,7 @@ in {
         run_clean ${self}/bin/apr --json cache generate \
           --registry host-install-channel \
           --output "$work/install-static-cache-output/cache" \
+          --key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --upload-url "file://$work/install-static-cache-upload/cache" \
           --priority 77 \
@@ -1508,9 +1514,17 @@ in {
           "$work/apr-cache-host-install.json" >/dev/null
         test -f "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-output/cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-output/cache/$install_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/nix-cache-info"
         test -f "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$install_hash.narinfo"
         find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
         git -C "$install_reg" add -A
         git -C "$install_reg" \
@@ -1523,6 +1537,7 @@ in {
           --registry host-install-channel \
           --key "$work/host-install-release-key" \
           --cache-output "$work/install-release-cache/cache" \
+          --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --cache-priority 77 \
           --upload-url "file://$work/install-static-cache-upload/cache" \
@@ -1562,6 +1577,10 @@ in {
           "$work/apr-release-host-install-v1-tag-object.out"
         test -f "$work/install-release-cache/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-release-cache/cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-release-cache/cache/$install_leaf_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-release-cache/cache/$install_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/HEAD"
         test -f "$work/install-static-cache-upload/cache/info/refs"
         test -f "$work/install-static-cache-upload/cache/releases/1/0/0/objects/info/packs"
@@ -1604,6 +1623,7 @@ in {
           --maintainer host@example.invalid \
           --key "$work/host-install-release-key" \
           --cache-output "$work/direct-release-cache" \
+          --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "$direct_release_url" \
           --cache-priority 66 \
           --upload-url "file://$work/install-static-cache-upload/direct-release" \
@@ -1641,6 +1661,10 @@ in {
           "$work/apr-release-host-direct-tag-object.out"
         test -f "$work/direct-release-cache/$install_leaf_hash.narinfo"
         test -f "$work/direct-release-cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/direct-release-cache/$install_leaf_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/direct-release-cache/$install_hash.narinfo"
         test -f "$work/install-static-cache-upload/direct-release/HEAD"
         test -f "$work/install-static-cache-upload/direct-release/info/refs"
         test -f "$work/install-static-cache-upload/direct-release/releases/1/0/0/objects/info/packs"
@@ -2339,6 +2363,7 @@ in {
         run_clean ${self}/bin/apr --json cache generate \
           --registry host-install-channel \
           --output "$work/install-static-cache-output/cache" \
+          --key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --upload-url "file://$work/install-static-cache-upload/cache" \
           --priority 77 \
@@ -2363,10 +2388,24 @@ in {
         test -f "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-output/cache/$install_leaf_hash_v2.narinfo"
         test -f "$work/install-static-cache-output/cache/$install_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-output/cache/$install_leaf_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-output/cache/$install_hash_v2.narinfo"
         test -f "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/$install_leaf_hash_v2.narinfo"
         test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$install_leaf_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
         find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
         git -C "$install_reg" add -A
         git -C "$install_reg" \
@@ -2379,6 +2418,7 @@ in {
           --registry host-install-channel \
           --key "$work/host-install-release-key" \
           --cache-output "$work/install-release-cache-v2/cache" \
+          --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --cache-priority 77 \
           --upload-url "file://$work/install-static-cache-upload/cache" \
@@ -2415,6 +2455,10 @@ in {
           > "$work/apr-release-host-install-v2-tag.out"
         test -f "$work/install-release-cache-v2/cache/$install_leaf_hash_v2.narinfo"
         test -f "$work/install-release-cache-v2/cache/$install_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-release-cache-v2/cache/$install_leaf_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-release-cache-v2/cache/$install_hash_v2.narinfo"
         test -f "$work/install-static-cache-upload/cache/releases/2/0/0/objects/info/packs"
         test -f "$work/install-static-cache-upload/cache/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
         grep -q "BEGIN SSH SIGNATURE" \
