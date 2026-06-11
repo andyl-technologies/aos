@@ -2505,6 +2505,328 @@ in {
         profile_root="$collab_main_profile_root"
         profile="$collab_main_profile"
 
+        subtree_origin="$work/host-subtree-origin.git"
+        git init --bare --object-format=sha256 "$subtree_origin" \
+          > "$work/git-init-host-subtree-origin.out" 2>&1
+        run_clean ${self}/bin/aos --json package registry create host-subtree \
+          --remote "$subtree_origin" \
+          > "$work/aos-package-registry-create-host-subtree.json"
+        subtree_reg="$data/apm/registries/host-subtree"
+        ${pkgs.jq}/bin/jq -e --arg reg "$subtree_reg" \
+          '.action == "create"
+            and .registry == "host-subtree"
+            and .path == $reg
+            and .remote != null
+            and .current == "stable"
+            and (.head | length == 64)' \
+          "$work/aos-package-registry-create-host-subtree.json" >/dev/null
+        git -C "$subtree_reg" config user.name "Host Subtree Maintainer"
+        git -C "$subtree_reg" config user.email "host-subtree@example.invalid"
+        run_clean ${self}/bin/aos --json package registry publish "$install_leaf_store" \
+          --name hostsubtree \
+          --version 1.0.0 \
+          --description "Host aos package subtree fixture" \
+          --license MIT \
+          --maintainer host-subtree@example.invalid \
+          --registry host-subtree \
+          --message "publish hostsubtree via aos package registry" \
+          > "$work/aos-package-registry-publish-host-subtree.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_leaf_store" \
+          '.action == "publish"
+            and .registry == "host-subtree"
+            and .package == "hostsubtree"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and .committed == true
+            and .commit_message == "publish hostsubtree via aos package registry"' \
+          "$work/aos-package-registry-publish-host-subtree.json" >/dev/null
+        subtree_commit=$(git -C "$subtree_reg" rev-parse HEAD)
+        run_clean ${self}/bin/aos --json package registry push \
+          --registry host-subtree \
+          --branch stable \
+          --set-upstream > "$work/aos-package-registry-push-host-subtree.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$subtree_commit" \
+          '.action == "push"
+            and .branch == "stable"
+            and .set_upstream == true
+            and .force == false
+            and .head == $head' \
+          "$work/aos-package-registry-push-host-subtree.json" >/dev/null
+
+        subtree_main_home="$home"
+        subtree_main_config="$config"
+        subtree_main_data="$data"
+        subtree_main_cache="$cache"
+        subtree_main_profile_root="$profile_root"
+        subtree_main_profile="$profile"
+        home="$work/subtree-consumer-home"
+        config="$work/subtree-consumer-config"
+        data="$work/subtree-consumer-share"
+        cache="$work/subtree-consumer-cache"
+        profile_root="$work/subtree-consumer-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/aos --json package registry add --no-verify \
+          "file://$subtree_origin" \
+          --name host-subtree-client \
+          --branch stable > "$work/aos-package-registry-add-host-subtree-client.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg head "$subtree_commit" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-subtree-client"
+            and .tracking == "branch:stable"
+            and .synced == true
+            and .last_commit == $head
+            and .packages == 1' \
+          "$work/aos-package-registry-add-host-subtree-client.json" >/dev/null
+        run_clean ${self}/bin/aos --json package search hostsubtree \
+          --registry host-subtree-client > "$work/aos-package-search-host-subtree-client.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostsubtree"
+            and .[0].version == "1.0.0"
+            and .[0].registry == "host-subtree-client"' \
+          "$work/aos-package-search-host-subtree-client.json" >/dev/null
+        run_clean ${self}/bin/aos --json package --yes install hostsubtree \
+          --registry host-subtree-client > "$work/aos-package-install-host-subtree.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostsubtree"]
+            and .generation == 1
+            and (.roots | length == 1)
+            and .roots[0].name == "hostsubtree"
+            and .roots[0].registry == "host-subtree-client"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | length == 1)
+            and .closure[0].name == "hostsubtree"
+            and .closure[0].store_path == $store
+            and .closure[0].explicit == true' \
+          "$work/aos-package-install-host-subtree.json" >/dev/null
+        "$profile/current/bin/host-leaf-tool" \
+          > "$work/aos-package-host-subtree-run.out"
+        grep -q "host leaf package executed" \
+          "$work/aos-package-host-subtree-run.out"
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$subtree_main_home"
+        config="$subtree_main_config"
+        data="$subtree_main_data"
+        cache="$subtree_main_cache"
+        profile_root="$subtree_main_profile_root"
+        profile="$subtree_main_profile"
+
+        run_clean ${self}/bin/apr create host-merge-review \
+          > "$work/apr-create-host-merge-review.out" 2>&1
+        merge_reg="$data/apm/registries/host-merge-review"
+        git -C "$merge_reg" config user.name "Host Merge Reviewer"
+        git -C "$merge_reg" config user.email "host-merge-reviewer@example.invalid"
+        run_clean ${self}/bin/apr --json publish "$install_leaf_store" \
+          --name hostmergeleaf \
+          --version 1.0.0 \
+          --description "Host merge review base fixture" \
+          --license MIT \
+          --maintainer merge-reviewer@example.invalid \
+          --registry host-merge-review \
+          --message "publish hostmergeleaf base" \
+          > "$work/apr-publish-host-merge-base.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_leaf_store" \
+          '.action == "publish"
+            and .registry == "host-merge-review"
+            and .package == "hostmergeleaf"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and .committed == true
+            and .commit_message == "publish hostmergeleaf base"' \
+          "$work/apr-publish-host-merge-base.json" >/dev/null
+
+        run_clean ${self}/bin/apr branch create feature/hostmerge-no-ff \
+          --registry host-merge-review > "$work/apr-branch-create-host-merge-no-ff.out" 2>&1
+        run_clean ${self}/bin/apr branch switch feature/hostmerge-no-ff \
+          --registry host-merge-review > "$work/apr-branch-switch-host-merge-no-ff.out" 2>&1
+        run_clean ${self}/bin/apr --json publish "$install_store" \
+          --name hostmergeapp \
+          --version 1.0.0 \
+          --description "Host merge review no-ff fixture" \
+          --license MIT \
+          --maintainer merge-reviewer@example.invalid \
+          --registry host-merge-review \
+          --message "publish hostmergeapp feature" \
+          > "$work/apr-publish-host-merge-no-ff.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_store" \
+          '.action == "publish"
+            and .registry == "host-merge-review"
+            and .package == "hostmergeapp"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and .committed == true' \
+          "$work/apr-publish-host-merge-no-ff.json" >/dev/null
+        run_clean ${self}/bin/apr branch switch stable \
+          --registry host-merge-review > "$work/apr-branch-switch-host-merge-stable-before-no-ff.out" 2>&1
+        merge_before_no_ff=$(git -C "$merge_reg" rev-parse HEAD)
+        run_clean ${self}/bin/apr --json merge feature/hostmerge-no-ff \
+          --no-ff \
+          --registry host-merge-review > "$work/apr-merge-host-merge-no-ff.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg before "$merge_before_no_ff" \
+          '.action == "merge"
+            and .branch == "feature/hostmerge-no-ff"
+            and .no_ff == true
+            and .squash == false
+            and .current == "stable"
+            and .head != $before
+            and (.head | length == 64)
+            and (.output | contains("Merge made"))
+            and (.branches | any(.name == "stable" and .current == true))' \
+          "$work/apr-merge-host-merge-no-ff.json" >/dev/null
+        merge_no_ff_parents=$(git -C "$merge_reg" rev-list --parents -n 1 HEAD)
+        set -- $merge_no_ff_parents
+        test "$#" = "3"
+        run_clean ${self}/bin/apr --json show hostmergeapp \
+          --registry host-merge-review > "$work/apr-show-host-merge-no-ff.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package.name == "hostmergeapp"
+            and .versions[0].version == "1.0.0"' \
+          "$work/apr-show-host-merge-no-ff.json" >/dev/null
+        run_clean ${self}/bin/apr branch delete feature/hostmerge-no-ff \
+          --registry host-merge-review > "$work/apr-branch-delete-host-merge-no-ff.out" 2>&1
+
+        run_clean ${self}/bin/apr branch create feature/hostmerge-squash \
+          --registry host-merge-review > "$work/apr-branch-create-host-merge-squash.out" 2>&1
+        run_clean ${self}/bin/apr branch switch feature/hostmerge-squash \
+          --registry host-merge-review > "$work/apr-branch-switch-host-merge-squash.out" 2>&1
+        run_clean ${self}/bin/apr --json publish "$bulk_store" \
+          --name hostmergebulk \
+          --version 1.0.0 \
+          --description "Host merge review squash fixture" \
+          --license MIT \
+          --maintainer merge-reviewer@example.invalid \
+          --registry host-merge-review \
+          --message "publish hostmergebulk feature" \
+          > "$work/apr-publish-host-merge-squash.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$bulk_store" \
+          '.action == "publish"
+            and .registry == "host-merge-review"
+            and .package == "hostmergebulk"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and (.nar_size > 1000000)
+            and .committed == true' \
+          "$work/apr-publish-host-merge-squash.json" >/dev/null
+        run_clean ${self}/bin/apr branch switch stable \
+          --registry host-merge-review > "$work/apr-branch-switch-host-merge-stable-before-squash.out" 2>&1
+        merge_before_squash=$(git -C "$merge_reg" rev-parse HEAD)
+        run_clean ${self}/bin/apr --json merge feature/hostmerge-squash \
+          --squash \
+          --registry host-merge-review > "$work/apr-merge-host-merge-squash.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg before "$merge_before_squash" \
+          '.action == "merge"
+            and .branch == "feature/hostmerge-squash"
+            and .no_ff == false
+            and .squash == true
+            and .current == "stable"
+            and .head == $before
+            and (.output | contains("Squash commit"))
+            and (.branches | any(.name == "stable" and .current == true))' \
+          "$work/apr-merge-host-merge-squash.json" >/dev/null
+        run_clean ${self}/bin/apr --json status \
+          --registry host-merge-review > "$work/apr-status-host-merge-squash.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.clean == false
+            and (.entries | any(.index == "A" and .path == "packages/h/hostmergebulk.toml"))' \
+          "$work/apr-status-host-merge-squash.json" >/dev/null
+        git -C "$merge_reg" commit -m "merge: squash hostmergebulk feature" \
+          > "$work/git-commit-host-merge-squash.out" 2>&1
+        run_clean ${self}/bin/apr --json show hostmergebulk \
+          --registry host-merge-review > "$work/apr-show-host-merge-squash.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package.name == "hostmergebulk"
+            and .versions[0].version == "1.0.0"
+            and .versions[0].platforms."x86_64-linux".nar_size > 1000000' \
+          "$work/apr-show-host-merge-squash.json" >/dev/null
+
+        run_clean ${self}/bin/apr branch create feature/hostmerge-conflict \
+          --registry host-merge-review > "$work/apr-branch-create-host-merge-conflict.out" 2>&1
+        run_clean ${self}/bin/apr branch switch feature/hostmerge-conflict \
+          --registry host-merge-review > "$work/apr-branch-switch-host-merge-conflict.out" 2>&1
+        run_clean ${self}/bin/apr --json publish "$install_store" \
+          --name hostmergeleaf \
+          --version 1.0.0 \
+          --description "Feature-side conflicting host merge fixture" \
+          --license MIT \
+          --maintainer merge-reviewer@example.invalid \
+          --registry host-merge-review \
+          --message "feature: update conflicting hostmergeleaf" \
+          > "$work/apr-publish-host-merge-conflict-feature.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$install_store" \
+          '.action == "publish"
+            and .registry == "host-merge-review"
+            and .package == "hostmergeleaf"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and .committed == true' \
+          "$work/apr-publish-host-merge-conflict-feature.json" >/dev/null
+        run_clean ${self}/bin/apr branch switch stable \
+          --registry host-merge-review > "$work/apr-branch-switch-host-merge-stable-before-conflict.out" 2>&1
+        run_clean ${self}/bin/apr --json publish "$bulk_store" \
+          --name hostmergeleaf \
+          --version 1.0.0 \
+          --description "Stable-side conflicting host merge fixture" \
+          --license MIT \
+          --maintainer merge-reviewer@example.invalid \
+          --registry host-merge-review \
+          --message "stable: update conflicting hostmergeleaf" \
+          > "$work/apr-publish-host-merge-conflict-stable.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$bulk_store" \
+          '.action == "publish"
+            and .registry == "host-merge-review"
+            and .package == "hostmergeleaf"
+            and .version == "1.0.0"
+            and .store_path == $store
+            and (.nar_size > 1000000)
+            and .committed == true' \
+          "$work/apr-publish-host-merge-conflict-stable.json" >/dev/null
+        merge_before_conflict=$(git -C "$merge_reg" rev-parse HEAD)
+        if run_clean ${self}/bin/apr --json merge feature/hostmerge-conflict \
+          --registry host-merge-review > "$work/apr-merge-host-merge-conflict.out" 2>&1; then
+          cat "$work/apr-merge-host-merge-conflict.out"
+          exit 1
+        fi
+        grep -q "git merge -- feature/hostmerge-conflict failed" \
+          "$work/apr-merge-host-merge-conflict.out"
+        test "$(git -C "$merge_reg" rev-parse HEAD)" = "$merge_before_conflict"
+        git -C "$merge_reg" status --porcelain \
+          > "$work/git-status-host-merge-conflict.out"
+        grep -q '^UU packages/h/hostmergeleaf.toml$' \
+          "$work/git-status-host-merge-conflict.out"
+        git -C "$merge_reg" merge --abort \
+          > "$work/git-merge-abort-host-merge-conflict.out" 2>&1
+        run_clean ${self}/bin/apr --json status \
+          --registry host-merge-review > "$work/apr-status-host-merge-after-conflict-abort.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.clean == true and .entries == []' \
+          "$work/apr-status-host-merge-after-conflict-abort.json" >/dev/null
+
+        run_clean ${self}/bin/apr --json packages \
+          --registry host-merge-review > "$work/apr-packages-host-merge-review.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 3
+            and any(.[]; .name == "hostmergeleaf" and .version == "1.0.0")
+            and any(.[]; .name == "hostmergeapp" and .version == "1.0.0")
+            and any(.[]; .name == "hostmergebulk" and .version == "1.0.0")' \
+          "$work/apr-packages-host-merge-review.json" >/dev/null
+        assert_no_profile
+
         run_clean ${self}/bin/apr create host-direct-release \
           > "$work/apr-create-host-direct-release.out" 2>&1
         direct_reg="$data/apm/registries/host-direct-release"
@@ -6143,6 +6465,99 @@ in {
         "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-rollback-upgrade.out"
         grep -q "host leaf package v2 executed" "$work/host-install-v2-after-rollback-upgrade.out"
         grep -q "host install package v2 executed" "$work/host-install-v2-after-rollback-upgrade.out"
+        assert_default_profile_absent
+
+        run_clean ${self}/bin/apm rollback --list \
+          > "$work/apm-rollback-list-host-install-after-roll-forward.out" 2>&1
+        grep -q "gen-1: .*hostinstall 1.0.0" \
+          "$work/apm-rollback-list-host-install-after-roll-forward.out"
+        grep -q "gen-3: .*hostinstall 2.0.0" \
+          "$work/apm-rollback-list-host-install-after-roll-forward.out"
+        grep -q "gen-3: .*current" \
+          "$work/apm-rollback-list-host-install-after-roll-forward.out"
+        run_clean ${self}/bin/apm --json rollback --generation 1 \
+          > "$work/apm-rollback-host-install-explicit-v1.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg old "$install_store" \
+          --arg old_leaf "$install_leaf_store" \
+          --arg new "$install_store_v2" \
+          --arg new_leaf "$install_leaf_store_v2" \
+          '.action == "rollback"
+            and .status == "rolled_back"
+            and .requested_generation == 1
+            and .from_generation == 3
+            and .to_generation == 1
+            and .dry_run == false
+            and .generation == 1
+            and (.restored | length == 2)
+            and (.restored | any(.store_path == $old
+              and .registry == "host-install-client"
+              and .package.name == "hostinstall"
+              and .package.version == "1.0.0"))
+            and (.restored | any(.store_path == $old_leaf
+              and .registry == "host-install-client"
+              and .package.name == "hostleaf"
+              and .package.version == "1.0.0"))
+            and (.removed | length == 2)
+            and (.removed | any(.store_path == $new
+              and .registry == "host-install-client"
+              and .package.name == "hostinstall"
+              and .package.version == "2.0.0"))
+            and (.removed | any(.store_path == $new_leaf
+              and .registry == "host-install-client"
+              and .package.name == "hostleaf"
+              and .package.version == "2.0.0"))' \
+          "$work/apm-rollback-host-install-explicit-v1.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-v1-after-explicit-rollback.out"
+        grep -q "host leaf package executed" \
+          "$work/host-install-v1-after-explicit-rollback.out"
+        grep -q "host install package executed" \
+          "$work/host-install-v1-after-explicit-rollback.out"
+        if grep -q "v2 executed" "$work/host-install-v1-after-explicit-rollback.out"; then
+          cat "$work/host-install-v1-after-explicit-rollback.out"
+          exit 1
+        fi
+        assert_default_profile_absent
+        run_clean ${self}/bin/apm --json rollback --generation 3 \
+          > "$work/apm-rollback-host-install-explicit-v2.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg old "$install_store" \
+          --arg old_leaf "$install_leaf_store" \
+          --arg new "$install_store_v2" \
+          --arg new_leaf "$install_leaf_store_v2" \
+          '.action == "rollback"
+            and .status == "rolled_back"
+            and .requested_generation == 3
+            and .from_generation == 1
+            and .to_generation == 3
+            and .dry_run == false
+            and .generation == 3
+            and (.restored | length == 2)
+            and (.restored | any(.store_path == $new
+              and .registry == "host-install-client"
+              and .package.name == "hostinstall"
+              and .package.version == "2.0.0"))
+            and (.restored | any(.store_path == $new_leaf
+              and .registry == "host-install-client"
+              and .package.name == "hostleaf"
+              and .package.version == "2.0.0"))
+            and (.removed | length == 2)
+            and (.removed | any(.store_path == $old
+              and .registry == "host-install-client"
+              and .package.name == "hostinstall"
+              and .package.version == "1.0.0"))
+            and (.removed | any(.store_path == $old_leaf
+              and .registry == "host-install-client"
+              and .package.name == "hostleaf"
+              and .package.version == "1.0.0"))' \
+          "$work/apm-rollback-host-install-explicit-v2.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-v2-after-explicit-roll-forward.out"
+        grep -q "host leaf package v2 executed" \
+          "$work/host-install-v2-after-explicit-roll-forward.out"
+        grep -q "host install package v2 executed" \
+          "$work/host-install-v2-after-explicit-roll-forward.out"
         assert_default_profile_absent
 
         run_clean ${self}/bin/apm --json hold hostinstall > "$work/apm-hold-host-install.json"
