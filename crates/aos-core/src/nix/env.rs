@@ -7,8 +7,10 @@
 //! and the ValidPaths DB under `<NIX_STATE_DIR>/nix/db/db.sqlite`).
 //! AOS uses a single `AOS_ROOT` knob with the convention:
 //!
-//!   `<AOS_ROOT>/store/`         → `NIX_STORE_DIR`
-//!   `<AOS_ROOT>/var/nix/`       → `NIX_STATE_DIR`
+//! ```text
+//! <AOS_ROOT>/store/      -> NIX_STORE_DIR
+//! <AOS_ROOT>/var/nix/    -> NIX_STATE_DIR
+//! ```
 //!
 //! Tests and advanced tooling may override either derived value with
 //! `AOS_NIX_STORE_DIR` or `AOS_NIX_STATE_DIR`. This is useful when a client
@@ -18,10 +20,17 @@
 //! lives in `aos-core` so the CLI side (`aos-cache`, `aos`) doesn't
 //! pull in `aos-server` as a dependency.
 
-/// Env bindings derived from `AOS_ROOT`. Returns an empty `Vec` when
-/// `AOS_ROOT` is unset — callers can unconditionally chain
-/// `.envs(aos_nix_env())` on a `std::process::Command` without
-/// branching on the env-var presence themselves.
+/// Returns the Nix store/state env bindings derived from `AOS_ROOT`.
+///
+/// Produces `NIX_STORE_DIR` and `NIX_STATE_DIR` pairs pointing at
+/// `<AOS_ROOT>/store` and `<AOS_ROOT>/var/nix` (a trailing slash on the
+/// root is normalised away). Either value can be overridden explicitly
+/// with `AOS_NIX_STORE_DIR` / `AOS_NIX_STATE_DIR`.
+///
+/// Returns an empty `Vec` when `AOS_ROOT` is unset — callers can
+/// unconditionally chain `.envs(aos_nix_env())` on a
+/// `std::process::Command` without branching on the env-var presence
+/// themselves.
 pub fn aos_nix_env() -> Vec<(&'static str, String)> {
     let Ok(root) = std::env::var("AOS_ROOT") else {
         return Vec::new();

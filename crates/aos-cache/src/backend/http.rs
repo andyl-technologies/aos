@@ -1,3 +1,16 @@
+//! HTTP(S) cache backend: generic binary caches and the AOS server API.
+//!
+//! One backend serves two modes, switched by whether an AOS provisioning
+//! token was supplied:
+//!
+//! - **Generic mode** — plain GET/PUT/HEAD on `<hash>.narinfo` and
+//!   `nar/...` URLs, compatible with any Nix binary cache.
+//! - **AOS mode** — the provisioning token is exchanged for a JWT at
+//!   `/oauth2/token`, and the AOS server API is used: batch
+//!   `/query-missing`, `/upload-pack` for batched NAR import, and
+//!   server-synthesised narinfo / cache-info (the corresponding client
+//!   puts become no-ops).
+
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -14,26 +27,42 @@ use super::{AuthOptions, CacheBackend, add_static_metadata_headers};
 /// For pull from any binary cache: standard GET on narinfo + NAR URLs.
 pub struct HttpBackend {
     engine: Arc<TransferEngine>,
+    /// Cache base URL without a trailing slash; for AOS servers this
+    /// includes the view path (e.g. `http://host:15000/default`).
     base_url: String,
     /// Scheme + host[:port] only — the auth endpoint lives at the root,
     /// not under the view path that `base_url` encodes.
     origin: String,
     /// Extra headers added to every request.
     headers: Vec<(String, String)>,
+    /// Whether the target is an AOS server (a provisioning token was
+    /// supplied), enabling the AOS-specific API paths.
     is_aos: bool,
 }
 
+/// OAuth2 token-endpoint response; only the access token is consumed.
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
 }
 
+/// Body of the AOS server's `/query-missing` response.
 #[derive(Deserialize)]
 struct QueryMissingResponse {
     missing: Vec<String>,
 }
 
 impl HttpBackend {
+    /// Creates a backend for `url`, authenticating against the AOS
+    /// server when `auth.token` is set.
+    ///
+    /// Custom `Name: value` headers from `auth.headers` are parsed once
+    /// and attached to every subsequent request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an AOS provisioning token is supplied but the
+    /// JWT exchange at `/oauth2/token` fails.
     pub async fn new(url: &str, auth: &AuthOptions, engine: Arc<TransferEngine>) -> Result<Self> {
         let base_url = url.trim_end_matches('/').to_string();
 
@@ -75,6 +104,8 @@ impl HttpBackend {
         Ok(backend)
     }
 
+    /// Exchanges an AOS provisioning token for a JWT and stores it as
+    /// the host's bearer credential on the engine.
     async fn authenticate(&mut self, provisioning_token: &str) -> Result<()> {
         // `oauth2/token` is a top-level route, NOT view-scoped — use
         // `self.origin`, not `self.base_url` (which already encodes the view).
@@ -123,6 +154,7 @@ impl HttpBackend {
         Ok(())
     }
 
+    /// Appends the backend's extra headers to a request.
     fn add_headers(&self, mut req: TransferRequest) -> TransferRequest {
         for (k, v) in &self.headers {
             req.headers.push((k.clone(), v.clone()));

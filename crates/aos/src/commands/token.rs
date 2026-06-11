@@ -1,3 +1,16 @@
+//! `aos token` — manage provisioning tokens on a local AOS server.
+//!
+//! Talks to the running `aos serve` daemon over its *bootstrap* Unix
+//! socket (`run/bootstrap.sock` under the AOS root) using a simple
+//! newline-delimited JSON request/response protocol. Because socket
+//! access implies local root-level trust, no further authentication is
+//! required — this is how the first token is minted on a fresh server.
+//!
+//! Subcommands: `create` (mint a token for one or more views), `list`,
+//! `revoke`, and `rotate` (revoke with a one-hour grace period and mint
+//! a replacement). Token secrets are displayed exactly once, at
+//! creation/rotation time.
+
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -8,6 +21,12 @@ use crate::cli::TokenCmd;
 use aos_core::output::Printer;
 
 /// `aos token` — manage provisioning tokens via the bootstrap socket.
+///
+/// # Errors
+///
+/// Returns an error if the bootstrap socket is unreachable (is
+/// `aos serve` running?), if the request is malformed (e.g. an invalid
+/// `--expires` duration), or if the server reports a failure.
 pub async fn run(printer: &Printer, command: &TokenCmd, socket_path: &Path) -> Result<()> {
     match command {
         TokenCmd::Create {
@@ -32,6 +51,9 @@ pub async fn run(printer: &Printer, command: &TokenCmd, socket_path: &Path) -> R
     }
 }
 
+/// Send one JSON request over the bootstrap socket and return the
+/// response's `data` field; a `{"ok": false}` response becomes an error
+/// carrying the server's message.
 async fn send_request(
     socket_path: &Path,
     request: &serde_json::Value,
@@ -70,6 +92,8 @@ async fn send_request(
     Ok(resp.get("data").cloned().unwrap_or(serde_json::Value::Null))
 }
 
+/// `aos token create` — mint a token and print its id and secret (shown
+/// only this once).
 async fn create(
     printer: &Printer,
     socket_path: &Path,
@@ -121,6 +145,8 @@ async fn create(
     Ok(())
 }
 
+/// `aos token list` — print id, views, permissions, and comment for each
+/// active token (secrets are never shown).
 async fn list(printer: &Printer, socket_path: &Path) -> Result<()> {
     let req = serde_json::json!({ "action": "list" });
     let data = send_request(socket_path, &req).await?;
@@ -173,6 +199,7 @@ async fn list(printer: &Printer, socket_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `aos token revoke` — invalidate a token by id.
 async fn revoke(printer: &Printer, socket_path: &Path, token_id: &str) -> Result<()> {
     let req = serde_json::json!({ "action": "revoke", "token_id": token_id });
     let data = send_request(socket_path, &req).await?;
@@ -185,6 +212,8 @@ async fn revoke(printer: &Printer, socket_path: &Path, token_id: &str) -> Result
     Ok(())
 }
 
+/// `aos token rotate` — revoke the old token (1h grace period) and mint
+/// a replacement, printing the new id and secret.
 async fn rotate(printer: &Printer, socket_path: &Path, token_id: &str) -> Result<()> {
     let req = serde_json::json!({ "action": "rotate", "token_id": token_id });
     let data = send_request(socket_path, &req).await?;

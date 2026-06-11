@@ -1,3 +1,22 @@
+//! Precomputed closure file loading.
+//!
+//! A registry may publish a `closures/` directory containing one file per
+//! root store path, named by the root's store path hash. Each file is an
+//! adjacency list: every line names a closure member's hash followed by the
+//! hashes of its direct dependencies, with the root on the first line:
+//!
+//! ```text
+//! h7j3k8l2m9n4 r4q1m2kp8v3x xr5is7by89v3q
+//! r4q1m2kp8v3x
+//! xr5is7by89v3q q8mn2pv73w0x
+//! q8mn2pv73w0x
+//! ```
+//!
+//! Precomputed closures let the installer plan a full dependency download
+//! without resolving each member's package TOML individually. Parsing of the
+//! format itself lives in [`ClosureMeta::parse`]; this module only handles
+//! reading the files from a synced registry cache.
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -13,6 +32,12 @@ use crate::types::ClosureMeta;
 ///
 /// Returns a map from store path hash to parsed `ClosureMeta`.
 /// Missing or empty `closures/` directory is not an error — returns empty map.
+/// Subdirectories and hidden files are skipped.
+///
+/// # Errors
+///
+/// Returns an error if the `closures/` directory or one of its files cannot
+/// be read.
 pub fn load_closures(registry_dir: &Path) -> Result<HashMap<String, ClosureMeta>> {
     let closures_dir = registry_dir.join("closures");
     let mut map = HashMap::new();
@@ -49,6 +74,10 @@ pub fn load_closures(registry_dir: &Path) -> Result<HashMap<String, ClosureMeta>
 /// Load a single closure file for a specific store path hash.
 ///
 /// Returns `None` if the file does not exist.
+///
+/// # Errors
+///
+/// Returns an error if the file exists but cannot be read.
 pub fn load_closure(registry_dir: &Path, hash: &str) -> Result<Option<ClosureMeta>> {
     let path = registry_dir.join("closures").join(hash);
     if !path.exists() {

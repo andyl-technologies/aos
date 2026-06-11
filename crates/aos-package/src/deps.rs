@@ -1,3 +1,22 @@
+//! Dependency-inspection commands: `apm depends`, `rdepends`, `policy`,
+//! and `files`.
+//!
+//! - **`depends`**: render a package's dependency graph as a tree. For
+//!   registry packages the graph comes from precomputed closure files
+//!   (falling back to `references` fields); for installed-only packages it
+//!   is walked live from the store via `nix-store -q --references`.
+//! - **`rdepends`**: the reverse query — which *installed* packages have the
+//!   target anywhere in their closure. Uses closure files for O(1)
+//!   membership, then registry reference traversal, then a live
+//!   `nix-store -qR` walk as last resort.
+//! - **`policy`**: apt-style version table — installed version(s),
+//!   candidate, and every available version across registries by priority,
+//!   including installed versions no longer available anywhere.
+//! - **`files`**: list the files inside an installed package's store path.
+//!
+//! All tree builders deduplicate by store-path hash and break reference
+//! cycles by emitting a leaf node instead of recursing.
+
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
@@ -24,6 +43,7 @@ struct DepNode {
 }
 
 impl DepNode {
+    /// Recursively render the node for JSON output mode.
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "name": &self.name,
@@ -34,6 +54,8 @@ impl DepNode {
     }
 }
 
+/// Identity of one installed package, indexed by store-path hash when
+/// building installed-only dependency trees.
 #[derive(Clone)]
 struct InstalledPackageRef {
     name: String,
@@ -50,6 +72,14 @@ struct InstalledPackageRef {
 ///
 /// Uses precomputed closure files when available for the dependency graph.
 /// Falls back to walking `references` fields when no closure file exists.
+/// A package that is installed (or absent from every registry) is rendered
+/// from the live store's reference graph instead.
+///
+/// # Errors
+///
+/// Returns an error if registry caches or profile metadata cannot be
+/// loaded, if `package` is neither installed nor in any registry, or if a
+/// live `nix-store` reference query fails.
 pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
     let profile = Profile::open_readonly(config.scope);
@@ -122,6 +152,14 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
 ///
 /// Uses precomputed closure files for O(1) membership checks when available.
 /// Falls back to recursive `references` traversal otherwise.
+///
+/// The target may be matched by any installed version's store hash; when
+/// the package is not installed, the registry candidate's hash is used.
+///
+/// # Errors
+///
+/// Returns an error if registry caches or profile metadata cannot be
+/// loaded, or if `package` is neither installed nor in any registry.
 pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
 
@@ -206,6 +244,15 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
 }
 
 /// `apm policy <package>` -- show available versions across registries.
+///
+/// Prints the installed version(s), the install candidate (the highest
+/// priority registry's entry), the full version table, and any installed
+/// versions that are no longer available from any registry.
+///
+/// # Errors
+///
+/// Returns an error if registry caches or profile metadata cannot be
+/// loaded, or if `package` is neither installed nor in any registry.
 pub async fn policy(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
 
@@ -291,6 +338,11 @@ pub async fn policy(config: &ApmConfig, package: &str, printer: &Printer) -> Res
 }
 
 /// `apm files <package>` -- list files in the package's store path.
+///
+/// # Errors
+///
+/// Returns an error if `package` is not installed, the store path no longer
+/// exists (e.g. garbage collected), or the directory walk fails.
 pub async fn files(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let profile = Profile::open_readonly(config.scope);
     let installed = meta::list_meta(&profile)?;
@@ -340,6 +392,9 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
 }
 
+/// Collect the store-path hashes identifying the rdepends target: every
+/// installed version's hash, or (when not installed) the registry
+/// candidate's hash. Also returns a display string of the version(s).
 fn rdepends_target_hashes(
     package: &str,
     registries: &RegistrySet,
@@ -371,6 +426,9 @@ fn rdepends_target_hashes(
     Ok((hashes, target_meta.version.clone()))
 }
 
+/// `apm depends` for an installed package: build the tree from the live
+/// store's reference graph, restricted to installed packages (unknown refs
+/// become `unknown` leaves).
 async fn depends_installed(
     package: &str,
     installed: &[InstalledMeta],
@@ -429,6 +487,9 @@ async fn depends_installed(
     Ok(())
 }
 
+/// BFS over `nix-store -q --references` starting at `root_hash`, collecting
+/// each reachable installed package's direct reference hashes. Only hashes
+/// belonging to installed packages are expanded further.
 async fn installed_direct_refs(
     root_hash: &str,
     installed_by_hash: &HashMap<String, InstalledPackageRef>,
@@ -460,6 +521,8 @@ async fn installed_direct_refs(
     Ok(refs_by_hash)
 }
 
+/// Whether an installed path's live closure (`nix-store -qR`) contains any
+/// of the target hashes — the last-resort rdepends membership check.
 async fn installed_closure_contains_any(
     installed: &InstalledMeta,
     target_hashes: &HashSet<String>,
@@ -471,6 +534,7 @@ async fn installed_closure_contains_any(
         .any(|hash| target_hashes.contains(hash)))
 }
 
+/// Index installed packages (those with APM metadata) by store-path hash.
 fn installed_apm_by_hash(installed: &[InstalledMeta]) -> HashMap<String, InstalledPackageRef> {
     installed
         .iter()
@@ -489,6 +553,7 @@ fn installed_apm_by_hash(installed: &[InstalledMeta]) -> HashMap<String, Install
         .collect()
 }
 
+/// Whether any profile metadata entry names this package.
 fn has_installed_package(package: &str, installed: &[InstalledMeta]) -> bool {
     installed.iter().any(|inst| {
         inst.apm
@@ -498,6 +563,7 @@ fn has_installed_package(package: &str, installed: &[InstalledMeta]) -> bool {
     })
 }
 
+/// Comma-joined sorted list of installed versions of `package`, if any.
 fn policy_installed_versions(package: &str, installed: &[InstalledMeta]) -> Option<String> {
     let mut versions = BTreeSet::new();
 
@@ -517,6 +583,10 @@ fn policy_installed_versions(package: &str, installed: &[InstalledMeta]) -> Opti
     }
 }
 
+/// Recursively build the installed-only dependency tree from precollected
+/// direct references. `ancestors` is the DFS path used to cut cycles
+/// (cycle members become leaves); hashes without installed metadata render
+/// as `unknown` nodes.
 fn build_installed_dep_tree(
     hash: &str,
     refs_by_hash: &HashMap<String, Vec<String>>,
@@ -569,6 +639,7 @@ fn build_installed_dep_tree(
     }
 }
 
+/// Childless tree node for `hash`, named from installed metadata when known.
 fn installed_dep_leaf(
     hash: &str,
     installed_by_hash: &HashMap<String, InstalledPackageRef>,
@@ -590,6 +661,8 @@ fn installed_dep_leaf(
     }
 }
 
+/// Whether a registry candidate's exact store path is what is installed
+/// (same name, registry, and store-path hash).
 fn policy_candidate_is_installed(
     package: &str,
     registry_name: &str,
@@ -608,6 +681,8 @@ fn policy_candidate_is_installed(
     })
 }
 
+/// Installed `(version, registry)` pairs of `package` whose store paths are
+/// no longer offered by any registry (e.g. superseded or de-listed).
 fn policy_unavailable_installed(
     package: &str,
     installed: &[InstalledMeta],
@@ -757,6 +832,7 @@ fn format_registry_or_ref(registry_name: &str, _hash: &str) -> String {
     format!("                     [{registry_name}]")
 }
 
+/// Format the root annotation for an installed package's tree.
 fn format_installed_registry_ref(registry_name: &str) -> String {
     format!("                     [{registry_name}, installed]")
 }
@@ -772,6 +848,8 @@ fn closure_contains_any(
     closure_contains_any_inner(meta, registry_name, registries, target_hashes, &mut visited)
 }
 
+/// DFS over registry `references`, short-circuiting on a target hit;
+/// `visited` prevents revisiting shared subgraphs.
 fn closure_contains_any_inner(
     meta: &PackageMeta,
     registry_name: &str,

@@ -1,9 +1,22 @@
+//! `aos graph` — display a package's dependency graph.
+//!
+//! Builds the package first (dependency information lives in the Nix
+//! store database, so the store path must exist), then queries the store
+//! with `--query --tree` for the default indented tree view or
+//! `--query --graph` for `--dot`, whose raw DOT output goes straight to
+//! stdout for piping into graphviz.
+
 use anyhow::{Context, Result};
 
 use aos_core::nix::NixRunner;
 use aos_core::output::{Printer, create_spinner};
 
 /// `aos graph <package>` — display the dependency graph for a package.
+///
+/// # Errors
+///
+/// Returns an error if building the package or querying the store for
+/// its dependency graph fails.
 pub fn run(nix: &NixRunner, printer: &Printer, package: &str, dot: bool) -> Result<()> {
     let attr = format!("pkgs.{package}");
 
@@ -22,6 +35,7 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str, dot: bool) -> Resu
     }
 }
 
+/// Emit the dependency graph in DOT format on stdout (graphviz-ready).
 fn output_dot(
     nix: &NixRunner,
     printer: &Printer,
@@ -48,6 +62,7 @@ fn output_dot(
     Ok(())
 }
 
+/// Print the dependency graph as an indented tree.
 fn output_tree(
     nix: &NixRunner,
     printer: &Printer,

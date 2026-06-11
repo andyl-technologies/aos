@@ -1,3 +1,16 @@
+//! `aos prefetch` — compute source hashes with parallel downloads and
+//! mirror failover.
+//!
+//! Evaluates the whole package set once to discover every `fetchurl`
+//! source (URLs + declared hash), then downloads the selected sources
+//! concurrently, streaming each body through SHA-256 (nothing is written
+//! to disk). By default only sources whose hash is still a placeholder
+//! (`AAAAAAA...`) are fetched; `--package` restricts to specific
+//! packages and `--all` re-fetches everything. Mirrors are tried in
+//! order, downloads that fall below the minimum speed are aborted, and
+//! `--update` writes the computed `sha256-...` hashes back into the
+//! package `.nix` files under `pkgs/`.
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -18,6 +31,8 @@ use aos_core::output::{OutputMode, Printer};
 // Nix-evaluated source metadata
 // -----------------------------------------------------------------------
 
+/// A package's `fetchurl` source as evaluated from Nix: mirror URLs plus
+/// the currently declared output hash.
 #[derive(Debug, Deserialize)]
 struct SourceInfo {
     urls: Vec<String>,
@@ -50,6 +65,8 @@ fn discover_sources(nix: &NixRunner) -> Result<BTreeMap<String, Option<SourceInf
 // async fetcher with mirror fallover
 // -----------------------------------------------------------------------
 
+/// A successful fetch: the computed SRI hash, the byte count, the wall
+/// time, and which mirror ultimately served the file.
 struct FetchOk {
     hash: String,
     bytes: u64,
@@ -244,6 +261,20 @@ fn update_package_hash(
 // command entry point
 // -----------------------------------------------------------------------
 
+/// `aos prefetch` — fetch package sources and report their SRI hashes.
+///
+/// See the module docs for the selection rules (`packages`, `all`, and
+/// the placeholder-hash default) and the download behaviour (`jobs`
+/// parallel fetches, per-mirror `connect_timeout`, `min_speed` abort
+/// threshold). With `update`, hashes are written back into the package
+/// `.nix` files.
+///
+/// # Errors
+///
+/// Returns an error if the Nix evaluation of the package set fails, if
+/// none of the requested packages have `fetchurl` sources, or if any
+/// source fails to download from all of its mirrors (the remaining
+/// sources are still fetched and reported first).
 pub fn run(
     nix: &NixRunner,
     printer: &Printer,

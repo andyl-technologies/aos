@@ -1,3 +1,22 @@
+//! Package registry loading, resolution, and synchronization.
+//!
+//! A registry is a git repository of per-package TOML metadata files plus
+//! optional precomputed closure files, mirrored into a local cache directory
+//! by `apm update`. This module ties the pieces together:
+//!
+//! - [`Registry`] loads one registry's cache and answers name, store-path
+//!   hash, and closure lookups for a single platform.
+//! - [`RegistrySet`] layers multiple registries by priority so the highest
+//!   priority registry that offers a package wins.
+//! - Submodules implement the moving parts: [`git`] (git/dumb-HTTP sync with
+//!   signature and fast-forward verification), [`parse`] (package TOML
+//!   schema), [`closures`] (precomputed closure files), [`channel`] and
+//!   [`verify`] (channel rollout partitions and signed tag chains), [`keys`]
+//!   (the committed `keys.toml` trust roster), [`fetch`] and [`pack`]
+//!   (delta/full-pack object transfer), [`objectstore`] and [`static_upload`]
+//!   (the producer-side static dumb-HTTP origin), [`nixcache`] (static Nix
+//!   binary-cache generation), and [`state`] (persisted sync state).
+
 pub mod channel;
 pub mod closures;
 pub mod fetch;
@@ -23,8 +42,13 @@ use parse::parse_registry;
 /// A loaded registry with all its packages for the current platform.
 #[derive(Debug)]
 pub struct Registry {
+    /// The registry configuration this instance was loaded from.
     pub config: RegistryConfig,
+    /// Newest version of every package offered for the loaded platform,
+    /// keyed by package name.
     pub packages: HashMap<String, PackageMeta>,
+    /// Reverse index from store path hash to the exact package version that
+    /// produced it (covers all versions, not just the newest).
     hash_index: HashMap<String, PackageMeta>,
     /// Precomputed closures keyed by store path hash.
     closures: HashMap<String, ClosureMeta>,
@@ -36,6 +60,13 @@ impl Registry {
     /// The cache directory should contain a `packages/` subdirectory with
     /// the registry's TOML package files organized by first letter, and
     /// optionally a `closures/` directory with precomputed closure files.
+    /// A missing or unreadable `closures/` directory is tolerated and simply
+    /// yields no precomputed closures.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `packages/` directory cannot be read or any
+    /// package TOML file inside it fails to parse.
     pub fn load(cache_dir: &Path, config: &RegistryConfig, platform: &str) -> Result<Self> {
         let registry_dir = cache_dir.join(&config.name);
         let (packages, hash_index) =
@@ -57,27 +88,34 @@ impl Registry {
         })
     }
 
-    /// Look up a package by name.
+    /// Looks up the newest version of a package by name.
     pub fn get(&self, name: &str) -> Option<&PackageMeta> {
         self.packages.get(name)
     }
 
-    /// Look up a package by store path hash.
+    /// Looks up a package version by its store path hash.
+    ///
+    /// Unlike [`Registry::get`], this resolves any published version whose
+    /// output landed at that hash, which is what closure walking and rollback
+    /// metadata rebuilds need.
     pub fn get_by_hash(&self, hash: &str) -> Option<&PackageMeta> {
         self.hash_index.get(hash)
     }
 
-    /// Get the precomputed closure for a store path hash, if available.
+    /// Returns the precomputed closure for a store path hash, if available.
     pub fn get_closure(&self, hash: &str) -> Option<&ClosureMeta> {
         self.closures.get(hash)
     }
 
-    /// List all package names.
+    /// Lists all package names offered by this registry (unordered).
     pub fn names(&self) -> Vec<&str> {
         self.packages.keys().map(|s| s.as_str()).collect()
     }
 
-    /// Search packages by pattern (name + description).
+    /// Searches packages by a case-insensitive substring pattern.
+    ///
+    /// Matches against the package name, and also the description unless
+    /// `names_only` is set.
     pub fn search(&self, pattern: &str, names_only: bool) -> Vec<&PackageMeta> {
         let pattern_lower = pattern.to_lowercase();
         self.packages
@@ -101,13 +139,24 @@ pub struct RegistrySet {
 }
 
 impl RegistrySet {
-    /// Create a new registry set from pre-loaded registries.
-    /// Registries should already be sorted by priority (highest first).
+    /// Creates a new registry set from pre-loaded registries.
+    ///
+    /// Registries should already be sorted by priority (highest first);
+    /// [`RegistrySet::resolve`] returns the first match in iteration order.
     pub fn new(registries: Vec<Registry>) -> Self {
         Self { registries }
     }
 
-    /// Load all enabled registries from the cache directory.
+    /// Loads all enabled registries from the cache directory.
+    ///
+    /// Registries that fail to load (typically because they have not been
+    /// synced yet) are skipped with a warning on stderr rather than failing
+    /// the whole set.
+    ///
+    /// # Errors
+    ///
+    /// Currently never returns an error; the `Result` is kept for forward
+    /// compatibility with stricter loading policies.
     pub fn load(cache_dir: &Path, configs: &[&RegistryConfig], platform: &str) -> Result<Self> {
         let mut registries = Vec::new();
         for config in configs {
@@ -123,8 +172,8 @@ impl RegistrySet {
         Ok(Self::new(registries))
     }
 
-    /// Resolve a package name: returns the package from the highest-priority
-    /// registry that offers it.
+    /// Resolves a package name to the package offered by the
+    /// highest-priority registry, together with that registry.
     pub fn resolve(&self, name: &str) -> Option<(&Registry, &PackageMeta)> {
         for reg in &self.registries {
             if let Some(meta) = reg.get(name) {
@@ -134,7 +183,7 @@ impl RegistrySet {
         None
     }
 
-    /// Resolve a store path hash within a specific registry.
+    /// Resolves a store path hash within a specific registry.
     ///
     /// Used for registry-scoped closure walking: all dependencies of a
     /// package resolve from the same registry that provided it.
@@ -145,8 +194,8 @@ impl RegistrySet {
             .and_then(|r| r.get_by_hash(hash))
     }
 
-    /// Get the precomputed closure for a store path hash within a specific
-    /// registry.
+    /// Returns the precomputed closure for a store path hash within a
+    /// specific registry.
     pub fn get_closure_in(&self, registry_name: &str, hash: &str) -> Option<&ClosureMeta> {
         self.registries
             .iter()
@@ -154,7 +203,7 @@ impl RegistrySet {
             .and_then(|r| r.get_closure(hash))
     }
 
-    /// Get all versions of a package across registries (for `apm policy`).
+    /// Returns all versions of a package across registries (for `apm policy`).
     ///
     /// Returns entries from all registries, ordered by priority (highest first).
     pub fn all_versions(&self, name: &str) -> Vec<(&Registry, &PackageMeta)> {
@@ -164,12 +213,12 @@ impl RegistrySet {
             .collect()
     }
 
-    /// Get a reference to a specific registry by name.
+    /// Returns a reference to a specific registry by name.
     pub fn get_registry(&self, name: &str) -> Option<&Registry> {
         self.registries.iter().find(|r| r.config.name == name)
     }
 
-    /// Iterate over all registries.
+    /// Returns all registries in priority order (highest first).
     pub fn registries(&self) -> &[Registry] {
         &self.registries
     }

@@ -1,10 +1,48 @@
 //! System sysroot management (`apm install --system`, `apm upgrade --system`,
 //! `apm rollback --system`).
 //!
-//! A sysroot package is a regular package with `sysroot = true`. Installing it
-//! as a system sysroot creates a numbered generation under
-//! `/var/lib/profiles/system/`, runs activation scripts, and compares kernels
-//! to determine if a reboot is needed.
+//! A sysroot package is a regular package with `sysroot = true` whose store
+//! path is a system toplevel. Installing it as the system sysroot creates a
+//! numbered **generation** under `/var/lib/profiles/system/`: a `gen-N/`
+//! directory holding a `toplevel` symlink, recorded in `state.json` (see
+//! [`SystemGenerationState`]) alongside a `current` symlink that always
+//! points at the live generation.
+//!
+//! # Install / upgrade / rollback flow
+//!
+//! [`install_system`] resolves the package, downloads and imports any
+//! missing closure paths, writes the new generation, then runs the
+//! toplevel's `activate` script with the generation number. [`upgrade_system`]
+//! checks the registries for a newer sysroot version and delegates to
+//! [`install_system`]; [`rollback_system`] re-activates a previous
+//! generation's toplevel. Only after a successful activation is the
+//! generation committed as `current`.
+//!
+//! # Activation exit-code contract
+//!
+//! The `activate` script (see `modules/base/activate.sh.in`) rebuilds the
+//! generation's `/etc` overlay, reconciles running daemons via the hidden
+//! [`activate_pre_etc_swap`] / [`activate_post_etc_swap`] split, and swaps
+//! `/etc` atomically. Its exit code is the authority on what happened:
+//!
+//! ```text
+//! 0      switch succeeded, every unit healthy
+//! 5      switch succeeded; only stale-mount cleanup failed (cosmetic)
+//! 6      switch succeeded but some units failed -- the generation stays
+//!        live, but apm exits non-zero
+//! 1/2/3  failed before the swap; the previous generation is still live
+//! 4      swap incomplete; /etc indeterminate -- operator must intervene
+//! ```
+//!
+//! # Kernel upgrade modes
+//!
+//! When the new generation ships a different kernel, [`KernelUpgradeMode`]
+//! selects what happens after activation: `Advisory` (default) updates the
+//! boot loader and advises a reboot, `Kexec` hot-loads the new kernel,
+//! `Reboot` queues a full reboot via systemd, and `Live` applies userspace
+//! only, deferring the kernel to the next reboot. `--drain` runs the
+//! toplevel's drain script (or isolates `drain.target`) before a disruptive
+//! switch.
 
 use std::collections::HashSet;
 use std::fs::OpenOptions;
@@ -52,7 +90,9 @@ pub enum KernelUpgradeMode {
 // Constants
 // ---------------------------------------------------------------------------
 
+/// File name of the generation-state JSON inside the system profile dir.
 const SYSTEM_STATE_FILE: &str = "state.json";
+/// systemd-boot loader entry rewritten when the kernel changes.
 const BOOT_LOADER_ENTRY: &str = "/boot/loader/entries/aos.conf";
 
 // ---------------------------------------------------------------------------
@@ -63,6 +103,28 @@ const BOOT_LOADER_ENTRY: &str = "/boot/loader/entries/aos.conf";
 ///
 /// When `--image <FMT>` is specified, downloads the pre-compiled image instead
 /// of the toplevel closure.
+///
+/// Otherwise runs the full pipeline: resolve the package, download/verify/
+/// import missing closure paths, create the next `gen-N` directory, run the
+/// toplevel's `activate` script (see the module docs for the exit-code
+/// contract), commit the generation as `current`, and apply the chosen
+/// [`KernelUpgradeMode`]. Note that in `Kexec` and `Reboot` modes a
+/// successful kernel switch does not return.
+///
+/// # Errors
+///
+/// Returns an error when:
+///
+/// - `packages` does not contain exactly one name, the package cannot be
+///   resolved, or it is not marked `sysroot = true`;
+/// - downloading, hash verification, or store import of a closure path fails;
+/// - generation state cannot be read or written;
+/// - the activate script fails before the `/etc` swap (previous generation
+///   stays live), leaves the swap incomplete (exit 4), or completes with
+///   failed units (exit 6 — the new generation *is* live, but the error
+///   surfaces the degraded state);
+/// - the user declines the confirmation prompt
+///   ([`aos_core::error::AosError::UserCancelled`]).
 #[allow(clippy::too_many_arguments)]
 pub async fn install_system(
     config: &ApmConfig,
@@ -339,6 +401,17 @@ pub async fn install_system(
 }
 
 /// `apm upgrade --system` — check for newer sysroot version and apply.
+///
+/// Looks up the current generation's package in the configured registries;
+/// when a different sysroot version is published, delegates to
+/// [`install_system`] (with confirmation auto-accepted) to perform the
+/// switch.
+///
+/// # Errors
+///
+/// Returns an error when there is no active system generation, when
+/// generation state or registries cannot be loaded, or when the delegated
+/// [`install_system`] call fails.
 pub async fn upgrade_system(
     config: &ApmConfig,
     dry_run: bool,
@@ -409,6 +482,20 @@ pub async fn upgrade_system(
 }
 
 /// `apm rollback --system [--generation N] [--list]`
+///
+/// With `--list`, prints the recorded system generations and returns.
+/// Otherwise re-activates the target generation's toplevel (the explicit
+/// `--generation N`, or the most recent generation before the current one),
+/// commits it as `current`, and applies the chosen [`KernelUpgradeMode`] —
+/// the same activation exit-code contract as [`install_system`] applies.
+///
+/// # Errors
+///
+/// Returns an error when there is no active system generation, the requested
+/// generation does not exist, there is no previous generation to roll back
+/// to, generation state cannot be read or written, or the target's activate
+/// script fails (including the degraded exit-6 case, where the rollback is
+/// live but some units failed).
 pub async fn rollback_system(
     _config: &ApmConfig,
     generation: Option<u32>,
@@ -548,8 +635,12 @@ pub async fn rollback_system(
 
 /// Check whether a package's closure is contained within the current sysroot.
 ///
-/// Returns `Some((sysroot_name, sysroot_version))` if the package is provided
-/// by the sysroot, `None` otherwise.
+/// Returns `Some((sysroot_name, sysroot_version))` if every reference in
+/// `pkg_refs` is already provided by the active sysroot's closure (in which
+/// case a user-scope install would be redundant), `None` otherwise. All
+/// failure modes — no system generation, unreadable state, unloadable
+/// registries — degrade to `None` rather than erroring, since this is a
+/// best-effort advisory check.
 pub fn check_sysroot_containment(
     pkg_refs: &[String],
     config: &ApmConfig,
@@ -594,6 +685,9 @@ pub fn check_sysroot_containment(
 }
 
 /// Show sysroot-specific information for `apm show <pkg>`.
+///
+/// Prints the sysroot flag, previous-version chain link, closure size, and
+/// any pre-compiled image formats. No-op for non-sysroot packages.
 pub fn show_sysroot_info(meta: &PackageMeta, printer: &Printer) {
     if !meta.sysroot {
         return;
@@ -623,7 +717,11 @@ pub fn show_sysroot_info(meta: &PackageMeta, printer: &Printer) {
 // Image download
 // ---------------------------------------------------------------------------
 
-/// Download a pre-compiled image from a sysroot package.
+/// Download a pre-compiled image from a sysroot package (`--image <FMT>`).
+///
+/// Fetches the image's NAR through the regular download pipeline, imports it
+/// into the store, then copies the image file out to `output` (defaulting to
+/// `<name>-<version>.<format>` in the current directory).
 async fn download_image(
     config: &ApmConfig,
     meta: &PackageMeta,
@@ -749,6 +847,14 @@ async fn download_image(
 // ---------------------------------------------------------------------------
 
 /// Load system generation state from disk (public wrapper for cross-module use).
+///
+/// Reads `state.json` from `profile_path`; a missing file yields the empty
+/// initial state (`current = 0`, `next = 1`, no generations).
+///
+/// # Errors
+///
+/// Returns an error when the state file exists but cannot be read or parsed
+/// as [`SystemGenerationState`] JSON.
 pub fn load_generation_state_pub(profile_path: &Path) -> Result<SystemGenerationState> {
     load_generation_state(profile_path)
 }
@@ -779,6 +885,9 @@ fn save_generation_state(profile_path: &Path, state: &SystemGenerationState) -> 
     Ok(())
 }
 
+/// Mark `generation` as current: persist it in `state.json` and atomically
+/// repoint the `current` symlink (via a temp link + rename). Called only
+/// after the generation's activate script has succeeded.
 fn commit_current_generation(
     profile_path: &Path,
     state: &mut SystemGenerationState,
@@ -879,9 +988,13 @@ const PLAN_SCHEMA_VERSION: u32 = 1;
 /// lives on tmpfs (`/run`), so crash debris disappears on reboot.
 const APM_RUN_DIR: &str = "/run/apm";
 
+/// The daemon-reconcile plan handed from the pre-swap phase to the post-swap
+/// phase, serialized as root-owned 0600 JSON under [`APM_RUN_DIR`].
 #[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Plan {
+    /// Plan format version; must equal [`PLAN_SCHEMA_VERSION`] on read.
     schema_version: u32,
+    /// Generation number this plan was computed for.
     generation: u32,
     /// Stopped by the pre-swap phase. Best-effort, informational.
     stopped: Vec<String>,
@@ -891,12 +1004,17 @@ struct Plan {
     to_start: Vec<String>,
     /// Units reconciled because an `X-Reload-Triggers` path changed.
     blanket_targets: Vec<String>,
+    /// Non-fatal diff warnings carried over for display.
     warnings: Vec<String>,
 }
 
 /// `apm activate-pre-etc-swap` — compute the live-vs-candidate diff while the
 /// old `/etc` is still live, stop removed / stop-if-changed units under their
 /// old definitions, and print the post-swap plan path on stdout.
+///
+/// Returns a process exit code rather than a `Result`: `0` on success
+/// (including `--dry-run`), `2` (`RECONCILE_CATASTROPHIC`) on any failure.
+/// The activate script maps these into its own 0/3/4/5/6 contract.
 pub async fn activate_pre_etc_swap(
     generation: u32,
     candidate_etc: &Path,
@@ -974,6 +1092,13 @@ async fn activate_pre_etc_swap_inner(
 /// `apm activate-post-etc-swap` — consume the plan after `/etc` has been
 /// swapped, reload systemd, apply reload/restart/start actions, and scan the
 /// final failed-unit state.
+///
+/// Returns a process exit code rather than a `Result`: `0` when every unit
+/// settled healthy, `1` (`RECONCILE_FAILED_UNITS`) when the apply completed
+/// but the final scan found failed units, and `2`
+/// (`RECONCILE_CATASTROPHIC`) on any other failure (invalid plan, D-Bus
+/// errors, ...). The activate script maps these into its own 0/3/4/5/6
+/// contract.
 pub async fn activate_post_etc_swap(plan_path: &Path, printer: &Printer) -> i32 {
     match activate_post_etc_swap_inner(plan_path, printer).await {
         Ok(code) => code,
@@ -1063,6 +1188,8 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
     Ok(RECONCILE_OK)
 }
 
+/// Convert a [`UnitDiff`] into a serializable [`Plan`], folding install-only
+/// units (new units with no live counterpart) into the start list.
 fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
     let install_only = std::mem::take(&mut diff.install_only);
     for unit in install_only {
@@ -1099,6 +1226,9 @@ fn ensure_secure_run_dir(dir: &Path) -> Result<()> {
     validate_secure_dir(dir)
 }
 
+/// Reject `dir` unless it is a real (non-symlink) directory, root-owned, and
+/// mode 0700 — the plan file's containing directory is part of its trust
+/// boundary.
 fn validate_secure_dir(dir: &Path) -> Result<()> {
     let meta = std::fs::symlink_metadata(dir).with_context(|| format!("stat {}", dir.display()))?;
     if meta.file_type().is_symlink() || !meta.file_type().is_dir() {
@@ -1114,6 +1244,8 @@ fn validate_secure_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Persist the plan as a unique `plan-*.json` tempfile (mode 0600) in
+/// `run_dir`, fsynced, and return its path for the post-swap phase.
 fn write_plan(run_dir: &Path, plan: &Plan) -> Result<PathBuf> {
     let f = tempfile::Builder::new()
         .prefix("plan-")
@@ -1128,6 +1260,9 @@ fn write_plan(run_dir: &Path, plan: &Plan) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Open and parse a plan file with hardening: `O_NOFOLLOW` (no symlinks),
+/// must be a regular root-owned file with mode 0600, and its
+/// `schema_version` must match [`PLAN_SCHEMA_VERSION`].
 fn read_validated_plan(path: &Path) -> Result<Plan> {
     let file = OpenOptions::new()
         .read(true)
@@ -1160,6 +1295,8 @@ fn read_validated_plan(path: &Path) -> Result<Plan> {
     Ok(plan)
 }
 
+/// `fstat(2)` the already-open file descriptor, so the metadata check cannot
+/// race against a path swap between open and stat.
 fn fstat_file(file: &std::fs::File) -> Result<libc::stat> {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
     // SAFETY: `stat` points to valid writable storage and `file` owns a live fd.
@@ -1171,6 +1308,9 @@ fn fstat_file(file: &std::fs::File) -> Result<libc::stat> {
     Ok(unsafe { stat.assume_init() })
 }
 
+/// Whether `uid` counts as "root-owned" for the security checks. Relaxed
+/// under `cfg(test)` so unit tests can exercise the validators as a
+/// non-root user.
 fn root_owned_for_runtime(uid: u32) -> bool {
     uid == 0 || cfg!(test)
 }
@@ -1482,11 +1622,14 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Load all enabled registries from the scope's metadata cache.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
     RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
 }
 
+/// Pick the mirror URL used for image downloads: the first configured
+/// registry's mirror, falling back to the default public cache.
 fn resolve_image_mirror(config: &ApmConfig, _meta: &PackageMeta) -> String {
     // Use the first configured registry's mirror URL.
     if let Some((cfg, _)) = config.registries.first() {
@@ -1495,6 +1638,8 @@ fn resolve_image_mirror(config: &ApmConfig, _meta: &PackageMeta) -> String {
     "https://cache.aos.dev".to_string()
 }
 
+/// Build a [`DownloadRequest`] per missing store path, mapping each path back
+/// to the mirror URL of the registry that resolved it.
 fn build_download_requests(
     closures: &[crate::resolve::ResolvedClosure],
     to_download: &[&PackageMeta],
@@ -1548,6 +1693,8 @@ fn build_download_requests(
     Ok(requests)
 }
 
+/// Prompt `[Y/n]` on stderr; empty/`y`/`yes` accepts, anything else returns
+/// [`aos_core::error::AosError::UserCancelled`].
 fn confirm(printer: &Printer) -> Result<()> {
     printer.plain("Do you want to continue? [Y/n] ");
     let _ = std::io::stderr().flush();
@@ -1565,6 +1712,7 @@ fn confirm(printer: &Printer) -> Result<()> {
     }
 }
 
+/// Format a byte count as a human-readable binary size (B/KiB/MiB/GiB).
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         return format!("{bytes} B");
@@ -1596,6 +1744,8 @@ pub(crate) fn djb2_hash(data: &[u8]) -> u64 {
     hash
 }
 
+/// Current UTC time as `YYYY-MM-DDTHH:MM:SSZ`, computed without a time
+/// crate (see [`days_to_ymd`]).
 fn chrono_iso8601_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1615,6 +1765,8 @@ fn chrono_iso8601_now() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
+/// Convert days since the Unix epoch to a Gregorian `(year, month, day)`
+/// using Howard Hinnant's civil-from-days algorithm.
 fn days_to_ymd(days: i64) -> (i32, u32, u32) {
     let z = days + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;

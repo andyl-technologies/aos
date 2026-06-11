@@ -1,3 +1,28 @@
+//! On-disk data contracts and well-known paths for `apm`/`apr`.
+//!
+//! This module defines the serde schemas that the package manager reads and
+//! writes, grouped by where they live on disk:
+//!
+//! - **Registry metadata** — [`PackageMeta`] (a package version entry from a
+//!   registry's package TOML), [`ClosureMeta`] (the `closures/{hash}`
+//!   adjacency-list files), and [`SysrootImageEntry`].
+//! - **Registry configuration** — [`RegistryConfig`] / [`RegistryFile`]
+//!   (`registries.d/*.toml`), with [`TrackingMode`], [`Transport`],
+//!   [`SigningConfig`], [`SigningKeySource`], [`RegistryUploadAuthConfig`],
+//!   and the mutable [`RegistryState`] appended by `apm update`.
+//! - **Registry root config** — [`RegistryRootConfig`] (`registry.toml`
+//!   committed inside a registry repo) and its [`CacheEntry`] list.
+//! - **Profile state** — [`InstalledMeta`] / [`ApmMeta`] (per-path
+//!   `meta/{hash}.json` in a profile) and the system-generation records
+//!   [`SystemGeneration`] / [`SystemGenerationState`]
+//!   (`/var/lib/profiles/system/state.json`).
+//! - **Settings and scopes** — [`ApmSettings`] (`apm.conf`) and
+//!   [`ProfileScope`], which maps the user/system scopes onto their config,
+//!   cache, registry-clone, and trusted-key directories.
+//!
+//! These types are the crate's stable data contracts: changing a field name
+//! or default changes what is written to (or accepted from) disk.
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -62,9 +87,9 @@ fn apm_system_config_dir() -> &'static Path {
 
 /// Resolve the current user's home directory.
 ///
-/// Tries `$HOME` first, then falls back to `/etc/passwd` via
-/// `std::env::home_dir` (deprecated but functional for this purpose).
-/// Panics only if no home directory can be determined at all.
+/// Uses a non-empty `$HOME` when set. Otherwise falls back to `/tmp` with a
+/// warning on stderr — better than silently scattering user-scoped state
+/// across process-relative paths. Never panics.
 fn resolve_home() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         if !home.is_empty() {
@@ -151,17 +176,26 @@ fn profiles_base() -> PathBuf {
 /// A package version entry for a specific platform, as found in a registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageMeta {
+    /// Package name (the registry TOML file name and `apm install` argument).
     pub name: String,
+    /// Package version string.
     pub version: String,
+    /// One-line human-readable description.
     pub description: String,
+    /// Upstream homepage URL, if recorded.
     #[serde(default)]
     pub homepage: Option<String>,
+    /// SPDX-style license identifier or free-form license string.
     pub license: String,
+    /// Maintainer contact recorded at publish time.
     pub maintainer: String,
+    /// Target platform (e.g. `x86_64-linux`).
     pub platform: String,
+    /// Full store path of the package output.
     pub store_path: String,
     /// Hash of the uncompressed NAR: `"sha256:..."`.
     pub nar_hash: String,
+    /// Size of the uncompressed NAR in bytes.
     pub nar_size: u64,
     /// Store path hashes of direct runtime references.
     pub references: Vec<String>,
@@ -277,14 +311,24 @@ impl ClosureMeta {
 /// The optional `apm` section extends this with package manager state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledMeta {
+    /// Full store path this metadata record describes.
     pub store_path: String,
+    /// Unix timestamp when the path was pushed/installed.
     pub pushed_at: i64,
+    /// Who created the record (`"apm"` for installs; a token name on the
+    /// cache server).
     pub pushed_by: String,
+    /// Optional Unix expiry timestamp (cache-server semantics; unset by apm).
     #[serde(default)]
     pub expires_at: Option<i64>,
+    /// Whether the path is a GC root (protected from garbage collection).
     pub is_root: bool,
+    /// Unix timestamp of the last recorded access.
     pub last_accessed: i64,
+    /// Number of recorded accesses.
     pub access_count: u64,
+    /// Package-manager extension; `None` for records written by the cache
+    /// server.
     #[serde(default)]
     pub apm: Option<ApmMeta>,
 }
@@ -292,7 +336,9 @@ pub struct InstalledMeta {
 /// APM-specific metadata extension.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApmMeta {
+    /// Package name as known to the registry.
     pub name: String,
+    /// Installed package version.
     pub version: String,
     /// `true` if the user explicitly installed this package.
     pub explicit: bool,
@@ -317,10 +363,17 @@ pub struct ApmMeta {
 /// Parsed configuration for a single registry source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryConfig {
+    /// Registry name; also names the config file, clone directory, and
+    /// metadata cache directory.
     pub name: String,
+    /// Registry URL; its scheme selects the [`Transport`].
     pub url: String,
+    /// Resolution priority — higher wins when several registries provide the
+    /// same package (default 500).
     #[serde(default = "default_priority")]
     pub priority: u32,
+    /// Whether this registry participates in resolution and updates
+    /// (default true).
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Exact commit hash to pin to (mutually exclusive with branch/tag/version).
@@ -355,6 +408,8 @@ pub struct RegistryConfig {
     /// Producer-side local signing-key sources keyed by committed keys.toml id.
     #[serde(default)]
     pub signing_keys: BTreeMap<String, SigningKeySource>,
+    /// Signature-verification policy (`[registry.signing]`). Absent means
+    /// verification is required — see [`SigningConfig`].
     #[serde(default)]
     pub signing: Option<SigningConfig>,
 }
@@ -420,9 +475,11 @@ impl SigningKeySource {
     }
 }
 
+/// Serde default for [`RegistryConfig::priority`].
 fn default_priority() -> u32 {
     500
 }
+/// Serde default for boolean fields that default to `true`.
 fn default_true() -> bool {
     true
 }
@@ -435,6 +492,8 @@ fn default_true() -> bool {
 /// verification (intended for local development fixtures).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SigningConfig {
+    /// Whether signature verification is enforced for this registry
+    /// (default true; see the fail-closed note above).
     #[serde(default = "default_true")]
     pub required: bool,
     /// Bootstrap trust anchor in `"name:Ed25519:base64key"` format.
@@ -453,31 +512,44 @@ pub struct SigningConfig {
 /// CLI flags and their env bindings override these defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegistryUploadAuthConfig {
+    /// AOS provisioning token for AOS cache backends.
     #[serde(default)]
     pub token: Option<String>,
+    /// AOS cache view name (defaults to `"default"` when unset).
     #[serde(default)]
     pub view: Option<String>,
+    /// Basic-auth username for generic HTTP backends.
     #[serde(default)]
     pub http_user: Option<String>,
+    /// Basic-auth password for generic HTTP backends.
     #[serde(default)]
     pub http_password: Option<String>,
+    /// Extra HTTP headers, each as a full `"Name: value"` string.
     #[serde(default)]
     pub headers: Vec<String>,
+    /// AWS region for S3 backends.
     #[serde(default)]
     pub s3_region: Option<String>,
+    /// AWS credentials profile name for S3 backends.
     #[serde(default)]
     pub s3_profile: Option<String>,
+    /// Custom S3-compatible endpoint (MinIO, B2, ...).
     #[serde(default)]
     pub s3_endpoint: Option<String>,
+    /// Path to an SSH private key for SFTP backends.
     #[serde(default)]
     pub ssh_key: Option<String>,
+    /// SSH password for SFTP backends.
     #[serde(default)]
     pub ssh_password: Option<String>,
+    /// Prompt for the SSH password interactively.
     #[serde(default)]
     pub ssh_ask_pass: bool,
 }
 
 impl RegistryUploadAuthConfig {
+    /// Convert these config defaults into backend [`aos_cache::AuthOptions`],
+    /// substituting the `"default"` view when none is configured.
     pub fn auth_options(&self) -> aos_cache::AuthOptions {
         aos_cache::AuthOptions {
             token: self.token.clone(),
@@ -498,16 +570,25 @@ impl RegistryUploadAuthConfig {
 /// Mutable state appended to a registry config file by `apm update`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RegistryState {
+    /// Commit hash the local clone was last synced to.
     #[serde(default)]
     pub last_commit: Option<String>,
+    /// Channel tracking: monotonic semver floor — the highest release this
+    /// host has verified; a channel pointing at anything older is refused
+    /// (rollback-attack protection).
     #[serde(default)]
     pub last_roster_commit: Option<String>,
     #[serde(default)]
     pub floor: Option<String>,
+    /// Channel tracking: this host's stable rollout partition bucket
+    /// (0-255), derived from a registry-local salt on first channel sync.
     #[serde(default)]
     pub bucket: Option<u8>,
+    /// Channel tracking: release versions kept locally as delta-fetch bases
+    /// for future channel advances.
     #[serde(default)]
     pub retained: Vec<String>,
+    /// ISO 8601 timestamp of the last successful sync.
     #[serde(default)]
     pub last_update: Option<String>,
 }
@@ -579,6 +660,11 @@ impl RegistryConfig {
 
     /// Basic validation that `self.url` has meaningful content after the
     /// scheme (i.e. it is not just `"https://"` or empty).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the URL is empty or contains only a scheme with
+    /// no host.
     pub fn validate_url(&self) -> Result<()> {
         if self.url.is_empty() {
             bail!("registry URL is empty");
@@ -603,6 +689,11 @@ impl RegistryConfig {
     /// Validates that at most one of `commit`, `branch`, `channel`, `tag`, `version`
     /// (and legacy `pin`) is set.  The legacy `pin` field is treated as
     /// `tag` for backward compatibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when more than one tracking field is set, or when
+    /// `version` is not a valid semver constraint.
     pub fn tracking_mode(&self) -> Result<TrackingMode> {
         // Merge legacy `pin` into `tag` if `tag` is not already set.
         let effective_tag = self.tag.clone().or_else(|| self.pin.clone());
@@ -682,6 +773,7 @@ pub struct ApmSettings {
     pub auto_gc: bool,
 }
 
+/// Serde default for [`ApmSettings::parallel_downloads`].
 fn default_parallel() -> u32 {
     4
 }
@@ -712,6 +804,10 @@ pub enum ProfileScope {
 
 impl ProfileScope {
     /// Base path for profiles of this scope.
+    ///
+    /// User scope resolves to `<profiles>/per-user/$USER` (with `"unknown"`
+    /// when `$USER` is unset); system scope to `<profiles>/system`. The
+    /// profile root honors the `AOS_PROFILE_ROOT` environment override.
     pub fn profile_path(&self) -> PathBuf {
         match self {
             ProfileScope::User => {
@@ -754,7 +850,11 @@ impl ProfileScope {
         }
     }
 
-    /// Path for trusted key storage.
+    /// Directories searched for pinned trusted keys, in precedence order.
+    ///
+    /// The first directory is also where new pins are written; the system
+    /// `trusted-keys.d` is shared by both scopes so user installs can trust
+    /// system-provisioned keys.
     pub fn trusted_keys_dirs(&self) -> Vec<PathBuf> {
         match self {
             ProfileScope::User => vec![
@@ -776,9 +876,15 @@ impl ProfileScope {
 /// Top-level structure of a `registries.d/*.toml` file.
 #[derive(Debug, Deserialize)]
 pub struct RegistryFile {
+    /// The `[registry]` table.
     pub registry: RegistryFileInner,
 }
 
+/// The `[registry]` table of a `registries.d/*.toml` file.
+///
+/// Field for field this mirrors [`RegistryConfig`] (see that type for the
+/// per-field semantics), plus the optional `[registry.state]` table that
+/// `apm update` appends — config loading splits the two apart.
 #[derive(Debug, Deserialize)]
 pub struct RegistryFileInner {
     pub name: String,
@@ -810,6 +916,7 @@ pub struct RegistryFileInner {
     pub signing_keys: BTreeMap<String, SigningKeySource>,
     #[serde(default)]
     pub signing: Option<SigningConfig>,
+    /// Mutable sync state appended by `apm update` (not user-edited).
     #[serde(default)]
     pub state: Option<RegistryState>,
 }
@@ -817,6 +924,7 @@ pub struct RegistryFileInner {
 /// Top-level structure of `apm.conf`.
 #[derive(Debug, Deserialize)]
 pub struct ApmConfFile {
+    /// The `[settings]` table; every field is optional.
     #[serde(default)]
     pub settings: ApmSettings,
 }
@@ -828,7 +936,10 @@ pub struct ApmConfFile {
 /// Top-level structure of a registry's `registry.toml` file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryRootConfig {
+    /// The `[registry]` metadata table.
     pub registry: RegistryRootMeta,
+    /// Committed `[[caches]]` entries: binary caches every consumer of this
+    /// registry should use.
     #[serde(default)]
     pub caches: Vec<CacheEntry>,
 }
@@ -836,7 +947,9 @@ pub struct RegistryRootConfig {
 /// Registry metadata in `registry.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryRootMeta {
+    /// Canonical registry name.
     pub name: String,
+    /// Optional human-readable description.
     #[serde(default)]
     pub description: Option<String>,
 }
@@ -844,11 +957,14 @@ pub struct RegistryRootMeta {
 /// A binary cache entry in `registry.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
+    /// Base URL of the binary cache.
     pub url: String,
+    /// Cache selection priority — higher is tried first (default 100).
     #[serde(default = "default_cache_priority")]
     pub priority: u32,
 }
 
+/// Serde default for [`CacheEntry::priority`].
 fn default_cache_priority() -> u32 {
     100
 }
@@ -860,9 +976,14 @@ fn default_cache_priority() -> u32 {
 /// A pre-compiled image format entry within a sysroot package version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SysrootImageEntry {
+    /// Image format identifier (e.g. `qcow2`, `raw`), matched against
+    /// `apm install --image <FMT>`.
     pub format: String,
+    /// Store path containing the image file.
     pub store_path: String,
+    /// Hash of the image's uncompressed NAR: `"sha256:..."`.
     pub nar_hash: String,
+    /// Size of the image's uncompressed NAR in bytes.
     pub nar_size: u64,
 }
 
@@ -873,12 +994,20 @@ pub struct SysrootImageEntry {
 /// Metadata about a single system generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemGeneration {
+    /// Generation number (names the `gen-N/` directory).
     pub number: u32,
+    /// Store path of the sysroot toplevel this generation activates.
     pub toplevel: String,
+    /// Version of the sysroot package.
     pub version: String,
+    /// Name of the sysroot package.
     pub package_name: String,
+    /// Registry the sysroot package was installed from.
     pub registry: String,
+    /// ISO 8601 timestamp when the generation was created.
     pub created_at: String,
+    /// Resolved kernel store path, used to detect kernel changes across
+    /// upgrades and rollbacks (`None` when the toplevel ships no kernel).
     #[serde(default)]
     pub kernel_path: Option<String>,
 }
@@ -886,8 +1015,11 @@ pub struct SystemGeneration {
 /// Persistent state for system generations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemGenerationState {
+    /// Number of the currently active generation (`0` = none yet).
     pub current: u32,
+    /// Number the next created generation will receive.
     pub next: u32,
+    /// All recorded generations, in creation order.
     #[serde(default)]
     pub generations: Vec<SystemGeneration>,
 }

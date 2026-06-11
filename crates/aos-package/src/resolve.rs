@@ -1,3 +1,23 @@
+//! Package and closure resolution against registry caches.
+//!
+//! Given a package name, resolution finds the owning registry (highest
+//! priority wins, unless a registry filter is given) and computes the
+//! package's full transitive closure — every store path that must exist for
+//! the package to run. Closures are returned in dependency order (deps
+//! before dependents, root last) so callers can import members sequentially
+//! with `nix-store --import` without dangling references.
+//!
+//! Two closure strategies are used:
+//!
+//! 1. **Precomputed closure files**: registries ship a per-root closure
+//!    member list; resolution is then a flat hash-to-meta lookup.
+//! 2. **BFS fallback**: when no closure file exists, the `references` field
+//!    of each [`PackageMeta`] is walked depth-first.
+//!
+//! In both cases, member hashes not present in the registry (e.g. system
+//! libraries assumed installed) are silently skipped rather than treated as
+//! errors.
+
 use std::collections::HashSet;
 
 use anyhow::{Context, Result};
@@ -33,6 +53,15 @@ pub struct ResolvedClosure {
 /// If the registry has a precomputed closure file for the package, uses it
 /// directly (O(n) lookups, no graph traversal).  Otherwise falls back to
 /// BFS over the `references` field of each `PackageMeta`.
+///
+/// With `registry_filter`, only that registry is searched; otherwise the
+/// highest-priority registry providing `name` wins.
+///
+/// # Errors
+///
+/// Returns an error if `registry_filter` names a registry that is not
+/// loaded, or [`AosError::PackageNotFound`] if no (matching) registry
+/// provides `name`.
 pub fn resolve_closure(
     registries: &RegistrySet,
     name: &str,
@@ -133,6 +162,10 @@ fn resolve_via_bfs(
     })
 }
 
+/// Depth-first post-order visit: append `current` to `closure` only after
+/// all of its resolvable references have been appended, so the resulting
+/// vector is in dependency order. Unresolvable references are marked seen
+/// and skipped.
 fn visit_dependencies_first(
     registries: &RegistrySet,
     registry_name: &str,
@@ -164,6 +197,11 @@ fn visit_dependencies_first(
 ///
 /// Does NOT deduplicate across closures -- that happens at download time
 /// via [`collect_unique_metas`].
+///
+/// # Errors
+///
+/// Returns the first per-package resolution failure (see
+/// [`resolve_closure`]), annotated with the failing package name.
 pub fn resolve_multiple(
     registries: &RegistrySet,
     names: &[String],

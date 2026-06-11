@@ -1,3 +1,5 @@
+//! SFTP (`sftp://` / `ssh://`) cache backend.
+
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -20,6 +22,9 @@ pub struct SftpBackend {
 }
 
 impl SftpBackend {
+    /// Creates a backend from the full cache URL and its already-parsed
+    /// path component (the remote root directory). The path is stripped
+    /// from `url` to recover the `sftp://user@host:port` base.
     pub fn new(url: &str, path: &str, engine: Arc<TransferEngine>) -> Self {
         // Strip the path from the original URL to get the base.
         let base_url = url
@@ -35,6 +40,7 @@ impl SftpBackend {
         }
     }
 
+    /// Builds a full sftp:// URL for a path relative to the remote root.
     fn remote_url(&self, relative_path: &str) -> String {
         format!("{}{}/{}", self.base_url, self.root, relative_path)
     }

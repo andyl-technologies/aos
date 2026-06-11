@@ -9,11 +9,28 @@ use sha2::{Sha256, Sha512};
 use crate::types::HashAlgorithm;
 
 /// A streaming hasher that can be fed chunks of data and finalized.
+///
+/// Used by the transfer engine to verify downloads chunk-by-chunk as
+/// they arrive, without buffering the full body.
+///
+/// # Examples
+///
+/// ```no_run
+/// use aos_net::StreamingHasher;
+/// use aos_net::types::HashAlgorithm;
+///
+/// let mut hasher = StreamingHasher::new(HashAlgorithm::Sha256);
+/// hasher.update(b"hel");
+/// hasher.update(b"lo");
+/// let result = hasher.finalize();
+/// println!("sha256 = {}", result.hex);
+/// ```
 pub struct StreamingHasher {
     state: HasherState,
     expected: Option<String>,
 }
 
+/// Algorithm-specific digest state behind [`StreamingHasher`].
 enum HasherState {
     Sha256(Sha256),
     Sha512(Sha512),
@@ -43,6 +60,10 @@ impl StreamingHasher {
     }
 
     /// Create a new streaming hasher with an expected hash value.
+    ///
+    /// The expected value may be bare hex (`"2cf2..."`) or carry a
+    /// `"sha256:"` / `"sha512:"` prefix; the prefix is stripped before
+    /// comparison in [`finalize`](StreamingHasher::finalize).
     pub fn with_expected(algorithm: HashAlgorithm, expected: &str) -> Self {
         let state = match algorithm {
             HashAlgorithm::Sha256 => HasherState::Sha256(Sha256::new()),
@@ -63,6 +84,10 @@ impl StreamingHasher {
     }
 
     /// Finalize the hash and return the result.
+    ///
+    /// The comparison against the expected value (if any) is
+    /// case-insensitive, and a `"sha256:"` or `"sha512:"` prefix on the
+    /// expected string is ignored.
     pub fn finalize(self) -> HashResult {
         let hex = match self.state {
             HasherState::Sha256(h) => hex::encode(h.finalize()),
