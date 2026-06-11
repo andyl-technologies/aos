@@ -1697,14 +1697,30 @@ in {
           > "$work/apr-release-host-keyadd-external-tag-object.out"
         grep -q "BEGIN SSH SIGNATURE" \
           "$work/apr-release-host-keyadd-external-tag-object.out"
-        run_clean ${self}/bin/apr keys generate next \
+        run_clean ${self}/bin/apr --json keys generate next \
           --registry host-keyadd \
           --add \
           --key "$work/host-install-release-key" \
-          > "$work/apr-keys-generate-add-next.out" 2>&1
-        host_keyadd_next=$(grep -o 'host-keyadd:Ed25519:[A-Za-z0-9+/=]*' \
-          "$work/apr-keys-generate-add-next.out" | head -1)
+          > "$work/apr-keys-generate-add-next.json"
+        host_keyadd_next=$(${pkgs.jq}/bin/jq -r '.public_key' \
+          "$work/apr-keys-generate-add-next.json")
         host_keyadd_next_path="$config/apm/keys/host-keyadd-next.key"
+        ${pkgs.jq}/bin/jq -e \
+          --arg key "$host_keyadd_next" \
+          --arg key_path "$host_keyadd_next_path" \
+          --arg config_path "$config/apm/registries.d/host-keyadd.toml" \
+          '.action == "keys_generate"
+            and .status == "generated"
+            and .registry == "host-keyadd"
+            and .id == "next"
+            and .private_key == $key_path
+            and .public_key == $key
+            and .configured == true
+            and .config == $config_path
+            and .added == true
+            and .committed == true
+            and (.fingerprint | length > 0)' \
+          "$work/apr-keys-generate-add-next.json" >/dev/null
         test -f "$host_keyadd_next_path"
         grep -q "$host_keyadd_next" "$keyadd_reg/keys.toml"
         grep -q 'id = "next"' "$keyadd_reg/keys.toml"
