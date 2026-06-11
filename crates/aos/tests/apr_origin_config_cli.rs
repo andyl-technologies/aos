@@ -554,6 +554,73 @@ async fn apr_release_channel_upload_supports_verified_consumer_sync() -> Result<
     assert_eq!(entries[0]["registry"], "signed-reg");
     assert_eq!(entries[0]["version"], "1.0.0");
 
+    write_fixture_package_version(&maintainer_registry, "1.1.0")?;
+    git_stdout(
+        &maintainer_registry,
+        &["add", "packages/f/fixture-tool.toml"],
+        "staging signed fixture package update",
+    )?;
+    git_stdout(
+        &maintainer_registry,
+        &["commit", "-m", "publish signed fixture package update"],
+        "committing signed fixture package update",
+    )?;
+
+    let release = run_apr(
+        &maintainer_home,
+        &[
+            "release",
+            "1.1.0",
+            "--registry",
+            "signed-reg",
+            "--key",
+            key_path.to_str().context("release key path utf-8")?,
+            "--channel",
+            "stable",
+            "--count",
+            "256",
+            "--upload-url",
+            &upload_url,
+        ],
+    )?;
+    assert!(release.contains("Released signed-reg 1.1.0"), "{release}");
+    assert!(
+        release.contains("Advanced channel 'stable' 256 partition(s) to 1.1.0"),
+        "{release}",
+    );
+
+    let updated = run_aos_package_json(
+        &consumer_home,
+        &consumer_system_dir,
+        &["--json", "update", "--registry", "signed-reg"],
+        "verified channel update",
+    )?;
+    assert_eq!(updated["action"], "update");
+    assert_eq!(updated["registry"], "signed-reg");
+    assert_eq!(updated["updated"], 1, "{updated}");
+    let registries = updated["registries"]
+        .as_array()
+        .context("verified channel update JSON should contain registries array")?;
+    assert_eq!(registries.len(), 1, "{updated}");
+    assert_eq!(registries[0]["registry"], "signed-reg");
+    assert_eq!(registries[0]["status"], "updated");
+    assert_eq!(registries[0]["packages"], 1, "{updated}");
+    assert_eq!(registries[0]["updated"], 1, "{updated}");
+
+    let listed = run_aos_package_json(
+        &consumer_home,
+        &consumer_system_dir,
+        &["--json", "list", "--registry", "signed-reg"],
+        "verified channel list after advance",
+    )?;
+    let entries = listed
+        .as_array()
+        .context("advanced signed package list JSON should be an array")?;
+    assert_eq!(entries.len(), 1, "{listed}");
+    assert_eq!(entries[0]["name"], "fixture-tool");
+    assert_eq!(entries[0]["registry"], "signed-reg");
+    assert_eq!(entries[0]["version"], "1.1.0");
+
     Ok(())
 }
 
