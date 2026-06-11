@@ -2406,13 +2406,52 @@ in {
           > "$work/apm-search-host-image-channel.out" 2>&1
         grep -q "hostsysroot/host-image-channel 1.0.0" \
           "$work/apm-search-host-image-channel.out"
-        run_clean ${self}/bin/apm install hostsysroot \
+        run_clean ${self}/bin/apm --json install hostsysroot \
+          --registry host-image-channel \
+          --image qcow2 \
+          --output "$work/hostsysroot-dry-run.qcow2" \
+          --dry-run > "$work/apm-install-host-sysroot-image-dry-run.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$sysroot_image_store" \
+          --arg output "$work/hostsysroot-dry-run.qcow2" \
+          '.action == "image_download"
+            and .status == "planned"
+            and .package == "hostsysroot"
+            and .version == "1.0.0"
+            and .format == "qcow2"
+            and .store_path == $store
+            and .output == $output
+            and .dry_run == true
+            and .downloads.planned == 1
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-install-host-sysroot-image-dry-run.json" >/dev/null
+        test ! -e "$work/hostsysroot-dry-run.qcow2"
+        if nix_store --check-validity "$sysroot_image_store" \
+          > "$work/nix-valid-host-sysroot-image-after-dry-run.out" 2>&1; then
+          cat "$work/nix-valid-host-sysroot-image-after-dry-run.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json install hostsysroot \
           --registry host-image-channel \
           --image qcow2 \
           --output "$work/hostsysroot-downloaded.qcow2" \
-          --yes > "$work/apm-install-host-sysroot-image.out" 2>&1
-        grep -q "Image hostsysroot 1.0.0 (qcow2) written to" \
-          "$work/apm-install-host-sysroot-image.out"
+          --yes > "$work/apm-install-host-sysroot-image.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$sysroot_image_store" \
+          --arg output "$work/hostsysroot-downloaded.qcow2" \
+          '.action == "image_download"
+            and .status == "downloaded"
+            and .package == "hostsysroot"
+            and .version == "1.0.0"
+            and .format == "qcow2"
+            and .store_path == $store
+            and .output == $output
+            and .dry_run == false
+            and .downloads.planned == 1
+            and .downloads.downloaded == 1
+            and .downloads.imported == 1' \
+          "$work/apm-install-host-sysroot-image.json" >/dev/null
         grep -q "host sysroot image qcow2 fixture" \
           "$work/hostsysroot-downloaded.qcow2"
         grep -q "boot-marker=hostsysroot" \
