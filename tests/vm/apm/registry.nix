@@ -1529,6 +1529,269 @@ in {
   };
 
   # -------------------------------------------------------------------------
+  # registry-system-config-dir-workflow — Redirected system config on non-AOS hosts
+  # -------------------------------------------------------------------------
+  registry-system-config-dir-workflow = testing.mkVMTest {
+    name = "apm-registry-system-config-dir-workflow";
+    rootfsDeps =
+      maintainerWorkflowDeps
+      ++ [
+        pkgs.jq
+        closureLeafTool
+        closureRootTool
+      ];
+    memory = 2048;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupNixPublishEnv}
+
+      echo "==> Test: redirected system config supports real registry workflows"
+
+      ROOT_STORE="${closureRootTool}"
+      LEAF_STORE="${closureLeafTool}"
+      ROOT_HASH=$(basename "$ROOT_STORE" | cut -d- -f1)
+      LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
+
+      $APR create override-reg
+      REG_DIR="$REG_STORAGE/override-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+
+      $APR publish "$ROOT_STORE" \
+        --name override-root \
+        --version 1.0.0 \
+        --description "System config override workflow root" \
+        --license MIT \
+        --maintainer override-workflow@example.invalid \
+        --registry override-reg \
+        --no-commit
+      $APR cache generate \
+        --registry override-reg \
+        --output /tmp/override-cache \
+        --cache-url http://127.0.0.1:18131 \
+        --priority 53 \
+        --no-commit
+      $APR verify --registry override-reg > /tmp/override-verify.out 2>&1 || {
+        cat /tmp/override-verify.out
+        fail "apr verify accepts override registry"
+      }
+      assert_file_exists "/tmp/override-cache/$ROOT_HASH.narinfo" \
+        "static cache includes override root package"
+      assert_file_exists "/tmp/override-cache/$LEAF_HASH.narinfo" \
+        "static cache includes override dependency package"
+
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "release: override root 1.0.0"
+      git init --bare --object-format=sha256 /tmp/override-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/override-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      PYTHONUNBUFFERED=1 python3 -m http.server 18131 --bind 127.0.0.1 \
+        --directory /tmp/override-cache > /tmp/override-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18131/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if ! curl -sf http://127.0.0.1:18131/nix-cache-info >/dev/null; then
+        cat /tmp/override-cache-http.log || true
+        fail "override static cache HTTP server started"
+      else
+        pass "override static cache HTTP server started"
+      fi
+
+      export HOME=/tmp/override-consumer
+      export USER=overrideuser
+      export APM_SYSTEM_CONFIG_DIR=/tmp/override-system-config
+      SYSTEM_REG_CONFIG="$APM_SYSTEM_CONFIG_DIR/registries.d/override-reg.toml"
+      USER_REG_CONFIG="$HOME/.config/apm/registries.d/override-reg.toml"
+      PROFILE_ROOT="/var/lib/profiles/per-user/$USER/current/bin/closure-root"
+      mkdir -p "$HOME" "$APM_SYSTEM_CONFIG_DIR/registries.d"
+      cat > "$SYSTEM_REG_CONFIG" << CFGEOF
+      [registry]
+      name = "override-reg"
+      url = "file:///tmp/override-origin.git"
+      branch = "$DEFAULT_BRANCH"
+      priority = 701
+      enabled = true
+
+      [registry.signing]
+      required = false
+      CFGEOF
+
+      if [ -e "$USER_REG_CONFIG" ]; then
+        fail "consumer should start without a user registry config"
+      else
+        pass "consumer starts without a user registry config"
+      fi
+
+      $APM --json update --registry override-reg > /tmp/override-update.json 2>&1 || {
+        cat /tmp/override-update.json
+        fail "apm update syncs registry from redirected system config"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        '.registry == "override-reg"
+          and (.registries | length == 1)
+          and .registries[0].registry == "override-reg"
+          and (.registries[0].status == "updated" or .registries[0].status == "current")
+          and .registries[0].packages == 1' \
+        /tmp/override-update.json >/dev/null || {
+        cat /tmp/override-update.json
+        fail "apm --json update reports redirected system registry sync"
+      }
+      pass "apm --json update reports redirected system registry sync"
+      assert_file_contains "$SYSTEM_REG_CONFIG" "last_commit = " \
+        "apm update writes sync state back to redirected system config"
+      assert_file_not_exists "$USER_REG_CONFIG" \
+        "apm update does not create a shadow user registry config"
+
+      $APM --json search override-root --registry override-reg \
+        > /tmp/override-search.json 2>&1 || {
+        cat /tmp/override-search.json
+        fail "apm search resolves package from redirected system registry"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        'length == 1
+          and .[0].name == "override-root"
+          and .[0].registry == "override-reg"
+          and .[0].version == "1.0.0"' \
+        /tmp/override-search.json >/dev/null || {
+        cat /tmp/override-search.json
+        fail "apm --json search reports redirected system registry package"
+      }
+      pass "apm --json search reports redirected system registry package"
+
+      mount -o remount,rw / || true
+      nix-store --delete --ignore-liveness "$ROOT_STORE" > /tmp/override-delete-root.out 2>&1 || {
+        cat /tmp/override-delete-root.out
+        fail "deleted override root before install"
+      }
+      nix-store --delete --ignore-liveness "$LEAF_STORE" > /tmp/override-delete-leaf.out 2>&1 || {
+        cat /tmp/override-delete-leaf.out
+        fail "deleted override dependency before install"
+      }
+      if nix-store --check-validity "$ROOT_STORE" >/tmp/override-root-valid.out 2>&1; then
+        cat /tmp/override-root-valid.out
+        fail "override root should be missing before install"
+      else
+        pass "override root missing before install"
+      fi
+      if nix-store --check-validity "$LEAF_STORE" >/tmp/override-leaf-valid.out 2>&1; then
+        cat /tmp/override-leaf-valid.out
+        fail "override dependency should be missing before install"
+      else
+        pass "override dependency missing before install"
+      fi
+
+      $APM install override-root --registry override-reg --yes \
+        > /tmp/override-install.out 2>&1 || {
+        cat /tmp/override-install.out
+        fail "apm install downloads redirected system registry package"
+      }
+      cat /tmp/override-install.out
+      assert_file_contains /tmp/override-install.out "Downloading" \
+        "apm install downloads from redirected system registry cache"
+      assert_file_contains /tmp/override-install.out "Installed 1 package" \
+        "apm install creates profile generation from redirected system registry"
+      "$PROFILE_ROOT" > /tmp/override-run.out
+      assert_file_contains /tmp/override-run.out \
+        "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
+        "installed redirected system registry executable runs"
+
+      $APM --json registry disable override-reg \
+        > /tmp/override-disable.json 2>&1 || {
+        cat /tmp/override-disable.json
+        fail "apm registry disable writes redirected system config"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        --arg config "$SYSTEM_REG_CONFIG" \
+        '.action == "registry_disable"
+          and .status == "disabled"
+          and .registry == "override-reg"
+          and .enabled == false
+          and .previous_enabled == true
+          and .changed == true
+          and .config == $config
+          and .packages == 1' \
+        /tmp/override-disable.json >/dev/null || {
+        cat /tmp/override-disable.json
+        fail "apm --json registry disable reports redirected system config"
+      }
+      pass "apm --json registry disable reports redirected system config"
+      assert_file_contains "$SYSTEM_REG_CONFIG" "enabled = false" \
+        "apm registry disable persists to redirected system config"
+      assert_file_not_exists "$USER_REG_CONFIG" \
+        "apm registry disable does not create a shadow user registry config"
+      if $APM update --registry override-reg > /tmp/override-update-disabled.out 2>&1; then
+        cat /tmp/override-update-disabled.out
+        fail "apm update should reject disabled redirected system registry"
+      else
+        assert_file_contains /tmp/override-update-disabled.out \
+          "registry 'override-reg' is not enabled" \
+          "disabled redirected system registry blocks update"
+      fi
+
+      $APM --json registry enable override-reg \
+        > /tmp/override-enable.json 2>&1 || {
+        cat /tmp/override-enable.json
+        fail "apm registry enable writes redirected system config"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        --arg config "$SYSTEM_REG_CONFIG" \
+        '.action == "registry_enable"
+          and .status == "enabled"
+          and .registry == "override-reg"
+          and .enabled == true
+          and .previous_enabled == false
+          and .changed == true
+          and .config == $config
+          and .packages == 1' \
+        /tmp/override-enable.json >/dev/null || {
+        cat /tmp/override-enable.json
+        fail "apm --json registry enable reports redirected system config"
+      }
+      pass "apm --json registry enable reports redirected system config"
+      assert_file_contains "$SYSTEM_REG_CONFIG" "enabled = true" \
+        "apm registry enable persists to redirected system config"
+
+      $APM --json registry remove override-reg --keep-local \
+        > /tmp/override-remove.json 2>&1 || {
+        cat /tmp/override-remove.json
+        fail "apm registry remove deletes redirected system config"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        --arg config "$SYSTEM_REG_CONFIG" \
+        '.action == "registry_remove"
+          and .status == "removed"
+          and .registry == "override-reg"
+          and .keep_local == true
+          and .config == $config
+          and .config_removed == true
+          and .local_removed == false' \
+        /tmp/override-remove.json >/dev/null || {
+        cat /tmp/override-remove.json
+        fail "apm --json registry remove reports redirected system config deletion"
+      }
+      pass "apm --json registry remove reports redirected system config deletion"
+      assert_file_not_exists "$SYSTEM_REG_CONFIG" \
+        "apm registry remove deletes redirected system registry config"
+      assert_file_not_exists "$USER_REG_CONFIG" \
+        "apm registry remove leaves user registry config absent"
+      "$PROFILE_ROOT" > /tmp/override-run-after-remove.out
+      assert_file_contains /tmp/override-run-after-remove.out \
+        "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
+        "installed redirected system registry package still runs after registry removal"
+
+      kill "$CACHE_PID" 2>/dev/null || true
+      wait "$CACHE_PID" 2>/dev/null || true
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
   # registry-maintainer-workflow — Real release, cache, install, execute
   # -------------------------------------------------------------------------
   registry-maintainer-workflow = testing.mkVMTest {
@@ -3565,10 +3828,10 @@ in {
       git init --bare --object-format=sha256 /tmp/branch-origin.git
       git -C "$REG_DIR" remote add origin /tmp/branch-origin.git
       git --git-dir=/tmp/branch-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
-      $APR --json push --registry test-reg --branch "$DEFAULT_BRANCH" --set-upstream \
+      $APR --json push --registry test-reg --set-upstream \
         > /tmp/branch-initial-push.json 2>&1 || {
         cat /tmp/branch-initial-push.json
-        fail "apr push publishes merged default branch"
+        fail "apr push --set-upstream publishes current default branch"
       }
       ${pkgs.jq}/bin/jq -e \
         --arg default "$DEFAULT_BRANCH" \
@@ -3582,9 +3845,9 @@ in {
           and (.branches | any(.name == $remote and .remote == true))' \
         /tmp/branch-initial-push.json >/dev/null || {
         cat /tmp/branch-initial-push.json
-        fail "apr --json push reports initial default branch push"
+        fail "apr --json push --set-upstream reports current branch push"
       }
-      pass "apr --json push reports initial default branch push"
+      pass "apr --json push --set-upstream reports current branch push"
       $APR --json branch list --registry test-reg \
         > /tmp/branch-list-after-push.json 2>&1 || {
         cat /tmp/branch-list-after-push.json
