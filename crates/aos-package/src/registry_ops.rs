@@ -3426,6 +3426,19 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
                 let _ = store.remove(registry)?;
             }
             store.store(&trusted)?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "trust_pin",
+                    "status": if *replace { "replaced" } else { "pinned" },
+                    "registry": registry,
+                    "replace": *replace,
+                    "key": key,
+                    "algorithm": trusted.algorithm,
+                    "fingerprint": trusted.fingerprint,
+                    "source": format!("{:?}", trusted.source),
+                }));
+                return Ok(());
+            }
             let action = if *replace { "Re-pinned" } else { "Pinned" };
             printer.success(&format!(
                 "{action} trust key for registry '{}' ({})",
@@ -3482,7 +3495,17 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
             Ok(())
         }
         TrustCommand::Remove { registry } => {
-            if store.remove(registry)? {
+            let removed = store.remove(registry)?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "trust_remove",
+                    "status": if removed { "removed" } else { "current" },
+                    "registry": registry,
+                    "removed": removed,
+                }));
+                return Ok(());
+            }
+            if removed {
                 printer.success(&format!(
                     "Removed pinned trust keys for registry '{registry}'"
                 ));

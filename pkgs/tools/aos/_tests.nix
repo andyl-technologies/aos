@@ -471,14 +471,34 @@ in {
         ${pkgs.jq}/bin/jq -e \
           'length == 1 and .[0].registry == "host-reg" and .[0].keys == []' \
           "$work/apr-trust-list-empty.json" >/dev/null
-        run_clean ${self}/bin/apr trust pin host-reg "$host_key_root" \
-          > "$work/apr-trust-pin-root.out" 2>&1
-        grep -q "Pinned trust key for registry 'host-reg'" \
-          "$work/apr-trust-pin-root.out"
+        run_clean ${self}/bin/apr --json trust pin host-reg "$host_key_root" \
+          > "$work/apr-trust-pin-root.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg key "$host_key_root" \
+          '.action == "trust_pin"
+            and .status == "pinned"
+            and .registry == "host-reg"
+            and .replace == false
+            and .key == $key
+            and .algorithm == "Ed25519"
+            and .source == "Tofu"
+            and (.fingerprint | length > 0)' \
+          "$work/apr-trust-pin-root.json" >/dev/null
         test -f "$trust_file"
         grep -q "$host_key_root" "$trust_file"
-        run_clean ${self}/bin/apr trust pin host-reg "$host_key_backup" \
-          > "$work/apr-trust-pin-backup.out" 2>&1
+        run_clean ${self}/bin/apr --json trust pin host-reg "$host_key_backup" \
+          > "$work/apr-trust-pin-backup.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg key "$host_key_backup" \
+          '.action == "trust_pin"
+            and .status == "pinned"
+            and .registry == "host-reg"
+            and .replace == false
+            and .key == $key
+            and .algorithm == "Ed25519"
+            and .source == "Tofu"
+            and (.fingerprint | length > 0)' \
+          "$work/apr-trust-pin-backup.json" >/dev/null
         test "$(wc -l < "$trust_file")" = "2"
         run_clean ${self}/bin/apr trust list host-reg \
           > "$work/apr-trust-list-pinned.out" 2>&1
@@ -498,19 +518,38 @@ in {
         fi
         grep -q "belongs to registry 'other-reg', expected 'host-reg'" \
           "$work/apr-trust-pin-foreign.out"
-        run_clean ${self}/bin/apr trust pin host-reg "$host_key_canary" --replace \
-          > "$work/apr-trust-replace.out" 2>&1
-        grep -q "Re-pinned trust key for registry 'host-reg'" \
-          "$work/apr-trust-replace.out"
+        run_clean ${self}/bin/apr --json trust pin host-reg "$host_key_canary" --replace \
+          > "$work/apr-trust-replace.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg key "$host_key_canary" \
+          '.action == "trust_pin"
+            and .status == "replaced"
+            and .registry == "host-reg"
+            and .replace == true
+            and .key == $key
+            and .algorithm == "Ed25519"
+            and .source == "Tofu"
+            and (.fingerprint | length > 0)' \
+          "$work/apr-trust-replace.json" >/dev/null
         test "$(wc -l < "$trust_file")" = "1"
         grep -q "$host_key_canary" "$trust_file"
-        run_clean ${self}/bin/apr trust remove host-reg \
-          > "$work/apr-trust-remove.out" 2>&1
-        grep -q "Removed pinned trust keys" "$work/apr-trust-remove.out"
+        run_clean ${self}/bin/apr --json trust remove host-reg \
+          > "$work/apr-trust-remove.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "trust_remove"
+            and .status == "removed"
+            and .registry == "host-reg"
+            and .removed == true' \
+          "$work/apr-trust-remove.json" >/dev/null
         test ! -e "$trust_file"
-        run_clean ${self}/bin/apr trust remove host-reg \
-          > "$work/apr-trust-remove-repeat.out" 2>&1
-        grep -q "No pinned trust keys found" "$work/apr-trust-remove-repeat.out"
+        run_clean ${self}/bin/apr --json trust remove host-reg \
+          > "$work/apr-trust-remove-repeat.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "trust_remove"
+            and .status == "current"
+            and .registry == "host-reg"
+            and .removed == false' \
+          "$work/apr-trust-remove-repeat.json" >/dev/null
         assert_no_profile
 
         run_clean ${self}/bin/apr status --registry host-reg > "$work/apr-status.out" 2>&1
@@ -1377,6 +1416,11 @@ in {
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/host-install-release-key"
         install_release_public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/host-install-release-key.pub")
         install_channel_trust_key="host-install-channel:Ed25519:$install_release_public_key"
+        ${pkgs.python3}/bin/python3 - << 'PY' > "$work/host-install-cache-signing-key"
+        import base64
+
+        print("hostcache:" + base64.b64encode(bytes(range(32))).decode("ascii"))
+        PY
         run_clean ${self}/bin/apr create host-install-channel \
           --trust-key "$install_channel_trust_key" \
           --trust-key-id channel \
@@ -1446,6 +1490,7 @@ in {
         run_clean ${self}/bin/apr --json cache generate \
           --registry host-install-channel \
           --output "$work/install-static-cache-output/cache" \
+          --key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --upload-url "file://$work/install-static-cache-upload/cache" \
           --priority 77 \
@@ -1469,9 +1514,17 @@ in {
           "$work/apr-cache-host-install.json" >/dev/null
         test -f "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-output/cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-output/cache/$install_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/nix-cache-info"
         test -f "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$install_hash.narinfo"
         find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
         git -C "$install_reg" add -A
         git -C "$install_reg" \
@@ -1484,6 +1537,7 @@ in {
           --registry host-install-channel \
           --key "$work/host-install-release-key" \
           --cache-output "$work/install-release-cache/cache" \
+          --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --cache-priority 77 \
           --upload-url "file://$work/install-static-cache-upload/cache" \
@@ -1523,6 +1577,10 @@ in {
           "$work/apr-release-host-install-v1-tag-object.out"
         test -f "$work/install-release-cache/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-release-cache/cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-release-cache/cache/$install_leaf_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-release-cache/cache/$install_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/HEAD"
         test -f "$work/install-static-cache-upload/cache/info/refs"
         test -f "$work/install-static-cache-upload/cache/releases/1/0/0/objects/info/packs"
@@ -1565,6 +1623,7 @@ in {
           --maintainer host@example.invalid \
           --key "$work/host-install-release-key" \
           --cache-output "$work/direct-release-cache" \
+          --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "$direct_release_url" \
           --cache-priority 66 \
           --upload-url "file://$work/install-static-cache-upload/direct-release" \
@@ -1602,6 +1661,10 @@ in {
           "$work/apr-release-host-direct-tag-object.out"
         test -f "$work/direct-release-cache/$install_leaf_hash.narinfo"
         test -f "$work/direct-release-cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/direct-release-cache/$install_leaf_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/direct-release-cache/$install_hash.narinfo"
         test -f "$work/install-static-cache-upload/direct-release/HEAD"
         test -f "$work/install-static-cache-upload/direct-release/info/refs"
         test -f "$work/install-static-cache-upload/direct-release/releases/1/0/0/objects/info/packs"
@@ -1619,11 +1682,27 @@ in {
           --key "$work/host-install-release-key" \
           > "$work/apr-create-host-keyadd.out" 2>&1
         keyadd_reg="$data/apm/registries/host-keyadd"
-        run_clean ${self}/bin/apm registry add --no-verify "file://$keyadd_reg" \
+        run_clean ${self}/bin/apm --json registry add --no-verify "file://$keyadd_reg" \
           --name host-keyadd \
-          --no-clone > "$work/apm-add-host-keyadd-config.out" 2>&1
-        grep -q "apm update --registry host-keyadd" \
-          "$work/apm-add-host-keyadd-config.out"
+          --no-clone > "$work/apm-add-host-keyadd-config.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg url "file://$keyadd_reg" \
+          --arg config_path "$config/apm/registries.d/host-keyadd.toml" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-keyadd"
+            and .name == "host-keyadd"
+            and .url == $url
+            and .priority == 500
+            and .enabled == true
+            and .tracking == "default"
+            and .clone == false
+            and .synced == false
+            and .config == $config_path
+            and .signing_required == false
+            and .verification_disabled == true
+            and .trusted_key_pinned == false' \
+          "$work/apm-add-host-keyadd-config.json" >/dev/null
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
           -f "$work/host-keyadd-external-key"
         run_clean ${self}/bin/apr --json keys register external \
@@ -2300,6 +2379,7 @@ in {
         run_clean ${self}/bin/apr --json cache generate \
           --registry host-install-channel \
           --output "$work/install-static-cache-output/cache" \
+          --key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --upload-url "file://$work/install-static-cache-upload/cache" \
           --priority 77 \
@@ -2324,10 +2404,24 @@ in {
         test -f "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-output/cache/$install_leaf_hash_v2.narinfo"
         test -f "$work/install-static-cache-output/cache/$install_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-output/cache/$install_leaf_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-output/cache/$install_leaf_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-output/cache/$install_hash_v2.narinfo"
         test -f "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/$install_leaf_hash_v2.narinfo"
         test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$install_leaf_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$install_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
         find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
         git -C "$install_reg" add -A
         git -C "$install_reg" \
@@ -2340,6 +2434,7 @@ in {
           --registry host-install-channel \
           --key "$work/host-install-release-key" \
           --cache-output "$work/install-release-cache-v2/cache" \
+          --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --cache-priority 77 \
           --upload-url "file://$work/install-static-cache-upload/cache" \
@@ -2376,6 +2471,10 @@ in {
           > "$work/apr-release-host-install-v2-tag.out"
         test -f "$work/install-release-cache-v2/cache/$install_leaf_hash_v2.narinfo"
         test -f "$work/install-release-cache-v2/cache/$install_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-release-cache-v2/cache/$install_leaf_hash_v2.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-release-cache-v2/cache/$install_hash_v2.narinfo"
         test -f "$work/install-static-cache-upload/cache/releases/2/0/0/objects/info/packs"
         test -f "$work/install-static-cache-upload/cache/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
         grep -q "BEGIN SSH SIGNATURE" \
@@ -3039,6 +3138,131 @@ in {
           'index("bin/host-install-tool") != null and index("share/host-install/payload.txt") != null' \
           "$work/apm-files-host-install-v2.json" >/dev/null
 
+        main_home="$home"
+        main_config="$config"
+        main_data="$data"
+        main_cache="$cache"
+        main_profile_root="$profile_root"
+        main_profile="$profile"
+        home="$work/commit-pin-home"
+        config="$work/commit-pin-config"
+        data="$work/commit-pin-share"
+        cache="$work/commit-pin-cache"
+        profile_root="$work/commit-pin-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        install_remote_v1_tracking="commit:$(${pkgs.coreutils}/bin/printf '%s' "$install_remote_v1_commit" | ${pkgs.coreutils}/bin/cut -c1-12)"
+        run_clean ${self}/bin/apm --json registry add --no-verify "file://$install_origin" \
+          --name host-install-commit \
+          --commit "$install_remote_v1_commit" \
+          > "$work/apm-add-host-install-commit.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg url "file://$install_origin" \
+          --arg commit "$install_remote_v1_commit" \
+          --arg tracking "$install_remote_v1_tracking" \
+          --arg config_path "$config/apm/registries.d/host-install-commit.toml" \
+          '.action == "registry_add"
+            and .status == "added"
+            and .registry == "host-install-commit"
+            and .name == "host-install-commit"
+            and .url == $url
+            and .priority == 500
+            and .enabled == true
+            and .tracking == $tracking
+            and .clone == true
+            and .synced == true
+            and .sync_error == null
+            and .packages == 2
+            and .last_commit == $commit
+            and .config == $config_path
+            and .signing_required == false
+            and .verification_disabled == true
+            and .trusted_key_pinned == false' \
+          "$work/apm-add-host-install-commit.json" >/dev/null
+        grep -q "commit = \"$install_remote_v1_commit\"" \
+          "$config/apm/registries.d/host-install-commit.toml"
+        run_clean ${self}/bin/apm --json search hostinstall \
+          --registry host-install-commit \
+          > "$work/apm-search-host-install-commit.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].registry == "host-install-commit"
+            and .[0].version == "1.0.0"' \
+          "$work/apm-search-host-install-commit.json" >/dev/null
+        run_clean ${self}/bin/apm --json update --registry host-install-commit \
+          > "$work/apm-update-host-install-commit-current.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg commit "$install_remote_v1_commit" \
+          --arg tracking "$install_remote_v1_tracking" \
+          '.registry == "host-install-commit"
+            and .updated == 0
+            and (.registries | length == 1)
+            and .registries[0].registry == "host-install-commit"
+            and .registries[0].status == "current"
+            and .registries[0].tracking == $tracking
+            and .registries[0].commit == $commit' \
+          "$work/apm-update-host-install-commit-current.json" >/dev/null
+        if nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-before-commit-pin.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$install_store" \
+            > "$work/nix-delete-host-install-before-commit-pin.out" 2>&1
+        fi
+        if nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-before-commit-pin.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$install_leaf_store" \
+            > "$work/nix-delete-host-leaf-before-commit-pin.out" 2>&1
+        fi
+        if nix_store --check-validity "$install_store" \
+          > "$work/nix-valid-host-install-commit-pin-deleted.out" 2>&1; then
+          cat "$work/nix-valid-host-install-commit-pin-deleted.out"
+          exit 1
+        fi
+        if nix_store --check-validity "$install_leaf_store" \
+          > "$work/nix-valid-host-leaf-commit-pin-deleted.out" 2>&1; then
+          cat "$work/nix-valid-host-leaf-commit-pin-deleted.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json install hostinstall \
+          --registry host-install-commit \
+          --yes > "$work/apm-install-host-install-commit.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+          '.action == "install"
+            and .status == "installed"
+            and .requested == ["hostinstall"]
+            and .generation == 1
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].registry == "host-install-commit"
+            and .roots[0].version == "1.0.0"
+            and .roots[0].store_path == $store
+            and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+            and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+            and (.downloads.planned >= 2)
+            and (.downloads.downloaded >= 2)
+            and (.downloads.imported >= 2)' \
+          "$work/apm-install-host-install-commit.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/host-install-commit-run.out"
+        grep -q "host leaf package executed" "$work/host-install-commit-run.out"
+        grep -q "host install package executed" "$work/host-install-commit-run.out"
+        if grep -q "v2 executed" "$work/host-install-commit-run.out"; then
+          cat "$work/host-install-commit-run.out"
+          exit 1
+        fi
+        run_clean ${self}/bin/apm --json list --upgradable \
+          --registry host-install-commit > "$work/apm-upgradable-host-install-commit.json"
+        ${pkgs.jq}/bin/jq -e 'length == 0' \
+          "$work/apm-upgradable-host-install-commit.json" >/dev/null
+        assert_default_profile_absent
+        rm -rf "$profile_root"
+        home="$main_home"
+        config="$main_config"
+        data="$main_data"
+        cache="$main_cache"
+        profile_root="$main_profile_root"
+        profile="$main_profile"
+
         run_clean ${self}/bin/apm rollback --list > "$work/apm-rollback-list-host-install-v2.out" 2>&1
         grep -q "gen-1: .*hostinstall 1.0.0" "$work/apm-rollback-list-host-install-v2.out"
         grep -q "gen-2: .*hostinstall 2.0.0" "$work/apm-rollback-list-host-install-v2.out"
@@ -3493,11 +3717,25 @@ in {
           > "$work/apm-orphans-before-registry-remove.json"
         ${pkgs.jq}/bin/jq -e 'length == 0' \
           "$work/apm-orphans-before-registry-remove.json" >/dev/null
-        run_clean ${self}/bin/apm registry remove orphan-reg \
-          > "$work/apm-registry-remove-orphan-reg.out" 2>&1
-        grep -q "Registry 'orphan-reg' removed" \
-          "$work/apm-registry-remove-orphan-reg.out"
-        grep -q "now orphaned" "$work/apm-registry-remove-orphan-reg.out"
+        run_clean ${self}/bin/apm --json registry remove orphan-reg \
+          > "$work/apm-registry-remove-orphan-reg.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$config/apm/registries.d/orphan-reg.toml" \
+          --arg local_path "$data/apm/registries/orphan-reg" \
+          '.action == "registry_remove"
+            and .status == "removed"
+            and .registry == "orphan-reg"
+            and .name == "orphan-reg"
+            and .keep_local == false
+            and .force == false
+            and .config == $config_path
+            and .config_removed == true
+            and .local == $local_path
+            and .local_removed == true
+            and .cache_removed == true
+            and .trusted_keys_removed == false
+            and .orphan_command == "apm orphans"' \
+          "$work/apm-registry-remove-orphan-reg.json" >/dev/null
         test ! -e "$config/apm/registries.d/orphan-reg.toml"
         test ! -e "$data/apm/registries/orphan-reg"
         test ! -e "$data/apm/remote/orphan-reg"

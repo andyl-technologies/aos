@@ -2089,22 +2089,36 @@ enabled = true
 "#,
     );
 
+    let tracking = if let Some(c) = commit {
+        format!("commit:{}", &c[..c.len().min(12)])
+    } else if let Some(b) = branch {
+        format!("branch:{b}")
+    } else if let Some(c) = channel {
+        format!("channel:{c}")
+    } else if let Some(t) = tag {
+        format!("tag:{t}")
+    } else if let Some(v) = version {
+        format!("version:{v}")
+    } else {
+        "default".to_string()
+    };
+
     // Add tracking mode field if specified.
     if let Some(c) = commit {
         toml_content.push_str(&format!("commit = \"{c}\"\n"));
-        printer.kv("Tracking", &format!("commit:{}", &c[..c.len().min(12)]));
+        printer.kv("Tracking", &tracking);
     } else if let Some(b) = branch {
         toml_content.push_str(&format!("branch = \"{b}\"\n"));
-        printer.kv("Tracking", &format!("branch:{b}"));
+        printer.kv("Tracking", &tracking);
     } else if let Some(c) = channel {
         toml_content.push_str(&format!("channel = \"{c}\"\n"));
-        printer.kv("Tracking", &format!("channel:{c}"));
+        printer.kv("Tracking", &tracking);
     } else if let Some(t) = tag {
         toml_content.push_str(&format!("tag = \"{t}\"\n"));
-        printer.kv("Tracking", &format!("tag:{t}"));
+        printer.kv("Tracking", &tracking);
     } else if let Some(v) = version {
         toml_content.push_str(&format!("version = \"{v}\"\n"));
-        printer.kv("Tracking", &format!("version:{v}"));
+        printer.kv("Tracking", &tracking);
     }
     if let Some(key) = &trusted_key {
         toml_content.push_str(&format!(
@@ -2128,6 +2142,25 @@ enabled = true
     let pkg_cmd = aos_core::invocation::package_manager_command();
 
     if !clone {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "action": "registry_add",
+                "status": "added",
+                "registry": &name,
+                "name": &name,
+                "url": url,
+                "priority": priority,
+                "enabled": true,
+                "tracking": &tracking,
+                "clone": false,
+                "synced": false,
+                "config": toml_path.to_string_lossy(),
+                "signing_required": !no_verify,
+                "verification_disabled": no_verify,
+                "trusted_key_pinned": trusted_key.is_some(),
+            }));
+            return Ok(());
+        }
         printer.success(&format!(
             "Registry '{name}' added. Run `{pkg_cmd} update --registry {name}` to sync package metadata."
         ));
@@ -2142,11 +2175,67 @@ enabled = true
     // save-back). A sync failure is non-fatal: the registry is registered and
     // can be retried with `<pkg> update`.
     let synced = config::ApmConfig::load(config.scope)?;
-    if let Err(e) = update::run(&synced, Some(&name), printer).await {
+    let sync_printer = if printer.mode() == OutputMode::Json {
+        Printer::new(0, true, false)
+    } else {
+        printer.clone()
+    };
+    let sync_result = update::run(&synced, Some(&name), &sync_printer).await;
+    if let Err(e) = sync_result {
+        if printer.mode() == OutputMode::Json {
+            let packages_dir = config.cache_path().join(&name).join("packages");
+            printer.json(&serde_json::json!({
+                "action": "registry_add",
+                "status": "added",
+                "registry": &name,
+                "name": &name,
+                "url": url,
+                "priority": priority,
+                "enabled": true,
+                "tracking": &tracking,
+                "clone": true,
+                "synced": false,
+                "sync_error": e.to_string(),
+                "packages": count_packages_in_dir(&packages_dir),
+                "config": toml_path.to_string_lossy(),
+                "signing_required": !no_verify,
+                "verification_disabled": no_verify,
+                "trusted_key_pinned": trusted_key.is_some(),
+            }));
+            return Ok(());
+        }
         printer.warning(&format!(
             "Registry '{name}' was added, but the initial sync failed: {e}\n\
              Retry with `{pkg_cmd} update --registry {name}`."
         ));
+    }
+    if printer.mode() == OutputMode::Json {
+        let reloaded = config::ApmConfig::load(config.scope)?;
+        let state = reloaded
+            .registries
+            .iter()
+            .find(|(cfg, _)| cfg.name == name)
+            .and_then(|(_, state)| state.as_ref());
+        let packages_dir = config.cache_path().join(&name).join("packages");
+        printer.json(&serde_json::json!({
+            "action": "registry_add",
+            "status": "added",
+            "registry": &name,
+            "name": &name,
+            "url": url,
+            "priority": priority,
+            "enabled": true,
+            "tracking": &tracking,
+            "clone": true,
+            "synced": true,
+            "sync_error": null,
+            "packages": count_packages_in_dir(&packages_dir),
+            "last_commit": state.and_then(|state| state.last_commit.as_ref()),
+            "config": toml_path.to_string_lossy(),
+            "signing_required": !no_verify,
+            "verification_disabled": no_verify,
+            "trusted_key_pinned": trusted_key.is_some(),
+        }));
     }
 
     Ok(())
@@ -2200,24 +2289,48 @@ async fn registry_remove(
     // installed from this registry become orphans; `apm orphans` surfaces them.
     let config_dir = config.scope.config_dir();
     let toml_path = config_dir.join("registries.d").join(format!("{name}.toml"));
+    let toml_existed = toml_path.exists();
 
     if toml_path.exists() {
         fs::remove_file(&toml_path).with_context(|| format!("removing {}", toml_path.display()))?;
     }
 
+    let mut cache_removed = false;
+    let mut local_removed = false;
     if !keep_local {
         let cache_dir = config.cache_path().join(name);
         if cache_dir.exists() {
             let _ = fs::remove_dir_all(&cache_dir);
+            cache_removed = !cache_dir.exists();
         }
 
         if clone_dir.exists() {
             let _ = fs::remove_dir_all(&clone_dir);
+            local_removed = !clone_dir.exists();
         }
     }
 
     let key_store = security::KeyStore::new(config.scope.trusted_keys_dirs());
-    let _ = key_store.remove(name);
+    let trusted_keys_removed = key_store.remove(name)?;
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "registry_remove",
+            "status": "removed",
+            "registry": name,
+            "name": name,
+            "keep_local": keep_local,
+            "force": force,
+            "config": toml_path.to_string_lossy(),
+            "config_removed": toml_existed && !toml_path.exists(),
+            "local": clone_dir.to_string_lossy(),
+            "local_removed": local_removed,
+            "cache_removed": cache_removed,
+            "trusted_keys_removed": trusted_keys_removed,
+            "orphan_command": format!("{} orphans", aos_core::invocation::package_manager_command()),
+        }));
+        return Ok(());
+    }
 
     printer.success(&format!("Registry '{name}' removed."));
     printer.info(&format!(
