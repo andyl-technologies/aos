@@ -671,6 +671,141 @@ in {
         pass "fresh client install excludes high-priority duplicate dependency"
       fi
 
+      delete_store_path "$HIGH_STORE" "high-priority-tool-client-explicit"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install priority-tool --yes \
+        > /tmp/priority-client-install-high-tool.out 2>&1 || {
+        cat /tmp/priority-client-install-high-tool.out
+        fail "apm install adds explicit high-priority duplicate beside client dependency"
+      }
+      cat /tmp/priority-client-install-high-tool.out
+      assert_file_contains /tmp/priority-client-install-high-tool.out "Downloading" \
+        "explicit duplicate install downloads high-priority NAR"
+      assert_store_valid "$HIGH_STORE" "explicit high priority duplicate"
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
+        '"explicit": false' "explicit duplicate install keeps low dependency automatic"
+      assert_file_contains "$CURRENT_PROFILE/meta/$HIGH_HASH.json" \
+        '"explicit": true' "explicit duplicate install records high package as explicit"
+      $APM --json list --installed \
+        > /tmp/priority-installed-client-with-high-tool.json 2>&1 || {
+        cat /tmp/priority-installed-client-with-high-tool.json
+        fail "apm --json list --installed reports duplicate installed sources"
+      }
+      if ${jqBin} -e '
+        map(select(.name == "priority-tool")) as $matches
+        | ($matches | length == 2)
+          and (map(select(.name == "priority-client"
+            and .registry == "low-priority"
+            and .version == "1.0.0")) | length == 1)
+          and ($matches
+            | map(select(.registry == "low-priority"
+              and .version == "9.0.0"
+              and (.status | contains("installed"))))
+            | length == 1)
+          and ($matches
+            | map(select(.registry == "high-priority"
+              and .version == "2.0.0"
+              and (.status | contains("installed"))))
+            | length == 1)
+      ' /tmp/priority-installed-client-with-high-tool.json >/dev/null; then
+        pass "apm --json list --installed keeps both duplicate sources visible"
+      else
+        cat /tmp/priority-installed-client-with-high-tool.json
+        fail "apm --json list --installed keeps both duplicate sources visible"
+      fi
+
+      $APM --json remove priority-tool --dry-run \
+        > /tmp/priority-client-remove-high-tool-dry-run.json 2>&1 || {
+        cat /tmp/priority-client-remove-high-tool-dry-run.json
+        fail "apm --json remove --dry-run plans duplicate-name explicit removal"
+      }
+      if ${jqBin} -e --arg store "$HIGH_STORE" '
+        .action == "remove"
+        and .status == "planned"
+        and .requested == ["priority-tool"]
+        and .dry_run == true
+        and .removed == 1
+        and .explicit_removed == 1
+        and .orphan_removed == 0
+        and (.orphans | length == 0)
+        and (.packages | length == 1)
+        and .packages[0].name == "priority-tool"
+        and .packages[0].registry == "high-priority"
+        and .packages[0].store_path == $store
+        and .packages[0].explicit == true
+      ' /tmp/priority-client-remove-high-tool-dry-run.json >/dev/null; then
+        pass "duplicate-name dry-run removes only the explicit high-priority package"
+      else
+        cat /tmp/priority-client-remove-high-tool-dry-run.json
+        fail "duplicate-name dry-run should preserve the automatic low-priority dependency"
+      fi
+
+      $APM --json remove priority-tool --yes \
+        > /tmp/priority-client-remove-high-tool.json 2>&1 || {
+        cat /tmp/priority-client-remove-high-tool.json
+        fail "apm --json remove deletes duplicate-name explicit package"
+      }
+      if ${jqBin} -e --arg store "$HIGH_STORE" '
+        .action == "remove"
+        and .status == "removed"
+        and .dry_run == false
+        and .removed == 1
+        and .explicit_removed == 1
+        and .orphan_removed == 0
+        and (.orphans | length == 0)
+        and (.packages | length == 1)
+        and .packages[0].registry == "high-priority"
+        and .packages[0].store_path == $store
+      ' /tmp/priority-client-remove-high-tool.json >/dev/null; then
+        pass "duplicate-name remove deletes only the explicit high-priority package"
+      else
+        cat /tmp/priority-client-remove-high-tool.json
+        fail "duplicate-name remove should leave the automatic low-priority dependency"
+      fi
+      if [ -L "$CURRENT_PROFILE/usr/$LOW_HASH" ]; then
+        pass "duplicate-name remove preserves low-priority dependency root"
+      else
+        fail "duplicate-name remove should preserve low-priority dependency root"
+      fi
+      if [ -L "$CURRENT_PROFILE/usr/$HIGH_HASH" ]; then
+        fail "duplicate-name remove should drop high-priority explicit root"
+      else
+        pass "duplicate-name remove drops high-priority explicit root"
+      fi
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
+        '"explicit": false' "duplicate-name remove preserves low dependency metadata"
+      if [ -e "$CURRENT_PROFILE/meta/$HIGH_HASH.json" ]; then
+        cat "$CURRENT_PROFILE/meta/$HIGH_HASH.json"
+        fail "duplicate-name remove should delete high-priority metadata"
+      else
+        pass "duplicate-name remove deletes high-priority metadata"
+      fi
+      "$PROFILE_CLIENT" > /tmp/priority-client-after-high-remove.out
+      assert_file_contains /tmp/priority-client-after-high-remove.out \
+        "priority-tool 9.0.0 from low-priority" \
+        "client still executes low-priority dependency after duplicate remove"
+      "$PROFILE_TOOL" > /tmp/priority-tool-after-high-remove.out
+      assert_file_contains /tmp/priority-tool-after-high-remove.out \
+        "priority-tool 9.0.0 from low-priority" \
+        "profile executable falls back to low-priority dependency after duplicate remove"
+      $APM --json autoremove --dry-run \
+        > /tmp/priority-client-autoremove-after-high-remove.json 2>&1 || {
+        cat /tmp/priority-client-autoremove-after-high-remove.json
+        fail "apm --json autoremove --dry-run handles preserved duplicate dependency"
+      }
+      if ${jqBin} -e '
+        .action == "autoremove"
+        and .status == "current"
+        and .removed == 0
+        and .orphan_removed == 0
+      ' /tmp/priority-client-autoremove-after-high-remove.json >/dev/null; then
+        pass "preserved duplicate dependency is still needed by remaining client"
+      else
+        cat /tmp/priority-client-autoremove-after-high-remove.json
+        fail "preserved duplicate dependency should not become an orphan"
+      fi
+
       export HOME=/tmp/priority-consumer
       export USER=priorityuser
       APM_CONFIG="$HOME/.config/apm"

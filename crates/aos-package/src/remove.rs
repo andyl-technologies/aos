@@ -346,26 +346,66 @@ fn installed_meta_json(meta: &InstalledMeta) -> serde_json::Value {
 /// Returns the matching entries. Errors on any name not found in the profile.
 fn find_installed(profile: &Profile, names: &[String]) -> Result<Vec<InstalledMeta>> {
     let all = list_meta(profile)?;
-    let mut found = Vec::new();
-    let mut found_names: HashSet<String> = HashSet::new();
+    select_installed_for_removal(&all, names)
+}
 
-    for meta_entry in &all {
-        if let Some(ref apm) = meta_entry.apm {
-            if names.contains(&apm.name) {
-                found.push(meta_entry.clone());
-                found_names.insert(apm.name.clone());
+/// Select installed entries that should be removed for requested package names.
+///
+/// Explicit entries are profile roots the user intentionally installed. If an
+/// explicit entry matches a requested name, keep automatic same-name entries out
+/// of the requested removal set so another remaining root can still depend on
+/// them. If only automatic entries match, preserve the historical behavior and
+/// remove those entries directly.
+fn select_installed_for_removal(
+    installed: &[InstalledMeta],
+    names: &[String],
+) -> Result<Vec<InstalledMeta>> {
+    let mut selected = Vec::new();
+    let mut selected_hashes = HashSet::new();
+
+    for name in names {
+        let matches: Vec<InstalledMeta> = installed
+            .iter()
+            .filter(|meta_entry| {
+                meta_entry
+                    .apm
+                    .as_ref()
+                    .map(|apm| apm.name == *name)
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+
+        if matches.is_empty() {
+            return Err(AosError::PackageNotFound { name: name.clone() }.into());
+        }
+
+        let explicit_matches: Vec<InstalledMeta> = matches
+            .iter()
+            .filter(|meta_entry| {
+                meta_entry
+                    .apm
+                    .as_ref()
+                    .map(|apm| apm.explicit)
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        let removals = if explicit_matches.is_empty() {
+            matches
+        } else {
+            explicit_matches
+        };
+
+        for meta_entry in removals {
+            let hash = store_path_hash(&meta_entry.store_path).to_string();
+            if selected_hashes.insert(hash) {
+                selected.push(meta_entry);
             }
         }
     }
 
-    // Check that every requested name was found.
-    for name in names {
-        if !found_names.contains(name) {
-            return Err(AosError::PackageNotFound { name: name.clone() }.into());
-        }
-    }
-
-    Ok(found)
+    Ok(selected)
 }
 
 /// Find orphaned auto-installed packages.
@@ -601,6 +641,17 @@ mod tests {
         }
     }
 
+    fn sample_installed_from_registry(
+        name: &str,
+        hash: &str,
+        registry: &str,
+        explicit: bool,
+    ) -> InstalledMeta {
+        let mut installed = sample_installed(name, hash, explicit);
+        installed.apm.as_mut().unwrap().registry = registry.into();
+        installed
+    }
+
     // 1. find_installed finds matching packages
     #[test]
     fn find_installed_finds_matching() {
@@ -649,6 +700,40 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("nonexistent"), "error was: {err}");
+    }
+
+    #[test]
+    fn select_installed_for_removal_prefers_explicit_duplicate_name() {
+        let installed = vec![
+            sample_installed_from_registry("priority-client", "aaa111", "low-priority", true),
+            sample_installed_from_registry("priority-tool", "bbb222", "low-priority", false),
+            sample_installed_from_registry("priority-tool", "ccc333", "high-priority", true),
+        ];
+
+        let selected = select_installed_for_removal(&installed, &["priority-tool".into()]).unwrap();
+
+        assert_eq!(selected.len(), 1);
+        let apm = selected[0].apm.as_ref().unwrap();
+        assert_eq!(apm.name, "priority-tool");
+        assert_eq!(apm.registry, "high-priority");
+        assert!(apm.explicit);
+    }
+
+    #[test]
+    fn select_installed_for_removal_keeps_implicit_only_behavior() {
+        let installed = vec![sample_installed_from_registry(
+            "priority-tool",
+            "bbb222",
+            "low-priority",
+            false,
+        )];
+
+        let selected = select_installed_for_removal(&installed, &["priority-tool".into()]).unwrap();
+
+        assert_eq!(selected.len(), 1);
+        let apm = selected[0].apm.as_ref().unwrap();
+        assert_eq!(apm.registry, "low-priority");
+        assert!(!apm.explicit);
     }
 
     // 3. find_orphans returns auto-installed packages
