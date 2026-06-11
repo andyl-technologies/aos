@@ -87,19 +87,40 @@ fn apm_profile_lifecycle_cli_lists_holds_executes_and_rolls_back() -> Result<()>
     assert_eq!(unheld_alpha["package"], "alpha");
     assert_eq!(unheld_alpha["held"], false);
 
-    let planned = fixture.run_json(&["--json", "--dry-run", "rollback"], "rollback dry-run")?;
+    let removed_beta = fixture.run_json(&["--json", "--yes", "remove", "beta"], "remove beta")?;
+    assert_eq!(removed_beta["action"], "remove");
+    assert_eq!(removed_beta["status"], "removed");
+    assert_eq!(removed_beta["removed"], 1);
+    assert_eq!(removed_beta["explicit_removed"], 1);
+    assert_eq!(removed_beta["orphan_removed"], 0);
+    assert_eq!(removed_beta["generation"], 3);
+    assert_eq!(removed_beta["packages"][0]["name"], "beta");
+    assert_eq!(fixture.current_generation()?, "gen-3");
+    assert_eq!(fixture.run_profile_command("alpha")?, "alpha 2.0.0\n");
+    assert!(
+        !fixture.profile_bin("beta").exists(),
+        "remove should delete beta from the active profile bin directory"
+    );
+
+    let installed = fixture.run_json(
+        &["--json", "list", "--installed", "--registry", "lifecycle"],
+        "list installed after remove",
+    )?;
+    assert_package_list(&installed, &[("alpha", "2.0.0", "installed")])?;
+
+    let planned = fixture.run_json(
+        &["--json", "--dry-run", "rollback", "--generation", "1"],
+        "rollback dry-run",
+    )?;
     assert_eq!(planned["action"], "rollback");
     assert_eq!(planned["status"], "planned");
-    assert_eq!(planned["from_generation"], 2);
+    assert_eq!(planned["from_generation"], 3);
     assert_eq!(planned["to_generation"], 1);
     assert_root_names(&planned["restored"], &[("alpha", "1.0.0")])?;
-    assert_root_names(
-        &planned["removed"],
-        &[("alpha", "2.0.0"), ("beta", "1.0.0")],
-    )?;
+    assert_root_names(&planned["removed"], &[("alpha", "2.0.0")])?;
     assert_eq!(fixture.run_profile_command("alpha")?, "alpha 2.0.0\n");
 
-    let rolled_back = fixture.run_json(&["--json", "rollback"], "rollback")?;
+    let rolled_back = fixture.run_json(&["--json", "rollback", "--generation", "1"], "rollback")?;
     assert_eq!(rolled_back["action"], "rollback");
     assert_eq!(rolled_back["status"], "rolled_back");
     assert_eq!(rolled_back["generation"], 1);
