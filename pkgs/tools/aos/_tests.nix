@@ -745,6 +745,19 @@ in {
         grep -q "store_path = \"/nix/store/$pkg_hash-hostpkg-1.0.0\"" "$work/apr-show-raw.out"
         run_clean ${self}/bin/apr verify --registry host-reg > "$work/apr-verify.out" 2>&1
         grep -q "Verified 1 package(s), 1 closure(s), no errors" "$work/apr-verify.out"
+        run_clean ${self}/bin/apr --json verify --registry host-reg \
+          > "$work/apr-verify.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "verify"
+            and .status == "ok"
+            and .registry == "host-reg"
+            and .package == null
+            and .fix == false
+            and .checked == 1
+            and .closures == 1
+            and .repaired == 0
+            and .errors == 0' \
+          "$work/apr-verify.json" >/dev/null
         run_clean ${self}/bin/apr log --registry host-reg --package hostpkg -n 1 > "$work/apr-log-package.out" 2>&1
         grep -q "release: hostpkg 1.0.0" "$work/apr-log-package.out"
         run_clean ${self}/bin/apr --json log --registry host-reg --package hostpkg -n 1 \
@@ -1481,6 +1494,24 @@ in {
         EOF
         @AOS_COREUTILS@/bin/chmod +x "$out/bin/host-bulk-verify"
         SCRIPT
+        cat > "$work/host-build-sysroot.sh" << 'SCRIPT'
+        set -eu
+        @AOS_COREUTILS@/bin/mkdir -p "$out/bin" "$out/etc"
+        {
+          printf '%s\n' '#!@AOS_BASH@/bin/bash'
+          printf '%s\n' 'printf "host sysroot fixture activated\n"'
+        } > "$out/activate"
+        @AOS_COREUTILS@/bin/chmod +x "$out/activate"
+        printf '%s\n' "host sysroot payload" > "$out/etc/host-sysroot-release"
+        SCRIPT
+        cat > "$work/host-build-sysroot-image.sh" << 'SCRIPT'
+        set -eu
+        @AOS_COREUTILS@/bin/mkdir -p "$out"
+        {
+          printf '%s\n' "host sysroot image qcow2 fixture"
+          printf '%s\n' "boot-marker=hostsysroot"
+        } > "$out/hostsysroot.qcow2"
+        SCRIPT
         substitute_fixture_paths() {
           ${pkgs.python3}/bin/python3 - "$1" '${pkgs.bash}' '${pkgs.coreutils}' '${pkgs.findutils}' '${pkgs.grep}' << 'PY'
         from pathlib import Path
@@ -1503,6 +1534,8 @@ in {
         substitute_fixture_paths "$work/host-build-app-v11.sh"
         substitute_fixture_paths "$work/host-build-app-v2.sh"
         substitute_fixture_paths "$work/host-build-bulk.sh"
+        substitute_fixture_paths "$work/host-build-sysroot.sh"
+        substitute_fixture_paths "$work/host-build-sysroot-image.sh"
         cat > "$work/host-install-fixtures.nix" << 'NIX'
         let
           bash = "@AOS_BASH@/bin/bash";
@@ -1540,9 +1573,21 @@ in {
             builder = bash;
             args = [ ./host-build-bulk.sh ];
           };
+          sysroot = derivation {
+            name = "hostsysroot-1.0.0";
+            inherit system;
+            builder = bash;
+            args = [ ./host-build-sysroot.sh ];
+          };
+          sysrootImage = derivation {
+            name = "hostsysroot-image-1.0.0";
+            inherit system;
+            builder = bash;
+            args = [ ./host-build-sysroot-image.sh ];
+          };
         in {
           leaf = leafV1;
-          inherit leafV1 leafV11 leafV2 bulk;
+          inherit leafV1 leafV11 leafV2 bulk sysroot sysrootImage;
           appV1 = app "hostinstall-1.0.0" leafV1 ./host-build-app-v1.sh;
           appV11 = app "hostinstall-1.1.0" leafV11 ./host-build-app-v11.sh;
           appV2 = app "hostinstall-2.0.0" leafV2 ./host-build-app-v2.sh;
@@ -1562,6 +1607,14 @@ in {
         bulk_hash=$(basename "$bulk_store" | cut -d- -f1)
         bulk_drv=$(nix_store -q --deriver "$bulk_store")
         test -e "$bulk_drv"
+        sysroot_store=$(nix_build "$work/host-install-fixtures.nix" -A sysroot --no-out-link)
+        sysroot_hash=$(basename "$sysroot_store" | cut -d- -f1)
+        sysroot_drv=$(nix_store -q --deriver "$sysroot_store")
+        test -e "$sysroot_drv"
+        sysroot_image_store=$(nix_build "$work/host-install-fixtures.nix" -A sysrootImage --no-out-link)
+        sysroot_image_hash=$(basename "$sysroot_image_store" | cut -d- -f1)
+        sysroot_image_drv=$(nix_store -q --deriver "$sysroot_image_store")
+        test -e "$sysroot_image_drv"
 
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/host-install-release-key"
         install_release_public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/host-install-release-key.pub")
@@ -1682,6 +1735,36 @@ in {
             and .current == "stable"
             and (.head | length == 64)' \
           "$work/apr-publish-host-bulk.json" >/dev/null
+        grep -q "$install_leaf_hash" "$install_reg/closures/$install_hash"
+        run_clean ${self}/bin/apr --json verify \
+          --registry host-install-channel > "$work/apr-verify-host-install-all.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "verify"
+            and .status == "ok"
+            and .registry == "host-install-channel"
+            and .package == null
+            and .fix == false
+            and .checked == 3
+            and .closures == 3
+            and .repaired == 0
+            and .errors == 0' \
+          "$work/apr-verify-host-install-all.json" >/dev/null
+        ${pkgs.coreutils}/bin/rm "$install_reg/closures/$install_hash"
+        run_clean ${self}/bin/apr --json verify \
+          --registry host-install-channel \
+          --package hostinstall \
+          --fix > "$work/apr-verify-host-install-fix.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "verify"
+            and .status == "ok"
+            and .registry == "host-install-channel"
+            and .package == "hostinstall"
+            and .fix == true
+            and .checked == 1
+            and .closures == 1
+            and .repaired == 1
+            and .errors == 0' \
+          "$work/apr-verify-host-install-fix.json" >/dev/null
         grep -q "$install_leaf_hash" "$install_reg/closures/$install_hash"
         install_default_upload="file://$work/install-static-cache-upload/cache"
         install_default_upload_mirror="file://$work/install-static-cache-upload/cache-mirror"
@@ -2162,6 +2245,173 @@ in {
         main_cache="$cache"
         main_profile_root="$profile_root"
         main_profile="$profile"
+
+        image_channel_trust_key="host-image-channel:Ed25519:$install_release_public_key"
+        image_cache_url="http://127.0.0.1:$install_cache_port/image-cache"
+        image_upload_url="file://$work/install-static-cache-upload/image-cache"
+        run_clean ${self}/bin/apr create host-image-channel \
+          --trust-key "$image_channel_trust_key" \
+          --trust-key-id channel \
+          --key "$work/host-install-release-key" \
+          > "$work/apr-create-host-image-channel.out" 2>&1
+        image_reg="$data/apm/registries/host-image-channel"
+        git -C "$image_reg" config user.name "Host Command Test"
+        git -C "$image_reg" config user.email "host-command@example.invalid"
+        run_clean ${self}/bin/apr --json publish "$sysroot_store" \
+          --name hostsysroot \
+          --version 1.0.0 \
+          --description "Host sysroot image fixture" \
+          --license MIT \
+          --maintainer host@example.invalid \
+          --sysroot \
+          --image "$sysroot_image_store" \
+          --image-format qcow2 \
+          --registry host-image-channel \
+          --no-commit > "$work/apr-publish-host-sysroot-image.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg store "$sysroot_store" \
+          --arg source "$sysroot_drv" \
+          --arg image "$sysroot_image_store" \
+          '.action == "publish"
+            and .registry == "host-image-channel"
+            and .package == "hostsysroot"
+            and .version == "1.0.0"
+            and .platform == "x86_64-linux"
+            and .store_path == $store
+            and .source.store_path == $source
+            and .sysroot == true
+            and (.images | length == 1)
+            and .images[0].format == "qcow2"
+            and .images[0].store_path == $image
+            and (.images[0].nar_hash | startswith("sha256-"))
+            and (.images[0].nar_size > 0)
+            and .package_file == "packages/h/hostsysroot.toml"
+            and .committed == false' \
+          "$work/apr-publish-host-sysroot-image.json" >/dev/null
+        grep -q '\[\[versions.platforms.x86_64-linux.images\]\]' \
+          "$image_reg/packages/h/hostsysroot.toml"
+        run_clean ${self}/bin/apr --json cache generate \
+          --registry host-image-channel \
+          --output "$work/image-static-cache-output/cache" \
+          --key "$work/host-install-cache-signing-key" \
+          --cache-url "$image_cache_url" \
+          --upload-url "$image_upload_url" \
+          --priority 71 \
+          --no-commit > "$work/apr-cache-host-image-channel.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg output "$work/image-static-cache-output/cache" \
+          --arg cache_url "$image_cache_url" \
+          --arg upload_url "$image_upload_url" \
+          '.action == "cache_generate"
+            and .registry == "host-image-channel"
+            and .output_dir == $output
+            and .paths >= 2
+            and .narinfos >= 2
+            and .nars >= 2
+            and .cache_url == $cache_url
+            and .priority == 71
+            and .upload_urls == [$upload_url]
+            and .uploaded == true
+            and .cache_pointer_updated == true
+            and .committed == false' \
+          "$work/apr-cache-host-image-channel.json" >/dev/null
+        test -f "$work/install-static-cache-upload/image-cache/$sysroot_hash.narinfo"
+        test -f "$work/install-static-cache-upload/image-cache/$sysroot_image_hash.narinfo"
+        grep -q '^Sig: hostcache:' \
+          "$work/install-static-cache-upload/image-cache/$sysroot_image_hash.narinfo"
+        git -C "$image_reg" add -A
+        git -C "$image_reg" \
+          -c gpg.format=ssh \
+          -c gpg.ssh.program=${pkgs.openssh}/bin/ssh-keygen \
+          -c user.signingkey="$work/host-install-release-key" \
+          commit -S -m "release: hostsysroot 1.0.0 image" \
+          > "$work/git-commit-host-image-channel.out" 2>&1
+        run_clean ${self}/bin/apr --json release 1.0.0 \
+          --registry host-image-channel \
+          --key "$work/host-install-release-key" \
+          --cache-output "$work/image-release-cache/cache" \
+          --cache-key "$work/host-install-cache-signing-key" \
+          --cache-url "$image_cache_url" \
+          --cache-priority 71 \
+          --upload-url "$image_upload_url" \
+          --channel stable \
+          --init-channel > "$work/apr-release-host-image-channel.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg cache "$work/image-release-cache/cache" \
+          --arg cache_url "$image_cache_url" \
+          --arg upload_url "$image_upload_url" \
+          '.action == "release"
+            and .status == "released"
+            and .registry == "host-image-channel"
+            and .version == "1.0.0"
+            and .cache_output == $cache
+            and .cache_url == $cache_url
+            and .cache_priority == 71
+            and .upload_urls == [$upload_url]
+            and .channel.name == "stable"
+            and .channel.action == "init"
+            and .channel.touched_partitions == 256
+            and (.cache.paths >= 2)
+            and (.cache.narinfos >= 2)
+            and (.cache.nars >= 2)
+            and (.uploaded_files > 0)
+            and (.uploaded_bytes > 0)' \
+          "$work/apr-release-host-image-channel.json" >/dev/null
+        test -f "$work/install-static-cache-upload/image-cache/channels/stable/00"
+        test -f "$work/install-static-cache-upload/image-cache/$sysroot_image_hash.narinfo"
+
+        if nix_store --check-validity "$sysroot_image_store" \
+          > "$work/nix-valid-host-sysroot-image-before-delete.out" 2>&1; then
+          nix_store --delete --ignore-liveness "$sysroot_image_store" \
+            > "$work/nix-delete-host-sysroot-image-before-download.out" 2>&1
+        fi
+        if nix_store --check-validity "$sysroot_image_store" \
+          > "$work/nix-valid-host-sysroot-image-after-delete.out" 2>&1; then
+          cat "$work/nix-valid-host-sysroot-image-after-delete.out"
+          exit 1
+        fi
+        home="$work/image-client-home"
+        config="$work/image-client-config"
+        data="$work/image-client-share"
+        cache="$work/image-client-cache"
+        profile_root="$work/image-client-profiles"
+        profile="$profile_root/per-user/unknown"
+        mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+        run_clean ${self}/bin/apm registry add "$image_cache_url" \
+          --name host-image-channel \
+          --channel stable \
+          --trust-key "$image_channel_trust_key" \
+          > "$work/apm-add-host-image-channel.out" 2>&1
+        grep -q "Registry 'host-image-channel' added" \
+          "$work/apm-add-host-image-channel.out"
+        run_clean ${self}/bin/apm search hostsysroot \
+          --registry host-image-channel \
+          > "$work/apm-search-host-image-channel.out" 2>&1
+        grep -q "hostsysroot/host-image-channel 1.0.0" \
+          "$work/apm-search-host-image-channel.out"
+        run_clean ${self}/bin/apm install hostsysroot \
+          --registry host-image-channel \
+          --image qcow2 \
+          --output "$work/hostsysroot-downloaded.qcow2" \
+          --yes > "$work/apm-install-host-sysroot-image.out" 2>&1
+        grep -q "Image hostsysroot 1.0.0 (qcow2) written to" \
+          "$work/apm-install-host-sysroot-image.out"
+        grep -q "host sysroot image qcow2 fixture" \
+          "$work/hostsysroot-downloaded.qcow2"
+        grep -q "boot-marker=hostsysroot" \
+          "$work/hostsysroot-downloaded.qcow2"
+        nix_store --check-validity "$sysroot_image_store" \
+          > "$work/nix-valid-host-sysroot-image-imported.out" 2>&1
+        assert_default_profile_absent
+        assert_no_profile
+        rm -rf "$profile_root"
+        home="$main_home"
+        config="$main_config"
+        data="$main_data"
+        cache="$main_cache"
+        profile_root="$main_profile_root"
+        profile="$main_profile"
+
         home="$work/direct-home"
         config="$work/direct-config"
         data="$work/direct-share"
