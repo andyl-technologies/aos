@@ -78,7 +78,7 @@ use clap::{Args, Subcommand};
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
 use sysroot::KernelUpgradeMode;
-use types::{ProfileScope, RegistryUploadAuthConfig};
+use types::{ProfileScope, RegistryUploadAuthConfig, validate_registry_name};
 
 /// Environment-variable documentation appended to `apm`/`apr` long help.
 pub const ENVIRONMENT_HELP: &str = "Environment:
@@ -2120,6 +2120,7 @@ async fn registry_add(
     let name = name_override
         .map(|s| s.to_string())
         .unwrap_or_else(|| derive_registry_name(url));
+    validate_registry_name(&name)?;
 
     if config.find_registry(&name).is_some() {
         bail!(
@@ -2339,6 +2340,7 @@ async fn registry_remove(
     force: bool,
     printer: &Printer,
 ) -> Result<()> {
+    validate_registry_name(name)?;
     let clone_dir = config.scope.registries_path().join(name);
 
     // A registry can exist as a local authoring clone (`apr create`) without

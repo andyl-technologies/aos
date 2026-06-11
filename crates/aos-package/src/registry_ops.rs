@@ -72,7 +72,7 @@ use crate::security::{
 use crate::sshkey;
 use crate::types::{
     CacheEntry, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
-    SigningKeySource, SigningKeySpec,
+    SigningKeySource, SigningKeySpec, validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
@@ -95,6 +95,7 @@ fn registry_dir(config: &ApmConfig, registry: Option<&str>) -> Result<PathBuf> {
 /// registry, use it. Otherwise bail with an error.
 fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<String> {
     if let Some(name) = registry {
+        validate_registry_name(name)?;
         return Ok(name.to_string());
     }
 
@@ -106,7 +107,9 @@ fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<S
             for entry in entries.flatten() {
                 if entry.path().is_dir() {
                     if let Some(name) = entry.file_name().to_str() {
-                        names.push(name.to_string());
+                        if validate_registry_name(name).is_ok() {
+                            names.push(name.to_string());
+                        }
                     }
                 }
             }
@@ -964,6 +967,7 @@ pub async fn create(
     key_id: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    validate_registry_name(name)?;
     let dir = config.scope.registries_path().join(name);
 
     if dir.exists() {

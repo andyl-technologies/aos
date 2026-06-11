@@ -316,6 +316,55 @@ in {
         grep -q "parallel_downloads must be at least 1" \
           "$work/apm-invalid-parallel-downloads.out"
 
+        invalid_registry_config="$work/invalid-registry-config"
+        mkdir -p "$invalid_registry_config/apm/registries.d"
+        cat > "$invalid_registry_config/apm/registries.d/escape.toml" << 'EOF'
+        [registry]
+        name = "../escaped-config"
+        url = "file:///invalid"
+        EOF
+        if run_clean ${pkgs.coreutils}/bin/env \
+          XDG_CONFIG_HOME="$invalid_registry_config" \
+          ${self}/bin/apm registry list \
+          > "$work/apm-invalid-registry-config.out" 2>&1; then
+          cat "$work/apm-invalid-registry-config.out"
+          exit 1
+        fi
+        grep -q "invalid registry name" \
+          "$work/apm-invalid-registry-config.out"
+
+        if run_clean ${self}/bin/apr create ../escaped-create \
+          > "$work/apr-create-invalid-registry-name.out" 2>&1; then
+          cat "$work/apr-create-invalid-registry-name.out"
+          exit 1
+        fi
+        grep -q "invalid registry name" \
+          "$work/apr-create-invalid-registry-name.out"
+        test ! -e "$data/apm/escaped-create"
+
+        if run_clean ${self}/bin/apm registry add --no-verify "file://$work" \
+          --name ../escaped-add \
+          > "$work/apm-add-invalid-registry-name.out" 2>&1; then
+          cat "$work/apm-add-invalid-registry-name.out"
+          exit 1
+        fi
+        grep -q "invalid registry name" \
+          "$work/apm-add-invalid-registry-name.out"
+        test ! -e "$config/apm/escaped-add.toml"
+        test ! -e "$data/apm/registries/escaped-add"
+
+        escaped_remove="$data/apm/escaped-remove"
+        mkdir -p "$escaped_remove"
+        printf '%s\n' "must stay put" > "$escaped_remove/sentinel"
+        if run_clean ${self}/bin/apm registry remove ../escaped-remove --force \
+          > "$work/apm-remove-invalid-registry-name.out" 2>&1; then
+          cat "$work/apm-remove-invalid-registry-name.out"
+          exit 1
+        fi
+        grep -q "invalid registry name" \
+          "$work/apm-remove-invalid-registry-name.out"
+        test -f "$escaped_remove/sentinel"
+
         reg="$data/apm/registries/host-reg"
         run_clean ${self}/bin/apr --json create host-reg > "$work/apr-create.json"
         ${pkgs.jq}/bin/jq -e --arg reg "$reg" \
@@ -5933,7 +5982,7 @@ in {
           "$work/apm-add-host-install-auto-remove.out"
         run_clean ${self}/bin/apm --json install hostinstall \
           --registry host-install-auto-remove \
-          --yes > "$work/apm-install-host-install-auto-remove.json"
+          > "$work/apm-install-host-install-auto-remove.json"
         ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
           '.action == "install"
             and .status == "installed"
