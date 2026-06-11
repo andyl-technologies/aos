@@ -2405,6 +2405,59 @@ in {
         grep -q "last_commit = \"$install_remote_v1_commit\"" \
           "$system_provisioned_config/registries.d/host-install-channel.toml"
         test ! -e "$config/apm/registries.d/host-install-channel.toml"
+        run_clean ${pkgs.coreutils}/bin/env \
+          APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
+          ${self}/bin/apm --json registry remove host-install-channel \
+          > "$work/apm-system-provisioned-registry-remove.json"
+        ${pkgs.jq}/bin/jq -e \
+          --arg config_path "$system_provisioned_config/registries.d/host-install-channel.toml" \
+          --arg local_path "$data/apm/registries/host-install-channel" \
+          '.action == "registry_remove"
+            and .status == "removed"
+            and .registry == "host-install-channel"
+            and .name == "host-install-channel"
+            and .keep_local == false
+            and .force == false
+            and .config == $config_path
+            and .config_removed == true
+            and .local == $local_path
+            and .local_removed == true
+            and .cache_removed == true
+            and .trusted_keys_removed == true
+            and .orphan_command == "apm orphans"' \
+          "$work/apm-system-provisioned-registry-remove.json" >/dev/null
+        test ! -e "$system_provisioned_config/registries.d/host-install-channel.toml"
+        test ! -e "$config/apm/registries.d/host-install-channel.toml"
+        test ! -e "$config/apm/trusted-keys.d/host-install-channel.pub"
+        test ! -e "$data/apm/registries/host-install-channel"
+        test ! -e "$data/apm/remote/host-install-channel"
+        run_clean ${pkgs.coreutils}/bin/env \
+          APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
+          ${self}/bin/apm --json registry list \
+          > "$work/apm-system-provisioned-registry-list-after-remove.json"
+        ${pkgs.jq}/bin/jq -e 'length == 0' \
+          "$work/apm-system-provisioned-registry-list-after-remove.json" >/dev/null
+        "$profile/current/bin/host-install-tool" \
+          > "$work/system-provisioned-host-install-after-registry-remove.out"
+        grep -q "host leaf package executed" \
+          "$work/system-provisioned-host-install-after-registry-remove.out"
+        grep -q "host install package executed" \
+          "$work/system-provisioned-host-install-after-registry-remove.out"
+        run_clean ${pkgs.coreutils}/bin/env \
+          APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
+          ${self}/bin/apm --json orphans \
+          > "$work/apm-system-provisioned-orphans-after-registry-remove.json"
+        ${pkgs.jq}/bin/jq -e \
+          'length == 2
+            and any(.[]; .name == "hostinstall"
+              and .version == "1.0.0"
+              and .registry == "host-install-channel"
+              and .explicit == true)
+            and any(.[]; .name == "hostleaf"
+              and .version == "1.0.0"
+              and .registry == "host-install-channel"
+              and .explicit == false)' \
+          "$work/apm-system-provisioned-orphans-after-registry-remove.json" >/dev/null
         assert_default_profile_absent
         rm -rf "$profile_root"
         home="$main_home"
