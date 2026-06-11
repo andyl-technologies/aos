@@ -2946,6 +2946,41 @@ in {
             and .[0].store_path == $store' \
           "$work/apm-held-host-install.json" >/dev/null
 
+        run_clean ${self}/bin/apm --json reinstall hostinstall --dry-run \
+          > "$work/apm-reinstall-held-host-install-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+          '.action == "reinstall"
+            and .status == "planned"
+            and .requested == ["hostinstall"]
+            and .reinstall == true
+            and .download_only == false
+            and .no_deps == false
+            and .dry_run == true
+            and .generation == null
+            and (.roots | length == 1)
+            and .roots[0].name == "hostinstall"
+            and .roots[0].version == "2.0.0"
+            and .roots[0].registry == "host-install-client"
+            and .roots[0].store_path == $store
+            and .roots[0].explicit == true
+            and (.downloads.planned >= 2)
+            and .downloads.downloaded == 0
+            and .downloads.imported == 0' \
+          "$work/apm-reinstall-held-host-install-dry-run.json" >/dev/null
+        "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-reinstall-dry-run.out"
+        grep -q "host leaf package v2 executed" "$work/host-install-v2-after-reinstall-dry-run.out"
+        grep -q "host install package v2 executed" "$work/host-install-v2-after-reinstall-dry-run.out"
+        run_clean ${self}/bin/apm --json held > "$work/apm-held-host-install-after-reinstall-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+          'length == 1
+            and .[0].name == "hostinstall"
+            and .[0].version == "2.0.0"
+            and .[0].registry == "host-install-client"
+            and .[0].store_path == $store' \
+          "$work/apm-held-host-install-after-reinstall-dry-run.json" >/dev/null
+        test "$(profile_generation_count)" = "3"
+        assert_default_profile_absent
+
         run_clean ${self}/bin/apm --json reinstall hostinstall --yes \
           > "$work/apm-reinstall-held-host-install.json"
         ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
@@ -3012,6 +3047,41 @@ in {
           "$work/apm-unhold-host-install.json" >/dev/null
         run_clean ${self}/bin/apm --json held > "$work/apm-held-host-install-after-unhold.json"
         ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apm-held-host-install-after-unhold.json" >/dev/null
+        assert_default_profile_absent
+
+        run_clean ${self}/bin/apm --json remove hostinstall --autoremove --dry-run \
+          > "$work/apm-remove-host-install-autoremove-dry-run.json"
+        ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" --arg leaf "$install_leaf_store_v2" \
+          '.action == "remove"
+            and .status == "planned"
+            and .requested == ["hostinstall"]
+            and .autoremove == true
+            and .dry_run == true
+            and .generation == null
+            and .removed == 2
+            and .explicit_removed == 1
+            and .orphan_removed == 1
+            and (.packages | length == 1)
+            and .packages[0].name == "hostinstall"
+            and .packages[0].version == "2.0.0"
+            and .packages[0].registry == "host-install-client"
+            and .packages[0].store_path == $store
+            and .packages[0].explicit == true
+            and .packages[0].held == false
+            and (.orphans | length == 1)
+            and .orphans[0].name == "hostleaf"
+            and .orphans[0].version == "2.0.0"
+            and .orphans[0].registry == "host-install-client"
+            and .orphans[0].store_path == $leaf
+            and .orphans[0].explicit == false' \
+          "$work/apm-remove-host-install-autoremove-dry-run.json" >/dev/null
+        "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-remove-dry-run.out"
+        grep -q "host leaf package v2 executed" "$work/host-install-v2-after-remove-dry-run.out"
+        grep -q "host install package v2 executed" "$work/host-install-v2-after-remove-dry-run.out"
+        run_clean ${self}/bin/apm list --installed > "$work/apm-installed-after-remove-dry-run.out" 2>&1
+        grep -q "hostinstall/host-install-client" "$work/apm-installed-after-remove-dry-run.out"
+        grep -q "hostleaf/host-install-client" "$work/apm-installed-after-remove-dry-run.out"
+        test "$(profile_generation_count)" = "4"
         assert_default_profile_absent
 
         run_clean ${self}/bin/apm --json remove hostinstall --yes \
