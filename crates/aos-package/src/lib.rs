@@ -2556,7 +2556,8 @@ async fn registry_remove(
         }
     }
 
-    let key_store = security::KeyStore::new(config.scope.trusted_keys_dirs());
+    let key_store =
+        security::KeyStore::new(trusted_key_dirs_for_registry_removal(config, &toml_path));
     let trusted_keys_removed = key_store.remove(name)?;
 
     if printer.mode() == OutputMode::Json {
@@ -2773,6 +2774,31 @@ fn registry_config_path_for_removal(config: &config::ApmConfig, name: &str) -> R
     } else {
         Ok(fallback)
     }
+}
+
+/// Return the trust-store layer to clean up for a registry removal.
+///
+/// Most user-scope removals should only remove or mask user trust entries.
+/// When user scope is operating on a writable redirected system registry
+/// config, however, the registry itself is being removed from the system layer;
+/// its associated system trust key should be removed from that same layer too.
+fn trusted_key_dirs_for_registry_removal(
+    config: &config::ApmConfig,
+    removed_config_path: &std::path::Path,
+) -> Vec<PathBuf> {
+    if config.scope == ProfileScope::User {
+        if let Some(file_name) = removed_config_path.file_name() {
+            let system_registry_config = ProfileScope::System
+                .config_dir()
+                .join("registries.d")
+                .join(file_name);
+            if removed_config_path == system_registry_config {
+                return ProfileScope::System.trusted_keys_dirs();
+            }
+        }
+    }
+
+    config.scope.trusted_keys_dirs()
 }
 
 #[cfg(test)]

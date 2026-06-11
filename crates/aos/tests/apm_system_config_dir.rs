@@ -560,13 +560,17 @@ fn system_config_dir_override_supports_apm_registry_lifecycle() -> Result<()> {
     let home = tmp.path().join("home");
     let system_dir = tmp.path().join("etc-apm");
     let registries_dir = system_dir.join("registries.d");
+    let trust_dir = system_dir.join("trusted-keys.d");
     fs::create_dir_all(&registries_dir)?;
+    fs::create_dir_all(&trust_dir)?;
 
     let system_config = registries_dir.join("sysreg.toml");
+    let system_trust_key = trust_dir.join("sysreg.pub");
     fs::write(
         &system_config,
         "[registry]\nname = \"sysreg\"\nurl = \"https://registry.example/sysreg\"\n",
     )?;
+    fs::write(&system_trust_key, "sysreg:Ed25519:YWJjZA==\n")?;
 
     let registries = run_aos_package(&home, &system_dir, &["registry", "list"])?;
     assert!(
@@ -655,6 +659,14 @@ fn system_config_dir_override_supports_apm_registry_lifecycle() -> Result<()> {
     assert!(
         !home.join(".config/apm/registries.d/sysreg.toml").exists(),
         "registry remove should not create a user config shadow file"
+    );
+    assert!(
+        !system_trust_key.exists(),
+        "registry remove should delete the redirected system trust key for the removed system registry"
+    );
+    assert!(
+        !home.join(".config/apm/trusted-keys.d/sysreg.pub").exists(),
+        "registry remove should not replace a deleted system registry trust key with a user revocation file"
     );
 
     let registries = run_aos_package(&home, &system_dir, &["registry", "list"])?;
