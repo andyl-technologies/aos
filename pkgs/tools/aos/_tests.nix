@@ -1819,10 +1819,25 @@ in {
         grep -q "invalid package name" \
           "$work/apr-publish-invalid-package-name.out"
         test ! -e "$install_reg/escaped-publish.toml"
+        if run_clean ${self}/bin/apr publish "$install_leaf_store" \
+          --name hostbadplatform \
+          --version 1.0.0 \
+          --platform 'x86_64-linux]' \
+          --description "Invalid platform fixture" \
+          --license MIT \
+          --maintainer host@example.invalid \
+          --registry host-install-channel \
+          --no-commit > "$work/apr-publish-invalid-platform.out" 2>&1; then
+          cat "$work/apr-publish-invalid-platform.out"
+          exit 1
+        fi
+        grep -q "invalid platform name" \
+          "$work/apr-publish-invalid-platform.out"
+        test ! -e "$install_reg/packages/h/hostbadplatform.toml"
         run_clean ${self}/bin/apr --json publish "$install_leaf_store" \
           --name hostleaf \
           --version 1.0.0 \
-          --description "Host APM dependency fixture" \
+          --description "Host \"APM\" dependency fixture" \
           --license MIT \
           --maintainer host@example.invalid \
           --registry host-install-channel \
@@ -1843,6 +1858,12 @@ in {
             and (.source.nar_size > 0)
             and .committed == false' \
           "$work/apr-publish-host-leaf.json" >/dev/null
+        run_clean ${self}/bin/apr --json show hostleaf \
+          --registry host-install-channel > "$work/apr-show-host-leaf-quoted-description.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.package.name == "hostleaf"
+            and .package.description == "Host \"APM\" dependency fixture"' \
+          "$work/apr-show-host-leaf-quoted-description.json" >/dev/null
         run_clean ${self}/bin/apr --json publish "$install_store" \
           --name hostinstall \
           --version 1.0.0 \
