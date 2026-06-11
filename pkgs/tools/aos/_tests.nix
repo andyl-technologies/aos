@@ -1505,6 +1505,79 @@ in {
           "$work/apr-release-resume.json" >/dev/null
         assert_no_profile
 
+        run_clean ${self}/bin/apr create host-resume \
+          > "$work/apr-create-host-resume.out" 2>&1
+        resume_reg="$data/apm/registries/host-resume"
+        git -C "$resume_reg" config user.name "Host Command Test"
+        git -C "$resume_reg" config user.email "host-command@example.invalid"
+        resume_hash="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        mkdir -p "$resume_reg/packages/h" "$resume_reg/closures"
+        printf '%s\n' \
+          '[package]' \
+          'name = "hostresume"' \
+          'description = "Host release resume fixture"' \
+          'license = "MIT"' \
+          'maintainer = "host@example.invalid"' \
+          "" \
+          '[[versions]]' \
+          'version = "1.0.0"' \
+          "" \
+          '[versions.platforms.x86_64-linux]' \
+          "store_path = \"/nix/store/$resume_hash-hostresume-1.0.0\"" \
+          'nar_hash = "sha256-EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE="' \
+          'nar_size = 1234' \
+          'closure_size = 1234' \
+          'source_drv = ""' \
+          'source_nar_hash = ""' \
+          'references = []' \
+          > "$resume_reg/packages/h/hostresume.toml"
+        printf '%s\n' "$resume_hash" > "$resume_reg/closures/$resume_hash"
+        git -C "$resume_reg" add -A
+        run_clean git -C "$resume_reg" commit -m "release: hostresume 1.0.0" \
+          > "$work/git-commit-host-resume.out" 2>&1
+        ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/resume-release-key"
+        if run_clean ${self}/bin/apr --json release 1.0.0 \
+          --registry host-resume \
+          --key "$work/resume-release-key" \
+          --cache-output "$work/resume-cache" \
+          --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
+          > "$work/apr-release-host-resume-interrupted.json" 2>&1; then
+          cat "$work/apr-release-host-resume-interrupted.json"
+          exit 1
+        fi
+        grep -Eq "not valid|does not exist|path-info|not in the Nix store" \
+          "$work/apr-release-host-resume-interrupted.json"
+        git -C "$resume_reg" rev-parse --verify '1.0.0^{tag}' \
+          > "$work/apr-release-host-resume-tag.out"
+        resume_pack_dir="$resume_reg/.git/releases/1/0/0/objects/pack"
+        test "$(find "$resume_pack_dir" -name 'pack-*.pack' | grep -c .)" = "1"
+        if run_clean ${self}/bin/apr --json release 1.0.0 \
+          --registry host-resume \
+          --key "$work/resume-release-key" \
+          > "$work/apr-release-host-resume-without-flag.json" 2>&1; then
+          cat "$work/apr-release-host-resume-without-flag.json"
+          exit 1
+        fi
+        grep -q "pass --resume to reuse it" \
+          "$work/apr-release-host-resume-without-flag.json"
+        run_clean ${self}/bin/apr --json release 1.0.0 \
+          --registry host-resume \
+          --key "$work/resume-release-key" \
+          --resume > "$work/apr-release-host-resume-after-interrupt.json"
+        ${pkgs.jq}/bin/jq -e \
+          '.action == "release"
+            and .status == "released"
+            and .registry == "host-resume"
+            and .version == "1.0.0"
+            and .resume == true
+            and .cache == null
+            and .cache_pointer_updated == false
+            and (.full_pack | startswith("pack-") and endswith(".pack"))
+            and .deltas == []' \
+          "$work/apr-release-host-resume-after-interrupt.json" >/dev/null
+        test "$(find "$resume_pack_dir" -name 'pack-*.pack' | grep -c .)" = "1"
+        assert_no_profile
+
         if run_clean ${self}/bin/apr sign --registry host-reg --key "$work/release-key" \
           > "$work/apr-sign-missing-tag.out" 2>&1; then
           cat "$work/apr-sign-missing-tag.out"
