@@ -377,15 +377,20 @@ in {
       # and download caches survive across commands. The aos-test-
       # agent doesn't spawn a login shell, so without this every
       # command would see a fresh empty $HOME.
+      # `USER=apmfleet` is likewise explicit so the profile path is
+      # stable and can be asserted after install.
       client.succeed(
-          "HOME=/tmp ${pkgs.aos}/bin/apm registry add --no-verify git://server:9418/test-reg --name test-reg",
+          "HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm registry add --no-verify git://server:9418/test-reg --name test-reg",
           timeout=120,
       )
       # `apm update` walks `git fetch` + `git archive | tar -x` over
       # the fleet's multicast L2, which can comfortably overshoot the
       # 30s default agent timeout under host load (other VMs running,
       # cargo recompiles competing for CPU).
-      client.succeed("HOME=/tmp ${pkgs.aos}/bin/apm update --registry test-reg", timeout=120)
+      client.succeed(
+          "HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm update --registry test-reg",
+          timeout=120,
+      )
       # `extract_packages` strips the leading `packages/` and lands TOMLs
       # under `cache_path()/<registry>/packages/` —
       # `crates/aos-package/src/{update,registry/git}.rs::extract_packages`.
@@ -415,12 +420,16 @@ in {
       # down (each cross-VM round-trip is a flake surface under load).
       client.succeed(
           "mkdir -p ${serverStoreRoot}/store ${serverStoreRoot}/var/nix/db && "
-          "AOS_ROOT=${serverStoreRoot} HOME=/tmp ${pkgs.aos}/bin/apm install ${testPkg.name} --registry test-reg",
+          "AOS_ROOT=${serverStoreRoot} HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm install ${testPkg.name} --registry test-reg",
           timeout=240,
       )
       # Path was absent in step 2; its presence here proves the NAR
       # was transferred over the network from the server's cache.
       client.succeed("test -x ${storePath}/bin/${testPkg.name}")
+      client.succeed(
+          "PROFILE_BIN=/var/lib/profiles/per-user/apmfleet/current/bin/${testPkg.name}; "
+          "test -x \"$PROFILE_BIN\" && \"$PROFILE_BIN\" | grep -qx '${testPkg.name} ${testPkg.version}'"
+      )
 
       # ── 6. Server's cache logged at least one NAR fetch ───────────
       # `nar_handler` in crates/aos-server/src/routes.rs:272 logs the
@@ -437,7 +446,10 @@ in {
       )
 
       # ── 7. Idempotency: second sync exits clean ───────────────────
-      client.succeed("HOME=/tmp ${pkgs.aos}/bin/apm update --registry test-reg", timeout=120)
+      client.succeed(
+          "HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm update --registry test-reg",
+          timeout=120,
+      )
 
       # ── 8. Negative path: registry down ───────────────────────────
       # Stop the git daemon. `apm update` should fail — there's no
@@ -446,7 +458,10 @@ in {
       # doesn't take the binary cache down with it. Restart afterwards
       # so any future operator inspection sees a working server.
       server.succeed("systemctl stop aos-registry-server-gitd.service")
-      client.fail("HOME=/tmp ${pkgs.aos}/bin/apm update --registry test-reg", timeout=120)
+      client.fail(
+          "HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm update --registry test-reg",
+          timeout=120,
+      )
       client.succeed("curl -sf http://server:15000/default/nix-cache-info")
       server.succeed("systemctl start aos-registry-server-gitd.service")
     '';
