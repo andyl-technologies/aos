@@ -4,7 +4,8 @@
 //! single named one) and stores it in the local cache.  Registry update now
 //! uses git-native sync for both dumb-HTTP and native git origins.
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -181,9 +182,9 @@ pub async fn run(
                 if let Some(state_path) =
                     writable_state_path(&config_dir, config.scope, &reg_config.name)
                 {
-                    state::save_state(&state_path, &current_state).with_context(|| {
-                        format!("saving state for registry '{}'", reg_config.name)
-                    })?;
+                    save_registry_state(&state_path, reg_config, &current_state).with_context(
+                        || format!("saving state for registry '{}'", reg_config.name),
+                    )?;
                 }
 
                 if json_mode {
@@ -267,9 +268,9 @@ pub async fn run(
 /// directory. A system-provisioned registry may not have a user-level TOML
 /// file at all; when the fallback file is writable, persist state there so
 /// non-AOS fixture deployments using `APM_SYSTEM_CONFIG_DIR` keep anti-
-/// rollback and last-commit state across invocations. Read-only system
-/// configs preserve the historical behavior: sync succeeds, but state is not
-/// written.
+/// rollback and last-commit state across invocations. When the fallback is
+/// read-only, persist a user override so unprivileged updates still retain
+/// anti-rollback and last-commit state across invocations.
 fn writable_state_path(
     config_dir: &std::path::Path,
     scope: ProfileScope,
@@ -295,7 +296,38 @@ fn writable_state_path(
             .is_ok()
     {
         Some(fallback)
+    } else if fallback.exists() {
+        Some(primary)
     } else {
         None
     }
+}
+
+/// Persist registry sync state, creating a user override config when needed.
+fn save_registry_state(
+    path: &Path,
+    reg_config: &crate::types::RegistryConfig,
+    registry_state: &crate::types::RegistryState,
+) -> Result<()> {
+    if path.exists() {
+        return state::save_state(path, registry_state);
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+
+    let registry = match toml::Value::try_from(reg_config.clone())? {
+        toml::Value::Table(mut table) => {
+            table.insert("state".into(), toml::Value::try_from(registry_state)?);
+            table
+        }
+        _ => anyhow::bail!("registry config did not serialize as a TOML table"),
+    };
+    let mut root = toml::map::Map::new();
+    root.insert("registry".into(), toml::Value::Table(registry));
+    let rendered = toml::to_string_pretty(&toml::Value::Table(root))?;
+    fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
 }
