@@ -64,7 +64,7 @@ pub struct PackageMeta {
 On disk this is the nested TOML at `packages/<letter>/<name>.toml`, parsed by
 `registry/parse.rs`, in the `[package]` / `[[versions]]` /
 `[versions.platforms.<platform>]` shape (see
-[`../registry/current-state.md`](../registry/current-state.md) §1).
+[`../../registry/current-state.md`](../../registry/current-state.md) §1).
 
 Two fields matter a lot for this design and are worth calling out:
 
@@ -344,7 +344,7 @@ expose phase runs:
    may not be usable as-is; an explicit per-package unit is the safer default.
 3. **Drop the target handle.** Generate `aos-pkg-<name>.target` with `Wants=` the
    launch unit and member units, matching the roles-as-targets design in
-   [`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md).
+   [`../0001-roles-as-targets.md`](../0001-roles-as-targets.md).
 4. **Enable.** Enabling is the separate step (Decision 8, resolved):
    `systemctl preset aos-pkg-<name>.target` against the merged preset policy —
    at boot the every-boot `aos-preset.service` pass covers every unit (see
@@ -355,7 +355,7 @@ expose phase runs:
 There is a real tension here with AOS's immutable root. Today, role units are
 baked into the EROFS `/etc` lower as *inert regular files* and activated only by
 an Ignition-written `multi-user.target.wants/...` symlink at first boot (see
-[`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md) §"In image
+[`../0001-roles-as-targets.md`](../0001-roles-as-targets.md) §"In image
 (inert)"). But an `apm install` that happens *after* first boot cannot rewrite
 the EROFS lower. So a runtime-installed package's units must land in the
 writable `/etc` overlay layer (the `/var/etc` upper of the 3-layer overlay)
@@ -502,8 +502,8 @@ tag-signed metadata.
    in `packages/<letter>/<name>.toml`, which is part of the git tree covered by
    the signed semver/channel release tag. `registry::verify` enforces
    name-binding and the `tag -> tag -> commit` chain
-   (see [`../registry/signing-and-trust.md`](../registry/signing-and-trust.md)
-   and [`../registry/current-state.md`](../registry/current-state.md) §6). So a
+   (see [`../../registry/signing-and-trust.md`](../../registry/signing-and-trust.md)
+   and [`../../registry/current-state.md`](../../registry/current-state.md) §6). So a
    container-root reference cannot be substituted without breaking the release
    signature.
 2. **The NAR is content-addressed.** `verify_nar_hash()` checks the downloaded
@@ -511,12 +511,12 @@ tag-signed metadata.
    cannot be tampered with in transit or at the cache.
 3. **The cache may add a second signature.** Generated narinfo can be Nix-cache
    signed (`aos-core::nar::cache::NarInfoSigner`,
-   [`../registry/current-state.md`](../registry/current-state.md) §7), so a
+   [`../../registry/current-state.md`](../../registry/current-state.md) §7), so a
    stock-Nix substituter with `require-sigs = true` also accepts it.
 4. **TOFU + anti-rollback still apply.** First sync pins the registry's Ed25519
    key; the anti-rollback floor prevents downgrading the package — and therefore
    its container root — below a stored semver
-   (see [`../registry/current-state.md`](../registry/current-state.md) §4–5).
+   (see [`../../registry/current-state.md`](../../registry/current-state.md) §4–5).
 
 **No new trust primitive is required for fetched container roots.** They are
 just NARs whose hashes are committed to tag-signed metadata.

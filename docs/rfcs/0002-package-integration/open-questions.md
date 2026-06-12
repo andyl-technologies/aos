@@ -19,7 +19,7 @@ deliberately leaves the **config delivery** decision open. Sibling docs:
 [container-model.md](container-model.md),
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
 [config.md](config.md), [migration.md](migration.md). The prior design this
-builds on is `docs/roles/targets-and-sandbox.md`.
+builds on is `docs/rfcs/0001-roles-as-targets.md`.
 
 A quick note on honesty up front: two things in this plan do **not** fit the
 clean model and are called out throughout. (1) **k3s is a high-privilege
