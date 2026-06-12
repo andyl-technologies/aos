@@ -35,7 +35,7 @@ which packages actually come up.
 | **Installed** | The package's store closure is present in the local `/nix/store`, recorded in the system profile generation, and (for container packages) its container root image is available under `/var/lib/machines`. | `apm install` at boot |
 | **Enabled** | The package is *running*: `aos-pkg-<name>.target` is reached, pulling member units; for container packages the `systemd-nspawn` service behind the target is started. | systemd activation, triggered by the Ignition-written enable hook |
 
-The in-flight roles-as-targets design (`docs/roles/targets-and-sandbox.md`,
+The in-flight roles-as-targets design (`docs/rfcs/0001-roles-as-targets.md`,
 PR #28 — **not yet on this branch**, cite as in-flight) already establishes the
 "inert in EROFS, one activation root per role" half: member units are baked into
 EROFS as plain files with no `multi-user.target.wants` symlink, and a single
@@ -143,7 +143,7 @@ separate `packages.d/desired.toml`, or fold both into one document.
 ### 3.2 The systemd.units[].enabled removal — how "enabled" is expressed now
 
 > **Canonical statement.** This section is the doc set's single source of truth
-> for how enable is expressed. `../roles/targets-and-sandbox.md` §"Activation"
+> for how enable is expressed. `../0001-roles-as-targets.md` §"Activation"
 > and [container-model.md](container-model.md)'s invariant list describe the
 > roles-era single `systemd.units[]` entry; for packages that path is
 > superseded by the **preset mechanism** below. Where the docs disagree, this

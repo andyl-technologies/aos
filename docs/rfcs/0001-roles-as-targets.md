@@ -1,8 +1,13 @@
-# Roles as systemd targets, with sandboxed side-effects
+# RFC-0001: Roles as systemd targets, with sandboxed side-effects
 
-Status: design + phased implementation
-Audience: anyone working on `modules/roles/`, `lib/modules/systemd/`,
-`modules/services/ignition.nix`, or `modules/security/firewall.nix`.
+- **Status:** Superseded by [RFC-0002](0002-package-integration/README.md) —
+  the per-role target, gated side-effect services, and nftables reload
+  coherence carry forward; the enable mechanism and the role concept itself
+  are replaced by the packages model.
+- **Date:** 2026-06-08
+- **PR:** [#28](https://github.com/andyl-technologies/aos/pull/28)
+- **Audience:** anyone working on `modules/roles/`, `lib/modules/systemd/`,
+  `modules/services/ignition.nix`, or `modules/security/firewall.nix`.
 
 ## Problem
 
@@ -147,7 +152,7 @@ deliberately and narrowly: roles may carry **exactly one** ignition
 forbidden.
 
 > **Packages-direction note.** The packages doc set
-> (`../packages/boot-activation.md` §3.2) supersedes this enable mechanism:
+> (`0002-package-integration/boot-activation.md` §3.2) supersedes this enable mechanism:
 > there, enable is expressed via **systemd presets** (image ships `disable *`;
 > Ignition writes a per-host preset file via `storage.files`; an every-boot
 > `aos-preset.service` applies the merged policy — systemd's native first-boot

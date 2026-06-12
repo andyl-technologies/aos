@@ -22,7 +22,7 @@ carve-out. Config delivery across the boundary is **left open** — see
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
 [migration.md](migration.md), [open-questions.md](open-questions.md). The
 target-sandbox invariants this builds on are in
-[../roles/targets-and-sandbox.md](../roles/targets-and-sandbox.md).
+[../0001-roles-as-targets.md](../0001-roles-as-targets.md).
 
 ## Where this sits in the new model
 
@@ -45,7 +45,7 @@ The boundary strength is a *gradient set by the manifest*, from "full sandbox"
 workload/infra split. See [permissions.md](permissions.md) for the full
 permission surface and how each grant maps onto an nspawn flag.
 
-The target sandbox from [../roles/targets-and-sandbox.md](../roles/targets-and-sandbox.md)
+The target sandbox from [../0001-roles-as-targets.md](../0001-roles-as-targets.md)
 is unchanged as the *activation* mechanism: `aos-pkg-<name>.target` is still the one
 switch, gated `*-modules`/`*-sysctl`/`*-firewall` oneshots are still members,
 and the disabled case is still the strict guarantee. What this doc adds is one
@@ -480,7 +480,7 @@ container cannot, so they persist one-way after stop (see
 [permissions.md](permissions.md) for the allowlist + signing model). The strict
 guarantee remains the
 *disabled* (never-enabled) case, identical to
-[../roles/targets-and-sandbox.md](../roles/targets-and-sandbox.md).
+[../0001-roles-as-targets.md](../0001-roles-as-targets.md).
 
 ## Security / isolation
 
@@ -614,7 +614,7 @@ container model spans "full sandbox" (empty manifest) to "packaging wrapper"
 
 ## Relation to the target-sandbox invariants
 
-Nothing here weakens [../roles/targets-and-sandbox.md](../roles/targets-and-sandbox.md):
+Nothing here weakens [../0001-roles-as-targets.md](../0001-roles-as-targets.md):
 
 - **Single activation root** — still `aos-pkg-<name>.target`. The nspawn instance is
   `WantedBy=`/`PartOf=` the target, never `WantedBy=multi-user.target`

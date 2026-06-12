@@ -11,7 +11,7 @@ increment plan, states the backward-compatibility stance, and is honest that the
 rename is a **prerequisite**, not the feature: it ships **no** behavior change.
 The interesting parts — registry installability, real nspawn containers, boot
 activation, config — live in the sibling docs and land in later increments. It
-also settles the relationship to PR #28 / [`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md):
+also settles the relationship to PR #28 / [`../0001-roles-as-targets.md`](../0001-roles-as-targets.md):
 that precursor doc stays where it is as history, and its content is superseded
 by this doc set.
 
@@ -84,7 +84,7 @@ the rename as its own reviewable increment means:
 ## What is being renamed
 
 The current design is described in
-[`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md) and lives
+[`../0001-roles-as-targets.md`](../0001-roles-as-targets.md) and lives
 under `modules/roles/`. The rename has four moving parts: the **option tree**,
 the **build/bundle surface**, the **fleet-test surface**, and the **synthesized
 systemd unit names**.
@@ -162,7 +162,7 @@ the rename.
 
 ### 4. Synthesized systemd unit names (PR #28 surface)
 
-PR #28 ([`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md))
+PR #28 ([`../0001-roles-as-targets.md`](../0001-roles-as-targets.md))
 synthesizes a per-role target and gated services. Those names carry an `aos-`
 prefix because targets share a flat namespace with `multi-user.target`:
 
@@ -324,8 +324,8 @@ detailed in the sibling docs.
   import in `modules/packages/default.nix`. Logic untouched.
 - Update in-tree comments that still say "role"/"roles" where they now mean a
   package.
-- Move/curate docs: leave `docs/roles/targets-and-sandbox.md` in place as
-  history (see next section), ensure this doc set cross-links it.
+- Curate docs: `docs/rfcs/0001-roles-as-targets.md` stays in place as history
+  (see next section); keep this doc set's cross-links to it intact.
 - **Gate:** `aos fmt --check` + `checks.eval`.
 
 > Increments 1–3 complete the rename. At this point the tree is functionally
@@ -356,19 +356,18 @@ detailed in the sibling docs.
 These are intentionally left as separate increments because they carry real
 design risk, unlike 1–4.
 
-## Relationship to PR #28 / `docs/roles/targets-and-sandbox.md`
+## Relationship to PR #28 / `docs/rfcs/0001-roles-as-targets.md`
 
 PR #28 introduced the roles-as-targets sandbox under `modules/roles/` and
-documented it at `docs/roles/targets-and-sandbox.md`. The packages direction
+documented it at `docs/rfcs/0001-roles-as-targets.md`. The packages direction
 **builds on** #28; it does not discard it.
 
-- **Does the doc move under `docs/packages/`?** No — leave
-  `docs/roles/targets-and-sandbox.md` where it is, as the historical record of
-  the targets/sandbox design and the PR that introduced it. This doc set
-  ([`README.md`](README.md) and siblings) is the current source of truth and
-  already links back to it. Moving the file would break the PR-#28 paper trail
-  for little gain; a one-line "superseded by `docs/packages/`" banner at its top
-  is the lighter touch (**optional**, do in increment 3).
+- **Where do the docs live?** Both designs are RFC records: the
+  targets/sandbox design is [RFC-0001](../0001-roles-as-targets.md), whose
+  status header marks it superseded and points here, and this doc set is
+  RFC-0002. RFC-0001 stays unedited as the historical record of the design
+  and the PR that introduced it; this doc set is the current source of
+  truth and links back to it.
 - **Merge ordering.** Cleanest is: **#28 merges first** (roles-as-targets under
   the `roles` name), then increments 1–3 rename the merged result, then
   increment 4 reconciles the synthesized unit names. If #28 is still open when
@@ -393,8 +392,8 @@ documented it at `docs/roles/targets-and-sandbox.md`. The packages direction
   `/etc/rancher/k3s/k3s.env` via `EnvironmentFile=` exactly as today; this doc
   picks **no** new config mechanism — that is [`config.md`](config.md)'s open
   decision.
-- **The `render-role.nix` → `render-package.nix` rename and the
-  `docs/roles/` banner are optional** and can be dropped from the first pass to
-  keep increment 1 minimal.
+- **The `render-role.nix` → `render-package.nix` rename and the doc
+  curation are optional** and can be dropped from the first pass to keep
+  increment 1 minimal.
 - **Increment 4's exact landing shape depends on PR #28's merge state**, which
   needs verification when scheduling.

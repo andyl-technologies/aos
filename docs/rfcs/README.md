@@ -1,0 +1,25 @@
+# RFCs — design records
+
+Every substantial design lives here as a dated, numbered record. An RFC
+explains *why* the system is shaped the way it is and tracks the
+proposal's implementation status; the canonical docs elsewhere in
+`docs/` describe *how it works today*. When the two disagree, the
+canonical docs win — an RFC is history, and its code links reflect the
+tree at the time of writing.
+
+A design may start as a working doc (e.g. under [`docs/plans/`](../plans/))
+and graduates here with the next number, a date, and a status header.
+Once a design ships, the RFC body is not edited to track the system —
+only its status header is maintained (Proposed → Accepted → Implemented,
+or Superseded / Rejected, with partial/deferred notes as needed).
+
+Single-file RFCs are `NNNN-slug.md`; larger designs are directories
+`NNNN-slug/` whose `README.md` carries the status header and indexes the
+topic files.
+
+| RFC | Date | Title | Status |
+| --- | --- | --- | --- |
+| [0001](0001-roles-as-targets.md) | 2026-06-08 | Roles as systemd targets, with sandboxed side-effects | Superseded by RFC-0002 (target + gated side-effect services carry forward) |
+| [0002](0002-package-integration/README.md) | 2026-06-08 | Package integration model (`expose` manifests, per-unit sandboxing, preset enablement) | Proposed (14/19 decisions resolved; gated on the Decision 17 spike) |
+
+Numbering is chronological by the date the design entered the tree.

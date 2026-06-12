@@ -1,6 +1,11 @@
-# Packages (formerly roles): overview & index
+# RFC-0002: Package integration model (packages, formerly roles)
 
-Status: planning
+- **Status:** Proposed — 14 of 19 tracked decisions resolved, 2 mooted,
+  3 open ([`open-questions.md`](open-questions.md)); implementation gated
+  on the Decision 17 validation spike ([`migration.md`](migration.md)).
+- **Date:** 2026-06-08
+- **PR:** [#28](https://github.com/andyl-technologies/aos/pull/28)
+- **Supersedes:** [RFC-0001](../0001-roles-as-targets.md)
 
 This doc set plans a new direction: **fold the "roles" concept into AOS's
 existing apm/registry package system**. A "package" becomes the single
@@ -14,7 +19,7 @@ it is a **high-privilege container** that declares a long permission list.
 Packages are listed in a host's Ignition config, **installed at first boot by
 apm**, then **enabled** (the package target and its nspawn instance). This
 generalizes the precursor design in
-[`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md) (PR #28),
+[`../0001-roles-as-targets.md`](../0001-roles-as-targets.md) (PR #28),
 which made each role a single `aos-<role>.target` with side-effects sandboxed
 under it. Config delivery is **explicitly open / TBD** — see
 [`config.md`](config.md).
@@ -59,7 +64,7 @@ baking them into the image as Ignition fragments.
 | Term | Meaning |
 |---|---|
 | **package** | The registry-installable unit. Resolvable by `apm install <name>`; described by `PackageMeta` in `crates/aos-package/src/types.rs`. Supersedes "role." Every package is an nspawn container. |
-| **package target** | `aos-pkg-<name>.target` — the single systemd handle for the package's effects (the "sandbox" of [`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md)). |
+| **package target** | `aos-pkg-<name>.target` — the single systemd handle for the package's effects (the "sandbox" of [`../0001-roles-as-targets.md`](../0001-roles-as-targets.md)). |
 | **`[permissions]` manifest** | The declared, signed privilege list on a package (see [`permissions.md`](permissions.md)). Empty = a tightly-sandboxed container; entries grant host network, capabilities, devices, host-paths, cgroup-delegate, kernel-modules, etc. The single source of truth for a container's privilege. |
 | **default (sandboxed) package** | A package with an empty `[permissions]` manifest — a real isolation boundary (own PID1, netns, user-ns on, ephemeral overlay root). |
 | **high-privilege package** | A package like k3s whose manifest declares host privilege (host net/cgroups, global kernel modules, broad caps). Its container is *nominal* — a packaging/lifecycle wrapper, not a security boundary; see the honesty note below. |
@@ -166,7 +171,7 @@ In scope for this plan:
 
 ## Relationship to the target/sandbox design (PR #28)
 
-[`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md) is the
+[`../0001-roles-as-targets.md`](../0001-roles-as-targets.md) is the
 direct precursor. It establishes:
 
 1. **One switch per role** — `aos-<role>.target` is the sole activation root.
