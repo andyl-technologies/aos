@@ -74,7 +74,8 @@ Ship an open-source registry management WebUI as a new crate,
 
 1. is written in Rust targeting WASM, runs on Cloudflare Workers
    (D1 + R2) and as a native binary (axum) for self-hosting — operators
-   or users of AOS can run their own instance easily;
+   or users of AOS can run their own instance easily, down to a fully
+   functional local instance on sqlite + filesystem storage;
 2. exposes the full registry feature set to both audiences — anonymous
    consumers get a verified, rich, no-JS-required browse surface (the
    Debian directory listing, done right); authenticated producers get
@@ -165,6 +166,22 @@ crates/aos-registry-hub/
   `aos-net` SigV4 engine. Packaged as an AOS package + module
   (`aos.registry-hub.enable = true`) so operators deploy the hub *with*
   AOS.
+- **Local-first operation is a hard requirement, not a degraded
+  mode.** The native binary + a sqlite file + `LocalFs` storage
+  bindings is a *complete* hub: `file://` paths are valid registry
+  backends exactly as they already are for `apr` and `aos-cache`'s
+  `FsBackend`, and every feature — the dumb-HTTP/nix-cache facade,
+  browse UI, indexing and verification, consistency validation,
+  publish leases and the upload facade, the web surface — works
+  offline against the local filesystem. `aos-registry-hub serve --dev`
+  boots zero-config: an ephemeral sqlite database and a bindings
+  directory under `--root`, listening on localhost, so
+  `apr release --upload-url http://127.0.0.1:8420/...` and
+  `apm` consumption against the same URL form a complete loop on one
+  machine with no cloud account, no network, and no containers. This
+  one binary is simultaneously the self-host story, the development
+  environment, and the integration-test harness — local is a
+  deployment target, not a simulator of one.
 - **Cloudflare target** — `wasm32-unknown-unknown` via `workers-rs`.
   D1 is the sqlite backend (same dialect, different driver); R2 via
   native bindings gives a zero-egress facade, which is why R2 is the
@@ -1055,11 +1072,10 @@ deserves — **release-engineering paper** — not a SaaS dashboard.
 Principles, concretely:
 
 - **One typeface.** A single monospace family for prose, UI, and data,
-  self-hosted as subsetted hash-named woff2. Default: JetBrains Mono
-  (OFL — redistributable in this repo and embeddable in `apr`).
-  Berkeley Mono is the aspirational fit — its name *is* this lineage —
-  but is commercially licensed; the theme system exposes a font slot
-  so an instance can drop it in without forking.
+  self-hosted as subsetted hash-named woff2: JetBrains Mono (OFL —
+  redistributable in this repo and embeddable in `apr`). Open-license
+  fonts only; no commercial typefaces anywhere in the system. The
+  theme system exposes a font slot, constrained to self-hosted files.
 - **Ink on paper.** Near-white paper, near-black ink; dark mode is
   terminal phosphor. Color is exclusively semantic — green = verified,
   amber = stale, red = failed, blue = interactive — never decorative.
@@ -1196,6 +1212,59 @@ written down:
   transferring sole ownerships first; their sessions and owned tokens
   deaden immediately.
 
+### Testing
+
+The pyramid exploits the local-first property: the hermetic local hub
+*is* the harness, and the no-JS design language makes most of the UI
+assertable with plain HTTP.
+
+1. **Parser-divergence fixtures.** Golden fixture surfaces —
+   committed registry trees, packs/thin-deltas, channel partitions,
+   static caches — generated *by `apr`* in a build step. Both `apm`'s
+   reader and the hub's `surface/` reader run against every fixture;
+   any disagreement (parse result, signature verdict, channel
+   resolution) is a test failure. This pins the bug class named in
+   Architecture, and the same fixtures feed the in-browser verifier's
+   wasm tests.
+2. **Database contract tests.** One contract suite for the `Database`
+   trait, run against every driver: sqlite always (in-process);
+   postgres and mysql as hermetic services built as AOS packages and
+   started inside the sandbox (their packaging is its own work, owed
+   anyway under the repo's no-host-tools principle); the D1 *dialect*
+   is sqlite and is covered by the sqlite runs, while the D1 *driver
+   shim* is exercised by tier 4. Dialect SQL runs on real engines,
+   never mocks.
+3. **The end-to-end CLI loop — the test that matters.** Start the
+   native hub on sqlite + a `LocalFs` binding; run the real `apr`
+   against it (`apr login` via device flow, `apr create --remote`,
+   `apr release --upload-url http://127.0.0.1:…`), then the real
+   `apm` consumes through the facade (update → install → channel
+   advance via prepared op → upgrade), asserting the entire magic
+   contract — unchanged-CLI publish, leases, the validation gate's
+   202 semantics, indexing, facade consumption — in one hermetic test.
+   The same scenario scales up into the existing fleet harness as a
+   hub-in-the-middle variant of `tests/fleet/apm-registry-upgrade.nix`
+   (hub running as the AOS module in one VM, hosts upgrading through
+   it).
+4. **Workers runtime, three tiers.** (a) Day one: the Workers drivers
+   (D1/R2/KV shims) are tested against in-tree fakes implementing the
+   same traits over sqlite/filesystem — fast, hermetic, runs
+   everywhere. (b) When a hermetic `workerd` AOS package lands (it
+   builds with Bazel, which the repo already builds from source — but
+   it drags in V8; see open question 11), a check runs the actual
+   worker cdylib under workerd with D1/R2 emulation. (c) Non-hermetic
+   staging deploys against real Cloudflare (deploy → smoke → destroy)
+   run as CI cron *outside* `nix-build` — the only tier that touches
+   the real platform, and deliberately not load-bearing for merges.
+5. **UI tests.** The tier-3 no-JS pages and all SSR pages are asserted
+   with plain HTTP + HTML checks — curl-testable by design, which is
+   the design language paying rent in CI. Leptos component tests
+   render SSR natively. Full headless-browser/WASM e2e is optional and
+   non-hermetic initially.
+6. **Policy lints.** The asset-policy CI walk (no third-party URLs in
+   dist or rendered pages) and the CSP header check run on every
+   build.
+
 ### Changes outside the hub crate
 
 The hub is one crate, but several small changes land in existing code,
@@ -1211,6 +1280,8 @@ each independently valuable:
 | `registry.toml` | **None required** for mirrors/shared caches. Additive later: `[cache_stack]` expression; `[[origins]]` git-origin mirror list; `[registry.upstream]` inheritance | deferred |
 | `apm` | Optional client-side `urls = [..]` git-origin fallback | deferred |
 | `aos-proto` | `aos.registry.v1` package incl. `MintUploadCredentials` | phase 2 |
+| `pkgs/` (rust) | `wasm32-unknown-unknown` std target in the from-source Rust chain (hermetic hub/SPA builds need it) | phase 1 |
+| `pkgs/` | postgres + mysql packages (DB contract tests, and owed under package completeness anyway) | phase 2–3 |
 
 On **registry inheritance**: layering already works consumer-side —
 `apm`'s registry `priority` selects the package source across
@@ -1342,7 +1413,8 @@ phase 2 — the first generally usable release.
     (identity and access management). If IP/host management for fleet
     operators (host inventory, per-host partition buckets) is also
     intended, that is a separate consumer-side design.
-11. **Typeface licensing.** JetBrains Mono (OFL) is the redistributable
-    default. Berkeley Mono is the better cultural fit but commercially
-    licensed — decide whether the hosted instance licenses it (the
-    theme font slot makes this a per-instance choice, not a fork).
+11. **Hermetic workerd.** `workerd` builds with Bazel and the repo
+    already builds Bazel from source, so a hermetic workerd AOS
+    package is plausible — but it drags in a V8 build, a heavy chain.
+    Decide its priority relative to the in-tree-fakes + staging-deploy
+    tiers of the testing story.
