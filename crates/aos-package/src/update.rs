@@ -75,6 +75,11 @@ pub async fn run(
     let trusted_key_dirs = config.scope.trusted_keys_dirs();
     let config_dir = config.scope.config_dir();
     let mut any_synced = false;
+    // Set when a system-provisioned registry (one with no user-level config
+    // file) is synced through the user-scope fallback while running as root.
+    // Such a sync lands clones and state in the user tree rather than
+    // `/var/lib/apm` + `/etc/apm`; nudge the operator toward `--system`.
+    let mut nudge_system = false;
     let json_mode = printer.mode() == OutputMode::Json;
     let mut json_registries = Vec::new();
 
@@ -92,6 +97,21 @@ pub async fn run(
         }
 
         any_synced = true;
+
+        // A user-scope sync of a registry that only exists in the system
+        // config (no user-level `registries.d/<name>.toml`) is the fallback
+        // path, not a true system update. Flag it when running as root so we
+        // can suggest `--system` once the loop finishes.
+        if config.scope == ProfileScope::User
+            && running_as_root()
+            && !config_dir
+                .join("registries.d")
+                .join(format!("{}.toml", reg_config.name))
+                .exists()
+        {
+            nudge_system = true;
+        }
+
         let mut current_state = existing_state.clone().unwrap_or_default();
 
         // Resolve tracking mode from config.
@@ -244,6 +264,13 @@ pub async fn run(
         ));
     }
 
+    if nudge_system && !json_mode {
+        printer.warning(
+            "Synced a system registry into the root user's tree; \
+             pass --system to update /var/lib/apm with state in /etc/apm.",
+        );
+    }
+
     if json_mode {
         let updated = json_registries
             .iter()
@@ -260,6 +287,16 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Returns `true` when the process is running with an effective uid of 0.
+///
+/// Used only to decide whether to print the `--system` discoverability hint;
+/// it never gates behavior, so a stale value is harmless.
+fn running_as_root() -> bool {
+    // SAFETY: `geteuid` is always successful and takes no arguments — it has
+    // no preconditions and cannot produce undefined behavior.
+    unsafe { libc::geteuid() == 0 }
 }
 
 /// Resolve the config file that should receive updated registry state.
