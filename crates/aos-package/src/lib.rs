@@ -163,6 +163,9 @@ pub enum PackageCommand {
         /// Update only this registry
         #[arg(long)]
         registry: Option<String>,
+        /// Sync the system registries (/var/lib/apm, state in /etc/apm)
+        #[arg(long)]
+        system: bool,
     },
     /// Upgrade installed packages to latest
     Upgrade {
@@ -435,12 +438,13 @@ pub enum TestSystemdClientOp {
 
 impl PackageCommand {
     /// Returns `true` when the user passed `--system` on a subcommand that
-    /// supports it (Install, Upgrade, Rollback, Registry).
+    /// supports it (Install, Upgrade, Rollback, Update, Registry).
     pub fn is_system(&self) -> bool {
         match self {
             PackageCommand::Install { system, .. } => *system,
             PackageCommand::Upgrade { system, .. } => *system,
             PackageCommand::Rollback { system, .. } => *system,
+            PackageCommand::Update { system, .. } => *system,
             PackageCommand::Registry { system, .. } => *system,
             _ => false,
         }
@@ -1506,7 +1510,7 @@ pub async fn run(
             )
             .await
         }
-        PackageCommand::Update { registry } => {
+        PackageCommand::Update { registry, .. } => {
             update::run(&config, registry.as_deref(), printer).await
         }
         PackageCommand::Upgrade {
