@@ -51,12 +51,33 @@
     packages = genAttrs systems (
       system: let
         aos = aosFor system;
+        # Every AOS package as a `pkg-<name>` flake output, so
+        # individual packages are buildable without the aos CLI:
+        #   nix build .#pkg-zlib
+        #   span build .#pkg-gcc
+        # (the Span CI campaign drives per-package remote builds
+        # through these attrs). Only derivations qualify — pkgs
+        # also carries builder helpers (mkDerivation, fetchurl,
+        # ccWrapper, ...) that are not buildable outputs.
+        pkgOutputs = prefixAttrs "pkg" (
+          builtins.listToAttrs (
+            builtins.concatMap (
+              name: let
+                v = aos.pkgs.${name};
+              in
+                if builtins.isAttrs v && (v.type or "") == "derivation"
+                then [{inherit name; value = v;}]
+                else []
+            ) (builtins.attrNames aos.pkgs)
+          )
+        );
       in
         {
           default = aos.pkgs.aos;
           aos = aos.pkgs.aos;
         }
         // systemPackages aos
+        // pkgOutputs
     );
 
     devShells = genAttrs systems (
