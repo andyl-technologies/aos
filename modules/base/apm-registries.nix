@@ -48,7 +48,12 @@
   trustKeyPattern = name: "${lib.escapeRegex name}:Ed25519:[A-Za-z0-9+/]+=*";
 in {
   options.aos.apm.registries = lib.mkOption {
-    default = {};
+    default.andyl = {
+      url = "https://cdn.aos.andyl.org/";
+      trustKeys = [
+        "andyl:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIJiuCf/fX/rsn5ODyT5ebEVtabAmZceKi2aD+cBWjWKL" # louis@
+      ];
+    };
     description = ''
       Package registries baked into the image with their trust anchors.
       Each entry writes `/etc/apm/registries.d/<name>.toml` and
