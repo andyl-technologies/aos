@@ -14,6 +14,7 @@
 //! ([`transport`]): credential helpers, proxies, and `url.<base>.insteadOf`
 //! rewrites are host concerns apm must honor.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -44,15 +45,64 @@ pub(crate) fn hermetic_async() -> tokio::process::Command {
 
 /// Build a git command for network transport (push, pull, fetch).
 ///
-/// Deliberately inherits the host configuration: credential helpers,
-/// proxies, and URL rewrites must keep working.
+/// Deliberately inherits the host configuration network operations depend on:
+/// credential helpers, proxies, and `url.<base>.insteadOf` rewrites. Proxies
+/// and rewrites travel through the environment and git config we inherit, but
+/// a bare-name credential helper (`helper = manager`, `osxkeychain`, …) is a
+/// host binary git resolves through `PATH` — and the `aos`/`apm`/`apr`
+/// wrappers have replaced `PATH` with a minimal hermetic tool set, stashing
+/// the caller's original value in `AOS_HOST_PATH`. We therefore append
+/// `AOS_HOST_PATH` *after* the hermetic entries ([`transport_env_path`]): the
+/// AOS-built git, ssh, and friends still win, while host-only helpers become
+/// resolvable. Outside the wrappers (`AOS_HOST_PATH` unset) `PATH` is left
+/// untouched.
 pub(crate) fn transport() -> std::process::Command {
-    std::process::Command::new("git")
+    let mut cmd = std::process::Command::new("git");
+    if let Some(path) = transport_env_path() {
+        cmd.env("PATH", path);
+    }
+    cmd
 }
 
 /// Async variant of [`transport`].
 pub(crate) fn transport_async() -> tokio::process::Command {
-    tokio::process::Command::new("git")
+    let mut cmd = tokio::process::Command::new("git");
+    if let Some(path) = transport_env_path() {
+        cmd.env("PATH", path);
+    }
+    cmd
+}
+
+/// Resolve the `PATH` a network-transport command should run with, reading
+/// the live process environment.
+///
+/// Returns `None` when `AOS_HOST_PATH` is unset, signaling that the command
+/// should inherit the process `PATH` unchanged.
+fn transport_env_path() -> Option<OsString> {
+    transport_path(std::env::var_os("PATH"), std::env::var_os("AOS_HOST_PATH"))
+}
+
+/// Concatenate the hermetic `PATH` and the caller's host `PATH`, hermetic
+/// first, dropping duplicate directories while preserving order.
+///
+/// `host_path` is the caller's original `PATH` (stashed in `AOS_HOST_PATH` by
+/// the wrappers). Returns `None` when it is absent — the command then inherits
+/// the process `PATH` rather than reconstructing it — so AOS-built tools keep
+/// priority and host-only credential helpers are reachable as a fallback.
+fn transport_path(
+    hermetic_path: Option<OsString>,
+    host_path: Option<OsString>,
+) -> Option<OsString> {
+    let host_path = host_path?;
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for source in [hermetic_path, Some(host_path)].into_iter().flatten() {
+        for dir in std::env::split_paths(&source) {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    std::env::join_paths(dirs).ok()
 }
 
 /// Add a `gpg.ssh.program` override when a working signer was discovered.
@@ -179,8 +229,45 @@ mod tests {
     }
 
     #[test]
-    fn transport_inherits_host_config() {
-        assert_eq!(transport().get_envs().count(), 0);
-        assert_eq!(transport_async().as_std().get_envs().count(), 0);
+    fn transport_does_not_hide_host_config() {
+        // Unlike `hermetic()`, transport must never neutralize the host git
+        // config network operations depend on (credential helpers, proxies,
+        // URL rewrites). It may set `PATH`, but never the config-hiding vars.
+        for (key, _) in HERMETIC_ENV {
+            assert!(
+                transport().get_envs().all(|(k, _)| k != OsStr::new(key)),
+                "transport must not set {key}"
+            );
+            assert!(
+                transport_async()
+                    .as_std()
+                    .get_envs()
+                    .all(|(k, _)| k != OsStr::new(key)),
+                "transport_async must not set {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn transport_path_appends_host_after_hermetic() {
+        let hermetic = std::env::join_paths(["/aos/bin", "/aos/git/bin"]).unwrap();
+        let host = std::env::join_paths(["/usr/bin", "/aos/bin"]).unwrap();
+        let combined = transport_path(Some(hermetic), Some(host)).expect("host path present");
+        let dirs: Vec<_> = std::env::split_paths(&combined).collect();
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/aos/bin"),
+                PathBuf::from("/aos/git/bin"),
+                PathBuf::from("/usr/bin"),
+            ],
+            "hermetic entries first, host-only entries appended, duplicates dropped"
+        );
+    }
+
+    #[test]
+    fn transport_path_without_host_inherits() {
+        let hermetic = std::env::join_paths(["/aos/bin"]).unwrap();
+        assert!(transport_path(Some(hermetic), None).is_none());
     }
 }
