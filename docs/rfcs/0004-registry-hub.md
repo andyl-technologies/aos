@@ -89,14 +89,15 @@ Ship an open-source registry management WebUI as a new crate,
 5. remains **backwards-compatible as a plain Nix binary cache** and as
    a dumb-HTTP git origin — every registry URL the hub serves is
    simultaneously a substituter URL and an `apm` origin;
-6. uses sqlite as the primary database, with postgres and mysql also
-   supported;
+6. uses sqlite as the primary database (Cloudflare D1 is its
+   sqlite-dialect twin), with postgres and mysql supported by phase 4;
 7. integrates with `aos`/`apr`/`apm` "like magic": existing CLI
    pipelines work against the hub unchanged, and the hub never asks a
    human to do something the CLI already automates;
 8. is **polished and self-contained**: every byte of every page —
    fonts, JS, CSS, WASM — is served from the page's own origin. No
    third-party font/script/style CDNs, no analytics beacons, ever.
+   Open-source under the repository's license; English-only initially.
 
 ## Design
 
@@ -119,7 +120,9 @@ or never deployed. The hub is three things layered on top:
 Consequence: the SQL database is **a rebuildable cache plus the
 tenancy/IAM system of record**. Registry content (packages, versions,
 channels, rosters) is always derivable by re-indexing the git surface;
-only orgs/users/tokens/audit live solely in SQL. This keeps the
+only tenancy (orgs, projects, users), registry identity and topology
+(visibility, storage binding, frontends — facts that exist nowhere on
+the surface), tokens, and audit live solely in SQL. This keeps the
 sqlite→postgres→mysql story trivial and makes "import an existing
 registry" a first-class operation rather than a migration.
 
@@ -191,6 +194,16 @@ crates/aos-registry-hub/
   fixture surfaces. The same crate compiles for a **third runtime —
   the visitor's browser** (see "The registry web surface"), so one
   parser serves server, Worker, and client.
+- **Indexer robustness.** Indexing is checkpointed and incremental,
+  keyed on `last_indexed_commit` — a re-walk fetches only the delta
+  (packs/thin deltas, the same access pattern as `apm`). Index state is
+  explicit and user-visible: `fresh`, `indexing`, `stale` (upstream
+  unreachable; shown with last-success age and retry/backoff state),
+  `failed` (verification error — a first-class health alarm, never
+  silently hidden), `partial` (crash mid-index; resumes from the
+  checkpoint). On Workers, large registries are indexed in
+  Queue-batched slices to respect CPU/duration limits. All list APIs
+  (`PackageService`, search, audit) are paginated from day one.
 
 ### Tenancy and IAM
 
@@ -202,10 +215,17 @@ Organization   (tenant boundary; SSO/audit scope)
 ```
 
 - **Principals**: users (humans), service accounts, and tokens.
+  **Service accounts** are token-only principals — no sessions, no
+  email, created by org admins with explicit role grants (CI publishers
+  being the canonical case). The token-ownership rule applies to them
+  unchanged: their tokens clamp to the service account's current
+  grants, and deleting the account deadens every token it owns. They
+  appear in audit as `sa:<org>/<name>`.
 - **Roles**, grantable at org, project, or registry scope and inherited
   downward, expanding to permission verbs (`read`, `publish`,
   `channel.advance`, `keys.manage`, `tokens.self`, `tokens.manage`,
-  `members.manage`, `registry.configure`, `audit.read`, `iam.admin`):
+  `members.manage`, `registry.configure`, `storage.manage`,
+  `validation.repair`, `audit.read`, `iam.admin`):
 
   | Role | Grants |
   | --- | --- |
@@ -238,7 +258,8 @@ Two principal planes that never cross:
   `aos-server`'s token store). Native: a `sessions` table. Workers: KV
   with native TTL plus a D1 row for enumeration and "revoke all
   sessions"; KV is eventually consistent, so revocation tombstones D1
-  and destructive operations re-check it. Sessions carry an
+  and destructive operations re-check it. Defaults: 7-day idle
+  timeout, 30-day absolute lifetime (the KV TTL). Sessions carry an
   `auth_level` enabling **sudo mode**: destructive operations require
   re-authentication within the last 10 minutes. Human authorization is
   computed from `memberships` per request — role changes take effect
@@ -256,7 +277,8 @@ Two principal planes that never cross:
   rotation-grace bug noted in `tokens.rs`'s own docs (grace window
   recorded but not honored) is fixed in the hub's implementation.
 
-**Human auth methods** (verified against both runtimes):
+**Human auth methods** (assessed against both runtimes; build-level
+verification of the wasm claims is part of the phase-1/2 spikes):
 
 - **Email magic links** — v1 baseline and the recovery path. SMTP via
   `lettre` natively; an HTTP mail API behind a `Mailer` trait on
@@ -313,15 +335,22 @@ including machine paths:
 | --- | --- | --- | --- |
 | Browse pages (home, packages, channels, releases, git log/diff), raw autoindex | anonymous | org member (viewer+) | explicit grant |
 | Machine paths: nix-cache + dumb-HTTP git | anonymous | bearer token with `read` at scope | same |
-| Cross-registry search | public results only | + internal for members | + grants |
+
+Search is not a per-registry surface: results are filtered
+registry-by-registry to what the caller could read — anonymous callers
+see public registries only. Global package search across orgs is
+public-only by definition.
 
 Always authenticated: org/project dashboards and member lists
 (viewer+), audit feed (admin+), publish console and upload-credential
-minting (maintainer+), channel advance (maintainer+), roster mutations
-(maintainer+; the roster itself is *readable* per visibility — it is
-public data on a public registry), hosted-key enrollment (admin+),
-own-token management (developer+), others' tokens (admin+),
-registry/frontend/storage configuration (admin+ at parent), org
+minting (maintainer+), channel advance (maintainer+ — hosted-key orgs
+only; BYO-key orgs prepare advances for CLI signing, see
+"Configuration management"), validation repair jobs (maintainer+,
+`validation.repair`), roster mutations (maintainer+; the roster itself
+is *readable* per visibility — it is public data on a public registry),
+hosted-key enrollment (admin+), own-token management (developer+),
+others' tokens (admin+), registry/frontend/storage/cache-store
+configuration (admin+ at parent, `storage.manage`), org
 delete/ownership transfer (owner; last-owner removal is hard-blocked).
 ConnectRPC services map method-by-method onto the same matrix.
 
@@ -336,16 +365,32 @@ third-party tooling share one schema:
 | `OrgService` | orgs, membership, invitations |
 | `ProjectService` | project tree CRUD, role grants |
 | `RegistryService` | create/import/configure registries, visibility, trust-anchor display, freshness/health, mirror sources |
-| `StorageService` | storage bindings, bucket provisioning, frontend domains |
+| `StorageService` | storage bindings, bucket provisioning, frontend domains, cache stores |
 | `PackageService` | search, package/version/platform metadata, closures, narinfo lookups, reverse-deps |
-| `ChannelService` | channel list, 256-partition state, advance/init, floor history |
-| `PublishService` | the write path: stage release, mint upload credentials (`MintUploadCredentials`), finalize, status stream |
+| `ChannelService` | channel list, 256-partition state, floor history; advance/init (hosted-key orgs) and prepared advances (BYO-key orgs) |
+| `PublishService` | the write path: stage release, mint upload credentials (`MintUploadCredentials`), finalize, status stream, publish leases |
 | `ValidationService` | consistency-validation runs, per-cache coverage reports, repair jobs |
 | `KeyService` | roster mirror, hosted-key operations, rotation workflows |
 | `TokenService` | provisioning-token CRUD — same semantics as `aos token` |
 | `AuditService` | audit log queries |
 | `GitService` | log/diff/branch/refs read API for the UI and remote `apr` |
 | `ConfigService` | change-sets: draft, review-diff, apply, revert |
+
+**Publish concurrency.** `apr` serializes publishers with an exclusive
+on-disk lock (`ReleaseLock`, `.git/apr-release.lock` in
+`registry_ops.rs`) — but that lock is per-clone, invisible across
+maintainers' machines. The hub closes the gap server-side: the facade
+holds a **per-registry publish lease** (acquired implicitly by the
+first mutable-pointer write of a pipeline or explicitly via
+`PublishService.Stage`; expires on a deadline, renewable while uploads
+progress), concurrent finalize attempts get `409 Conflict`, and every
+mutable-pointer write goes through conditional PUT / compare-and-swap
+where the binding supports it (the `capabilities.conditional_put` field
+exists for exactly this) so a lost-update on `info/refs`, partitions,
+or `nix-cache-info` is structurally impossible on the managed path.
+Direct-to-bucket publishers bypass the lease by definition — for them
+the hub can only detect and flag races after the fact, which the
+registry page surfaces as a health warning.
 
 ### Storage: `StorageBinding` and shared buckets
 
@@ -446,8 +491,9 @@ backup.
 the cache surface**: the committed `registry.toml` already carries
 `[[caches]]` entries with `url` + `priority`, and the client merges
 them with client-side entries and sorts by priority descending
-(`crates/aos-package/src/registry_ops.rs:916-924`,
-`types.rs:1247-1259`). Each frontend with
+(`resolve_mirrors_for_registry` in
+`crates/aos-package/src/registry_ops.rs`; `RegistryRootConfig` /
+`CacheEntry` in `types.rs`). Each frontend with
 `surfaces.cache && advertised.in_caches` becomes one `[[caches]]` row.
 Because `registry.toml` is signed tree content, the hub cannot silently
 edit the mirror list — updating it is a normal signed publish
@@ -457,7 +503,7 @@ probe finds a mirror stale or dead, the hub alerts and offers a
 one-click "demote mirror" change request.
 
 The **git origin** is the one genuinely singular thing today
-(`RegistryConfig.url` is a single string, `types.rs:638-639`). A stale
+(`RegistryConfig.url` is a single string in `types.rs`). A stale
 git origin is *safe* by construction (signed tags + anti-rollback floor
 → old-but-valid state); it is an availability gap only. Deferred
 follow-ons: a client-side `urls = [..]` ordered fallback list in
@@ -474,11 +520,15 @@ small `apr` change is specified regardless of the hub: restructure to
 then all `Mutable` pointers to all destinations; a mirror that fails
 phase 1 skips phase 2 and stays stale-but-consistent. New invariant:
 *any pointer visible on any mirror only references objects present on
-every mirror that completed phase 1.* The hub's `MirrorJob` (replicate
-primary → secondary bindings server-side, immutable-first, idempotent
-because content-addressed) follows the same rule, and per-frontend
-`MirrorProbe` jobs record observed frontier + lag, rendered as a
-freshness table on the registry page.
+every mirror that completed phase 1.* The hub's **`ReplicationJob`**
+(replicate primary → secondary bindings server-side, immutable-first,
+idempotent because content-addressed) follows the same rule, and
+per-frontend **`FrontendProbe`** jobs record observed frontier + lag
+(the `frontend_probes` table), rendered as a freshness table on the
+registry page. Naming note: replication jobs copy *this* registry
+across its own frontends; `MirrorSource` (next section) tracks an
+*upstream* registry — two unrelated features that both colloquially
+read as "mirroring".
 
 ### Cache stores, stacks, and consistency validation
 
@@ -494,7 +544,8 @@ an org with twenty team registries stores each NAR once. No
 
 **Cache stacks.** Today the `[[caches]]` list is a *preference* list,
 not a failover chain: `apm` resolves the highest-priority cache and
-uses only it (`crates/aos-package/src/download.rs:147-156` takes
+uses only it (`resolve_mirror` in
+`crates/aos-package/src/download.rs` takes
 `mirrors.first()`). The stack model generalizes this into a small,
 nestable expression:
 
@@ -563,9 +614,18 @@ advertises* — the server-side, always-on generalization of
   see "mirror X is missing 3 NARs" before pointing a fleet at it).
 - **Gating**: on hub-managed publishes, the pointer flip can optionally
   be gated on `presence` validation of required caches — a release is
-  not announced until its closures are fetchable. (CLI `apr release`
-  retains its own ordering guarantees; the gate is facade-side and
-  opt-in.)
+  not announced until its closures are fetchable. Wire semantics, so
+  the unchanged-CLI contract holds: with the gate enabled, the facade
+  accepts the client's mutable-pointer PUTs into a **staging area** and
+  returns `202 Accepted` with a status URL; validation runs; on pass
+  the hub flips the pointers server-side (under the publish lease,
+  conditional-PUT), on fail the release stays staged and visible in the
+  publish pipeline view with the missing-path report. `apr` treats
+  `202` on mutable uploads as success-pending and can poll (`apr
+  release --wait`); a staged release that is never repaired is
+  garbage-collected after a configurable window (default 7 days) and
+  audited as abandoned. With the gate disabled (the default), pointer
+  PUTs apply immediately and validation runs after the fact.
 
 ### Mirroring other registries
 
@@ -633,7 +693,12 @@ The registry URL is simultaneously:
 3. **A Nix binary cache**: `…/{registry}/nix-cache-info`,
    `/{hash}.narinfo`, `/nar/…` — same facade. Any Nix installation can
    point a substituter at it. The backwards-compatibility requirement
-   is satisfied structurally, not as a feature.
+   is satisfied structurally, not as a feature. One honest caveat:
+   plain-Nix compatibility is unconditional only for *public*
+   registries — Nix's substituter auth is netrc-based, so for private
+   registries the facade also accepts HTTP basic auth with a token as
+   the password (the netrc bridge); `apm`/`aos-cache` use bearer
+   tokens natively.
 
 Private registries enforce bearer-token auth on the machine paths —
 which `apm` and `aos-cache` already know how to send.
@@ -686,15 +751,26 @@ stance above:
 
 1. **Default (BYO-key orgs): web edits are change requests.** The hub
    commits the edit to `refs/hub/changes/<change_id>`, signed by a
-   per-instance hub key that is *not* in the roster — consumption-
-   invisible by construction, since clients follow only signed
-   tags/partitions, never branches. Promotion happens when a maintainer
-   reviews and signs locally: `apr change merge <change_id>` fetches
-   the draft, shows the diff, signs with a roster key, pushes. The web
-   UI is a full authoring/review surface; roster keys never leave
-   maintainers' machines.
+   per-instance **draft-signing key** that is *not* in the roster (and
+   is deliberately named to be unconfusable with *hosted* keys — the
+   draft-signing key carries no consumer trust at all; clients follow
+   only signed tags/partitions, never branches). Promotion happens when
+   a maintainer reviews and signs locally: `apr change merge
+   <change_id>` fetches the draft, shows the diff, signs with a roster
+   key, pushes. The web UI is a full authoring/review surface; roster
+   keys never leave maintainers' machines.
 2. **Hosted-key orgs**: the hub applies and signs directly; every use
    audited.
+
+Commit change requests cannot carry **signed-tag operations** (channel
+advances, release tags — tag objects, not commits). For those, BYO-key
+orgs get **prepared operations**: the hub records the exact intent
+(channel, partitions, target release) as a pending change-set, and the
+maintainer executes `apr channel advance --from-hub <change_id>`, which
+fetches the intent, verifies it matches what was reviewed, signs the
+partition tags locally, and pushes. Same review UX, same audit trail,
+signature still client-side. Direct web-button advances remain a
+hosted-key-org feature.
 
 Consequence: without hosted keys, web editing of registry config is
 change-request-only — which is why a *minimal* change-request feature
@@ -776,7 +852,7 @@ disabled — the Debian ethos):
 **Producer-facing** (authenticated):
 
 - Org/project dashboards: registries, members, roles, tokens, storage
-  bindings, frontends, audit feed.
+  bindings, frontends, cache stores, quotas, audit feed.
 - Publish pipeline view: live phase status mirroring `apr release`
   (commit → tag → packs → upload-immutable → flip-pointers),
   resumable/idempotent like `--resume`, with the optional
@@ -795,10 +871,12 @@ origin: no third-party font CDNs (system-font stack by default;
 any custom face is a self-hosted, subsetted, hash-named woff2), no
 external JS or CSS, no analytics beacons, no third-party embeds. This
 is enforced, not aspired to: a `Content-Security-Policy` of
-`default-src 'self'` (plus the minimum for inline Leptos hydration
-bootstrapping, nonce'd) ships in every response on both runtimes, and a
-CI check walks the built dist + rendered pages and fails on any
-absolute third-party URL. The same policy applies to the on-CDN web
+`default-src 'self'` — plus `'wasm-unsafe-eval'` in `script-src`
+(required to execute WASM on Chromium) and a nonce for the Leptos
+hydration bootstrap; the exact policy is validated in the phase-1
+spike — ships in every response on both runtimes, and a CI check walks
+the built dist + rendered pages and fails on any absolute third-party
+URL. The same policy applies to the on-CDN web
 surface below — which is also a privacy property: browsing a registry
 leaks nothing to anyone but the registry's own origin (and the hub,
 only when explicitly configured).
@@ -873,9 +951,170 @@ same way they handle the cache dir. The no-hub story stays complete:
 an operator with only `apr` and a bucket gets the full web surface.
 The hub regenerates snapshots on managed publishes; both producers emit
 the identical layout, and `index.json` carries `generator` +
-`surface_commit` so staleness is detectable. `config.json` is
-presentation-only and never trust-relevant (it is origin-only, not
-signed tree content).
+`surface_commit` so staleness is detectable.
+
+Trust scoping, stated precisely: `config.json` is origin-only, unsigned
+content — **not consumption-trust-relevant** (it can never change what
+`apm` or Nix accept) but it *is* same-origin-integrity-trusted by the
+SPA, and `hub_url` directs authenticated browser traffic. The
+mitigations: `config.json` is writable only through the same
+write-controlled paths as the rest of the surface, and the hub refuses
+Connect calls from origins it has not registered as frontends, so a
+forged `hub_url` cannot harvest a session against a legitimate hub.
+The same honesty applies to the in-browser verification badge: it is
+only as honest as the served SPA — an attacker with origin write could
+serve a lying app. That is the same compromise that could serve any
+content; the independent check is the hub-proxied page (different
+origin, same verifier), and the badge UI links to it.
+
+### Sitemap, page flows, and visual design
+
+#### The `/-/` namespace — humans and machines share a root
+
+The machine surface owns paths at the registry root: `HEAD`, `info/`,
+`objects/`, `channels/`, `releases/`, `nix-cache-info`,
+`{hash}.narinfo`, `nar/`, plus the web-surface files (`index.html`,
+`web/`, `browse/`). Human sub-pages would collide — a channel page at
+`…/{registry}/channels/stable` shadows the partition files
+`channels/stable/<bucket>` that `apm` fetches. So **all human pages
+below a registry live under `/-/`** (the GitLab convention): exact
+machine paths always win, `/-/` is reserved and can never appear in
+the machine layout, and the registry root itself content-negotiates
+(HTML for browsers; on direct frontends the root *is* the generated
+`index.html`). Org and project slugs are validated against a reserved
+top-level list (`login`, `activate`, `account`, `new`, `oauth2`,
+`api`, `-`, …).
+
+```text
+/                                   instance home — public registries, global search
+/login  /activate  /account         auth · device-code approval · profile/sessions/passkeys/tokens
+/new                                create organization
+/{org}/                             org home — projects, registries, members
+/{org}/-/audit                      org audit feed
+/{org}/-/settings                   IAM · SSO · domains · storage bindings · hosted keys · quotas
+/{org}/{proj…}/                     project home (nested)
+/{org}/{proj…}/{registry}/          registry home  ⇄  machine surface root
+/{org}/{proj…}/{registry}/-/
+    packages/        packages/{name}     index · package page
+    channels/        channels/{name}     rollout grid · advance console
+    releases/        releases/{semver}   signed tags · pack/delta detail
+    health/                              validation matrix · mirror freshness
+    git/log  git/diff/{a}..{b}           git views
+    changes/         changes/{id}        change requests · prepared operations
+    publishes/       publishes/{id}      publish pipeline runs
+    settings/                            frontends · caches/stacks · mirror source · visibility · tokens
+```
+
+#### Page flows — the five journeys that matter
+
+1. **Evaluate → adopt** (anonymous consumer): land on the registry
+   home from search or a pasted URL → trust anchors, frontier
+   freshness, and cache health are above the fold (the decision
+   inputs) → package page → copy the setup snippet. Zero login, zero
+   JS required.
+2. **Publish** (maintainer): run `apr release` in the terminal → the
+   `publishes/{id}` page narrates the pipeline live (status stream:
+   commit → tag → packs → upload → validation gate → flip) → channel
+   page reflects the new frontier. The web never asks the maintainer
+   to leave the terminal; it *narrates* what the CLI is doing.
+3. **Roll out**: channel page grid → "advance to 50%" → BYO-key orgs
+   get a prepared operation with a copy-paste
+   `apr channel advance --from-hub <id>`; hosted-key orgs get the
+   button → the grid updates, floor and staleness in view.
+4. **Onboard an org**: create org → create registry (binding picker:
+   hub bucket / BYO) → the success page *is* the
+   `apr create --remote …` snippet → first publish appears live.
+5. **Device login**: `apr login` prints a code → `/activate` → scope
+   approval (shows exactly which paths/permissions) → the CLI
+   proceeds without a copied secret.
+
+#### Design language: release-engineering paper
+
+Two contemporary references set the register, both studied from their
+shipped HTML/CSS:
+
+- **usgraphics.com** (U.S. Graphics / Berkeley Graphics): a
+  server-rendered, table-dense "engineering document" aesthetic —
+  flat, ruled, monospace-forward — whose published design philosophy
+  is nearly a restatement of this RFC's ethos: *expose state and inner
+  workings; dense, not sparse; explicit is better than implicit;
+  verbosity over opacity; don't infantilize users; performance is
+  design*. Notably it achieves the look with plain server-rendered
+  HTML — proof the no-JS tier can carry the full design.
+- **turbopuffer.com**: one monospace typeface for everything, and
+  box-drawing ASCII diagrams as the *primary* graphic device
+  (animated, where animated at all, by stepping a CSS keyframe through
+  pre-rendered text frames — no canvas, no SVG).
+
+Behind both stands the heritage this tool actually descends from:
+Debian FTP listings and changelogs, man pages, IETF RFC plaintext,
+`MAINTAINERS` files, BSD handbooks, release-announcement emails.
+The hub should look like the best-set engineering document its lineage
+deserves — **release-engineering paper** — not a SaaS dashboard.
+
+Principles, concretely:
+
+- **One typeface.** A single monospace family for prose, UI, and data,
+  self-hosted as subsetted hash-named woff2. Default: JetBrains Mono
+  (OFL — redistributable in this repo and embeddable in `apr`).
+  Berkeley Mono is the aspirational fit — its name *is* this lineage —
+  but is commercially licensed; the theme system exposes a font slot
+  so an instance can drop it in without forking.
+- **Ink on paper.** Near-white paper, near-black ink; dark mode is
+  terminal phosphor. Color is exclusively semantic — green = verified,
+  amber = stale, red = failed, blue = interactive — never decorative.
+- **Tables and rules are the layout.** Man-page-style uppercase
+  section headers, dense bordered tables, horizontal rules. Flat: no
+  shadows, no gradients, no rounded corners; the only permitted
+  ornament is the `░` shade.
+- **ASCII diagrams are the iconography.** Stack topology, mirror
+  layout, and closure graphs render as box-drawing text — identical in
+  the SSR page, the SPA, the static no-JS tier, and a `curl` of the
+  page. Diagrams are content: selectable, copy-pasteable into a
+  terminal or a doc.
+- **The partition grid** is a 16×16 monospace grid where each release
+  gets a glyph *and* a color (`■`/`▣`/`▢`/`▤` — colorblind-safe by
+  construction); the legend is a table.
+- **Raw formats shown raw.** A narinfo renders as a narinfo,
+  `registry.toml` as TOML, a signature chain as indented text — with a
+  permalink on everything. The page teaches the format by showing it.
+- **Expose state.** Every page footer carries a state line: surface
+  commit, index freshness, render time, hub version. Performance *is*
+  design: SSR pages target tens of kilobytes of HTML and are complete
+  without a single client-side request.
+- **Accessibility.** Information is never encoded in color alone
+  (glyphs and labels accompany), tables are real `<table>` semantics
+  with headers, focus states are visible, both schemes hold WCAG AA
+  contrast.
+
+A flavor wireframe of the registry home (itself in the diagram
+language it proposes):
+
+```text
+┌────────────────────────────────────────────────────────────────┐
+│ ANDYL REGISTRY HUB        acme / infra / prod         [log in]  │
+├────────────────────────────────────────────────────────────────┤
+│ REGISTRY acme/infra/prod            frontier 1.4.2  ✓ verified  │
+│ trust    andyl:Ed25519:AAAAC3…WKL (+1)     indexed 38s ago      │
+│ caches   cdn.acme.com ✓ 100%   backup-s3 ⚠ 98.7% (3 missing)    │
+├────────────────────────────────────────────────────────────────┤
+│ CHANNELS                                                        │
+│   stable    1.4.2      ████████████░░░░  75%     floor 1.4.0    │
+│   testing   1.5.0-rc1  ████████████████ 100%                    │
+├────────────────────────────────────────────────────────────────┤
+│ PACKAGES (214)                        [ search ______________ ] │
+│   curl      8.5.0    x86_64    3.0M / 50M     MIT               │
+│   openssl   3.2.1    x86_64    7.1M / 12M     Apache-2.0        │
+│   …                                                             │
+├────────────────────────────────────────────────────────────────┤
+│ SETUP     apr add https://hub.example.com/acme/infra/prod       │
+└────────────────────────────────────────────────────────────────┘
+  surface ab12cd34 · indexed 2026-06-12T16:02Z · rendered 11ms
+```
+
+Per-registry theming (`config.json`: logo, accent) selects *within*
+this language, never around it — a tenant can brand a registry, not
+break the system.
 
 ### Database schema (sketch)
 
@@ -885,17 +1124,77 @@ hierarchy), `users`, `user_identities` (`(iss, sub)`-keyed),
 `tokens(id, hash, owner, scope, permissions, expires_at, revoked_at,
 last_used_at)`, `sessions`, `invitations`, `org_idp_configs`
 (encrypted client secrets), `org_domains` (TXT-verified),
-`storage_bindings`, `frontends`, `cache_stores`, `mirror_sources`,
-`hosted_keys` (encrypted), `config_changesets`, `config_revisions`,
-`audit_log`, `webhooks`.
+**`registries`** (identity, slug, visibility, `storage_binding_id`,
+prefix — facts that exist nowhere on the surface and do *not* survive a
+re-index), `storage_bindings`, `frontends`, `cache_stores`,
+`mirror_sources`, `hosted_keys` (encrypted), `publish_jobs` (leases,
+staged releases, pipeline state), `config_changesets`,
+`config_revisions`, `audit_log`, `webhooks` (phase 4; event taxonomy
+and delivery model in a follow-up RFC).
 
 Rebuildable index tables (derived from the surface, droppable and
-re-indexable at any time): `registries` (with `last_indexed_commit`,
-frontier, health), `packages`, `package_versions`, `version_platforms`,
-`channels`, `channel_partitions(channel, bucket, release, sig_key_id)`,
+re-indexable at any time): `registry_index` (per-registry
+`last_indexed_commit`, frontier, index state, health), `packages`,
+`package_versions`, `version_platforms`, `channels`,
+`channel_partitions(channel, bucket, release, sig_key_id)`,
+`channel_floor_events` (derived from indexed tag/partition history),
 `releases(semver, tag_hash, signer, pack_presence)`, `key_rosters`,
 `validation_runs`, `validation_findings(cache, store_hash, depth,
 status)`, `frontend_probes`, plus the per-dialect full-text index.
+Reverse-dependencies are derived from `closures/` during indexing, not
+stored as a separate source of truth.
+
+### Operations: migrations, backup, quotas, observability, offboarding
+
+The index half of the database is disposable; the system-of-record half
+is not, and a multi-tenant service needs the unglamorous chapters
+written down:
+
+- **Migrations.** Ordered SQL migration files per dialect, applied by
+  an embedded runner: at startup under an advisory lock natively; at
+  deploy time (wrangler migrations) or behind a first-request gate on
+  D1. A `schema_version` table is the source of truth; the runner
+  refuses to serve ahead of or behind its known range. Moving an
+  instance between backends is an app-level export/import (below), not
+  a SQL-dump translation.
+- **Backup.** The SoR tables must be backed up: D1 Time Travel /
+  export on Cloudflare; `sqlite3 .backup` / `pg_dump` / `mysqldump`
+  natively; plus an app-level encrypted export covering the same data
+  for backend moves. Hosted keys are the one unrecoverable secret:
+  they are encrypted at rest with an instance KMS key (Workers secret
+  / native keyfile), exports keep them encrypted, and losing the KMS
+  key means re-enrolling keys — stated loudly in the enrollment UI.
+- **Quotas and limits.** Per-org quotas on hub-managed storage (bytes
+  and object count — enforced at the upload facade with
+  `507 Insufficient Storage`, the same contract as `aos-server`'s
+  `max_paths`), registries, members, and active tokens. Per-endpoint
+  rate limits by class: anonymous browse/search (per-IP),
+  device-authorization and magic-link issuance (per-target *and*
+  per-IP — the email-bombing surface), token exchange, and the upload
+  facade (per-token). Instance signup policy is `open` or
+  `invite-only` on both the hosted instance and self-hosted ones —
+  free hub-managed storage behind an open signup is an abuse magnet
+  and the default hosted posture is invite-gated org creation with
+  open membership-by-invitation.
+- **Observability of the hub itself.** The hub monitors registries;
+  this monitors the hub. Natively: a Prometheus `/metrics` endpoint,
+  structured JSON logs, optional OTLP traces. On Workers: Workers
+  Analytics Engine counters and Logpush with the *same* structured-log
+  schema and metric names, so dashboards are portable. A `/healthz`
+  endpoint covers DB reachability, binding reachability, and indexer
+  lag; the AOS module wires it to systemd watchdog/readiness.
+- **Offboarding and export.** Org deletion is soft, gated (owner +
+  sudo + typed path), with a 30-day grace window during which an
+  export job can run. Export is genuinely easy here and worth
+  advertising: a registry *is* a portable git surface + bucket prefix
+  — the export job copies the prefix to any S3-compatible target the
+  org supplies, and the SQL SoR (members, tokens-metadata, audit
+  slice) exports as JSON. At hard-delete, hub-managed objects are
+  removed, hosted keys are destroyed (loud, irreversible, stated at
+  enrollment), and the audit log is retained per instance policy
+  (default one year) with the org tombstoned. User deletion requires
+  transferring sole ownerships first; their sessions and owned tokens
+  deaden immediately.
 
 ### Changes outside the hub crate
 
@@ -904,8 +1203,9 @@ each independently valuable:
 
 | Where | Change | When |
 | --- | --- | --- |
-| `apr` (`static_upload.rs`) | Phase-major multi-destination ordering (immutables to all mirrors, then mutables to all); `content_type()` entries for `.wasm/.html/.js/.css/.json`; collect `index.html` + `web/` + `browse/` | with hub phase 1–2 |
-| `apr` | New `apr web generate` / `apr web config`; `apr release` web-dir awareness | hub phase 1–2 |
+| `apr` (`static_upload.rs`) | Phase-major multi-destination ordering (immutables to all mirrors, then mutables to all); `content_type()` entries for `.wasm/.html/.js/.css/.json`; collect `index.html` + `web/` + `browse/` | phase 1, in parallel |
+| `apr` | New `apr web generate` / `apr web config`; `apr release` web-dir awareness | phase 1, in parallel |
+| `apr` | `apr channel advance --from-hub <id>` (execute a prepared advance); `apr release --wait` (poll a gated flip) | hub phase 3 |
 | `apr` | `apr change merge <id>` (fetch, review, sign, push a hub change request) | hub phase 3 |
 | `apm` (`download.rs`) | Cache miss-fallthrough (try next `[[caches]]` entry on 404) — today only the highest-priority cache is consulted | hub phase 3 |
 | `registry.toml` | **None required** for mirrors/shared caches. Additive later: `[cache_stack]` expression; `[[origins]]` git-origin mirror list; `[registry.upstream]` inheritance | deferred |
@@ -923,12 +1223,20 @@ deliberately deferred.
 
 ### Sequencing
 
+References to *v1* elsewhere in this document mean the end of
+phase 2 — the first generally usable release.
+
 1. **Read-only hub** (highest value, lowest risk): `surface/` reader +
    indexer, public browse UI, nix-cache/dumb-HTTP facade,
    **consistency validation** (read-only by nature) and frontend
    freshness probes. Deploy on Cloudflare against the existing
-   `cdn.aos.andyl.org` bucket in registration-only mode. In parallel:
-   `apr web generate` and the phase-major upload fix.
+   `cdn.aos.andyl.org` bucket in registration-only mode. Since
+   tenancy arrives in phase 2, phase-1 registries are **instance-level
+   records** — created by instance config or CLI, owned by no org,
+   served at a flat configured slug — and are adopted into an org
+   (acquiring the canonical `{org}/{proj…}/{registry}` URL, with a
+   redirect from the flat slug) when tenancy lands. In parallel
+   (phase 1): `apr web generate` and the phase-major upload fix.
 2. **Tenancy + tokens + upload facade**: orgs/projects/IAM, magic
    links + the passkey verifier spike, device-flow login, storage
    bindings + registry creation (hub-managed R2 + BYO), the AOS-mode
@@ -1007,7 +1315,10 @@ deliberately deferred.
 5. **JWT minting on Workers.** `jsonwebtoken` historically depends on
    ring; confirm a RustCrypto path or hand-roll HS256 (`hmac` + `sha2`)
    / EdDSA via `ed25519-dalek`. Also: `getrandom` needs its js feature
-   on `wasm32-unknown-unknown`.
+   on `wasm32-unknown-unknown`, and `openidconnect` — assessed
+   wasm-clean from its dependency structure — has not yet been
+   *compiled* for the target with the Fetch adapter; do so in the
+   phase-2 spike.
 6. **The in-house passkey verifier spike.** Attestation-`none` RP
    verification is ~500–800 lines on RustCrypto crates with W3C test
    vectors; if it overruns, magic links carry phase 2 alone and
@@ -1018,9 +1329,12 @@ deliberately deferred.
    expression encoding (inline TOML tables vs a parallel section) and
    the `apm` stack-resolution semantics need a short design pass with
    the `apm` miss-fallthrough change.
-8. **R2 dynamic bindings.** Workers R2 bindings are deploy-time static
-   today, which shapes the shared-bucket default — re-verify (dispatch
-   namespaces et al.) before phase 2 locks the provisioning model.
+8. **R2 dynamic bindings and temp credentials.** Workers R2 bindings
+   are deploy-time static today, which shapes the shared-bucket
+   default — re-verify (dispatch namespaces et al.) before phase 2
+   locks the provisioning model. Likewise, R2 temporary-credential
+   prefix scoping (load-bearing for shared-bucket direct upload) is
+   documented but should be validated in practice in the same spike.
 9. **SSO timing for the first deployment.** Magic links + passkeys are
    sufficient for the bootstrap team; if Andyl needs org SSO sooner
    than phase 3, OIDC moves up.
@@ -1028,3 +1342,7 @@ deliberately deferred.
     (identity and access management). If IP/host management for fleet
     operators (host inventory, per-host partition buckets) is also
     intended, that is a separate consumer-side design.
+11. **Typeface licensing.** JetBrains Mono (OFL) is the redistributable
+    default. Berkeley Mono is the better cultural fit but commercially
+    licensed — decide whether the hosted instance licenses it (the
+    theme font slot makes this a per-instance choice, not a fork).
