@@ -283,6 +283,51 @@ impl RegistryRpc {
         Ok(false)
     }
 
+    /// Authorize a read of `registry` over a Connect context, following
+    /// registry visibility.
+    ///
+    /// A `public` registry (and any unowned phase-1 registry) reads
+    /// anonymously. An `internal` or `private` registry requires a bearer JWT
+    /// granting [`Permission::Read`] on the registry scope (intersected with
+    /// the owner's current grants by [`Self::require_permission`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated`/`PermissionDenied` when a non-public registry
+    /// is read without sufficient authority.
+    fn require_read(&self, ctx: &Context, registry: &RegistryRecord) -> Result<(), ConnectError> {
+        if registry.visibility == "public" || registry.org_id.is_none() {
+            return Ok(());
+        }
+        let claims = self.require_claims(ctx)?;
+        self.require_permission(&claims, Permission::Read, &Scope::parse(&registry.slug))
+    }
+
+    /// The current verified HEAD commit oid of a registry's tracked branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns `FailedPrecondition` when the registry has no indexed HEAD yet,
+    /// `InvalidArgument` for a malformed stored oid, and `Internal` on database
+    /// failure.
+    fn head_commit(
+        &self,
+        registry: &RegistryRecord,
+    ) -> Result<crate::surface::object::Oid, ConnectError> {
+        let hex = self
+            .db
+            .index_status(registry.id)
+            .map_err(internal)?
+            .and_then(|s| s.last_indexed_commit)
+            .ok_or_else(|| {
+                ConnectError::new(
+                    ErrorCode::FailedPrecondition,
+                    "registry has no indexed commit yet",
+                )
+            })?;
+        crate::surface::object::Oid::from_hex(&hex).map_err(|e| invalid(format!("{e:#}")))
+    }
+
     /// Resolve an org by slug or map a miss to `NotFound`.
     fn org_or_not_found(&self, slug: &str) -> Result<crate::db::OrgRecord, ConnectError> {
         self.db
@@ -1384,6 +1429,186 @@ impl PublishService for RegistryRpc {
         ))
     }
 }
+
+impl GitService for RegistryRpc {
+    /// `GitLog` — the committed commit log of a registry's tracked branch.
+    ///
+    /// Walks the verified HEAD commit's first-parent history through the
+    /// committed git surface, newest first. Reads follow registry visibility:
+    /// the caller must hold [`Permission::Read`] on the registry scope (a
+    /// `public` registry's read is anonymous; see the access matrix). Each
+    /// entry carries the `AOS-Change-Id` trailer when the commit was authored
+    /// or promoted through the hub.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` for an unknown slug, `PermissionDenied` when the
+    /// caller cannot read the registry, `FailedPrecondition` when the registry
+    /// has no indexed HEAD yet, `InvalidArgument` for a malformed `page_token`,
+    /// and `Internal` on database or surface-read failure.
+    async fn git_log(
+        &self,
+        ctx: Context,
+        req: OwnedView<GitLogRequestView<'static>>,
+    ) -> Result<(GitLogResponse, Context), ConnectError> {
+        let registry = self.registry_or_not_found(req.slug)?;
+        self.require_read(&ctx, &registry)?;
+        let head = self.head_commit(&registry)?;
+        let fetch = crate::gitwrite::fetcher_for_registry(&self.db, &registry).map_err(internal)?;
+        let log = crate::gitwrite::commit_log(fetch.as_ref(), head, GIT_LOG_LIMIT)
+            .await
+            .map_err(internal)?;
+        let commits: Vec<GitCommit> = log
+            .into_iter()
+            .map(|c| GitCommit {
+                oid: c.oid,
+                parents: c.parents,
+                message: c.message,
+                author: c.author,
+                when: c.when,
+                change_id: c.change_id.unwrap_or_default(),
+                ..Default::default()
+            })
+            .collect();
+        let (commits, next_page_token) = paginate(commits, req.page_size, req.page_token)?;
+        Ok((
+            GitLogResponse {
+                commits,
+                next_page_token,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    /// `GitDiff` — a textual diff of committed config files between commits.
+    ///
+    /// Diffs `registry.toml` and `keys.toml` between `from_oid` and `to_oid`
+    /// (an empty `to_oid` defaults to the current HEAD; an empty `from_oid`
+    /// renders the whole `to` tree as additions). Requires
+    /// [`Permission::Read`] on the registry scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` for an unknown slug, `PermissionDenied` when the
+    /// caller cannot read the registry, `InvalidArgument` for a malformed oid,
+    /// `FailedPrecondition` when no HEAD is available to default `to_oid`, and
+    /// `Internal` on database or surface-read failure.
+    async fn git_diff(
+        &self,
+        ctx: Context,
+        req: OwnedView<GitDiffRequestView<'static>>,
+    ) -> Result<(GitDiffResponse, Context), ConnectError> {
+        let registry = self.registry_or_not_found(req.slug)?;
+        self.require_read(&ctx, &registry)?;
+        let from = if req.from_oid.is_empty() {
+            None
+        } else {
+            Some(
+                crate::surface::object::Oid::from_hex(req.from_oid)
+                    .map_err(|e| invalid(format!("{e:#}")))?,
+            )
+        };
+        let to = if req.to_oid.is_empty() {
+            self.head_commit(&registry)?
+        } else {
+            crate::surface::object::Oid::from_hex(req.to_oid)
+                .map_err(|e| invalid(format!("{e:#}")))?
+        };
+        let fetch = crate::gitwrite::fetcher_for_registry(&self.db, &registry).map_err(internal)?;
+        let diff = crate::gitwrite::diff_config_files(fetch.as_ref(), from, to)
+            .await
+            .map_err(internal)?;
+        Ok((
+            GitDiffResponse {
+                diff,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    /// `ListChangeRequests` — the registry's draft git-backed change requests.
+    ///
+    /// Surfaces every change-set the hub recorded as a git-backed change
+    /// request (one with a draft ref and commit), with each edited file's
+    /// unified diff (computed from the recorded old/new file contents) and the
+    /// `apr change merge` command a maintainer runs to promote it. Listing the
+    /// change requests is an admin+ surface: the caller must hold
+    /// [`Permission::AuditRead`] on the registry scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT, `NotFound`
+    /// for an unknown slug, `PermissionDenied` when the caller lacks
+    /// `audit.read`, and `Internal` on database failure.
+    async fn list_change_requests(
+        &self,
+        ctx: Context,
+        req: OwnedView<ListChangeRequestsRequestView<'static>>,
+    ) -> Result<(ListChangeRequestsResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        let registry = self.registry_or_not_found(req.slug)?;
+        let scope = Scope::parse(&registry.slug);
+        self.require_permission(&claims, Permission::AuditRead, &scope)?;
+
+        let upload_url = format!(
+            "{}/{}",
+            self.external_url.trim_end_matches('/'),
+            registry.slug
+        );
+        let change_requests = self
+            .db
+            .list_changesets(&registry.slug)
+            .map_err(internal)?
+            .into_iter()
+            .filter(|cs| cs.git_ref.is_some())
+            .map(|cs| {
+                let file_diffs = self
+                    .db
+                    .list_revisions(&cs.change_id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|r| r.object_type == "registry_file")
+                    .map(|r| FileDiff {
+                        diff: crate::gitwrite::unified_diff(
+                            &r.object_id,
+                            r.old_json.as_deref().unwrap_or_default(),
+                            r.new_json.as_deref().unwrap_or_default(),
+                        ),
+                        path: r.object_id,
+                        ..Default::default()
+                    })
+                    .collect();
+                ChangeRequest {
+                    merge_command: crate::gitwrite::merge_command(
+                        &upload_url,
+                        &crate::config::ChangeId(cs.change_id.clone()),
+                    ),
+                    change_id: cs.change_id,
+                    git_ref: cs.git_ref.unwrap_or_default(),
+                    git_commit: cs.git_commit.unwrap_or_default(),
+                    status: cs.status,
+                    summary: cs.summary.unwrap_or_default(),
+                    actor_label: cs.actor_label,
+                    created_at: cs.created_at,
+                    file_diffs,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        Ok((
+            ListChangeRequestsResponse {
+                change_requests,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+}
+
+/// Maximum commits returned by one `GitLog` walk.
+const GIT_LOG_LIMIT: usize = 1000;
 
 /// Current Unix time in seconds (saturating at 0 before the epoch).
 fn unix_now() -> i64 {

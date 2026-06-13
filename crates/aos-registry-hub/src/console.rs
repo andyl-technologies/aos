@@ -88,6 +88,11 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{slug}/-/settings/tokens/revoke", post(tokens_revoke))
         .route("/{slug}/-/settings/tokens/rotate", post(tokens_rotate))
         .route(
+            "/{slug}/-/settings/config",
+            get(config_edit).post(config_submit),
+        )
+        .route("/{slug}/-/changes", get(changes))
+        .route(
             "/{slug}/-/channels/{name}/console",
             get(channel_console).post(channel_advance),
         )
@@ -844,6 +849,10 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
     match right {
         "settings/tokens" => true,
         "settings/tokens/revoke" | "settings/tokens/rotate" => is_post,
+        // The config-edit page is GET (form) + POST (submit); the change-request
+        // list is GET-only.
+        "settings/config" => true,
+        "changes" => !is_post,
         "keys" | "keys/rotate" | "publishes" => !is_post,
         other => {
             if let Some(name) = other
@@ -869,10 +878,11 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
 /// so a registry whose canonical path has slashes (`acme/infra/prod/cdn`)
 /// never matches them and lands in [`crate::server`]'s catch-all. This
 /// function recognizes the console `/-/` sub-paths there — `settings/tokens`
-/// (and `/revoke`, `/rotate`), `channels/{name}/console`,
-/// `channels/{name}/advance` (the POST-only direct hosted-key advance),
-/// `keys`, `keys/rotate`, `publishes`— for both `GET` and `POST`, resolving the
-/// registry by longest-prefix over the path before the `/-/` marker.
+/// (and `/revoke`, `/rotate`), `settings/config` (GET form + POST submit),
+/// `changes` (GET), `channels/{name}/console`, `channels/{name}/advance` (the
+/// POST-only direct hosted-key advance), `keys`, `keys/rotate`, `publishes`—
+/// for both `GET` and `POST`, resolving the registry by longest-prefix over the
+/// path before the `/-/` marker.
 ///
 /// Returns `None` when the path is not a console page (so the caller falls
 /// back to the browse-page resolver), `Some(response)` otherwise.
@@ -936,6 +946,18 @@ pub(crate) async fn dispatch_nested(
             field(&fields, "token_id"),
             true,
         ),
+        ("settings/config", false) => config_edit_view(state, &session, &registry, None).await,
+        ("settings/config", true) => {
+            config_submit_action(
+                state,
+                &session,
+                &registry,
+                field(&fields, "csrf"),
+                field(&fields, "contents"),
+            )
+            .await
+        }
+        ("changes", false) => changes_view(state, &session, &registry),
         ("keys", false) => keys_view(state, &session, &registry, headers),
         ("keys/rotate", false) => keys_rotate_view(state, &session, &registry, headers),
         ("publishes", false) => publishes_view(state, &session, &registry, headers),
@@ -1915,6 +1937,263 @@ fn publishes_view(
         Ok(html) => Html(html).into_response(),
         Err(err) => internal(err),
     }
+}
+
+// -- git-backed config change requests --------------------------------------
+
+/// `GET /{slug}/-/settings/config` — the git-backed config-edit page.
+///
+/// Renders the current committed `registry.toml` in a textarea for a
+/// `registry.configure`-bearing admin to edit and submit as a change request.
+async fn config_edit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    config_edit_view(&state, &session, &registry, None).await
+}
+
+/// Render the config-edit page, optionally with a just-created change-request
+/// `result` (its change id and merge command).
+async fn config_edit_view(
+    state: &AppState,
+    session: &Session,
+    registry: &RegistryRecord,
+    result: Option<(&str, &str)>,
+) -> Response {
+    let scope = Scope::parse(&registry.slug);
+    let can_edit = session.allows(&state.db, Permission::RegistryConfigure, &scope);
+    let current = match current_registry_toml(state, registry).await {
+        Ok(toml) => toml,
+        Err(err) => return internal(err),
+    };
+    Html(console::config_edit_page(
+        &session.email,
+        registry,
+        &session.csrf(),
+        &current,
+        can_edit,
+        result,
+        Instant::now(),
+    ))
+    .into_response()
+}
+
+/// Load a registry's current committed `registry.toml`, or an empty string
+/// when the registry has not been indexed yet (no HEAD to read from).
+async fn current_registry_toml(
+    state: &AppState,
+    registry: &RegistryRecord,
+) -> anyhow::Result<String> {
+    let Some(head_hex) = state
+        .db
+        .index_status(registry.id)?
+        .and_then(|s| s.last_indexed_commit)
+    else {
+        return Ok(String::new());
+    };
+    let head = crate::surface::object::Oid::from_hex(&head_hex)?;
+    let fetch = crate::gitwrite::fetcher_for_registry(&state.db, registry)?;
+    Ok(
+        crate::gitwrite::load_committed_file(fetch.as_ref(), head, "registry.toml")
+            .await?
+            .unwrap_or_default(),
+    )
+}
+
+/// The config-edit submission form body.
+#[derive(serde::Deserialize)]
+struct ConfigForm {
+    #[serde(default)]
+    csrf: String,
+    contents: String,
+}
+
+/// `POST /{slug}/-/settings/config` — submit a git-backed config change request.
+///
+/// CSRF-checked, `registry.configure`-gated: writes the draft-signed change
+/// request to `refs/hub/changes/<id>` via
+/// [`crate::gitwrite::propose_config_change`] and re-renders the page with the
+/// new change id and the `apr change merge` command to run.
+async fn config_submit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<ConfigForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    config_submit_action(&state, &session, &registry, &form.csrf, &form.contents).await
+}
+
+/// Process a config-change submission for a resolved registry.
+///
+/// CSRF-checked then `registry.configure`-gated; proposes the change request
+/// and re-renders the config-edit page with the new change id and merge
+/// command, or a `400` on a proposal error.
+async fn config_submit_action(
+    state: &AppState,
+    session: &Session,
+    registry: &RegistryRecord,
+    csrf: &str,
+    contents: &str,
+) -> Response {
+    if let Err(resp) = check_csrf(session, csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&registry.slug);
+    if !session.allows(&state.db, Permission::RegistryConfigure, &scope) {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let proposed = crate::gitwrite::propose_config_change(
+        &state.db,
+        state.sealer.as_ref(),
+        registry,
+        "registry.toml",
+        contents,
+        "user",
+        Some(session.auth.user_id),
+        &session.email,
+        unix_now(),
+    )
+    .await;
+    match proposed {
+        Ok(proposed) => {
+            let merge_url = format!(
+                "{}/{}",
+                state.external_url.trim_end_matches('/'),
+                registry.slug
+            );
+            let merge_command = crate::gitwrite::merge_command(&merge_url, &proposed.change_id);
+            config_edit_view(
+                state,
+                session,
+                registry,
+                Some((proposed.change_id.as_str(), &merge_command)),
+            )
+            .await
+        }
+        Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
+    }
+}
+
+/// `GET /{slug}/-/changes` — the git-backed change-request list page.
+///
+/// Lists the registry's git-backed change requests with their file diffs and
+/// promotion commands. Gated to `audit.read` (admin+), matching the access
+/// matrix for the configuration/change surface.
+async fn changes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    changes_view(&state, &session, &registry)
+}
+
+/// Render the change-request list page for a resolved registry.
+///
+/// Gated to `audit.read` (admin+). Each draft renders its file diffs (computed
+/// from the recorded old/new file contents) and the promotion command.
+fn changes_view(state: &AppState, session: &Session, registry: &RegistryRecord) -> Response {
+    let scope = Scope::parse(&registry.slug);
+    if !session.allows(&state.db, Permission::AuditRead, &scope) {
+        return (StatusCode::FORBIDDEN, "audit.read required").into_response();
+    }
+
+    let result = (|| {
+        let merge_url = format!(
+            "{}/{}",
+            state.external_url.trim_end_matches('/'),
+            registry.slug
+        );
+        let requests: Vec<console::ChangeRequestView> = state
+            .db
+            .list_changesets(&registry.slug)?
+            .into_iter()
+            .filter(|cs| cs.git_ref.is_some())
+            .map(|cs| {
+                let file_diffs = state
+                    .db
+                    .list_revisions(&cs.change_id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|r| r.object_type == "registry_file")
+                    .map(|r| {
+                        (
+                            r.object_id.clone(),
+                            crate::gitwrite::unified_diff(
+                                &r.object_id,
+                                r.old_json.as_deref().unwrap_or_default(),
+                                r.new_json.as_deref().unwrap_or_default(),
+                            ),
+                        )
+                    })
+                    .collect();
+                let merge_command = crate::gitwrite::merge_command(
+                    &merge_url,
+                    &config::ChangeId(cs.change_id.clone()),
+                );
+                console::ChangeRequestView {
+                    change_id: cs.change_id,
+                    status: cs.status,
+                    summary: cs.summary.unwrap_or_default(),
+                    actor_label: cs.actor_label,
+                    git_commit: cs.git_commit.unwrap_or_default(),
+                    file_diffs,
+                    merge_command,
+                }
+            })
+            .collect();
+        Ok::<_, anyhow::Error>(console::changes_page(
+            &session.email,
+            registry,
+            &requests,
+            Instant::now(),
+        ))
+    })();
+    match result {
+        Ok(html) => Html(html).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// Current Unix time in seconds.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Percent-encode a string for a query component.

@@ -56,6 +56,9 @@
 //! - [`signing`] — hub-side hosted-key signing: signs release tags and
 //!   channel partitions for opt-in registries, writing surface objects the
 //!   indexer's own verifier accepts.
+//! - [`gitwrite`] — git-backed configuration change requests: writes a
+//!   draft-signed commit editing a committed file to
+//!   `refs/hub/changes/<change_id>` for a maintainer to review and promote.
 //! - [`rpc`] — the `aos.registry.v1` ConnectRPC read-path services plus the
 //!   tenancy and webhook write-path services.
 //! - [`webhook`] — outbound webhooks: the [`webhook::WebhookEvent`] taxonomy,
@@ -73,6 +76,7 @@ pub mod domain;
 pub mod export;
 pub mod facade;
 pub mod fetch;
+pub mod gitwrite;
 pub mod indexer;
 pub mod probe;
 pub mod ratelimit;
