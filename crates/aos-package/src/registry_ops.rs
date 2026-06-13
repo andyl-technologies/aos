@@ -14,9 +14,11 @@
 //!   [`local_registries`] and [`authoring_clone_precious`] support
 //!   `apr list`/`apr remove` over clones that have no consumer config.
 //! - **Publishing**: [`publish`] introspects a Nix store path and records it
-//!   in package TOML plus closure files; [`unpublish`] removes packages,
-//!   versions, or platform entries. Both commit the change (optionally
-//!   SSH-signed) unless `--no-commit` is given.
+//!   in package TOML, closure files, and `ca/` trust-map entries for every
+//!   closure member; [`unpublish`] removes packages, versions, or platform
+//!   entries. Both commit the change (optionally SSH-signed) unless
+//!   `--no-commit` is given. [`run_ca`] maintains the trust map directly
+//!   (bless/revoke/verify/backfill).
 //! - **Query and integrity**: [`show`], [`packages`], [`verify`] (closure
 //!   consistency), and [`validate`] (cache reachability over HTTP).
 //! - **Git workflow**: [`status`], [`log`], [`diff`], [`run_branch`],
@@ -58,6 +60,7 @@ use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
 use crate::gitcmd;
+use crate::registry::ca::{self, CaEntry, CaMap, UpsertOutcome};
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::nixcache;
@@ -77,8 +80,8 @@ use crate::types::{
     validate_registry_name,
 };
 use crate::{
-    BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
-    TrustCommand, UploadConfigField,
+    BranchCommand, CaCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand,
+    OriginCommand, TrustCommand, UploadConfigField,
 };
 
 // ---------------------------------------------------------------------------
@@ -688,6 +691,194 @@ fn extract_hash(store_path: &str) -> &str {
     basename.split('-').next().unwrap_or(basename)
 }
 
+// ---------------------------------------------------------------------------
+// ca/ trust-map writing (RFC-0005)
+// ---------------------------------------------------------------------------
+
+/// Per-member NAR metadata for a runtime closure.
+struct ClosureMemberNar {
+    path: String,
+    nar_hash: String,
+    nar_size: u64,
+}
+
+/// Introspect every member of a store path's runtime closure in one
+/// `nix path-info --json --recursive` invocation.
+fn introspect_closure_nars(store_path: &str) -> Result<Vec<ClosureMemberNar>> {
+    let output = nix_command("nix")
+        .args(["path-info", "--json", "--recursive", store_path])
+        .output()
+        .with_context(|| format!("running nix path-info --recursive on {store_path}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "nix path-info --recursive failed for {store_path}: {}",
+            stderr.trim()
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(&stdout)
+        .with_context(|| format!("parsing nix path-info JSON for {store_path} closure"))?;
+
+    // nix path-info --json returns an array of entries or an object keyed
+    // by store path, depending on Nix version.
+    let mut members = Vec::new();
+    let mut push = |path_hint: Option<&str>, info: &Value| -> Result<()> {
+        let path = info
+            .get("path")
+            .and_then(Value::as_str)
+            .or(path_hint)
+            .ok_or_else(|| anyhow::anyhow!("nix path-info entry without a path"))?;
+        let nar_hash = info
+            .get("narHash")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("nix path-info missing narHash for {path}"))?;
+        let nar_size = info
+            .get("narSize")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| anyhow::anyhow!("nix path-info missing narSize for {path}"))?;
+        members.push(ClosureMemberNar {
+            path: path.to_string(),
+            nar_hash: nar_hash.to_string(),
+            nar_size,
+        });
+        Ok(())
+    };
+
+    match &json {
+        Value::Array(entries) => {
+            for info in entries {
+                push(None, info)?;
+            }
+        }
+        Value::Object(map) => {
+            for (path, info) in map {
+                push(Some(path.as_str()), info)?;
+            }
+        }
+        other => bail!("unexpected nix path-info JSON shape: {other}"),
+    }
+
+    if members.is_empty() {
+        bail!("nix path-info --recursive returned no closure members for {store_path}");
+    }
+    Ok(members)
+}
+
+/// Counts of trust-map mutations performed by [`write_ca_entries`].
+#[derive(Debug, Default, Clone, Copy)]
+struct CaWriteReport {
+    /// Hashes that gained their first blessed entry.
+    inserted: usize,
+    /// Hashes that gained an additional blessed entry (`bless` was set).
+    blessed: usize,
+    /// Hashes whose entry was already present, unchanged.
+    unchanged: usize,
+}
+
+impl CaWriteReport {
+    fn merge(&mut self, other: CaWriteReport) {
+        self.inserted += other.inserted;
+        self.blessed += other.blessed;
+        self.unchanged += other.unchanged;
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "{} inserted, {} blessed, {} unchanged",
+            self.inserted, self.blessed, self.unchanged
+        )
+    }
+}
+
+/// Write `ca/` trust-map entries for every member of a store path's runtime
+/// closure (RFC-0005).
+///
+/// Each member's uncompressed NAR hash and size come from the local Nix
+/// store (`nix path-info --recursive`). A member already mapped to
+/// *different* blessed content fails the whole write unless `bless` is set
+/// — an unexpected mismatch at publish time is exactly the divergence the
+/// trust map exists to surface, so it must never be merged silently.
+fn write_ca_entries(dir: &Path, store_path: &str, bless: bool) -> Result<CaWriteReport> {
+    let members = introspect_closure_nars(store_path)?;
+    let mut report = CaWriteReport::default();
+
+    for member in &members {
+        let entry = CaEntry::from_nar_hash(&member.nar_hash, member.nar_size)
+            .with_context(|| format!("building ca entry for {}", member.path))?;
+        let ia_hash = extract_hash(&member.path);
+        match ca::upsert_entry(dir, ia_hash, entry.clone(), bless)? {
+            UpsertOutcome::Inserted => report.inserted += 1,
+            UpsertOutcome::AlreadyPresent => report.unchanged += 1,
+            UpsertOutcome::Blessed => report.blessed += 1,
+            UpsertOutcome::Conflict(existing) => {
+                let existing = existing
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!(
+                    "{} is already mapped to different blessed content\n  registry: {existing}\n  local:    {entry}\n\
+                     A publish-time mismatch is exactly what the ca/ trust map exists to catch:\n\
+                     either the local rebuild legitimately diverged (re-run with --bless to\n\
+                     append this realisation) or one of the two builds cannot be trusted.",
+                    member.path,
+                );
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+/// Collect every unique `store_path` from the registry's package TOML
+/// files (runtime closure roots only — sources and images are covered by
+/// their own TOML hashes, not the trust map).
+fn collect_package_store_paths(dir: &Path) -> Result<Vec<String>> {
+    let packages_dir = dir.join("packages");
+    let mut paths = std::collections::BTreeSet::new();
+    if !packages_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    for letter_entry in std::fs::read_dir(&packages_dir)
+        .with_context(|| format!("reading {}", packages_dir.display()))?
+    {
+        let letter_path = letter_entry?.path();
+        if !letter_path.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&letter_path)
+            .with_context(|| format!("reading {}", letter_path.display()))?
+        {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let value: toml::Value =
+                toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+            let Some(versions) = value.get("versions").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for version in versions {
+                let Some(platforms) = version.get("platforms").and_then(|v| v.as_table()) else {
+                    continue;
+                };
+                for platform in platforms.values() {
+                    if let Some(sp) = platform.get("store_path").and_then(|v| v.as_str()) {
+                        paths.insert(sp.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(paths.into_iter().collect())
+}
+
 /// Whether the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` environment variables fully
 /// specify a commit identity. They take precedence over any git config and
 /// are how hermetic environments (VM tests, build sandboxes) provide one.
@@ -1131,6 +1322,7 @@ pub async fn publish(
     source_drv: Option<&str>,
     image_paths: &[String],
     image_formats: &[String],
+    bless: bool,
     no_commit: bool,
     message: Option<&str>,
     key: Option<&str>,
@@ -1220,11 +1412,13 @@ pub async fn publish(
 
     std::fs::write(&toml_path, &new_content)?;
 
-    printer.step(3, 4, "Computing closure...");
+    printer.step(3, 4, "Computing closure and trust-map entries...");
     write_closure_files(&dir, &info.path)
         .with_context(|| format!("writing closure files for {}", info.path))?;
     let closure_hash = extract_hash(&info.path).to_string();
     let closure_path = dir.join("closures").join(&closure_hash);
+    let ca_report = write_ca_entries(&dir, &info.path, bless)
+        .with_context(|| format!("writing ca/ trust-map entries for {}", info.path))?;
 
     printer.step(4, 4, "Done.");
     printer.kv("Package", pkg_name);
@@ -1234,6 +1428,7 @@ pub async fn publish(
     printer.kv("NAR hash", &info.nar_hash);
     printer.kv("NAR size", &format_size(info.nar_size));
     printer.kv("Closure size", &format_size(info.closure_size));
+    printer.kv("CA entries", &ca_report.summary());
     if let Some(source_info) = &source_info {
         printer.kv("Source drv", &source_info.path);
     }
@@ -1255,6 +1450,7 @@ pub async fn publish(
         let staged_paths = [
             toml_path.clone(),
             closure_path.clone(),
+            dir.join(crate::registry::ca::CA_DIR),
             dir.join(".gitattributes"),
         ];
         commit_registry_paths(
@@ -1301,6 +1497,11 @@ pub async fn publish(
             "nar_hash": info.nar_hash,
             "nar_size": info.nar_size,
             "closure_size": info.closure_size,
+            "ca_entries": {
+                "inserted": ca_report.inserted,
+                "blessed": ca_report.blessed,
+                "unchanged": ca_report.unchanged,
+            },
             "references": info.references,
             "source": source,
             "sysroot": sysroot,
@@ -1492,14 +1693,10 @@ fn package_platform_table(
 ) -> toml::Value {
     let mut table = toml::map::Map::new();
     table.insert("store_path".into(), toml::Value::String(info.path.clone()));
-    table.insert(
-        "nar_hash".into(),
-        toml::Value::String(info.nar_hash.clone()),
-    );
-    table.insert(
-        "nar_size".into(),
-        toml::Value::Integer(info.nar_size as i64),
-    );
+    // No nar_hash/nar_size here: the output's content binding lives in the
+    // ca/ trust map (RFC-0005), the single authority for blessed bytes.
+    // Sources and images keep their hashes below — they are outside the
+    // runtime closure the map covers.
     table.insert(
         "closure_size".into(),
         toml::Value::Integer(info.closure_size as i64),
@@ -2155,13 +2352,41 @@ pub async fn verify(
                         entry.package_name, entry.store_path
                     )
                 })?;
+                write_ca_entries(&dir, &entry.store_path, false).with_context(|| {
+                    format!(
+                        "regenerating ca/ trust-map entries for {} ({})",
+                        entry.package_name, entry.store_path
+                    )
+                })?;
                 repaired += 1;
             }
         }
         if repaired > 0 {
-            printer.success(&format!("Regenerated {repaired} closure file(s)."));
+            printer.success(&format!(
+                "Regenerated {repaired} closure file(s) and their trust-map entries."
+            ));
         }
     }
+
+    // The ca/ trust map, for coverage checks below (RFC-0005). A malformed
+    // map is an error; an absent one downgrades to a warning (legacy
+    // registry — consumers fall back to unauthenticated narinfo hashes).
+    let ca_map = match CaMap::load(&dir) {
+        Ok(map) => {
+            if !map.is_present() {
+                printer.warning(
+                    "registry publishes no ca/ trust map; consumer NAR verification \
+                     falls back to unauthenticated narinfo hashes",
+                );
+            }
+            map
+        }
+        Err(e) => {
+            printer.error(&format!("ca/ trust map failed to load: {e:#}"));
+            errors += 1;
+            CaMap::default()
+        }
+    };
 
     // Verify closure files.
     let mut closure_checked = 0u32;
@@ -2213,6 +2438,21 @@ pub async fn verify(
                     printer.warning(&format!(
                         "{pkg_name}: closure {store_hash}: member {member} references \
                          {dep} which is not in the closure"
+                    ));
+                    errors += 1;
+                }
+            }
+        }
+
+        // Trust-map totality (RFC-0005): every closure member must carry a
+        // blessed entry. A partial map is indistinguishable from a
+        // stripping attack, so any gap is an error.
+        if ca_map.is_present() {
+            for member in &closure.members {
+                if ca_map.get(member).is_none() {
+                    printer.warning(&format!(
+                        "{pkg_name}: closure member {member} has no ca/ trust-map entry \
+                         (run `apr ca backfill` or `apr verify --fix`)"
                     ));
                     errors += 1;
                 }
@@ -2699,6 +2939,10 @@ fn collect_cache_validation_entries(
         return Ok(entries);
     }
 
+    // Newer registries record output NAR hashes in the ca/ trust map
+    // rather than the package TOML; load it once for the fallback.
+    let ca_map = CaMap::load(dir).unwrap_or_default();
+
     for letter_entry in std::fs::read_dir(&packages_dir)
         .with_context(|| format!("reading {}", packages_dir.display()))?
     {
@@ -2717,6 +2961,7 @@ fn collect_cache_validation_entries(
                 &path,
                 package_filter,
                 platform_filter,
+                &ca_map,
                 &mut entries,
             )?;
         }
@@ -2736,6 +2981,7 @@ fn collect_cache_validation_entries_from_package(
     path: &Path,
     package_filter: Option<&str>,
     platform_filter: Option<&str>,
+    ca_map: &CaMap,
     entries: &mut Vec<CacheValidationEntry>,
 ) -> Result<()> {
     let content = std::fs::read_to_string(path)
@@ -2765,7 +3011,18 @@ fn collect_cache_validation_entries_from_package(
             let Some(store_path) = entry.get("store_path").and_then(|v| v.as_str()) else {
                 continue;
             };
-            let Some(nar_hash) = entry.get("nar_hash").and_then(|v| v.as_str()) else {
+            // Legacy TOML nar_hash, or the ca/ trust map for newer
+            // registries (first usable blessed entry).
+            let nar_hash = entry
+                .get("nar_hash")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or_else(|| {
+                    ca_map
+                        .get(extract_hash(store_path))
+                        .and_then(|blessed| blessed.iter().find_map(CaEntry::nar_hash))
+                });
+            let Some(nar_hash) = nar_hash else {
                 continue;
             };
             entries.push(CacheValidationEntry {
@@ -2773,7 +3030,7 @@ fn collect_cache_validation_entries_from_package(
                 platform: platform.to_string(),
                 store_path: store_path.to_string(),
                 store_hash: extract_hash(store_path).to_string(),
-                nar_hash: nar_hash.to_string(),
+                nar_hash,
             });
             if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
                 for image in images {
@@ -2980,7 +3237,11 @@ async fn validate_cache_entry(
             ));
             continue;
         }
-        if narinfo.nar_hash != entry.nar_hash {
+        // Registry hashes may be SRI (legacy TOML) or nixbase32 (ca/ trust
+        // map); narinfo hashes vary by emitter. Compare normalized.
+        if aos_core::nar::cache::normalize_sha256_nix32(&narinfo.nar_hash)
+            != aos_core::nar::cache::normalize_sha256_nix32(&entry.nar_hash)
+        {
             details.push(format!(
                 "{narinfo_url}: narinfo NarHash {} did not match registry NarHash {}",
                 narinfo.nar_hash, entry.nar_hash
@@ -3397,6 +3658,358 @@ pub async fn run_channel(
 ///
 /// Fails when cache generation, an upload, the pointer commit, or the
 /// object-store refresh fails.
+/// `apr ca` — maintains the registry's `ca/` trust map (RFC-0005).
+///
+/// The map is append-mostly: `bless` adds a realisation computed from the
+/// local Nix store, `revoke` removes one (a security event with the same
+/// review weight as a key retirement), `verify` checks map health and
+/// coverage, and `backfill` maps every published closure in one pass so an
+/// existing registry becomes fully covered.
+///
+/// # Errors
+///
+/// Fails when the registry cannot be resolved, the referenced store paths
+/// are not valid in the local Nix store, a bucket file cannot be read or
+/// written, a blessing conflicts without `--bless`, verification finds
+/// errors, or the commit fails.
+pub async fn run_ca(config: &ApmConfig, command: &CaCommand, printer: &Printer) -> Result<()> {
+    match command {
+        CaCommand::Bless {
+            store_path,
+            recursive,
+            no_commit,
+            message,
+            key,
+            key_id,
+            registry,
+        } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            ensure_writable_registry_clone(&registry_name, &dir)?;
+            let signing_key =
+                resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
+
+            let report = if *recursive {
+                write_ca_entries(&dir, store_path, true)?
+            } else {
+                let info = introspect_store_path(store_path)?;
+                let entry = CaEntry::from_nar_hash(&info.nar_hash, info.nar_size)
+                    .with_context(|| format!("building ca entry for {store_path}"))?;
+                let mut report = CaWriteReport::default();
+                match ca::upsert_entry(&dir, extract_hash(&info.path), entry, true)? {
+                    UpsertOutcome::Inserted => report.inserted += 1,
+                    UpsertOutcome::AlreadyPresent => report.unchanged += 1,
+                    UpsertOutcome::Blessed => report.blessed += 1,
+                    UpsertOutcome::Conflict(_) => unreachable!("bless=true never conflicts"),
+                }
+                report
+            };
+
+            printer.kv("CA entries", &report.summary());
+            let changed = report.inserted + report.blessed > 0;
+            let mut committed = false;
+            if changed && !*no_commit {
+                let default_msg = format!("ca: bless {store_path}");
+                let msg = message.as_deref().unwrap_or(&default_msg);
+                commit_registry_paths(
+                    &dir,
+                    msg,
+                    &[dir.join(ca::CA_DIR)],
+                    signing_key.as_ref().map(|k| k.path()),
+                )?;
+                refresh_registry_object_store(&dir)
+                    .context("refreshing dumb-HTTP object store after ca bless")?;
+                committed = true;
+                printer.success(&format!("Committed: {msg}"));
+            } else if !changed {
+                printer.info("Trust map already covers this content; nothing to commit.");
+            }
+
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "ca_bless",
+                    "registry": registry_name,
+                    "store_path": store_path,
+                    "recursive": recursive,
+                    "inserted": report.inserted,
+                    "blessed": report.blessed,
+                    "unchanged": report.unchanged,
+                    "committed": committed,
+                }));
+            }
+            Ok(())
+        }
+
+        CaCommand::Revoke {
+            store_path,
+            entry,
+            no_commit,
+            message,
+            key,
+            key_id,
+            registry,
+        } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            ensure_writable_registry_clone(&registry_name, &dir)?;
+            let signing_key =
+                resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
+
+            let ia_hash = extract_hash(store_path);
+            let target = entry
+                .as_deref()
+                .map(|token| {
+                    let parsed = CaEntry::parse(token)?;
+                    if matches!(parsed, CaEntry::Unknown(_)) && !token.contains(':') {
+                        bail!("'{token}' does not look like a ca entry token");
+                    }
+                    Ok(parsed)
+                })
+                .transpose()?;
+
+            if !ca::remove_entry(&dir, ia_hash, target.as_ref())? {
+                bail!("no matching ca/ entry for {ia_hash}; nothing to revoke");
+            }
+
+            printer.success(&format!(
+                "Revoked {} for {ia_hash}.",
+                entry.as_deref().unwrap_or("all blessed entries"),
+            ));
+            let mut committed = false;
+            if !*no_commit {
+                let default_msg = format!("ca: revoke {ia_hash}");
+                let msg = message.as_deref().unwrap_or(&default_msg);
+                commit_registry_paths(
+                    &dir,
+                    msg,
+                    &[dir.join(ca::CA_DIR)],
+                    signing_key.as_ref().map(|k| k.path()),
+                )?;
+                refresh_registry_object_store(&dir)
+                    .context("refreshing dumb-HTTP object store after ca revoke")?;
+                committed = true;
+                printer.success(&format!("Committed: {msg}"));
+            }
+
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "ca_revoke",
+                    "registry": registry_name,
+                    "ia_hash": ia_hash,
+                    "entry": entry,
+                    "committed": committed,
+                }));
+            }
+            Ok(())
+        }
+
+        CaCommand::Verify { deep, registry } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            ca_verify(&dir, &registry_name, *deep, printer)
+        }
+
+        CaCommand::Backfill {
+            bless,
+            no_commit,
+            message,
+            key,
+            key_id,
+            registry,
+        } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            ensure_writable_registry_clone(&registry_name, &dir)?;
+            let signing_key =
+                resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
+
+            let roots = collect_package_store_paths(&dir)?;
+            if roots.is_empty() {
+                bail!("registry has no published store paths to backfill");
+            }
+
+            let mut report = CaWriteReport::default();
+            for root in &roots {
+                printer.info(&format!("Mapping closure of {root}"));
+                report.merge(write_ca_entries(&dir, root, *bless).with_context(|| {
+                    format!("writing ca/ trust-map entries for {root}")
+                })?);
+            }
+            printer.kv("Roots", &roots.len().to_string());
+            printer.kv("CA entries", &report.summary());
+
+            let changed = report.inserted + report.blessed > 0;
+            let mut committed = false;
+            if changed && !*no_commit {
+                let default_msg = format!(
+                    "ca: backfill trust map ({} closures, {} entries)",
+                    roots.len(),
+                    report.inserted + report.blessed,
+                );
+                let msg = message.as_deref().unwrap_or(&default_msg);
+                commit_registry_paths(
+                    &dir,
+                    msg,
+                    &[dir.join(ca::CA_DIR)],
+                    signing_key.as_ref().map(|k| k.path()),
+                )?;
+                refresh_registry_object_store(&dir)
+                    .context("refreshing dumb-HTTP object store after ca backfill")?;
+                committed = true;
+                printer.success(&format!("Committed: {msg}"));
+            } else if !changed {
+                printer.info("Trust map already covers every published closure.");
+            }
+
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "ca_backfill",
+                    "registry": registry_name,
+                    "roots": roots.len(),
+                    "inserted": report.inserted,
+                    "blessed": report.blessed,
+                    "unchanged": report.unchanged,
+                    "committed": committed,
+                }));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Resolve a producer signing key only when `--key`/`--key-id` was given
+/// (the `apr publish` convention).
+fn resolve_optional_signing_key(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    key: &Option<String>,
+    key_id: &Option<String>,
+) -> Result<Option<ResolvedSigningKey>> {
+    if key.is_some() || key_id.is_some() {
+        Ok(Some(resolve_producer_signing_key(
+            config,
+            dir,
+            registry_name,
+            key.as_deref(),
+            key_id.as_deref(),
+        )?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// `apr ca verify` — checks trust-map health: bucket parseability, coverage
+/// of every closure member, and (with `deep`) agreement with the local Nix
+/// store's actual NAR hashes.
+fn ca_verify(dir: &Path, registry_name: &str, deep: bool, printer: &Printer) -> Result<()> {
+    let ca_map = CaMap::load(dir).context("loading ca/ trust map")?;
+    if !ca_map.is_present() {
+        bail!(
+            "registry '{registry_name}' publishes no ca/ trust map; \
+             run `apr ca backfill` to create one"
+        );
+    }
+
+    let mut errors = 0u32;
+    let mut members_checked = 0u32;
+
+    // Coverage: every member of every published closure file is mapped.
+    let closures_dir = dir.join("closures");
+    if closures_dir.is_dir() {
+        for entry in std::fs::read_dir(&closures_dir)
+            .with_context(|| format!("reading {}", closures_dir.display()))?
+        {
+            let path = entry?.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if path.is_dir() || name.starts_with('.') {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading closure file {}", path.display()))?;
+            let closure = crate::types::ClosureMeta::parse(name, &content);
+            for member in &closure.members {
+                members_checked += 1;
+                if ca_map.get(member).is_none() {
+                    printer.warning(&format!(
+                        "closure {name}: member {member} has no ca/ trust-map entry"
+                    ));
+                    errors += 1;
+                }
+            }
+        }
+    }
+
+    // Deep: recompute every locally-available closure member's NAR hash and
+    // require membership in its blessed set.
+    let mut deep_checked = 0u32;
+    if deep {
+        for root in collect_package_store_paths(dir)? {
+            let members = match introspect_closure_nars(&root) {
+                Ok(members) => members,
+                Err(err) => {
+                    printer.warning(&format!(
+                        "skipping deep check for {root} (not introspectable locally): {err:#}"
+                    ));
+                    continue;
+                }
+            };
+            for member in members {
+                deep_checked += 1;
+                let ia_hash = extract_hash(&member.path);
+                let Some(blessed) = ca_map.get(ia_hash) else {
+                    // Already reported by the coverage pass when the
+                    // closure file exists; count it here for roots whose
+                    // closure file is missing.
+                    printer.warning(&format!(
+                        "{}: no ca/ trust-map entry for {ia_hash}",
+                        member.path
+                    ));
+                    errors += 1;
+                    continue;
+                };
+                if !blessed
+                    .iter()
+                    .any(|entry| entry.matches_nar(&member.nar_hash, member.nar_size))
+                {
+                    printer.error(&format!(
+                        "{}: local store content is NOT blessed (local {} / {} bytes)",
+                        member.path, member.nar_hash, member.nar_size,
+                    ));
+                    errors += 1;
+                }
+            }
+        }
+    }
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "ca_verify",
+            "registry": registry_name,
+            "mapped_hashes": ca_map.len(),
+            "members_checked": members_checked,
+            "deep_checked": deep_checked,
+            "errors": errors,
+        }));
+    }
+
+    if errors > 0 {
+        bail!("ca/ trust-map verification failed with {errors} error(s)");
+    }
+    printer.success(&format!(
+        "Trust map OK: {} mapped hash(es), {members_checked} closure member(s) covered{}.",
+        ca_map.len(),
+        if deep {
+            format!(", {deep_checked} deep-checked")
+        } else {
+            String::new()
+        },
+    ));
+    Ok(())
+}
+
 pub async fn run_cache(
     config: &ApmConfig,
     command: &CacheCommand,
@@ -5624,6 +6237,7 @@ pub async fn release(
     source_drv: Option<&str>,
     image_paths: &[String],
     image_formats: &[String],
+    bless: bool,
     message: Option<&str>,
     channel: Option<&str>,
     init_channel: bool,
@@ -5674,6 +6288,7 @@ pub async fn release(
                 source_drv,
                 image_paths,
                 image_formats,
+                bless,
                 false,
                 message,
                 Some(signing_key.path()),
@@ -7446,7 +8061,10 @@ mod tests {
         assert!(content.contains("name = \"curl\""));
         assert!(content.contains("version = \"8.5.0\""));
         assert!(content.contains("x86_64-linux"));
-        assert!(content.contains("sha256:deadbeef"));
+        // Output content bindings live in the ca/ trust map, not the TOML
+        // (RFC-0005).
+        assert!(!content.contains("nar_hash = \"sha256:deadbeef\""));
+        assert!(!content.contains("nar_size"));
         assert!(content.contains("source_drv = \"\""));
         assert!(content.contains("source_nar_hash = \"\""));
     }
@@ -7533,7 +8151,11 @@ references = []
         // Should contain both platforms.
         assert!(content.contains("x86_64-linux"));
         assert!(content.contains("aarch64-linux"));
-        assert!(content.contains("sha256:new"));
+        assert!(content.contains("/nix/store/new-curl-8.5.0"));
+        // The pre-existing platform's legacy fields survive untouched; the
+        // new platform entry carries no nar_hash (RFC-0005).
+        assert!(content.contains("sha256:old"));
+        assert!(!content.contains("sha256:new"));
     }
 
     #[test]
