@@ -5,9 +5,11 @@
 //! client-side framework — in the same "release-engineering paper" language
 //! as the consumer browse tier ([`super::pages`]). The pages are:
 //!
-//! - **Auth**: login (email-first magic link), the "check your email"
-//!   confirmation, the account profile (sessions, tokens, passkey
-//!   placeholder), and the RFC 8628 device-approval page at `/activate`.
+//! - **Auth**: login (email-first magic link, plus a passkey sign-in button
+//!   and its nonced inline script), the "check your email" confirmation, the
+//!   account profile (sessions, tokens, passkeys), the passkey management page
+//!   (`/account/passkeys`), and the RFC 8628 device-approval page at
+//!   `/activate`.
 //! - **Org/project**: the user's org list, a per-org dashboard (projects,
 //!   registries, members, storage bindings, tokens), and the org audit feed.
 //! - **Registry management**: per-registry token management, the channel
@@ -28,7 +30,7 @@ use std::time::Instant;
 
 use crate::db::{
     AuditRow, ChangesetRow, ChannelSummary, HostedKeyRecord, IndexStatus, OrgRecord, ProjectRecord,
-    RegistryRecord, ReleaseRow, StorageBindingRecord,
+    RegistryRecord, ReleaseRow, StorageBindingRecord, WebauthnCredentialRecord,
 };
 use crate::domain::{iam, Permission, Role, Scope};
 use crate::ui::render::{
@@ -52,13 +54,20 @@ fn indicator(email: &str) -> SessionIndicator {
     SessionIndicator::signed_in(email)
 }
 
-/// The login page: a single email field that issues a magic link.
+/// The login page: a single email field that issues a magic link, plus an
+/// optional "Sign in with a passkey" button.
 ///
-/// `error` renders an inline error (e.g. a malformed address). The form
-/// `POST`s to `/login`; there is no CSRF token because the caller is
-/// anonymous (no ambient cookie to forge against).
+/// `error` renders an inline error (e.g. a malformed address). The email form
+/// `POST`s to `/login`; there is no CSRF token because the caller is anonymous
+/// (no ambient cookie to forge against).
+///
+/// `passkey_nonce` is `Some(nonce)` on the canonical `GET /login` render, where
+/// the handler also sets a `script-src 'nonce-…'` CSP: it adds a passkey button
+/// and the first-party inline script that drives `navigator.credentials.get`.
+/// It is `None` on no-JS error re-renders, which still show the email form (a
+/// plain reload restores the passkey button).
 #[must_use]
-pub fn login_page(error: Option<&str>, started: Instant) -> String {
+pub fn login_page(error: Option<&str>, passkey_nonce: Option<&str>, started: Instant) -> String {
     let mut body = String::from("<h1>Log in</h1>\n");
     body.push_str(
         "<p class=\"dim\">Enter your email; we send a one-time sign-in link. \
@@ -73,6 +82,14 @@ pub fn login_page(error: Option<&str>, started: Instant) -> String {
          placeholder=\"you@example.com\"></label>\n\
          <button>send sign-in link</button>\n</form>\n",
     );
+    if let Some(nonce) = passkey_nonce {
+        body.push_str(
+            "<p class=\"dim\">Already set up a passkey?</p>\n\
+             <p><button type=\"button\" id=\"passkey-login\">sign in with a passkey</button></p>\n\
+             <p id=\"passkey-error\" class=\"bad\"></p>\n",
+        );
+        let _ = write!(body, "{}", passkey_login_script(nonce));
+    }
     page_with_session(
         "log in",
         &[(String::new(), "log in".into())],
@@ -154,11 +171,150 @@ pub fn login_sso_page(email: &str, org_slug: &str, start_url: &str, started: Ins
     )
 }
 
+/// The first-party inline script that drives passkey **login**
+/// (`navigator.credentials.get`), nonced for the page's CSP.
+///
+/// The script POSTs `/auth/passkey/begin` for the options, runs the WebAuthn
+/// `get` ceremony, base64url-encodes the binary response fields, and POSTs them
+/// to `/auth/passkey/finish`; on success the server set a session cookie and the
+/// script navigates to `/`. It is the one first-party inline script the no-JS
+/// console serves, gated by `script-src 'nonce-…'`.
+fn passkey_login_script(nonce: &str) -> String {
+    format!(
+        "<script nonce=\"{nonce}\">\n{}\n</script>\n",
+        PASSKEY_LOGIN_FLOW
+    )
+}
+
+/// The first-party inline script that drives passkey **registration**
+/// (`navigator.credentials.create`), nonced for the page's CSP.
+///
+/// The script reads the CSRF token from the page, POSTs
+/// `/account/passkeys/begin` for the options, runs the WebAuthn `create`
+/// ceremony, base64url-encodes the response, and POSTs it to
+/// `/account/passkeys/finish`; on success it reloads to show the new passkey.
+fn passkey_register_script(nonce: &str) -> String {
+    format!(
+        "<script nonce=\"{nonce}\">\n{}\n</script>\n",
+        PASSKEY_REGISTER_FLOW
+    )
+}
+
+/// The passkey login ceremony flow (includes the shared b64 helpers, so each
+/// script is fully self-contained and dependency-free).
+const PASSKEY_LOGIN_FLOW: &str = r#"
+function b64uToBuf(s){s=s.replace(/-/g,'+').replace(/_/g,'/');var p=s.length%4;if(p)s+='='.repeat(4-p);var bin=atob(s);var b=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b.buffer;}
+function bufToB64u(buf){var b=new Uint8Array(buf);var s='';for(var i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+document.getElementById('passkey-login').addEventListener('click', async function(){
+  var err=document.getElementById('passkey-error'); err.textContent='';
+  try{
+    var opts=await (await fetch('/auth/passkey/begin',{method:'POST',headers:{'connect-protocol-version':'1'}})).json();
+    var cred=await navigator.credentials.get({publicKey:{challenge:b64uToBuf(opts.challenge),rpId:opts.rp_id,userVerification:'preferred',timeout:60000}});
+    var body={credential_id:bufToB64u(cred.rawId),client_data_json:bufToB64u(cred.response.clientDataJSON),authenticator_data:bufToB64u(cred.response.authenticatorData),signature:bufToB64u(cred.response.signature)};
+    var r=await fetch('/auth/passkey/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.ok){window.location='/';}else{err.textContent='Passkey sign-in failed.';}
+  }catch(e){err.textContent='Passkey sign-in was cancelled or failed.';}
+});
+"#;
+
+/// The passkey registration ceremony flow.
+const PASSKEY_REGISTER_FLOW: &str = r#"
+function b64uToBuf(s){s=s.replace(/-/g,'+').replace(/_/g,'/');var p=s.length%4;if(p)s+='='.repeat(4-p);var bin=atob(s);var b=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b.buffer;}
+function bufToB64u(buf){var b=new Uint8Array(buf);var s='';for(var i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+document.getElementById('passkey-add').addEventListener('click', async function(){
+  var err=document.getElementById('passkey-error'); err.textContent='';
+  var csrf=document.getElementById('passkey-csrf').value;
+  var label=document.getElementById('passkey-label').value;
+  try{
+    var opts=await (await fetch('/account/passkeys/begin',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'csrf='+encodeURIComponent(csrf)})).json();
+    var ex=(opts.exclude_credentials||[]).map(function(id){return {type:'public-key',id:b64uToBuf(id)};});
+    var cred=await navigator.credentials.create({publicKey:{
+      challenge:b64uToBuf(opts.challenge),
+      rp:{id:opts.rp_id,name:opts.rp_name},
+      user:{id:b64uToBuf(opts.user_handle),name:opts.user_name,displayName:opts.user_name},
+      pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-8},{type:'public-key',alg:-257}],
+      authenticatorSelection:{residentKey:'required',userVerification:'preferred'},
+      attestation:'none',
+      excludeCredentials:ex,
+      timeout:60000
+    }});
+    var body={csrf:csrf,label:label,client_data_json:bufToB64u(cred.response.clientDataJSON),attestation_object:bufToB64u(cred.response.attestationObject)};
+    var r=await fetch('/account/passkeys/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.ok){window.location.reload();}else{err.textContent='Could not register the passkey.';}
+  }catch(e){err.textContent='Passkey registration was cancelled or failed.';}
+});
+"#;
+
+/// The passkey management page: the user's registered passkeys and an add form.
+///
+/// `creds` are the user's registered credentials. `nonce` gates the inline
+/// registration script (the handler sets the matching `script-src 'nonce-…'`
+/// CSP). `csrf` is the per-session synchronizer token both begin and finish
+/// verify.
+#[must_use]
+pub fn passkeys_page(
+    email: &str,
+    csrf: &str,
+    creds: &[WebauthnCredentialRecord],
+    nonce: &str,
+    started: Instant,
+) -> String {
+    let mut body = String::from("<h1>Passkeys</h1>\n");
+    body.push_str(
+        "<p class=\"dim\">Passkeys sign you in with your device — no password, \
+         no one-time link. Add one per device or browser.</p>\n",
+    );
+
+    if creds.is_empty() {
+        body.push_str("<p class=\"dim\">No passkeys registered yet.</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = creds
+            .iter()
+            .map(|c| {
+                let label = c.label.as_deref().unwrap_or("passkey");
+                let last = c
+                    .last_used_at
+                    .map_or_else(|| "never".to_string(), |t| ago(t));
+                vec![
+                    escape(label),
+                    ago(c.created_at),
+                    escape(&last),
+                    c.sign_count.to_string(),
+                ]
+            })
+            .collect();
+        body.push_str(&table(&["label", "added", "last used", "counter"], &rows));
+    }
+
+    // The add-passkey control. The CSRF token and label are read by the inline
+    // script; the button has no <form> because the ceremony is script-driven.
+    let _ = write!(
+        body,
+        "<h2>Add a passkey</h2>\n\
+         <input type=\"hidden\" id=\"passkey-csrf\" value=\"{}\">\n\
+         <p><label>label (optional) <input type=\"text\" id=\"passkey-label\" \
+         placeholder=\"work laptop\"></label></p>\n\
+         <p><button type=\"button\" id=\"passkey-add\">add passkey</button></p>\n\
+         <p id=\"passkey-error\" class=\"bad\"></p>\n",
+        escape(csrf),
+    );
+    body.push_str(&passkey_register_script(nonce));
+
+    page_with_session(
+        "passkeys",
+        &[(String::new(), "passkeys".into())],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
 /// The account profile page: email, active sessions, tokens, passkeys.
 ///
 /// `tokens` are `(id, scope, permissions)` tuples across every scope the
-/// user owns. The sessions section offers a "sign out everywhere" button;
-/// passkeys are a documented placeholder (a later spike, RFC-0004).
+/// user owns. The sessions section offers a "sign out everywhere" button; the
+/// passkeys section links to the dedicated management page
+/// ([`passkeys_page`]).
 #[must_use]
 pub fn account_page(
     email: &str,
@@ -208,7 +364,8 @@ pub fn account_page(
 
     body.push_str(
         "<h2>Passkeys</h2>\n\
-         <p class=\"dim\">Passkey (WebAuthn) sign-in is planned (RFC-0004); not yet available.</p>\n",
+         <p class=\"dim\">Sign in with your device instead of an email link. \
+         <a href=\"/account/passkeys\">Manage passkeys →</a></p>\n",
     );
 
     page_with_session(

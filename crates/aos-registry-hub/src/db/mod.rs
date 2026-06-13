@@ -53,6 +53,15 @@
 //! `frontend_probes` (the latest reachability/freshness observation per
 //! frontend) is a **rebuildable** observation refreshed on every probe.
 //!
+//! The phase-future passkeys / WebAuthn tables (v17) are **system of record**:
+//! `webauthn_credentials` (one registered passkey per row — the base64url
+//! credential id, the base64 COSE public key, and the monotonic signature
+//! counter; the hub is its own relying party with a hard `attestation: none`
+//! policy, so no attestation statement is ever stored) and
+//! `webauthn_challenges` (short-lived, single-use registration/assertion
+//! ceremony state, the same shape as `oidc_flows`). Losing the credentials
+//! de-registers every passkey; the challenges are transient.
+//!
 //! Migrations are ordered SQL statements tracked in `schema_version`,
 //!  applied at open. The connection is wrapped in a `Mutex` following the
 //! pattern of `aos-server`'s token store; hub queries are short and
@@ -938,6 +947,49 @@ const MIGRATIONS: &[&str] = &[
         checked_at       INTEGER
     );
     ",
+    // v17: passkeys / WebAuthn (RFC-0004 "Passkeys/WebAuthn"). The hub is its
+    // own WebAuthn relying party with a hard `attestation: none` policy (see
+    // crate::auth::webauthn), so the only credential material it persists is the
+    // public key — never an attestation statement, never a secret. Two tables:
+    //
+    // - webauthn_credentials: one row per registered passkey. `credential_id`
+    //   is the base64url of the authenticator's raw credential id (the lookup
+    //   key an assertion arrives with) and is UNIQUE across all users.
+    //   `public_key` is the base64 of the credential's COSE public key as the
+    //   authenticator emitted it; the verifier re-decodes it on every assertion.
+    //   `sign_count` is the authenticator's signature counter, enforced
+    //   monotonic on assertion to detect a cloned authenticator. `transports`
+    //   and `label` are advisory metadata. ON DELETE CASCADE drops a user's
+    //   passkeys when the user is hard-deleted.
+    // - webauthn_challenges: short-lived (~5 min) in-flight ceremony state keyed
+    //   by the random `challenge` (base64url). `kind` is 'registration' or
+    //   'assertion'. `user_id` is the registering user for a registration
+    //   ceremony, or NULL for a usernameless (discoverable-credential) assertion
+    //   ceremony where the user is resolved from the presented credential.
+    //   Single-use: consumed (deleted) on verify; garbage by `expires_at`. This
+    //   mirrors oidc_flows (v9) — the same short-lived, single-use ceremony-state
+    //   shape, never present on any registry surface.
+    "
+    CREATE TABLE webauthn_credentials (
+        id            INTEGER PRIMARY KEY,
+        user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        credential_id TEXT NOT NULL UNIQUE,         -- base64url of the raw cred id
+        public_key    TEXT NOT NULL,                -- base64 of the COSE public key
+        sign_count    INTEGER NOT NULL DEFAULT 0,   -- authenticator signature counter
+        transports    TEXT,                         -- advisory: JSON array of transports
+        label         TEXT,                         -- advisory: human label
+        created_at    INTEGER NOT NULL,
+        last_used_at  INTEGER
+    );
+    CREATE INDEX webauthn_credentials_user_idx ON webauthn_credentials (user_id);
+    CREATE TABLE webauthn_challenges (
+        challenge   TEXT PRIMARY KEY,               -- base64url random challenge
+        user_id     INTEGER,                        -- registering user, or NULL (usernameless assertion)
+        kind        TEXT NOT NULL,                  -- 'registration' | 'assertion'
+        created_at  INTEGER NOT NULL,
+        expires_at  INTEGER NOT NULL
+    );
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -1211,6 +1263,58 @@ pub struct OidcFlowRecord {
     /// instance home.
     pub redirect_after: Option<String>,
     /// Unix time the flow expires; a callback after this is rejected.
+    pub expires_at: i64,
+}
+
+/// A registered passkey / WebAuthn credential (system-of-record row).
+///
+/// Created at [`crate::auth::webauthn::finish_registration`] and looked up by
+/// [`Database::webauthn_credential_by_id`] on every assertion. The hub stores
+/// only the public key (the `attestation: none` policy means no attestation
+/// statement is ever persisted), so a database leak yields nothing usable for
+/// impersonation.
+#[derive(Debug, Clone)]
+pub struct WebauthnCredentialRecord {
+    /// Database id.
+    pub id: i64,
+    /// Owning user id.
+    pub user_id: i64,
+    /// The authenticator's raw credential id, base64url-encoded; the lookup key
+    /// an assertion arrives with, UNIQUE across all users.
+    pub credential_id: String,
+    /// The credential's COSE public key, base64-encoded as the authenticator
+    /// emitted it; re-decoded by the verifier on every assertion.
+    pub public_key: String,
+    /// The authenticator's signature counter, enforced monotonic on assertion
+    /// to detect a cloned authenticator.
+    pub sign_count: i64,
+    /// Advisory transports the authenticator reported (JSON array), or `None`.
+    pub transports: Option<String>,
+    /// A human label for the passkey, or `None`.
+    pub label: Option<String>,
+    /// Unix time the credential was registered.
+    pub created_at: i64,
+    /// Unix time the credential last authenticated a login, or `None`.
+    pub last_used_at: Option<i64>,
+}
+
+/// An in-flight WebAuthn ceremony challenge (system-of-record row).
+///
+/// Created at the start of a registration or assertion ceremony and consumed
+/// exactly once at verify by [`Database::take_webauthn_challenge`]. Mirrors
+/// [`OidcFlowRecord`]'s short-lived, single-use shape: the random `challenge`
+/// the client signs into `clientDataJSON` must match a live, unexpired row, and
+/// taking it deletes it so a challenge can never be replayed.
+#[derive(Debug, Clone)]
+pub struct WebauthnChallengeRecord {
+    /// The random challenge value, base64url-encoded.
+    pub challenge: String,
+    /// The registering user for a registration ceremony, or `None` for a
+    /// usernameless assertion ceremony (resolved from the presented credential).
+    pub user_id: Option<i64>,
+    /// The ceremony kind: `"registration"` or `"assertion"`.
+    pub kind: String,
+    /// Unix time the challenge expires; a verify after this is rejected.
     pub expires_at: i64,
 }
 
@@ -5470,6 +5574,199 @@ impl Database {
         }
     }
 
+    // -- WebAuthn / passkeys (migration v17) --------------------------------
+
+    /// Stage a WebAuthn ceremony challenge with a short TTL.
+    ///
+    /// `kind` is `"registration"` or `"assertion"`; `user_id` is the
+    /// registering user for a registration ceremony, or `None` for a
+    /// usernameless assertion ceremony (the user is resolved from the presented
+    /// credential at verify). The challenge is consumed exactly once by
+    /// [`Database::take_webauthn_challenge`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure (including a `challenge` collision,
+    /// which cannot happen for a 256-bit random value in practice).
+    pub fn create_webauthn_challenge(
+        &self,
+        challenge: &str,
+        user_id: Option<i64>,
+        kind: &str,
+        ttl_secs: i64,
+    ) -> Result<()> {
+        let now = unix_now();
+        self.backend.execute(
+            "INSERT INTO webauthn_challenges (challenge, user_id, kind, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            &vals![challenge, user_id, kind, now, now + ttl_secs],
+        )?;
+        Ok(())
+    }
+
+    /// Consume a WebAuthn challenge by value, returning it exactly once.
+    ///
+    /// Deletes the row and returns it (`DELETE … RETURNING` on sqlite/postgres,
+    /// a select-then-delete transaction on MySQL), so a replayed challenge finds
+    /// nothing — the single-use, anti-replay gate. Returns `Ok(None)` for an
+    /// unknown, already-consumed, expired, or wrong-`kind` challenge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn take_webauthn_challenge(
+        &self,
+        challenge: &str,
+        kind: &str,
+    ) -> Result<Option<WebauthnChallengeRecord>> {
+        let now = unix_now();
+        let row: Option<WebauthnChallengeRecord> = if self.dialect() == Dialect::Mysql {
+            let mut found = None;
+            self.backend.with_tx(&mut |tx| {
+                let selected = tx.query_opt(
+                    "SELECT challenge, user_id, kind, expires_at
+                     FROM webauthn_challenges WHERE challenge = ?1",
+                    &vals![challenge],
+                )?;
+                if let Some(r) = selected {
+                    let n = tx.execute(
+                        "DELETE FROM webauthn_challenges WHERE challenge = ?1",
+                        &vals![challenge],
+                    )?;
+                    if n > 0 {
+                        found = Some(row_to_webauthn_challenge(&r)?);
+                    }
+                }
+                Ok(())
+            })?;
+            found
+        } else {
+            self.backend
+                .query_opt(
+                    "DELETE FROM webauthn_challenges WHERE challenge = ?1
+                     RETURNING challenge, user_id, kind, expires_at",
+                    &vals![challenge],
+                )
+                .context("consuming webauthn challenge")?
+                .map(|row| row_to_webauthn_challenge(&row))
+                .transpose()?
+        };
+        // The row is deleted, but an expired or mismatched-kind challenge must
+        // not authenticate.
+        match row {
+            Some(rec) if now < rec.expires_at && rec.kind == kind => Ok(Some(rec)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Persist a newly-registered WebAuthn credential, returning its id.
+    ///
+    /// `credential_id` is the base64url of the authenticator's raw credential
+    /// id; `public_key` is the base64 of its COSE public key. `sign_count` is
+    /// the authenticator's initial signature counter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a `UNIQUE(credential_id)`
+    /// violation when the same credential is registered twice.
+    pub fn add_webauthn_credential(
+        &self,
+        user_id: i64,
+        credential_id: &str,
+        public_key: &str,
+        sign_count: i64,
+        transports: Option<&str>,
+        label: Option<&str>,
+    ) -> Result<i64> {
+        self.backend.execute_insert(
+            "INSERT INTO webauthn_credentials
+             (user_id, credential_id, public_key, sign_count, transports, label, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            &vals![
+                user_id,
+                credential_id,
+                public_key,
+                sign_count,
+                transports,
+                label,
+                unix_now()
+            ],
+        )
+    }
+
+    /// Look up a WebAuthn credential by its base64url credential id.
+    ///
+    /// Returns `Ok(None)` when no credential with that id is registered (the
+    /// assertion is for an unknown or de-registered passkey).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn webauthn_credential_by_id(
+        &self,
+        credential_id: &str,
+    ) -> Result<Option<WebauthnCredentialRecord>> {
+        self.backend
+            .query_opt(
+                "SELECT id, user_id, credential_id, public_key, sign_count, transports,
+                        label, created_at, last_used_at
+                 FROM webauthn_credentials WHERE credential_id = ?1",
+                &vals![credential_id],
+            )
+            .context("loading webauthn credential by id")?
+            .map(|row| row_to_webauthn_credential(&row))
+            .transpose()
+    }
+
+    /// List a user's registered WebAuthn credentials, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_user_credentials(&self, user_id: i64) -> Result<Vec<WebauthnCredentialRecord>> {
+        self.backend
+            .query(
+                "SELECT id, user_id, credential_id, public_key, sign_count, transports,
+                        label, created_at, last_used_at
+                 FROM webauthn_credentials WHERE user_id = ?1
+                 ORDER BY created_at DESC, id DESC",
+                &vals![user_id],
+            )
+            .context("listing user webauthn credentials")?
+            .iter()
+            .map(row_to_webauthn_credential)
+            .collect()
+    }
+
+    /// Update a credential's stored signature counter.
+    ///
+    /// Called after a successful assertion to advance the monotonic counter the
+    /// next assertion is checked against.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn update_credential_sign_count(&self, id: i64, sign_count: i64) -> Result<()> {
+        self.backend.execute(
+            "UPDATE webauthn_credentials SET sign_count = ?2 WHERE id = ?1",
+            &vals![id, sign_count],
+        )?;
+        Ok(())
+    }
+
+    /// Stamp a credential's `last_used_at` to now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn touch_credential(&self, id: i64) -> Result<()> {
+        self.backend.execute(
+            "UPDATE webauthn_credentials SET last_used_at = ?2 WHERE id = ?1",
+            &vals![id, unix_now()],
+        )?;
+        Ok(())
+    }
+
     /// Reconcile an OIDC identity to a hub user, JIT-provisioning if allowed.
     ///
     /// Identities are keyed on `(issuer, subject)` — never bare email — so an
@@ -6340,6 +6637,29 @@ fn row_to_oidc_flow(row: &Row) -> Result<OidcFlowRecord> {
         code_verifier: row.get(3)?,
         redirect_after: row.get(4)?,
         expires_at: row.get(5)?,
+    })
+}
+
+fn row_to_webauthn_challenge(row: &Row) -> Result<WebauthnChallengeRecord> {
+    Ok(WebauthnChallengeRecord {
+        challenge: row.get(0)?,
+        user_id: row.get(1)?,
+        kind: row.get(2)?,
+        expires_at: row.get(3)?,
+    })
+}
+
+fn row_to_webauthn_credential(row: &Row) -> Result<WebauthnCredentialRecord> {
+    Ok(WebauthnCredentialRecord {
+        id: row.get(0)?,
+        user_id: row.get(1)?,
+        credential_id: row.get(2)?,
+        public_key: row.get(3)?,
+        sign_count: row.get(4)?,
+        transports: row.get(5)?,
+        label: row.get(6)?,
+        created_at: row.get(7)?,
+        last_used_at: row.get(8)?,
     })
 }
 

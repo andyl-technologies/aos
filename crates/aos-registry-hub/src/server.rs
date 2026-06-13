@@ -301,10 +301,14 @@ async fn security_headers(
 ) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'self'"),
-    );
+    // Default policy is `default-src 'self'` (no inline scripts). The passkey
+    // pages are the one no-JS exception (WebAuthn requires `navigator.
+    // credentials`): they set their own per-request CSP carrying a nonce in
+    // `script-src` before this layer runs, so honor a handler-set CSP rather
+    // than clobbering it. Every other response gets the strict default.
+    headers
+        .entry(header::CONTENT_SECURITY_POLICY)
+        .or_insert_with(|| HeaderValue::from_static("default-src 'self'"));
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),

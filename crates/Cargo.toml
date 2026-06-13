@@ -59,6 +59,14 @@ jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.9"
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
+# In-house WebAuthn RP verifier (RFC-0004 passkeys, attestation: none). These
+# round out the COSE signature algorithms beyond Ed25519 (already present):
+# p256 for ES256 ECDSA, rsa for RS256 PKCS#1v1.5, and ciborium as the CBOR
+# decoder for COSE keys + the attestationObject. All are pure-Rust RustCrypto
+# crates, wasm-clean for the Workers target.
+p256 = { version = "0.13", features = ["ecdsa"] }
+rsa = { version = "0.9", features = ["sha2"] }
+ciborium = "0.2"
 zstd = "0.13"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["io"] }

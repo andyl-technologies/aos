@@ -15,8 +15,10 @@
 //! - **Humans** carry opaque [cookie sessions](session)
 //!   (`__Host-aos_session`) with a sudo `auth_level`, obtained through the
 //!   [device-authorization flow](device) (RFC 8628) for the CLI, [email magic
-//!   links](magic) for the browser, or — per org — [OIDC single sign-on](oidc)
-//!   (authorization-code + PKCE, domain-captured email-first routing).
+//!   links](magic) for the browser, [passkeys / WebAuthn](webauthn) (an
+//!   in-house relying-party verifier, `attestation: none` only), or — per org —
+//!   [OIDC single sign-on](oidc) (authorization-code + PKCE, domain-captured
+//!   email-first routing).
 //!
 //! # Module map
 //!
@@ -26,6 +28,10 @@
 //! - [`device`] — RFC 8628 device-code and user-code minting.
 //! - [`magic`] — single-use email magic-link secrets and the [`magic::Mailer`]
 //!   delivery trait.
+//! - [`webauthn`] — the in-house WebAuthn relying-party verifier
+//!   (`attestation: none` only): `clientDataJSON`/`authenticatorData` checks,
+//!   COSE key decode, ES256/Ed25519/RS256 signature verification, and the
+//!   registration/assertion ceremonies.
 //! - [`oidc`] — per-org OIDC SSO: the authorization-code + PKCE flow, JWKS-backed
 //!   RS256 id_token verification, and the [`oidc::SecretSealer`] seam.
 //! - [`extract`] — the axum extractors and middleware that gate requests:
@@ -45,6 +51,7 @@ pub mod oidc;
 pub mod seal;
 pub mod session;
 pub mod token;
+pub mod webauthn;
 
 use crate::domain::Permission;
 
