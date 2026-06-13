@@ -13,8 +13,8 @@ use std::fmt::Write as _;
 use std::time::Instant;
 
 use crate::db::{
-    CacheProbeRow, ChannelSummary, IndexStatus, PackageDetail, PackageRow, RegistryRecord,
-    ReleaseRow, RepairJobRow, ValidationRunRow,
+    CacheProbeRow, ChannelSummary, FrontendProbeRow, FrontendRecord, IndexStatus, PackageDetail,
+    PackageRow, RegistryRecord, ReleaseRow, RepairJobRow, ValidationRunRow,
 };
 use crate::stack::StackNode;
 use crate::ui::render::{ago, escape, human_size, key_fingerprint, page, table, StateLine};
@@ -984,6 +984,7 @@ fn render_cache_stack(stack: &StackNode, coverage_by_url: &BTreeMap<&str, String
 /// ASCII tree with per-endpoint coverage, and any `mirror` group whose
 /// members are not individually complete is flagged as a replication
 /// shortfall above the matrix.
+#[allow(clippy::too_many_arguments)]
 pub fn health_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -991,6 +992,8 @@ pub fn health_page(
     stack: Option<&StackNode>,
     cache_probes: &[CacheProbeRow],
     repair_jobs: &[RepairJobRow],
+    frontends: &[FrontendRecord],
+    frontend_probes: &[FrontendProbeRow],
     started: Instant,
 ) -> String {
     /// Missing hashes shown per cache before collapsing to "and N more".
@@ -1160,6 +1163,86 @@ pub fn health_page(
             })
             .collect();
         body.push_str(&table(&["cache", "status", "latency", "checked"], &rows));
+    }
+
+    // Frontends + their freshness (RFC-0004 "Frontends: direct and proxied
+    // domains"). Advertised cache frontends map informationally to [[caches]]
+    // priority entries; the committed registry.toml mirror list is signed tree
+    // content the hub never silently edits.
+    if !frontends.is_empty() {
+        body.push_str("<h2>Frontends</h2>\n");
+        let probe_by_id: BTreeMap<i64, &FrontendProbeRow> =
+            frontend_probes.iter().map(|p| (p.frontend_id, p)).collect();
+        let rows: Vec<Vec<String>> = frontends
+            .iter()
+            .map(|frontend| {
+                let mut surfaces = Vec::new();
+                if frontend.serves_git {
+                    surfaces.push("git");
+                }
+                if frontend.serves_cache {
+                    surfaces.push("cache");
+                }
+                if frontend.serves_web {
+                    surfaces.push("web");
+                }
+                let probe = probe_by_id.get(&frontend.id);
+                let status = probe.map_or_else(
+                    || "<span class=\"dim\">unprobed</span>".to_string(),
+                    |p| {
+                        let label = p.status.as_deref().unwrap_or("unprobed");
+                        let class = match label {
+                            "ok" => "ok",
+                            "stale" => "warn",
+                            "unprobed" => "dim",
+                            _ => "bad",
+                        };
+                        format!("<span class=\"{class}\">{}</span>", escape(label))
+                    },
+                );
+                let frontier = probe
+                    .and_then(|p| p.observed_frontier.as_deref())
+                    .map(|f| format!("<code>{}</code>", escape(f)))
+                    .unwrap_or_else(|| "-".to_string());
+                let lag = probe
+                    .and_then(|p| p.lag_releases)
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let checked = probe
+                    .and_then(|p| p.checked_at)
+                    .map(ago)
+                    .unwrap_or_else(|| "-".to_string());
+                vec![
+                    format!(
+                        "<code>{}{}</code>",
+                        escape(&frontend.domain),
+                        escape(&frontend.base_path)
+                    ),
+                    escape(&frontend.mode),
+                    surfaces.join("+"),
+                    frontend.consumer_priority.to_string(),
+                    if frontend.advertised { "yes" } else { "no" }.to_string(),
+                    status,
+                    frontier,
+                    lag,
+                    checked,
+                ]
+            })
+            .collect();
+        body.push_str(&table(
+            &[
+                "domain",
+                "mode",
+                "surfaces",
+                "priority",
+                "advertised",
+                "status",
+                "frontier",
+                "lag",
+                "checked",
+            ],
+            &rows,
+        ));
     }
 
     page(
@@ -1421,6 +1504,8 @@ mod tests {
             None,
             &[],
             &[],
+            &[],
+            &[],
             Instant::now(),
         );
         assert!(html.contains("Missing from https://cache.example"));
@@ -1491,6 +1576,8 @@ mod tests {
             Some(&stack),
             &probes,
             &[],
+            &[],
+            &[],
             Instant::now(),
         );
         assert!(html.contains("Cache stack"));
@@ -1551,6 +1638,8 @@ mod tests {
             None,
             &[],
             &repair_jobs,
+            &[],
+            &[],
             Instant::now(),
         );
         // Corruption is flagged distinctly from absence.

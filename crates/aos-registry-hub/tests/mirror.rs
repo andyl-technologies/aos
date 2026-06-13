@@ -1,0 +1,277 @@
+//! Registry mirroring e2e: full-mirror verify-then-copy and pull-through.
+//!
+//! An in-test "upstream" is a real signed fixture surface served over a local
+//! axum file server (the `tests/http_source.rs` pattern). The full-mirror sync
+//! verifies the upstream against the mirror's trust anchors before copying it
+//! byte-identically into the local binding; the pull-through cache fetches a
+//! missing machine path on demand, verifies it by oid, persists it, and serves
+//! it.
+
+mod common;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use aos_registry_hub::db::Database;
+use aos_registry_hub::fetch::safe_join;
+use aos_registry_hub::mirror::{fetch_through, sync_full_mirror};
+use aos_registry_hub::server::{router, AppState};
+use axum::body::Body;
+use axum::extract::{Path as AxPath, State};
+use axum::http::{Request, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use tower::ServiceExt;
+
+/// Minimal static file server over a fixture directory; 404s missing files.
+async fn serve_file(State(root): State<Arc<PathBuf>>, AxPath(path): AxPath<String>) -> Response {
+    let Ok(full) = safe_join(&root, &path) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    match std::fs::read(full) {
+        Ok(bytes) => bytes.into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Stand up a real upstream HTTP server over `surface` on an ephemeral port,
+/// returning its base URL.
+async fn serve_upstream(surface: PathBuf) -> String {
+    let app = axum::Router::new()
+        .route("/{*path}", get(serve_file))
+        .with_state(Arc::new(surface));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    url
+}
+
+/// Create a managed mirror registry whose surface lives under a `local_fs`
+/// binding, returning `(registry_id, binding_root)`.
+fn make_mirror_registry(
+    db: &Database,
+    trust_key: &str,
+    binding_root: &std::path::Path,
+) -> (i64, PathBuf) {
+    let org = db.create_org("acme", "Acme, Inc.").unwrap();
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", &binding_root.to_string_lossy())
+        .unwrap();
+    let reg = db
+        .create_managed_registry(
+            org,
+            "infra/prod",
+            "mirror",
+            "public",
+            Some(binding),
+            "infra/prod/mirror",
+            std::slice::from_ref(&trust_key.to_string()),
+            true,
+        )
+        .unwrap();
+    let root = db.registry_surface_root(reg).unwrap().unwrap();
+    (reg, root)
+}
+
+#[tokio::test]
+async fn full_mirror_verifies_then_copies_upstream() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Build a real signed upstream surface and serve it over HTTP.
+    let upstream_surface = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream_surface).unwrap();
+    let fixture = common::standard_registry(&upstream_surface);
+    let upstream_url = serve_upstream(upstream_surface.clone()).await;
+
+    // A local mirror registry whose trust anchor is the upstream's (so a
+    // consumer keeps upstream trust), bound to an empty local directory.
+    let binding_root = dir.path().join("binding");
+    let db = Database::open_in_memory().unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
+        .unwrap();
+    let registry = db.registry_by_id(reg).unwrap().unwrap();
+
+    // Sync: verify the upstream, then copy it byte-identically.
+    let result = sync_full_mirror(&db, &registry).await.unwrap();
+    assert!(result.files_copied > 0);
+    assert_eq!(result.channels, 1);
+    assert_eq!(result.releases, 1);
+
+    // The local binding now holds the upstream's HEAD, info/refs, a sample
+    // loose object, and channel partitions — byte-identical to upstream.
+    for path in ["HEAD", "info/refs", "channels/stable/00", "nix-cache-info"] {
+        let local = std::fs::read(local_root.join(path)).unwrap();
+        let up = std::fs::read(upstream_surface.join(path)).unwrap();
+        assert_eq!(local, up, "byte-identical copy of {path}");
+    }
+    // The HEAD commit's loose object is present locally.
+    let head_commit = result.commit;
+    let loose = format!("objects/{}/{}", &head_commit[..2], &head_commit[2..]);
+    assert!(
+        local_root.join(&loose).exists(),
+        "HEAD commit object copied"
+    );
+
+    // The mirror indexed to the upstream's frontier and recorded a clean sync.
+    let status = db.index_status(reg).unwrap().unwrap();
+    assert_eq!(status.state, "fresh");
+    let source = db.mirror_source(reg).unwrap().unwrap();
+    assert_eq!(source.last_sync_status.as_deref(), Some("ok"));
+    assert_eq!(source.upstream_frontier.as_deref(), Some("1.0.0"));
+}
+
+#[tokio::test]
+async fn full_mirror_refuses_untrusted_upstream() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // The upstream is signed by the fixture key…
+    let upstream_surface = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream_surface).unwrap();
+    let fixture = common::standard_registry(&upstream_surface);
+    let upstream_url = serve_upstream(upstream_surface.clone()).await;
+
+    // …but the mirror's trust anchor is a *different* key, so verification must
+    // fail and nothing may be written.
+    let other = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+    let wrong_anchor =
+        aos_registry_hub::surface::sshsig::trusted_key_line("wrong", &other.verifying_key());
+    assert_ne!(wrong_anchor, fixture.trust_key);
+
+    let binding_root = dir.path().join("binding");
+    let db = Database::open_in_memory().unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &wrong_anchor, &binding_root);
+    db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
+        .unwrap();
+    let registry = db.registry_by_id(reg).unwrap().unwrap();
+
+    let err = sync_full_mirror(&db, &registry).await.unwrap_err();
+    assert!(format!("{err:#}").contains("verif"), "got: {err:#}");
+
+    // Local state is unchanged: nothing was copied.
+    assert!(
+        !local_root.join("HEAD").exists(),
+        "no surface bytes written on a failed verification"
+    );
+    // The failure is recorded for the health page.
+    let source = db.mirror_source(reg).unwrap().unwrap();
+    assert_eq!(source.last_sync_status.as_deref(), Some("failed"));
+    assert!(source.last_sync_error.is_some());
+    assert!(source.upstream_frontier.is_none());
+}
+
+#[tokio::test]
+async fn pull_through_fetches_verifies_persists_and_serves() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let upstream_surface = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream_surface).unwrap();
+    let fixture = common::standard_registry(&upstream_surface);
+    let upstream_url = serve_upstream(upstream_surface.clone()).await;
+
+    // A pull-through mirror with an EMPTY local binding.
+    let binding_root = dir.path().join("binding");
+    let db = Database::open_in_memory().unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    db.create_mirror_source(reg, &upstream_url, "pullthrough", true, 3600)
+        .unwrap();
+
+    // Pick a real loose-object path from the upstream surface to request.
+    let oid_hex = find_a_loose_object(&upstream_surface);
+    let object_path = format!("objects/{}/{}", &oid_hex[..2], &oid_hex[2..]);
+    assert!(
+        !local_root.join(&object_path).exists(),
+        "the object is absent locally before the first request"
+    );
+
+    // Sanity: fetch_through alone fetches, verifies, persists, and serves the
+    // bytes (isolates the facade wiring from the mirror logic).
+    {
+        let fetch = aos_registry_hub::fetch::HttpFetch::new(&upstream_url);
+        let direct = fetch_through(&fetch, &local_root, &object_path)
+            .await
+            .expect("fetch_through ok")
+            .expect("upstream has the object");
+        assert!(direct.persisted);
+        std::fs::remove_file(local_root.join(&object_path)).unwrap();
+    }
+
+    // GET the object through the hub facade: it fetches from upstream, verifies
+    // by oid, persists locally, and serves the bytes.
+    let state = Arc::new(AppState::new(Arc::new(db), "http://127.0.0.1:8420".into()));
+    let app = router(state);
+    let uri = format!("/acme/infra/prod/mirror/{object_path}");
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let served = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let upstream_bytes = std::fs::read(upstream_surface.join(&object_path)).unwrap();
+    assert_eq!(served.as_ref(), upstream_bytes.as_slice());
+
+    // The object was persisted: a second GET is served from the local binding.
+    assert!(
+        local_root.join(&object_path).exists(),
+        "the pulled object is now persisted locally"
+    );
+    let persisted = std::fs::read(local_root.join(&object_path)).unwrap();
+    assert_eq!(persisted, upstream_bytes);
+}
+
+#[tokio::test]
+async fn pull_through_rejects_tampered_object_by_oid() {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream_surface = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream_surface).unwrap();
+    let fixture = common::standard_registry(&upstream_surface);
+
+    // Tamper a loose object's bytes on the upstream so it no longer hashes to
+    // the oid its path names.
+    let oid_hex = find_a_loose_object(&upstream_surface);
+    let object_path = format!("objects/{}/{}", &oid_hex[..2], &oid_hex[2..]);
+    std::fs::write(upstream_surface.join(&object_path), b"tampered").unwrap();
+    let upstream_url = serve_upstream(upstream_surface.clone()).await;
+
+    let binding_root = dir.path().join("binding");
+    let db = Database::open_in_memory().unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+
+    let fetch = aos_registry_hub::fetch::HttpFetch::new(&upstream_url);
+    let err = fetch_through(&fetch, &local_root, &object_path)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("verifying pulled object"),
+        "got: {err:#}"
+    );
+    assert!(
+        !local_root.join(&object_path).exists(),
+        "a tampered object is never persisted"
+    );
+    let _ = reg;
+}
+
+/// Find one loose object's oid (the basename joined to its `xx` dir) under a
+/// fixture surface's `objects/` tree, skipping the `objects/info` and
+/// `objects/pack` subdirs.
+fn find_a_loose_object(surface: &std::path::Path) -> String {
+    let objects = surface.join("objects");
+    for shard in std::fs::read_dir(&objects).unwrap() {
+        let shard = shard.unwrap();
+        let name = shard.file_name().to_string_lossy().into_owned();
+        if name.len() != 2 || !shard.file_type().unwrap().is_dir() {
+            continue;
+        }
+        if let Some(file) = std::fs::read_dir(shard.path()).unwrap().next() {
+            let rest = file.unwrap().file_name().to_string_lossy().into_owned();
+            return format!("{name}{rest}");
+        }
+    }
+    panic!("no loose object found under {}", objects.display());
+}

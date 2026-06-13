@@ -536,6 +536,46 @@ mod tests {
     }
 
     #[test]
+    fn v16_mirror_and_frontends_migration_translates_for_every_dialect() {
+        // The v16 migration adds mirror_sources, frontends, and frontend_probes.
+        // Its column names (`mode`, `domain`, `verify`, `advertised`, …) avoid
+        // SQL reserved-identifier hazards on every dialect, and the standard
+        // INTEGER PRIMARY KEY / TEXT shapes translate cleanly.
+        let v16 = crate::db::MIGRATIONS
+            .get(15)
+            .expect("v16 mirror/frontends migration");
+        for stmt in crate::db::backend::split_statements(v16) {
+            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
+                dialect
+                    .translate(&stmt)
+                    .unwrap_or_else(|e| panic!("v16 stmt failed for {dialect:?}: {e}\n{stmt}"));
+            }
+        }
+        // mirror_sources keys on the registry FK (explicit value on every
+        // write), so its PK maps to BIGSERIAL/BIGINT, not an autoincrement.
+        let mirror = crate::db::backend::split_statements(v16)
+            .into_iter()
+            .find(|s| s.contains("CREATE TABLE mirror_sources"))
+            .expect("mirror_sources DDL present");
+        let pg = Dialect::Postgres.translate(&mirror).unwrap().sql;
+        assert!(
+            pg.contains("BIGSERIAL PRIMARY KEY REFERENCES registries(id)"),
+            "{pg}"
+        );
+        // frontends has a synthetic autoincrement id on every dialect; its TEXT
+        // columns (domain, mode, base_path) narrow to an indexable VARCHAR on
+        // mysql so the UNIQUE(domain, base_path) index is valid.
+        let frontends = crate::db::backend::split_statements(v16)
+            .into_iter()
+            .find(|s| s.contains("CREATE TABLE frontends"))
+            .expect("frontends DDL present");
+        let my = Dialect::Mysql.translate(&frontends).unwrap().sql;
+        assert!(my.contains("BIGINT AUTO_INCREMENT PRIMARY KEY"), "{my}");
+        assert!(my.contains("VARCHAR(255)"), "{my}");
+        assert!(!my.contains("TEXT"), "all TEXT narrowed on mysql: {my}");
+    }
+
+    #[test]
     fn mysql_upsert_do_update() {
         let src =
             "INSERT INTO t (a, b) VALUES (?1, ?2) ON CONFLICT(a) DO UPDATE SET b = excluded.b";
