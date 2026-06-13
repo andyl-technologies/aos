@@ -31,6 +31,7 @@
 //!   table and the rebuildable index tables.
 //! - [`indexer`] — fetch → verify → load → index orchestration.
 //! - [`compat`] — the machine-path facade.
+//! - [`rpc`] — the `aos.registry.v1` ConnectRPC read-path services.
 //! - [`ui`] — server-rendered HTML pages.
 //! - [`server`] — axum router assembly tying the above together.
 
@@ -38,6 +39,7 @@ pub mod compat;
 pub mod db;
 pub mod fetch;
 pub mod indexer;
+pub mod rpc;
 pub mod server;
 pub mod surface;
 pub mod ui;

@@ -1,0 +1,189 @@
+syntax = "proto3";
+package aos.registry.v1;
+
+// Read-path services of the registry hub (RFC-0004). Phase 1 exposes the
+// verified index — registries, packages, channels, releases — to browsers,
+// CLIs, and third parties over one schema. Write-path services
+// (PublishService, ConfigService, …) arrive with hub phase 2+.
+//
+// All list RPCs paginate: pass the previous response's next_page_token to
+// continue; an empty token means the listing is complete.
+
+service RegistryService {
+  rpc ListRegistries(ListRegistriesRequest) returns (ListRegistriesResponse);
+  rpc GetRegistry(GetRegistryRequest) returns (GetRegistryResponse);
+  rpc ListReleases(ListReleasesRequest) returns (ListReleasesResponse);
+}
+
+service PackageService {
+  rpc ListPackages(ListPackagesRequest) returns (ListPackagesResponse);
+  rpc GetPackage(GetPackageRequest) returns (GetPackageResponse);
+}
+
+service ChannelService {
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
+  rpc GetChannel(GetChannelRequest) returns (GetChannelResponse);
+}
+
+message ListRegistriesRequest {
+  uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListRegistriesResponse {
+  repeated Registry registries = 1;
+  string next_page_token = 2;
+}
+
+message GetRegistryRequest {
+  string slug = 1;
+}
+
+message GetRegistryResponse {
+  Registry registry = 1;
+}
+
+message ListReleasesRequest {
+  string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListReleasesResponse {
+  repeated Release releases = 1;
+  string next_page_token = 2;
+}
+
+message ListPackagesRequest {
+  string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListPackagesResponse {
+  repeated PackageSummary packages = 1;
+  string next_page_token = 2;
+}
+
+message GetPackageRequest {
+  string slug = 1;
+  string name = 2;
+}
+
+message GetPackageResponse {
+  Package package = 1;
+}
+
+message ListChannelsRequest {
+  string slug = 1;
+}
+
+message ListChannelsResponse {
+  repeated Channel channels = 1;
+}
+
+message GetChannelRequest {
+  string slug = 1;
+  string name = 2;
+}
+
+message GetChannelResponse {
+  Channel channel = 1;
+}
+
+// One registered registry with its verified index status.
+message Registry {
+  string slug = 1;
+  // Committed registry name from registry.toml (empty until indexed).
+  string name = 2;
+  string description = 3;
+  string source_url = 4;
+  // Index state: fresh | indexing | stale | failed.
+  string index_state = 5;
+  // Failure detail when index_state is failed.
+  string index_error = 6;
+  // Commit the current index was built from (64-hex sha256).
+  string last_indexed_commit = 7;
+  // Unix seconds of the last successful index.
+  int64 indexed_at = 8;
+  // Pinned trust anchors in name:Ed25519:<base64> form.
+  repeated string trust_keys = 9;
+  // Committed [[caches]] entries, highest priority first.
+  repeated Cache caches = 10;
+  // Committed signing-key roster.
+  repeated RosterKey roster = 11;
+}
+
+message Cache {
+  string url = 1;
+  uint32 priority = 2;
+}
+
+message RosterKey {
+  string id = 1;
+  // Key in name:Ed25519:<base64> form; empty for revoked entries whose
+  // key material left the roster.
+  string key = 2;
+  // active | revoked.
+  string status = 3;
+}
+
+message PackageSummary {
+  string name = 1;
+  string description = 2;
+  string license = 3;
+  string latest_version = 4;
+}
+
+// Full package detail: every version and platform artifact.
+message Package {
+  string name = 1;
+  string description = 2;
+  string homepage = 3;
+  string license = 4;
+  string maintainer = 5;
+  bool sysroot = 6;
+  repeated Version versions = 7;
+}
+
+message Version {
+  string version = 1;
+  // Previous version in the sysroot upgrade chain.
+  string previous = 2;
+  repeated Platform platforms = 3;
+}
+
+message Platform {
+  string platform = 1;
+  string store_path = 2;
+  string nar_hash = 3;
+  uint64 nar_size = 4;
+  uint64 closure_size = 5;
+}
+
+// One rollout channel with its 256-partition assignment map.
+message Channel {
+  string name = 1;
+  // Newest release any partition targets.
+  string frontier = 2;
+  // Assigned partitions only; unassigned buckets are omitted.
+  repeated Partition partitions = 3;
+}
+
+message Partition {
+  // Bucket index, 0..=255.
+  uint32 bucket = 1;
+  string release = 2;
+}
+
+// One verified, signed release tag.
+message Release {
+  string semver = 1;
+  // Unpeeled tag object id.
+  string tag_oid = 2;
+  string commit_oid = 3;
+  // Base64 SSH wire blob of the trusted key that signed the tag.
+  string signer = 4;
+  // Tagger timestamp, Unix seconds.
+  int64 tagged_at = 5;
+}
