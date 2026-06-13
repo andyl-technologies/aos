@@ -1,8 +1,13 @@
 # RFC-0004: `aos-registry-hub` — a multi-tenant registry management WebUI
 
-- **Status:** Proposed
+- **Status:** Proposed — phase 1 implemented
+  (`crates/aos-registry-hub`: surface reader, fail-closed indexer with
+  anti-rollback floors, consistency validation at presence depth,
+  machine-path facade, no-JS browse UI, `aos.registry.v1` read path,
+  local-first `serve --dev`; plus the phase-major `apr` upload fix).
+  Phases 2–4 remain proposed.
 - **Date:** 2026-06-12
-- **PR:** _(pending)_
+- **PR:** [#99](https://github.com/andyl-technologies/aos/pull/99)
 - **Audience:** anyone working on `crates/aos-package/` (the `apr`/`apm`
   registry surface), `crates/aos-server/`, `crates/aos-proto/`, or the
   registry docs under `docs/registry/`.
