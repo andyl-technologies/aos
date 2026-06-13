@@ -22,7 +22,7 @@
 //! source_nar_hash = "sha256:..."
 //! references = ["r4q1m2kp8v3x"]
 //! # nar_hash/nar_size may appear in pre-RFC-0005 registries; newer ones
-//! # publish the output's content binding in the ca/ trust map instead.
+//! # publish the output's content binding in the store/ graph instead.
 //! ```
 //!
 //! [`parse_registry`] walks the whole cache directory and flattens it into
@@ -94,12 +94,12 @@ struct PlatformEntry {
     /// NAR hash of the output (`sha256:...`).
     ///
     /// Legacy (pre-RFC-0005) field: newer registries publish the hash in
-    /// the `ca/` trust map instead, and consumers backfill it from there.
+    /// the `store/` graph instead, and consumers backfill it from there.
     #[serde(default)]
     nar_hash: String,
     /// Uncompressed NAR size in bytes.
     ///
-    /// Legacy (pre-RFC-0005) field, superseded by the `ca/` trust map like
+    /// Legacy (pre-RFC-0005) field, superseded by the `store/` graph like
     /// `nar_hash`.
     #[serde(default)]
     nar_size: u64,

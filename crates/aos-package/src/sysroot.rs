@@ -182,18 +182,18 @@ pub async fn install_system(
         }
     }
 
-    // Trust-map totality (RFC-0005 §2.4/§2.8) over the whole closure.
-    let trust_members: Vec<(&str, &str)> = closures
+    // Trust-graph totality (RFC-0005 §2.6): seed from the WHOLE graph closure
+    // of each root (every reachable member, including anonymous paths).
+    let trust_roots: Vec<(&str, &str)> = closures
         .iter()
-        .flat_map(|closure| {
-            let registry = closure.registry_name.as_str();
-            closure
-                .closure
-                .iter()
-                .map(move |meta| (registry, store_path_hash(&meta.store_path)))
+        .map(|closure| {
+            (
+                closure.registry_name.as_str(),
+                store_path_hash(&closure.root.store_path),
+            )
         })
         .collect();
-    let trust_ctx = registries.trust_context(&trust_members);
+    let trust_ctx = registries.trust_context_for_roots(&trust_roots);
     trust_ctx.enforce_totality()?;
 
     // Step 2: Determine missing store paths.
@@ -261,7 +261,7 @@ pub async fn install_system(
         )
         .await?;
 
-        // Step 6: Verify (against each path's source-registry ca/ trust
+        // Step 6: Verify (against each path's source-registry store/ graph
         // map, RFC-0005; totality enforced above) and import.
         printer.step(5, 8, "Verifying...");
         verify_downloads(&results, &trust_ctx, printer)?;
@@ -828,7 +828,7 @@ async fn download_image(
     // Import NAR to get the store path, then copy image file out. The
     // expected NAR hash is the image entry from the signed package TOML -
     // not the cache-served narinfo - so the bytes are rooted at the
-    // registry signature (images sit outside the ca/ trust map).
+    // registry signature (images sit outside the store/ graph).
     let result = &results[0];
     verify_download_hash(&result.local_path, &result.download_hash)?;
     verify_nar_hash(&result.local_path, &img.nar_hash)

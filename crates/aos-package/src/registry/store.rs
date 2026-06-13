@@ -502,6 +502,27 @@ impl StoreMap {
             .unwrap_or_default()
     }
 
+    /// Every store-path hash reachable from `root` by walking dependency
+    /// edges (root included), in no particular order.
+    ///
+    /// This is the **whole closure** the graph records — including anonymous,
+    /// non-package members (system libraries, intermediate paths) — so it is
+    /// the correct basis for trust enforcement and totality, which must cover
+    /// every byte that gets imported, not just the published packages.
+    pub fn reachable(&self, root: &str) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![root.to_string()];
+        let mut out = Vec::new();
+        while let Some(hash) = stack.pop() {
+            if !seen.insert(hash.clone()) {
+                continue;
+            }
+            stack.extend(self.direct_deps(&hash));
+            out.push(hash);
+        }
+        out
+    }
+
     /// Number of published store paths.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -641,10 +662,12 @@ pub enum UpsertOutcome {
 /// when `bless` is explicitly set; otherwise the conflict is reported and the
 /// file is left untouched.
 ///
-/// "Differs" is judged by the realisation's identity - its `ca` if present,
-/// else its `nar`: a record may legitimately hold several realisations (one
-/// per blessed build), but re-publishing the *same* realisation key with
-/// changed content is the mismatch.
+/// "Differs" is judged by the NAR bytes: a record may legitimately hold
+/// several realisations of the *same* bytes (e.g. adding a CA realisation to
+/// an existing IA-only record, or a new CA realisation of the same NAR), but
+/// a realisation whose NAR differs from every recorded one means the path's
+/// content changed — the mismatch to catch, regardless of whether either side
+/// carries a `ca`.
 ///
 /// # Errors
 ///
@@ -671,19 +694,15 @@ pub fn upsert_realisation(
     let outcome = if entry.realisations.is_empty() {
         UpsertOutcome::Created
     } else {
-        // A realisation sharing an existing key (its `ca`, or its `nar` when
-        // IA-only) but carrying different content is the publish-time mismatch
-        // this graph exists to catch - refuse unless explicitly blessing. A
-        // genuinely new key (e.g. the first CA realisation of a path that had
-        // only an IA record, or an independent rebuild) is additive.
-        let same_key = |existing: &Realisation| match (&existing.ca, &realisation.ca) {
-            (Some(x), Some(y)) => x == y,
-            // An IA-only path has one byte-set slot: a different nar is the
-            // mismatch to catch (identical was already handled above).
-            (None, None) => true,
-            _ => false,
-        };
-        if !bless && entry.realisations.iter().any(same_key) {
+        // The path's bytes must not silently change. If the new realisation's
+        // NAR matches one already recorded, this is an additive refinement
+        // (e.g. attaching a CA realisation to the same bytes) — allow it. If
+        // the NAR differs from every recorded one, the content diverged — the
+        // mismatch this graph exists to catch — refuse unless `--bless`. This
+        // holds whether or not either side carries a `ca`, so an IA-only
+        // record re-published in CA mode with different bytes still conflicts.
+        let same_bytes = entry.realisations.iter().any(|r| r.nar == realisation.nar);
+        if !same_bytes && !bless {
             return Ok(UpsertOutcome::Conflict(entry.realisations.clone()));
         }
         UpsertOutcome::Blessed
@@ -845,7 +864,7 @@ mod tests {
             UpsertOutcome::AlreadyPresent
         );
 
-        // Same CA key, different nar ⇒ conflict without bless.
+        // Different bytes for the same path ⇒ conflict without bless.
         let r1_bad = Realisation {
             nar: nar(D_B, 11),
             ca: Some(D_C.to_string()),
@@ -860,9 +879,10 @@ mod tests {
             UpsertOutcome::Blessed
         );
 
-        // Distinct CA realisation ⇒ additive, no conflict.
+        // A new CA realisation of bytes ALREADY recorded (r1's nar) is an
+        // additive refinement — no bless needed.
         let r2 = Realisation {
-            nar: nar(D_B, 20),
+            nar: nar(D_A, 10),
             ca: Some(D_A.to_string()),
             deps: vec![],
         };
@@ -875,7 +895,7 @@ mod tests {
         assert!(map.is_present());
         assert_eq!(map.len(), 1);
         assert!(tmp.path().join(STORE_DIR).join("r4").join(ia).exists());
-        // Two CA keys (D_C with two nars, D_A with one) ⇒ 3 realisations.
+        // r1 (D_A/D_C), r1_bad (D_B/D_C), r2 (D_A/D_A) ⇒ 3 realisations.
         assert_eq!(map.get(ia).unwrap().realisations.len(), 3);
     }
 

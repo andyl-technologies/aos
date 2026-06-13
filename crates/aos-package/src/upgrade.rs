@@ -182,18 +182,16 @@ pub async fn run(
         }
     }
 
-    // Trust-map totality (RFC-0005 §2.4/§2.8): over the whole closure, not
-    // just the missing subset, so a stripped/partial map fails even when the
-    // gap is on an already-local member (the common case on upgrades).
-    let trust_members: Vec<(&str, &str)> = upgrade_closures
+    // Trust-graph totality (RFC-0005 §2.6): seed from the WHOLE graph closure
+    // of each upgraded root, so the check covers every reachable member
+    // (including anonymous non-package paths) over the whole closure, not just
+    // the missing subset - a stripped/partial graph fails even when the gap is
+    // on an already-local member (the common case on upgrades).
+    let trust_roots: Vec<(&str, &str)> = to_upgrade
         .iter()
-        .flat_map(|(registry, metas)| {
-            metas
-                .iter()
-                .map(move |meta| (registry.as_str(), store_path_hash(&meta.store_path)))
-        })
+        .map(|c| (c.registry.as_str(), store_path_hash(&c.new_meta.store_path)))
         .collect();
-    let trust_ctx = registries.trust_context(&trust_members);
+    let trust_ctx = registries.trust_context_for_roots(&trust_roots);
     trust_ctx.enforce_totality()?;
 
     // Filter to only missing store paths.
@@ -259,7 +257,7 @@ pub async fn run(
         .await?;
         downloaded_count = results.len();
 
-        // Verify downloads against each path's source-registry ca/ trust map
+        // Verify downloads against each path's source-registry store/ graph
         // (RFC-0005); totality was already enforced above.
         printer.step(5, 7, "Verifying downloads...");
         verify_downloads(&results, &trust_ctx, printer)?;

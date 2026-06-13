@@ -14,7 +14,7 @@
 //!   [`local_registries`] and [`authoring_clone_precious`] support
 //!   `apr list`/`apr remove` over clones that have no consumer config.
 //! - **Publishing**: [`publish`] introspects a Nix store path and records it
-//!   in package TOML, closure files, and `ca/` trust-map entries for every
+//!   in package TOML and `store/` realisation records for every
 //!   closure member; [`unpublish`] removes packages, versions, or platform
 //!   entries. Both commit the change (optionally SSH-signed) unless
 //!   `--no-commit` is given. [`run_store`] maintains the realisation graph
@@ -867,7 +867,7 @@ fn write_store_files(
 
 /// Collect every unique `store_path` from the registry's package TOML
 /// files (runtime closure roots only - sources and images are covered by
-/// their own TOML hashes, not the trust map).
+/// their own TOML hashes, not the graph).
 fn collect_package_store_paths(dir: &Path) -> Result<Vec<String>> {
     let packages_dir = dir.join("packages");
     let mut paths = std::collections::BTreeSet::new();
@@ -1366,6 +1366,7 @@ pub async fn publish(
     image_paths: &[String],
     image_formats: &[String],
     bless: bool,
+    no_ca: bool,
     no_commit: bool,
     message: Option<&str>,
     key: Option<&str>,
@@ -1456,7 +1457,7 @@ pub async fn publish(
     std::fs::write(&toml_path, &new_content)?;
 
     printer.step(3, 4, "Computing realisation graph...");
-    let content_addressed = registry_content_addressed(&dir);
+    let content_addressed = registry_content_addressed(&dir) && !no_ca;
     let store_report = write_store_files(&dir, &info.path, content_addressed, bless, printer)
         .with_context(|| format!("writing store/ realisation graph for {}", info.path))?;
 
@@ -2792,7 +2793,7 @@ struct CacheValidationEntry {
     store_path: String,
     store_hash: String,
     /// Acceptable NAR hashes for this path. A legacy TOML entry has one;
-    /// a `ca/` trust-map entry may have several blessed realisations, any
+    /// a `store/` record may have several blessed realisations, any
     /// of which a cache may legitimately serve (RFC-0005 §2.2).
     nar_hashes: Vec<String>,
 }
@@ -3198,7 +3199,7 @@ async fn validate_cache_entry(
             ));
             continue;
         }
-        // Registry hashes may be SRI (legacy TOML) or nixbase32 (ca/ trust
+        // Registry hashes may be SRI (legacy TOML) or nixbase32 (store/ graph
         // map); narinfo hashes vary by emitter. Compare normalized, and
         // accept the cache if it serves ANY blessed realisation.
         let narinfo_norm = aos_core::nar::cache::normalize_sha256_nix32(&narinfo.nar_hash);
@@ -6230,7 +6231,8 @@ pub async fn release(
                 image_paths,
                 image_formats,
                 bless,
-                false,
+                false, // no_ca: release honors the registry's content_addressed setting
+                false, // no_commit
                 message,
                 Some(signing_key.path()),
                 None,
@@ -8002,7 +8004,7 @@ mod tests {
         assert!(content.contains("name = \"curl\""));
         assert!(content.contains("version = \"8.5.0\""));
         assert!(content.contains("x86_64-linux"));
-        // Output content bindings live in the ca/ trust map, not the TOML
+        // Output content bindings live in the store/ graph, not the TOML
         // (RFC-0005).
         assert!(!content.contains("nar_hash = \"sha256:deadbeef\""));
         assert!(!content.contains("nar_size"));
