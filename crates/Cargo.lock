@@ -280,6 +280,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-registry-hub"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-package",
+ "async-trait",
+ "axum",
+ "base64",
+ "clap",
+ "ed25519-dalek",
+ "flate2",
+ "futures",
+ "hex",
+ "http 1.4.1",
+ "reqwest",
+ "rusqlite",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tower",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "aos-remote"
 version = "0.1.0"
 dependencies = [
