@@ -37,7 +37,7 @@ use aos_core::nix::aos_nix_env;
 use aos_core::output::Printer;
 
 use crate::download::DownloadResult;
-use crate::registry::ca::{CaEntry, CaPolicy};
+use crate::registry::ca::{CaEntry, TrustContext};
 use crate::registry::store_path_hash;
 
 // ---------------------------------------------------------------------------
@@ -87,20 +87,27 @@ pub fn sha256_stream(mut reader: impl Read) -> Result<String> {
 
 /// Convert a SHA-256 hash into a lowercase hex digest.
 ///
-/// Accepts the AOS internal `sha256:<hex>` form and the Nix SRI
-/// `sha256-<base64>` form emitted by `nix path-info --json`. A bare value
-/// with neither prefix is assumed to already be hex and is lowercased
-/// unchecked.
+/// Accepts the AOS internal `sha256:<hex>` form, Nix's base32
+/// `sha256:<52-char-nix32>` form (used by the `ca/` trust map and Nix
+/// signing fingerprints), and the Nix SRI `sha256-<base64>` form emitted
+/// by `nix path-info --json`. A bare value with neither prefix is assumed
+/// to already be hex and is lowercased unchecked.
 ///
 /// # Errors
 ///
 /// Returns an error if an SRI hash's base64 payload does not decode or does
-/// not decode to exactly 32 bytes.
+/// not decode to exactly 32 bytes, or a 52-char `sha256:` payload is not
+/// valid nixbase32.
 pub fn sha256_digest_hex(hash: &str) -> Result<String> {
     let hash = hash.trim();
 
-    if let Some(hex) = hash.strip_prefix("sha256:") {
-        return Ok(hex.to_ascii_lowercase());
+    if let Some(payload) = hash.strip_prefix("sha256:") {
+        if payload.len() == 52 {
+            let digest = aos_core::nar::cache::decode_nix_base32(payload)
+                .ok_or_else(|| anyhow::anyhow!("invalid nixbase32 SHA-256 hash '{hash}'"))?;
+            return Ok(hex::encode(digest));
+        }
+        return Ok(payload.to_ascii_lowercase());
     }
 
     if let Some(b64) = hash.strip_prefix("sha256-") {
@@ -273,23 +280,26 @@ pub fn verify_nar_blessed(path: &Path, blessed: &[CaEntry]) -> Result<String> {
 ///
 /// Every result gets the compressed-file check (Layer 4a) against the
 /// narinfo `FileHash` it was downloaded under — an integrity precheck, not
-/// a trust decision. The trust decision is per path:
+/// a trust decision. The trust decision is per path, judged against the
+/// path's *own* source registry via `ctx`:
 ///
-/// - A blessed `ca/` entry set exists → Layer 4c, the signed trust map is
-///   authoritative ([`verify_nar_blessed`]).
-/// - No entry and the transaction is enforcing (every involved registry
-///   publishes a map) → hard failure. A gap in a published map is
-///   indistinguishable from a stripping attack.
-/// - No entry and some involved registry predates the trust map → legacy
-///   Layer 4b against the unauthenticated narinfo `NarHash`, with a
-///   one-time warning.
+/// - The path's registry publishes a map → Layer 4c, the signed trust map
+///   is authoritative ([`verify_nar_blessed`]). A missing blessed entry is
+///   a hard failure (also caught up front by
+///   [`TrustContext::enforce_totality`]).
+/// - The path's registry has no map (legacy) → Layer 4b against the
+///   unauthenticated narinfo `NarHash`, with a one-time warning.
+///
+/// Callers should run [`TrustContext::enforce_totality`] over the full
+/// closure *before* this, so a stripped map fails even for members already
+/// present locally (which never reach this download-only path).
 ///
 /// # Errors
 ///
 /// Returns an error on the first result that fails its applicable checks.
 pub fn verify_downloads(
     results: &[DownloadResult],
-    policy: &CaPolicy<'_>,
+    ctx: &TrustContext<'_>,
     printer: &Printer,
 ) -> Result<()> {
     let mut warned_legacy = false;
@@ -298,21 +308,22 @@ pub fn verify_downloads(
             .with_context(|| format!("verifying download for {}", result.store_path))?;
 
         let ia_hash = store_path_hash(&result.store_path);
-        let blessed = policy.blessed(ia_hash);
-        if !blessed.is_empty() {
+        if ctx.enforced(ia_hash) {
+            let blessed = ctx.blessed(ia_hash);
+            if blessed.is_empty() {
+                bail!(
+                    "no ca/ trust-map entry for {} in its source registry; refusing to \
+                     install content the registry signature does not vouch for \
+                     (the registry may be malformed or its trust map stripped)",
+                    result.store_path,
+                );
+            }
             verify_nar_blessed(&result.local_path, &blessed).with_context(|| {
                 format!(
                     "verifying {} against the registry ca/ trust map",
                     result.store_path
                 )
             })?;
-        } else if policy.enforcing() {
-            bail!(
-                "no ca/ trust-map entry for {} in any involved registry; refusing to \
-                 install content the registry signature does not vouch for \
-                 (the registry may be malformed or its trust map stripped)",
-                result.store_path,
-            );
         } else {
             if !warned_legacy {
                 printer.warning(
@@ -366,6 +377,11 @@ pub fn verify_store_path(actual: &str, expected: &str) -> Result<()> {
 /// Returns an error if `nix-store` cannot be spawned or exits with a
 /// non-zero status (e.g. the store path does not exist).
 pub async fn store_path_nar_hash(store_path: &str) -> Result<String> {
+    Ok(dump_store_path(store_path).await?.0)
+}
+
+/// Dump a store path as a NAR and return its SHA-256 hash and size.
+async fn dump_store_path(store_path: &str) -> Result<(String, u64)> {
     let output = tokio::process::Command::new("nix-store")
         .envs(aos_nix_env())
         .args(["--dump", store_path])
@@ -383,7 +399,8 @@ pub async fn store_path_nar_hash(store_path: &str) -> Result<String> {
         .into());
     }
 
-    sha256_stream(output.stdout.as_slice())
+    let hash = sha256_stream(output.stdout.as_slice())?;
+    Ok((hash, output.stdout.len() as u64))
 }
 
 /// Verify an installed package against registry metadata.
@@ -410,6 +427,41 @@ pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Resu
         .into());
     }
     Ok(actual)
+}
+
+/// Verify an installed store path against a blessed `ca/` entry set.
+///
+/// The multi-realisation analogue of [`verify_installed`]: re-dumps the
+/// path and accepts iff *some* `nar:` entry matches the freshly computed
+/// digest and exact size — a path matching any blessed realisation is
+/// intact, even when it is not the realisation a single-valued display
+/// hash would name.
+///
+/// On success, returns the computed `sha256:<hex>` hash.
+///
+/// # Errors
+///
+/// Returns an error when `blessed` contains no `nar:` entries, when
+/// `nix-store --dump` fails, or — as [`AosError::HashMismatch`] — when no
+/// blessed entry matches.
+pub async fn verify_installed_blessed(store_path: &str, blessed: &[CaEntry]) -> Result<String> {
+    if !blessed.iter().any(|entry| entry.nar_size().is_some()) {
+        bail!("no usable blessed entries: every ca/ entry is of an unrecognised type");
+    }
+    let (actual, size) = dump_store_path(store_path).await?;
+    if blessed.iter().any(|entry| entry.matches_nar(&actual, size)) {
+        return Ok(actual);
+    }
+    let expected = blessed
+        .iter()
+        .map(|entry| entry.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(AosError::HashMismatch {
+        expected,
+        actual: format!("{actual} ({size} bytes)"),
+    }
+    .into())
 }
 
 // ---------------------------------------------------------------------------
@@ -751,6 +803,13 @@ mod tests {
         (tmp, result)
     }
 
+    /// Build a one-entry [`TrustContext`] mapping `store_hash` to `map`.
+    fn ctx_for<'a>(store_hash: &str, map: &'a crate::registry::ca::CaMap) -> TrustContext<'a> {
+        let mut ctx = TrustContext::new();
+        ctx.insert(store_hash.to_string(), map);
+        ctx
+    }
+
     #[test]
     fn verify_downloads_uses_blessed_entries_over_narinfo() {
         use crate::registry::ca::{CaMap, upsert_entry};
@@ -770,10 +829,10 @@ mod tests {
         )
         .unwrap();
         let map = CaMap::load(reg.path()).unwrap();
-        let policy = CaPolicy::from_maps(vec![&map]);
+        let ctx = ctx_for("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &map);
         let printer = Printer::new(0, true, false);
 
-        verify_downloads(std::slice::from_ref(&result), &policy, &printer).unwrap();
+        verify_downloads(std::slice::from_ref(&result), &ctx, &printer).unwrap();
     }
 
     #[test]
@@ -785,7 +844,8 @@ mod tests {
         let nar_hash = sha256_stream(content.as_slice()).unwrap();
         let (_tmp, result) = download_result_fixture(store_path, content, &nar_hash);
 
-        // The map exists but covers a different hash: enforcing, no entry.
+        // The source registry publishes a map but has no entry for this
+        // path: enforced, blessed-empty → hard fail.
         let reg = tempfile::TempDir::new().unwrap();
         upsert_entry(
             reg.path(),
@@ -795,10 +855,10 @@ mod tests {
         )
         .unwrap();
         let map = CaMap::load(reg.path()).unwrap();
-        let policy = CaPolicy::from_maps(vec![&map]);
+        let ctx = ctx_for("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &map);
         let printer = Printer::new(0, true, false);
 
-        let err = verify_downloads(std::slice::from_ref(&result), &policy, &printer).unwrap_err();
+        let err = verify_downloads(std::slice::from_ref(&result), &ctx, &printer).unwrap_err();
         assert!(format!("{err:#}").contains("no ca/ trust-map entry"));
     }
 
@@ -814,14 +874,14 @@ mod tests {
         // No ca/ directory at all: legacy registry, narinfo hash decides.
         let reg = tempfile::TempDir::new().unwrap();
         let map = CaMap::load(reg.path()).unwrap();
-        let policy = CaPolicy::from_maps(vec![&map]);
+        let ctx = ctx_for("dddddddddddddddddddddddddddddddd", &map);
         let printer = Printer::new(0, true, false);
 
-        verify_downloads(std::slice::from_ref(&result), &policy, &printer).unwrap();
+        verify_downloads(std::slice::from_ref(&result), &ctx, &printer).unwrap();
 
         // And a lying narinfo still fails in legacy mode.
         let (_tmp2, bad) = download_result_fixture(store_path, content, "sha256:bogus");
-        assert!(verify_downloads(std::slice::from_ref(&bad), &policy, &printer).is_err());
+        assert!(verify_downloads(std::slice::from_ref(&bad), &ctx, &printer).is_err());
     }
 
     #[test]

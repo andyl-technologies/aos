@@ -268,12 +268,19 @@ parsers must not hard-break on published trees:
    emitting the removed TOML fields. `apr ca backfill` walks all
    published closures and generates entries from the origin's NARs, so
    an existing registry becomes fully mapped in one signed commit.
-3. **Consumer enforcement.** Once the registries we operate are
-   backfilled, `apm` makes a missing `ca/` entry a hard failure (§2.4
-   step 2). Until then, a registry with no `ca/` directory at all
-   verifies as today (root-only `nar_hash` when present), with a
-   warning; a registry with a *partial* map is treated as malformed —
-   partial maps are indistinguishable from a stripping attack.
+3. **Consumer enforcement.** Enforcement is **per source registry**: a
+   path is judged against the `ca/` map of the registry that resolved it,
+   never a cross-registry union. When that registry publishes a map, a
+   missing blessed entry for any closure member is a hard failure — checked
+   over the *whole* closure (including members already in the local store),
+   so a *partial* map is rejected even on an upgrade where the gap falls on
+   an already-present path (a partial map is indistinguishable from a
+   stripping attack). A registry with no `ca/` directory at all falls back,
+   with a warning, to verifying every downloaded member against the
+   cache-served narinfo `NarHash` — the same unauthenticated check apm
+   applied before this RFC. A mixed transaction (one mapped registry, one
+   legacy) enforces the mapped registry's paths regardless of the legacy
+   one.
 
 ## What this does NOT do
 

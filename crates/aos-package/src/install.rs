@@ -221,6 +221,24 @@ pub async fn run(
             .collect()
     };
 
+    // Trust-map totality (RFC-0005 §2.4/§2.8): every closure member from a
+    // registry that publishes a ca/ map must carry a blessed entry — checked
+    // over the WHOLE closure, including members already in the local store
+    // (which never reach the download/verify path), so a stripped or partial
+    // map fails loudly rather than slipping through on an upgrade.
+    let trust_members: Vec<(&str, &str)> = closures
+        .iter()
+        .flat_map(|closure| {
+            let registry = closure.registry_name.as_str();
+            closure
+                .closure
+                .iter()
+                .map(move |meta| (registry, store_path_hash(&meta.store_path)))
+        })
+        .collect();
+    let trust_ctx = registries.trust_context(&trust_members);
+    trust_ctx.enforce_totality()?;
+
     // Step 5: Fetch narinfo for each missing path so the summary can show
     // real compressed sizes and the download can use the cache's URL/hash.
     let requests = build_download_requests(&closures, &to_download, config)?;
@@ -300,14 +318,11 @@ pub async fn run(
         .await?;
         downloaded_count = results.len();
 
-        // Verify downloads against the involved registries' ca/ trust maps
-        // (RFC-0005), falling back to narinfo hashes for legacy registries.
+        // Verify downloads against each path's source-registry ca/ trust
+        // map (RFC-0005), falling back to narinfo hashes for legacy
+        // registries. Closure totality was already enforced above.
         printer.step(4, 7, "Verifying downloads...");
-        let registry_names: Vec<&str> = closures
-            .iter()
-            .map(|closure| closure.registry_name.as_str())
-            .collect();
-        verify_downloads(&results, &registries.ca_policy(&registry_names), printer)?;
+        verify_downloads(&results, &trust_ctx, printer)?;
 
         if download_only {
             if json_mode {

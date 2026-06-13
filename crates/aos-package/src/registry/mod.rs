@@ -253,23 +253,20 @@ impl RegistrySet {
         &self.registries
     }
 
-    /// Builds the blessed-content policy for a transaction that resolves
-    /// packages from the named registries (RFC-0005).
+    /// Builds the per-path trust context for a transaction (RFC-0005).
     ///
-    /// Duplicate names collapse; names not present in the set contribute
-    /// nothing (resolution cannot have produced packages from them).
-    pub fn ca_policy(&self, registry_names: &[&str]) -> ca::CaPolicy<'_> {
-        let mut seen = std::collections::HashSet::new();
-        let mut maps = Vec::new();
-        for name in registry_names {
-            if !seen.insert(*name) {
-                continue;
-            }
-            if let Some(registry) = self.get_registry(name) {
-                maps.push(registry.ca_map());
+    /// `members` pairs each closure member's store-path hash with the name
+    /// of the registry that resolved it, so each path is judged against
+    /// *that* registry's trust map (never a cross-registry union).
+    /// Members from registries not present in the set contribute nothing.
+    pub fn trust_context<'a>(&'a self, members: &[(&str, &str)]) -> ca::TrustContext<'a> {
+        let mut ctx = ca::TrustContext::new();
+        for (registry_name, store_path_hash) in members {
+            if let Some(registry) = self.get_registry(registry_name) {
+                ctx.insert((*store_path_hash).to_string(), registry.ca_map());
             }
         }
-        ca::CaPolicy::from_maps(maps)
+        ctx
     }
 }
 

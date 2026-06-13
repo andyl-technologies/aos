@@ -234,9 +234,13 @@ first `:` segment; `ca:` is reserved for Nix experimental-CA-store interop.
   `apr ca bless/revoke/verify/backfill` maintain the map directly.
 - **Consumer**: `apm` verifies each downloaded NAR's decompressed SHA-256
   and size against the blessed set (`verify_downloads`,
-  `crates/aos-package/src/verify.rs`). When every involved registry
-  publishes a map, an unmapped path is a **hard failure**; a registry with
-  no `ca/` at all falls back to narinfo hashes with a warning.
+  `crates/aos-package/src/verify.rs`), and checks blessed-entry coverage
+  over the **whole closure** before downloading (`enforce_totality`), so a
+  stripped map is caught even for members already in the local store.
+  Enforcement is **per source registry**: when a path's registry publishes
+  a map, an unmapped member is a **hard failure**; a registry with no `ca/`
+  at all falls back to narinfo hashes with a warning, independent of other
+  registries in the same transaction.
 - **Semantics**: append-mostly; removal is revocation and carries the same
   review weight as a `keys.toml` retirement. Deliberately **no
   `ca/** -diff`** gitattribute — blessing changes are the highest-value
