@@ -1,8 +1,8 @@
-# RFC-0005: Full Secure Boot integration — sign, measure, attest
+# RFC-0006: Full Secure Boot integration — sign, measure, attest
 
 - **Status:** Proposed
 - **Date:** 2026-06-13
-- **PR:** [#101](https://github.com/andyl-technologies/aos/pull/101)
+- **PR:** _(pending)_
 - **Audience:** anyone working on `pkgs/boot/`, `pkgs/system/systemd.nix`,
   `pkgs/kernel/`, `modules/security/`, `modules/services/ignition.nix`,
   `crates/aos-package/`, `lib/testing/`, or release/key operations.

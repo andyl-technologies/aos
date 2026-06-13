@@ -1,4 +1,4 @@
-# RFC-0005 — Measured boot & sealed encryption
+# RFC-0006 — Measured boot & sealed encryption
 
 Phase 3. Secure Boot answers "is this allowed to run." Measured boot answers
 "what *actually* ran," records it in a TPM, and lets secrets unseal only when

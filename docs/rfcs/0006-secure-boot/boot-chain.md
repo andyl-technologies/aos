@@ -1,4 +1,4 @@
-# RFC-0005 — Boot chain: sign & enforce
+# RFC-0006 — Boot chain: sign & enforce
 
 Phase 1 (firmware root) and phase 2 (lockdown overlay). The goal: the
 firmware refuses to start anything not signed by our db key, and the running
