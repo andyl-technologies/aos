@@ -33,8 +33,9 @@ use crate::db::{
     RegistryRecord, ReleaseRow, StorageBindingRecord, WebauthnCredentialRecord,
 };
 use crate::domain::{iam, Permission, Role, Scope};
+use crate::ui::pages::LIST_PER_PAGE;
 use crate::ui::render::{
-    ago, escape, key_fingerprint, page_with_session, table, SessionIndicator, StateLine,
+    ago, escape, key_fingerprint, page_with_session, table, Pager, SessionIndicator, StateLine,
 };
 
 /// The hidden CSRF synchronizer field every console `POST` form embeds.
@@ -506,7 +507,13 @@ pub fn activate_page(
 /// member, an invitee, or an instance admin); the link targets the
 /// [`new_org_page`] form at `/new`.
 #[must_use]
-pub fn orgs_page(email: &str, orgs: &[OrgRecord], can_create: bool, started: Instant) -> String {
+pub fn orgs_page(
+    email: &str,
+    orgs: &[OrgRecord],
+    can_create: bool,
+    page_number: usize,
+    started: Instant,
+) -> String {
     let mut body = String::from("<h1>Organizations</h1>\n");
     if can_create {
         body.push_str("<p><a href=\"/new\">+ create an organization</a></p>\n");
@@ -514,7 +521,9 @@ pub fn orgs_page(email: &str, orgs: &[OrgRecord], can_create: bool, started: Ins
     if orgs.is_empty() {
         body.push_str("<p class=\"dim\">You are not a member of any organization.</p>\n");
     } else {
-        let rows: Vec<Vec<String>> = orgs
+        let pager = Pager::new(page_number, LIST_PER_PAGE, orgs.len());
+        let rows: Vec<Vec<String>> = pager
+            .slice(orgs)
             .iter()
             .map(|org| {
                 vec![
@@ -528,6 +537,7 @@ pub fn orgs_page(email: &str, orgs: &[OrgRecord], can_create: bool, started: Ins
             })
             .collect();
         body.push_str(&table(&["organization", "slug"], &rows));
+        body.push_str(&pager.nav("/-/orgs", ""));
     }
     page_with_session(
         "organizations",
@@ -811,12 +821,20 @@ pub fn org_dashboard(
 
 /// The org audit feed page.
 #[must_use]
-pub fn audit_page(email: &str, org: &OrgRecord, rows: &[AuditRow], started: Instant) -> String {
+pub fn audit_page(
+    email: &str,
+    org: &OrgRecord,
+    rows: &[AuditRow],
+    page_number: usize,
+    started: Instant,
+) -> String {
     let mut body = format!("<h1>Audit · {}</h1>\n", escape(&org.name));
     if rows.is_empty() {
         body.push_str("<p class=\"dim\">No audit entries.</p>\n");
     } else {
-        let table_rows: Vec<Vec<String>> = rows
+        let pager = Pager::new(page_number, LIST_PER_PAGE, rows.len());
+        let table_rows: Vec<Vec<String>> = pager
+            .slice(rows)
             .iter()
             .map(|row| {
                 vec![
@@ -836,6 +854,7 @@ pub fn audit_page(email: &str, org: &OrgRecord, rows: &[AuditRow], started: Inst
             &["when", "actor", "action", "scope", "detail"],
             &table_rows,
         ));
+        body.push_str(&pager.nav(&format!("/-/org/{}/audit", org.slug), ""));
     }
     page_with_session(
         "audit",

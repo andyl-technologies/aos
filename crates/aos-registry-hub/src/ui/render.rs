@@ -294,6 +294,137 @@ pub fn live_table(headers: &[&str], rows: &[Vec<String>], noun: &str) -> String 
     )
 }
 
+/// Percent-encode a string for safe inclusion in a URL query value.
+#[must_use]
+pub fn urlencode(text: &str) -> String {
+    url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
+}
+
+/// Render a `<datalist id="…">` of `<option>`s for native input autocomplete.
+///
+/// An `<input list="id">` bound to this list gets browser-native suggestions
+/// with no JavaScript. Empty values are skipped; every value is escaped.
+#[must_use]
+pub fn datalist(id: &str, values: &[String]) -> String {
+    let mut out = format!("<datalist id=\"{}\">", escape(id));
+    for value in values {
+        if value.is_empty() {
+            continue;
+        }
+        let _ = write!(out, "<option value=\"{}\">", escape(value));
+    }
+    out.push_str("</datalist>\n");
+    out
+}
+
+/// A one-based pagination window over a list of `total` items.
+///
+/// Construct with [`Pager::new`], which clamps the requested page into
+/// `1..=pages()`; slice the current page's items with [`Pager::slice`] and
+/// render the prev/next navigation with [`Pager::nav`]. The same type backs
+/// every paginated list (registries, organizations, packages, audit) so they
+/// share one off-by-one-free implementation and one look.
+///
+/// ```no_run
+/// use aos_registry_hub::ui::render::Pager;
+/// let items: Vec<u32> = (0..250).collect();
+/// let pager = Pager::new(2, 100, items.len());
+/// assert_eq!(pager.page(), 2);
+/// assert_eq!(pager.pages(), 3);
+/// assert_eq!(pager.slice(&items).len(), 100);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct Pager {
+    page: usize,
+    per_page: usize,
+    total: usize,
+}
+
+impl Pager {
+    /// Build a pager, clamping `requested_page` (1-based) into the valid
+    /// range and `per_page` to at least 1.
+    #[must_use]
+    pub fn new(requested_page: usize, per_page: usize, total: usize) -> Self {
+        let per_page = per_page.max(1);
+        let pages = total.div_ceil(per_page).max(1);
+        let page = requested_page.max(1).min(pages);
+        Self {
+            page,
+            per_page,
+            total,
+        }
+    }
+
+    /// The clamped, 1-based current page.
+    #[must_use]
+    pub fn page(self) -> usize {
+        self.page
+    }
+
+    /// The total number of pages (at least 1, even when `total` is 0).
+    #[must_use]
+    pub fn pages(self) -> usize {
+        self.total.div_ceil(self.per_page).max(1)
+    }
+
+    /// The current page's half-open item range `start..end`.
+    #[must_use]
+    pub fn range(self) -> (usize, usize) {
+        let start = (self.page - 1) * self.per_page;
+        let end = start.saturating_add(self.per_page).min(self.total);
+        (start.min(self.total), end)
+    }
+
+    /// Slice `items` to the current page, tolerating a slice shorter than
+    /// `total` (returns an empty slice if the window is past the end).
+    #[must_use]
+    pub fn slice<T>(self, items: &[T]) -> &[T] {
+        let (start, end) = self.range();
+        let start = start.min(items.len());
+        let end = end.min(items.len());
+        &items[start..end]
+    }
+
+    /// Render the `‹ first · prev · page N of M · next · last ›` navigation,
+    /// or an empty string when there is only one page.
+    ///
+    /// `path` is the page's own path; `query` is the already-encoded query
+    /// string to preserve across navigation (search terms, sort, facets),
+    /// without a leading `?`/`&` and without any `page=` pair — empty when
+    /// there is nothing to preserve. Each link appends `page=N`.
+    #[must_use]
+    pub fn nav(self, path: &str, query: &str) -> String {
+        let pages = self.pages();
+        if pages <= 1 {
+            return String::new();
+        }
+        let href = |n: usize| -> String {
+            let raw = if query.is_empty() {
+                format!("{path}?page={n}")
+            } else {
+                format!("{path}?{query}&page={n}")
+            };
+            escape(&raw)
+        };
+        let mut out = String::from("<p class=\"pager\">");
+        if self.page > 1 {
+            let _ = write!(out, "<a href=\"{}\">⏮ first</a> ", href(1));
+            let _ = write!(out, "<a href=\"{}\">← prev</a> ", href(self.page - 1));
+        }
+        let _ = write!(
+            out,
+            "<span class=\"of\">page {} of {pages}</span>",
+            self.page
+        );
+        if self.page < pages {
+            let _ = write!(out, " <a href=\"{}\">next →</a>", href(self.page + 1));
+            let _ = write!(out, " <a href=\"{}\">last ⏭</a>", href(pages));
+        }
+        out.push_str("</p>\n");
+        out
+    }
+}
+
 /// Format a Unix timestamp as a coarse relative age ("38s ago",
 /// "4m ago", "3h ago", "2d ago").
 ///

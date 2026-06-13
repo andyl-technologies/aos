@@ -184,6 +184,17 @@ pre.partition-grid { line-height: 1.15; letter-spacing: 0.18em; }
 
 .rollout-bar { color: var(--ok); }
 
+/* Pagination nav (shared by every paginated list). The page-of-page label is
+ * dimmed so the prev/next/first/last links read as the actionable elements. */
+p.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 1rem;
+  margin: 0.4rem 0 1.6rem;
+}
+p.pager .of { color: var(--dim); }
+
 /* Package browser: the prominent lede description, the platform chips, the
  * dependency lists, and the raw-metadata disclosure — all monochrome-first,
  * matching the release-engineering paper aesthetic. */

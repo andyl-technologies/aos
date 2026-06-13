@@ -318,6 +318,19 @@ struct MagicQuery {
     token: String,
 }
 
+/// `?page=N` extractor for the paginated console lists (orgs, audit).
+#[derive(serde::Deserialize, Default)]
+struct PageQuery {
+    page: Option<usize>,
+}
+
+impl PageQuery {
+    /// The requested 1-based page, clamped to at least 1.
+    fn page(&self) -> usize {
+        self.page.unwrap_or(1).max(1)
+    }
+}
+
 /// `GET /auth/magic?token=<secret>` — consume the link, sign the user in.
 ///
 /// Finds or creates the user by the link's bound email, creates a session,
@@ -990,7 +1003,11 @@ async fn activate_submit(
 // -- orgs -------------------------------------------------------------------
 
 /// `GET /-/orgs` — the user's org list.
-async fn orgs(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+async fn orgs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<PageQuery>,
+) -> Response {
     let session = match require_session(&state, &headers) {
         Ok(s) => s,
         Err(resp) => return *resp,
@@ -1012,6 +1029,7 @@ async fn orgs(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respons
             &session.email,
             &orgs,
             can_create,
+            params.page(),
             Instant::now(),
         ))
         .into_response(),
@@ -1132,6 +1150,7 @@ async fn org_audit(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(org_slug): Path<String>,
+    Query(params): Query<PageQuery>,
 ) -> Response {
     let session = match require_session(&state, &headers) {
         Ok(s) => s,
@@ -1155,6 +1174,7 @@ async fn org_audit(
             &session.email,
             &org,
             &rows,
+            params.page(),
             Instant::now(),
         )))
     })();
