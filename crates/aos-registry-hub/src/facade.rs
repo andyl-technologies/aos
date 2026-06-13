@@ -70,6 +70,19 @@
 //! lease is process-local (phase 1/2 is single-process); a cross-process
 //! lease is a later phase.
 //!
+//! # Quotas
+//!
+//! Before writing, an org-owned registry's upload is checked against its org's
+//! quota ([`crate::db::Database::would_exceed_quota`] for bytes, plus the
+//! object-count cap): an over-quota `PUT` is rejected `507 Insufficient
+//! Storage`, the same contract as `aos-server`'s `max_paths`. After a
+//! successful write of a *new* object (an overwrite does not double-count),
+//! the org's running usage is incremented
+//! ([`crate::db::Database::add_org_usage`]). Usage is **approximate** — it
+//! counts bytes as written; a re-index/GC reconciliation that rebuilds it from
+//! the surface is a later refinement, so a deleted object's bytes linger.
+//! Unowned phase-1 registries (no `org_id`) have no quota and are unaffected.
+//!
 //! # Index-after-flip
 //!
 //! A successful mutable-pointer write re-indexes the registry from its
@@ -314,6 +327,22 @@ pub async fn put_machine_path(
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     }
 
+    // Quota gate (org-owned registries only): reject an over-quota write with
+    // 507 before any bytes land, matching aos-server's `max_paths` contract.
+    if let Some(org_id) = registry.org_id {
+        match quota_check(state, org_id, body.len() as i64) {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    StatusCode::INSUFFICIENT_STORAGE,
+                    "org storage quota exceeded",
+                )
+                    .into_response();
+            }
+            Err(err) => return internal(err),
+        }
+    }
+
     let mutable = is_mutable_pointer(path);
     if mutable {
         if let Err(holder) = state.leases.acquire(registry.id, &token_id, unix_now()) {
@@ -338,6 +367,21 @@ pub async fn put_machine_path(
     let existed = target.exists();
     if let Err(err) = write_atomic(&target, &body).await {
         return internal(err);
+    }
+
+    // Account a *new* object's bytes against the org's running usage. An
+    // overwrite is not double-counted (the prior bytes were already counted);
+    // a usage-update failure is logged, not fatal, since the bytes have landed.
+    if !existed {
+        if let Some(org_id) = registry.org_id {
+            if let Err(err) = state.db.add_org_usage(org_id, body.len() as i64, 1) {
+                tracing::warn!(
+                    slug = %registry.slug,
+                    error = %format!("{err:#}"),
+                    "recording org usage after upload failed"
+                );
+            }
+        }
     }
 
     // A pointer that completes a publish re-indexes inline so the index is
@@ -446,6 +490,28 @@ async fn write_atomic(target: &std::path::Path, bytes: &[u8]) -> anyhow::Result<
         .await
         .with_context(|| format!("renaming into {}", target.display()))?;
     Ok(())
+}
+
+/// Whether an org may accept `additional_bytes` more under its quota.
+///
+/// Returns `Ok(true)` when the write fits both the byte cap
+/// ([`crate::db::Database::would_exceed_quota`]) and the object-count cap, and
+/// `Ok(false)` when either would be exceeded. An org with no quota row, or
+/// `NULL` caps, always fits.
+///
+/// # Errors
+///
+/// Returns an error on database failure.
+fn quota_check(state: &AppState, org_id: i64, additional_bytes: i64) -> anyhow::Result<bool> {
+    if state.db.would_exceed_quota(org_id, additional_bytes)? {
+        return Ok(false);
+    }
+    if let Some(max_objects) = state.db.org_quota(org_id)?.max_objects {
+        if state.db.org_usage(org_id)?.object_count.saturating_add(1) > max_objects {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Current Unix time in seconds.

@@ -272,6 +272,45 @@
 //! `status` is `ok` (reachable, valid `nix-cache-info`), `stale` (reachable but
 //! no/empty `nix-cache-info`), or `unreachable` (transport failure or missing
 //! file root). The probing logic lives in [`crate::probe`].
+//!
+//! # Operations: quotas, signup policy, soft-delete (v13)
+//!
+//! The operations chapter of RFC-0004 ("Operations: migrations, backup,
+//! quotas, observability, offboarding") adds four tables/columns that are all
+//! **system of record** — none is rebuildable from the surface.
+//!
+//! ```text
+//! org_quotas       org_id 1  max_bytes 1073741824  max_objects 100000
+//!                  max_registries 50  max_tokens 200    -- NULL = unlimited
+//!
+//! org_usage        org_id 1  used_bytes 532480  object_count 412
+//!                  updated_at 1730000000             -- running totals on upload
+//!
+//! instance_config  config_key "signup_policy"  value "invite_only"   -- 'open'|'invite_only'
+//!
+//! orgs (+columns)  deleted_at 1730000000  purge_after 1732592000  -- NULL = active
+//! ```
+//!
+//! - `org_quotas` caps an org's hub-managed storage: bytes, object count,
+//!   registries, and active tokens. A `NULL` cell is unlimited; the upload
+//!   facade rejects an over-quota write with `507 Insufficient Storage`
+//!   ([`Database::would_exceed_quota`]), matching `aos-server`'s `max_paths`
+//!   contract.
+//! - `org_usage` holds running totals maintained on every successful upload
+//!   ([`Database::add_org_usage`]). Usage is *approximate* — it counts bytes as
+//!   written; a re-index/GC reconciliation that rebuilds it from the surface is
+//!   a later refinement, so a deleted object's bytes linger until then.
+//! - `instance_config` is the instance-wide key/value store; its first key is
+//!   `signup_policy` (`open` allows any authenticated user to create an org;
+//!   `invite_only`, the default, requires an invitation or existing
+//!   membership). See [`Database::signup_policy`].
+//! - The `orgs.deleted_at`/`orgs.purge_after` columns implement soft-delete
+//!   with a grace window (RFC-0004 offboarding): [`Database::soft_delete_org`]
+//!   stamps both, [`Database::restore_org`] clears them, the purge job
+//!   ([`Database::list_purgeable_orgs`] + [`Database::hard_purge_org`]) hard
+//!   deletes past the grace, and the serving paths
+//!   ([`Database::org_by_slug`], [`Database::list_registries`], …) exclude
+//!   soft-deleted orgs so a tombstoned org stops serving immediately.
 
 pub mod backend;
 pub mod dialect;
@@ -755,6 +794,42 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (registry_id, cache_url)
     );
     ",
+    // v13: operations — quotas, instance signup policy, and org soft-delete
+    // (RFC-0004 \"Operations: migrations, backup, quotas, observability,
+    // offboarding\"). All system of record; none rebuildable from the surface.
+    //
+    // - org_quotas: per-org caps on hub-managed storage. NULL = unlimited.
+    //   Enforced at the upload facade with 507 (the aos-server max_paths
+    //   contract) plus registry/token count gates in the create paths.
+    // - org_usage: running byte/object totals maintained on each upload. The
+    //   counts are approximate (bytes as written); a GC/re-index reconciliation
+    //   is a later refinement.
+    // - instance_config: instance-wide key/value settings. signup_policy is
+    //   'open' or 'invite_only' (default invite_only); gates org creation.
+    // - orgs.deleted_at / purge_after: soft-delete with a grace window. A
+    //   soft-deleted org stops serving (the serving queries filter it out) but
+    //   its data persists until the purge job hard-deletes it past purge_after.
+    "
+    CREATE TABLE org_quotas (
+        org_id         INTEGER PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+        max_bytes      INTEGER,                  -- NULL = unlimited
+        max_objects    INTEGER,                  -- NULL = unlimited
+        max_registries INTEGER,                  -- NULL = unlimited
+        max_tokens     INTEGER                   -- NULL = unlimited
+    );
+    CREATE TABLE org_usage (
+        org_id       INTEGER PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+        used_bytes   INTEGER NOT NULL DEFAULT 0,
+        object_count INTEGER NOT NULL DEFAULT 0,
+        updated_at   INTEGER NOT NULL
+    );
+    CREATE TABLE instance_config (
+        config_key   TEXT PRIMARY KEY,
+        value        TEXT NOT NULL
+    );
+    ALTER TABLE orgs ADD COLUMN deleted_at INTEGER;
+    ALTER TABLE orgs ADD COLUMN purge_after INTEGER;
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -826,6 +901,77 @@ pub struct OrgRecord {
     pub name: String,
     /// Unix time the org was created.
     pub created_at: i64,
+}
+
+/// Per-org quota caps on hub-managed resources (system-of-record row).
+///
+/// Mirrors the `org_quotas` row. Every cap is optional: `None` means *that*
+/// dimension is unlimited (an org with no `org_quotas` row at all is
+/// unlimited on every dimension). Quotas are enforced at the upload facade
+/// (bytes/objects, via [`Database::would_exceed_quota`]) and in the
+/// registry/token create paths (counts).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OrgQuota {
+    /// Maximum total stored bytes, or `None` for unlimited.
+    pub max_bytes: Option<i64>,
+    /// Maximum total stored objects, or `None` for unlimited.
+    pub max_objects: Option<i64>,
+    /// Maximum number of registries, or `None` for unlimited.
+    pub max_registries: Option<i64>,
+    /// Maximum number of active (non-revoked) tokens, or `None` for unlimited.
+    pub max_tokens: Option<i64>,
+}
+
+/// Per-org running usage totals (system-of-record row).
+///
+/// Mirrors the `org_usage` row. The totals are maintained incrementally on
+/// each upload ([`Database::add_org_usage`]) and are *approximate* — they
+/// count bytes as written, so a deleted object's bytes linger until a
+/// re-index/GC reconciliation (a later refinement) rebuilds them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OrgUsage {
+    /// Total bytes written under the org's managed registries.
+    pub used_bytes: i64,
+    /// Total objects written under the org's managed registries.
+    pub object_count: i64,
+    /// Unix time the totals were last updated.
+    pub updated_at: i64,
+}
+
+/// The instance-wide policy gating who may create organizations.
+///
+/// Stored in `instance_config` under the key `signup_policy`; see
+/// [`Database::signup_policy`]. The default is [`SignupPolicy::InviteOnly`]
+/// (the hosted-instance posture: free hub-managed storage behind open signup
+/// is an abuse magnet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignupPolicy {
+    /// Any authenticated principal may create an org.
+    Open,
+    /// Org creation requires an invitation or an existing membership (or an
+    /// instance admin).
+    InviteOnly,
+}
+
+impl SignupPolicy {
+    /// The wire string stored in `instance_config.value`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SignupPolicy::Open => "open",
+            SignupPolicy::InviteOnly => "invite_only",
+        }
+    }
+
+    /// Parse a stored policy string, defaulting to [`SignupPolicy::InviteOnly`]
+    /// for any unknown value (fail closed).
+    #[must_use]
+    pub fn parse(s: &str) -> SignupPolicy {
+        match s {
+            "open" => SignupPolicy::Open,
+            _ => SignupPolicy::InviteOnly,
+        }
+    }
 }
 
 /// A project (materialized-path node) system-of-record row.
@@ -1568,15 +1714,45 @@ impl Database {
             .transpose()
     }
 
-    /// List all registered registries.
+    /// List all registered registries that are servable.
+    ///
+    /// Registries owned by a soft-deleted org are excluded (a tombstoned org
+    /// stops serving every one of its registries); unowned phase-1 registries
+    /// (`org_id IS NULL`) always pass.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
     pub fn list_registries(&self) -> Result<Vec<RegistryRecord>> {
         let rows = self.backend.query(
-            &format!("SELECT {REGISTRY_COLUMNS} FROM registries ORDER BY slug"),
+            &format!(
+                "SELECT {REGISTRY_COLUMNS} FROM registries r
+                 WHERE r.org_id IS NULL
+                    OR NOT EXISTS (
+                        SELECT 1 FROM orgs o
+                        WHERE o.id = r.org_id AND o.deleted_at IS NOT NULL
+                    )
+                 ORDER BY r.slug"
+            ),
             &[],
+        )?;
+        rows.iter().map(row_to_registry).collect()
+    }
+
+    /// List the registries owned by one org, ordered by slug.
+    ///
+    /// Unlike [`Database::list_registries`], this does **not** filter by the
+    /// owning org's soft-delete state — it is the admin/export view, so it
+    /// returns an org's registries even while the org is tombstoned during its
+    /// offboarding grace window.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_registries_including_org(&self, org_id: i64) -> Result<Vec<RegistryRecord>> {
+        let rows = self.backend.query(
+            &format!("SELECT {REGISTRY_COLUMNS} FROM registries WHERE org_id = ?1 ORDER BY slug"),
+            &vals![org_id],
         )?;
         rows.iter().map(row_to_registry).collect()
     }
@@ -2321,7 +2497,12 @@ impl Database {
         )
     }
 
-    /// Look up an organization by slug.
+    /// Look up an active organization by slug.
+    ///
+    /// Soft-deleted orgs (those with `deleted_at` set) are **excluded** so a
+    /// tombstoned org stops resolving on every serving path. Use
+    /// [`Database::org_by_slug_including_deleted`] for the admin/restore path
+    /// that must still see them during the grace window.
     ///
     /// # Errors
     ///
@@ -2329,10 +2510,31 @@ impl Database {
     pub fn org_by_slug(&self, slug: &str) -> Result<Option<OrgRecord>> {
         self.backend
             .query_opt(
-                "SELECT id, slug, name, created_at FROM orgs WHERE slug = ?1",
+                "SELECT id, slug, name, created_at FROM orgs
+                 WHERE slug = ?1 AND deleted_at IS NULL",
                 &vals![slug],
             )
             .context("loading org by slug")?
+            .map(|row| row_to_org(&row))
+            .transpose()
+    }
+
+    /// Look up an organization by slug, *including* soft-deleted ones.
+    ///
+    /// The admin-visible variant of [`Database::org_by_slug`]: it resolves an
+    /// org even after it has been soft-deleted, so the restore and export
+    /// paths can act on it during its grace window.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn org_by_slug_including_deleted(&self, slug: &str) -> Result<Option<OrgRecord>> {
+        self.backend
+            .query_opt(
+                "SELECT id, slug, name, created_at FROM orgs WHERE slug = ?1",
+                &vals![slug],
+            )
+            .context("loading org by slug (incl. deleted)")?
             .map(|row| row_to_org(&row))
             .transpose()
     }
@@ -2732,6 +2934,12 @@ impl Database {
         if self.registry_by_slug(&slug)?.is_some() {
             bail!("a registry already exists at '{slug}'");
         }
+        // Per-org registry-count quota (NULL/unset = unlimited).
+        if let Some(max_registries) = self.org_quota(org_id)?.max_registries {
+            if self.org_registry_count(org_id)? >= max_registries {
+                bail!("org registry quota of {max_registries} reached");
+            }
+        }
         let id = self.backend.execute_insert(
             "INSERT INTO registries
              (slug, source_url, trust_keys, require_signatures, created_at,
@@ -3068,17 +3276,454 @@ impl Database {
             .transpose()
     }
 
-    /// List all organizations, ordered by slug.
+    /// List all active organizations, ordered by slug.
+    ///
+    /// Soft-deleted orgs are excluded (see [`Database::org_by_slug`]).
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
     pub fn list_orgs(&self) -> Result<Vec<OrgRecord>> {
         let rows = self.backend.query(
-            "SELECT id, slug, name, created_at FROM orgs ORDER BY slug",
+            "SELECT id, slug, name, created_at FROM orgs
+             WHERE deleted_at IS NULL ORDER BY slug",
             &[],
         )?;
         rows.iter().map(row_to_org).collect()
+    }
+
+    // -- operations: quotas, usage, signup policy, offboarding (v13) ---------
+
+    /// Set (or replace) an org's quota caps.
+    ///
+    /// Each cap is optional: pass `None` to leave that dimension unlimited.
+    /// Upserts the single `org_quotas` row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn set_org_quota(&self, org_id: i64, quota: &OrgQuota) -> Result<()> {
+        self.backend.execute(
+            "INSERT INTO org_quotas (org_id, max_bytes, max_objects, max_registries, max_tokens)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(org_id) DO UPDATE SET
+                 max_bytes = excluded.max_bytes,
+                 max_objects = excluded.max_objects,
+                 max_registries = excluded.max_registries,
+                 max_tokens = excluded.max_tokens",
+            &vals![
+                org_id,
+                quota.max_bytes,
+                quota.max_objects,
+                quota.max_registries,
+                quota.max_tokens,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Look up an org's quota caps.
+    ///
+    /// Returns [`OrgQuota::default`] (all dimensions unlimited) when the org
+    /// has no `org_quotas` row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn org_quota(&self, org_id: i64) -> Result<OrgQuota> {
+        let row = self.backend.query_opt(
+            "SELECT max_bytes, max_objects, max_registries, max_tokens
+             FROM org_quotas WHERE org_id = ?1",
+            &vals![org_id],
+        )?;
+        match row {
+            Some(row) => Ok(OrgQuota {
+                max_bytes: row.get(0)?,
+                max_objects: row.get(1)?,
+                max_registries: row.get(2)?,
+                max_tokens: row.get(3)?,
+            }),
+            None => Ok(OrgQuota::default()),
+        }
+    }
+
+    /// Look up an org's current usage totals.
+    ///
+    /// Returns [`OrgUsage::default`] (all zero) when the org has no
+    /// `org_usage` row yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn org_usage(&self, org_id: i64) -> Result<OrgUsage> {
+        let row = self.backend.query_opt(
+            "SELECT used_bytes, object_count, updated_at FROM org_usage WHERE org_id = ?1",
+            &vals![org_id],
+        )?;
+        match row {
+            Some(row) => Ok(OrgUsage {
+                used_bytes: row.get(0)?,
+                object_count: row.get(1)?,
+                updated_at: row.get(2)?,
+            }),
+            None => Ok(OrgUsage::default()),
+        }
+    }
+
+    /// Add `delta_bytes`/`delta_objects` to an org's running usage totals.
+    ///
+    /// Upserts the `org_usage` row, creating it on first use. Called by the
+    /// upload facade after a successful write of a new object. The totals are
+    /// approximate (see [`OrgUsage`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn add_org_usage(&self, org_id: i64, delta_bytes: i64, delta_objects: i64) -> Result<()> {
+        self.backend.execute(
+            "INSERT INTO org_usage (org_id, used_bytes, object_count, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(org_id) DO UPDATE SET
+                 used_bytes = org_usage.used_bytes + excluded.used_bytes,
+                 object_count = org_usage.object_count + excluded.object_count,
+                 updated_at = excluded.updated_at",
+            &vals![org_id, delta_bytes, delta_objects, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    /// Whether writing `additional_bytes` more would exceed an org's byte quota.
+    ///
+    /// Returns `true` only when the org has a `max_bytes` cap *and*
+    /// `used_bytes + additional_bytes` would exceed it. An org with no cap (or
+    /// no quota row) never exceeds. The object-count cap is checked separately
+    /// by the caller against [`Database::org_quota`]/[`Database::org_usage`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn would_exceed_quota(&self, org_id: i64, additional_bytes: i64) -> Result<bool> {
+        let quota = self.org_quota(org_id)?;
+        let Some(max_bytes) = quota.max_bytes else {
+            return Ok(false);
+        };
+        let used = self.org_usage(org_id)?.used_bytes;
+        Ok(used.saturating_add(additional_bytes) > max_bytes)
+    }
+
+    /// Read an instance-config value by key.
+    ///
+    /// Returns `None` when the key is unset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn instance_config_get(&self, key: &str) -> Result<Option<String>> {
+        self.backend
+            .query_opt(
+                "SELECT value FROM instance_config WHERE config_key = ?1",
+                &vals![key],
+            )?
+            .map(|row| row.get(0))
+            .transpose()
+    }
+
+    /// Set an instance-config value, upserting the key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn instance_config_set(&self, key: &str, value: &str) -> Result<()> {
+        self.backend.execute(
+            "INSERT INTO instance_config (config_key, value) VALUES (?1, ?2)
+             ON CONFLICT(config_key) DO UPDATE SET value = excluded.value",
+            &vals![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// The instance's signup policy (defaulting to invite-only when unset).
+    ///
+    /// Reads the `signup_policy` instance-config key and parses it through
+    /// [`SignupPolicy::parse`] (any unknown value falls closed to
+    /// invite-only).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn signup_policy(&self) -> Result<SignupPolicy> {
+        Ok(self
+            .instance_config_get("signup_policy")?
+            .map(|v| SignupPolicy::parse(&v))
+            .unwrap_or(SignupPolicy::InviteOnly))
+    }
+
+    /// Set the instance signup policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn set_signup_policy(&self, policy: SignupPolicy) -> Result<()> {
+        self.instance_config_set("signup_policy", policy.as_str())
+    }
+
+    /// The number of active (non-revoked) tokens owned by any principal in an
+    /// org.
+    ///
+    /// Counts tokens whose owner is the org's service accounts; user-owned
+    /// tokens are not scoped to a single org, so the per-org token quota
+    /// governs the org's service-account publishers (the CI surface). Used by
+    /// the token-mint quota gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn org_active_token_count(&self, org_id: i64) -> Result<i64> {
+        self.backend
+            .query_opt(
+                "SELECT COUNT(*) FROM tokens
+                 WHERE owner_kind = 'service_account'
+                   AND revoked_at IS NULL
+                   AND owner_id IN (SELECT id FROM service_accounts WHERE org_id = ?1)",
+                &vals![org_id],
+            )?
+            .context("token count query returned no row")?
+            .get(0)
+    }
+
+    /// List token *metadata* (never the hash/secret) for an org's service
+    /// accounts, for export.
+    ///
+    /// Returns `(token_id, owner_kind, owner_id, scope, permissions_json,
+    /// created_at, expires_at, last_used_at)` for every token owned by a
+    /// service account in `org_id`. The `hash` column is deliberately excluded
+    /// — an export carries no usable credential (RFC-0004 offboarding).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    #[allow(clippy::type_complexity)]
+    pub fn export_org_token_metadata(
+        &self,
+        org_id: i64,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            i64,
+            String,
+            String,
+            i64,
+            Option<i64>,
+            Option<i64>,
+        )>,
+    > {
+        let rows = self.backend.query(
+            "SELECT id, owner_kind, owner_id, scope, permissions, created_at, expires_at,
+                    last_used_at
+             FROM tokens
+             WHERE owner_kind = 'service_account'
+               AND owner_id IN (SELECT id FROM service_accounts WHERE org_id = ?1)
+             ORDER BY created_at, id",
+            &vals![org_id],
+        )?;
+        rows.iter()
+            .map(|row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            })
+            .collect()
+    }
+
+    /// List every membership grant at a scope at or below `scope_prefix`.
+    ///
+    /// Returns `(principal_kind, principal_id, scope, role)` for grants whose
+    /// scope is `scope_prefix` or a descendant of it (segment-boundary match),
+    /// for org export. Passing an org slug returns the org's whole grant tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_memberships_under(
+        &self,
+        scope_prefix: &str,
+    ) -> Result<Vec<(String, i64, String, String)>> {
+        let prefix = crate::domain::Scope::parse(scope_prefix);
+        let rows = self.backend.query(
+            "SELECT principal_kind, principal_id, scope, role FROM memberships
+             ORDER BY scope, principal_kind, principal_id",
+            &[],
+        )?;
+        let mut out = Vec::new();
+        for row in &rows {
+            let kind: String = row.get(0)?;
+            let pid: i64 = row.get(1)?;
+            let scope: String = row.get(2)?;
+            let role: String = row.get(3)?;
+            if prefix.contains(&crate::domain::Scope::parse(&scope)) {
+                out.push((kind, pid, scope, role));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether a user holds any role grant at any scope.
+    ///
+    /// Used by the `invite_only` signup gate: an existing member of some org
+    /// may create another org without an invitation (RFC-0004).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn user_has_any_membership(&self, user_id: i64) -> Result<bool> {
+        let count: i64 = self
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM memberships
+                 WHERE principal_kind = 'user' AND principal_id = ?1",
+                &vals![user_id],
+            )?
+            .context("membership count query returned no row")?
+            .get(0)?;
+        Ok(count > 0)
+    }
+
+    /// Whether a live (unexpired, unaccepted) invitation exists for `email`.
+    ///
+    /// Used by the `invite_only` signup gate. A user invited to any org may
+    /// create their own org (RFC-0004 "open membership-by-invitation").
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn has_pending_invitation(&self, email: &str) -> Result<bool> {
+        let now = unix_now();
+        let count: i64 = self
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM invitations
+                 WHERE email = ?1 AND accepted_at IS NULL AND expires_at > ?2",
+                &vals![email, now],
+            )?
+            .context("invitation count query returned no row")?
+            .get(0)?;
+        Ok(count > 0)
+    }
+
+    /// The number of registries owned by an org.
+    ///
+    /// Used by the registry-create quota gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn org_registry_count(&self, org_id: i64) -> Result<i64> {
+        self.backend
+            .query_opt(
+                "SELECT COUNT(*) FROM registries WHERE org_id = ?1",
+                &vals![org_id],
+            )?
+            .context("registry count query returned no row")?
+            .get(0)
+    }
+
+    /// Whether an org exists and is not soft-deleted.
+    ///
+    /// The serving paths consult this to stop serving a tombstoned org's
+    /// registries without disclosing their existence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn org_is_active(&self, org_id: i64) -> Result<bool> {
+        let row = self.backend.query_opt(
+            "SELECT 1 FROM orgs WHERE id = ?1 AND deleted_at IS NULL",
+            &vals![org_id],
+        )?;
+        Ok(row.is_some())
+    }
+
+    /// Soft-delete an org, opening a `grace_secs` grace window.
+    ///
+    /// Stamps `deleted_at = now` and `purge_after = now + grace_secs`. The org
+    /// immediately stops serving (the serving queries exclude soft-deleted
+    /// orgs), but its data persists until the purge job hard-deletes it past
+    /// `purge_after`. Returns `Ok(false)` when the org is unknown or already
+    /// soft-deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn soft_delete_org(&self, org_id: i64, grace_secs: i64) -> Result<bool> {
+        let now = unix_now();
+        let n = self.backend.execute(
+            "UPDATE orgs SET deleted_at = ?2, purge_after = ?3
+             WHERE id = ?1 AND deleted_at IS NULL",
+            &vals![org_id, now, now + grace_secs],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Restore a soft-deleted org within its grace window.
+    ///
+    /// Clears `deleted_at`/`purge_after`, returning the org to active serving.
+    /// Returns `Ok(false)` when the org is unknown or was not soft-deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn restore_org(&self, org_id: i64) -> Result<bool> {
+        let n = self.backend.execute(
+            "UPDATE orgs SET deleted_at = NULL, purge_after = NULL
+             WHERE id = ?1 AND deleted_at IS NOT NULL",
+            &vals![org_id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// List orgs whose grace window has elapsed (`purge_after <= now`).
+    ///
+    /// These are the orgs the purge job ([`Database::hard_purge_org`]) hard
+    /// deletes. Returns the admin-visible records (soft-deleted orgs are
+    /// otherwise hidden).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_purgeable_orgs(&self, now: i64) -> Result<Vec<OrgRecord>> {
+        let rows = self.backend.query(
+            "SELECT id, slug, name, created_at FROM orgs
+             WHERE deleted_at IS NOT NULL AND purge_after IS NOT NULL AND purge_after <= ?1
+             ORDER BY slug",
+            &vals![now],
+        )?;
+        rows.iter().map(row_to_org).collect()
+    }
+
+    /// Hard-delete an org row, cascading to everything it owns.
+    ///
+    /// The org's `ON DELETE CASCADE` foreign keys remove its projects,
+    /// registries, service accounts, memberships, bindings, quotas, usage, and
+    /// the rest of its SQL system of record. Bucket/LocalFs content removal is
+    /// a *separate* step (the caller deletes the binding root dir), since the
+    /// surface lives outside SQL. Returns `Ok(false)` when the org is unknown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn hard_purge_org(&self, org_id: i64) -> Result<bool> {
+        let n = self
+            .backend
+            .execute("DELETE FROM orgs WHERE id = ?1", &vals![org_id])?;
+        Ok(n > 0)
     }
 
     // -- tenancy: invitations ------------------------------------------------
@@ -3454,6 +4099,129 @@ impl Database {
         self.backend
             .execute("DELETE FROM sessions WHERE user_id = ?1", &vals![user_id])?;
         Ok(())
+    }
+
+    // -- offboarding: ownership transfer + user deletion (v13) --------------
+
+    /// The org slugs where `user_id` is the *sole* `Owner`.
+    ///
+    /// An org's owners are the user principals holding the `owner` role at the
+    /// org's own scope (`scope == org.slug`). This returns the slugs of orgs
+    /// for which `user_id` is the only such owner — exactly the orgs whose
+    /// ownership must be transferred before the user can be deleted (RFC-0004
+    /// offboarding). Soft-deleted orgs are skipped (they are en route to purge
+    /// anyway).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn sole_owned_orgs(&self, user_id: i64) -> Result<Vec<String>> {
+        // Orgs where the user is an owner at the org scope.
+        let rows = self.backend.query(
+            "SELECT o.id, o.slug FROM orgs o
+             JOIN memberships m
+               ON m.scope = o.slug
+              AND m.principal_kind = 'user'
+              AND m.principal_id = ?1
+              AND m.role = 'owner'
+             WHERE o.deleted_at IS NULL",
+            &vals![user_id],
+        )?;
+        let mut sole = Vec::new();
+        for row in &rows {
+            let org_slug: String = row.get(1)?;
+            let owner_count: i64 = self
+                .backend
+                .query_opt(
+                    "SELECT COUNT(*) FROM memberships
+                     WHERE scope = ?1 AND principal_kind = 'user' AND role = 'owner'",
+                    &vals![org_slug],
+                )?
+                .context("owner count query returned no row")?
+                .get(0)?;
+            if owner_count <= 1 {
+                sole.push(org_slug);
+            }
+        }
+        Ok(sole)
+    }
+
+    /// Transfer org ownership from one user to another at the org scope.
+    ///
+    /// Grants `to_user` the `owner` role at `org.slug` and revokes `from_user`'s
+    /// owner grant there, in one transaction. The recipient need not have been
+    /// a member previously. Returns an error when the org is unknown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no org has `org_id`, or on database failure.
+    pub fn transfer_org_ownership(&self, org_id: i64, from_user: i64, to_user: i64) -> Result<()> {
+        let org = self
+            .org_by_id(org_id)?
+            .with_context(|| format!("no org with id {org_id}"))?;
+        let now = unix_now();
+        self.backend.with_tx(&mut |tx| {
+            tx.execute(
+                "INSERT INTO memberships
+                 (principal_kind, principal_id, scope, role, created_at)
+                 VALUES ('user', ?1, ?2, 'owner', ?3)
+                 ON CONFLICT(principal_kind, principal_id, scope)
+                 DO UPDATE SET role = excluded.role",
+                &vals![to_user, org.slug, now],
+            )?;
+            tx.execute(
+                "DELETE FROM memberships
+                 WHERE principal_kind = 'user' AND principal_id = ?1 AND scope = ?2",
+                &vals![from_user, org.slug],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// Soft-delete a user, failing if they are the sole owner of any org.
+    ///
+    /// RFC-0004 offboarding: a user may not be deleted while they are the only
+    /// `Owner` of an org — the ownership must be transferred first
+    /// ([`Database::transfer_org_ownership`]). On the blocking path this
+    /// returns an `Err` whose message lists the offending org slugs and makes
+    /// no change. On success it stamps `users.deleted_at`, revokes every
+    /// session the user holds, and hard-revokes every token they own (their
+    /// credentials deaden immediately), all in one transaction. Returns
+    /// `Ok(false)` when the user is unknown or already deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error (listing the orgs) when the user is the sole owner of
+    /// any org, or on database failure.
+    pub fn delete_user(&self, user_id: i64) -> Result<bool> {
+        let blocking = self.sole_owned_orgs(user_id)?;
+        if !blocking.is_empty() {
+            bail!(
+                "user {user_id} is the sole owner of: {} — transfer ownership before deleting",
+                blocking.join(", ")
+            );
+        }
+        let now = unix_now();
+        let mut deleted = false;
+        self.backend.with_tx(&mut |tx| {
+            let n = tx.execute(
+                "UPDATE users SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+                &vals![user_id, now],
+            )?;
+            if n == 0 {
+                return Ok(());
+            }
+            deleted = true;
+            tx.execute("DELETE FROM sessions WHERE user_id = ?1", &vals![user_id])?;
+            tx.execute(
+                "UPDATE tokens SET revoked_at = ?2
+                 WHERE owner_kind = 'user' AND owner_id = ?1 AND revoked_at IS NULL",
+                &vals![user_id, now],
+            )?;
+            Ok(())
+        })?;
+        Ok(deleted)
     }
 
     /// Elevate a session to sudo: set `auth_level = 1` and stamp
@@ -5831,5 +6599,164 @@ mod tests {
         // Releases (and the rest of the index) are untouched.
         assert_eq!(db.list_releases(id).unwrap().len(), 1);
         assert_eq!(db.index_status(id).unwrap().unwrap().state, "fresh");
+    }
+
+    // -- operations: quotas, usage, signup policy, offboarding (v13) --------
+
+    #[test]
+    fn quota_defaults_to_unlimited_and_round_trips() {
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        // No quota row: every dimension unlimited.
+        assert_eq!(db.org_quota(org).unwrap(), OrgQuota::default());
+        assert!(!db.would_exceed_quota(org, i64::MAX / 2).unwrap());
+
+        let quota = OrgQuota {
+            max_bytes: Some(1000),
+            max_objects: Some(10),
+            max_registries: Some(2),
+            max_tokens: Some(5),
+        };
+        db.set_org_quota(org, &quota).unwrap();
+        assert_eq!(db.org_quota(org).unwrap(), quota);
+    }
+
+    #[test]
+    fn usage_accumulates_and_drives_would_exceed_quota() {
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        db.set_org_quota(
+            org,
+            &OrgQuota {
+                max_bytes: Some(100),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(db.org_usage(org).unwrap(), OrgUsage::default());
+        // 60 more fits under 100.
+        assert!(!db.would_exceed_quota(org, 60).unwrap());
+        db.add_org_usage(org, 60, 1).unwrap();
+        assert_eq!(db.org_usage(org).unwrap().used_bytes, 60);
+        assert_eq!(db.org_usage(org).unwrap().object_count, 1);
+        // 60 + 50 = 110 > 100: would exceed.
+        assert!(db.would_exceed_quota(org, 50).unwrap());
+        // 60 + 40 = 100 is not *over* 100.
+        assert!(!db.would_exceed_quota(org, 40).unwrap());
+    }
+
+    #[test]
+    fn signup_policy_defaults_invite_only_and_round_trips() {
+        let db = Database::open_in_memory().unwrap();
+        assert_eq!(db.signup_policy().unwrap(), SignupPolicy::InviteOnly);
+        db.set_signup_policy(SignupPolicy::Open).unwrap();
+        assert_eq!(db.signup_policy().unwrap(), SignupPolicy::Open);
+        // An unknown stored value falls closed to invite-only.
+        db.instance_config_set("signup_policy", "garbage").unwrap();
+        assert_eq!(db.signup_policy().unwrap(), SignupPolicy::InviteOnly);
+    }
+
+    #[test]
+    fn soft_delete_excludes_from_serving_then_restore() {
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        db.register_owned(org, "acme/cdn");
+        assert!(db.org_by_slug("acme").unwrap().is_some());
+        assert_eq!(db.list_orgs().unwrap().len(), 1);
+        assert_eq!(db.list_registries().unwrap().len(), 1);
+
+        assert!(db.soft_delete_org(org, 30 * 86_400).unwrap());
+        // Excluded from active serving queries...
+        assert!(db.org_by_slug("acme").unwrap().is_none());
+        assert!(db.list_orgs().unwrap().is_empty());
+        assert!(db.list_registries().unwrap().is_empty());
+        assert!(!db.org_is_active(org).unwrap());
+        // ...but still visible to the admin/restore path.
+        assert!(db.org_by_slug_including_deleted("acme").unwrap().is_some());
+
+        assert!(db.restore_org(org).unwrap());
+        assert!(db.org_by_slug("acme").unwrap().is_some());
+        assert_eq!(db.list_registries().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn purge_only_after_grace_window() {
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        let now = unix_now();
+        db.soft_delete_org(org, 100).unwrap();
+        // Not yet purgeable just after deletion.
+        assert!(db.list_purgeable_orgs(now).unwrap().is_empty());
+        // Past the grace window it is listed and can be purged.
+        let purgeable = db.list_purgeable_orgs(now + 200).unwrap();
+        assert_eq!(purgeable.len(), 1);
+        assert!(db.hard_purge_org(org).unwrap());
+        assert!(db.org_by_slug_including_deleted("acme").unwrap().is_none());
+    }
+
+    #[test]
+    fn sole_owner_delete_blocked_then_transfer_succeeds() {
+        use crate::domain::{Permission, Principal, Role};
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        let alice = db.create_user("alice@acme.com", None).unwrap();
+        let bob = db.create_user("bob@acme.com", None).unwrap();
+        db.grant_membership("user", alice, "acme", "owner").unwrap();
+        // Alice has a token + a session, to confirm they deaden on deletion.
+        let (token_id, secret) = db
+            .create_token(
+                Principal::user(alice),
+                "acme",
+                &[Permission::Read],
+                None,
+                None,
+            )
+            .unwrap();
+        let session = db.create_session(alice, 3600, 1).unwrap();
+
+        // Alice is the sole owner: deletion is blocked.
+        assert_eq!(db.sole_owned_orgs(alice).unwrap(), vec!["acme".to_string()]);
+        assert!(db.delete_user(alice).is_err());
+        // The token and session are untouched by the failed delete.
+        assert!(db.validate_token(&secret).unwrap().is_some());
+        assert!(db.validate_session(&session).unwrap().is_some());
+
+        // Transfer ownership to Bob, then Alice is deletable.
+        db.transfer_org_ownership(org, alice, bob).unwrap();
+        assert!(db.sole_owned_orgs(alice).unwrap().is_empty());
+        assert!(db.delete_user(alice).unwrap());
+        // Alice's credentials deaden immediately.
+        assert!(db.validate_token(&secret).unwrap().is_none());
+        assert!(db.validate_session(&session).unwrap().is_none());
+        assert!(db.user_email(alice).unwrap().is_none());
+        let _ = token_id;
+        // Bob now owns acme.
+        let grants = db.effective_scopes(Principal::user(bob)).unwrap();
+        assert!(grants
+            .iter()
+            .any(|(s, r)| s.as_str() == "acme" && *r == Role::Owner));
+    }
+
+    /// Test helper: register a managed registry owned by `org` at `slug` with a
+    /// local_fs binding, so serving queries can exclude it on soft-delete.
+    impl Database {
+        fn register_owned(&self, org_id: i64, slug: &str) {
+            let binding = self
+                .create_storage_binding(org_id, "primary", "local_fs", "/tmp/aos-hub-test")
+                .unwrap();
+            // The slug is `org/name`; split off the name for the canonical path.
+            let name = slug.rsplit('/').next().unwrap();
+            self.create_managed_registry(
+                org_id,
+                "",
+                name,
+                "public",
+                Some(binding),
+                name,
+                &[],
+                false,
+            )
+            .unwrap();
+        }
     }
 }

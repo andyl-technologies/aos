@@ -31,6 +31,7 @@ fn seed() -> (Arc<AuthState>, String) {
         db,
         jwt_keys: JwtKeys::from_secret(b"test-secret-key-32-bytes-padding!"),
         access_token_ttl: 900,
+        ratelimit: aos_registry_hub::ratelimit::RateLimiter::new().into(),
     });
     (state, secret)
 }

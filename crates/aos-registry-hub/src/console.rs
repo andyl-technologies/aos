@@ -222,7 +222,11 @@ fn sso_target(state: &AppState, email: &str) -> Option<(String, bool)> {
 /// address is never revealed as known/unknown.
 ///
 /// [`LogMailer`]: crate::auth::magic::LogMailer
-async fn login_submit(State(state): State<Arc<AppState>>, Form(form): Form<LoginForm>) -> Response {
+async fn login_submit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<LoginForm>,
+) -> Response {
     let email = form.email.trim().to_lowercase();
     if email.is_empty() || !email.contains('@') {
         return Html(console::login_page(
@@ -230,6 +234,21 @@ async fn login_submit(State(state): State<Arc<AppState>>, Form(form): Form<Login
             Instant::now(),
         ))
         .into_response();
+    }
+    // Rate-limit magic-link issuance on both the target email (the email-bomb
+    // victim) and the source IP (the sender) — see [`crate::ratelimit`].
+    let now = crate::server::now_secs();
+    let ip = crate::server::client_ip_from_headers(&headers);
+    use crate::ratelimit::RateClass;
+    for (class, key) in [
+        (RateClass::MagicLinkEmail, email.as_str()),
+        (RateClass::MagicLinkIp, ip.as_str()),
+    ] {
+        if let crate::ratelimit::RateDecision::Limited { retry_after } =
+            state.ratelimit.check(class, key, now)
+        {
+            return crate::server::too_many_requests(retry_after);
+        }
     }
     // Domain capture: route to the org's IdP when one is configured.
     if let Some((org_slug, enforce_sso)) = sso_target(&state, &email) {

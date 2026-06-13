@@ -65,6 +65,9 @@ pub struct AuthState {
     pub jwt_keys: JwtKeys,
     /// Lifetime, in seconds, of a minted access token.
     pub access_token_ttl: i64,
+    /// Rate limiter the `/oauth2/token` exchange consults (per token id, with
+    /// an IP fallback). Shared with [`AppState`](crate::server::AppState).
+    pub ratelimit: Arc<crate::ratelimit::RateLimiter>,
 }
 
 impl AuthState {
@@ -78,6 +81,7 @@ impl AuthState {
             db,
             jwt_keys: JwtKeys::random(),
             access_token_ttl,
+            ratelimit: Arc::new(crate::ratelimit::RateLimiter::new()),
         }
     }
 }
@@ -313,6 +317,31 @@ pub fn oauth2_router() -> Router<Arc<AuthState>> {
 /// is missing/malformed or the secret is unknown, revoked (past grace), or
 /// expired, and `500` on a token-store or JWT-minting failure.
 pub async fn oauth2_token_handler(State(state): State<Arc<AuthState>>, parts: Parts) -> Response {
+    // Rate-limit the exchange per source IP to bound credential spray (an
+    // attacker probing provisioning secrets). See [`crate::ratelimit`].
+    let ip = parts
+        .headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .map_or_else(String::new, |xff| {
+            crate::ratelimit::client_ip(Some(xff), "")
+        });
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    if let crate::ratelimit::RateDecision::Limited { retry_after } =
+        state
+            .ratelimit
+            .check(crate::ratelimit::RateClass::TokenExchange, &ip, now)
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, retry_after.max(1).to_string())],
+            "rate limit exceeded",
+        )
+            .into_response();
+    }
     let header = match parts
         .headers
         .get(header::AUTHORIZATION)

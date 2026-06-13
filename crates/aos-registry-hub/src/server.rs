@@ -74,6 +74,9 @@ pub struct AppState {
     /// Hardened HTTP client for hub-originated OIDC requests (token exchange,
     /// JWKS fetch), with the same timeouts as the surface fetcher.
     pub http: reqwest::Client,
+    /// Process-local rate limiter for the pre-auth endpoints (device
+    /// authorization, magic-link issuance, token exchange, browse/search).
+    pub ratelimit: Arc<crate::ratelimit::RateLimiter>,
 }
 
 impl AppState {
@@ -86,7 +89,13 @@ impl AppState {
     /// [`LogMailer`]: crate::auth::magic::LogMailer
     #[must_use]
     pub fn new(db: Arc<Database>, external_url: String) -> AppState {
-        let auth = Arc::new(AuthState::new(Arc::clone(&db), ACCESS_TOKEN_TTL_SECS));
+        let ratelimit = Arc::new(crate::ratelimit::RateLimiter::new());
+        let auth = Arc::new(AuthState {
+            db: Arc::clone(&db),
+            jwt_keys: crate::auth::jwt::JwtKeys::random(),
+            access_token_ttl: ACCESS_TOKEN_TTL_SECS,
+            ratelimit: Arc::clone(&ratelimit),
+        });
         AppState {
             db,
             external_url,
@@ -98,6 +107,7 @@ impl AppState {
             // supplies a real one via the struct literal.
             sealer: crate::auth::oidc::dev_sealer(),
             http: crate::fetch::hardened_client(),
+            ratelimit,
         }
     }
 }
@@ -161,6 +171,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/", get(instance_home))
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
+        .route(
+            "/oauth2/device_authorization",
+            axum::routing::post(device_authorization),
+        )
         .route("/_assets/style.css", get(stylesheet))
         .route("/_assets/jetbrains-mono-regular.woff2", get(font_regular))
         .route("/_assets/jetbrains-mono-bold.woff2", get(font_bold))
@@ -228,6 +242,37 @@ pub(crate) fn internal(err: anyhow::Error) -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
 }
 
+/// Current Unix time in seconds.
+pub(crate) fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// A `429 Too Many Requests` response carrying a `Retry-After` header.
+pub(crate) fn too_many_requests(retry_after: i64) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, retry_after.max(1).to_string())],
+        "rate limit exceeded",
+    )
+        .into_response()
+}
+
+/// Resolve the request's client IP from `X-Forwarded-For` (last hop) or, when
+/// absent, a best-effort empty peer.
+///
+/// The axum router does not expose the TCP peer address inside a plain handler
+/// without a `ConnectInfo` extractor, so the forwarded header is the primary
+/// signal in the common proxied deployment; absent it, the limiter keys on an
+/// empty string (a single shared bucket) which is conservative — it cannot
+/// under-count. See [`crate::ratelimit`] for the trust model.
+pub(crate) fn client_ip_from_headers(headers: &HeaderMap) -> String {
+    let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
+    crate::ratelimit::client_ip(xff, "")
+}
+
 pub(crate) fn load_registry(
     state: &AppState,
     slug: &str,
@@ -242,6 +287,65 @@ pub(crate) fn load_registry(
 async fn healthz(State(state): State<Arc<AppState>>) -> Response {
     match state.db.list_registries() {
         Ok(regs) => (StatusCode::OK, format!("ok ({} registries)\n", regs.len())).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /oauth2/device_authorization` form (RFC 8628).
+#[derive(Debug, Default, serde::Deserialize)]
+struct DeviceAuthForm {
+    /// Requested scope path (defaults to the instance root when omitted).
+    scope: Option<String>,
+    /// Requested permission verb (repeatable via the form encoding; defaults
+    /// to `read`).
+    #[serde(default)]
+    permission: Vec<String>,
+}
+
+/// `POST /oauth2/device_authorization` — start an RFC 8628 device grant.
+///
+/// Anonymous and **rate-limited per source IP** (the abuse surface the RFC
+/// calls out): a flood from one IP is `429`d with `Retry-After`. On success it
+/// returns the RFC 8628 JSON (`device_code`, `user_code`,
+/// `verification_uri`, `expires_in`, `interval`). The requested scope and
+/// permissions are recorded but not authorized here — the approving user's
+/// grants clamp them at `/activate`.
+async fn device_authorization(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Form(form): axum::extract::Form<DeviceAuthForm>,
+) -> Response {
+    let ip = client_ip_from_headers(&headers);
+    if let crate::ratelimit::RateDecision::Limited { retry_after } = state.ratelimit.check(
+        crate::ratelimit::RateClass::DeviceAuthorization,
+        &ip,
+        now_secs(),
+    ) {
+        return too_many_requests(retry_after);
+    }
+    let scope = form.scope.unwrap_or_default();
+    let perms: Vec<Permission> = if form.permission.is_empty() {
+        vec![Permission::Read]
+    } else {
+        form.permission
+            .iter()
+            .filter_map(|p| crate::auth::permission_from_str(p))
+            .collect()
+    };
+    match state.db.start_device_authorization(&scope, &perms) {
+        Ok((device_code, user_code, expires_in)) => {
+            let verification_uri = format!("{}/activate", state.external_url.trim_end_matches('/'));
+            let verification_uri_complete = format!("{verification_uri}?user_code={user_code}");
+            axum::Json(serde_json::json!({
+                "device_code": device_code,
+                "user_code": user_code,
+                "verification_uri": verification_uri,
+                "verification_uri_complete": verification_uri_complete,
+                "expires_in": expires_in,
+                "interval": 5,
+            }))
+            .into_response()
+        }
         Err(err) => internal(err),
     }
 }
@@ -1118,6 +1222,13 @@ pub(crate) fn authorize_registry_read(
     headers: &HeaderMap,
 ) -> Result<(), Box<Response>> {
     let denied = || Box::new(StatusCode::NOT_FOUND.into_response());
+    // A registry owned by a soft-deleted org stops serving entirely (RFC-0004
+    // offboarding): 404, never disclosing that it once existed.
+    if let Some(org_id) = registry.org_id {
+        if !matches!(state.db.org_is_active(org_id), Ok(true)) {
+            return Err(denied());
+        }
+    }
     match registry.visibility.as_str() {
         // Public (and any unowned phase-1 registry) is always readable.
         "public" => Ok(()),
