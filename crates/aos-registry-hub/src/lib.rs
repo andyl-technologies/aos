@@ -68,6 +68,7 @@ pub mod domain;
 pub mod facade;
 pub mod fetch;
 pub mod indexer;
+pub mod probe;
 pub mod rpc;
 pub mod server;
 pub mod signing;

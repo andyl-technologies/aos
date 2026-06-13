@@ -254,6 +254,24 @@
 //! `next_attempt_at` with exponential backoff up to the attempt cap. The
 //! dispatch/delivery logic lives in [`crate::webhook`]; this module only
 //! stores and lists the rows.
+//!
+//! # Cache freshness probes (v12)
+//!
+//! Phase-1 "frontend freshness probes". For each committed `[[caches]]` URL the
+//! hub knows, a lightweight reachability probe records whether the cache serves
+//! a `nix-cache-info`, how long the probe took, and when it ran. These rows are
+//! purely **observational** (rebuildable from the next probe), so they live in
+//! the index/derived set rather than the system of record.
+//!
+//! ```text
+//! cache_probes  registry_id 1  cache_url "https://cdn.aos.andyl.org"
+//!               status "ok"  observed_nix_cache_info 1
+//!               latency_ms 42  checked_at 1730000000
+//! ```
+//!
+//! `status` is `ok` (reachable, valid `nix-cache-info`), `stale` (reachable but
+//! no/empty `nix-cache-info`), or `unreachable` (transport failure or missing
+//! file root). The probing logic lives in [`crate::probe`].
 
 pub mod backend;
 pub mod dialect;
@@ -723,6 +741,20 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX webhook_deliveries_due_idx
         ON webhook_deliveries (status, next_attempt_at);
     ",
+    // v12: cache freshness probes (phase-1 \"frontend freshness probes\").
+    // Observational reachability/latency for each committed [[caches]] URL,
+    // upserted on every probe. Derived/rebuildable, not a system of record.
+    "
+    CREATE TABLE cache_probes (
+        registry_id             INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
+        cache_url               TEXT NOT NULL,
+        status                  TEXT NOT NULL,   -- ok | stale | unreachable
+        observed_nix_cache_info INTEGER NOT NULL,-- 1 when nix-cache-info was served
+        latency_ms              INTEGER NOT NULL,
+        checked_at              INTEGER NOT NULL,
+        PRIMARY KEY (registry_id, cache_url)
+    );
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -1130,6 +1162,24 @@ pub struct ValidationRunRow {
     pub reachable: bool,
     /// Unix time the run finished.
     pub finished_at: i64,
+}
+
+/// The latest freshness probe of one committed cache endpoint.
+///
+/// See the [cache-freshness migration docs](self) for the `status` vocabulary
+/// and the probing logic in [`crate::probe`].
+#[derive(Debug, Clone)]
+pub struct CacheProbeRow {
+    /// The committed cache endpoint that was probed.
+    pub cache_url: String,
+    /// Probe outcome: `ok`, `stale`, or `unreachable`.
+    pub status: String,
+    /// Whether a `nix-cache-info` document was served by the cache.
+    pub observed_nix_cache_info: bool,
+    /// Round-trip latency of the probe, in milliseconds.
+    pub latency_ms: i64,
+    /// Unix time the probe ran.
+    pub checked_at: i64,
 }
 
 /// The full index payload one successful indexing run produces.
@@ -1882,6 +1932,68 @@ impl Database {
             &vals![run_id],
         )?;
         rows.iter().map(|row| row.get(0)).collect()
+    }
+
+    /// Records (upserting) the latest freshness probe of one cache endpoint.
+    ///
+    /// One row is kept per `(registry_id, cache_url)`; re-probing overwrites
+    /// the prior observation. See [`crate::probe`] for the producer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn upsert_cache_probe(
+        &self,
+        registry_id: i64,
+        cache_url: &str,
+        status: &str,
+        observed_nix_cache_info: bool,
+        latency_ms: i64,
+        checked_at: i64,
+    ) -> Result<()> {
+        self.backend.execute(
+            "INSERT INTO cache_probes
+             (registry_id, cache_url, status, observed_nix_cache_info, latency_ms, checked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(registry_id, cache_url) DO UPDATE SET
+               status = excluded.status,
+               observed_nix_cache_info = excluded.observed_nix_cache_info,
+               latency_ms = excluded.latency_ms,
+               checked_at = excluded.checked_at",
+            &vals![
+                registry_id,
+                cache_url,
+                status,
+                observed_nix_cache_info,
+                latency_ms,
+                checked_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The latest freshness probe per committed cache, for one registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_cache_probes(&self, registry_id: i64) -> Result<Vec<CacheProbeRow>> {
+        let rows = self.backend.query(
+            "SELECT cache_url, status, observed_nix_cache_info, latency_ms, checked_at
+             FROM cache_probes WHERE registry_id = ?1 ORDER BY cache_url",
+            &vals![registry_id],
+        )?;
+        rows.iter()
+            .map(|row| {
+                Ok(CacheProbeRow {
+                    cache_url: row.get(0)?,
+                    status: row.get(1)?,
+                    observed_nix_cache_info: row.get(2)?,
+                    latency_ms: row.get(3)?,
+                    checked_at: row.get(4)?,
+                })
+            })
+            .collect()
     }
 
     /// Every distinct store hash the registry's index references, sorted.

@@ -85,10 +85,18 @@ fn from_my(value: &MyValue) -> Value {
 }
 
 /// Materializes a mysql result set into hub [`Row`]s.
+///
+/// Columns are read via `unwrap_raw`, which never panics: the hub never calls
+/// `mysql::Row::take`, so no cell is moved out, but a taken cell would surface
+/// here as a `NULL` rather than a panic on the live query path.
 fn rows_from(rows: Vec<mysql::Row>) -> Vec<Row> {
     rows.into_iter()
         .map(|row| {
-            let values = row.unwrap().iter().map(from_my).collect::<Vec<_>>();
+            let values = row
+                .unwrap_raw()
+                .iter()
+                .map(|cell| cell.as_ref().map_or(Value::Null, from_my))
+                .collect::<Vec<_>>();
             Row::new(values)
         })
         .collect()

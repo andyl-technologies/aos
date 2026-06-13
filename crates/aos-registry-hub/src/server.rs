@@ -382,12 +382,19 @@ fn font_response(bytes: &'static [u8]) -> Response {
 
 async fn instance_home(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(params): Query<SearchParams>,
 ) -> Response {
     let started = Instant::now();
     let result = (|| {
         let mut rows = Vec::new();
         for registry in state.db.list_registries()? {
+            // Non-disclosure: only list registries this caller could open.
+            // Anonymous callers see public only; a session/token member sees
+            // their org's internal and any granted private registries too.
+            if !can_read_registry(&state, &registry, &headers) {
+                continue;
+            }
             let status = state.db.index_status(registry.id)?;
             rows.push((registry, status));
         }
@@ -613,11 +620,13 @@ async fn health_page(State(state): State<Arc<AppState>>, Path(slug): Path<String
             runs.push((run, missing));
         }
         let stack = state.db.registry_cache_stack(registry.id)?;
+        let probes = state.db.list_cache_probes(registry.id)?;
         Ok::<_, anyhow::Error>(Some(pages::health_page(
             &registry,
             status.as_ref(),
             &runs,
             stack.as_ref(),
+            &probes,
             started,
         )))
     })();
@@ -1038,11 +1047,13 @@ async fn render_page(
                     runs.push((run, missing));
                 }
                 let stack = state.db.registry_cache_stack(registry.id)?;
+                let probes = state.db.list_cache_probes(registry.id)?;
                 Some(pages::health_page(
                     registry,
                     status.as_ref(),
                     &runs,
                     stack.as_ref(),
+                    &probes,
                     started,
                 ))
             }
@@ -1133,6 +1144,30 @@ pub(crate) fn authorize_registry_read(
             }
         }
     }
+}
+
+/// Whether the caller in `headers` may see `registry` at all.
+///
+/// This is the boolean form of [`authorize_registry_read`], used to filter
+/// listings (the instance home and its `?q=` search) so that internal and
+/// private registries never leak to callers who could not open their pages.
+/// It applies the same access matrix:
+///
+/// - **public** (and every unowned phase-1 registry) is visible to anyone;
+/// - **internal** is visible only to a session member of the owning org;
+/// - **private** (and any unknown visibility, failing closed) is visible only
+///   when a session or bearer token grants `Read` at the registry scope.
+///
+/// Keeping the filter in terms of the same primitives as
+/// [`authorize_registry_read`] guarantees a registry shown in a listing is one
+/// the caller can actually open, and one hidden from the listing 404s on its
+/// page — preserving the non-disclosure rule end to end.
+pub(crate) fn can_read_registry(
+    state: &AppState,
+    registry: &RegistryRecord,
+    headers: &HeaderMap,
+) -> bool {
+    authorize_registry_read(state, registry, headers).is_ok()
 }
 
 /// Whether the request's session user holds any membership covering `org_id`.

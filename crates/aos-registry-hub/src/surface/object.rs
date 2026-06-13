@@ -125,7 +125,14 @@ pub fn hash_object(kind: ObjectKind, content: &[u8]) -> Oid {
 }
 
 /// Encode an object as a zlib-compressed loose object.
-pub fn encode_loose(kind: ObjectKind, content: &[u8]) -> Vec<u8> {
+///
+/// # Errors
+///
+/// Returns an error only if the in-memory zlib encoder reports an I/O
+/// failure. The encoder writes into a heap `Vec`, so in practice this cannot
+/// fail; the `Result` exists so callers never have to `unwrap` an infallible
+/// path.
+pub fn encode_loose(kind: ObjectKind, content: &[u8]) -> Result<Vec<u8>> {
     let mut raw = Vec::with_capacity(content.len() + 32);
     raw.extend_from_slice(kind.as_str().as_bytes());
     raw.push(b' ');
@@ -135,9 +142,12 @@ pub fn encode_loose(kind: ObjectKind, content: &[u8]) -> Vec<u8> {
 
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     use std::io::Write as _;
-    // Writing to a Vec-backed encoder cannot fail.
-    encoder.write_all(&raw).expect("write to Vec encoder");
-    encoder.finish().expect("finish Vec encoder")
+    encoder
+        .write_all(&raw)
+        .context("writing loose object into zlib encoder")?;
+    encoder
+        .finish()
+        .context("finishing zlib encoder for loose object")
 }
 
 /// Maximum inflated size of a loose object (64 MiB).
@@ -398,7 +408,7 @@ mod tests {
     #[test]
     fn loose_roundtrip_preserves_content_and_hash() {
         let content = b"hello registry";
-        let compressed = encode_loose(ObjectKind::Blob, content);
+        let compressed = encode_loose(ObjectKind::Blob, content).unwrap();
         let oid = hash_object(ObjectKind::Blob, content);
         let (kind, decoded) = decode_loose(&compressed, Some(oid)).unwrap();
         assert_eq!(kind, ObjectKind::Blob);
@@ -409,7 +419,7 @@ mod tests {
     fn decode_enforces_inflation_cap() {
         // Highly compressible content well past a tiny test cap.
         let content = vec![0u8; 4096];
-        let compressed = encode_loose(ObjectKind::Blob, &content);
+        let compressed = encode_loose(ObjectKind::Blob, &content).unwrap();
         let err = decode_loose_with_limit(&compressed, None, 64).unwrap_err();
         assert!(err.to_string().contains("cap"), "got: {err:#}");
         // The same object decodes fine under a sufficient cap.
@@ -418,7 +428,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_wrong_oid() {
-        let compressed = encode_loose(ObjectKind::Blob, b"a");
+        let compressed = encode_loose(ObjectKind::Blob, b"a").unwrap();
         let wrong = hash_object(ObjectKind::Blob, b"b");
         assert!(decode_loose(&compressed, Some(wrong)).is_err());
     }

@@ -44,7 +44,7 @@ impl Fixture {
         let oid = hash_object(kind, content);
         let path = self.root.join(oid.loose_path());
         fs::create_dir_all(path.parent().expect("loose path has parent")).unwrap();
-        fs::write(path, encode_loose(kind, content)).unwrap();
+        fs::write(path, encode_loose(kind, content).unwrap()).unwrap();
         oid
     }
 

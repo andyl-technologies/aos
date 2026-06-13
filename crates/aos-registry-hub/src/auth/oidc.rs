@@ -47,9 +47,10 @@
 //!
 //! An [`IdpConfig`] mirrors the `org_idp_configs` row (see [`crate::db`]). The
 //! client secret is held **sealed**; it is unsealed through a [`SecretSealer`]
-//! only at the token exchange. Phase 3d ships [`XorSealer`], a deliberately
-//! **placeholder** sealer (see its docs) behind the [`SecretSealer`] trait so
-//! a real AEAD/KMS implementation drops in without touching call sites.
+//! only at the token exchange. Production seals with
+//! [`AesGcmSealer`](crate::auth::seal::AesGcmSealer) (AES-256-GCM, keyed by the
+//! persisted instance key); [`XorSealer`] is a deliberately **placeholder**
+//! sealer (see its docs) used only under `--dev` and in tests.
 
 use std::collections::BTreeMap;
 
@@ -144,9 +145,9 @@ fn parse_role_map(json: &str) -> BTreeMap<String, Role> {
 /// Seals and unseals client secrets at rest.
 ///
 /// The hub stores OIDC client secrets *sealed* and unseals them only at the
-/// instant of the token exchange. This trait is the seam a production
-/// deployment uses to plug in a real AEAD/KMS; phase 3d ships only the
-/// placeholder [`XorSealer`].
+/// instant of the token exchange. Production uses
+/// [`AesGcmSealer`](crate::auth::seal::AesGcmSealer); the placeholder
+/// [`XorSealer`] is reachable only under `--dev` and in tests.
 pub trait SecretSealer: Send + Sync {
     /// Seals a plaintext secret into the at-rest form stored in
     /// `org_idp_configs.client_secret_enc`.
@@ -172,14 +173,11 @@ pub trait SecretSealer: Send + Sync {
 /// This is **not** confidentiality-grade. XOR with a repeating key is trivially
 /// reversible by anyone who can read both the database and the instance key,
 /// and offers no integrity. It exists only so phase 3d can store client
-/// secrets in a *non-plaintext* form behind the [`SecretSealer`] seam without
-/// taking on an AEAD dependency. **A real deployment MUST supply a proper
-/// sealer** — AES-GCM with a KMS-held key, an external secrets manager, or a
-/// hardware-backed key store — by implementing [`SecretSealer`] and passing it
-/// wherever an `XorSealer` is constructed today.
-///
-/// `TODO(rfc-0004): replace with a KMS/AEAD-backed SecretSealer before any
-/// non-local deployment.`
+/// secrets in a *non-plaintext* form behind the [`SecretSealer`] seam. It is
+/// now **test/dev-only**: production `serve` uses
+/// [`AesGcmSealer`](crate::auth::seal::AesGcmSealer) instead, and `XorSealer`
+/// is reachable only under `--dev` (where reproducibility, not confidentiality,
+/// is the goal) and in tests via [`dev_sealer`].
 #[derive(Debug, Clone)]
 pub struct XorSealer {
     key: Vec<u8>,

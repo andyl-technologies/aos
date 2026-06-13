@@ -13,8 +13,8 @@ use std::fmt::Write as _;
 use std::time::Instant;
 
 use crate::db::{
-    ChannelSummary, IndexStatus, PackageDetail, PackageRow, RegistryRecord, ReleaseRow,
-    ValidationRunRow,
+    CacheProbeRow, ChannelSummary, IndexStatus, PackageDetail, PackageRow, RegistryRecord,
+    ReleaseRow, ValidationRunRow,
 };
 use crate::stack::StackNode;
 use crate::ui::render::{ago, escape, human_size, key_fingerprint, page, table, StateLine};
@@ -989,6 +989,7 @@ pub fn health_page(
     status: Option<&IndexStatus>,
     runs: &[(ValidationRunRow, Vec<String>)],
     stack: Option<&StackNode>,
+    cache_probes: &[CacheProbeRow],
     started: Instant,
 ) -> String {
     /// Missing hashes shown per cache before collapsing to "and N more".
@@ -1083,6 +1084,27 @@ pub fn health_page(
             }
             body.push_str("</pre>\n");
         }
+    }
+
+    if !cache_probes.is_empty() {
+        body.push_str("<h2>Cache freshness</h2>\n");
+        let rows: Vec<Vec<String>> = cache_probes
+            .iter()
+            .map(|probe| {
+                let class = match probe.status.as_str() {
+                    "ok" => "ok",
+                    "stale" => "warn",
+                    _ => "bad",
+                };
+                vec![
+                    format!("<code>{}</code>", escape(&probe.cache_url)),
+                    format!("<span class=\"{class}\">{}</span>", escape(&probe.status)),
+                    format!("{} ms", probe.latency_ms),
+                    ago(probe.checked_at),
+                ]
+            })
+            .collect();
+        body.push_str(&table(&["cache", "status", "latency", "checked"], &rows));
     }
 
     page(
@@ -1337,7 +1359,14 @@ mod tests {
             finished_at: 0,
         };
         let missing: Vec<String> = (0..150).map(|i| format!("hash{i:03}")).collect();
-        let html = health_page(&registry(), None, &[(run, missing)], None, Instant::now());
+        let html = health_page(
+            &registry(),
+            None,
+            &[(run, missing)],
+            None,
+            &[],
+            Instant::now(),
+        );
         assert!(html.contains("Missing from https://cache.example"));
         assert!(html.contains("hash000"));
         assert!(html.contains("hash099"));
@@ -1381,7 +1410,30 @@ mod tests {
             ]),
             StackNode::Endpoint("https://c".into()),
         ]);
-        let html = health_page(&registry(), None, &runs, Some(&stack), Instant::now());
+        let probes = vec![
+            CacheProbeRow {
+                cache_url: "https://a".into(),
+                status: "ok".into(),
+                observed_nix_cache_info: true,
+                latency_ms: 12,
+                checked_at: 0,
+            },
+            CacheProbeRow {
+                cache_url: "https://c".into(),
+                status: "unreachable".into(),
+                observed_nix_cache_info: false,
+                latency_ms: 0,
+                checked_at: 0,
+            },
+        ];
+        let html = health_page(
+            &registry(),
+            None,
+            &runs,
+            Some(&stack),
+            &probes,
+            Instant::now(),
+        );
         assert!(html.contains("Cache stack"));
         assert!(html.contains("try (fall-through"));
         assert!(html.contains("mirror (every member must be complete)"));
@@ -1391,5 +1443,9 @@ mod tests {
         // The incomplete mirror member is flagged as a shortfall.
         assert!(html.contains("Mirror replication shortfalls"));
         assert!(html.contains("mirror group 0: <code>https://b</code> missing 1"));
+        // The cache-freshness table surfaces each probe's status.
+        assert!(html.contains("Cache freshness"));
+        assert!(html.contains("12 ms"));
+        assert!(html.contains("unreachable"));
     }
 }
