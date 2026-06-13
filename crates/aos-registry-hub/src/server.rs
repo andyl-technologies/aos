@@ -67,6 +67,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/", get(instance_home))
         .route("/healthz", get(healthz))
         .route("/_assets/style.css", get(stylesheet))
+        .route("/_assets/jetbrains-mono-regular.woff2", get(font_regular))
+        .route("/_assets/jetbrains-mono-bold.woff2", get(font_bold))
+        .route("/_assets/OFL.txt", get(font_license))
         .route("/{slug}", get(registry_redirect))
         .route("/{slug}/", get(registry_home))
         .route("/{slug}/-/packages", get(package_index))
@@ -112,6 +115,33 @@ async fn stylesheet() -> Response {
             (header::CACHE_CONTROL, "public, max-age=3600"),
         ],
         STYLESHEET,
+    )
+        .into_response()
+}
+
+async fn font_regular() -> Response {
+    font_response(crate::ui::FONT_REGULAR)
+}
+
+async fn font_bold() -> Response {
+    font_response(crate::ui::FONT_BOLD)
+}
+
+async fn font_license() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        crate::ui::FONT_LICENSE,
+    )
+        .into_response()
+}
+
+fn font_response(bytes: &'static [u8]) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "font/woff2"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        bytes,
     )
         .into_response()
 }

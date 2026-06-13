@@ -192,9 +192,10 @@ pub struct Commit {
     pub tree: Oid,
     /// Parent commit oids, in header order.
     pub parents: Vec<Oid>,
-    /// The armored SSH signature from the `gpgsig` header, when present.
+    /// The armored SSH signature from the `gpgsig`/`gpgsig-sha256`
+    /// header, when present.
     pub signature: Option<String>,
-    /// The commit content with the `gpgsig` header removed — the exact
+    /// The commit content with the signature header removed — the exact
     /// bytes the signature covers.
     pub signed_payload: Vec<u8>,
     /// Committer timestamp in Unix seconds, when parseable.
@@ -204,7 +205,8 @@ pub struct Commit {
 /// Parse a raw commit object's headers and reconstruct its signed payload.
 ///
 /// Git signs commits by inserting the armored signature as a multi-line
-/// `gpgsig` header (continuation lines prefixed with one space); the signed
+/// signature header (continuation lines prefixed with one space) — `gpgsig`
+/// in SHA-1 repos, `gpgsig-sha256` in SHA-256 repos; the signed
 /// payload is the commit content with that whole header removed.
 ///
 /// # Errors
@@ -234,7 +236,10 @@ pub fn parse_commit(content: &[u8]) -> Result<Commit> {
                 parents.push(Oid::from_hex(rest)?);
             } else if let Some(rest) = trimmed.strip_prefix("committer ") {
                 committer_when = parse_ident_when(rest);
-            } else if let Some(rest) = trimmed.strip_prefix("gpgsig ") {
+            } else if let Some(rest) = trimmed
+                .strip_prefix("gpgsig-sha256 ")
+                .or_else(|| trimmed.strip_prefix("gpgsig "))
+            {
                 // Consume the multi-line header without copying it into the
                 // signed payload.
                 signature_lines.push(rest);
@@ -412,7 +417,7 @@ mod tests {
             "tree {tree}\nauthor A <a@x> 1770000000 +0000\ncommitter A <a@x> 1770000000 +0000\n\nmsg\n",
         );
         let signed = format!(
-            "tree {tree}\nauthor A <a@x> 1770000000 +0000\ncommitter A <a@x> 1770000000 +0000\ngpgsig -----BEGIN SSH SIGNATURE-----\n line2\n -----END SSH SIGNATURE-----\n\nmsg\n",
+            "tree {tree}\nauthor A <a@x> 1770000000 +0000\ncommitter A <a@x> 1770000000 +0000\ngpgsig-sha256 -----BEGIN SSH SIGNATURE-----\n line2\n -----END SSH SIGNATURE-----\n\nmsg\n",
         );
         let commit = parse_commit(signed.as_bytes()).unwrap();
         assert_eq!(commit.tree, tree);
