@@ -87,12 +87,13 @@ pub async fn generate_static_cache(
     }
     let store_dir = common_store_dir(&paths)?;
 
-    // The ca/ trust map is the authority for blessed output bytes
-    // (RFC-0005 §2.7). Generation reads the local store, so guard against
-    // emitting a narinfo+NAR for a path whose local bytes were never
-    // blessed — every enforcing consumer would reject it. Paths outside the
-    // map (sources, images) are unaffected.
-    let ca_map = super::ca::CaMap::load(registry_dir).context("loading ca/ trust map")?;
+    // The store/ realisation graph is the authority for blessed output bytes
+    // (RFC-0005). Generation reads the local store, so guard against emitting
+    // a narinfo+NAR for a path whose local bytes were never blessed — every
+    // enforcing consumer would reject it. Paths outside the graph (sources,
+    // images) are unaffected.
+    let store_graph =
+        super::store::StoreMap::load(registry_dir).context("loading store/ realisation graph")?;
 
     std::fs::create_dir_all(output_dir)
         .with_context(|| format!("creating {}", output_dir.display()))?;
@@ -114,21 +115,21 @@ pub async fn generate_static_cache(
         check_store_path_valid(path)?;
         let info = query_path_info(path)?;
 
-        // If the trust map blesses this path, the local bytes must match a
-        // blessed realisation before we publish them.
-        if let Some(blessed) = ca_map.get(store_hash(&info.path)) {
-            if !blessed
+        // If the graph blesses this path, the local bytes must match a
+        // blessed NAR before we publish them.
+        let blessed = store_graph.blessed_nars(store_hash(&info.path));
+        if !blessed.is_empty()
+            && !blessed
                 .iter()
-                .any(|entry| entry.matches_nar(&info.nar_hash, info.nar_size))
-            {
-                bail!(
-                    "refusing to publish {}: local NAR ({} / {} bytes) is not blessed in ca/ \
-                     — `apr ca bless` it or rebuild to a blessed realisation",
-                    info.path,
-                    info.nar_hash,
-                    info.nar_size,
-                );
-            }
+                .any(|nar| nar.matches(&info.nar_hash, info.nar_size))
+        {
+            bail!(
+                "refusing to publish {}: local NAR ({} / {} bytes) is not blessed in store/ \
+                 — `apr store bless` it or rebuild to a blessed realisation",
+                info.path,
+                info.nar_hash,
+                info.nar_size,
+            );
         }
         let compressed = dump_zstd_nar(&info.path)?;
         let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(&compressed)));

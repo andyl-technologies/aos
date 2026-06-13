@@ -17,8 +17,8 @@
 //!   in package TOML, closure files, and `ca/` trust-map entries for every
 //!   closure member; [`unpublish`] removes packages, versions, or platform
 //!   entries. Both commit the change (optionally SSH-signed) unless
-//!   `--no-commit` is given. [`run_ca`] maintains the trust map directly
-//!   (bless/revoke/verify/backfill).
+//!   `--no-commit` is given. [`run_store`] maintains the realisation graph
+//!   directly (bless/revoke/verify/backfill).
 //! - **Query and integrity**: [`show`], [`packages`], [`verify`] (closure
 //!   consistency), and [`validate`] (cache reachability over HTTP).
 //! - **Git workflow**: [`status`], [`log`], [`diff`], [`run_branch`],
@@ -43,7 +43,7 @@
 //! dumb-HTTP object store metadata is refreshed so plain-file origins stay
 //! cloneable.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -60,7 +60,6 @@ use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
 use crate::gitcmd;
-use crate::registry::ca::{self, CaEntry, CaMap, UpsertOutcome};
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::nixcache;
@@ -68,6 +67,7 @@ use crate::registry::objectstore;
 use crate::registry::pack;
 use crate::registry::state;
 use crate::registry::static_upload;
+use crate::registry::store::{self, DepEdge, NarBytes, Realisation, StoreMap, UpsertOutcome};
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
 use crate::security::{
     KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key, verify_tag_signature,
@@ -80,8 +80,8 @@ use crate::types::{
     validate_registry_name,
 };
 use crate::{
-    BranchCommand, CaCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand,
-    OriginCommand, TrustCommand, UploadConfigField,
+    BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
+    StoreCommand, TrustCommand, UploadConfigField,
 };
 
 // ---------------------------------------------------------------------------
@@ -611,80 +611,6 @@ fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
     Ok(result)
 }
 
-/// Write closure files for a store path and all its closure members.
-///
-/// Creates `closures/{hash}` for the root store path as an adjacency list.
-/// Also ensures `.gitattributes` has the `closures/** -diff` entry.
-fn write_closure_files(dir: &Path, store_path: &str) -> Result<()> {
-    let closure = compute_closure(store_path)?;
-    if closure.is_empty() {
-        return Ok(());
-    }
-
-    let closures_dir = dir.join("closures");
-    std::fs::create_dir_all(&closures_dir)?;
-
-    // Build the adjacency list file content.
-    // Root should be first line — nix-store -qR returns deps-first order,
-    // so the root is typically last.  Reorder: root first, then the rest.
-    let root_hash = extract_hash(store_path).to_string();
-    let mut lines = String::new();
-
-    // Root line first.
-    if let Some((_, deps)) = closure.iter().find(|(h, _)| *h == root_hash) {
-        lines.push_str(&root_hash);
-        for dep in deps {
-            lines.push(' ');
-            lines.push_str(dep);
-        }
-        lines.push('\n');
-    }
-
-    // Then the rest in dependency order.
-    for (hash, deps) in &closure {
-        if *hash == root_hash {
-            continue;
-        }
-        lines.push_str(hash);
-        for dep in deps {
-            lines.push(' ');
-            lines.push_str(dep);
-        }
-        lines.push('\n');
-    }
-
-    std::fs::write(closures_dir.join(&root_hash), &lines)?;
-
-    // Ensure .gitattributes has the closures entry.
-    ensure_gitattributes(dir)?;
-
-    Ok(())
-}
-
-/// Ensure `.gitattributes` contains `closures/** -diff`.
-fn ensure_gitattributes(dir: &Path) -> Result<()> {
-    let path = dir.join(".gitattributes");
-    let entry = "closures/** -diff\n";
-
-    if path.exists() {
-        let content = std::fs::read_to_string(&path)?;
-        if content.contains("closures/** -diff") {
-            return Ok(());
-        }
-        // Append the entry.
-        let mut new_content = content;
-        if !new_content.ends_with('\n') {
-            new_content.push('\n');
-        }
-        new_content.push_str(entry);
-        std::fs::write(&path, new_content)?;
-    } else {
-        std::fs::write(&path, entry)?;
-    }
-
-    Ok(())
-}
-
 /// Extract the store path hash from a full store path.
 fn extract_hash(store_path: &str) -> &str {
     let basename = store_path.rsplit('/').next().unwrap_or(store_path);
@@ -692,7 +618,7 @@ fn extract_hash(store_path: &str) -> &str {
 }
 
 // ---------------------------------------------------------------------------
-// ca/ trust-map writing (RFC-0005)
+// store/ realisation-graph writing (RFC-0005)
 // ---------------------------------------------------------------------------
 
 /// Per-member NAR metadata for a runtime closure.
@@ -766,64 +692,171 @@ fn introspect_closure_nars(store_path: &str) -> Result<Vec<ClosureMemberNar>> {
     Ok(members)
 }
 
-/// Counts of trust-map mutations performed by [`write_ca_entries`].
-#[derive(Debug, Default, Clone, Copy)]
-struct CaWriteReport {
-    /// Hashes that gained their first blessed entry.
-    inserted: usize,
-    /// Hashes that gained an additional blessed entry (`bless` was set).
-    blessed: usize,
-    /// Hashes whose entry was already present, unchanged.
-    unchanged: usize,
+/// Run `nix store make-content-addressed --json` over a closure root and
+/// return the input-addressed → content-addressed store-path-hash map for
+/// every member it rewrites.
+///
+/// This is how the producer learns each member's CA realisation and the
+/// dependency CA pins, consistently for the whole closure in one pass. It
+/// realises CA paths in the local store as a side effect.
+fn make_content_addressed(store_path: &str) -> Result<HashMap<String, String>> {
+    let output = nix_command("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command ca-derivations",
+            "store",
+            "make-content-addressed",
+            "--json",
+            store_path,
+        ])
+        .output()
+        .with_context(|| format!("running nix store make-content-addressed on {store_path}"))?;
+    if !output.status.success() {
+        bail!(
+            "nix store make-content-addressed failed for {store_path}: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    let json: Value = serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .with_context(|| format!("parsing make-content-addressed JSON for {store_path}"))?;
+    let rewrites = json
+        .get("rewrites")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("make-content-addressed output missing 'rewrites'"))?;
+    Ok(rewrites
+        .iter()
+        .filter_map(|(ia_path, ca_path)| {
+            ca_path.as_str().map(|ca| {
+                (
+                    extract_hash(ia_path).to_string(),
+                    extract_hash(ca).to_string(),
+                )
+            })
+        })
+        .collect())
 }
 
-impl CaWriteReport {
-    fn merge(&mut self, other: CaWriteReport) {
-        self.inserted += other.inserted;
+/// Counts of realisation-graph mutations performed by [`write_store_files`].
+#[derive(Debug, Default, Clone, Copy)]
+struct StoreWriteReport {
+    /// Paths that gained their first record.
+    created: usize,
+    /// Paths that gained an additional realisation.
+    blessed: usize,
+    /// Paths whose realisation was already present, unchanged.
+    unchanged: usize,
+    /// Whether content addresses were filled.
+    content_addressed: bool,
+}
+
+impl StoreWriteReport {
+    fn merge(&mut self, other: StoreWriteReport) {
+        self.created += other.created;
         self.blessed += other.blessed;
         self.unchanged += other.unchanged;
+        self.content_addressed |= other.content_addressed;
     }
 
     fn summary(&self) -> String {
         format!(
-            "{} inserted, {} blessed, {} unchanged",
-            self.inserted, self.blessed, self.unchanged
+            "{} created, {} blessed, {} unchanged{}",
+            self.created,
+            self.blessed,
+            self.unchanged,
+            if self.content_addressed {
+                " (content-addressed)"
+            } else {
+                ""
+            },
         )
     }
 }
 
-/// Write `ca/` trust-map entries for every member of a store path's runtime
-/// closure (RFC-0005).
+/// Write `store/` realisation records for every member of a store path's
+/// runtime closure (RFC-0005).
 ///
-/// Each member's uncompressed NAR hash and size come from the local Nix
-/// store (`nix path-info --recursive`). A member already mapped to
-/// *different* blessed content fails the whole write unless `bless` is set
-/// — an unexpected mismatch at publish time is exactly the divergence the
-/// trust map exists to surface, so it must never be merged silently.
-fn write_ca_entries(dir: &Path, store_path: &str, bless: bool) -> Result<CaWriteReport> {
-    let members = introspect_closure_nars(store_path)?;
-    let mut report = CaWriteReport::default();
+/// Records each member's exact NAR bytes and dependency edges; when
+/// `content_addressed`, also its CA realisation and pinned dependency CAs
+/// (from `nix store make-content-addressed`). A member already recorded with
+/// *different* content for the same realisation fails the whole write unless
+/// `bless` is set — an unexpected mismatch at publish time is exactly the
+/// divergence the graph exists to surface, so it is never merged silently.
+///
+/// When `content_addressed` is requested but the local Nix cannot compute CA
+/// paths, the member records are still written input-addressed and a warning
+/// is printed (the graph stays valid for IA consumers).
+fn write_store_files(
+    dir: &Path,
+    store_path: &str,
+    content_addressed: bool,
+    bless: bool,
+    printer: &Printer,
+) -> Result<StoreWriteReport> {
+    let closure = compute_closure(store_path)?;
+    let nars = introspect_closure_nars(store_path)?;
+    let nar_by_hash: HashMap<&str, &ClosureMemberNar> =
+        nars.iter().map(|m| (extract_hash(&m.path), m)).collect();
 
-    for member in &members {
-        let entry = CaEntry::from_nar_hash(&member.nar_hash, member.nar_size)
-            .with_context(|| format!("building ca entry for {}", member.path))?;
-        let ia_hash = extract_hash(&member.path);
-        match ca::upsert_entry(dir, ia_hash, entry.clone(), bless)? {
-            UpsertOutcome::Inserted => report.inserted += 1,
+    let ca_by_hash: HashMap<String, String> = if content_addressed {
+        match make_content_addressed(store_path) {
+            Ok(map) => map,
+            Err(err) => {
+                printer.warning(&format!(
+                    "content-addressing unavailable for {store_path}; writing \
+                     input-addressed records only ({err:#})"
+                ));
+                HashMap::new()
+            }
+        }
+    } else {
+        HashMap::new()
+    };
+    let filled_ca = !ca_by_hash.is_empty();
+
+    let mut report = StoreWriteReport {
+        content_addressed: filled_ca,
+        ..Default::default()
+    };
+
+    for (ia_hash, dep_hashes) in &closure {
+        let Some(member) = nar_by_hash.get(ia_hash.as_str()) else {
+            bail!("no NAR metadata for closure member {ia_hash} of {store_path}");
+        };
+        let nar = NarBytes::from_hash(&member.nar_hash, member.nar_size)
+            .with_context(|| format!("building NAR entry for {}", member.path))?;
+        let deps = dep_hashes
+            .iter()
+            .map(|dep| DepEdge {
+                dep_ia: dep.clone(),
+                dep_ca: ca_by_hash.get(dep).cloned(),
+            })
+            .collect();
+        let realisation = Realisation {
+            nar,
+            ca: ca_by_hash.get(ia_hash).cloned(),
+            deps,
+        };
+
+        match store::upsert_realisation(dir, ia_hash, realisation.clone(), bless)? {
+            UpsertOutcome::Created => report.created += 1,
             UpsertOutcome::AlreadyPresent => report.unchanged += 1,
             UpsertOutcome::Blessed => report.blessed += 1,
             UpsertOutcome::Conflict(existing) => {
                 let existing = existing
                     .iter()
-                    .map(ToString::to_string)
+                    .map(|r| match &r.ca {
+                        Some(ca) => format!("ca:sha256:{ca} nar:sha256:{}", r.nar.sha256_nix32),
+                        None => format!("nar:sha256:{}", r.nar.sha256_nix32),
+                    })
                     .collect::<Vec<_>>()
-                    .join(", ");
+                    .join("; ");
                 bail!(
-                    "{} is already mapped to different blessed content\n  registry: {existing}\n  local:    {entry}\n\
-                     A publish-time mismatch is exactly what the ca/ trust map exists to catch:\n\
+                    "{} is already recorded with different content\n  registry: {existing}\n  local:    nar:sha256:{}\n\
+                     A publish-time mismatch is exactly what the store/ graph exists to catch:\n\
                      either the local rebuild legitimately diverged (re-run with --bless to\n\
-                     append this realisation) or one of the two builds cannot be trusted.",
+                     add this realisation) or one of the two builds cannot be trusted.",
                     member.path,
+                    realisation.nar.sha256_nix32,
                 );
             }
         }
@@ -1081,6 +1114,16 @@ fn read_registry_toml(dir: &Path) -> Result<Option<RegistryRootConfig>> {
     let config: RegistryRootConfig =
         toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
     Ok(Some(config))
+}
+
+/// Whether a registry records content addresses in its `store/` graph
+/// (`[registry] content_addressed`, RFC-0005). Defaults to `true` when the
+/// file is missing or unparsable.
+fn registry_content_addressed(dir: &Path) -> bool {
+    match read_registry_toml(dir) {
+        Ok(Some(config)) => config.registry.content_addressed,
+        _ => true,
+    }
 }
 
 /// Resolves the mirror cache URLs committed in a registry's `registry.toml`.
@@ -1412,13 +1455,10 @@ pub async fn publish(
 
     std::fs::write(&toml_path, &new_content)?;
 
-    printer.step(3, 4, "Computing closure and trust-map entries...");
-    write_closure_files(&dir, &info.path)
-        .with_context(|| format!("writing closure files for {}", info.path))?;
-    let closure_hash = extract_hash(&info.path).to_string();
-    let closure_path = dir.join("closures").join(&closure_hash);
-    let ca_report = write_ca_entries(&dir, &info.path, bless)
-        .with_context(|| format!("writing ca/ trust-map entries for {}", info.path))?;
+    printer.step(3, 4, "Computing realisation graph...");
+    let content_addressed = registry_content_addressed(&dir);
+    let store_report = write_store_files(&dir, &info.path, content_addressed, bless, printer)
+        .with_context(|| format!("writing store/ realisation graph for {}", info.path))?;
 
     printer.step(4, 4, "Done.");
     printer.kv("Package", pkg_name);
@@ -1428,7 +1468,7 @@ pub async fn publish(
     printer.kv("NAR hash", &info.nar_hash);
     printer.kv("NAR size", &format_size(info.nar_size));
     printer.kv("Closure size", &format_size(info.closure_size));
-    printer.kv("CA entries", &ca_report.summary());
+    printer.kv("Store graph", &store_report.summary());
     if let Some(source_info) = &source_info {
         printer.kv("Source drv", &source_info.path);
     }
@@ -1447,12 +1487,7 @@ pub async fn publish(
     if !no_commit {
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
-        let staged_paths = [
-            toml_path.clone(),
-            closure_path.clone(),
-            dir.join(crate::registry::ca::CA_DIR),
-            dir.join(".gitattributes"),
-        ];
+        let staged_paths = [toml_path.clone(), dir.join(store::STORE_DIR)];
         commit_registry_paths(
             &dir,
             msg,
@@ -1497,10 +1532,11 @@ pub async fn publish(
             "nar_hash": info.nar_hash,
             "nar_size": info.nar_size,
             "closure_size": info.closure_size,
-            "ca_entries": {
-                "inserted": ca_report.inserted,
-                "blessed": ca_report.blessed,
-                "unchanged": ca_report.unchanged,
+            "store_graph": {
+                "created": store_report.created,
+                "blessed": store_report.blessed,
+                "unchanged": store_report.unchanged,
+                "content_addressed": store_report.content_addressed,
             },
             "references": info.references,
             "source": source,
@@ -1510,11 +1546,6 @@ pub async fn publish(
             "package_file": toml_path
                 .strip_prefix(&dir)
                 .unwrap_or(&toml_path)
-                .display()
-                .to_string(),
-            "closure_file": closure_path
-                .strip_prefix(&dir)
-                .unwrap_or(&closure_path)
                 .display()
                 .to_string(),
             "committed": committed,
@@ -1693,10 +1724,10 @@ fn package_platform_table(
 ) -> toml::Value {
     let mut table = toml::map::Map::new();
     table.insert("store_path".into(), toml::Value::String(info.path.clone()));
-    // No nar_hash/nar_size here: the output's content binding lives in the
-    // ca/ trust map (RFC-0005), the single authority for blessed bytes.
-    // Sources and images keep their hashes below — they are outside the
-    // runtime closure the map covers.
+    // No nar_hash/nar_size/references here: the output's content binding and
+    // dependency edges live in the store/ realisation graph (RFC-0005), the
+    // single authority. Sources and images keep their hashes below — they sit
+    // outside the runtime closure the graph covers.
     table.insert(
         "closure_size".into(),
         toml::Value::Integer(info.closure_size as i64),
@@ -1709,12 +1740,6 @@ fn package_platform_table(
         "source_nar_hash".into(),
         toml::Value::String(source_nar_hash.to_string()),
     );
-    let references = info
-        .references
-        .iter()
-        .map(|reference| toml::Value::String(reference.clone()))
-        .collect::<Vec<_>>();
-    table.insert("references".into(), toml::Value::Array(references));
 
     if !image_infos.is_empty() {
         let images = image_infos
@@ -2235,7 +2260,6 @@ pub async fn verify(
     let registry_name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&registry_name);
     let packages_dir = dir.join("packages");
-    let closures_dir = dir.join("closures");
     if let Some(package) = package {
         validate_package_name(package)?;
     }
@@ -2246,8 +2270,6 @@ pub async fn verify(
 
     // Collect all store path hashes from package TOMLs.
     let mut all_store_entries: Vec<RegistryVerifyStoreEntry> = Vec::new();
-    let mut all_ref_hashes: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new(); // hash -> references
     let mut matched_package_filter = package.is_none();
 
     // Verify package TOML files.
@@ -2308,18 +2330,6 @@ pub async fn verify(
                                                     store_path: sp.to_string(),
                                                     package_name: pkg_name.clone(),
                                                 });
-                                                let refs: Vec<String> = plat_val
-                                                    .get("references")
-                                                    .and_then(|r| r.as_array())
-                                                    .map(|arr| {
-                                                        arr.iter()
-                                                            .filter_map(|v| {
-                                                                v.as_str().map(|s| s.to_string())
-                                                            })
-                                                            .collect()
-                                                    })
-                                                    .unwrap_or_default();
-                                                all_ref_hashes.insert(hash, refs);
                                             }
                                         }
                                     }
@@ -2343,138 +2353,78 @@ pub async fn verify(
     }
 
     if fix {
+        let content_addressed = registry_content_addressed(&dir);
         let mut seen = HashSet::new();
         for entry in &all_store_entries {
             if seen.insert(entry.store_hash.clone()) {
-                write_closure_files(&dir, &entry.store_path).with_context(|| {
-                    format!(
-                        "regenerating closure metadata for {} ({})",
-                        entry.package_name, entry.store_path
-                    )
-                })?;
-                write_ca_entries(&dir, &entry.store_path, false).with_context(|| {
-                    format!(
-                        "regenerating ca/ trust-map entries for {} ({})",
-                        entry.package_name, entry.store_path
-                    )
-                })?;
+                write_store_files(&dir, &entry.store_path, content_addressed, false, printer)
+                    .with_context(|| {
+                        format!(
+                            "regenerating store/ records for {} ({})",
+                            entry.package_name, entry.store_path
+                        )
+                    })?;
                 repaired += 1;
             }
         }
         if repaired > 0 {
             printer.success(&format!(
-                "Regenerated {repaired} closure file(s) and their trust-map entries."
+                "Regenerated store/ records for {repaired} package(s)."
             ));
         }
     }
 
-    // The ca/ trust map, for coverage checks below (RFC-0005). A malformed
-    // map is an error; an absent one downgrades to a warning (legacy
-    // registry — consumers fall back to unauthenticated narinfo hashes).
-    let ca_map = match CaMap::load(&dir) {
+    // The store/ realisation graph, for coverage checks below (RFC-0005). A
+    // malformed graph is an error; an absent one downgrades to a warning
+    // (legacy registry — consumers fall back to unauthenticated narinfo).
+    let store_graph = match StoreMap::load(&dir) {
         Ok(map) => {
             if !map.is_present() {
                 printer.warning(
-                    "registry publishes no ca/ trust map; consumer NAR verification \
-                     falls back to unauthenticated narinfo hashes",
+                    "registry publishes no store/ realisation graph; consumer NAR \
+                     verification falls back to unauthenticated narinfo hashes",
                 );
             }
             map
         }
         Err(e) => {
-            printer.error(&format!("ca/ trust map failed to load: {e:#}"));
+            printer.error(&format!("store/ graph failed to load: {e:#}"));
             errors += 1;
-            CaMap::default()
+            StoreMap::default()
         }
     };
 
-    // Verify closure files.
-    let mut closure_checked = 0u32;
-
-    for entry in &all_store_entries {
-        let store_hash = &entry.store_hash;
-        let pkg_name = &entry.package_name;
-        let closure_path = closures_dir.join(store_hash);
-
-        // Check closure file exists.
-        if !closure_path.exists() {
-            printer.warning(&format!(
-                "{pkg_name}: missing closure file for store hash {store_hash}"
-            ));
-            errors += 1;
-            continue;
-        }
-
-        closure_checked += 1;
-        let content = std::fs::read_to_string(&closure_path)?;
-        let closure = crate::types::ClosureMeta::parse(store_hash, &content);
-
-        // Check root is first member and matches filename.
-        if closure.members.first().map(|s| s.as_str()) != Some(store_hash) {
-            printer.warning(&format!(
-                "{pkg_name}: closure file {store_hash} does not start with root hash"
-            ));
-            errors += 1;
-        }
-
-        // Check that all direct references from the package TOML are in the closure.
-        if let Some(refs) = all_ref_hashes.get(store_hash) {
-            for ref_hash in refs {
-                if !closure.contains(ref_hash) {
-                    printer.warning(&format!(
-                        "{pkg_name}: reference {ref_hash} not found in closure {store_hash}"
-                    ));
-                    errors += 1;
+    // Verify graph coverage: every package root and every member reachable
+    // from it via dependency edges must have a record with a blessed NAR.
+    let mut roots_checked = 0u32;
+    if store_graph.is_present() {
+        for entry in &all_store_entries {
+            let pkg_name = &entry.package_name;
+            roots_checked += 1;
+            let mut seen = HashSet::new();
+            let mut stack = vec![entry.store_hash.clone()];
+            while let Some(hash) = stack.pop() {
+                if !seen.insert(hash.clone()) {
+                    continue;
                 }
-            }
-        }
-
-        // Check that all closure members that have direct deps in the
-        // adjacency list actually reference hashes that are also in the
-        // closure (internal consistency).
-        for member in &closure.members {
-            for dep in closure.direct_deps(member) {
-                if !closure.contains(dep) {
-                    printer.warning(&format!(
-                        "{pkg_name}: closure {store_hash}: member {member} references \
-                         {dep} which is not in the closure"
-                    ));
-                    errors += 1;
+                match store_graph.get(&hash) {
+                    None => {
+                        printer.warning(&format!(
+                            "{pkg_name}: closure member {hash} has no store/ record \
+                             (run `apr store backfill` or `apr verify --fix`)"
+                        ));
+                        errors += 1;
+                    }
+                    Some(record) if record.blessed_nars().is_empty() => {
+                        printer.warning(&format!(
+                            "{pkg_name}: store/ record {hash} has no blessed NAR"
+                        ));
+                        errors += 1;
+                    }
+                    Some(_) => {
+                        stack.extend(store_graph.direct_deps(&hash));
+                    }
                 }
-            }
-        }
-
-        // Trust-map totality (RFC-0005): every closure member must carry a
-        // blessed entry. A partial map is indistinguishable from a
-        // stripping attack, so any gap is an error.
-        if ca_map.is_present() {
-            for member in &closure.members {
-                if ca_map.get(member).is_none() {
-                    printer.warning(&format!(
-                        "{pkg_name}: closure member {member} has no ca/ trust-map entry \
-                         (run `apr ca backfill` or `apr verify --fix`)"
-                    ));
-                    errors += 1;
-                }
-            }
-        }
-    }
-
-    // Check for orphan closure files (closure files with no matching package).
-    // A package-scoped verification intentionally ignores closure files for
-    // other packages in the registry.
-    if package.is_none() && closures_dir.is_dir() {
-        let known_hashes: std::collections::HashSet<&str> = all_store_entries
-            .iter()
-            .map(|entry| entry.store_hash.as_str())
-            .collect();
-        for entry in std::fs::read_dir(&closures_dir)?.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if !name_str.starts_with('.') && !known_hashes.contains(name_str.as_ref()) {
-                // Not an error — could be a closure for a dep that isn't a
-                // top-level package.  Just note it.
-                checked += 1;
             }
         }
     }
@@ -2488,18 +2438,18 @@ pub async fn verify(
                 "package": package,
                 "fix": fix,
                 "checked": checked,
-                "closures": closure_checked,
+                "roots": roots_checked,
                 "repaired": repaired,
                 "errors": 0,
             }));
         } else {
             printer.success(&format!(
-                "Verified {checked} package(s), {closure_checked} closure(s), no errors."
+                "Verified {checked} package(s), {roots_checked} closure root(s), no errors."
             ));
         }
     } else {
         printer.error(&format!(
-            "Verified {checked} package(s), {closure_checked} closure(s), {errors} error(s) found."
+            "Verified {checked} package(s), {roots_checked} closure root(s), {errors} error(s) found."
         ));
         bail!("registry verification failed with {errors} error(s)");
     }
@@ -2942,11 +2892,11 @@ fn collect_cache_validation_entries(
         return Ok(entries);
     }
 
-    // Newer registries record output NAR hashes in the ca/ trust map
-    // rather than the package TOML; load it once for the fallback. A
-    // malformed map is a hard error (matching Registry::load) — silently
-    // treating it as absent would validate nothing on a post-RFC registry.
-    let ca_map = CaMap::load(dir).context("loading ca/ trust map for cache validation")?;
+    // Newer registries record output NAR hashes in the store/ graph rather
+    // than the package TOML; load it once for the fallback. A malformed graph
+    // is a hard error (matching Registry::load) — silently treating it as
+    // absent would validate nothing on a post-RFC registry.
+    let store_graph = StoreMap::load(dir).context("loading store/ graph for cache validation")?;
 
     for letter_entry in std::fs::read_dir(&packages_dir)
         .with_context(|| format!("reading {}", packages_dir.display()))?
@@ -2966,7 +2916,7 @@ fn collect_cache_validation_entries(
                 &path,
                 package_filter,
                 platform_filter,
-                &ca_map,
+                &store_graph,
                 &mut entries,
             )?;
         }
@@ -2986,7 +2936,7 @@ fn collect_cache_validation_entries_from_package(
     path: &Path,
     package_filter: Option<&str>,
     platform_filter: Option<&str>,
-    ca_map: &CaMap,
+    store_graph: &StoreMap,
     entries: &mut Vec<CacheValidationEntry>,
 ) -> Result<()> {
     let content = std::fs::read_to_string(path)
@@ -3017,8 +2967,8 @@ fn collect_cache_validation_entries_from_package(
                 continue;
             };
             // Acceptable hashes: the legacy TOML nar_hash, or ALL blessed
-            // realisations from the ca/ trust map (a cache may legitimately
-            // serve any of them — RFC-0005 §2.2).
+            // NARs from the store/ graph (a cache may legitimately serve any
+            // of them — RFC-0005 §2.3).
             let mut nar_hashes: Vec<String> = entry
                 .get("nar_hash")
                 .and_then(|v| v.as_str())
@@ -3026,9 +2976,12 @@ fn collect_cache_validation_entries_from_package(
                 .into_iter()
                 .collect();
             if nar_hashes.is_empty() {
-                if let Some(blessed) = ca_map.get(extract_hash(store_path)) {
-                    nar_hashes.extend(blessed.iter().filter_map(CaEntry::nar_hash));
-                }
+                nar_hashes.extend(
+                    store_graph
+                        .blessed_nars(extract_hash(store_path))
+                        .iter()
+                        .map(NarBytes::nar_hash),
+                );
             }
             if nar_hashes.is_empty() {
                 continue;
@@ -3671,25 +3624,29 @@ pub async fn run_channel(
 ///
 /// Fails when cache generation, an upload, the pointer commit, or the
 /// object-store refresh fails.
-/// `apr ca` — maintains the registry's `ca/` trust map (RFC-0005).
+/// `apr store` — maintains the registry's `store/` realisation graph
+/// (RFC-0005).
 ///
-/// The map is append-mostly: `bless` adds a realisation computed from the
+/// The graph is append-mostly: `bless` adds a realisation computed from the
 /// local Nix store, `revoke` removes one (a security event with the same
-/// review weight as a key retirement), `verify` checks map health and
-/// coverage, and `backfill` maps every published closure in one pass so an
+/// review weight as a key retirement), `verify` checks graph health and
+/// coverage, and `backfill` records every published closure in one pass so an
 /// existing registry becomes fully covered.
 ///
 /// # Errors
 ///
 /// Fails when the registry cannot be resolved, the referenced store paths
-/// are not valid in the local Nix store, a bucket file cannot be read or
-/// written, a blessing conflicts without `--bless`, verification finds
-/// errors, or the commit fails.
-pub async fn run_ca(config: &ApmConfig, command: &CaCommand, printer: &Printer) -> Result<()> {
+/// are not valid in the local Nix store, a record cannot be read or written,
+/// a blessing conflicts without `--bless`, verification finds errors, or the
+/// commit fails.
+pub async fn run_store(
+    config: &ApmConfig,
+    command: &StoreCommand,
+    printer: &Printer,
+) -> Result<()> {
     match command {
-        CaCommand::Bless {
+        StoreCommand::Bless {
             store_path,
-            recursive,
             no_commit,
             message,
             key,
@@ -3701,61 +3658,50 @@ pub async fn run_ca(config: &ApmConfig, command: &CaCommand, printer: &Printer) 
             ensure_writable_registry_clone(&registry_name, &dir)?;
             let signing_key =
                 resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
+            let content_addressed = registry_content_addressed(&dir);
 
-            let report = if *recursive {
-                write_ca_entries(&dir, store_path, true)?
-            } else {
-                let info = introspect_store_path(store_path)?;
-                let entry = CaEntry::from_nar_hash(&info.nar_hash, info.nar_size)
-                    .with_context(|| format!("building ca entry for {store_path}"))?;
-                let mut report = CaWriteReport::default();
-                match ca::upsert_entry(&dir, extract_hash(&info.path), entry, true)? {
-                    UpsertOutcome::Inserted => report.inserted += 1,
-                    UpsertOutcome::AlreadyPresent => report.unchanged += 1,
-                    UpsertOutcome::Blessed => report.blessed += 1,
-                    UpsertOutcome::Conflict(_) => unreachable!("bless=true never conflicts"),
-                }
-                report
-            };
+            // Bless the whole closure of the path (records every member).
+            let report = write_store_files(&dir, store_path, content_addressed, true, printer)
+                .with_context(|| format!("writing store/ records for {store_path}"))?;
 
-            printer.kv("CA entries", &report.summary());
-            let changed = report.inserted + report.blessed > 0;
+            printer.kv("Store graph", &report.summary());
+            let changed = report.created + report.blessed > 0;
             let mut committed = false;
             if changed && !*no_commit {
-                let default_msg = format!("ca: bless {store_path}");
+                let default_msg = format!("store: bless {store_path}");
                 let msg = message.as_deref().unwrap_or(&default_msg);
                 commit_registry_paths(
                     &dir,
                     msg,
-                    &[dir.join(ca::CA_DIR)],
+                    &[dir.join(store::STORE_DIR)],
                     signing_key.as_ref().map(|k| k.path()),
                 )?;
                 refresh_registry_object_store(&dir)
-                    .context("refreshing dumb-HTTP object store after ca bless")?;
+                    .context("refreshing dumb-HTTP object store after store bless")?;
                 committed = true;
                 printer.success(&format!("Committed: {msg}"));
             } else if !changed {
-                printer.info("Trust map already covers this content; nothing to commit.");
+                printer.info("Graph already covers this content; nothing to commit.");
             }
 
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
-                    "action": "ca_bless",
+                    "action": "store_bless",
                     "registry": registry_name,
                     "store_path": store_path,
-                    "recursive": recursive,
-                    "inserted": report.inserted,
+                    "created": report.created,
                     "blessed": report.blessed,
                     "unchanged": report.unchanged,
+                    "content_addressed": report.content_addressed,
                     "committed": committed,
                 }));
             }
             Ok(())
         }
 
-        CaCommand::Revoke {
+        StoreCommand::Revoke {
             store_path,
-            entry,
+            realisation,
             no_commit,
             message,
             key,
@@ -3769,60 +3715,49 @@ pub async fn run_ca(config: &ApmConfig, command: &CaCommand, printer: &Printer) 
                 resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
 
             let ia_hash = extract_hash(store_path);
-            let target = entry
-                .as_deref()
-                .map(|token| {
-                    let parsed = CaEntry::parse(token)?;
-                    if matches!(parsed, CaEntry::Unknown(_)) && !token.contains(':') {
-                        bail!("'{token}' does not look like a ca entry token");
-                    }
-                    Ok(parsed)
-                })
-                .transpose()?;
-
-            if !ca::remove_entry(&dir, ia_hash, target.as_ref())? {
-                bail!("no matching ca/ entry for {ia_hash}; nothing to revoke");
+            if !store::remove_realisations(&dir, ia_hash, realisation.as_deref())? {
+                bail!("no matching store/ realisation for {ia_hash}; nothing to revoke");
             }
 
             printer.success(&format!(
                 "Revoked {} for {ia_hash}.",
-                entry.as_deref().unwrap_or("all blessed entries"),
+                realisation.as_deref().unwrap_or("all realisations"),
             ));
             let mut committed = false;
             if !*no_commit {
-                let default_msg = format!("ca: revoke {ia_hash}");
+                let default_msg = format!("store: revoke {ia_hash}");
                 let msg = message.as_deref().unwrap_or(&default_msg);
                 commit_registry_paths(
                     &dir,
                     msg,
-                    &[dir.join(ca::CA_DIR)],
+                    &[dir.join(store::STORE_DIR)],
                     signing_key.as_ref().map(|k| k.path()),
                 )?;
                 refresh_registry_object_store(&dir)
-                    .context("refreshing dumb-HTTP object store after ca revoke")?;
+                    .context("refreshing dumb-HTTP object store after store revoke")?;
                 committed = true;
                 printer.success(&format!("Committed: {msg}"));
             }
 
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
-                    "action": "ca_revoke",
+                    "action": "store_revoke",
                     "registry": registry_name,
                     "ia_hash": ia_hash,
-                    "entry": entry,
+                    "realisation": realisation,
                     "committed": committed,
                 }));
             }
             Ok(())
         }
 
-        CaCommand::Verify { deep, registry } => {
+        StoreCommand::Verify { deep, registry } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
-            ca_verify(&dir, &registry_name, *deep, printer)
+            store_verify(&dir, &registry_name, *deep, printer)
         }
 
-        CaCommand::Backfill {
+        StoreCommand::Backfill {
             bless,
             no_commit,
             message,
@@ -3835,54 +3770,55 @@ pub async fn run_ca(config: &ApmConfig, command: &CaCommand, printer: &Printer) 
             ensure_writable_registry_clone(&registry_name, &dir)?;
             let signing_key =
                 resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
+            let content_addressed = registry_content_addressed(&dir);
 
             let roots = collect_package_store_paths(&dir)?;
             if roots.is_empty() {
                 bail!("registry has no published store paths to backfill");
             }
 
-            let mut report = CaWriteReport::default();
+            let mut report = StoreWriteReport::default();
             for root in &roots {
-                printer.info(&format!("Mapping closure of {root}"));
+                printer.info(&format!("Recording closure of {root}"));
                 report.merge(
-                    write_ca_entries(&dir, root, *bless)
-                        .with_context(|| format!("writing ca/ trust-map entries for {root}"))?,
+                    write_store_files(&dir, root, content_addressed, *bless, printer)
+                        .with_context(|| format!("writing store/ records for {root}"))?,
                 );
             }
             printer.kv("Roots", &roots.len().to_string());
-            printer.kv("CA entries", &report.summary());
+            printer.kv("Store graph", &report.summary());
 
-            let changed = report.inserted + report.blessed > 0;
+            let changed = report.created + report.blessed > 0;
             let mut committed = false;
             if changed && !*no_commit {
                 let default_msg = format!(
-                    "ca: backfill trust map ({} closures, {} entries)",
+                    "store: backfill realisation graph ({} closures)",
                     roots.len(),
-                    report.inserted + report.blessed,
                 );
                 let msg = message.as_deref().unwrap_or(&default_msg);
                 commit_registry_paths(
                     &dir,
                     msg,
-                    &[dir.join(ca::CA_DIR)],
+                    &[dir.join(store::STORE_DIR)],
                     signing_key.as_ref().map(|k| k.path()),
                 )?;
                 refresh_registry_object_store(&dir)
-                    .context("refreshing dumb-HTTP object store after ca backfill")?;
+                    .context("refreshing dumb-HTTP object store after store backfill")?;
                 committed = true;
                 printer.success(&format!("Committed: {msg}"));
             } else if !changed {
-                printer.info("Trust map already covers every published closure.");
+                printer.info("Graph already covers every published closure.");
             }
 
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
-                    "action": "ca_backfill",
+                    "action": "store_backfill",
                     "registry": registry_name,
                     "roots": roots.len(),
-                    "inserted": report.inserted,
+                    "created": report.created,
                     "blessed": report.blessed,
                     "unchanged": report.unchanged,
+                    "content_addressed": report.content_addressed,
                     "committed": committed,
                 }));
             }
@@ -3913,51 +3849,47 @@ fn resolve_optional_signing_key(
     }
 }
 
-/// `apr ca verify` — checks trust-map health: bucket parseability, coverage
-/// of every closure member, and (with `deep`) agreement with the local Nix
-/// store's actual NAR hashes.
-fn ca_verify(dir: &Path, registry_name: &str, deep: bool, printer: &Printer) -> Result<()> {
-    let ca_map = CaMap::load(dir).context("loading ca/ trust map")?;
-    if !ca_map.is_present() {
+/// `apr store verify` — checks graph health: record parseability, coverage of
+/// every published closure member (reachable via dependency edges), and (with
+/// `deep`) agreement with the local Nix store's actual NAR hashes.
+fn store_verify(dir: &Path, registry_name: &str, deep: bool, printer: &Printer) -> Result<()> {
+    let graph = StoreMap::load(dir).context("loading store/ graph")?;
+    if !graph.is_present() {
         bail!(
-            "registry '{registry_name}' publishes no ca/ trust map; \
-             run `apr ca backfill` to create one"
+            "registry '{registry_name}' publishes no store/ realisation graph; \
+             run `apr store backfill` to create one"
         );
     }
 
     let mut errors = 0u32;
     let mut members_checked = 0u32;
 
-    // Coverage: every member of every published closure file is mapped.
-    let closures_dir = dir.join("closures");
-    if closures_dir.is_dir() {
-        for entry in std::fs::read_dir(&closures_dir)
-            .with_context(|| format!("reading {}", closures_dir.display()))?
-        {
-            let path = entry?.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if path.is_dir() || name.starts_with('.') {
+    // Coverage: every member reachable from every published package root has a
+    // record with a blessed NAR.
+    for root in collect_package_store_paths(dir)? {
+        let mut seen = HashSet::new();
+        let mut stack = vec![extract_hash(&root).to_string()];
+        while let Some(hash) = stack.pop() {
+            if !seen.insert(hash.clone()) {
                 continue;
             }
-            let content = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading closure file {}", path.display()))?;
-            let closure = crate::types::ClosureMeta::parse(name, &content);
-            for member in &closure.members {
-                members_checked += 1;
-                if ca_map.get(member).is_none() {
-                    printer.warning(&format!(
-                        "closure {name}: member {member} has no ca/ trust-map entry"
-                    ));
+            members_checked += 1;
+            match graph.get(&hash) {
+                None => {
+                    printer.warning(&format!("closure member {hash} has no store/ record"));
                     errors += 1;
                 }
+                Some(record) if record.blessed_nars().is_empty() => {
+                    printer.warning(&format!("store/ record {hash} has no blessed NAR"));
+                    errors += 1;
+                }
+                Some(_) => stack.extend(graph.direct_deps(&hash)),
             }
         }
     }
 
     // Deep: recompute every locally-available closure member's NAR hash and
-    // require membership in its blessed set.
+    // require it to match a blessed NAR in the record.
     let mut deep_checked = 0u32;
     if deep {
         for root in collect_package_store_paths(dir)? {
@@ -3973,20 +3905,15 @@ fn ca_verify(dir: &Path, registry_name: &str, deep: bool, printer: &Printer) -> 
             for member in members {
                 deep_checked += 1;
                 let ia_hash = extract_hash(&member.path);
-                let Some(blessed) = ca_map.get(ia_hash) else {
-                    // Already reported by the coverage pass when the
-                    // closure file exists; count it here for roots whose
-                    // closure file is missing.
-                    printer.warning(&format!(
-                        "{}: no ca/ trust-map entry for {ia_hash}",
-                        member.path
-                    ));
+                let blessed = graph.blessed_nars(ia_hash);
+                if blessed.is_empty() {
+                    printer.warning(&format!("{}: no store/ record for {ia_hash}", member.path));
                     errors += 1;
                     continue;
-                };
+                }
                 if !blessed
                     .iter()
-                    .any(|entry| entry.matches_nar(&member.nar_hash, member.nar_size))
+                    .any(|nar| nar.matches(&member.nar_hash, member.nar_size))
                 {
                     printer.error(&format!(
                         "{}: local store content is NOT blessed (local {} / {} bytes)",
@@ -4000,9 +3927,9 @@ fn ca_verify(dir: &Path, registry_name: &str, deep: bool, printer: &Printer) -> 
 
     if printer.mode() == OutputMode::Json {
         printer.json(&serde_json::json!({
-            "action": "ca_verify",
+            "action": "store_verify",
             "registry": registry_name,
-            "mapped_hashes": ca_map.len(),
+            "records": graph.len(),
             "members_checked": members_checked,
             "deep_checked": deep_checked,
             "errors": errors,
@@ -4010,11 +3937,11 @@ fn ca_verify(dir: &Path, registry_name: &str, deep: bool, printer: &Printer) -> 
     }
 
     if errors > 0 {
-        bail!("ca/ trust-map verification failed with {errors} error(s)");
+        bail!("store/ graph verification failed with {errors} error(s)");
     }
     printer.success(&format!(
-        "Trust map OK: {} mapped hash(es), {members_checked} closure member(s) covered{}.",
-        ca_map.len(),
+        "Graph OK: {} record(s), {members_checked} closure member(s) covered{}.",
+        graph.len(),
         if deep {
             format!(", {deep_checked} deep-checked")
         } else {
