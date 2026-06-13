@@ -1582,6 +1582,22 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Look up a service account's id by `(org_id, name)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn service_account_by_name(&self, org_id: i64, name: &str) -> Result<Option<i64>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT id FROM service_accounts WHERE org_id = ?1 AND name = ?2",
+            params![org_id, name],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("loading service account by name")
+    }
+
     // -- tenancy: memberships ------------------------------------------------
 
     /// Grant (or update) a principal's role at a scope.
