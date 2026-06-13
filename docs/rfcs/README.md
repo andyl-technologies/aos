@@ -22,5 +22,6 @@ topic files.
 | [0001](0001-roles-as-targets.md) | 2026-06-08 | Roles as systemd targets, with sandboxed side-effects | Superseded by RFC-0002 (target + gated side-effect services carry forward) |
 | [0002](0002-package-integration/README.md) | 2026-06-08 | Package integration model (`expose` manifests, per-unit sandboxing, preset enablement) | Proposed (14/19 decisions resolved; gated on the Decision 17 spike) |
 | [0003](0003-install-from-image.md) | 2026-06-12 | Installation from image — UEFI + Ignition first boot, CI-enforced | Implemented (`checks.fleet.install-from-image`) |
+| [0005](0005-secure-boot/README.md) | 2026-06-13 | Full Secure Boot integration — sign, measure, attest | Proposed |
 
 Numbering is chronological by the date the design entered the tree.
