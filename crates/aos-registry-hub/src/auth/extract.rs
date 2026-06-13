@@ -23,9 +23,12 @@
 //! - A **JWT** carries explicit permission verbs and a single bound scope,
 //!   so [`token_allows`] decides locally —
 //!   `claims.scope contains target && claims.perms contains perm` — with no
-//!   database read. (Effective authority is still the token's grant
-//!   intersected with the owner's *current* memberships; that tightening is
-//!   applied where the owner's grants are loaded.)
+//!   database read. On the machine plane the JWT's short TTL (not a live
+//!   membership re-check) is the revocation bound: a role revoked at the
+//!   membership level stops minting new JWTs at `/oauth2/token` at once
+//!   (a hard token revoke is immediate), but an already-issued JWT keeps
+//!   its grant until it expires. The RPC and session planes *do* re-check
+//!   live memberships per request via [`require_permission`].
 //! - A **session** carries only the user id, so the gate loads the user's
 //!   current effective scopes from [`crate::db::Database::effective_scopes`]
 //!   and calls [`crate::domain::iam::allow`] directly — role changes take
@@ -238,6 +241,11 @@ pub fn require_permission(
 /// strict CORS), or the SSR form path supplies a valid per-session
 /// synchronizer token via the `x-aos-csrf` header. Bearer requests carry no
 /// ambient credential and should not be routed through this check.
+///
+/// Not yet wired into a handler: every state-changing endpoint today
+/// authenticates with a `Bearer` token and no ambient cookie, so it is not
+/// CSRF-able. This gate must be applied to the first cookie-authenticated
+/// mutation that lands (the phase-3 producer console).
 #[must_use]
 pub fn connect_or_csrf_ok(headers: &HeaderMap, session_secret: Option<&str>) -> bool {
     if headers.contains_key("connect-protocol-version") {

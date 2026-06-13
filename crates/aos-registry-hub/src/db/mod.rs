@@ -369,6 +369,15 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE registries ADD COLUMN storage_binding_id INTEGER;
     ALTER TABLE registries ADD COLUMN prefix TEXT NOT NULL DEFAULT '';
     ",
+    // v6: split token rotation from hard revocation. `rotated_at` carries
+    // the grace window (a rotated secret stays valid briefly so in-flight
+    // clients are not cut off); `revoked_at` is an immediate hard cutoff
+    // with no grace (a leaked secret denied at once). Before this split,
+    // revocation reused the rotation grace and a revoked secret kept
+    // minting JWTs for an hour.
+    "
+    ALTER TABLE tokens ADD COLUMN rotated_at INTEGER;
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -471,10 +480,12 @@ pub struct InvitationRecord {
 /// A validated provisioning token: who owns it and what it may do.
 ///
 /// Produced by [`Database::validate_token`] after a secret checks out
-/// (hash matches, not expired, and either not revoked or still inside the
-/// rotation grace window). The `scope`/`permissions` here are the token's
-/// *own* grants; effective authority is their intersection with the
-/// owner's current memberships, computed at decision time.
+/// (hash matches, not expired, not hard-revoked, and — if rotated — still
+/// inside the rotation grace window). The `scope`/`permissions` here are
+/// the token's *own* grants. The RPC plane additionally intersects them
+/// with the owner's current memberships at decision time
+/// ([`Database::effective_scopes`]); the machine plane authorizes from
+/// these grants alone, bounded by the JWT TTL (see `auth::extract`).
 #[derive(Debug, Clone)]
 pub struct TokenAuth {
     /// The token's id (UUID); the JWT `sub` and the revoke/rotate key.
@@ -1785,7 +1796,8 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error when a registry already exists at the canonical
-    /// path, or on database failure.
+    /// path, when `prefix` contains a path-traversal component (`..`, an
+    /// absolute segment), or on database failure.
     #[allow(clippy::too_many_arguments)]
     pub fn create_managed_registry(
         &self,
@@ -1798,6 +1810,19 @@ impl Database {
         trust_keys: &[String],
         require_signatures: bool,
     ) -> Result<i64> {
+        // Defense in depth: the per-file upload tail is already constrained
+        // by `safe_join`, but a `..` in the binding prefix would relocate
+        // the whole surface root, so reject it at creation.
+        if !prefix.is_empty() {
+            let rel = std::path::Path::new(prefix);
+            if rel.is_absolute()
+                || rel
+                    .components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            {
+                bail!("registry prefix '{prefix}' must be a relative path with no '..' components");
+            }
+        }
         let org_slug = self
             .org_by_id(org_id)?
             .with_context(|| format!("no org with id {org_id}"))?
@@ -2174,7 +2199,8 @@ impl Database {
         let conn = self.lock();
         let row = conn
             .query_row(
-                "SELECT id, owner_kind, owner_id, scope, permissions, expires_at, revoked_at
+                "SELECT id, owner_kind, owner_id, scope, permissions, expires_at,
+                        revoked_at, rotated_at
                  FROM tokens WHERE hash = ?1",
                 [&hash],
                 |row| {
@@ -2186,12 +2212,14 @@ impl Database {
                         row.get::<_, String>(4)?,
                         row.get::<_, Option<i64>>(5)?,
                         row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, Option<i64>>(7)?,
                     ))
                 },
             )
             .optional()
             .context("loading token by hash")?;
-        let Some((id, owner_kind, owner_id, scope, perms_json, expires_at, revoked_at)) = row
+        let Some((id, owner_kind, owner_id, scope, perms_json, expires_at, revoked_at, rotated_at)) =
+            row
         else {
             return Ok(None);
         };
@@ -2200,8 +2228,13 @@ impl Database {
                 return Ok(None);
             }
         }
-        if let Some(revoked) = revoked_at {
-            if now >= revoked + ROTATION_GRACE_SECS {
+        // A hard revocation cuts off immediately; a rotation grants the
+        // grace window so in-flight clients can finish.
+        if revoked_at.is_some() {
+            return Ok(None);
+        }
+        if let Some(rotated) = rotated_at {
+            if now >= rotated + ROTATION_GRACE_SECS {
                 return Ok(None);
             }
         }
@@ -2305,7 +2338,7 @@ impl Database {
             return Ok(None);
         };
         tx.execute(
-            "UPDATE tokens SET revoked_at = ?2 WHERE id = ?1",
+            "UPDATE tokens SET rotated_at = ?2 WHERE id = ?1",
             params![token_id, now],
         )?;
         let (secret, hash) = crate::auth::token::generate_token();
@@ -2642,21 +2675,20 @@ impl Database {
         let hash = crate::auth::token::sha256_hex(secret);
         let now = unix_now();
         let conn = self.lock();
+        // Claim-then-read in one statement: the conditional UPDATE is the
+        // single-use gate, so two concurrent consumptions of the same link
+        // cannot both succeed (the second stamps zero rows). RETURNING ties
+        // the claim to the email atomically.
         let email: Option<String> = conn
             .query_row(
-                "SELECT email FROM magic_links
-                 WHERE token_hash = ?1 AND consumed_at IS NULL AND expires_at > ?2",
+                "UPDATE magic_links SET consumed_at = ?2
+                 WHERE token_hash = ?1 AND consumed_at IS NULL AND expires_at > ?2
+                 RETURNING email",
                 params![hash, now],
                 |row| row.get(0),
             )
             .optional()
-            .context("loading magic link by hash")?;
-        if email.is_some() {
-            conn.execute(
-                "UPDATE magic_links SET consumed_at = ?2 WHERE token_hash = ?1",
-                params![hash, now],
-            )?;
-        }
+            .context("consuming magic link by hash")?;
         Ok(email)
     }
 }
@@ -3193,22 +3225,36 @@ mod tests {
         assert_eq!(new_auth.scope.as_str(), "acme");
         assert_eq!(new_auth.permissions, vec![Permission::Read]);
 
-        // The OLD secret still validates — it was revoked now, but within
+        // The OLD secret still validates — it was rotated now, but within
         // the grace window.
         assert!(db.validate_token(&old_secret).unwrap().is_some());
 
-        // Force the old token's revoked_at to be older than the grace
+        // Force the old token's rotated_at to be older than the grace
         // window: now it is invalid.
         db.lock()
             .execute(
-                "UPDATE tokens SET revoked_at = ?2 WHERE id = ?1",
+                "UPDATE tokens SET rotated_at = ?2 WHERE id = ?1",
                 params![old_id, unix_now() - ROTATION_GRACE_SECS - 1],
             )
             .unwrap();
         assert!(db.validate_token(&old_secret).unwrap().is_none());
 
-        // Rotating an already-revoked token returns None.
-        assert!(db.rotate_token(&old_id).unwrap().is_none());
+        // Rotating an already-rotated token mints again from it (it was
+        // never hard-revoked).
+        assert!(db.rotate_token(&old_id).unwrap().is_some());
+    }
+
+    #[test]
+    fn revoked_token_is_denied_immediately_without_grace() {
+        use crate::domain::{Permission, Principal};
+        let db = Database::open_in_memory().unwrap();
+        let (id, secret) = db
+            .create_token(Principal::user(7), "acme", &[Permission::Read], None, None)
+            .unwrap();
+        assert!(db.validate_token(&secret).unwrap().is_some());
+        db.revoke_token(&id).unwrap();
+        // A hard revocation cuts off at once — no rotation grace.
+        assert!(db.validate_token(&secret).unwrap().is_none());
     }
 
     #[test]
@@ -3567,6 +3613,21 @@ mod tests {
     fn managed_registry_canonical_slug_and_scope_lookup() {
         let db = Database::open_in_memory().unwrap();
         let org = db.create_org("acme", "Acme").unwrap();
+
+        // A traversal-bearing prefix is rejected (defense in depth).
+        assert!(
+            db.create_managed_registry(
+                org,
+                "infra",
+                "evil",
+                "public",
+                None,
+                "../../etc",
+                &[],
+                true
+            )
+            .is_err()
+        );
 
         // With a project path.
         let cdn = db
