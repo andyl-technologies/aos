@@ -43,6 +43,9 @@
 //!   device-code, magic-link, and per-org OIDC SSO flows, and the axum
 //!   extractors that gate requests.
 //! - [`indexer`] — fetch → verify → load → index orchestration.
+//! - [`mirror`] — registry mirroring: full-mirror sync (verify-then-copy the
+//!   upstream surface into the local binding) and the pull-through fetch-on-miss
+//!   cache.
 //! - [`stack`] — the nestable try/mirror cache-stack expression and its
 //!   committed TOML encoding.
 //! - [`ratelimit`] — in-memory per-endpoint fixed-window rate limiting for the
@@ -78,6 +81,7 @@ pub mod facade;
 pub mod fetch;
 pub mod gitwrite;
 pub mod indexer;
+pub mod mirror;
 pub mod probe;
 pub mod ratelimit;
 pub mod rpc;

@@ -46,6 +46,13 @@
 //!   attempts that copied missing objects between caches. Not derived from the
 //!   surface, but droppable without losing registration state.
 //!
+//! The phase-future mirroring and frontend topology (v16) splits across these
+//! contracts too: `mirror_sources` (a registry's upstream URL + mode — full or
+//! pull-through — and the last-sync record) and `frontends` (the direct/proxied
+//! domains serving a registry's surfaces) are **system of record**, while
+//! `frontend_probes` (the latest reachability/freshness observation per
+//! frontend) is a **rebuildable** observation refreshed on every probe.
+//!
 //! Migrations are ordered SQL statements tracked in `schema_version`,
 //!  applied at open. The connection is wrapped in a `Mutex` following the
 //! pattern of `aos-server`'s token store; hub queries are short and
@@ -869,6 +876,68 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE config_changesets ADD COLUMN git_ref TEXT;
     ALTER TABLE config_changesets ADD COLUMN git_commit TEXT;
     ",
+    // v16: registry mirroring + frontends (RFC-0004 "Mirroring other
+    // registries" and "Frontends: direct and proxied domains").
+    //
+    // - mirror_sources: a registry with a row here is a *mirror* of an upstream
+    //   registry. `mode` is 'full' (a scheduled job copies the verified upstream
+    //   surface byte-identically into the local binding, immutable-first, and
+    //   refuses to flip pointers on a verification failure — consumers keep the
+    //   upstream's trust anchors) or 'pullthrough' (a proxied frontend that
+    //   fetches-on-miss from upstream, verifies content-addressed payloads by
+    //   hash, persists them, and serves). `verify` (default on) gates whether the
+    //   full-mirror sync verifies signatures before accepting; `schedule_secs` is
+    //   the full-mirror cadence. The last_sync_* columns and `upstream_frontier`
+    //   record the most recent sync outcome for the registry health page. System
+    //   of record (the upstream URL and mode exist nowhere on the local surface).
+    // - frontends: the domains that serve a registry's surfaces (RFC-0004's
+    //   `Frontend`). `mode` is 'direct' (the hub is not in the serving path — a
+    //   CNAME to an R2 custom domain or CloudFront; the hub only probes it) or
+    //   'proxied' (the hub's facade serves it, enabling bearer auth + HTML).
+    //   serves_git/serves_cache/serves_web pick the advertised surface subset;
+    //   consumer_priority maps to the [[caches]] priority an advertised cache
+    //   frontend would carry (informational here — registry.toml [[caches]] is
+    //   signed tree content the hub never silently edits). UNIQUE(domain,
+    //   base_path) keeps one frontend per served URL. System of record.
+    // - frontend_probes: the latest reachability/freshness observation per
+    //   frontend (RFC-0004's FrontendProbe — observed_frontier + lag_releases vs
+    //   the local index frontier), upserted on every probe. Rebuildable.
+    "
+    CREATE TABLE mirror_sources (
+        registry_id      INTEGER PRIMARY KEY REFERENCES registries(id) ON DELETE CASCADE,
+        upstream_url     TEXT NOT NULL,
+        mode             TEXT NOT NULL,              -- full | pullthrough
+        verify           INTEGER NOT NULL DEFAULT 1,
+        schedule_secs    INTEGER NOT NULL DEFAULT 3600,
+        last_sync_at     INTEGER,
+        last_sync_status TEXT,                       -- ok | failed
+        last_sync_error  TEXT,
+        upstream_frontier TEXT
+    );
+    CREATE TABLE frontends (
+        id               INTEGER PRIMARY KEY,
+        registry_id      INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
+        domain           TEXT NOT NULL,
+        base_path        TEXT NOT NULL DEFAULT '',
+        mode             TEXT NOT NULL,              -- direct | proxied
+        serves_git       INTEGER NOT NULL DEFAULT 1,
+        serves_cache     INTEGER NOT NULL DEFAULT 1,
+        serves_web       INTEGER NOT NULL DEFAULT 1,
+        consumer_priority INTEGER NOT NULL DEFAULT 100,
+        advertised       INTEGER NOT NULL DEFAULT 1,
+        created_at       INTEGER NOT NULL,
+        UNIQUE (domain, base_path)
+    );
+    CREATE INDEX frontends_registry_idx ON frontends (registry_id);
+    CREATE TABLE frontend_probes (
+        frontend_id      INTEGER PRIMARY KEY REFERENCES frontends(id) ON DELETE CASCADE,
+        status           TEXT,                       -- ok | stale | unreachable
+        observed_frontier TEXT,
+        lag_releases     INTEGER,
+        latency_ms       INTEGER,
+        checked_at       INTEGER
+    );
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -1421,6 +1490,88 @@ pub struct CacheProbeRow {
     pub checked_at: i64,
 }
 
+/// A registry's upstream mirror source (system-of-record row).
+///
+/// A registry that has a `mirror_sources` row *is* a mirror (see
+/// [`Database::is_mirror`]). The [`MirrorSource::mode`] selects the
+/// replication strategy: `full` copies the verified upstream surface into the
+/// local binding on a schedule; `pullthrough` fetches-on-miss through a
+/// proxied frontend. See [`crate::mirror`] for the sync and fetch logic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirrorSource {
+    /// The upstream registry surface URL (`file://`, `/path`, or `http(s)://`).
+    pub upstream_url: String,
+    /// Replication mode: `full` (scheduled byte-identical copy) or
+    /// `pullthrough` (fetch-on-miss proxy).
+    pub mode: String,
+    /// Whether the full-mirror sync verifies upstream signatures before
+    /// accepting anything (default `true`; a poisoned upstream never
+    /// propagates).
+    pub verify: bool,
+    /// Full-mirror sync cadence, in seconds.
+    pub schedule_secs: i64,
+    /// Unix time of the last completed sync attempt, or `None` if never run.
+    pub last_sync_at: Option<i64>,
+    /// Outcome of the last sync attempt: `ok` or `failed`, or `None` if never
+    /// run.
+    pub last_sync_status: Option<String>,
+    /// Failure detail when [`Self::last_sync_status`] is `failed`.
+    pub last_sync_error: Option<String>,
+    /// The upstream channel frontier observed at the last successful sync.
+    pub upstream_frontier: Option<String>,
+}
+
+/// A frontend domain serving some subset of a registry's surfaces
+/// (system-of-record row; RFC-0004 "Frontends: direct and proxied domains").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontendRecord {
+    /// Database id.
+    pub id: i64,
+    /// The registry this frontend serves.
+    pub registry_id: i64,
+    /// The domain the frontend is reachable at (e.g. `cdn.acme.com`).
+    pub domain: String,
+    /// A path prefix under the domain the registry surface lives at (`""` for
+    /// the domain root).
+    pub base_path: String,
+    /// Serving mode: `direct` (hub not in the path; probe-only) or `proxied`
+    /// (the hub's facade serves it).
+    pub mode: String,
+    /// Whether the frontend serves the dumb-HTTP git surface.
+    pub serves_git: bool,
+    /// Whether the frontend serves the Nix binary-cache surface.
+    pub serves_cache: bool,
+    /// Whether the frontend serves the static web surface.
+    pub serves_web: bool,
+    /// The `[[caches]]` priority an advertised cache frontend would carry
+    /// (informational; the committed mirror list is signed tree content).
+    pub consumer_priority: i64,
+    /// Whether the frontend is advertised to consumers.
+    pub advertised: bool,
+    /// Unix time the frontend was created.
+    pub created_at: i64,
+}
+
+/// The latest reachability/freshness observation of one frontend
+/// (rebuildable; RFC-0004's `FrontendProbe`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontendProbeRow {
+    /// The frontend the observation concerns.
+    pub frontend_id: i64,
+    /// Probe outcome: `ok`, `stale`, or `unreachable`, or `None` if never
+    /// probed.
+    pub status: Option<String>,
+    /// The channel frontier the frontend's surface advertised, when observed.
+    pub observed_frontier: Option<String>,
+    /// How many releases behind the local index frontier the frontend is, when
+    /// computable.
+    pub lag_releases: Option<i64>,
+    /// Round-trip latency of the probe, in milliseconds.
+    pub latency_ms: Option<i64>,
+    /// Unix time the probe ran.
+    pub checked_at: Option<i64>,
+}
+
 /// The full index payload one successful indexing run produces.
 #[derive(Debug, Default)]
 pub struct IndexSnapshot {
@@ -1809,6 +1960,22 @@ impl Database {
                 &vals![slug],
             )
             .context("loading registry by slug")?
+            .map(|row| row_to_registry(&row))
+            .transpose()
+    }
+
+    /// Look up a registry by its database id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn registry_by_id(&self, registry_id: i64) -> Result<Option<RegistryRecord>> {
+        self.backend
+            .query_opt(
+                &format!("SELECT {REGISTRY_COLUMNS} FROM registries WHERE id = ?1"),
+                &vals![registry_id],
+            )
+            .context("loading registry by id")?
             .map(|row| row_to_registry(&row))
             .transpose()
     }
@@ -2406,6 +2573,284 @@ impl Database {
                     observed_nix_cache_info: row.get(2)?,
                     latency_ms: row.get(3)?,
                     checked_at: row.get(4)?,
+                })
+            })
+            .collect()
+    }
+
+    // -- mirror sources + frontends (v16) -----------------------------------
+
+    /// Mark a registry as a mirror of `upstream_url` in `mode`.
+    ///
+    /// Idempotent: re-running for the same registry updates the upstream URL,
+    /// mode, verify flag, and schedule, preserving the last-sync record. `mode`
+    /// must be `full` or `pullthrough`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unrecognized `mode` or on database failure.
+    pub fn create_mirror_source(
+        &self,
+        registry_id: i64,
+        upstream_url: &str,
+        mode: &str,
+        verify: bool,
+        schedule_secs: i64,
+    ) -> Result<()> {
+        if !matches!(mode, "full" | "pullthrough") {
+            bail!("unsupported mirror mode '{mode}' (expected full or pullthrough)");
+        }
+        self.backend.execute(
+            "INSERT INTO mirror_sources
+             (registry_id, upstream_url, mode, verify, schedule_secs)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(registry_id) DO UPDATE SET
+               upstream_url = excluded.upstream_url,
+               mode = excluded.mode,
+               verify = excluded.verify,
+               schedule_secs = excluded.schedule_secs",
+            &vals![registry_id, upstream_url, mode, verify, schedule_secs],
+        )?;
+        Ok(())
+    }
+
+    /// Load a registry's mirror source, if it is a mirror.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn mirror_source(&self, registry_id: i64) -> Result<Option<MirrorSource>> {
+        self.backend
+            .query_opt(
+                "SELECT upstream_url, mode, verify, schedule_secs, last_sync_at,
+                        last_sync_status, last_sync_error, upstream_frontier
+                 FROM mirror_sources WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .context("loading mirror source")?
+            .map(|row| row_to_mirror_source(&row))
+            .transpose()
+    }
+
+    /// List every registry that has a mirror source, paired with the source.
+    ///
+    /// Used by the serve loop to find mirrors due for a scheduled full sync.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_mirror_sources(&self) -> Result<Vec<(i64, MirrorSource)>> {
+        let rows = self.backend.query(
+            "SELECT registry_id, upstream_url, mode, verify, schedule_secs, last_sync_at,
+                    last_sync_status, last_sync_error, upstream_frontier
+             FROM mirror_sources ORDER BY registry_id",
+            &[],
+        )?;
+        rows.iter()
+            .map(|row| {
+                let registry_id: i64 = row.get(0)?;
+                Ok((
+                    registry_id,
+                    MirrorSource {
+                        upstream_url: row.get(1)?,
+                        mode: row.get(2)?,
+                        verify: row.get(3)?,
+                        schedule_secs: row.get(4)?,
+                        last_sync_at: row.get(5)?,
+                        last_sync_status: row.get(6)?,
+                        last_sync_error: row.get(7)?,
+                        upstream_frontier: row.get(8)?,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    /// Whether `registry_id` is a mirror (has a `mirror_sources` row).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn is_mirror(&self, registry_id: i64) -> Result<bool> {
+        Ok(self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM mirror_sources WHERE registry_id = ?1",
+                &vals![registry_id],
+            )?
+            .is_some())
+    }
+
+    /// Record the outcome of a mirror sync attempt.
+    ///
+    /// `status` is `ok` or `failed`; on success `error` is `None` and
+    /// `upstream_frontier` records the synced frontier, on failure `error`
+    /// carries the detail and the prior `upstream_frontier` is preserved (so a
+    /// failed sync never overwrites the last good frontier with `NULL`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn update_mirror_sync(
+        &self,
+        registry_id: i64,
+        at: i64,
+        status: &str,
+        error: Option<&str>,
+        upstream_frontier: Option<&str>,
+    ) -> Result<()> {
+        // On a failed sync, keep the prior upstream_frontier (COALESCE the new
+        // NULL onto the old value) so the health page still shows the last good
+        // frontier.
+        self.backend.execute(
+            "UPDATE mirror_sources SET
+               last_sync_at = ?2,
+               last_sync_status = ?3,
+               last_sync_error = ?4,
+               upstream_frontier = COALESCE(?5, upstream_frontier)
+             WHERE registry_id = ?1",
+            &vals![registry_id, at, status, error, upstream_frontier],
+        )?;
+        Ok(())
+    }
+
+    /// Create a frontend serving a registry; returns its new id.
+    ///
+    /// `mode` must be `direct` or `proxied`. The `(domain, base_path)` pair is
+    /// unique across all frontends.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unrecognized `mode`, a `(domain, base_path)`
+    /// collision, or on database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_frontend(
+        &self,
+        registry_id: i64,
+        domain: &str,
+        base_path: &str,
+        mode: &str,
+        serves_git: bool,
+        serves_cache: bool,
+        serves_web: bool,
+        consumer_priority: i64,
+        advertised: bool,
+    ) -> Result<i64> {
+        if !matches!(mode, "direct" | "proxied") {
+            bail!("unsupported frontend mode '{mode}' (expected direct or proxied)");
+        }
+        self.backend.execute_insert(
+            "INSERT INTO frontends
+             (registry_id, domain, base_path, mode, serves_git, serves_cache,
+              serves_web, consumer_priority, advertised, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            &vals![
+                registry_id,
+                domain,
+                base_path,
+                mode,
+                serves_git,
+                serves_cache,
+                serves_web,
+                consumer_priority,
+                advertised,
+                unix_now(),
+            ],
+        )
+    }
+
+    /// List a registry's frontends, ordered by descending consumer priority
+    /// then domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_frontends(&self, registry_id: i64) -> Result<Vec<FrontendRecord>> {
+        let rows = self.backend.query(
+            "SELECT id, registry_id, domain, base_path, mode, serves_git, serves_cache,
+                    serves_web, consumer_priority, advertised, created_at
+             FROM frontends WHERE registry_id = ?1
+             ORDER BY consumer_priority DESC, domain",
+            &vals![registry_id],
+        )?;
+        rows.iter().map(row_to_frontend).collect()
+    }
+
+    /// Delete a frontend by id; returns whether a row was removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn delete_frontend(&self, frontend_id: i64) -> Result<bool> {
+        let affected = self
+            .backend
+            .execute("DELETE FROM frontends WHERE id = ?1", &vals![frontend_id])?;
+        Ok(affected > 0)
+    }
+
+    /// Record (upsert) the latest probe observation for a frontend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn upsert_frontend_probe(
+        &self,
+        frontend_id: i64,
+        status: &str,
+        observed_frontier: Option<&str>,
+        lag_releases: Option<i64>,
+        latency_ms: i64,
+        checked_at: i64,
+    ) -> Result<()> {
+        self.backend.execute(
+            "INSERT INTO frontend_probes
+             (frontend_id, status, observed_frontier, lag_releases, latency_ms, checked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(frontend_id) DO UPDATE SET
+               status = excluded.status,
+               observed_frontier = excluded.observed_frontier,
+               lag_releases = excluded.lag_releases,
+               latency_ms = excluded.latency_ms,
+               checked_at = excluded.checked_at",
+            &vals![
+                frontend_id,
+                status,
+                observed_frontier,
+                lag_releases,
+                latency_ms,
+                checked_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The latest probe per frontend of one registry, keyed by frontend id.
+    ///
+    /// Frontends that have never been probed are omitted; the health page joins
+    /// them back in from [`Database::list_frontends`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_frontend_probes(&self, registry_id: i64) -> Result<Vec<FrontendProbeRow>> {
+        let rows = self.backend.query(
+            "SELECT fp.frontend_id, fp.status, fp.observed_frontier, fp.lag_releases,
+                    fp.latency_ms, fp.checked_at
+             FROM frontend_probes fp
+             JOIN frontends f ON f.id = fp.frontend_id
+             WHERE f.registry_id = ?1
+             ORDER BY fp.frontend_id",
+            &vals![registry_id],
+        )?;
+        rows.iter()
+            .map(|row| {
+                Ok(FrontendProbeRow {
+                    frontend_id: row.get(0)?,
+                    status: row.get(1)?,
+                    observed_frontier: row.get(2)?,
+                    lag_releases: row.get(3)?,
+                    latency_ms: row.get(4)?,
+                    checked_at: row.get(5)?,
                 })
             })
             .collect()
@@ -5791,6 +6236,40 @@ fn row_to_registry(row: &Row) -> Result<RegistryRecord> {
         storage_binding_id: row.get(8)?,
         prefix: row.get(9)?,
         hosted_key_id: row.get(10)?,
+    })
+}
+
+/// Map a `mirror_sources` row (selected in column order
+/// `upstream_url, mode, verify, schedule_secs, last_sync_at, last_sync_status,
+/// last_sync_error, upstream_frontier`) into a [`MirrorSource`].
+fn row_to_mirror_source(row: &Row) -> Result<MirrorSource> {
+    Ok(MirrorSource {
+        upstream_url: row.get(0)?,
+        mode: row.get(1)?,
+        verify: row.get(2)?,
+        schedule_secs: row.get(3)?,
+        last_sync_at: row.get(4)?,
+        last_sync_status: row.get(5)?,
+        last_sync_error: row.get(6)?,
+        upstream_frontier: row.get(7)?,
+    })
+}
+
+/// Map a `frontends` row into a [`FrontendRecord`] (columns in the order
+/// [`Database::list_frontends`] selects).
+fn row_to_frontend(row: &Row) -> Result<FrontendRecord> {
+    Ok(FrontendRecord {
+        id: row.get(0)?,
+        registry_id: row.get(1)?,
+        domain: row.get(2)?,
+        base_path: row.get(3)?,
+        mode: row.get(4)?,
+        serves_git: row.get(5)?,
+        serves_cache: row.get(6)?,
+        serves_web: row.get(7)?,
+        consumer_priority: row.get(8)?,
+        advertised: row.get(9)?,
+        created_at: row.get(10)?,
     })
 }
 

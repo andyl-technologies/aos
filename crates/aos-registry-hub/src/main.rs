@@ -125,6 +125,74 @@ enum Command {
         #[command(subcommand)]
         command: ValidateCommand,
     },
+    /// Mirror an upstream registry (full or pull-through).
+    Mirror {
+        #[command(subcommand)]
+        command: MirrorCommand,
+    },
+    /// Manage a registry's serving frontends (direct or proxied domains).
+    Frontend {
+        #[command(subcommand)]
+        command: FrontendCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum MirrorCommand {
+    /// Mark a registry as a mirror of an upstream registry.
+    ///
+    /// `full` copies the verified upstream surface into the local binding on a
+    /// schedule (set the mirror's trust keys to the upstream's anchors so
+    /// consumers keep upstream trust). `pullthrough` serves reads by
+    /// fetch-on-miss from upstream. `derived` (re-signed under the org's own
+    /// roster) is deferred past v1 and rejected.
+    Add {
+        /// Canonical registry path or flat slug of the local mirror registry.
+        canonical: String,
+        /// Upstream registry surface URL (file:///path, /path, or http(s)://…).
+        upstream_url: String,
+        /// Mirror mode: full, pullthrough, or derived (deferred).
+        #[arg(long, default_value = "full")]
+        mode: String,
+        /// Full-mirror sync cadence in seconds.
+        #[arg(long = "schedule-secs", default_value_t = 3600)]
+        schedule_secs: i64,
+    },
+    /// Run a full-mirror sync now (verify the upstream and copy it locally).
+    Sync {
+        /// Canonical registry path or flat slug of the local mirror registry.
+        canonical: String,
+    },
+    /// Show a mirror's upstream, mode, and last sync state.
+    Status {
+        /// Canonical registry path or flat slug of the local mirror registry.
+        canonical: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum FrontendCommand {
+    /// Add a serving frontend (domain) to a registry.
+    Add {
+        /// Canonical registry path or flat slug.
+        canonical: String,
+        /// Domain the frontend serves (e.g. cdn.acme.com).
+        domain: String,
+        /// Serving mode: direct (probe-only) or proxied (hub facade).
+        #[arg(long, default_value = "direct")]
+        mode: String,
+        /// Path prefix under the domain the surface lives at.
+        #[arg(long = "base-path", default_value = "")]
+        base_path: String,
+        /// Consumer cache priority for an advertised cache frontend.
+        #[arg(long, default_value_t = 100)]
+        priority: i64,
+    },
+    /// List a registry's frontends.
+    List {
+        /// Canonical registry path or flat slug.
+        canonical: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -491,6 +559,9 @@ async fn main() -> Result<()> {
                     loop {
                         tick.tick().await;
                         index_all(&db).await;
+                        // Full mirrors due for a scheduled sync: verify the
+                        // upstream surface and copy it into the local binding.
+                        sync_due_mirrors(&db, now_secs()).await;
                         // Offboarding: hard-purge orgs past their grace window.
                         match aos_registry_hub::export::purge_expired_orgs(&db, now_secs()) {
                             Ok(purged) => {
@@ -911,6 +982,148 @@ async fn main() -> Result<()> {
             let root = resolve_root(cli.root, false)?;
             let db = Database::open(&root.join("hub.db"))?;
             run_webhook_command(&db, command)?;
+        }
+        Command::Mirror { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            run_mirror_command(&db, command).await?;
+        }
+        Command::Frontend { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            run_frontend_command(&db, command)?;
+        }
+    }
+    Ok(())
+}
+
+/// Handle the `mirror add`/`sync`/`status` subcommands.
+///
+/// `add` records the upstream + mode (rejecting `derived`, which is deferred);
+/// `sync` runs a full-mirror sync now; `status` prints the upstream, mode, and
+/// last-sync record.
+async fn run_mirror_command(db: &Database, command: MirrorCommand) -> Result<()> {
+    match command {
+        MirrorCommand::Add {
+            canonical,
+            upstream_url,
+            mode,
+            schedule_secs,
+        } => {
+            if mode == "derived" {
+                anyhow::bail!(
+                    "derived mirroring (re-signing under the org's own roster) is deferred \
+                     past v1 (RFC-0004 \"Mirroring other registries\", mode 2); use \
+                     --mode full or --mode pullthrough"
+                );
+            }
+            let registry = db
+                .registry_by_slug(&canonical)?
+                .with_context(|| format!("no registry '{canonical}'"))?;
+            db.create_mirror_source(registry.id, &upstream_url, &mode, true, schedule_secs)?;
+            println!(
+                "registry '{}' is now a {mode} mirror of {upstream_url}",
+                registry.slug
+            );
+            if mode == "full" {
+                println!(
+                    "note: set this mirror's trust keys to the upstream's anchors so consumers \
+                     keep upstream trust; run `mirror sync {canonical}` to sync now."
+                );
+            }
+        }
+        MirrorCommand::Sync { canonical } => {
+            let registry = db
+                .registry_by_slug(&canonical)?
+                .with_context(|| format!("no registry '{canonical}'"))?;
+            let result = aos_registry_hub::mirror::sync_full_mirror(db, &registry).await?;
+            println!(
+                "synced '{}' @ {} · {} files · frontier {} · {} releases · {} channels",
+                registry.slug,
+                result.commit,
+                result.files_copied,
+                result.frontier.as_deref().unwrap_or("-"),
+                result.releases,
+                result.channels,
+            );
+        }
+        MirrorCommand::Status { canonical } => {
+            let registry = db
+                .registry_by_slug(&canonical)?
+                .with_context(|| format!("no registry '{canonical}'"))?;
+            match db.mirror_source(registry.id)? {
+                Some(source) => {
+                    println!("upstream:   {}", source.upstream_url);
+                    println!("mode:       {}", source.mode);
+                    println!("verify:     {}", source.verify);
+                    println!("schedule:   {}s", source.schedule_secs);
+                    println!(
+                        "last sync:  {} ({})",
+                        source
+                            .last_sync_at
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "never".into()),
+                        source.last_sync_status.as_deref().unwrap_or("-"),
+                    );
+                    if let Some(error) = &source.last_sync_error {
+                        println!("last error: {error}");
+                    }
+                    println!(
+                        "frontier:   {}",
+                        source.upstream_frontier.as_deref().unwrap_or("-")
+                    );
+                }
+                None => println!("registry '{canonical}' is not a mirror"),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Handle the `frontend add`/`list` subcommands.
+fn run_frontend_command(db: &Database, command: FrontendCommand) -> Result<()> {
+    match command {
+        FrontendCommand::Add {
+            canonical,
+            domain,
+            mode,
+            base_path,
+            priority,
+        } => {
+            let registry = db
+                .registry_by_slug(&canonical)?
+                .with_context(|| format!("no registry '{canonical}'"))?;
+            let id = db.create_frontend(
+                registry.id,
+                &domain,
+                &base_path,
+                &mode,
+                true,
+                true,
+                true,
+                priority,
+                true,
+            )?;
+            println!(
+                "added {mode} frontend {id} for '{}': {domain}{base_path} (priority {priority})",
+                registry.slug
+            );
+        }
+        FrontendCommand::List { canonical } => {
+            let registry = db
+                .registry_by_slug(&canonical)?
+                .with_context(|| format!("no registry '{canonical}'"))?;
+            for frontend in db.list_frontends(registry.id)? {
+                println!(
+                    "{}\t{}{}\t{}\tpriority={}\tadvertised={}",
+                    frontend.id,
+                    frontend.domain,
+                    frontend.base_path,
+                    frontend.mode,
+                    frontend.consumer_priority,
+                    frontend.advertised,
+                );
+            }
         }
     }
     Ok(())
@@ -1338,10 +1551,83 @@ async fn index_all(db: &Database) {
             Ok(_) => {
                 run_presence_validation(db, &registry).await;
                 run_cache_probes(db, &registry).await;
+                run_frontend_probes(db, &registry).await;
             }
             Err(err) => {
                 tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "index failed");
             }
+        }
+    }
+}
+
+/// Sync every full mirror whose schedule is due, then re-probe its frontends.
+///
+/// A full mirror is *due* when it has never synced or `schedule_secs` have
+/// elapsed since its last attempt. Each sync verifies the upstream surface and
+/// copies it into the local binding; a verification failure is recorded and
+/// logged, never fatal to the loop.
+async fn sync_due_mirrors(db: &Database, now: i64) {
+    let sources = match db.list_mirror_sources() {
+        Ok(sources) => sources,
+        Err(err) => {
+            tracing::warn!(error = %format!("{err:#}"), "listing mirror sources");
+            return;
+        }
+    };
+    for (registry_id, source) in sources {
+        if source.mode != "full" {
+            continue; // pull-through mirrors are served on demand, not synced.
+        }
+        let due = match source.last_sync_at {
+            None => true,
+            Some(last) => now - last >= source.schedule_secs,
+        };
+        if !due {
+            continue;
+        }
+        let registry = match db.registry_by_id(registry_id) {
+            Ok(Some(registry)) => registry,
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::warn!(error = %format!("{err:#}"), "loading mirror registry");
+                continue;
+            }
+        };
+        match aos_registry_hub::mirror::sync_full_mirror(db, &registry).await {
+            Ok(result) => tracing::info!(
+                slug = %registry.slug,
+                commit = %result.commit,
+                files = result.files_copied,
+                "full mirror synced"
+            ),
+            Err(err) => tracing::warn!(
+                slug = %registry.slug,
+                error = %format!("{err:#}"),
+                "full mirror sync failed"
+            ),
+        }
+    }
+}
+
+/// Probe each configured frontend's freshness for one registry, logging a
+/// one-line summary per frontend; probe failures are logged, never fatal.
+async fn run_frontend_probes(db: &Database, registry: &RegistryRecord) {
+    let http = aos_registry_hub::fetch::hardened_client();
+    match aos_registry_hub::probe::probe_frontends(db, &http, registry).await {
+        Ok(probes) => {
+            for probe in &probes {
+                tracing::info!(
+                    slug = %registry.slug,
+                    frontend = %probe.base_url,
+                    status = %probe.status.as_str(),
+                    lag = ?probe.lag_releases,
+                    latency_ms = probe.latency_ms,
+                    "frontend freshness probe"
+                );
+            }
+        }
+        Err(err) => {
+            tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "frontend probe failed");
         }
     }
 }

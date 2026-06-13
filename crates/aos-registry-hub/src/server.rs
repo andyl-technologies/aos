@@ -811,6 +811,8 @@ async fn health_page(State(state): State<Arc<AppState>>, Path(slug): Path<String
         let repair_jobs = state
             .db
             .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)?;
+        let frontends = state.db.list_frontends(registry.id)?;
+        let frontend_probes = state.db.list_frontend_probes(registry.id)?;
         Ok::<_, anyhow::Error>(Some(pages::health_page(
             &registry,
             status.as_ref(),
@@ -818,6 +820,8 @@ async fn health_page(State(state): State<Arc<AppState>>, Path(slug): Path<String
             stack.as_ref(),
             &probes,
             &repair_jobs,
+            &frontends,
+            &frontend_probes,
             started,
         )))
     })();
@@ -978,11 +982,77 @@ async fn serve_registry_machine_path(
         Ok(Some(root)) => {
             let mut resolved = registry.clone();
             resolved.source_url = root.to_string_lossy().into_owned();
-            compat::serve_machine_path(&resolved, path).await
+            let response = compat::serve_machine_path(&resolved, path).await;
+            // Pull-through: a pullthrough mirror serving from an empty (or
+            // partial) local binding fetches the missing path from upstream,
+            // verifies it, persists content-addressed payloads, and serves it.
+            if response.status() == StatusCode::NOT_FOUND {
+                if let Some(pulled) = pull_through_machine_path(state, registry, &root, path).await
+                {
+                    return pulled;
+                }
+            }
+            response
         }
         // No local surface (unbound managed registry): nothing to serve.
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => internal(err),
+    }
+}
+
+/// Pull-through fetch-on-miss for a proxied pull-through mirror.
+///
+/// When `registry` is a `pullthrough` mirror, fetches the missing machine
+/// `path` from its upstream, verifies it (content-addressed objects/NARs by
+/// hash; pointers fetched live and not frozen), persists content-addressed
+/// payloads into the binding `root`, and serves the bytes with the path's
+/// machine cache-control. Returns `None` when the registry is not a
+/// pull-through mirror, the path is not a machine path, or the upstream lacks
+/// it — letting the caller fall back to its `404`. Upstream errors map to
+/// `502 Bad Gateway` so the proxy never hangs or 500s on an upstream fault.
+async fn pull_through_machine_path(
+    state: &AppState,
+    registry: &RegistryRecord,
+    root: &std::path::Path,
+    path: &str,
+) -> Option<Response> {
+    if !compat::is_machine_path(path) {
+        return None;
+    }
+    let source = match state.db.mirror_source(registry.id) {
+        Ok(Some(source)) if source.mode == "pullthrough" => source,
+        Ok(_) => return None,
+        Err(err) => return Some(internal(err)),
+    };
+    let fetch = match crate::fetch::fetch_for_url(&source.upstream_url) {
+        Ok(fetch) => fetch,
+        Err(err) => return Some(internal(err)),
+    };
+    match crate::mirror::fetch_through(fetch.as_ref(), root, path).await {
+        Ok(Some(result)) => {
+            let mut response = result.bytes.into_response();
+            let headers = response.headers_mut();
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(compat::content_type(path)),
+            );
+            headers.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static(compat::cache_control(path)),
+            );
+            Some(response)
+        }
+        // Upstream definitively lacks the path: fall back to the local 404.
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(
+                slug = %registry.slug,
+                %path,
+                error = %format!("{err:#}"),
+                "pull-through fetch failed"
+            );
+            Some(StatusCode::BAD_GATEWAY.into_response())
+        }
     }
 }
 
@@ -1247,6 +1317,8 @@ async fn render_page(
                 let repair_jobs = state
                     .db
                     .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)?;
+                let frontends = state.db.list_frontends(registry.id)?;
+                let frontend_probes = state.db.list_frontend_probes(registry.id)?;
                 Some(pages::health_page(
                     registry,
                     status.as_ref(),
@@ -1254,6 +1326,8 @@ async fn render_page(
                     stack.as_ref(),
                     &probes,
                     &repair_jobs,
+                    &frontends,
+                    &frontend_probes,
                     started,
                 ))
             }

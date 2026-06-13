@@ -251,6 +251,60 @@ fn exercise(db: &Database) {
     assert_eq!(jobs[0].status, "done");
     assert_eq!(jobs[0].store_hash, "absent01");
     assert_eq!(jobs[0].source_cache_url, "file:///srv/good");
+
+    // -- mirror sources + frontends (v16) -------------------------------------
+    // A mirror source round-trips and `is_mirror` flips; the last-sync record
+    // updates without clobbering the frontier on a later failure.
+    assert!(!db.is_mirror(reg).unwrap());
+    db.create_mirror_source(reg, "https://upstream.example/", "full", true, 1800)
+        .unwrap();
+    assert!(db.is_mirror(reg).unwrap());
+    let source = db.mirror_source(reg).unwrap().expect("mirror source");
+    assert_eq!(source.upstream_url, "https://upstream.example/");
+    assert_eq!(source.mode, "full");
+    assert!(source.verify);
+    assert_eq!(source.schedule_secs, 1800);
+    db.update_mirror_sync(reg, 100, "ok", None, Some("2.0.0"))
+        .unwrap();
+    db.update_mirror_sync(reg, 200, "failed", Some("upstream tampered"), None)
+        .unwrap();
+    let source = db.mirror_source(reg).unwrap().unwrap();
+    assert_eq!(source.last_sync_status.as_deref(), Some("failed"));
+    assert_eq!(source.last_sync_error.as_deref(), Some("upstream tampered"));
+    // The frontier from the prior OK sync survives the later failure.
+    assert_eq!(source.upstream_frontier.as_deref(), Some("2.0.0"));
+    assert_eq!(db.list_mirror_sources().unwrap().len(), 1);
+
+    // A frontend CRUD round-trip plus a probe upsert.
+    let fe = db
+        .create_frontend(
+            reg,
+            "cdn.acme.com",
+            "",
+            "direct",
+            true,
+            true,
+            false,
+            200,
+            true,
+        )
+        .unwrap();
+    let frontends = db.list_frontends(reg).unwrap();
+    assert_eq!(frontends.len(), 1);
+    assert_eq!(frontends[0].domain, "cdn.acme.com");
+    assert_eq!(frontends[0].mode, "direct");
+    assert!(frontends[0].serves_cache);
+    assert!(!frontends[0].serves_web);
+    db.upsert_frontend_probe(fe, "ok", Some("8.5.0"), Some(0), 12, 300)
+        .unwrap();
+    let probes = db.list_frontend_probes(reg).unwrap();
+    assert_eq!(probes.len(), 1);
+    assert_eq!(probes[0].status.as_deref(), Some("ok"));
+    assert_eq!(probes[0].observed_frontier.as_deref(), Some("8.5.0"));
+    assert!(db.delete_frontend(fe).unwrap());
+    assert!(db.list_frontends(reg).unwrap().is_empty());
+    // The probe row cascades away with its frontend.
+    assert!(db.list_frontend_probes(reg).unwrap().is_empty());
 }
 
 #[test]
