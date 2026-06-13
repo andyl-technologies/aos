@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use crate::db::{
     CacheProbeRow, ChannelSummary, IndexStatus, PackageDetail, PackageRow, RegistryRecord,
-    ReleaseRow, ValidationRunRow,
+    ReleaseRow, RepairJobRow, ValidationRunRow,
 };
 use crate::stack::StackNode;
 use crate::ui::render::{ago, escape, human_size, key_fingerprint, page, table, StateLine};
@@ -987,9 +987,10 @@ fn render_cache_stack(stack: &StackNode, coverage_by_url: &BTreeMap<&str, String
 pub fn health_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
-    runs: &[(ValidationRunRow, Vec<String>)],
+    runs: &[(ValidationRunRow, Vec<String>, Vec<String>)],
     stack: Option<&StackNode>,
     cache_probes: &[CacheProbeRow],
+    repair_jobs: &[RepairJobRow],
     started: Instant,
 ) -> String {
     /// Missing hashes shown per cache before collapsing to "and N more".
@@ -1001,7 +1002,7 @@ pub fn health_page(
     // Per-cache coverage labels, keyed by URL, drawn from the latest runs.
     let coverage_by_url: BTreeMap<&str, String> = runs
         .iter()
-        .map(|(run, _)| {
+        .map(|(run, _, _)| {
             let label = if !run.reachable {
                 "unreachable".to_string()
             } else if run.checked == 0 {
@@ -1019,7 +1020,7 @@ pub fn health_page(
         // Flag mirror groups whose members are not all complete.
         let missing_by_url: BTreeMap<&str, u64> = runs
             .iter()
-            .map(|(run, _)| (run.cache_url.as_str(), run.missing))
+            .map(|(run, _, _)| (run.cache_url.as_str(), run.missing))
             .collect();
         let mut shortfalls = String::new();
         for (group_index, group) in stack.mirror_groups().iter().enumerate() {
@@ -1047,13 +1048,23 @@ pub fn health_page(
         body.push_str("<h2>Cache validation</h2>\n");
         let rows: Vec<Vec<String>> = runs
             .iter()
-            .map(|(run, _)| {
+            .map(|(run, _, corrupt)| {
                 let [status, coverage, checked, probed] = validation_cells(Some(run));
+                // Missing here is the *absent* count (total problems minus
+                // corruption), so the two columns read independently.
+                let corrupt_count = corrupt.len() as u64;
+                let absent = run.missing.saturating_sub(corrupt_count);
+                let corrupt_cell = if corrupt_count > 0 {
+                    format!("<span class=\"bad\">{corrupt_count}</span>")
+                } else {
+                    "0".to_string()
+                };
                 vec![
                     format!("<code>{}</code>", escape(&run.cache_url)),
                     escape(&run.depth),
                     checked,
-                    run.missing.to_string(),
+                    absent.to_string(),
+                    corrupt_cell,
                     coverage,
                     status,
                     probed,
@@ -1062,28 +1073,72 @@ pub fn health_page(
             .collect();
         body.push_str(&table(
             &[
-                "cache", "depth", "checked", "missing", "coverage", "status", "finished",
+                "cache", "depth", "checked", "missing", "corrupt", "coverage", "status", "finished",
             ],
             &rows,
         ));
 
-        for (run, missing) in runs {
-            if missing.is_empty() {
-                continue;
+        for (run, missing, corrupt) in runs {
+            if !missing.is_empty() {
+                let _ = write!(
+                    body,
+                    "<h2>Missing from {}</h2>\n<pre>",
+                    escape(&run.cache_url),
+                );
+                for hash in missing.iter().take(MISSING_DISPLAY_CAP) {
+                    let _ = writeln!(body, "{}", escape(hash));
+                }
+                if missing.len() > MISSING_DISPLAY_CAP {
+                    let _ = writeln!(body, "… and {} more", missing.len() - MISSING_DISPLAY_CAP);
+                }
+                body.push_str("</pre>\n");
             }
-            let _ = write!(
-                body,
-                "<h2>Missing from {}</h2>\n<pre>",
-                escape(&run.cache_url),
-            );
-            for hash in missing.iter().take(MISSING_DISPLAY_CAP) {
-                let _ = writeln!(body, "{}", escape(hash));
+            // Deep-validation corruption is flagged distinctly: these hashes
+            // are *present* but their bytes do not match — a copy cannot
+            // repair them, the cache must be re-uploaded from a good source.
+            if !corrupt.is_empty() {
+                let _ = write!(
+                    body,
+                    "<h2 class=\"bad\">Corrupt in {}</h2>\n\
+                     <p class=\"dim\">Content hash mismatch — re-upload required \
+                     (not repairable by copy).</p>\n<pre>",
+                    escape(&run.cache_url),
+                );
+                for hash in corrupt.iter().take(MISSING_DISPLAY_CAP) {
+                    let _ = writeln!(body, "{}", escape(hash));
+                }
+                if corrupt.len() > MISSING_DISPLAY_CAP {
+                    let _ = writeln!(body, "… and {} more", corrupt.len() - MISSING_DISPLAY_CAP);
+                }
+                body.push_str("</pre>\n");
             }
-            if missing.len() > MISSING_DISPLAY_CAP {
-                let _ = writeln!(body, "… and {} more", missing.len() - MISSING_DISPLAY_CAP);
-            }
-            body.push_str("</pre>\n");
         }
+    }
+
+    if !repair_jobs.is_empty() {
+        body.push_str("<h2>Repair history</h2>\n");
+        let rows: Vec<Vec<String>> = repair_jobs
+            .iter()
+            .map(|job| {
+                let class = match job.status.as_str() {
+                    "done" => "ok",
+                    "plan_only" => "warn",
+                    _ => "bad",
+                };
+                vec![
+                    format!("<code>{}</code>", escape(&job.store_hash)),
+                    format!("<code>{}</code>", escape(&job.cache_url)),
+                    format!("<code>{}</code>", escape(&job.source_cache_url)),
+                    format!("<span class=\"{class}\">{}</span>", escape(&job.status)),
+                    escape(job.error.as_deref().unwrap_or("")),
+                    ago(job.created_at),
+                ]
+            })
+            .collect();
+        body.push_str(&table(
+            &["hash", "target", "source", "status", "error", "when"],
+            &rows,
+        ));
     }
 
     if !cache_probes.is_empty() {
@@ -1362,8 +1417,9 @@ mod tests {
         let html = health_page(
             &registry(),
             None,
-            &[(run, missing)],
+            &[(run, missing, Vec::new())],
             None,
+            &[],
             &[],
             Instant::now(),
         );
@@ -1389,6 +1445,7 @@ mod tests {
                     finished_at: 0,
                 },
                 Vec::new(),
+                Vec::new(),
             ),
             (
                 ValidationRunRow {
@@ -1401,6 +1458,7 @@ mod tests {
                     finished_at: 0,
                 },
                 vec!["xyz".into()],
+                Vec::new(),
             ),
         ];
         let stack = StackNode::Try(vec![
@@ -1432,6 +1490,7 @@ mod tests {
             &runs,
             Some(&stack),
             &probes,
+            &[],
             Instant::now(),
         );
         assert!(html.contains("Cache stack"));
@@ -1447,5 +1506,64 @@ mod tests {
         assert!(html.contains("Cache freshness"));
         assert!(html.contains("12 ms"));
         assert!(html.contains("unreachable"));
+    }
+
+    #[test]
+    fn health_page_flags_corruption_and_repair_history() {
+        let run = ValidationRunRow {
+            id: 1,
+            cache_url: "https://cache.example".into(),
+            depth: "deep".into(),
+            checked: 10,
+            missing: 2,
+            reachable: true,
+            finished_at: 0,
+        };
+        // One missing, one corrupt — the page must distinguish them.
+        let missing = vec!["miss000".to_string()];
+        let corrupt = vec!["bad000".to_string()];
+        let repair_jobs = vec![
+            RepairJobRow {
+                id: 1,
+                cache_url: "https://cache.example".into(),
+                store_hash: "miss000".into(),
+                source_cache_url: "file:///srv/good".into(),
+                status: "done".into(),
+                error: None,
+                created_at: 0,
+                finished_at: Some(1),
+            },
+            RepairJobRow {
+                id: 2,
+                cache_url: "https://external.example".into(),
+                store_hash: "miss001".into(),
+                source_cache_url: "file:///srv/good".into(),
+                status: "plan_only".into(),
+                error: None,
+                created_at: 0,
+                finished_at: Some(1),
+            },
+        ];
+        let html = health_page(
+            &registry(),
+            None,
+            &[(run, missing, corrupt)],
+            None,
+            &[],
+            &repair_jobs,
+            Instant::now(),
+        );
+        // Corruption is flagged distinctly from absence.
+        assert!(html.contains("Corrupt in https://cache.example"));
+        assert!(html.contains("bad000"));
+        assert!(html.contains("re-upload required"));
+        assert!(html.contains("Missing from https://cache.example"));
+        assert!(html.contains("miss000"));
+        // The validation table carries a corrupt column.
+        assert!(html.contains("<th>corrupt</th>"));
+        // The repair history surfaces both a done and a plan-only job.
+        assert!(html.contains("Repair history"));
+        assert!(html.contains("done"));
+        assert!(html.contains("plan_only"));
     }
 }

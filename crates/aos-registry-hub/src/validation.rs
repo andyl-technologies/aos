@@ -2,17 +2,22 @@
 //! and repair planning.
 //!
 //! RFC-0004's "Cache stores, stacks, and consistency validation" defines
-//! three validation depths; this module implements the first two:
+//! three validation depths; this module implements all three:
 //!
 //! - **presence** — for every store hash the registry's verified index
 //!   references, check that `<hash>.narinfo` exists in each advertised cache.
 //! - **integrity** — beyond presence, fetch each present narinfo, parse its
 //!   `URL:` field, and check the referenced NAR exists (HEAD), with a
 //!   `file://`-only size sanity check against the narinfo's `FileSize`.
-//!
-//! The remaining `deep` depth (sampled download + `FileHash` verification) is
-//! still unimplemented; runs record their depth so the schema already
-//! accommodates it.
+//! - **deep** — beyond integrity, on a deterministic *sample* of up to
+//!   [`DEEP_SAMPLE_SIZE`] hashes, actually download the NAR and verify its
+//!   content hash against the narinfo's declared `FileHash` (falling back to
+//!   `NarHash`). A hash whose bytes do not match its declared hash is a
+//!   `corrupt` finding, recorded distinctly from `missing` — corruption
+//!   cannot be repaired by a content-addressed copy (the copy would carry the
+//!   same bad bytes), so it flags a cache that must be re-uploaded from a good
+//!   source. The sample is the first [`DEEP_SAMPLE_SIZE`] hashes in sorted
+//!   order, so reruns are stable.
 //!
 //! # Stack-aware coverage
 //!
@@ -31,8 +36,16 @@
 //! for each missing `(cache, hash)` it finds another cache that *has* the
 //! hash to copy from (content-addressed, so always safe). [`execute_repair`]
 //! carries out `file://`-to-`file://` repairs by copying the narinfo and its
-//! NAR; `http` targets are left as a plan (hub-managed upload-credential
-//! repair is a later phase).
+//! NAR.
+//!
+//! For an **http target the hub is authorized to write** — a managed registry
+//! facade URL the hub serves — [`run_repairs`] mints an internal short-lived
+//! Publish token (the same path as [`crate::rpc`]'s `MintUploadCredentials`)
+//! and PUTs the narinfo + NAR to the target through the facade with a Bearer
+//! JWT ([`execute_repair_http`]). Targets the hub has *no* credential for
+//! (arbitrary external caches) remain plan-only: [`run_repairs`] records them
+//! as `plan_only` repair jobs and never writes to them. Every repair attempt
+//! is recorded in `repair_jobs` (`pending | done | failed | plan_only`).
 //!
 //! Two cache transports are probed:
 //!
@@ -51,8 +64,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 
-use crate::db::{Database, RegistryRecord};
+use crate::db::{Database, FindingStatus, RegistryRecord, ValidationFinding};
 use crate::fetch;
 use crate::stack::StackNode;
 
@@ -62,6 +76,14 @@ use crate::stack::StackNode;
 /// sorted) with a warning, never silently.
 pub const MAX_HASHES_PER_RUN: usize = 4096;
 
+/// Maximum NARs downloaded and content-verified per cache in a deep run.
+///
+/// A deep run is expensive (it transfers NAR bytes), so it samples a bounded
+/// subset of the closure rather than the whole set. The sample is the first
+/// `DEEP_SAMPLE_SIZE` hashes in sorted order, so the choice is deterministic
+/// and reruns are stable for tests.
+pub const DEEP_SAMPLE_SIZE: usize = 16;
+
 /// The depth of a consistency-validation run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidationDepth {
@@ -70,6 +92,10 @@ pub enum ValidationDepth {
     /// Also fetch each narinfo and HEAD its referenced NAR (with a
     /// `file://` size sanity check).
     Integrity,
+    /// Also download a deterministic sample of NARs and verify their content
+    /// hash against the narinfo's declared hash (flagging mismatches
+    /// `corrupt`).
+    Deep,
 }
 
 impl ValidationDepth {
@@ -78,6 +104,7 @@ impl ValidationDepth {
         match self {
             ValidationDepth::Presence => "presence",
             ValidationDepth::Integrity => "integrity",
+            ValidationDepth::Deep => "deep",
         }
     }
 }
@@ -89,9 +116,13 @@ pub struct ValidationSummary {
     pub cache_url: String,
     /// Number of store hashes probed (0 when unreachable).
     pub checked: u64,
-    /// Number of probed hashes whose narinfo (or, at integrity depth, NAR)
-    /// was absent or inconsistent.
+    /// Number of probed hashes that did not resolve correctly: absent at any
+    /// depth, plus (at deep depth) content-hash mismatches.
     pub missing: u64,
+    /// Number of deep-sampled hashes whose downloaded content did not match
+    /// its declared hash (a subset of [`ValidationSummary::missing`]). Always
+    /// zero below [`ValidationDepth::Deep`].
+    pub corrupt: u64,
     /// Whether the cache endpoint was reachable.
     pub reachable: bool,
     /// Percentage of probed hashes present (0 when nothing was checked).
@@ -135,7 +166,11 @@ enum CacheKind {
 /// Result of probing one cache against the hash set.
 struct ProbeOutcome {
     checked: u64,
+    /// Hashes whose narinfo/NAR was absent.
     missing: Vec<String>,
+    /// Hashes (a subset of the deep sample) whose downloaded NAR content did
+    /// not match its declared hash.
+    corrupt: Vec<String>,
     reachable: bool,
 }
 
@@ -144,8 +179,30 @@ impl ProbeOutcome {
         Self {
             checked: 0,
             missing: Vec::new(),
+            corrupt: Vec::new(),
             reachable: false,
         }
+    }
+
+    /// All findings (missing then corrupt) as typed [`ValidationFinding`]s.
+    fn findings(&self) -> Vec<ValidationFinding> {
+        self.missing
+            .iter()
+            .map(|hash| ValidationFinding {
+                store_hash: hash.clone(),
+                status: FindingStatus::Missing,
+            })
+            .chain(self.corrupt.iter().map(|hash| ValidationFinding {
+                store_hash: hash.clone(),
+                status: FindingStatus::Corrupt,
+            }))
+            .collect()
+    }
+
+    /// The total finding count (missing + corrupt) — the run's `missing`
+    /// column.
+    fn problem_count(&self) -> u64 {
+        (self.missing.len() + self.corrupt.len()) as u64
     }
 }
 
@@ -162,6 +219,22 @@ pub async fn validate_presence(
     registry: &RegistryRecord,
 ) -> Result<Vec<ValidationSummary>> {
     validate_registry(db, registry, ValidationDepth::Presence).await
+}
+
+/// Run deep validation for every committed cache of one registry.
+///
+/// A thin wrapper over [`validate_registry`] at [`ValidationDepth::Deep`]: a
+/// deterministic sample of NARs is downloaded and content-verified, flagging
+/// any mismatch `corrupt`.
+///
+/// # Errors
+///
+/// Returns an error on database failure. Unreachable caches are *not* errors.
+pub async fn validate_deep(
+    db: &Database,
+    registry: &RegistryRecord,
+) -> Result<Vec<ValidationSummary>> {
+    validate_registry(db, registry, ValidationDepth::Deep).await
 }
 
 /// Run consistency validation for one registry at the requested depth.
@@ -223,23 +296,27 @@ pub async fn validate_registry(
         let outcome = probe_cache(&client, &cache_url, &hashes, depth).await;
         let finished_at = unix_now();
 
-        db.record_validation_run(
+        db.record_validation_run_with_findings(
             registry.id,
             &cache_url,
             depth.as_str(),
             outcome.checked,
-            &outcome.missing,
+            &outcome.findings(),
             outcome.reachable,
             started_at,
             finished_at,
         )?;
+        // Only *missing* hashes drive mirror-shortfall and repair planning;
+        // a corrupt hash is present (so not a replication gap) and is not
+        // safely copyable.
         missing_by_cache.insert(cache_url.clone(), outcome.missing.iter().cloned().collect());
         summaries.push(ValidationSummary {
             cache_url,
             checked: outcome.checked,
-            missing: outcome.missing.len() as u64,
+            missing: outcome.problem_count(),
+            corrupt: outcome.corrupt.len() as u64,
             reachable: outcome.reachable,
-            coverage_percent: coverage_percent(outcome.checked, outcome.missing.len() as u64),
+            coverage_percent: coverage_percent(outcome.checked, outcome.problem_count()),
             mirror_shortfall: None,
         });
     }
@@ -335,13 +412,103 @@ pub fn plan_repair(db: &Database, registry: &RegistryRecord) -> Result<Vec<Repai
     Ok(actions)
 }
 
+/// One narinfo and its NAR, read from a source cache for a repair.
+struct RepairObject {
+    /// The narinfo file's text (`<hash>.narinfo`).
+    narinfo: String,
+    /// The narinfo's `URL:` (NAR path relative to the cache root), if any.
+    nar_rel: Option<String>,
+    /// The NAR bytes, when a `URL:` named one.
+    nar_bytes: Option<Vec<u8>>,
+}
+
+/// Read a `(narinfo, NAR)` object for one store hash from a source cache.
+///
+/// Works against a `file://`/bare-path source (filesystem read) or an
+/// `http(s)://` source (GET through the hardened client). The narinfo's `URL:`
+/// NAR is fetched too when present. Content is **not** trusted blindly — the
+/// caller verifies the hash before writing it anywhere (content-addressed, so
+/// a hash mismatch means the source itself is corrupt and is rejected).
+///
+/// # Errors
+///
+/// Returns an error when the source narinfo (or its named NAR) cannot be read.
+async fn read_repair_object(
+    client: &reqwest::Client,
+    source_cache_url: &str,
+    store_hash: &str,
+) -> Result<RepairObject> {
+    let narinfo_name = format!("{store_hash}.narinfo");
+    match classify_cache(source_cache_url) {
+        Some(CacheKind::File(root)) => {
+            let narinfo = tokio::fs::read_to_string(root.join(&narinfo_name))
+                .await
+                .with_context(|| format!("reading source narinfo for {store_hash}"))?;
+            let nar_rel = narinfo_field(&narinfo, "URL");
+            let nar_bytes = match &nar_rel {
+                Some(rel) => Some(
+                    tokio::fs::read(root.join(rel))
+                        .await
+                        .with_context(|| format!("reading source NAR for {store_hash}"))?,
+                ),
+                None => None,
+            };
+            Ok(RepairObject {
+                narinfo,
+                nar_rel,
+                nar_bytes,
+            })
+        }
+        Some(CacheKind::Http(base)) => {
+            let narinfo = http_get_text(client, &format!("{base}/{narinfo_name}"))
+                .await
+                .with_context(|| format!("fetching source narinfo for {store_hash}"))?;
+            let nar_rel = narinfo_field(&narinfo, "URL");
+            let nar_bytes = match &nar_rel {
+                Some(rel) => {
+                    let nar_url = format!("{}/{}", base, rel.trim_start_matches('/'));
+                    Some(
+                        http_get_bytes(client, &nar_url)
+                            .await
+                            .with_context(|| format!("fetching source NAR for {store_hash}"))?,
+                    )
+                }
+                None => None,
+            };
+            Ok(RepairObject {
+                narinfo,
+                nar_rel,
+                nar_bytes,
+            })
+        }
+        None => anyhow::bail!("repair source {source_cache_url} has an unsupported scheme"),
+    }
+}
+
+/// GET a URL and return its body text, erroring on any non-200.
+async fn http_get_text(client: &reqwest::Client, url: &str) -> Result<String> {
+    let response = client.get(url).send().await?;
+    if response.status() != reqwest::StatusCode::OK {
+        anyhow::bail!("GET {url}: HTTP {}", response.status());
+    }
+    Ok(response.text().await?)
+}
+
+/// GET a URL and return its body bytes, erroring on any non-200.
+async fn http_get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
+    let response = client.get(url).send().await?;
+    if response.status() != reqwest::StatusCode::OK {
+        anyhow::bail!("GET {url}: HTTP {}", response.status());
+    }
+    Ok(response.bytes().await?.to_vec())
+}
+
 /// Execute a `file://`-to-`file://` repair by content-addressed copy.
 ///
 /// Copies `<hash>.narinfo` from the source directory into the target
 /// directory, then copies the NAR file the narinfo's `URL:` field names
-/// (resolved relative to each cache root). `http` sources or targets are
-/// rejected — hub-managed upload-credential repair for HTTP caches is a later
-/// phase.
+/// (resolved relative to each cache root). For HTTP *targets*, use
+/// [`execute_repair_http`] instead.
 ///
 /// Returns the number of files copied (1 for the narinfo plus 1 for the NAR
 /// when a `URL:` is present).
@@ -390,6 +557,246 @@ pub async fn execute_repair(action: &RepairAction) -> Result<usize> {
     Ok(copied)
 }
 
+/// A credential for writing one missing object into an http target the hub is
+/// authorized to write.
+#[derive(Debug, Clone)]
+pub struct RepairCredential {
+    /// The facade base URL to PUT surface paths under (the registry's
+    /// canonical upload URL, e.g. `https://hub.example.com/acme/infra/prod`).
+    pub upload_url: String,
+    /// A Bearer JWT granting `publish` on that registry's scope.
+    pub bearer_jwt: String,
+}
+
+/// Resolves the upload credential for an http repair target.
+///
+/// Implemented by the hub server to mint an internal short-lived Publish JWT
+/// for a target that is one of the hub's own managed registry facade URLs (the
+/// same authorization the `MintUploadCredentials` RPC grants a producer). For
+/// a target the hub does not serve — an arbitrary external cache with no
+/// configured credential — it returns `None`, and [`run_repairs`] records the
+/// repair as `plan_only` rather than writing somewhere it cannot authorize.
+pub trait RepairAuthorizer: Send + Sync {
+    /// Return a write credential for `target_cache_url`, or `None` when the
+    /// hub is not authorized to write to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on an internal failure while minting the credential
+    /// (e.g. a database or signing error).
+    fn credential_for(&self, target_cache_url: &str) -> Result<Option<RepairCredential>>;
+}
+
+/// Execute a repair into an **http** target the hub is authorized to write.
+///
+/// Reads the `(narinfo, NAR)` object from the source cache (file or http),
+/// **verifies the NAR's content hash against the narinfo** before trusting it
+/// (a source whose bytes do not match is corrupt and is rejected, never
+/// propagated), then PUTs the narinfo and NAR to the target through the
+/// registry facade with the supplied Bearer JWT, exactly as `apr origin
+/// upload` would. Surface paths are written relative to `credential.upload_url`
+/// (`<hash>.narinfo` and the narinfo's `URL:` NAR path).
+///
+/// Returns the number of files PUT (1 for the narinfo plus 1 for the NAR when
+/// the narinfo names one).
+///
+/// # Errors
+///
+/// Returns an error when the source object cannot be read, the source NAR
+/// fails content-hash verification, or a target PUT returns a non-2xx status.
+pub async fn execute_repair_http(
+    client: &reqwest::Client,
+    action: &RepairAction,
+    credential: &RepairCredential,
+) -> Result<usize> {
+    let object = read_repair_object(client, &action.source_cache_url, &action.store_hash).await?;
+
+    // Content-addressed safety: never propagate bytes that do not match the
+    // narinfo. (file:// repair copies bit-for-bit so it is trivially safe; an
+    // http round-trip is where a mid-flight corruption could enter.)
+    if let Some(bytes) = &object.nar_bytes {
+        if matches!(verify_nar_bytes(&object.narinfo, bytes), DeepCheck::Corrupt) {
+            anyhow::bail!(
+                "source {} holds a corrupt NAR for {} (content hash mismatch); refusing to propagate",
+                action.source_cache_url,
+                action.store_hash,
+            );
+        }
+    }
+
+    let base = credential.upload_url.trim_end_matches('/');
+    put_surface_file(
+        client,
+        &format!("{base}/{}.narinfo", action.store_hash),
+        &credential.bearer_jwt,
+        "text/x-nix-narinfo",
+        object.narinfo.into_bytes(),
+    )
+    .await
+    .context("PUT narinfo to repair target")?;
+    let mut written = 1;
+
+    if let (Some(rel), Some(bytes)) = (object.nar_rel, object.nar_bytes) {
+        put_surface_file(
+            client,
+            &format!("{base}/{}", rel.trim_start_matches('/')),
+            &credential.bearer_jwt,
+            "application/x-nix-nar",
+            bytes,
+        )
+        .await
+        .context("PUT NAR to repair target")?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+/// PUT one surface file to a facade target with a Bearer JWT.
+async fn put_surface_file(
+    client: &reqwest::Client,
+    url: &str,
+    bearer_jwt: &str,
+    content_type: &str,
+    body: Vec<u8>,
+) -> Result<()> {
+    let response = client
+        .put(url)
+        .bearer_auth(bearer_jwt)
+        .header(reqwest::header::CONTENT_TYPE, content_type)
+        .body(body)
+        .send()
+        .await
+        .with_context(|| format!("PUT {url}"))?;
+    if !response.status().is_success() {
+        anyhow::bail!("PUT {url}: HTTP {}", response.status());
+    }
+    Ok(())
+}
+
+/// Summary of one [`run_repairs`] pass.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RepairSummary {
+    /// Repairs that completed (file copy or http PUT).
+    pub done: u64,
+    /// Repairs left as a plan (no write credential for the http target).
+    pub plan_only: u64,
+    /// Repairs attempted but failed (recorded with the error).
+    pub failed: u64,
+}
+
+/// Plan and execute every repairable missing object for one registry,
+/// recording each attempt in `repair_jobs`.
+///
+/// Plans with [`plan_repair`], then for each action:
+///
+/// - a `file://`/bare-path target is repaired by content-addressed copy
+///   ([`execute_repair`]) and recorded `done` (or `failed`);
+/// - an `http(s)://` target the `authorizer` grants a [`RepairCredential`] for
+///   is repaired by fetch-verify-PUT ([`execute_repair_http`]) and recorded
+///   `done` (or `failed`);
+/// - an `http(s)://` target the authorizer declines (no credential) is left
+///   untouched and recorded `plan_only`.
+///
+/// Returns the per-status tally. A single action's failure does not abort the
+/// pass — its `repair_jobs` row carries the error and the pass continues.
+///
+/// # Errors
+///
+/// Returns an error only on a database failure (planning, or recording a job);
+/// individual repair failures are captured as `failed` jobs, not propagated.
+pub async fn run_repairs(
+    db: &Database,
+    client: &reqwest::Client,
+    registry: &RegistryRecord,
+    authorizer: &dyn RepairAuthorizer,
+) -> Result<RepairSummary> {
+    let actions = plan_repair(db, registry)?;
+    let mut summary = RepairSummary::default();
+    for action in &actions {
+        let created_at = unix_now();
+        // An http target needs a write credential; a file target never does.
+        let credential = match classify_cache(&action.cache_url) {
+            Some(CacheKind::File(_)) => None,
+            Some(CacheKind::Http(_)) => match authorizer.credential_for(&action.cache_url)? {
+                Some(credential) => Some(credential),
+                None => {
+                    // No credential: record plan-only and move on.
+                    db.record_repair_job(
+                        registry.id,
+                        &action.cache_url,
+                        &action.store_hash,
+                        &action.source_cache_url,
+                        "plan_only",
+                        None,
+                        created_at,
+                        Some(unix_now()),
+                    )?;
+                    summary.plan_only += 1;
+                    continue;
+                }
+            },
+            None => {
+                db.record_repair_job(
+                    registry.id,
+                    &action.cache_url,
+                    &action.store_hash,
+                    &action.source_cache_url,
+                    "failed",
+                    Some("unsupported target cache scheme"),
+                    created_at,
+                    Some(unix_now()),
+                )?;
+                summary.failed += 1;
+                continue;
+            }
+        };
+
+        let result = match &credential {
+            Some(credential) => execute_repair_http(client, action, credential)
+                .await
+                .map(|_| ()),
+            None => execute_repair(action).await.map(|_| ()),
+        };
+        match result {
+            Ok(()) => {
+                db.record_repair_job(
+                    registry.id,
+                    &action.cache_url,
+                    &action.store_hash,
+                    &action.source_cache_url,
+                    "done",
+                    None,
+                    created_at,
+                    Some(unix_now()),
+                )?;
+                summary.done += 1;
+            }
+            Err(err) => {
+                let message = format!("{err:#}");
+                tracing::warn!(
+                    registry = %registry.slug,
+                    target = %action.cache_url,
+                    hash = %action.store_hash,
+                    error = %message,
+                    "repair failed"
+                );
+                db.record_repair_job(
+                    registry.id,
+                    &action.cache_url,
+                    &action.store_hash,
+                    &action.source_cache_url,
+                    "failed",
+                    Some(&message),
+                    created_at,
+                    Some(unix_now()),
+                )?;
+                summary.failed += 1;
+            }
+        }
+    }
+    Ok(summary)
+}
+
 /// Percentage of `checked` hashes that were present.
 fn coverage_percent(checked: u64, missing: u64) -> f64 {
     if checked == 0 {
@@ -434,6 +841,86 @@ fn narinfo_field(text: &str, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Verify downloaded NAR `bytes` against the hashes a narinfo declares.
+///
+/// Prefers `FileHash` (the hash of the compressed NAR as stored, which is what
+/// is downloaded); falls back to `NarHash` only when `FileHash` is absent
+/// *and* the NAR is uncompressed (`Compression: none`), since `NarHash` is
+/// over the uncompressed bytes. A declared hash that this function cannot
+/// compare against (no usable hash field) is treated as [`DeepCheck::Ok`] —
+/// there is nothing to refute. Returns [`DeepCheck::Corrupt`] only on a
+/// definite mismatch.
+fn verify_nar_bytes(narinfo: &str, bytes: &[u8]) -> DeepCheck {
+    let digest = Sha256::digest(bytes);
+    if let Some(declared) = narinfo_field(narinfo, "FileHash") {
+        return match sha256_hash_matches(&declared, &digest) {
+            Some(true) => DeepCheck::Ok,
+            Some(false) => DeepCheck::Corrupt,
+            None => DeepCheck::Ok,
+        };
+    }
+    // No FileHash: NarHash only applies to the raw bytes when uncompressed.
+    let uncompressed = narinfo_field(narinfo, "Compression")
+        .map(|c| c == "none")
+        .unwrap_or(true);
+    if uncompressed {
+        if let Some(declared) = narinfo_field(narinfo, "NarHash") {
+            return match sha256_hash_matches(&declared, &digest) {
+                Some(true) => DeepCheck::Ok,
+                Some(false) => DeepCheck::Corrupt,
+                None => DeepCheck::Ok,
+            };
+        }
+    }
+    DeepCheck::Ok
+}
+
+/// Whether a declared `sha256:`/`sha256-` hash matches a computed digest.
+///
+/// Accepts the three encodings a narinfo hash may use — hex
+/// (`sha256:<64 hex>`), SRI base64 (`sha256-<base64>`), and Nix base32
+/// (`sha256:<52 base32>`) — by encoding the computed digest into the matching
+/// form and comparing. Returns `None` when the declared string is not a
+/// recognizable `sha256` hash (so the caller treats it as un-refuted).
+fn sha256_hash_matches(declared: &str, digest: &[u8]) -> Option<bool> {
+    if let Some(encoded) = declared.strip_prefix("sha256:") {
+        if encoded.len() == 64 && encoded.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Some(encoded.eq_ignore_ascii_case(&hex::encode(digest)));
+        }
+        // Otherwise assume Nix base32.
+        return Some(encoded == encode_nix_base32(digest));
+    }
+    if let Some(encoded) = declared.strip_prefix("sha256-") {
+        use base64::Engine as _;
+        return Some(encoded == base64::engine::general_purpose::STANDARD.encode(digest));
+    }
+    None
+}
+
+/// Nix's custom base32 alphabet (omits `e`, `o`, `t`, `u`).
+const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
+
+/// Encodes bytes in Nix's base32 variant (little-endian bit order, most-
+/// significant digit first), matching `nix hash convert --to nix32`.
+fn encode_nix_base32(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let len = (bytes.len() * 8).div_ceil(5);
+    let mut out = String::with_capacity(len);
+    for n in (0..len).rev() {
+        let bit = n * 5;
+        let i = bit / 8;
+        let j = bit % 8;
+        let mut c = (bytes[i] >> j) as u16;
+        if i + 1 < bytes.len() {
+            c |= (bytes[i + 1] as u16) << (8 - j);
+        }
+        out.push(NIX_BASE32[(c & 0x1f) as usize] as char);
+    }
+    out
+}
+
 /// Probe one cache for every hash at the requested depth.
 async fn probe_cache(
     client: &reqwest::Client,
@@ -453,12 +940,15 @@ async fn probe_cache(
 
 /// Filesystem probe: `<root>/<hash>.narinfo` must exist; at integrity depth
 /// its `URL:` NAR must exist too and (when `FileSize` is present) match the
-/// NAR file's byte length.
+/// NAR file's byte length; at deep depth a deterministic sample additionally
+/// has its NAR content hash verified against the narinfo's declared hash.
 async fn probe_file_cache(root: &Path, hashes: &[String], depth: ValidationDepth) -> ProbeOutcome {
     if !root.is_dir() {
         return ProbeOutcome::unreachable();
     }
+    let deep_sample = deep_sample(hashes, depth);
     let mut missing = Vec::new();
+    let mut corrupt = Vec::new();
     for hash in hashes {
         let narinfo_path = root.join(format!("{hash}.narinfo"));
         let present = tokio::fs::try_exists(&narinfo_path).await.unwrap_or(false);
@@ -466,15 +956,65 @@ async fn probe_file_cache(root: &Path, hashes: &[String], depth: ValidationDepth
             missing.push(hash.clone());
             continue;
         }
-        if depth == ValidationDepth::Integrity && !file_integrity_ok(root, &narinfo_path).await {
+        if depth != ValidationDepth::Presence && !file_integrity_ok(root, &narinfo_path).await {
             missing.push(hash.clone());
+            continue;
+        }
+        if deep_sample.contains(hash.as_str()) {
+            match file_deep_ok(root, &narinfo_path).await {
+                DeepCheck::Ok => {}
+                DeepCheck::Missing => missing.push(hash.clone()),
+                DeepCheck::Corrupt => corrupt.push(hash.clone()),
+            }
         }
     }
     ProbeOutcome {
         checked: hashes.len() as u64,
         missing,
+        corrupt,
         reachable: true,
     }
+}
+
+/// The deterministic deep-validation sample: the first [`DEEP_SAMPLE_SIZE`]
+/// hashes (the input is already sorted), or all of them if fewer. Empty below
+/// [`ValidationDepth::Deep`].
+fn deep_sample(hashes: &[String], depth: ValidationDepth) -> BTreeSet<&str> {
+    if depth != ValidationDepth::Deep {
+        return BTreeSet::new();
+    }
+    hashes
+        .iter()
+        .take(DEEP_SAMPLE_SIZE)
+        .map(String::as_str)
+        .collect()
+}
+
+/// Outcome of a deep content-hash check of one narinfo's NAR.
+enum DeepCheck {
+    /// Content hash matched the declared hash.
+    Ok,
+    /// The NAR (or a declared hash to verify against) was absent.
+    Missing,
+    /// The NAR was present but its content hash did not match.
+    Corrupt,
+}
+
+/// Deep check for a `file://` cache: read the NAR the narinfo names and verify
+/// its content hash against the declared `FileHash` (falling back to
+/// `NarHash`).
+async fn file_deep_ok(root: &Path, narinfo_path: &Path) -> DeepCheck {
+    let Ok(text) = tokio::fs::read_to_string(narinfo_path).await else {
+        return DeepCheck::Missing;
+    };
+    let Some(nar_rel) = narinfo_field(&text, "URL") else {
+        // No URL to download; nothing to deep-verify.
+        return DeepCheck::Ok;
+    };
+    let Ok(bytes) = tokio::fs::read(root.join(&nar_rel)).await else {
+        return DeepCheck::Missing;
+    };
+    verify_nar_bytes(&text, &bytes)
 }
 
 /// Integrity check for a `file://` cache: the narinfo's NAR exists and (when
@@ -511,7 +1051,9 @@ async fn probe_http_cache(
     hashes: &[String],
     depth: ValidationDepth,
 ) -> ProbeOutcome {
+    let deep_sample = deep_sample(hashes, depth);
     let mut missing = Vec::new();
+    let mut corrupt = Vec::new();
     for hash in hashes {
         let narinfo_url = format!("{base}/{hash}.narinfo");
         match head_status(client, &narinfo_url).await {
@@ -529,22 +1071,65 @@ async fn probe_http_cache(
                 return ProbeOutcome::unreachable();
             }
         }
-        if depth == ValidationDepth::Integrity {
+        if depth != ValidationDepth::Presence {
             match http_integrity_ok(client, base, &narinfo_url).await {
                 Some(true) => {}
-                Some(false) => missing.push(hash.clone()),
+                Some(false) => {
+                    missing.push(hash.clone());
+                    continue;
+                }
                 None => {
                     tracing::warn!(cache = %base, "cache unreachable during integrity probe");
                     return ProbeOutcome::unreachable();
                 }
             }
         }
+        if deep_sample.contains(hash.as_str()) {
+            match http_deep_ok(client, base, &narinfo_url).await {
+                DeepCheck::Ok => {}
+                DeepCheck::Missing => missing.push(hash.clone()),
+                DeepCheck::Corrupt => corrupt.push(hash.clone()),
+            }
+        }
     }
     ProbeOutcome {
         checked: hashes.len() as u64,
         missing,
+        corrupt,
         reachable: true,
     }
+}
+
+/// Deep check for an HTTP cache: GET the narinfo, GET the NAR it names, and
+/// verify the downloaded NAR's content hash against the declared hash.
+async fn http_deep_ok(client: &reqwest::Client, base: &str, narinfo_url: &str) -> DeepCheck {
+    let Ok(response) = client.get(narinfo_url).send().await else {
+        return DeepCheck::Missing;
+    };
+    if response.status() != reqwest::StatusCode::OK {
+        return DeepCheck::Missing;
+    }
+    let Ok(text) = response.text().await else {
+        return DeepCheck::Missing;
+    };
+    let Some(nar_rel) = narinfo_field(&text, "URL") else {
+        return DeepCheck::Ok;
+    };
+    let nar_url = format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        nar_rel.trim_start_matches('/')
+    );
+    let Ok(response) = client.get(&nar_url).send().await else {
+        return DeepCheck::Missing;
+    };
+    if response.status() != reqwest::StatusCode::OK {
+        return DeepCheck::Missing;
+    }
+    let Ok(bytes) = response.bytes().await else {
+        return DeepCheck::Missing;
+    };
+    verify_nar_bytes(&text, &bytes)
 }
 
 /// Integrity check for an HTTP cache: GET the narinfo, parse its `URL:`, and
@@ -679,6 +1264,132 @@ mod tests {
         let mismatch =
             probe_file_cache(dir.path(), &["ccc".to_string()], ValidationDepth::Integrity).await;
         assert_eq!(mismatch.missing, vec!["ccc".to_string()]);
+    }
+
+    #[test]
+    fn sha256_hash_matches_all_encodings() {
+        // SHA-256 of "abc".
+        let digest =
+            hex::decode("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+                .unwrap();
+        // hex
+        assert_eq!(
+            sha256_hash_matches(
+                "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                &digest,
+            ),
+            Some(true)
+        );
+        // nix base32 (the stock `nix hash convert` value for "abc")
+        assert_eq!(
+            sha256_hash_matches(
+                "sha256:1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s",
+                &digest,
+            ),
+            Some(true)
+        );
+        // SRI base64
+        use base64::Engine as _;
+        let sri = base64::engine::general_purpose::STANDARD.encode(&digest);
+        assert_eq!(
+            sha256_hash_matches(&format!("sha256-{sri}"), &digest),
+            Some(true)
+        );
+        // A mismatch is refuted.
+        assert_eq!(
+            sha256_hash_matches(
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                &digest,
+            ),
+            Some(false)
+        );
+        // An unrecognized form is un-refuted.
+        assert_eq!(sha256_hash_matches("md5:deadbeef", &digest), None);
+    }
+
+    #[tokio::test]
+    async fn deep_depth_flags_corrupt_nar_and_passes_good() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("nar")).unwrap();
+
+        // A good NAR: FileHash matches its bytes.
+        let good_bytes = b"good-nar-bytes";
+        let good_hash = format!("sha256:{}", hex::encode(Sha256::digest(good_bytes)));
+        std::fs::write(dir.path().join("nar/good.nar"), good_bytes).unwrap();
+        std::fs::write(
+            dir.path().join("good.narinfo"),
+            format!(
+                "StorePath: /x\nURL: nar/good.nar\nCompression: none\nFileSize: {}\nFileHash: {good_hash}\nNarHash: {good_hash}\n",
+                good_bytes.len()
+            ),
+        )
+        .unwrap();
+
+        // A corrupt NAR: bytes do not match the declared FileHash.
+        let bad_bytes = b"tampered-nar-bytes";
+        std::fs::write(dir.path().join("nar/bad.nar"), bad_bytes).unwrap();
+        std::fs::write(
+            dir.path().join("bad.narinfo"),
+            format!(
+                "StorePath: /y\nURL: nar/bad.nar\nCompression: none\nFileSize: {}\nFileHash: {good_hash}\nNarHash: {good_hash}\n",
+                bad_bytes.len()
+            ),
+        )
+        .unwrap();
+
+        let hashes = vec!["good".to_string(), "bad".to_string()];
+
+        // Integrity passes both (NAR present, size matches).
+        let integrity = probe_file_cache(dir.path(), &hashes, ValidationDepth::Integrity).await;
+        assert!(integrity.missing.is_empty());
+        assert!(integrity.corrupt.is_empty());
+
+        // Deep flags the tampered NAR as corrupt, not missing.
+        let deep = probe_file_cache(dir.path(), &hashes, ValidationDepth::Deep).await;
+        assert!(deep.missing.is_empty(), "corrupt is not missing");
+        assert_eq!(deep.corrupt, vec!["bad".to_string()]);
+        assert_eq!(deep.problem_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn deep_validation_records_corrupt_finding() {
+        let cache = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(cache.path().join("nar")).unwrap();
+        let bad_bytes = b"not-the-declared-bytes";
+        // Declare a FileHash for different content.
+        let declared = format!("sha256:{}", hex::encode(Sha256::digest(b"real-bytes")));
+        std::fs::write(cache.path().join("nar/abc.nar"), bad_bytes).unwrap();
+        std::fs::write(
+            cache.path().join("abc.narinfo"),
+            format!(
+                "StorePath: /var/lib/store/abc-curl-8.5.0\nURL: nar/abc.nar\nCompression: none\nFileSize: {}\nFileHash: {declared}\nNarHash: {declared}\n",
+                bad_bytes.len()
+            ),
+        )
+        .unwrap();
+
+        let cache_url = format!("file://{}", cache.path().display());
+        let (db, registry) = registry_with_caches(vec![(cache_url.clone(), 100)]);
+
+        let summaries = validate_registry(&db, &registry, ValidationDepth::Deep)
+            .await
+            .unwrap();
+        let summary = summaries.iter().find(|s| s.cache_url == cache_url).unwrap();
+        assert_eq!(summary.corrupt, 1);
+        assert_eq!(summary.missing, 1, "corrupt counts toward problems");
+
+        // The finding is recorded as `corrupt`, distinct from `missing`.
+        let runs = db.latest_validation_runs(registry.id).unwrap();
+        let run = runs.iter().find(|r| r.cache_url == cache_url).unwrap();
+        assert_eq!(
+            db.validation_corrupt(run.id).unwrap(),
+            vec!["abc".to_string()]
+        );
+        assert!(db.validation_missing(run.id).unwrap().is_empty());
+
+        // A corrupt hash is NOT planned for repair (a copy would carry the
+        // same bad bytes).
+        assert!(plan_repair(&db, &registry).unwrap().is_empty());
     }
 
     /// Build a registry whose index references a single store hash `abc`,
@@ -866,6 +1577,7 @@ mod tests {
                 cache_url: "https://a".into(),
                 checked: 2,
                 missing: 0,
+                corrupt: 0,
                 reachable: true,
                 coverage_percent: 100.0,
                 mirror_shortfall: None,
@@ -874,6 +1586,7 @@ mod tests {
                 cache_url: "https://b".into(),
                 checked: 2,
                 missing: 1,
+                corrupt: 0,
                 reachable: true,
                 coverage_percent: 50.0,
                 mirror_shortfall: None,

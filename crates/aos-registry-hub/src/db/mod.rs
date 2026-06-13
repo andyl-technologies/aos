@@ -40,10 +40,11 @@
 //!   `channel_partitions`, `releases`, `key_rosters`, `caches`: derived
 //!   from the verified surface by the indexer and safely droppable; a
 //!   re-index reconstructs it.
-//! - **Operational history** — `validation_runs` and
-//!   `validation_findings`: records of past consistency-validation runs.
-//!   Not derived from the surface, but droppable without losing
-//!   registration state.
+//! - **Operational history** — `validation_runs`, `validation_findings`, and
+//!   `repair_jobs` (v14): records of past consistency-validation runs (each
+//!   finding flagged `missing` or, at deep depth, `corrupt`) and the repair
+//!   attempts that copied missing objects between caches. Not derived from the
+//!   surface, but droppable without losing registration state.
 //!
 //! Migrations are ordered SQL statements tracked in `schema_version`,
 //!  applied at open. The connection is wrapped in a `Mutex` following the
@@ -830,6 +831,31 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE orgs ADD COLUMN deleted_at INTEGER;
     ALTER TABLE orgs ADD COLUMN purge_after INTEGER;
     ",
+    // v14: repair jobs (RFC-0004 "Cache stores, stacks, and consistency
+    // validation" — the one-click repair that copies missing objects from a
+    // member that has them). One row per attempted (cache, hash) repair, so
+    // the health page can render a repair-job history alongside validation
+    // findings. status is one of pending | done | failed | plan_only:
+    //
+    // - pending:   recorded but not yet executed.
+    // - done:      the object was copied/PUT into the target cache.
+    // - failed:    execution attempted and errored (see `error`).
+    // - plan_only: a target the hub is not authorized to write (an arbitrary
+    //   external http cache with no upload credential); recorded for
+    //   visibility but never executed.
+    "
+    CREATE TABLE repair_jobs (
+        id               INTEGER PRIMARY KEY,
+        registry_id      INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
+        cache_url        TEXT NOT NULL,
+        store_hash       TEXT NOT NULL,
+        source_cache_url TEXT NOT NULL,
+        status           TEXT NOT NULL,
+        error            TEXT,
+        created_at       INTEGER NOT NULL,
+        finished_at      INTEGER
+    );
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -1308,6 +1334,60 @@ pub struct ValidationRunRow {
     pub reachable: bool,
     /// Unix time the run finished.
     pub finished_at: i64,
+}
+
+/// The classification of one [`validation finding`](ValidationFinding).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindingStatus {
+    /// The narinfo (or, at integrity depth, its NAR) was absent.
+    Missing,
+    /// The NAR was present but its downloaded content did not match its
+    /// declared hash (recorded only at deep depth).
+    Corrupt,
+}
+
+impl FindingStatus {
+    /// The status label stored in `validation_findings.status`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FindingStatus::Missing => "missing",
+            FindingStatus::Corrupt => "corrupt",
+        }
+    }
+}
+
+/// One per-hash finding of a validation run.
+#[derive(Debug, Clone)]
+pub struct ValidationFinding {
+    /// The store hash the finding concerns.
+    pub store_hash: String,
+    /// Whether the hash is missing or corrupt.
+    pub status: FindingStatus,
+}
+
+/// One recorded repair-job attempt.
+///
+/// See the [repair-jobs migration docs](self) (v14) for the `status`
+/// vocabulary (`pending | done | failed | plan_only`).
+#[derive(Debug, Clone)]
+pub struct RepairJobRow {
+    /// Repair-job id.
+    pub id: i64,
+    /// The cache the object was (to be) copied into.
+    pub cache_url: String,
+    /// The store hash repaired.
+    pub store_hash: String,
+    /// The cache the object was copied from.
+    pub source_cache_url: String,
+    /// Lifecycle status: `pending`, `done`, `failed`, or `plan_only`.
+    pub status: String,
+    /// Failure detail when `status` is `failed` (else `None`).
+    pub error: Option<String>,
+    /// Unix time the job was recorded.
+    pub created_at: i64,
+    /// Unix time the job finished (`None` while pending).
+    pub finished_at: Option<i64>,
 }
 
 /// The latest freshness probe of one committed cache endpoint.
@@ -2035,6 +2115,49 @@ impl Database {
         started_at: i64,
         finished_at: i64,
     ) -> Result<i64> {
+        let findings: Vec<ValidationFinding> = missing_hashes
+            .iter()
+            .map(|hash| ValidationFinding {
+                store_hash: hash.clone(),
+                status: FindingStatus::Missing,
+            })
+            .collect();
+        self.record_validation_run_with_findings(
+            registry_id,
+            cache_url,
+            depth,
+            checked,
+            &findings,
+            reachable,
+            started_at,
+            finished_at,
+        )
+    }
+
+    /// Record one validation run, classifying each finding as `missing` or
+    /// `corrupt`.
+    ///
+    /// The run's `missing` count column is the total number of findings (a
+    /// hash that is absent *or* whose downloaded content does not match its
+    /// declared hash is, either way, a hash that does not resolve correctly in
+    /// the cache). Each finding row carries its own status so the health page
+    /// can flag deep-validation corruption distinctly from plain absence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_validation_run_with_findings(
+        &self,
+        registry_id: i64,
+        cache_url: &str,
+        depth: &str,
+        checked: u64,
+        findings: &[ValidationFinding],
+        reachable: bool,
+        started_at: i64,
+        finished_at: i64,
+    ) -> Result<i64> {
         let mut run_id = 0_i64;
         self.backend.with_tx(&mut |tx| {
             run_id = tx.execute_insert(
@@ -2047,18 +2170,18 @@ impl Database {
                     cache_url,
                     depth,
                     checked,
-                    missing_hashes.len() as i64,
+                    findings.len() as i64,
                     reachable,
                     started_at,
                     finished_at,
                 ],
             )?;
-            for hash in missing_hashes {
+            for finding in findings {
                 tx.execute(
                     "INSERT INTO validation_findings (run_id, store_hash, status)
-                     VALUES (?1, ?2, 'missing')
+                     VALUES (?1, ?2, ?3)
                      ON CONFLICT(run_id, store_hash) DO NOTHING",
-                    &vals![run_id, hash],
+                    &vals![run_id, finding.store_hash, finding.status.as_str()],
                 )?;
             }
             Ok(())
@@ -2098,6 +2221,9 @@ impl Database {
 
     /// The store hashes a validation run found missing, sorted.
     ///
+    /// Includes only `missing` findings (absent narinfo/NAR); deep-validation
+    /// `corrupt` findings are reported separately by [`Self::validation_corrupt`].
+    ///
     /// # Errors
     ///
     /// Returns an error on database failure.
@@ -2108,6 +2234,100 @@ impl Database {
             &vals![run_id],
         )?;
         rows.iter().map(|row| row.get(0)).collect()
+    }
+
+    /// The store hashes a validation run found corrupt, sorted.
+    ///
+    /// A `corrupt` finding is recorded only at [`crate::validation::ValidationDepth::Deep`]:
+    /// a hash whose narinfo and NAR are present, but the downloaded NAR's
+    /// content hash does not match the narinfo's declared `FileHash`/`NarHash`.
+    /// This is distinct from a `missing` finding (which repair can fix by
+    /// copying); corruption flags a cache that must be re-uploaded from a good
+    /// source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn validation_corrupt(&self, run_id: i64) -> Result<Vec<String>> {
+        let rows = self.backend.query(
+            "SELECT store_hash FROM validation_findings
+             WHERE run_id = ?1 AND status = 'corrupt' ORDER BY store_hash",
+            &vals![run_id],
+        )?;
+        rows.iter().map(|row| row.get(0)).collect()
+    }
+
+    /// Record a repair-job attempt and return its id.
+    ///
+    /// `status` is one of `pending`, `done`, `failed`, or `plan_only`;
+    /// `error` carries the failure detail for `failed` jobs (else `None`), and
+    /// `finished_at` is the completion time for terminal jobs (`None` while
+    /// pending).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_repair_job(
+        &self,
+        registry_id: i64,
+        cache_url: &str,
+        store_hash: &str,
+        source_cache_url: &str,
+        status: &str,
+        error: Option<&str>,
+        created_at: i64,
+        finished_at: Option<i64>,
+    ) -> Result<i64> {
+        self.backend.execute_insert(
+            "INSERT INTO repair_jobs
+             (registry_id, cache_url, store_hash, source_cache_url, status, error,
+              created_at, finished_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            &vals![
+                registry_id,
+                cache_url,
+                store_hash,
+                source_cache_url,
+                status,
+                error,
+                created_at,
+                finished_at,
+            ],
+        )
+    }
+
+    /// The most recent repair jobs for one registry, newest first.
+    ///
+    /// Capped at `limit` rows for the health-page history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_repair_jobs(&self, registry_id: i64, limit: i64) -> Result<Vec<RepairJobRow>> {
+        let rows = self.backend.query(
+            "SELECT id, cache_url, store_hash, source_cache_url, status, error,
+                    created_at, finished_at
+             FROM repair_jobs
+             WHERE registry_id = ?1
+             ORDER BY id DESC
+             LIMIT ?2",
+            &vals![registry_id, limit],
+        )?;
+        rows.iter()
+            .map(|row| {
+                Ok(RepairJobRow {
+                    id: row.get(0)?,
+                    cache_url: row.get(1)?,
+                    store_hash: row.get(2)?,
+                    source_cache_url: row.get(3)?,
+                    status: row.get(4)?,
+                    error: row.get(5)?,
+                    created_at: row.get(6)?,
+                    finished_at: row.get(7)?,
+                })
+            })
+            .collect()
     }
 
     /// Records (upserting) the latest freshness probe of one cache endpoint.
