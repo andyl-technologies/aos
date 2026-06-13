@@ -70,19 +70,49 @@ def _load_manifest(path: Path) -> dict[str, Any]:
                 f"machine {name!r}: transport must be 'qemu' or"
                 f" 'firecracker' (got {transport!r})"
             )
-        for required in ("kernel", "initrd", "disk", "memory_mib", "vcpu_count"):
+        boot = m.get("boot", "kernel")
+        if boot not in ("kernel", "image"):
+            raise SystemExit(
+                f"machine {name!r}: boot must be 'kernel' or 'image'"
+                f" (got {boot!r})"
+            )
+        if boot == "image" and transport != "qemu":
+            raise SystemExit(
+                f"machine {name!r}: image boot requires the qemu transport"
+            )
+        for required in ("disk", "memory_mib", "vcpu_count"):
             if required not in m:
                 raise SystemExit(
                     f"machine {name!r}: missing required field {required!r}"
                 )
-        if "metadata" not in m:
-            raise SystemExit(
-                f"machine {name!r}: missing 'metadata' (use null to omit)"
-            )
-        if transport == "qemu":
-            if m["metadata"] is None:
+        if boot == "kernel":
+            for required in ("kernel", "initrd"):
+                if required not in m:
+                    raise SystemExit(
+                        f"machine {name!r}: missing required field {required!r}"
+                    )
+            if "metadata" not in m:
                 raise SystemExit(
-                    f"machine {name!r}: qemu transport requires non-null metadata"
+                    f"machine {name!r}: missing 'metadata' (use null to omit)"
+                )
+        else:
+            # Image boot: UEFI firmware is mandatory, and a metadata ISO
+            # is forbidden — its presence would flip platform detection
+            # to PLATFORM_ID=file and ignition would ignore fw_cfg.
+            for required in ("firmware_code", "firmware_vars"):
+                if required not in m:
+                    raise SystemExit(
+                        f"machine {name!r}: image boot requires {required!r}"
+                    )
+            if m.get("metadata") is not None:
+                raise SystemExit(
+                    f"machine {name!r}: image boot must not attach a"
+                    " metadata ISO (it forces PLATFORM_ID=file)"
+                )
+        if transport == "qemu":
+            if boot == "kernel" and m["metadata"] is None:
+                raise SystemExit(
+                    f"machine {name!r}: qemu kernel boot requires non-null metadata"
                 )
             for required in ("mac", "ip"):
                 if required not in m:
@@ -113,10 +143,15 @@ def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
         )
     return QemuMachine(
         name=entry["name"],
-        kernel=entry["kernel"],
-        initrd=entry["initrd"],
+        boot=entry.get("boot", "kernel"),
+        kernel=entry.get("kernel"),
+        initrd=entry.get("initrd"),
         disk=entry["disk"],
-        metadata=entry["metadata"],
+        metadata=entry.get("metadata"),
+        firmware_code=entry.get("firmware_code"),
+        firmware_vars=entry.get("firmware_vars"),
+        fw_cfg=entry.get("fw_cfg"),
+        disk_size_mib=entry.get("disk_size_mib"),
         memory_mib=entry["memory_mib"],
         vcpu_count=entry["vcpu_count"],
         mac=entry["mac"],
