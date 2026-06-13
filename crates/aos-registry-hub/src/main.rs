@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 
 use aos_registry_hub::db::{Database, RegistryRecord};
-use aos_registry_hub::fetch::fetch_for_url;
+use aos_registry_hub::fetch::{fetch_for_url, LocalFsFetch, SurfaceFetch};
 use aos_registry_hub::indexer::index_and_record;
 use aos_registry_hub::server::{router, AppState};
 use aos_registry_hub::validation::validate_presence;
@@ -1049,7 +1049,7 @@ async fn main() -> Result<()> {
                 None => db.list_registries()?,
             };
             for registry in registries {
-                let fetch = fetch_for_url(&registry.source_url)?;
+                let fetch = fetch_for_registry(&db, &registry)?;
                 match index_and_record(&db, fetch.as_ref(), &registry).await {
                     Ok(outcome) => {
                         println!(
@@ -1633,6 +1633,25 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Resolve the surface fetcher for a registry.
+///
+/// Managed registries (and `file://` registration-only ones) serve from a
+/// local surface — their storage-binding root or local path — which
+/// [`Database::registry_surface_root`] resolves; their `source_url` is
+/// empty, so they must not go through [`fetch_for_url`]. Everything else is
+/// an `http(s)` registration-only source.
+///
+/// # Errors
+///
+/// Returns an error when the registry has neither a local surface nor a
+/// usable source URL.
+fn fetch_for_registry(db: &Database, registry: &RegistryRecord) -> Result<Box<dyn SurfaceFetch>> {
+    if let Some(root) = db.registry_surface_root(registry.id)? {
+        return Ok(Box::new(LocalFsFetch::new(root)));
+    }
+    fetch_for_url(&registry.source_url)
+}
+
 /// The persisted masthead brand (`instance_config['brand']`), or empty.
 fn state_brand(app_state: &AppState) -> Result<String> {
     Ok(app_state
@@ -1689,7 +1708,7 @@ async fn index_all(db: &Database) {
         }
     };
     for registry in registries {
-        let fetch = match fetch_for_url(&registry.source_url) {
+        let fetch = match fetch_for_registry(db, &registry) {
             Ok(fetch) => fetch,
             Err(err) => {
                 tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "bad source url");

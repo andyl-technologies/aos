@@ -114,21 +114,26 @@ impl SessionIndicator {
 
     /// Renders the indicator as the right-hand masthead HTML fragment.
     ///
-    /// When signed in it doubles as the primary navigation — links to the
-    /// caller's organizations and account profile (the entry points to all
-    /// management pages) plus the email and a log-out link. When anonymous
-    /// it is a single log-in link.
+    /// It always leads with a "registries" home link (so there is always a
+    /// way back to the instance home). When signed in it continues as the
+    /// primary navigation — the caller's organizations and account profile
+    /// (the entry points to all management pages) plus the email and a
+    /// log-out link; when anonymous it is the home link plus log-in.
     fn render(&self) -> String {
         match &self.email {
             Some(email) => format!(
                 "<span class=\"session\">\
+                 <a href=\"/\">registries</a> · \
                  <a href=\"/-/orgs\">organizations</a> · \
                  <a href=\"/account\">account</a> · \
                  <span class=\"who\">{}</span> · \
                  <a href=\"/logout\">log out</a></span>",
                 escape(email),
             ),
-            None => "<span class=\"session\"><a href=\"/login\">log in</a></span>".to_string(),
+            None => "<span class=\"session\">\
+                     <a href=\"/\">registries</a> · \
+                     <a href=\"/login\">log in</a></span>"
+                .to_string(),
         }
     }
 }
