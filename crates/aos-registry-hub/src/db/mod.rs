@@ -3,10 +3,15 @@
 //! Three kinds of tables live in one sqlite database, with sharply
 //! different contracts (RFC-0004 "Stance"):
 //!
-//! - **System of record** — `registries` and `channel_floors`: facts that
-//!   exist nowhere on the surface (slug, source URL, trust anchors, the
-//!   anti-rollback floor each channel has reached). Losing these loses
-//!   real state; floors in particular survive every re-index.
+//! - **System of record** — `registries`, `channel_floors`, and the
+//!   phase-2 tenancy tables `orgs`, `projects`, `users`,
+//!   `user_identities`, `service_accounts`, `memberships`, and
+//!   `invitations`: facts that exist nowhere on the surface (slug, source
+//!   URL, trust anchors, the anti-rollback floor each channel has reached,
+//!   plus the org → project → registry hierarchy and who may act on it).
+//!   Losing these loses real state; floors in particular survive every
+//!   re-index, and ownership/grants are never rebuildable from the
+//!   surface.
 //! - **Rebuildable index** — `registry_index`, `packages`,
 //!   `package_versions`, `version_platforms`, `channels`,
 //!   `channel_partitions`, `releases`, `key_rosters`, `caches`: derived
@@ -21,6 +26,37 @@
 //!  applied at open. The connection is wrapped in a `Mutex` following the
 //! pattern of `aos-server`'s token store; hub queries are short and
 //! page-shaped, so a single writer is ample for phase 1.
+//!
+//! # Tenancy hierarchy (v3)
+//!
+//! Phase 2a adds the multi-tenant system of record. A **project** locates
+//! itself inside its org with a *materialized path* — the slash-joined
+//! chain of ancestor project names, with `''` for a project that sits
+//! directly under the org root. A registry then lives at
+//! `{org}/{project_path}/{registry_slug}`. Scopes (the strings stored in
+//! `memberships.scope` / `invitations.scope`) are prefixes of that path:
+//!
+//! ```text
+//! orgs                acme
+//! projects            (org acme, path "")              -> scope "acme"
+//!                     (org acme, path "infra")         -> scope "acme/infra"
+//!                     (org acme, path "infra/prod")    -> scope "acme/infra/prod"
+//! registries          slug "cdn", project_path "infra/prod", org acme
+//!                                                      -> scope "acme/infra/prod/cdn"
+//!
+//! memberships.scope   ""                  instance root (every org/project)
+//!                     "acme"              the whole org
+//!                     "acme/infra"        a project subtree
+//!                     "acme/infra/prod/cdn"   one registry
+//! ```
+//!
+//! Roles inherit downward: a grant at `acme` covers every project and
+//! registry beneath it. The pure containment/decision logic lives in
+//! [`crate::domain::iam`]; this module only stores and lists the rows.
+//!
+//! Existing phase-1 `registries` rows acquire `org_id IS NULL`,
+//! `project_path = ''`, and `visibility = 'public'` — the RFC's
+//! instance-level *unowned public registry* that phase 2 adopts unchanged.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -145,6 +181,72 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE releases ADD COLUMN pack_present INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE registry_index ADD COLUMN refs_digest TEXT;
     ",
+    // v3: multi-tenant system of record (RFC-0004 "Tenancy and IAM").
+    // Orgs, projects (materialized-path hierarchy), users and their OIDC
+    // identities, service accounts, role memberships, and invitations.
+    // Existing registries gain ownership columns; phase-1 rows become
+    // unowned public registries (org_id NULL).
+    "
+    CREATE TABLE orgs (
+        id          INTEGER PRIMARY KEY,
+        slug        TEXT NOT NULL UNIQUE,
+        name        TEXT NOT NULL,
+        created_at  INTEGER NOT NULL
+    );
+    CREATE TABLE projects (
+        id          INTEGER PRIMARY KEY,
+        org_id      INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+        path        TEXT NOT NULL,                -- materialized path; '' = org root
+        name        TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        UNIQUE (org_id, path)
+    );
+    CREATE TABLE users (
+        id           INTEGER PRIMARY KEY,
+        email        TEXT NOT NULL UNIQUE,
+        display_name TEXT,
+        created_at   INTEGER NOT NULL,
+        deleted_at   INTEGER
+    );
+    CREATE TABLE user_identities (
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        issuer      TEXT NOT NULL,                -- OIDC iss
+        subject     TEXT NOT NULL,                -- OIDC sub
+        email       TEXT,
+        last_login  INTEGER,
+        PRIMARY KEY (issuer, subject)
+    );
+    CREATE TABLE service_accounts (
+        id          INTEGER PRIMARY KEY,
+        org_id      INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        UNIQUE (org_id, name)
+    );
+    CREATE TABLE memberships (
+        id             INTEGER PRIMARY KEY,
+        principal_kind TEXT NOT NULL,             -- 'user' | 'service_account'
+        principal_id   INTEGER NOT NULL,
+        scope          TEXT NOT NULL,             -- scope path string
+        role           TEXT NOT NULL,             -- one of the five role names
+        created_at     INTEGER NOT NULL,
+        UNIQUE (principal_kind, principal_id, scope)
+    );
+    CREATE TABLE invitations (
+        id          INTEGER PRIMARY KEY,
+        org_id      INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+        email       TEXT NOT NULL,
+        scope       TEXT NOT NULL,
+        role        TEXT NOT NULL,
+        token_hash  TEXT NOT NULL UNIQUE,         -- SHA-256 of the invite secret
+        created_at  INTEGER NOT NULL,
+        accepted_at INTEGER,
+        expires_at  INTEGER NOT NULL
+    );
+    ALTER TABLE registries ADD COLUMN org_id INTEGER;
+    ALTER TABLE registries ADD COLUMN project_path TEXT NOT NULL DEFAULT '';
+    ALTER TABLE registries ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public';
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -160,6 +262,49 @@ pub struct RegistryRecord {
     pub trust_keys: Vec<String>,
     /// Whether indexing fails closed on missing/invalid signatures.
     pub require_signatures: bool,
+}
+
+/// An organization (tenant boundary) system-of-record row.
+#[derive(Debug, Clone)]
+pub struct OrgRecord {
+    /// Database id.
+    pub id: i64,
+    /// URL-safe unique slug the org is addressed by.
+    pub slug: String,
+    /// Human-readable display name.
+    pub name: String,
+    /// Unix time the org was created.
+    pub created_at: i64,
+}
+
+/// A project (materialized-path node) system-of-record row.
+#[derive(Debug, Clone)]
+pub struct ProjectRecord {
+    /// Database id.
+    pub id: i64,
+    /// Owning org id.
+    pub org_id: i64,
+    /// Materialized path within the org (`""` for an org-root project).
+    pub path: String,
+    /// Human-readable display name.
+    pub name: String,
+    /// Unix time the project was created.
+    pub created_at: i64,
+}
+
+/// A pending invitation system-of-record row.
+#[derive(Debug, Clone)]
+pub struct InvitationRecord {
+    /// Database id.
+    pub id: i64,
+    /// Org the invitation grants membership in.
+    pub org_id: i64,
+    /// Invited email address.
+    pub email: String,
+    /// Scope path the resulting grant is bound to.
+    pub scope: String,
+    /// Role the resulting grant confers.
+    pub role: String,
 }
 
 /// Index freshness state for one registry.
@@ -1109,6 +1254,373 @@ impl Database {
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+
+    // -- tenancy: orgs and projects -----------------------------------------
+
+    /// Create an organization; returns its new id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a unique-constraint
+    /// violation when `slug` is already taken.
+    pub fn create_org(&self, slug: &str, name: &str) -> Result<i64> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO orgs (slug, name, created_at) VALUES (?1, ?2, ?3)",
+            params![slug, name, unix_now()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Look up an organization by slug.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn org_by_slug(&self, slug: &str) -> Result<Option<OrgRecord>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT id, slug, name, created_at FROM orgs WHERE slug = ?1",
+            [slug],
+            |row| {
+                Ok(OrgRecord {
+                    id: row.get(0)?,
+                    slug: row.get(1)?,
+                    name: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .context("loading org by slug")
+    }
+
+    /// Create a project under an org at a materialized path; returns its id.
+    ///
+    /// Pass `""` as `path` for a project that sits directly under the org
+    /// root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a unique-constraint
+    /// violation when `(org_id, path)` already exists or `org_id` does not
+    /// reference an org.
+    pub fn create_project(&self, org_id: i64, path: &str, name: &str) -> Result<i64> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO projects (org_id, path, name, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![org_id, path, name, unix_now()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// List an org's projects, ordered by materialized path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_projects(&self, org_id: i64) -> Result<Vec<ProjectRecord>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, org_id, path, name, created_at FROM projects
+             WHERE org_id = ?1 ORDER BY path",
+        )?;
+        let rows = stmt.query_map([org_id], |row| {
+            Ok(ProjectRecord {
+                id: row.get(0)?,
+                org_id: row.get(1)?,
+                path: row.get(2)?,
+                name: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    // -- tenancy: principals -------------------------------------------------
+
+    /// Create a user; returns the new user id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a unique-constraint
+    /// violation when `email` is already registered.
+    pub fn create_user(&self, email: &str, display_name: Option<&str>) -> Result<i64> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO users (email, display_name, created_at) VALUES (?1, ?2, ?3)",
+            params![email, display_name, unix_now()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Look up a non-deleted user's id by email.
+    ///
+    /// Soft-deleted users (those with `deleted_at` set) are not returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn user_by_email(&self, email: &str) -> Result<Option<i64>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT id FROM users WHERE email = ?1 AND deleted_at IS NULL",
+            [email],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("loading user by email")
+    }
+
+    /// Create a service account under an org; returns the new id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a unique-constraint
+    /// violation when `(org_id, name)` already exists.
+    pub fn create_service_account(&self, org_id: i64, name: &str) -> Result<i64> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO service_accounts (org_id, name, created_at) VALUES (?1, ?2, ?3)",
+            params![org_id, name, unix_now()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    // -- tenancy: memberships ------------------------------------------------
+
+    /// Grant (or update) a principal's role at a scope.
+    ///
+    /// A principal has at most one role per scope; re-granting the same
+    /// `(principal_kind, principal_id, scope)` overwrites the role. The
+    /// `scope` and `role` strings are the wire forms produced by
+    /// [`crate::domain::Scope::as_str`] and [`crate::domain::Role::as_str`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn grant_membership(
+        &self,
+        principal_kind: &str,
+        principal_id: i64,
+        scope: &str,
+        role: &str,
+    ) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO memberships
+             (principal_kind, principal_id, scope, role, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(principal_kind, principal_id, scope)
+             DO UPDATE SET role = excluded.role",
+            params![principal_kind, principal_id, scope, role, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    /// Revoke a principal's grant at a scope.
+    ///
+    /// A no-op when no such grant exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn revoke_membership(
+        &self,
+        principal_kind: &str,
+        principal_id: i64,
+        scope: &str,
+    ) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "DELETE FROM memberships
+             WHERE principal_kind = ?1 AND principal_id = ?2 AND scope = ?3",
+            params![principal_kind, principal_id, scope],
+        )?;
+        Ok(())
+    }
+
+    /// List a principal's grants as `(scope, role)` strings, ordered by
+    /// scope.
+    ///
+    /// These pairs feed [`crate::domain::iam::allow`] after parsing with
+    /// [`crate::domain::Scope::parse`] and [`crate::domain::Role::parse`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_memberships_for(
+        &self,
+        principal_kind: &str,
+        principal_id: i64,
+    ) -> Result<Vec<(String, String)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT scope, role FROM memberships
+             WHERE principal_kind = ?1 AND principal_id = ?2 ORDER BY scope",
+        )?;
+        let rows = stmt.query_map(params![principal_kind, principal_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// List the principals granted a role directly at one scope.
+    ///
+    /// Returns `(principal_kind, principal_id, role)` for the grants whose
+    /// `scope` equals `scope` exactly — it does **not** expand inherited
+    /// grants from ancestor scopes; that inheritance is resolved by
+    /// [`crate::domain::iam::allow`] at decision time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_members_of_scope(&self, scope: &str) -> Result<Vec<(String, i64, String)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT principal_kind, principal_id, role FROM memberships
+             WHERE scope = ?1 ORDER BY principal_kind, principal_id",
+        )?;
+        let rows = stmt.query_map([scope], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Resolve a principal's effective grants as parsed `(Scope, Role)`
+    /// pairs ready for [`crate::domain::iam::allow`].
+    ///
+    /// This is the thin domain-db bridge: it reads `memberships` via
+    /// [`Database::list_memberships_for`] and parses each row into the
+    /// pure domain types. Rows whose stored `role` is not one of the five
+    /// known role names are skipped (forward-compatibility with a future
+    /// role added by a newer writer); scopes always parse.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn effective_scopes(
+        &self,
+        principal: crate::domain::Principal,
+    ) -> Result<Vec<(crate::domain::Scope, crate::domain::Role)>> {
+        let rows = self.list_memberships_for(principal.kind.as_str(), principal.id)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(scope, role)| {
+                crate::domain::Role::parse(&role)
+                    .map(|role| (crate::domain::Scope::parse(&scope), role))
+            })
+            .collect())
+    }
+
+    // -- tenancy: registry ownership ----------------------------------------
+
+    /// Bind a registry to an org/project and set its visibility.
+    ///
+    /// Pass `None` for `org_id` to leave (or make) the registry an
+    /// instance-level unowned public registry. `project_path` is the
+    /// owning project's materialized path (`""` for an org-root registry);
+    /// `visibility` is `public`, `internal`, or `private`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn set_registry_ownership(
+        &self,
+        registry_id: i64,
+        org_id: Option<i64>,
+        project_path: &str,
+        visibility: &str,
+    ) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE registries
+             SET org_id = ?2, project_path = ?3, visibility = ?4
+             WHERE id = ?1",
+            params![registry_id, org_id, project_path, visibility],
+        )?;
+        Ok(())
+    }
+
+    // -- tenancy: invitations ------------------------------------------------
+
+    /// Create an invitation; returns its new id.
+    ///
+    /// The caller passes the SHA-256 hash of the invite secret as
+    /// `token_hash` (the secret itself is never stored). `expires_at` is a
+    /// Unix timestamp after which [`Database::accept_invitation`] refuses
+    /// the invite.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a unique-constraint
+    /// violation when `token_hash` collides.
+    pub fn create_invitation(
+        &self,
+        org_id: i64,
+        email: &str,
+        scope: &str,
+        role: &str,
+        token_hash: &str,
+        expires_at: i64,
+    ) -> Result<i64> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO invitations
+             (org_id, email, scope, role, token_hash, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                org_id,
+                email,
+                scope,
+                role,
+                token_hash,
+                unix_now(),
+                expires_at
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Accept an invitation by its token hash, returning its details.
+    ///
+    /// Succeeds only for an invitation that is unexpired (`expires_at` is
+    /// in the future relative to the current clock) and not already
+    /// accepted; on success it stamps `accepted_at` and returns the
+    /// invitation so the caller can mint the corresponding membership.
+    /// Returns `Ok(None)` when no matching, live, unaccepted invitation
+    /// exists — covering unknown hashes, expired invites, and replays
+    /// alike, without distinguishing them to the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn accept_invitation(&self, token_hash: &str) -> Result<Option<InvitationRecord>> {
+        let conn = self.lock();
+        let now = unix_now();
+        let record = conn
+            .query_row(
+                "SELECT id, org_id, email, scope, role FROM invitations
+                 WHERE token_hash = ?1 AND accepted_at IS NULL AND expires_at > ?2",
+                params![token_hash, now],
+                |row| {
+                    Ok(InvitationRecord {
+                        id: row.get(0)?,
+                        org_id: row.get(1)?,
+                        email: row.get(2)?,
+                        scope: row.get(3)?,
+                        role: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .context("loading invitation by hash")?;
+        if let Some(record) = &record {
+            conn.execute(
+                "UPDATE invitations SET accepted_at = ?2 WHERE id = ?1",
+                params![record.id, now],
+            )?;
+        }
+        Ok(record)
+    }
 }
 
 fn row_to_registry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryRecord> {
@@ -1290,6 +1802,180 @@ mod tests {
             db.channel_floor(1, "stable").unwrap().as_deref(),
             Some("1.0.0")
         );
+    }
+
+    #[test]
+    fn v2_database_migrates_to_v3() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.db");
+        // Build a v2 database by hand with one phase-1 registry row.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(MIGRATIONS[0]).unwrap();
+            conn.execute_batch(MIGRATIONS[1]).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (2);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO registries (slug, source_url, created_at)
+                 VALUES ('legacy', '/srv/legacy', 0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Reopening migrates to v3.
+        let db = Database::open(&path).unwrap();
+        let conn = db.lock();
+        // New tenancy tables exist (querying a missing table would error).
+        for table in [
+            "orgs",
+            "projects",
+            "users",
+            "user_identities",
+            "service_accounts",
+            "memberships",
+            "invitations",
+        ] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0, "{table} should start empty");
+        }
+        // The phase-1 registry became an unowned public registry.
+        let (org_id, project_path, visibility): (Option<i64>, String, String) = conn
+            .query_row(
+                "SELECT org_id, project_path, visibility FROM registries WHERE slug = 'legacy'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(org_id, None);
+        assert_eq!(project_path, "");
+        assert_eq!(visibility, "public");
+    }
+
+    #[test]
+    fn orgs_projects_and_principals_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme, Inc.").unwrap();
+        assert_eq!(db.org_by_slug("acme").unwrap().unwrap().id, org);
+        assert!(db.org_by_slug("nope").unwrap().is_none());
+
+        db.create_project(org, "", "Root").unwrap();
+        db.create_project(org, "infra", "Infra").unwrap();
+        db.create_project(org, "infra/prod", "Prod").unwrap();
+        let projects = db.list_projects(org).unwrap();
+        assert_eq!(projects.len(), 3);
+        assert_eq!(projects[0].path, "");
+        assert_eq!(projects[1].path, "infra");
+        assert_eq!(projects[2].path, "infra/prod");
+
+        let user = db.create_user("dev@acme.com", Some("Dev")).unwrap();
+        assert_eq!(db.user_by_email("dev@acme.com").unwrap(), Some(user));
+        assert!(db.user_by_email("ghost@acme.com").unwrap().is_none());
+
+        let sa = db.create_service_account(org, "ci").unwrap();
+        assert!(sa > 0);
+    }
+
+    #[test]
+    fn memberships_grant_revoke_and_list() {
+        let db = Database::open_in_memory().unwrap();
+        let user = db.create_user("dev@acme.com", None).unwrap();
+        db.grant_membership("user", user, "acme", "admin").unwrap();
+        db.grant_membership("user", user, "acme/infra", "maintainer")
+            .unwrap();
+        // Re-granting overwrites the role at the same scope.
+        db.grant_membership("user", user, "acme", "owner").unwrap();
+
+        let grants = db.list_memberships_for("user", user).unwrap();
+        assert_eq!(
+            grants,
+            vec![
+                ("acme".to_string(), "owner".to_string()),
+                ("acme/infra".to_string(), "maintainer".to_string()),
+            ]
+        );
+
+        // effective_scopes parses into domain types.
+        let scopes = db
+            .effective_scopes(crate::domain::Principal::user(user))
+            .unwrap();
+        assert_eq!(scopes.len(), 2);
+        assert!(crate::domain::iam::allow(
+            &scopes,
+            crate::domain::Permission::IamAdmin,
+            &crate::domain::Scope::parse("acme/infra/prod/cdn"),
+        ));
+
+        // list_members_of_scope returns exact-scope grants only (the
+        // org grant at "acme", not the inherited "acme/infra" one).
+        let members = db.list_members_of_scope("acme").unwrap();
+        assert_eq!(
+            members,
+            vec![("user".to_string(), user, "owner".to_string())]
+        );
+
+        db.revoke_membership("user", user, "acme").unwrap();
+        let grants = db.list_memberships_for("user", user).unwrap();
+        assert_eq!(
+            grants,
+            vec![("acme/infra".to_string(), "maintainer".to_string())]
+        );
+    }
+
+    #[test]
+    fn registry_ownership_can_be_set() {
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        let reg = db.register_registry("cdn", "/srv/cdn", &[], false).unwrap();
+        db.set_registry_ownership(reg, Some(org), "infra/prod", "private")
+            .unwrap();
+        let conn = db.lock();
+        let (got_org, path, vis): (Option<i64>, String, String) = conn
+            .query_row(
+                "SELECT org_id, project_path, visibility FROM registries WHERE id = ?1",
+                [reg],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(got_org, Some(org));
+        assert_eq!(path, "infra/prod");
+        assert_eq!(vis, "private");
+    }
+
+    #[test]
+    fn invitations_create_accept_and_expire() {
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        let far_future = unix_now() + 86_400;
+
+        db.create_invitation(
+            org,
+            "new@acme.com",
+            "acme/infra",
+            "developer",
+            "hash-a",
+            far_future,
+        )
+        .unwrap();
+        let accepted = db.accept_invitation("hash-a").unwrap().unwrap();
+        assert_eq!(accepted.email, "new@acme.com");
+        assert_eq!(accepted.scope, "acme/infra");
+        assert_eq!(accepted.role, "developer");
+        // A second accept of the same hash is rejected (already accepted).
+        assert!(db.accept_invitation("hash-a").unwrap().is_none());
+        // Unknown hash is rejected.
+        assert!(db.accept_invitation("hash-missing").unwrap().is_none());
+
+        // An already-expired invitation cannot be accepted.
+        let past = unix_now() - 10;
+        db.create_invitation(org, "late@acme.com", "acme", "viewer", "hash-b", past)
+            .unwrap();
+        assert!(db.accept_invitation("hash-b").unwrap().is_none());
     }
 
     #[test]
