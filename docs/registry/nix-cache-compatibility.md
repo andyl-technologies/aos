@@ -385,11 +385,11 @@ round trip is lossless for the fields AOS uses.
 > **Trust note (RFC-0005):** for the AOS consumer, narinfos are **advisory
 > transport metadata** — they supply the NAR URL, compression, and sizes for
 > planning, plus the `FileHash` integrity precheck. The *trust decision* for
-> the decompressed bytes is the registry's signed `ca/` trust map
-> ([`repo-layout.md`](repo-layout.md) §5b): every downloaded NAR's
+> the decompressed bytes is the registry's signed `store/` realisation graph
+> ([`repo-layout.md`](repo-layout.md) §5): every downloaded NAR's
 > uncompressed SHA-256 and size must match a blessed entry, and a narinfo
-> `NarHash` disagreeing with `ca/` always resolves in favor of `ca/`. Only
-> registries that publish no map at all fall back to trusting `NarHash`
+> `NarHash` disagreeing with `store/` always resolves in favor of `store/`. Only
+> registries that publish no graph at all fall back to trusting `NarHash`
 > (with a warning). Stock-Nix consumers, which cannot read `ca/`, keep the
 > narinfo `Sig:` Ed25519 signature (§8) as their substitution defence.
 
@@ -443,11 +443,10 @@ narinfo References:    r4q1m2kp8v3x…-glibc-2.39  xr5is7by89v3q…-zlib-1.3.1
 ```
 
 > **Note for the git-metadata layer:** the *git registry* stores
-> `references` as **bare store-path hashes** — "Store path hashes of direct
-> runtime references" (`crates/aos-package/src/types.rs:57-58`), with the closure
-> files (`closures/<hash>`) using the same bare-hash adjacency-list format
-> (`ClosureMeta`, `types.rs:80-102`). That bare-hash form lives in the git tree
-> and is consumed by `apm`'s closure walk; it is **independent** of the
+> dependency edges as **bare store-path hashes** in the `store/` realisation
+> graph (`ia:sha256:<store-hash>` lines, RFC-0005;
+> `crates/aos-package/src/registry/store.rs`). That bare-hash form lives in the
+> git tree and is consumed by `apm`'s closure walk; it is **independent** of the
 > narinfo-layer `References`, which the producer writes as basenames from the
 > store DB into the static narinfo. The two layers are decoupled (§1) — no
 > expansion step crosses between them.

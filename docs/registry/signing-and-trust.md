@@ -51,8 +51,8 @@ Key consequences:
   `/channels/<name>/<00..ff>` (256 files), so they never appear in `info/refs` and a
   stock dumb clone never sees them.
 - **The tree binds content, not just names.** The signed commit's tree carries the
-  `ca/` trust map (blessed content addresses for every published closure member,
-  [`repo-layout.md`](repo-layout.md) §5b, RFC-0005), so the signature vouches for the
+  `store/` realisation graph (blessed bytes + dependency edges + content
+  addresses for every published closure member, [`repo-layout.md`](repo-layout.md) §5, RFC-0005), so the signature vouches for the
   exact NAR bytes of the whole dependency graph — input-addressed store-path names
   alone would only bind the graph's *shape*. Cache-served narinfos are advisory
   transport metadata, never a trust source.
@@ -582,8 +582,8 @@ bytes.
 | Is the frontier branch trustworthy? | `refs/heads/<channel>` — **unsigned pointer** | **no** (convenience only) |
 | Is this pointer fresh? | low CDN TTL on `/channels` + consumer max-staleness policy + monotonic floor (no in-band expiry) | freshness, not forgery |
 | Could I be downgraded? | consumer **monotonic floor** (semver); abort = **fix-forward** | yes |
-| Are these NAR bytes the published bytes? | `ca/` trust map in the signed tree: decompressed SHA-256 + size must match a blessed entry; unmapped path = hard failure when the map is published (RFC-0005) | yes — roots content at the tag signature |
-| NAR substitution from same origin? | `ca/` trust map (above); narinfo `Sig:` reusing the **one** Ed25519 key remains for stock-Nix consumers | yes |
+| Are these NAR bytes the published bytes? | `store/` realisation graph in the signed tree: decompressed SHA-256 + size must match a blessed NAR; unmapped path = hard failure when the graph is published (RFC-0005) | yes — roots content at the tag signature |
+| NAR substitution from same origin? | `store/` realisation graph (above); narinfo `Sig:` reusing the **one** Ed25519 key remains for stock-Nix consumers | yes |
 
 ---
 
@@ -635,7 +635,7 @@ Historical removed concepts are listed in design-brief §15.
 
 - [`README.md`](README.md) — registry doc index and glossary.
 - [`architecture.md`](architecture.md) — git-over-dumb-HTTP, the three ref layers.
-- [`repo-layout.md`](repo-layout.md) — the committed git tree: `registry.toml` (pubkey removed) + `keys.toml` trust roster + `packages/` + `closures/`.
+- [`repo-layout.md`](repo-layout.md) — the committed git tree: `registry.toml` (pubkey removed) + `keys.toml` trust roster + `packages/` + `store/` realisation graph.
 - [`http-layout.md`](http-layout.md) — HTTP/object layout, CDN TTLs, sha256 object store.
 - [`versioning-and-channels.md`](versioning-and-channels.md) — semver, channels-as-branches, 256-partition rollout, bucket selection, anti-rollback.
 - [`packs-and-deltas.md`](packs-and-deltas.md) — what the verified commit's object store contains.
