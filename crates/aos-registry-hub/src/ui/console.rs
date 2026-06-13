@@ -274,7 +274,7 @@ pub fn passkeys_page(
                 let label = c.label.as_deref().unwrap_or("passkey");
                 let last = c
                     .last_used_at
-                    .map_or_else(|| "never".to_string(), |t| ago(t));
+                    .map_or_else(|| "never".to_string(), ago);
                 vec![
                     escape(label),
                     ago(c.created_at),
