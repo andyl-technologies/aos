@@ -32,11 +32,13 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
         access_token_ttl: 900,
         ratelimit: aos_registry_hub::ratelimit::RateLimiter::new().into(),
+        trusted_proxy: false,
     });
     Arc::new(AppState {
         db,
         external_url: "http://127.0.0.1:8420".into(),
         ratelimit: auth.ratelimit.clone(),
+        trusted_proxy: false,
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
@@ -492,6 +494,106 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     assert_eq!(record.visibility, "private");
     assert!(record.storage_binding_id.is_some());
     assert_eq!(record.prefix, "infra/prod/cdn");
+}
+
+#[tokio::test]
+async fn soft_deleted_org_registry_is_not_found_over_rpc() {
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("surface");
+    std::fs::create_dir_all(&surface).unwrap();
+    let fixture = common::standard_registry(&surface);
+    // A public registry so the read would otherwise succeed anonymously.
+    let db = serve_managed(&surface, &fixture, "public").await;
+    let app = router(app_state(Arc::clone(&db)));
+
+    // While the org is live, GetRegistry/ListReleases serve.
+    let (status, value) = rpc(
+        &app,
+        "RegistryService/GetRegistry",
+        serde_json::json!({"slug": "acme/infra/prod/cdn"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let (status, _) = rpc(
+        &app,
+        "RegistryService/ListReleases",
+        serde_json::json!({"slug": "acme/infra/prod/cdn"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Soft-delete the owning org.
+    let org = db.org_by_slug("acme").unwrap().unwrap();
+    assert!(db.soft_delete_org(org.id, 86_400).unwrap());
+
+    // Both reads now report the registry as gone (NotFound -> HTTP 404).
+    let (status, value) = rpc(
+        &app,
+        "RegistryService/GetRegistry",
+        serde_json::json!({"slug": "acme/infra/prod/cdn"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{value}");
+    let (status, value) = rpc(
+        &app,
+        "RegistryService/ListReleases",
+        serde_json::json!({"slug": "acme/infra/prod/cdn"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{value}");
+}
+
+#[tokio::test]
+async fn private_registry_list_releases_requires_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("surface");
+    std::fs::create_dir_all(&surface).unwrap();
+    let fixture = common::standard_registry(&surface);
+    let db = serve_managed(&surface, &fixture, "private").await;
+    let app = router(app_state(Arc::clone(&db)));
+
+    // Anonymous ListReleases of a private registry is rejected (no leak).
+    let (status, _) = rpc(
+        &app,
+        "RegistryService/ListReleases",
+        serde_json::json!({"slug": "acme/infra/prod/cdn"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // GetRegistry of a private registry is likewise rejected anonymously.
+    let (status, _) = rpc(
+        &app,
+        "RegistryService/GetRegistry",
+        serde_json::json!({"slug": "acme/infra/prod/cdn"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // A member with Read, carrying a bearer scoped to the registry, sees the
+    // releases (the permission is intersected with the owner's live grants).
+    let user = db.create_user("dev@acme.com", None).unwrap();
+    db.grant_membership("user", user, "acme", Role::Developer.as_str())
+        .unwrap();
+    let token = bearer(
+        Principal::user(user),
+        "acme/infra/prod/cdn",
+        &[Permission::Read],
+    );
+    let (status, value) = rpc(
+        &app,
+        "RegistryService/ListReleases",
+        serde_json::json!({"slug": "acme/infra/prod/cdn"}),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
 }
 
 #[tokio::test]

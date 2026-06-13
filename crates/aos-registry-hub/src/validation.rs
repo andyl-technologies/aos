@@ -486,21 +486,33 @@ async fn read_repair_object(
 }
 
 /// GET a URL and return its body text, erroring on any non-200.
+///
+/// The body is read with the surface cap ([`MAX_FETCH_BYTES`](crate::fetch::MAX_FETCH_BYTES)) so a hostile
+/// upstream cannot stream an unbounded narinfo/text body into memory.
 async fn http_get_text(client: &reqwest::Client, url: &str) -> Result<String> {
     let response = client.get(url).send().await?;
     if response.status() != reqwest::StatusCode::OK {
         anyhow::bail!("GET {url}: HTTP {}", response.status());
     }
-    Ok(response.text().await?)
+    crate::fetch::read_text_capped(
+        response,
+        crate::fetch::MAX_FETCH_BYTES,
+        &format!("GET {url}"),
+    )
+    .await
 }
 
 /// GET a URL and return its body bytes, erroring on any non-200.
+///
+/// The body is read with the generous NAR cap ([`MAX_NAR_BYTES`](crate::fetch::MAX_NAR_BYTES)) so a
+/// legitimate large NAR is accepted while a runaway body is still bounded.
 async fn http_get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     let response = client.get(url).send().await?;
     if response.status() != reqwest::StatusCode::OK {
         anyhow::bail!("GET {url}: HTTP {}", response.status());
     }
-    Ok(response.bytes().await?.to_vec())
+    crate::fetch::read_body_capped(response, crate::fetch::MAX_NAR_BYTES, &format!("GET {url}"))
+        .await
 }
 
 /// Execute a `file://`-to-`file://` repair by content-addressed copy.
@@ -844,35 +856,46 @@ fn narinfo_field(text: &str, name: &str) -> Option<String> {
 /// Verify downloaded NAR `bytes` against the hashes a narinfo declares.
 ///
 /// Prefers `FileHash` (the hash of the compressed NAR as stored, which is what
-/// is downloaded); falls back to `NarHash` only when `FileHash` is absent
-/// *and* the NAR is uncompressed (`Compression: none`), since `NarHash` is
-/// over the uncompressed bytes. A declared hash that this function cannot
-/// compare against (no usable hash field) is treated as [`DeepCheck::Ok`] —
-/// there is nothing to refute. Returns [`DeepCheck::Corrupt`] only on a
-/// definite mismatch.
+/// is downloaded); falls back to `NarHash` only when the NAR is uncompressed
+/// (`Compression: none`), since `NarHash` is over the uncompressed bytes.
+///
+/// The check **fails closed**: a declared hash whose encoding cannot be parsed
+/// (`sha256_hash_matches` returns `None`) does not short-circuit to
+/// [`DeepCheck::Ok`] — instead it falls through to the next available hash. If
+/// the narinfo declares *some* hash but none of them can be parsed and matched,
+/// the result is [`DeepCheck::Corrupt`]: a payload whose declared integrity is
+/// uncheckable is treated as a finding, not silently accepted. Only a narinfo
+/// that declares **no** integrity field at all is [`DeepCheck::Ok`] (there is
+/// genuinely nothing to refute).
 fn verify_nar_bytes(narinfo: &str, bytes: &[u8]) -> DeepCheck {
     let digest = Sha256::digest(bytes);
-    if let Some(declared) = narinfo_field(narinfo, "FileHash") {
-        return match sha256_hash_matches(&declared, &digest) {
-            Some(true) => DeepCheck::Ok,
-            Some(false) => DeepCheck::Corrupt,
-            None => DeepCheck::Ok,
-        };
-    }
-    // No FileHash: NarHash only applies to the raw bytes when uncompressed.
+    let file_hash = narinfo_field(narinfo, "FileHash");
+    // `NarHash` only applies to the raw bytes when the NAR is uncompressed.
     let uncompressed = narinfo_field(narinfo, "Compression")
         .map(|c| c == "none")
         .unwrap_or(true);
-    if uncompressed {
-        if let Some(declared) = narinfo_field(narinfo, "NarHash") {
-            return match sha256_hash_matches(&declared, &digest) {
-                Some(true) => DeepCheck::Ok,
-                Some(false) => DeepCheck::Corrupt,
-                None => DeepCheck::Ok,
-            };
+    let nar_hash = if uncompressed {
+        narinfo_field(narinfo, "NarHash")
+    } else {
+        None
+    };
+
+    // No usable integrity field at all: nothing to refute.
+    if file_hash.is_none() && nar_hash.is_none() {
+        return DeepCheck::Ok;
+    }
+
+    // A definite match on any declared hash confirms integrity; an
+    // unparseable declared hash is *not* a pass — fall through to the next.
+    for declared in [file_hash, nar_hash].into_iter().flatten() {
+        match sha256_hash_matches(&declared, &digest) {
+            Some(true) => return DeepCheck::Ok,
+            Some(false) => return DeepCheck::Corrupt,
+            None => continue,
         }
     }
-    DeepCheck::Ok
+    // A hash was declared but none could be parsed and matched: fail closed.
+    DeepCheck::Corrupt
 }
 
 /// Whether a declared `sha256:`/`sha256-` hash matches a computed digest.
@@ -1210,6 +1233,40 @@ mod tests {
         );
         assert_eq!(narinfo_field(text, "FileSize").as_deref(), Some("42"));
         assert_eq!(narinfo_field(text, "Missing"), None);
+    }
+
+    #[test]
+    fn verify_nar_bytes_fails_closed_on_unparseable_declared_hash() {
+        let bytes = b"some-nar-bytes";
+        let good = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
+
+        // A good FileHash over the real bytes passes.
+        let ok = format!("StorePath: /x\nCompression: none\nFileHash: {good}\nNarHash: {good}\n");
+        assert!(matches!(verify_nar_bytes(&ok, bytes), DeepCheck::Ok));
+
+        // A garbage FileHash that cannot be parsed must NOT short-circuit to
+        // Ok; with a valid NarHash over tampered bytes the check falls through
+        // to NarHash and flags the mismatch as corrupt.
+        let tampered = b"tampered";
+        let info =
+            format!("StorePath: /x\nCompression: none\nFileHash: garbage\nNarHash: {good}\n");
+        assert!(
+            matches!(verify_nar_bytes(&info, tampered), DeepCheck::Corrupt),
+            "unparseable FileHash + valid NarHash over tampered bytes must be corrupt"
+        );
+
+        // A declared-but-entirely-unparseable hash set fails closed (corrupt),
+        // rather than silently accepting an uncheckable payload.
+        let unparseable =
+            "StorePath: /x\nCompression: none\nFileHash: garbage\nNarHash: nonsense\n";
+        assert!(matches!(
+            verify_nar_bytes(unparseable, bytes),
+            DeepCheck::Corrupt
+        ));
+
+        // No integrity field at all: nothing to refute -> Ok.
+        let none = "StorePath: /x\nCompression: none\n";
+        assert!(matches!(verify_nar_bytes(none, bytes), DeepCheck::Ok));
     }
 
     #[tokio::test]

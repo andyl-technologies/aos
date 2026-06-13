@@ -16,6 +16,7 @@
 //! registry *stale* (surface unreachable) rather than *failed* (surface
 //! invalid) when the underlying error is a fetch error.
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -29,6 +30,72 @@ use async_trait::async_trait;
 /// with the same cap (and additionally bounded by the client's 30-second
 /// total-request timeout).
 pub const MAX_FETCH_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Maximum NAR body size accepted by deep-validation and repair reads
+/// (2 GiB).
+///
+/// NAR payloads are content-addressed store archives and can legitimately be
+/// far larger than a surface pointer file, so the cap on a NAR read is
+/// deliberately generous — large packages are not rejected — while still
+/// bounding the read so a hostile or buggy upstream cannot stream an
+/// unbounded body into memory. The 30-second client timeout bounds duration
+/// independently.
+pub const MAX_NAR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Read a response body into memory, rejecting anything past `cap` bytes.
+///
+/// Rejects up front when the server declares a `Content-Length` over `cap`,
+/// then accumulates the (possibly chunked) body with the same cap so a
+/// response that omits or lies about its length is bounded too. Use this for
+/// every hub-originated full-body read so no upstream can OOM the process.
+///
+/// # Errors
+///
+/// Returns a [`FetchError`] when the declared length exceeds `cap`, the
+/// accumulated body exceeds `cap`, or a chunk read fails.
+pub async fn read_body_capped(
+    mut response: reqwest::Response,
+    cap: u64,
+    what: &str,
+) -> Result<Vec<u8>> {
+    if let Some(declared) = response.content_length() {
+        if declared > cap {
+            return Err(fetch_err(format!(
+                "{what}: response is {declared} bytes (cap {cap})"
+            )));
+        }
+    }
+    let mut body: Vec<u8> = Vec::new();
+    loop {
+        let chunk = response
+            .chunk()
+            .await
+            .map_err(|err| fetch_err(format!("reading {what}: {err}")))?;
+        let Some(chunk) = chunk else { break };
+        if body.len() as u64 + chunk.len() as u64 > cap {
+            return Err(fetch_err(format!(
+                "{what}: response exceeds the {cap}-byte cap"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// Read a response body as UTF-8 text, rejecting anything past `cap` bytes.
+///
+/// A thin wrapper over [`read_body_capped`] that decodes the bounded body
+/// lossily, for text surfaces (narinfo, `info/refs`) where a small cap is
+/// appropriate.
+///
+/// # Errors
+///
+/// Returns a [`FetchError`] when the body exceeds `cap` (see
+/// [`read_body_capped`]).
+pub async fn read_text_capped(response: reqwest::Response, cap: u64, what: &str) -> Result<String> {
+    let bytes = read_body_capped(response, cap, what).await?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
 
 /// Marker error for transport-level surface fetch failures.
 ///
@@ -162,7 +229,7 @@ impl HttpFetch {
 impl SurfaceFetch for HttpFetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
         let url = format!("{}/{path}", self.base);
-        let mut response = self
+        let response = self
             .client
             .get(&url)
             .send()
@@ -177,30 +244,10 @@ impl SurfaceFetch for HttpFetch {
                 response.status()
             )));
         }
-        // Reject oversized bodies up front when the server declares a
-        // length, then stream with the same cap so chunked responses
-        // (no Content-Length) are bounded too.
-        if let Some(declared) = response.content_length() {
-            if declared > MAX_FETCH_BYTES {
-                return Err(fetch_err(format!(
-                    "fetching {url}: response is {declared} bytes (cap {MAX_FETCH_BYTES})"
-                )));
-            }
-        }
-        let mut body: Vec<u8> = Vec::new();
-        loop {
-            let chunk = response
-                .chunk()
-                .await
-                .map_err(|err| fetch_err(format!("reading {url}: {err}")))?;
-            let Some(chunk) = chunk else { break };
-            if body.len() as u64 + chunk.len() as u64 > MAX_FETCH_BYTES {
-                return Err(fetch_err(format!(
-                    "fetching {url}: response exceeds the {MAX_FETCH_BYTES}-byte cap"
-                )));
-            }
-            body.extend_from_slice(&chunk);
-        }
+        // Reject oversized bodies up front when the server declares a length,
+        // then stream with the same cap so chunked responses (no
+        // Content-Length) are bounded too.
+        let body = read_body_capped(response, MAX_FETCH_BYTES, &format!("fetching {url}")).await?;
         Ok(Some(body))
     }
 
@@ -230,6 +277,138 @@ pub fn fetch_for_url(source_url: &str) -> Result<Box<dyn SurfaceFetch>> {
     bail!(
         "unsupported registry source URL '{source_url}' (expected file://, /path, or http(s)://)"
     );
+}
+
+/// Reject a network-origin URL that is local, internal, or non-HTTP — an SSRF
+/// guard for operator-configured mirror upstreams and frontend domains.
+///
+/// A mirror upstream or frontend the hub will *fetch over the network* must be
+/// an `http(s)://` URL whose host does not resolve to an address the hub could
+/// otherwise be tricked into reaching internally. This rejects:
+///
+/// - non-`http(s)` schemes (`file://`, bare paths) — a network origin must not
+///   read the local filesystem or a metadata endpoint by path,
+/// - hosts that resolve to **loopback** (`127.0.0.0/8`, `::1`),
+///   **link-local** (`169.254.0.0/16` — the cloud metadata range — and
+///   `fe80::/10`), **RFC-1918 private** (`10/8`, `172.16/12`, `192.168/16`),
+///   **unique-local** IPv6 (`fc00::/7`), unspecified (`0.0.0.0`, `::`), and
+///   IPv4-mapped IPv6 forms of the above.
+///
+/// Mirror/frontend creation is org-admin/operator-only, which bounds the blast
+/// radius, but this check is applied at both creation *and* each fetch/probe as
+/// defense in depth.
+///
+/// **Out of scope:** DNS rebinding — the host is resolved and checked here, but
+/// a name that resolves benignly now and to an internal address later is not
+/// defended against (it would require pinning the resolved address through the
+/// connection). The check is on the configured host as resolved at call time.
+///
+/// **Test/dev escape hatch:** when the `AOS_HUB_ALLOW_LOCAL_REMOTES`
+/// environment variable is set, the local/internal address rejection is
+/// skipped (the non-HTTP scheme rejection still applies). The integration
+/// tests stand up upstream servers on `127.0.0.1`; this lets them run while
+/// production — which never sets the variable — keeps the SSRF guard.
+///
+/// # Errors
+///
+/// Returns an error when the scheme is not `http(s)`, the URL has no host, DNS
+/// resolution fails, or any resolved address is local/internal.
+pub fn is_safe_remote_url(raw: &str) -> Result<()> {
+    let url = url::Url::parse(raw).map_err(|err| {
+        fetch_err(format!(
+            "mirror/frontend URL '{raw}' is not a valid URL: {err}"
+        ))
+    })?;
+    match url.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(fetch_err(format!(
+                "mirror/frontend URL '{raw}' uses unsupported scheme '{other}' \
+                 (a network origin must be http(s)://)"
+            )));
+        }
+    }
+    // The non-HTTP scheme rejection above always applies; the local/internal
+    // address rejection below is the part the test/dev hatch relaxes.
+    let allow_local = std::env::var_os("AOS_HUB_ALLOW_LOCAL_REMOTES").is_some();
+    if allow_local {
+        return Ok(());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| fetch_err(format!("mirror/frontend URL '{raw}' has no host")))?;
+
+    // A bracketed/literal IP host is checked directly; a name is resolved and
+    // every returned address checked, so a name pointing at an internal IP is
+    // rejected too.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if !is_global_ip(ip) {
+            return Err(fetch_err(format!(
+                "mirror/frontend URL '{raw}' resolves to a local/internal address {ip}"
+            )));
+        }
+        return Ok(());
+    }
+    let port = url.port_or_known_default().unwrap_or(80);
+    let resolved: Vec<IpAddr> = (host, port)
+        .to_socket_addrs()
+        .map_err(|err| fetch_err(format!("resolving mirror/frontend host '{host}': {err}")))?
+        .map(|addr| addr.ip())
+        .collect();
+    if resolved.is_empty() {
+        return Err(fetch_err(format!(
+            "mirror/frontend host '{host}' did not resolve to any address"
+        )));
+    }
+    for ip in resolved {
+        if !is_global_ip(ip) {
+            return Err(fetch_err(format!(
+                "mirror/frontend URL '{raw}' resolves to a local/internal address {ip}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `ip` is a globally routable address (not local/internal).
+///
+/// Rejects loopback, link-local, private/unique-local, unspecified, and broadcast
+/// ranges for both IPv4 and IPv6 (including IPv4-mapped IPv6). The std-stable
+/// predicates are combined manually because `Ipv6Addr::is_unique_local` and
+/// related helpers are not yet stable.
+fn is_global_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_global_ipv4(v4),
+        IpAddr::V6(v6) => {
+            // Unwrap IPv4-mapped/compatible IPv6 to apply the IPv4 rules.
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_global_ipv4(mapped);
+            }
+            if let Some(compat) = v6.to_ipv4() {
+                return is_global_ipv4(compat);
+            }
+            is_global_ipv6(v6)
+        }
+    }
+}
+
+/// Whether an IPv4 address is globally routable (not local/internal).
+fn is_global_ipv4(v4: Ipv4Addr) -> bool {
+    let o = v4.octets();
+    !(v4.is_loopback()           // 127.0.0.0/8
+        || v4.is_private()        // 10/8, 172.16/12, 192.168/16
+        || v4.is_link_local()     // 169.254.0.0/16 (cloud metadata)
+        || v4.is_unspecified()    // 0.0.0.0
+        || v4.is_broadcast()      // 255.255.255.255
+        || o[0] == 0) // 0.0.0.0/8
+}
+
+/// Whether an IPv6 address is globally routable (not local/internal).
+fn is_global_ipv6(v6: Ipv6Addr) -> bool {
+    let segs = v6.segments();
+    let is_unique_local = (segs[0] & 0xfe00) == 0xfc00; // fc00::/7
+    let is_link_local = (segs[0] & 0xffc0) == 0xfe80; // fe80::/10
+    !(v6.is_loopback() || v6.is_unspecified() || is_unique_local || is_link_local)
 }
 
 /// Join a relative surface path onto a root, rejecting traversal.
@@ -294,6 +473,81 @@ mod tests {
         assert!(fetch_for_url("/srv/reg").is_ok());
         assert!(fetch_for_url("https://cdn.example.com/reg").is_ok());
         assert!(fetch_for_url("s3://bucket/prefix").is_err());
+    }
+
+    #[tokio::test]
+    async fn read_body_capped_rejects_over_cap_body() {
+        use axum::routing::get;
+
+        // A tiny upstream that streams more bytes than a deliberately small
+        // cap, with no Content-Length so the cap is enforced mid-stream.
+        async fn big() -> axum::response::Response {
+            use axum::response::IntoResponse as _;
+            // 4 KiB body, well over the 1 KiB cap below.
+            vec![0u8; 4096].into_response()
+        }
+        let app = axum::Router::new().route("/big", get(big));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/big", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = hardened_client();
+        let response = client.get(&url).send().await.unwrap();
+        let cap = 1024;
+        let err = read_body_capped(response, cap, "test fetch")
+            .await
+            .unwrap_err();
+        assert!(is_fetch_error(&err), "got: {err:#}");
+        assert!(err.to_string().contains("cap"), "got: {err:#}");
+
+        // A body within the cap is read whole.
+        let response = client.get(&url).send().await.unwrap();
+        let body = read_body_capped(response, MAX_NAR_BYTES, "test fetch")
+            .await
+            .unwrap();
+        assert_eq!(body.len(), 4096);
+    }
+
+    #[test]
+    fn is_safe_remote_url_rejects_local_and_non_http() {
+        // The escape hatch must be unset for this test (the lib test binary
+        // never sets it).
+        assert!(std::env::var_os("AOS_HUB_ALLOW_LOCAL_REMOTES").is_none());
+
+        // Non-HTTP schemes and bare paths are rejected outright.
+        assert!(is_safe_remote_url("file:///etc/passwd").is_err());
+        assert!(is_safe_remote_url("/srv/secret").is_err());
+        assert!(is_safe_remote_url("ftp://example.com/x").is_err());
+
+        // Loopback, link-local (cloud metadata), and RFC-1918 literals.
+        assert!(is_safe_remote_url("http://127.0.0.1/").is_err());
+        assert!(is_safe_remote_url("http://127.0.0.1:8500/v1/").is_err());
+        assert!(is_safe_remote_url("http://169.254.169.254/latest/meta-data/").is_err());
+        assert!(is_safe_remote_url("http://10.0.0.5/").is_err());
+        assert!(is_safe_remote_url("http://172.16.3.4/").is_err());
+        assert!(is_safe_remote_url("http://192.168.1.1/").is_err());
+        assert!(is_safe_remote_url("http://[::1]/").is_err());
+        assert!(is_safe_remote_url("http://[fe80::1]/").is_err());
+        assert!(is_safe_remote_url("http://[fc00::1]/").is_err());
+        // IPv4-mapped IPv6 form of loopback must not slip through.
+        assert!(is_safe_remote_url("http://[::ffff:127.0.0.1]/").is_err());
+
+        // A public literal IP passes (no DNS needed).
+        assert!(is_safe_remote_url("https://93.184.216.34/").is_ok());
+    }
+
+    #[test]
+    fn is_global_ip_classifies_ranges() {
+        use std::net::Ipv4Addr;
+        assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
+        assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))));
+        assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1))));
+        assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
+        assert!(is_global_ip(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))));
+        assert!(is_global_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
     }
 
     #[test]

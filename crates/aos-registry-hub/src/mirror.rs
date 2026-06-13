@@ -129,6 +129,15 @@ pub async fn sync_full_mirror(
         )
     })?;
 
+    // Defense in depth: re-validate the upstream is a safe remote target before
+    // fetching, even though creation already validated it (the row could have
+    // been written by an older binary or restored from a backup).
+    crate::fetch::is_safe_remote_url(&source.upstream_url).with_context(|| {
+        format!(
+            "refusing to sync mirror '{}' from unsafe upstream",
+            registry.slug
+        )
+    })?;
     let fetch = fetch_for_url(&source.upstream_url)?;
     let now = unix_now();
 
@@ -499,9 +508,19 @@ fn lenient_tag(payload: &[u8], expected_name: &str) -> Result<crate::surface::ta
 /// The classification of a pull-through surface path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PullClass {
-    /// Content-addressed payload (`objects/<oid>`, `nar/<hash>`, release
-    /// packs): verified by hash and safe to persist as immutable.
-    ContentAddressed,
+    /// A loose git object under `objects/<xx>/<62-hex>`: the path *is* the
+    /// content's git oid, so the inflated bytes are verified against it before
+    /// the object is frozen into the local cache. The only class persisted by
+    /// the pull-through cache.
+    VerifiedObject,
+    /// A payload that is content-addressed in principle but that the
+    /// pull-through cache cannot currently verify before persisting — NARs
+    /// (whose filename encodes the *uncompressed* NAR hash while the fetched
+    /// bytes are the *compressed* file) and release packs (whose checksum is
+    /// in the pack trailer). To avoid persisting unverified upstream bytes
+    /// (cache poisoning), these are fetched live and served but **never
+    /// frozen**, exactly like a pointer, until hash verification exists.
+    UnverifiableLive,
     /// A self-verifying pointer (`info/refs`, `HEAD`, `channels/**`,
     /// `nix-cache-info`, `*.narinfo`): fetched fresh, served, never frozen.
     Pointer,
@@ -509,17 +528,26 @@ enum PullClass {
 
 /// Classify a machine path for the pull-through cache.
 ///
-/// Loose objects under `objects/<xx>/<62-hex>` and NARs under `nar/` are
-/// content-hash named and verified by hash; everything else under a registry's
-/// machine surface is a pointer fetched live with low TTL.
+/// Only loose git objects under `objects/<xx>/<62-hex>` are
+/// [`PullClass::VerifiedObject`] — their path is their git oid, so the
+/// inflated content can be hash-checked before persisting. NARs and release
+/// packs are content-addressed but not verifiable here (the NAR filename
+/// encodes the uncompressed hash, not the compressed bytes; a pack's checksum
+/// is in its trailer), so they are [`PullClass::UnverifiableLive`]: served but
+/// never persisted. Everything else is a [`PullClass::Pointer`] fetched live.
+///
+/// The invariant: **no content-addressed payload is persisted into the local
+/// cache without verifying its hash.**
 fn pull_class(path: &str) -> PullClass {
     let is_loose_object = path
         .strip_prefix("objects/")
         .is_some_and(|rest| !rest.starts_with("info/") && rest.contains('/'));
     let is_nar = path.starts_with("nar/");
     let is_release_pack = path.starts_with("releases/") && path.contains("/objects/pack/");
-    if is_loose_object || is_nar || is_release_pack {
-        PullClass::ContentAddressed
+    if is_loose_object {
+        PullClass::VerifiedObject
+    } else if is_nar || is_release_pack {
+        PullClass::UnverifiableLive
     } else {
         PullClass::Pointer
     }
@@ -539,18 +567,20 @@ pub struct PullResult {
 /// content-addressed payloads) persisting it.
 ///
 /// A loose-object path is verified against the oid embedded in its path before
-/// being persisted; a NAR or release pack is persisted as-is (its content hash
-/// is bound by the signed narinfo/pack index a verifier already trusts).
+/// being persisted. NARs and release packs are **not** persisted: their hash
+/// cannot be verified here (the NAR filename encodes the uncompressed hash, not
+/// the fetched compressed bytes; a pack's checksum is in its trailer), so they
+/// are served live but never frozen to avoid caching tampered upstream bytes.
 /// Pointers (`info/refs`, partition tags, `nix-cache-info`, narinfos) are
-/// fetched live and returned without persisting, so the next request re-fetches
-/// the current pointer.
+/// likewise fetched live and returned without persisting, so the next request
+/// re-fetches the current pointer.
 ///
 /// Returns `Ok(None)` when the upstream definitively lacks the path (404).
 ///
 /// # Errors
 ///
-/// Returns an error on a transport failure, an oid mismatch (a tampered
-/// content-addressed object), or a write failure.
+/// Returns an error on a transport failure, an oid mismatch (a tampered loose
+/// object), or a write failure.
 pub async fn fetch_through(
     fetch: &dyn SurfaceFetch,
     root: &std::path::Path,
@@ -561,15 +591,21 @@ pub async fn fetch_through(
     };
 
     match pull_class(path) {
-        PullClass::ContentAddressed => {
+        PullClass::VerifiedObject => {
             // A loose object path carries its oid: objects/<xx>/<62-hex>.
             // Verify the inflated content hashes to that oid before persisting,
-            // so a tampered object is rejected rather than cached.
-            if let Some(oid) = oid_from_loose_path(path) {
-                // decode_loose verifies the hash against `oid`.
-                crate::surface::object::decode_loose(&bytes, Some(oid))
-                    .with_context(|| format!("verifying pulled object {path}"))?;
-            }
+            // so a tampered object is rejected rather than cached. A path that
+            // does not parse as an oid is not persisted (it cannot be
+            // verified), so the invariant holds even for a malformed path.
+            let Some(oid) = oid_from_loose_path(path) else {
+                return Ok(Some(PullResult {
+                    bytes,
+                    persisted: false,
+                }));
+            };
+            // decode_loose verifies the hash against `oid`.
+            crate::surface::object::decode_loose(&bytes, Some(oid))
+                .with_context(|| format!("verifying pulled object {path}"))?;
             let target = safe_join(root, path)?;
             write_atomic(&target, &bytes).await?;
             Ok(Some(PullResult {
@@ -577,7 +613,9 @@ pub async fn fetch_through(
                 persisted: true,
             }))
         }
-        PullClass::Pointer => Ok(Some(PullResult {
+        // NARs, release packs, and pointers are served live but never frozen,
+        // because their content hash cannot be verified before persisting.
+        PullClass::UnverifiableLive | PullClass::Pointer => Ok(Some(PullResult {
             bytes,
             persisted: false,
         })),
@@ -608,11 +646,14 @@ mod tests {
 
     #[test]
     fn classifies_pull_paths() {
-        assert_eq!(pull_class("objects/ab/cdef"), PullClass::ContentAddressed);
-        assert_eq!(pull_class("nar/x.nar.zst"), PullClass::ContentAddressed);
+        // Only loose git objects are verifiable-and-persisted.
+        assert_eq!(pull_class("objects/ab/cdef"), PullClass::VerifiedObject);
+        // NARs and release packs are content-addressed but unverifiable here:
+        // served live, never persisted.
+        assert_eq!(pull_class("nar/x.nar.zst"), PullClass::UnverifiableLive);
         assert_eq!(
             pull_class("releases/1/0/0/objects/pack/p.pack"),
-            PullClass::ContentAddressed
+            PullClass::UnverifiableLive
         );
         for pointer in [
             "HEAD",
@@ -623,6 +664,47 @@ mod tests {
             "abc.narinfo",
         ] {
             assert_eq!(pull_class(pointer), PullClass::Pointer, "{pointer}");
+        }
+    }
+
+    #[tokio::test]
+    async fn nar_and_pack_payloads_are_served_but_never_persisted() {
+        use crate::fetch::LocalFsFetch;
+
+        // An upstream surface carrying a NAR and a release pack.
+        let upstream = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(upstream.path().join("nar")).unwrap();
+        std::fs::write(upstream.path().join("nar/x.nar.zst"), b"upstream-nar-bytes").unwrap();
+        std::fs::create_dir_all(upstream.path().join("releases/1/0/0/objects/pack")).unwrap();
+        std::fs::write(
+            upstream.path().join("releases/1/0/0/objects/pack/p.pack"),
+            b"upstream-pack-bytes",
+        )
+        .unwrap();
+
+        let local = tempfile::tempdir().unwrap();
+        let fetch = LocalFsFetch::new(upstream.path());
+
+        for (path, bytes) in [
+            ("nar/x.nar.zst", b"upstream-nar-bytes".as_slice()),
+            (
+                "releases/1/0/0/objects/pack/p.pack",
+                b"upstream-pack-bytes".as_slice(),
+            ),
+        ] {
+            let result = fetch_through(&fetch, local.path(), path)
+                .await
+                .unwrap()
+                .unwrap();
+            // The bytes are served...
+            assert_eq!(result.bytes, bytes, "{path} served");
+            // ...but the payload is never frozen into the local cache, so a
+            // tampered upstream payload cannot poison it.
+            assert!(!result.persisted, "{path} must not be persisted");
+            assert!(
+                !local.path().join(path).exists(),
+                "{path} must not be written to the local binding"
+            );
         }
     }
 

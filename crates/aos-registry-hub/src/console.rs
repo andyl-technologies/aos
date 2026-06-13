@@ -244,6 +244,7 @@ fn sso_target(state: &AppState, email: &str) -> Option<(String, bool)> {
 /// [`LogMailer`]: crate::auth::magic::LogMailer
 async fn login_submit(
     State(state): State<Arc<AppState>>,
+    crate::server::PeerAddr(peer): crate::server::PeerAddr,
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
@@ -259,7 +260,7 @@ async fn login_submit(
     // Rate-limit magic-link issuance on both the target email (the email-bomb
     // victim) and the source IP (the sender) — see [`crate::ratelimit`].
     let now = crate::server::now_secs();
-    let ip = crate::server::client_ip_from_headers(&headers);
+    let ip = crate::server::client_ip_for(&headers, peer, state.trusted_proxy);
     use crate::ratelimit::RateClass;
     for (class, key) in [
         (RateClass::MagicLinkEmail, email.as_str()),
@@ -656,11 +657,15 @@ async fn passkeys_finish(
 /// Pre-auth (the login path). Returns the
 /// [`AssertionChallenge`](crate::auth::webauthn::AssertionChallenge) the inline
 /// login script feeds to `navigator.credentials.get`.
-async fn passkey_login_begin(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+async fn passkey_login_begin(
+    State(state): State<Arc<AppState>>,
+    crate::server::PeerAddr(peer): crate::server::PeerAddr,
+    headers: HeaderMap,
+) -> Response {
     // Rate-limit assertion-challenge issuance per source IP, the same pre-auth
     // spray bound as magic-link issuance.
     let now = crate::server::now_secs();
-    let ip = crate::server::client_ip_from_headers(&headers);
+    let ip = crate::server::client_ip_for(&headers, peer, state.trusted_proxy);
     if let crate::ratelimit::RateDecision::Limited { retry_after } =
         state
             .ratelimit

@@ -32,11 +32,13 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
         access_token_ttl: 900,
         ratelimit: aos_registry_hub::ratelimit::RateLimiter::new().into(),
+        trusted_proxy: false,
     });
     Arc::new(AppState {
         db,
         external_url: "http://127.0.0.1:8420".into(),
         ratelimit: auth.ratelimit.clone(),
+        trusted_proxy: false,
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
@@ -268,6 +270,70 @@ async fn indexer_trailer_marks_known_change_request_applied() {
 
     // No external-commit audit row is synthesized when a trailer matched.
     assert!(!db
+        .audit_exists_for_commit("index.external_commit", &outcome.commit)
+        .unwrap());
+}
+
+// -- indexer: a foreign-scoped change-id trailer does NOT mark applied --------
+
+#[tokio::test]
+async fn indexer_ignores_change_id_scoped_to_another_registry() {
+    // Registry B (acme/cdn) is indexed; its HEAD commit carries a change-id
+    // whose change-set is scoped to a *different* registry (acme/other).
+    let change_id = "01JCROSSSCOPETEST";
+    let message = format!("release 1.0.0\n\nAOS-Change-Id: {change_id}\n");
+
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("cdn");
+    let fixture = common::standard_registry_with_commit_message(&surface, "1.0.0", &message);
+
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let org = db.create_org("acme", "Acme").unwrap();
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
+        .unwrap();
+    db.create_managed_registry(
+        org,
+        "",
+        "cdn",
+        "public",
+        Some(binding),
+        "cdn",
+        std::slice::from_ref(&fixture.trust_key),
+        true,
+    )
+    .unwrap();
+    // The change-set targets registry A (acme/other), not the registry being
+    // indexed. A commit on B must not mark A's change request applied.
+    db.create_git_changeset(
+        change_id,
+        "user",
+        Some(7),
+        "alice@acme.com",
+        "acme/other",
+        Some("edit a different registry"),
+        &format!("refs/hub/changes/{change_id}"),
+        "draftoid",
+    )
+    .unwrap();
+
+    let registry = db.registry_by_slug("acme/cdn").unwrap().unwrap();
+    let fetch = LocalFsFetch::new(&surface);
+    let outcome = indexer::index_and_record(&db, &fetch, &registry)
+        .await
+        .unwrap();
+
+    // The foreign-scoped change-set is left untouched (still a draft).
+    let cs = db.changeset(change_id).unwrap().unwrap();
+    assert_eq!(
+        cs.status, "draft",
+        "foreign change request must not be applied"
+    );
+    assert!(cs.applied_at.is_none());
+    assert!(cs.git_commit.as_deref() != Some(outcome.commit.as_str()));
+
+    // The commit is instead treated as external (an audit row is synthesized).
+    assert!(db
         .audit_exists_for_commit("index.external_commit", &outcome.commit)
         .unwrap());
 }

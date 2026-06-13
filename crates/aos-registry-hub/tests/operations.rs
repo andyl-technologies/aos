@@ -37,11 +37,13 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
         access_token_ttl: 900,
         ratelimit: aos_registry_hub::ratelimit::RateLimiter::new().into(),
+        trusted_proxy: false,
     });
     Arc::new(AppState {
         db,
         external_url: "http://127.0.0.1:8420".into(),
         ratelimit: auth.ratelimit.clone(),
+        trusted_proxy: false,
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
@@ -210,6 +212,55 @@ async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
     .await;
     assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
     assert_eq!(db.org_usage(org.id).unwrap().used_bytes, 4);
+}
+
+#[tokio::test]
+async fn overwrite_with_larger_payload_charges_the_delta() {
+    let (db, _surface) = empty_managed();
+    let org = db.org_by_slug("acme").unwrap().unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let token = bearer(
+        Principal::service_account(1),
+        "acme/infra/prod/cdn",
+        &[Permission::Publish],
+    );
+
+    // Initial write of a 4-byte object: usage is 4 bytes / 1 object.
+    let (status, _) = put(
+        &app,
+        "/acme/infra/prod/cdn/objects/ab/cd",
+        &token,
+        b"data".to_vec(),
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+    assert_eq!(db.org_usage(org.id).unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).unwrap().object_count, 1);
+
+    // Overwrite the same path with a larger 10-byte payload: usage grows by the
+    // 6-byte delta (not the full 10), and the object count is unchanged.
+    let (status, _) = put(
+        &app,
+        "/acme/infra/prod/cdn/objects/ab/cd",
+        &token,
+        b"ten-bytes!".to_vec(),
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+    assert_eq!(db.org_usage(org.id).unwrap().used_bytes, 10);
+    assert_eq!(db.org_usage(org.id).unwrap().object_count, 1);
+
+    // A shrinking overwrite back to 4 bytes subtracts the delta.
+    let (status, _) = put(
+        &app,
+        "/acme/infra/prod/cdn/objects/ab/cd",
+        &token,
+        b"abcd".to_vec(),
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+    assert_eq!(db.org_usage(org.id).unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).unwrap().object_count, 1);
 }
 
 #[tokio::test]

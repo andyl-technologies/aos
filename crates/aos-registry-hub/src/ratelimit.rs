@@ -28,14 +28,19 @@
 //!
 //! **Client-IP trust model.** Behind a trusted reverse proxy the real client
 //! is the last hop of `X-Forwarded-For`; directly exposed, it is the TCP peer
-//! address. [`client_ip`] reads `X-Forwarded-For`'s last entry when present,
-//! else falls back to the supplied peer string. An operator who does *not*
-//! front the hub with a proxy that strips inbound `X-Forwarded-For` should not
-//! trust the header — but the limiter failing open per-IP is a
-//! denial-of-abuse-protection, never a security bypass (the credential checks
-//! downstream are unchanged), so the conservative default of honoring the
-//! header keeps the email/IP buckets meaningful behind the common proxy
-//! deployment.
+//! address. [`client_ip`] only honors `X-Forwarded-For` when the deployment is
+//! configured to trust its proxy (`trusted_proxy = true`); otherwise it keys
+//! on the real TCP peer address, ignoring the header entirely. This is the
+//! safe default: an attacker who can send arbitrary `X-Forwarded-For` values
+//! to a directly-exposed hub could otherwise mint a fresh per-IP bucket per
+//! request and evade every per-IP limit (and, with unique forged values,
+//! balloon the limiter's tracking map). With `trusted_proxy = false` the
+//! forged header is discarded and the peer address is the limiter key.
+//!
+//! **Bounded tracking.** The window map is pruned of expired entries on each
+//! insert and hard-capped at [`MAX_TRACKED`] entries (evicting the
+//! oldest-started window when full), so a flood of distinct keys — forged or
+//! genuine — cannot grow it without bound.
 //!
 //! # Testability
 //!
@@ -64,6 +69,16 @@ pub const TOKEN_EXCHANGE: u32 = 60;
 
 /// Default anonymous browse/search requests allowed per IP per window (loose).
 pub const BROWSE_SEARCH: u32 = 300;
+
+/// Maximum number of `(class, key)` windows the limiter tracks at once.
+///
+/// A bound on the limiter's memory footprint: once the map reaches this size a
+/// fresh key evicts the entry whose window started earliest (least recently
+/// opened). Sized generously enough that legitimate traffic is never evicted
+/// mid-window in practice, while a flood of distinct (e.g. forged) keys cannot
+/// OOM the process. Expired windows are also swept on insert, so the cap is
+/// rarely the binding constraint.
+pub const MAX_TRACKED: usize = 100_000;
 
 /// A rate-limited endpoint class.
 ///
@@ -157,7 +172,18 @@ impl RateLimiter {
     pub fn check(&self, class: RateClass, key: &str, now: i64) -> RateDecision {
         let budget = class.budget();
         let mut windows = self.windows.lock().unwrap_or_else(|p| p.into_inner());
-        let entry = windows.entry((class, key.to_string())).or_insert(Window {
+        let map_key = (class, key.to_string());
+        // Bound the map before inserting a *new* key: sweep entries whose
+        // window has fully elapsed, then, if still at the cap, evict the
+        // oldest-started window. An existing key is refreshed in place and
+        // needs neither, so the bookkeeping is paid only on growth.
+        if !windows.contains_key(&map_key) {
+            Self::prune_expired(&mut windows, now);
+            if windows.len() >= MAX_TRACKED {
+                Self::evict_oldest(&mut windows);
+            }
+        }
+        let entry = windows.entry(map_key).or_insert(Window {
             started_at: now,
             count: 0,
         });
@@ -173,20 +199,51 @@ impl RateLimiter {
         entry.count += 1;
         RateDecision::Allowed
     }
+
+    /// Drop every window whose fixed window has fully elapsed by `now`.
+    ///
+    /// An elapsed window would reset to a fresh budget on its next touch
+    /// anyway, so removing it is free of behavioral effect and bounds the map
+    /// against keys that are never seen again (e.g. one-shot forged values).
+    fn prune_expired(windows: &mut HashMap<(RateClass, String), Window>, now: i64) {
+        windows.retain(|_, w| now.saturating_sub(w.started_at) < WINDOW_SECS);
+    }
+
+    /// Evict the entry whose window started earliest (least recently opened).
+    ///
+    /// The hard backstop when the map is at [`MAX_TRACKED`] and every tracked
+    /// window is still live: evicting the oldest only resets that one key's
+    /// budget early, which is acceptable under a key flood and keeps the map
+    /// from growing past the cap.
+    fn evict_oldest(windows: &mut HashMap<(RateClass, String), Window>) {
+        if let Some(oldest) = windows
+            .iter()
+            .min_by_key(|(_, w)| w.started_at)
+            .map(|(k, _)| k.clone())
+        {
+            windows.remove(&oldest);
+        }
+    }
 }
 
-/// Resolve the client IP from a forwarded header or the peer address.
+/// Resolve the client IP for rate-limiting, honoring `X-Forwarded-For` only
+/// when the deployment trusts its proxy.
 ///
-/// Honors `X-Forwarded-For`'s **last** hop when the header is present (the hop
-/// a trusted reverse proxy appends), falling back to `peer` (the TCP peer
-/// address string) otherwise. See the [module docs](self) for the trust model.
+/// When `trusted_proxy` is `true`, returns `X-Forwarded-For`'s **last** hop
+/// (the one a trusted reverse proxy appends) if present, falling back to
+/// `peer`. When `trusted_proxy` is `false`, the header is ignored entirely and
+/// the real TCP `peer` address is always the key — so a directly-exposed hub
+/// cannot be tricked into a fresh bucket per forged header value. See the
+/// [module docs](self) for the trust model.
 #[must_use]
-pub fn client_ip(forwarded_for: Option<&str>, peer: &str) -> String {
-    if let Some(xff) = forwarded_for {
-        // The last non-empty comma-separated hop (the one a trusted proxy
-        // appends), scanning from the right.
-        if let Some(last) = xff.rsplit(',').map(str::trim).find(|s| !s.is_empty()) {
-            return last.to_string();
+pub fn client_ip(forwarded_for: Option<&str>, peer: &str, trusted_proxy: bool) -> String {
+    if trusted_proxy {
+        if let Some(xff) = forwarded_for {
+            // The last non-empty comma-separated hop (the one a trusted proxy
+            // appends), scanning from the right.
+            if let Some(last) = xff.rsplit(',').map(str::trim).find(|s| !s.is_empty()) {
+                return last.to_string();
+            }
         }
     }
     peer.to_string()
@@ -249,16 +306,69 @@ mod tests {
     }
 
     #[test]
-    fn client_ip_prefers_forwarded_last_hop() {
+    fn client_ip_honors_forwarded_only_when_trusted() {
+        // Trusted proxy: the last forwarded hop wins.
         assert_eq!(
-            client_ip(Some("203.0.113.1, 10.0.0.2"), "10.0.0.2:443"),
+            client_ip(Some("203.0.113.1, 10.0.0.2"), "10.0.0.2:443", true),
             "10.0.0.2"
         );
         assert_eq!(
-            client_ip(Some("203.0.113.1"), "10.0.0.2:443"),
+            client_ip(Some("203.0.113.1"), "10.0.0.2:443", true),
             "203.0.113.1"
         );
-        assert_eq!(client_ip(None, "10.0.0.2:443"), "10.0.0.2:443");
-        assert_eq!(client_ip(Some("  "), "peer"), "peer");
+        assert_eq!(client_ip(None, "10.0.0.2:443", true), "10.0.0.2:443");
+        assert_eq!(client_ip(Some("  "), "peer", true), "peer");
+
+        // Untrusted (the default): the forwarded header is ignored entirely;
+        // the real peer is always the key, however the attacker forges XFF.
+        assert_eq!(
+            client_ip(Some("1.1.1.1"), "10.0.0.2:443", false),
+            "10.0.0.2:443"
+        );
+        assert_eq!(
+            client_ip(Some("2.2.2.2"), "10.0.0.2:443", false),
+            "10.0.0.2:443"
+        );
+        assert_eq!(client_ip(None, "10.0.0.2:443", false), "10.0.0.2:443");
+    }
+
+    #[test]
+    fn forged_forwarded_for_does_not_evade_limit_when_untrusted() {
+        let limiter = RateLimiter::new();
+        // The attacker is one peer but rotates a unique forged XFF per request.
+        // With trusted_proxy = false the limiter keys on the peer, so the
+        // budget is enforced regardless of the forged header.
+        let peer = "198.51.100.7:5000";
+        let mut allowed = 0;
+        for i in 0..(DEVICE_AUTH_PER_IP + 5) {
+            let forged = format!("{i}.{i}.{i}.{i}");
+            let key = client_ip(Some(&forged), peer, false);
+            if limiter
+                .check(RateClass::DeviceAuthorization, &key, 0)
+                .is_allowed()
+            {
+                allowed += 1;
+            }
+        }
+        assert_eq!(
+            allowed, DEVICE_AUTH_PER_IP,
+            "forged XFF must not mint fresh per-IP buckets"
+        );
+    }
+
+    #[test]
+    fn expired_windows_are_pruned_on_insert() {
+        let limiter = RateLimiter::new();
+        // Open windows for 50 distinct keys at t=0.
+        for i in 0..50 {
+            limiter.check(RateClass::BrowseSearch, &format!("k{i}"), 0);
+        }
+        assert_eq!(limiter.windows.lock().unwrap().len(), 50);
+        // A new key well past the window sweeps every elapsed entry first, so
+        // only the freshly inserted key remains.
+        limiter.check(RateClass::BrowseSearch, "fresh", WINDOW_SECS + 1);
+        let windows = limiter.windows.lock().unwrap();
+        assert_eq!(windows.len(), 1, "expired entries must be swept");
+        assert!(windows.contains_key(&(RateClass::BrowseSearch, "fresh".to_string())));
     }
 }

@@ -283,8 +283,15 @@ async fn probe_one_frontend(
         .unwrap_or(0);
     let base_url = frontend_base_url(frontend);
     let started = Instant::now();
+    // Defense in depth: never probe a frontend whose URL resolves to a
+    // local/internal address (SSRF), even if it slipped past creation
+    // validation. An unsafe target is recorded as unreachable, not fetched.
     let (status, observed_frontier, lag_releases) =
-        probe_frontend_surface(http, &base_url, local_releases).await;
+        if crate::fetch::is_safe_remote_url(&base_url).is_err() {
+            (ProbeStatus::Unreachable, None, None)
+        } else {
+            probe_frontend_surface(http, &base_url, local_releases).await
+        };
     let latency_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
     FrontendProbe {
         frontend_id: frontend.id,

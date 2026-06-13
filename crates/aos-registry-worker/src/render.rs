@@ -18,6 +18,16 @@ use std::fmt::Write as _;
 
 use crate::model::{ChannelSummary, IndexInfo, PackageDetail, PackageRow, Registry, ReleaseRow};
 
+/// Truncate a string to at most `n` characters on a char boundary.
+///
+/// Object ids are ASCII hex in practice, but D1 is stored data and a hostile
+/// or corrupt oid could be non-ASCII; a byte slice such as `&s[..12]` would
+/// then panic mid-codepoint and 500 the page. Taking `n` *chars* is
+/// panic-free for any input.
+fn truncate_chars(text: &str, n: usize) -> String {
+    text.chars().take(n).collect()
+}
+
 /// Escape text for HTML element and attribute contexts.
 ///
 /// A faithful copy of the native `ui::render::escape`.
@@ -125,11 +135,7 @@ pub fn page(title: &str, crumbs: &[(String, String)], body: &str, index: &IndexI
 
     let mut statline = String::new();
     if let Some(commit) = &index.last_indexed_commit {
-        let _ = write!(
-            statline,
-            "surface {}",
-            escape(&commit[..commit.len().min(12)])
-        );
+        let _ = write!(statline, "surface {}", escape(&truncate_chars(commit, 12)));
     }
     if let Some(at) = index.indexed_at {
         if !statline.is_empty() {
@@ -298,11 +304,17 @@ pub fn package_page(slug: &str, index: &IndexInfo, detail: &PackageDetail) -> St
         escape(&detail.maintainer)
     );
     if let Some(home) = &detail.homepage {
-        let _ = write!(
-            body,
-            "<dt>homepage</dt><dd><a href=\"{h}\">{h}</a></dd>",
-            h = escape(home)
-        );
+        // Only http(s) homepages become links; anything else (javascript:,
+        // data:, …) renders as escaped text (mirrors the native hub's
+        // `pages.rs`). The homepage is stored content the native hub may have
+        // populated from a package TOML, so it cannot be trusted to be a safe
+        // scheme.
+        let cell = if crate::indexlogic::is_safe_href(home) {
+            format!("<a href=\"{h}\">{h}</a>", h = escape(home))
+        } else {
+            escape(home)
+        };
+        let _ = write!(body, "<dt>homepage</dt><dd>{cell}</dd>");
     }
     body.push_str("</dl>\n");
 
@@ -375,7 +387,7 @@ pub fn releases_page(slug: &str, index: &IndexInfo, releases: &[ReleaseRow]) -> 
             .map(|r| {
                 vec![
                     escape(&r.semver),
-                    escape(&r.commit_oid[..r.commit_oid.len().min(12)]),
+                    escape(&truncate_chars(&r.commit_oid, 12)),
                     escape(r.signer.as_deref().unwrap_or("—")),
                     if r.pack_present != 0 {
                         "yes".into()
@@ -550,5 +562,77 @@ mod tests {
         let html = home_page(&[demo_registry()]);
         assert!(html.contains("/demo/-/"));
         assert!(html.contains("https://cdn.example/demo"));
+    }
+
+    #[test]
+    fn package_homepage_requires_http_scheme() {
+        // A `javascript:` homepage (stored content the native hub may populate)
+        // must never become a live href; it renders as escaped text instead.
+        let detail = PackageDetail {
+            name: "evil".into(),
+            description: "x".into(),
+            homepage: Some("javascript:alert(1)".into()),
+            license: "MIT".into(),
+            maintainer: "alice".into(),
+            sysroot: false,
+            versions: vec![],
+        };
+        let html = package_page("demo", &demo_index(), &detail);
+        assert!(
+            !html.contains("href=\"javascript:"),
+            "javascript: homepage must not become a link: {html}"
+        );
+        assert!(html.contains("javascript:alert(1)"), "still shown as text");
+    }
+
+    #[test]
+    fn package_homepage_http_becomes_link() {
+        let detail = PackageDetail {
+            name: "curl".into(),
+            description: "x".into(),
+            homepage: Some("https://curl.se".into()),
+            license: "MIT".into(),
+            maintainer: "alice".into(),
+            sysroot: false,
+            versions: vec![],
+        };
+        let html = package_page("demo", &demo_index(), &detail);
+        assert!(html.contains("href=\"https://curl.se\""));
+    }
+
+    #[test]
+    fn non_ascii_commit_oid_does_not_panic() {
+        // A corrupt/hostile multibyte oid must truncate on a char boundary, not
+        // panic mid-codepoint (which would 500 the page).
+        let releases = vec![ReleaseRow {
+            semver: "1.0.0".into(),
+            tag_oid: "t".into(),
+            commit_oid: "café—deadbeef—oid".into(),
+            signer: None,
+            tagged_at: None,
+            pack_present: 0,
+        }];
+        let html = releases_page("demo", &demo_index(), &releases);
+        assert!(html.contains("1.0.0"));
+    }
+
+    #[test]
+    fn non_ascii_surface_commit_does_not_panic() {
+        let mut index = demo_index();
+        index.last_indexed_commit = Some("café—surface—commit".into());
+        let html = home_page(&[demo_registry()]);
+        // The statline only appears on pages that take an index; render one.
+        let _ = html;
+        let detail = PackageDetail {
+            name: "p".into(),
+            description: "x".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "a".into(),
+            sysroot: false,
+            versions: vec![],
+        };
+        let page = package_page("demo", &index, &detail);
+        assert!(page.contains("surface"));
     }
 }

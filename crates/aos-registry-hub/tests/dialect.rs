@@ -35,6 +35,12 @@ use aos_registry_hub::domain::{Permission, Principal};
 /// config change-set apply, audit record + scoped list, and the webhook
 /// enqueue/list path.
 fn exercise(db: &Database) {
+    // The mirror/frontend creation paths SSRF-validate their target; these
+    // contract assertions use placeholder hosts, so opt out of the
+    // local/internal-address rejection (the non-HTTP scheme rejection still
+    // applies). Production never sets this.
+    std::env::set_var("AOS_HUB_ALLOW_LOCAL_REMOTES", "1");
+
     // -- orgs, projects, users -------------------------------------------------
     let org = db.create_org("acme", "Acme, Inc.").unwrap();
     assert_eq!(db.org_by_slug("acme").unwrap().unwrap().id, org);

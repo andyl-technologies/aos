@@ -649,12 +649,16 @@ fn render_browse_html(registry_name: &str, pkg: &MergedPackage, spa: Option<&Spa
 
     body.push_str("<table>\n");
     if let Some(homepage) = &pkg.newest.homepage {
-        // Homepage is a package-declared URL, not a page asset; render as a
-        // link but escape both the href and the text.
-        body.push_str(&format!(
-            "<tr><th>Homepage</th><td><a href=\"{href}\">{href}</a></td></tr>\n",
-            href = escape(homepage),
-        ));
+        // Homepage is a package-declared URL, not a page asset. Only http(s)
+        // homepages become links; anything else (`javascript:`, `data:`, …)
+        // renders as escaped text, since HTML-attribute escaping does not
+        // neutralize a dangerous URL scheme.
+        let cell = if homepage.starts_with("http://") || homepage.starts_with("https://") {
+            format!("<a href=\"{href}\">{href}</a>", href = escape(homepage))
+        } else {
+            escape(homepage)
+        };
+        body.push_str(&format!("<tr><th>Homepage</th><td>{cell}</td></tr>\n"));
     }
     body.push_str(&format!(
         "<tr><th>License</th><td>{}</td></tr>\n",
@@ -1068,6 +1072,77 @@ mod tests {
         // The package homepage is the only external URL allowed (declared
         // data, rendered as an escaped link).
         assert!(html.contains("https://curl.se"));
+    }
+
+    #[test]
+    fn browse_homepage_requires_http_scheme() {
+        // A `javascript:` homepage must never become a clickable link —
+        // HTML-attribute escaping does not neutralize the scheme.
+        let evil = r#"
+[package]
+name = "evil"
+description = "no markup here"
+license = "MIT"
+maintainer = "aos-team"
+homepage = "javascript:alert(document.cookie)"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/evilhash00001-evil-1.0.0"
+nar_hash = "sha256:abc"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+        let reg = make_registry(REGISTRY_META, &[("evil", evil)]);
+        let out = TempDir::new().unwrap();
+        generate_web_surface(reg.path(), out.path(), WebConfig::default()).unwrap();
+
+        let html = read(out.path(), "browse/evil.html");
+        // Rendered as escaped plain text, not inside an href attribute.
+        assert!(
+            !html.contains("href=\"javascript:"),
+            "javascript: homepage must not become a link: {html}"
+        );
+        assert!(
+            html.contains("javascript:alert(document.cookie)"),
+            "still shown as text: {html}"
+        );
+
+        // A normal https homepage IS rendered as a link.
+        let good = r#"
+[package]
+name = "good"
+description = "safe"
+license = "MIT"
+maintainer = "aos-team"
+homepage = "https://curl.se"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/goodhash00001-good-1.0.0"
+nar_hash = "sha256:abc"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+        let reg = make_registry(REGISTRY_META, &[("good", good)]);
+        let out = TempDir::new().unwrap();
+        generate_web_surface(reg.path(), out.path(), WebConfig::default()).unwrap();
+
+        let html = read(out.path(), "browse/good.html");
+        assert!(
+            html.contains("<a href=\"https://curl.se\">https://curl.se</a>"),
+            "https homepage must be a link: {html}"
+        );
     }
 
     #[test]

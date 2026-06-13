@@ -38,6 +38,10 @@
 //! - [`model`] — serde data models shared by the D1 layer, JSON API, and
 //!   renderer.
 //! - [`render`] — the no-JS HTML browse pages.
+//! - [`indexlogic`] — the Cron indexer's pure verification decisions (partition
+//!   target checks, channel anti-rollback floors, href-scheme safety), factored
+//!   out of the wasm-only [`indexer`] so they are unit-tested natively against
+//!   the same rules the native hub indexer enforces.
 //!
 //! Worker glue (wasm32-only, gated behind `#[cfg(target_arch = "wasm32")]`):
 //!
@@ -57,6 +61,7 @@
 //! is wasm-only, exactly like the sibling `aos-registry-spa` crate, so adding
 //! this crate to the workspace members never breaks the native build.
 
+pub mod indexlogic;
 pub mod keymap;
 pub mod model;
 pub mod render;

@@ -68,6 +68,12 @@ pub struct AuthState {
     /// Rate limiter the `/oauth2/token` exchange consults (per token id, with
     /// an IP fallback). Shared with [`AppState`](crate::server::AppState).
     pub ratelimit: Arc<crate::ratelimit::RateLimiter>,
+    /// Whether `X-Forwarded-For` may be trusted for the per-IP rate-limit key.
+    ///
+    /// `false` by default (the safe choice for a directly-exposed hub); see
+    /// [`AppState::trusted_proxy`](crate::server::AppState) and the
+    /// [`crate::ratelimit`] trust model.
+    pub trusted_proxy: bool,
 }
 
 impl AuthState {
@@ -82,6 +88,7 @@ impl AuthState {
             jwt_keys: JwtKeys::random(),
             access_token_ttl,
             ratelimit: Arc::new(crate::ratelimit::RateLimiter::new()),
+            trusted_proxy: false,
         }
     }
 }
@@ -318,14 +325,18 @@ pub fn oauth2_router() -> Router<Arc<AuthState>> {
 /// expired, and `500` on a token-store or JWT-minting failure.
 pub async fn oauth2_token_handler(State(state): State<Arc<AuthState>>, parts: Parts) -> Response {
     // Rate-limit the exchange per source IP to bound credential spray (an
-    // attacker probing provisioning secrets). See [`crate::ratelimit`].
-    let ip = parts
+    // attacker probing provisioning secrets). The key is the real TCP peer
+    // unless the deployment trusts its proxy's `X-Forwarded-For`, so a forged
+    // header cannot evade the limit. See [`crate::ratelimit`].
+    let peer = parts
+        .extensions
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map_or_else(String::new, |ci| ci.0.ip().to_string());
+    let xff = parts
         .headers
         .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .map_or_else(String::new, |xff| {
-            crate::ratelimit::client_ip(Some(xff), "")
-        });
+        .and_then(|v| v.to_str().ok());
+    let ip = crate::ratelimit::client_ip(xff, &peer, state.trusted_proxy);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

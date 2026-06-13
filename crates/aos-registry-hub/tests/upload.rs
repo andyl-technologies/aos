@@ -32,11 +32,13 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
         access_token_ttl: 900,
         ratelimit: aos_registry_hub::ratelimit::RateLimiter::new().into(),
+        trusted_proxy: false,
     });
     Arc::new(AppState {
         db,
         external_url: "http://127.0.0.1:8420".into(),
         ratelimit: auth.ratelimit.clone(),
+        trusted_proxy: false,
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
@@ -253,6 +255,58 @@ async fn put_requires_publish_permission() {
         status == StatusCode::CREATED || status == StatusCode::OK,
         "{status}"
     );
+}
+
+#[tokio::test]
+async fn upload_to_soft_deleted_org_registry_is_not_found() {
+    let (db, _root) = empty_managed("public");
+    let app = router(app_state(Arc::clone(&db)));
+    let token = bearer(
+        "pub",
+        Principal::service_account(1),
+        "acme/infra/prod/cdn",
+        &[Permission::Publish],
+    );
+
+    // While the org is live, a Publish-scoped PUT is accepted.
+    let status = put(
+        &app,
+        "/acme/infra/prod/cdn/HEAD",
+        Some(&token),
+        b"ref: refs/heads/stable\n".to_vec(),
+    )
+    .await;
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::OK,
+        "{status}"
+    );
+
+    // Soft-delete the owning org: its registry stops accepting uploads (404),
+    // before any auth or quota work — the resource is gone.
+    let org = db.org_by_slug("acme").unwrap().unwrap();
+    assert!(db.soft_delete_org(org.id, 86_400).unwrap());
+
+    let status = put(
+        &app,
+        "/acme/infra/prod/cdn/objects/ab/cdef",
+        Some(&token),
+        b"payload".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // HEAD probe likewise reports the registry as gone.
+    let req = Request::builder()
+        .method("HEAD")
+        .uri("/acme/infra/prod/cdn/HEAD")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    let status = app
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
