@@ -76,10 +76,13 @@ message GetPackageResponse {
 
 message ListChannelsRequest {
   string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
 }
 
 message ListChannelsResponse {
   repeated Channel channels = 1;
+  string next_page_token = 2;
 }
 
 message GetChannelRequest {

@@ -30,6 +30,7 @@
 //! - [`db`] — sqlite-backed storage: the `registries` system-of-record
 //!   table and the rebuildable index tables.
 //! - [`indexer`] — fetch → verify → load → index orchestration.
+//! - [`validation`] — presence-depth cache consistency validation.
 //! - [`compat`] — the machine-path facade.
 //! - [`rpc`] — the `aos.registry.v1` ConnectRPC read-path services.
 //! - [`ui`] — server-rendered HTML pages.
@@ -43,3 +44,4 @@ pub mod rpc;
 pub mod server;
 pub mod surface;
 pub mod ui;
+pub mod validation;

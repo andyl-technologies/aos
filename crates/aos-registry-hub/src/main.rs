@@ -21,10 +21,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use aos_registry_hub::db::Database;
+use aos_registry_hub::db::{Database, RegistryRecord};
 use aos_registry_hub::fetch::fetch_for_url;
 use aos_registry_hub::indexer::index_and_record;
 use aos_registry_hub::server::{router, AppState};
+use aos_registry_hub::validation::validate_presence;
 
 #[derive(Parser)]
 #[command(name = "aos-registry-hub", version, about = "AOS registry hub server")]
@@ -139,13 +140,16 @@ async fn main() -> Result<()> {
                         .context("registry vanished after registration")?;
                     let fetch = fetch_for_url(&source_url)?;
                     match index_and_record(&db, fetch.as_ref(), &registry).await {
-                        Ok(outcome) => println!(
-                            "registered '{slug}' (id {id}): {} packages, {} releases, {} channels @ {}",
-                            outcome.packages, outcome.releases, outcome.channels, outcome.commit,
-                        ),
-                        Err(err) => println!(
-                            "registered '{slug}' (id {id}); initial index failed: {err:#}"
-                        ),
+                        Ok(outcome) => {
+                            println!(
+                                "registered '{slug}' (id {id}): {} packages, {} releases, {} channels @ {}",
+                                outcome.packages, outcome.releases, outcome.channels, outcome.commit,
+                            );
+                            run_presence_validation(&db, &registry).await;
+                        }
+                        Err(err) => {
+                            println!("registered '{slug}' (id {id}); initial index failed: {err:#}")
+                        }
                     }
                 }
                 RegistryCommand::List => {
@@ -171,14 +175,17 @@ async fn main() -> Result<()> {
             for registry in registries {
                 let fetch = fetch_for_url(&registry.source_url)?;
                 match index_and_record(&db, fetch.as_ref(), &registry).await {
-                    Ok(outcome) => println!(
-                        "{}: {} packages, {} releases, {} channels @ {}",
-                        registry.slug,
-                        outcome.packages,
-                        outcome.releases,
-                        outcome.channels,
-                        outcome.commit,
-                    ),
+                    Ok(outcome) => {
+                        println!(
+                            "{}: {} packages, {} releases, {} channels @ {}",
+                            registry.slug,
+                            outcome.packages,
+                            outcome.releases,
+                            outcome.channels,
+                            outcome.commit,
+                        );
+                        run_presence_validation(&db, &registry).await;
+                    }
                     Err(err) => println!("{}: index failed: {err:#}", registry.slug),
                 }
             }
@@ -187,7 +194,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Index every registered registry, logging failures without aborting.
+/// Index every registered registry, logging failures without aborting;
+/// each successful index is followed by presence validation of the
+/// registry's committed caches.
 async fn index_all(db: &Database) {
     let registries = match db.list_registries() {
         Ok(regs) => regs,
@@ -204,8 +213,34 @@ async fn index_all(db: &Database) {
                 continue;
             }
         };
-        if let Err(err) = index_and_record(db, fetch.as_ref(), &registry).await {
-            tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "index failed");
+        match index_and_record(db, fetch.as_ref(), &registry).await {
+            Ok(_) => run_presence_validation(db, &registry).await,
+            Err(err) => {
+                tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "index failed");
+            }
+        }
+    }
+}
+
+/// Run presence validation for one registry, logging a one-line summary
+/// per cache; validation problems are logged, never fatal.
+async fn run_presence_validation(db: &Database, registry: &RegistryRecord) {
+    match validate_presence(db, registry).await {
+        Ok(summaries) => {
+            for summary in &summaries {
+                tracing::info!(
+                    slug = %registry.slug,
+                    cache = %summary.cache_url,
+                    checked = summary.checked,
+                    missing = summary.missing,
+                    reachable = summary.reachable,
+                    coverage = %format!("{:.1}%", summary.coverage_percent),
+                    "presence validation"
+                );
+            }
+        }
+        Err(err) => {
+            tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "presence validation failed");
         }
     }
 }

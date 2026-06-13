@@ -164,6 +164,15 @@ impl Fixture {
 /// `stable` fully rolled out, roster with one active key, one committed
 /// cache, plus the nix-cache files.
 pub fn standard_registry(root: &Path) -> Fixture {
+    standard_registry_versioned(root, "1.0.0")
+}
+
+/// [`standard_registry`] with a configurable release semver, so tests can
+/// build surfaces at different (e.g. older) release versions.
+// Not every test crate that compiles this module uses the fixture
+// builders (the same pre-existing pattern as the rest of this file).
+#[allow(dead_code)]
+pub fn standard_registry_versioned(root: &Path, semver: &str) -> Fixture {
     let fixture = Fixture::new(root);
 
     let registry_toml = fixture.put_blob(
@@ -194,13 +203,13 @@ pub fn standard_registry(root: &Path) -> Fixture {
         ("40000", "packages", packages),
     ]);
 
-    let commit = fixture.put_signed_commit(root_tree, "release 1.0.0");
-    let release_tag = fixture.put_release_tag("1.0.0", commit);
+    let commit = fixture.put_signed_commit(root_tree, &format!("release {semver}"));
+    let release_tag = fixture.put_release_tag(semver, commit);
     fixture.put_channel("stable", release_tag);
     fixture.put_refs(
         "stable",
         &[("stable", commit)],
-        &[("1.0.0", release_tag, commit)],
+        &[(semver, release_tag, commit)],
     );
     fixture.put_nix_cache();
     fixture

@@ -193,8 +193,10 @@ pub fn sign_armored(payload: &[u8], signing_key: &ed25519_dalek::SigningKey) -> 
     let body = base64::engine::general_purpose::STANDARD.encode(&blob);
     let mut armored = String::from(ARMOR_BEGIN);
     armored.push('\n');
+    // Standard base64 output is pure ASCII, so rebuilding each 70-byte
+    // chunk character-by-character is lossless and infallible.
     for chunk in body.as_bytes().chunks(70) {
-        armored.push_str(std::str::from_utf8(chunk).expect("base64 is ASCII"));
+        armored.extend(chunk.iter().map(|&b| char::from(b)));
         armored.push('\n');
     }
     armored.push_str(ARMOR_END);
@@ -265,8 +267,9 @@ fn take<'a>(cursor: &mut &'a [u8], n: usize) -> Result<&'a [u8]> {
 }
 
 fn read_u32(cursor: &mut &[u8]) -> Result<u32> {
+    // `take` guarantees exactly four bytes, making the indexing infallible.
     let bytes = take(cursor, 4)?;
-    Ok(u32::from_be_bytes(bytes.try_into().expect("4 bytes")))
+    Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 fn read_string(cursor: &mut &[u8]) -> Result<Vec<u8>> {

@@ -304,9 +304,11 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "thiserror",
  "tokio",
  "toml",
  "tower",
+ "tower-http",
  "tracing",
  "url",
 ]
