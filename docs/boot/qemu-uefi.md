@@ -8,6 +8,15 @@ kernel + initrd, and ignition provisions the disk on first boot.
 
 Supersedes `2026-04-16_initrd_vm_qemu_instructions.md`.
 
+> **CI-enforced:** this flow — image boot under OVMF, ignition
+> partitioning over fw_cfg, then `apm update` / `apm install` /
+> `apm upgrade --system` / reboot — runs on every CI pass as
+> `checks.fleet.install-from-image`
+> (`tests/fleet/install-from-image.nix`, RFC-0003). The test script is
+> the authoritative command sequence; if this doc and the test
+> disagree, the test wins. CI uses the hermetic `pkgs.edk2` OVMF; the
+> host-nixpkgs OVMF below is a development convenience only.
+
 ## 0. Ignition test config
 
 Write to `tests/ignition-test.json` at the repo root. Not checked in.
