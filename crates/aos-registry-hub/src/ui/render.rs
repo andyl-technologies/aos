@@ -113,10 +113,19 @@ impl SessionIndicator {
     }
 
     /// Renders the indicator as the right-hand masthead HTML fragment.
+    ///
+    /// When signed in it doubles as the primary navigation — links to the
+    /// caller's organizations and account profile (the entry points to all
+    /// management pages) plus the email and a log-out link. When anonymous
+    /// it is a single log-in link.
     fn render(&self) -> String {
         match &self.email {
             Some(email) => format!(
-                "<span class=\"session\">{} · <a href=\"/logout\">log out</a></span>",
+                "<span class=\"session\">\
+                 <a href=\"/-/orgs\">organizations</a> · \
+                 <a href=\"/account\">account</a> · \
+                 <span class=\"who\">{}</span> · \
+                 <a href=\"/logout\">log out</a></span>",
                 escape(email),
             ),
             None => "<span class=\"session\"><a href=\"/login\">log in</a></span>".to_string(),
@@ -124,14 +133,45 @@ impl SessionIndicator {
     }
 }
 
+tokio::task_local! {
+    /// The signed-in user's email for the current request, set per-request
+    /// by the session-resolving middleware. `None` for anonymous requests.
+    ///
+    /// Lets every page reflect the session in its masthead without threading
+    /// the identity through every handler and renderer signature.
+    static SESSION_EMAIL: Option<String>;
+}
+
+/// Run `fut` with the current request's session email in scope.
+///
+/// The session-resolving middleware wraps each request in this so [`page`]
+/// can read the identity via [`current_session_indicator`].
+pub async fn with_session_email<F: std::future::Future>(email: Option<String>, fut: F) -> F::Output {
+    SESSION_EMAIL.scope(email, fut).await
+}
+
+/// The session indicator for the current request, from the task-local set by
+/// the middleware; anonymous when unset (e.g. in unit tests calling [`page`]).
+#[must_use]
+pub fn current_session_indicator() -> SessionIndicator {
+    SESSION_EMAIL
+        .try_with(|email| email.clone())
+        .ok()
+        .flatten()
+        .map(SessionIndicator::signed_in)
+        .unwrap_or_default()
+}
+
 /// Render a complete page in the shared layout.
 ///
 /// `crumbs` is the masthead trail as `(href, label)` pairs; the final
 /// crumb should be the current page (empty href renders unlinked). The
-/// masthead carries the anonymous session indicator; use
-/// [`page_with_session`] to show the signed-in identity.
+/// masthead reflects the current request's session (from the task-local set
+/// by the session middleware), so browse pages show the signed-in identity
+/// and navigation automatically; use [`page_with_session`] to pass an
+/// explicit indicator.
 pub fn page(title: &str, crumbs: &[(String, String)], body: &str, state: &StateLine) -> String {
-    page_with_session(title, crumbs, body, state, &SessionIndicator::default())
+    page_with_session(title, crumbs, body, state, &current_session_indicator())
 }
 
 /// Render a complete page, threading a masthead session indicator.
