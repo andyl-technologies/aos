@@ -255,11 +255,29 @@
 //! dispatch/delivery logic lives in [`crate::webhook`]; this module only
 //! stores and lists the rows.
 
+pub mod backend;
+pub mod dialect;
+pub mod value;
+
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::Connection;
+
+use self::backend::{Backend, SqliteBackend};
+use self::dialect::Dialect;
+use self::value::{Row, ToValue};
+
+/// Builds a `Vec<Value>` parameter list from a heterogeneous set of bindable
+/// values, mirroring rusqlite's `params!` ergonomics for the [`Backend`] API.
+///
+/// Each argument is converted via [`ToValue`], so `i64`, `Option<i64>`,
+/// `&str`, `String`, `bool`, `u32`, … all bind directly.
+macro_rules! vals {
+    ($($v:expr),* $(,)?) => {
+        [$( ToValue::to_value(&$v) ),*]
+    };
+}
 
 /// Grace period, in seconds, during which a rotated token's old secret
 /// keeps validating after its `revoked_at` stamp (RFC-0004 fixes the
@@ -1282,7 +1300,7 @@ pub struct DueDelivery {
     pub secret: String,
 }
 
-fn row_to_webhook(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRecord> {
+fn row_to_webhook(row: &Row) -> Result<WebhookRecord> {
     let events_json: String = row.get(4)?;
     Ok(WebhookRecord {
         id: row.get(0)?,
@@ -1290,18 +1308,18 @@ fn row_to_webhook(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRecord> {
         url: row.get(2)?,
         secret: row.get(3)?,
         events: serde_json::from_str(&events_json).unwrap_or_default(),
-        active: row.get::<_, i64>(5)? != 0,
+        active: row.get(5)?,
         created_at: row.get(6)?,
     })
 }
 
 /// The hub database handle.
 pub struct Database {
-    conn: Mutex<Connection>,
+    backend: Box<dyn Backend>,
 }
 
 impl Database {
-    /// Open (creating and migrating if needed) the hub database.
+    /// Open (creating and migrating if needed) the hub sqlite database.
     ///
     /// # Errors
     ///
@@ -1309,10 +1327,10 @@ impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("opening hub database {}", path.display()))?;
-        Self::from_connection(conn)
+        Self::from_sqlite(conn)
     }
 
-    /// Open an in-memory database (tests only).
+    /// Open an in-memory sqlite database (tests only).
     ///
     /// `serve --dev` does *not* use this: dev mode persists a regular
     /// `hub.db` under its `--root` directory (defaulting to `./.aos-hub`).
@@ -1321,46 +1339,123 @@ impl Database {
     ///
     /// Returns an error if a migration fails.
     pub fn open_in_memory() -> Result<Self> {
-        Self::from_connection(Connection::open_in_memory()?)
+        Self::from_sqlite(Connection::open_in_memory()?)
     }
 
-    fn from_connection(conn: Connection) -> Result<Self> {
-        conn.pragma_update(None, "journal_mode", "WAL").ok();
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        let db = Self {
-            conn: Mutex::new(conn),
-        };
+    /// Connect to a hub database by URL, dispatching on the scheme.
+    ///
+    /// The native self-hosting entry point (RFC-0004 "Database abstraction"):
+    ///
+    /// - `sqlite://<path>`, `file://<path>`, or a bare filesystem path → the
+    ///   always-available [`SqliteBackend`].
+    /// - `postgres://…` / `postgresql://…` → the [`PostgresBackend`], when the
+    ///   crate is built with the `postgres` feature (else an error).
+    /// - `mysql://…` → the [`MysqlBackend`], when built with the `mysql`
+    ///   feature (else an error).
+    ///
+    /// In every case the schema is created and migrated to the current
+    /// version before returning.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported scheme, a backend whose feature is
+    /// not enabled, a connection failure, or a migration failure.
+    pub fn connect(url: &str) -> Result<Self> {
+        if let Some(rest) = url
+            .strip_prefix("postgres://")
+            .or_else(|| url.strip_prefix("postgresql://"))
+        {
+            let _ = rest;
+            #[cfg(feature = "postgres")]
+            {
+                let backend = backend::PostgresBackend::connect(url)?;
+                return Self::with_backend(Box::new(backend));
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                bail!("postgres support not compiled in (build with --features postgres)");
+            }
+        }
+        if let Some(rest) = url.strip_prefix("mysql://") {
+            let _ = rest;
+            #[cfg(feature = "mysql")]
+            {
+                let backend = backend::MysqlBackend::connect(url)?;
+                return Self::with_backend(Box::new(backend));
+            }
+            #[cfg(not(feature = "mysql"))]
+            {
+                bail!("mysql support not compiled in (build with --features mysql)");
+            }
+        }
+        // sqlite:// or file:// or a bare path.
+        let path = url
+            .strip_prefix("sqlite://")
+            .or_else(|| url.strip_prefix("file://"))
+            .unwrap_or(url);
+        if path.is_empty() || path == ":memory:" {
+            return Self::open_in_memory();
+        }
+        Self::open(Path::new(path))
+    }
+
+    fn from_sqlite(conn: Connection) -> Result<Self> {
+        let backend = SqliteBackend::new(conn)?;
+        Self::with_backend(Box::new(backend))
+    }
+
+    fn with_backend(backend: Box<dyn Backend>) -> Result<Self> {
+        let db = Self { backend };
         db.migrate()?;
         Ok(db)
     }
 
+    /// The SQL dialect of the underlying backend.
+    fn dialect(&self) -> Dialect {
+        self.backend.dialect()
+    }
+
     fn migrate(&self) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)",
-            [],
+            &[],
         )?;
-        let current: i64 = conn
-            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
-            .optional()?
+        let current: i64 = self
+            .backend
+            .query_opt("SELECT version FROM schema_version", &[])?
+            .map(|row| row.get::<i64>(0))
+            .transpose()?
             .unwrap_or(0);
         let target = MIGRATIONS.len() as i64;
         if current > target {
             bail!("hub database schema {current} is newer than this build supports ({target})");
         }
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
-            conn.execute_batch(sql)
+            self.backend
+                .execute_batch(sql)
                 .with_context(|| format!("applying migration v{}", i + 1))?;
         }
-        conn.execute("DELETE FROM schema_version", [])?;
-        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [target])?;
+        self.backend.execute("DELETE FROM schema_version", &[])?;
+        self.backend.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            &vals![target],
+        )?;
         Ok(())
     }
 
+    /// Locks the underlying sqlite connection for tests that need raw
+    /// rusqlite access.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the backend is not a [`SqliteBackend`]. Only the in-module
+    /// migration tests use this, and they always open sqlite.
+    #[cfg(test)]
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
-        // A poisoned mutex means another thread panicked mid-query; the
-        // connection itself is still structurally usable for new calls.
-        self.conn.lock().unwrap_or_else(|p| p.into_inner())
+        self.backend
+            .as_sqlite()
+            .expect("lock() is sqlite-only (test helper)")
+            .lock()
     }
 
     // -- system of record ---------------------------------------------------
@@ -1377,31 +1472,32 @@ impl Database {
         trust_keys: &[String],
         require_signatures: bool,
     ) -> Result<i64> {
-        let conn = self.lock();
         let now = unix_now();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO registries (slug, source_url, trust_keys, require_signatures, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(slug) DO UPDATE SET
                  source_url = excluded.source_url,
                  trust_keys = excluded.trust_keys,
                  require_signatures = excluded.require_signatures",
-            params![
+            &vals![
                 slug,
                 source_url,
                 serde_json::to_string(trust_keys)?,
-                require_signatures as i64,
+                require_signatures,
                 now,
             ],
         )?;
-        let id: i64 = conn.query_row("SELECT id FROM registries WHERE slug = ?1", [slug], |r| {
-            r.get(0)
-        })?;
-        conn.execute(
+        let id: i64 = self
+            .backend
+            .query_opt("SELECT id FROM registries WHERE slug = ?1", &vals![slug])?
+            .context("registry row missing after upsert")?
+            .get(0)?;
+        self.backend.execute(
             "INSERT INTO registry_index (registry_id, state)
              VALUES (?1, 'indexing')
              ON CONFLICT(registry_id) DO NOTHING",
-            [id],
+            &vals![id],
         )?;
         Ok(id)
     }
@@ -1412,14 +1508,14 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn registry_by_slug(&self, slug: &str) -> Result<Option<RegistryRecord>> {
-        let conn = self.lock();
-        conn.query_row(
-            &format!("SELECT {REGISTRY_COLUMNS} FROM registries WHERE slug = ?1"),
-            [slug],
-            row_to_registry,
-        )
-        .optional()
-        .context("loading registry by slug")
+        self.backend
+            .query_opt(
+                &format!("SELECT {REGISTRY_COLUMNS} FROM registries WHERE slug = ?1"),
+                &vals![slug],
+            )
+            .context("loading registry by slug")?
+            .map(|row| row_to_registry(&row))
+            .transpose()
     }
 
     /// List all registered registries.
@@ -1428,12 +1524,11 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_registries(&self) -> Result<Vec<RegistryRecord>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {REGISTRY_COLUMNS} FROM registries ORDER BY slug"
-        ))?;
-        let rows = stmt.query_map([], row_to_registry)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let rows = self.backend.query(
+            &format!("SELECT {REGISTRY_COLUMNS} FROM registries ORDER BY slug"),
+            &[],
+        )?;
+        rows.iter().map(row_to_registry).collect()
     }
 
     // -- index writes -------------------------------------------------------
@@ -1444,143 +1539,139 @@ impl Database {
     ///
     /// Returns an error on database failure; the transaction rolls back.
     pub fn apply_snapshot(&self, registry_id: i64, snapshot: &IndexSnapshot) -> Result<()> {
-        let mut conn = self.lock();
-        let tx = conn.transaction()?;
-        for table in ["packages", "channels", "releases", "key_rosters", "caches"] {
-            tx.execute(
-                &format!("DELETE FROM {table} WHERE registry_id = ?1"),
-                [registry_id],
-            )?;
-        }
-
-        for package in &snapshot.packages {
-            tx.execute(
-                "INSERT INTO packages
-                 (registry_id, name, description, homepage, license, maintainer, sysroot)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    registry_id,
-                    package.package.name,
-                    package.package.description,
-                    package.package.homepage,
-                    package.package.license,
-                    package.package.maintainer,
-                    package.package.sysroot as i64,
-                ],
-            )?;
-            let package_id = tx.last_insert_rowid();
-            for version in &package.versions {
+        self.backend.with_tx(&mut |tx| {
+            for table in ["packages", "channels", "releases", "key_rosters", "caches"] {
                 tx.execute(
-                    "INSERT INTO package_versions (package_id, version, previous)
-                     VALUES (?1, ?2, ?3)",
-                    params![package_id, version.version, version.previous],
+                    &format!("DELETE FROM {table} WHERE registry_id = ?1"),
+                    &vals![registry_id],
                 )?;
-                let version_id = tx.last_insert_rowid();
-                for (platform, entry) in &version.platforms {
-                    let images = entry
-                        .images
-                        .iter()
-                        .map(|i| {
-                            serde_json::json!({
-                                "format": i.format,
-                                "store_path": i.store_path,
-                                "nar_hash": i.nar_hash,
-                                "nar_size": i.nar_size,
-                            })
-                        })
-                        .collect::<Vec<_>>();
-                    tx.execute(
-                        "INSERT INTO version_platforms
-                         (version_id, platform, store_path, nar_hash, nar_size,
-                          closure_size, refs, images)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                        params![
-                            version_id,
-                            platform,
-                            entry.store_path,
-                            entry.nar_hash,
-                            entry.nar_size as i64,
-                            entry.closure_size as i64,
-                            serde_json::to_string(&entry.references)?,
-                            serde_json::Value::Array(images).to_string(),
-                        ],
+            }
+
+            for package in &snapshot.packages {
+                let package_id = tx.execute_insert(
+                    "INSERT INTO packages
+                     (registry_id, name, description, homepage, license, maintainer, sysroot)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    &vals![
+                        registry_id,
+                        package.package.name,
+                        package.package.description,
+                        package.package.homepage,
+                        package.package.license,
+                        package.package.maintainer,
+                        package.package.sysroot,
+                    ],
+                )?;
+                for version in &package.versions {
+                    let version_id = tx.execute_insert(
+                        "INSERT INTO package_versions (package_id, version, previous)
+                         VALUES (?1, ?2, ?3)",
+                        &vals![package_id, version.version, version.previous],
                     )?;
+                    for (platform, entry) in &version.platforms {
+                        let images = entry
+                            .images
+                            .iter()
+                            .map(|i| {
+                                serde_json::json!({
+                                    "format": i.format,
+                                    "store_path": i.store_path,
+                                    "nar_hash": i.nar_hash,
+                                    "nar_size": i.nar_size,
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        tx.execute(
+                            "INSERT INTO version_platforms
+                             (version_id, platform, store_path, nar_hash, nar_size,
+                              closure_size, refs, images)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                            &vals![
+                                version_id,
+                                platform,
+                                entry.store_path,
+                                entry.nar_hash,
+                                entry.nar_size,
+                                entry.closure_size,
+                                serde_json::to_string(&entry.references)?,
+                                serde_json::Value::Array(images).to_string(),
+                            ],
+                        )?;
+                    }
                 }
             }
-        }
 
-        for release in &snapshot.releases {
+            for release in &snapshot.releases {
+                tx.execute(
+                    "INSERT INTO releases
+                     (registry_id, semver, tag_oid, commit_oid, signer, tagged_at, pack_present)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    &vals![
+                        registry_id,
+                        release.semver,
+                        release.tag_oid,
+                        release.commit_oid,
+                        release.signer,
+                        release.tagged_at,
+                        release.pack_present,
+                    ],
+                )?;
+            }
+
+            for channel in &snapshot.channels {
+                let channel_id = tx.execute_insert(
+                    "INSERT INTO channels (registry_id, name, frontier) VALUES (?1, ?2, ?3)",
+                    &vals![registry_id, channel.name, channel.frontier],
+                )?;
+                for (bucket, release) in channel.partitions.iter().enumerate() {
+                    if let Some(release) = release {
+                        tx.execute(
+                            "INSERT INTO channel_partitions (channel_id, bucket, release)
+                             VALUES (?1, ?2, ?3)",
+                            &vals![channel_id, bucket as i64, release],
+                        )?;
+                    }
+                }
+            }
+
+            for (key_id, public_key, status) in &snapshot.roster {
+                tx.execute(
+                    "INSERT INTO key_rosters (registry_id, key_id, public_key, status)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    &vals![registry_id, key_id, public_key, status],
+                )?;
+            }
+            for (url, priority) in &snapshot.caches {
+                tx.execute(
+                    "INSERT INTO caches (registry_id, url, priority) VALUES (?1, ?2, ?3)",
+                    &vals![registry_id, url, *priority],
+                )?;
+            }
+
             tx.execute(
-                "INSERT INTO releases
-                 (registry_id, semver, tag_oid, commit_oid, signer, tagged_at, pack_present)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
+                "INSERT INTO registry_index
+                 (registry_id, state, error, last_indexed_commit, name, description,
+                  indexed_at, refs_digest, cache_stack)
+                 VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(registry_id) DO UPDATE SET
+                     state = 'fresh', error = NULL,
+                     last_indexed_commit = excluded.last_indexed_commit,
+                     name = excluded.name, description = excluded.description,
+                     indexed_at = excluded.indexed_at,
+                     refs_digest = excluded.refs_digest,
+                     cache_stack = excluded.cache_stack",
+                &vals![
                     registry_id,
-                    release.semver,
-                    release.tag_oid,
-                    release.commit_oid,
-                    release.signer,
-                    release.tagged_at,
-                    release.pack_present as i64,
+                    snapshot.commit,
+                    snapshot.name,
+                    snapshot.description,
+                    unix_now(),
+                    snapshot.refs_digest,
+                    snapshot.cache_stack,
                 ],
             )?;
-        }
-
-        for channel in &snapshot.channels {
-            tx.execute(
-                "INSERT INTO channels (registry_id, name, frontier) VALUES (?1, ?2, ?3)",
-                params![registry_id, channel.name, channel.frontier],
-            )?;
-            let channel_id = tx.last_insert_rowid();
-            for (bucket, release) in channel.partitions.iter().enumerate() {
-                if let Some(release) = release {
-                    tx.execute(
-                        "INSERT INTO channel_partitions (channel_id, bucket, release)
-                         VALUES (?1, ?2, ?3)",
-                        params![channel_id, bucket as i64, release],
-                    )?;
-                }
-            }
-        }
-
-        for (key_id, public_key, status) in &snapshot.roster {
-            tx.execute(
-                "INSERT INTO key_rosters (registry_id, key_id, public_key, status)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![registry_id, key_id, public_key, status],
-            )?;
-        }
-        for (url, priority) in &snapshot.caches {
-            tx.execute(
-                "INSERT INTO caches (registry_id, url, priority) VALUES (?1, ?2, ?3)",
-                params![registry_id, url, *priority as i64],
-            )?;
-        }
-
-        tx.execute(
-            "INSERT INTO registry_index
-             (registry_id, state, error, last_indexed_commit, name, description,
-              indexed_at, refs_digest, cache_stack)
-             VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(registry_id) DO UPDATE SET
-                 state = 'fresh', error = NULL,
-                 last_indexed_commit = excluded.last_indexed_commit,
-                 name = excluded.name, description = excluded.description,
-                 indexed_at = excluded.indexed_at,
-                 refs_digest = excluded.refs_digest,
-                 cache_stack = excluded.cache_stack",
-            params![
-                registry_id,
-                snapshot.commit,
-                snapshot.name,
-                snapshot.description,
-                unix_now(),
-                snapshot.refs_digest,
-                snapshot.cache_stack,
-            ],
-        )?;
-        tx.commit()?;
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Record an indexing failure without touching the last good index.
@@ -1589,12 +1680,11 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn mark_index_failed(&self, registry_id: i64, error: &str) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO registry_index (registry_id, state, error)
              VALUES (?1, 'failed', ?2)
              ON CONFLICT(registry_id) DO UPDATE SET state = 'failed', error = excluded.error",
-            params![registry_id, error],
+            &vals![registry_id, error],
         )?;
         Ok(())
     }
@@ -1610,12 +1700,11 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn mark_index_stale(&self, registry_id: i64, error: &str) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO registry_index (registry_id, state, error)
              VALUES (?1, 'stale', ?2)
              ON CONFLICT(registry_id) DO UPDATE SET state = 'stale', error = excluded.error",
-            params![registry_id, error],
+            &vals![registry_id, error],
         )?;
         Ok(())
     }
@@ -1634,32 +1723,33 @@ impl Database {
     ///
     /// Returns an error on database failure; the transaction rolls back.
     pub fn update_channels(&self, registry_id: i64, channels: &[ChannelSummary]) -> Result<()> {
-        let mut conn = self.lock();
-        let tx = conn.transaction()?;
-        // Deleting channels cascades to channel_partitions.
-        tx.execute("DELETE FROM channels WHERE registry_id = ?1", [registry_id])?;
-        for channel in channels {
+        self.backend.with_tx(&mut |tx| {
+            // Deleting channels cascades to channel_partitions.
             tx.execute(
-                "INSERT INTO channels (registry_id, name, frontier) VALUES (?1, ?2, ?3)",
-                params![registry_id, channel.name, channel.frontier],
+                "DELETE FROM channels WHERE registry_id = ?1",
+                &vals![registry_id],
             )?;
-            let channel_id = tx.last_insert_rowid();
-            for (bucket, release) in channel.partitions.iter().enumerate() {
-                if let Some(release) = release {
-                    tx.execute(
-                        "INSERT INTO channel_partitions (channel_id, bucket, release)
-                         VALUES (?1, ?2, ?3)",
-                        params![channel_id, bucket as i64, release],
-                    )?;
+            for channel in channels {
+                let channel_id = tx.execute_insert(
+                    "INSERT INTO channels (registry_id, name, frontier) VALUES (?1, ?2, ?3)",
+                    &vals![registry_id, channel.name, channel.frontier],
+                )?;
+                for (bucket, release) in channel.partitions.iter().enumerate() {
+                    if let Some(release) = release {
+                        tx.execute(
+                            "INSERT INTO channel_partitions (channel_id, bucket, release)
+                             VALUES (?1, ?2, ?3)",
+                            &vals![channel_id, bucket as i64, release],
+                        )?;
+                    }
                 }
             }
-        }
-        tx.execute(
-            "UPDATE registry_index SET indexed_at = ?2 WHERE registry_id = ?1",
-            params![registry_id, unix_now()],
-        )?;
-        tx.commit()?;
-        Ok(())
+            tx.execute(
+                "UPDATE registry_index SET indexed_at = ?2 WHERE registry_id = ?1",
+                &vals![registry_id, unix_now()],
+            )?;
+            Ok(())
+        })
     }
 
     // -- anti-rollback floors ------------------------------------------------
@@ -1670,14 +1760,14 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn channel_floor(&self, registry_id: i64, channel: &str) -> Result<Option<String>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT floor FROM channel_floors WHERE registry_id = ?1 AND channel = ?2",
-            params![registry_id, channel],
-            |row| row.get(0),
-        )
-        .optional()
-        .context("loading channel floor")
+        self.backend
+            .query_opt(
+                "SELECT floor FROM channel_floors WHERE registry_id = ?1 AND channel = ?2",
+                &vals![registry_id, channel],
+            )
+            .context("loading channel floor")?
+            .map(|row| row.get(0))
+            .transpose()
     }
 
     /// Set (or overwrite) the anti-rollback floor for one channel.
@@ -1689,12 +1779,11 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn set_channel_floor(&self, registry_id: i64, channel: &str, floor: &str) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO channel_floors (registry_id, channel, floor)
              VALUES (?1, ?2, ?3)
              ON CONFLICT(registry_id, channel) DO UPDATE SET floor = excluded.floor",
-            params![registry_id, channel, floor],
+            &vals![registry_id, channel, floor],
         )?;
         Ok(())
     }
@@ -1720,33 +1809,34 @@ impl Database {
         started_at: i64,
         finished_at: i64,
     ) -> Result<i64> {
-        let mut conn = self.lock();
-        let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT INTO validation_runs
-             (registry_id, cache_url, depth, checked, missing, reachable,
-              started_at, finished_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                registry_id,
-                cache_url,
-                depth,
-                checked as i64,
-                missing_hashes.len() as i64,
-                reachable as i64,
-                started_at,
-                finished_at,
-            ],
-        )?;
-        let run_id = tx.last_insert_rowid();
-        for hash in missing_hashes {
-            tx.execute(
-                "INSERT OR IGNORE INTO validation_findings (run_id, store_hash, status)
-                 VALUES (?1, ?2, 'missing')",
-                params![run_id, hash],
+        let mut run_id = 0_i64;
+        self.backend.with_tx(&mut |tx| {
+            run_id = tx.execute_insert(
+                "INSERT INTO validation_runs
+                 (registry_id, cache_url, depth, checked, missing, reachable,
+                  started_at, finished_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                &vals![
+                    registry_id,
+                    cache_url,
+                    depth,
+                    checked,
+                    missing_hashes.len() as i64,
+                    reachable,
+                    started_at,
+                    finished_at,
+                ],
             )?;
-        }
-        tx.commit()?;
+            for hash in missing_hashes {
+                tx.execute(
+                    "INSERT INTO validation_findings (run_id, store_hash, status)
+                     VALUES (?1, ?2, 'missing')
+                     ON CONFLICT(run_id, store_hash) DO NOTHING",
+                    &vals![run_id, hash],
+                )?;
+            }
+            Ok(())
+        })?;
         Ok(run_id)
     }
 
@@ -1756,27 +1846,28 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn latest_validation_runs(&self, registry_id: i64) -> Result<Vec<ValidationRunRow>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT v.id, v.cache_url, v.depth, v.checked, v.missing, v.reachable, v.finished_at
              FROM validation_runs v
              WHERE v.registry_id = ?1
                AND v.id = (SELECT MAX(id) FROM validation_runs
                            WHERE registry_id = ?1 AND cache_url = v.cache_url)
              ORDER BY v.cache_url",
+            &vals![registry_id],
         )?;
-        let rows = stmt.query_map([registry_id], |row| {
-            Ok(ValidationRunRow {
-                id: row.get(0)?,
-                cache_url: row.get(1)?,
-                depth: row.get(2)?,
-                checked: row.get::<_, i64>(3)? as u64,
-                missing: row.get::<_, i64>(4)? as u64,
-                reachable: row.get::<_, i64>(5)? != 0,
-                finished_at: row.get(6)?,
+        rows.iter()
+            .map(|row| {
+                Ok(ValidationRunRow {
+                    id: row.get(0)?,
+                    cache_url: row.get(1)?,
+                    depth: row.get(2)?,
+                    checked: row.get(3)?,
+                    missing: row.get(4)?,
+                    reachable: row.get(5)?,
+                    finished_at: row.get(6)?,
+                })
             })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            .collect()
     }
 
     /// The store hashes a validation run found missing, sorted.
@@ -1785,13 +1876,12 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn validation_missing(&self, run_id: i64) -> Result<Vec<String>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT store_hash FROM validation_findings
              WHERE run_id = ?1 AND status = 'missing' ORDER BY store_hash",
+            &vals![run_id],
         )?;
-        let rows = stmt.query_map([run_id], |row| row.get(0))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.iter().map(|row| row.get(0)).collect()
     }
 
     /// Every distinct store hash the registry's index references, sorted.
@@ -1805,19 +1895,17 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn all_store_hashes(&self, registry_id: i64) -> Result<Vec<String>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT vp.store_path, vp.refs FROM version_platforms vp
              JOIN package_versions pv ON pv.id = vp.version_id
              JOIN packages p ON p.id = pv.package_id
              WHERE p.registry_id = ?1",
+            &vals![registry_id],
         )?;
-        let rows = stmt.query_map([registry_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
         let mut hashes = std::collections::BTreeSet::new();
-        for row in rows {
-            let (store_path, refs_json) = row?;
+        for row in &rows {
+            let store_path: String = row.get(0)?;
+            let refs_json: String = row.get(1)?;
             let basename = store_path.rsplit('/').next().unwrap_or(&store_path);
             if let Some((hash, _)) = basename.split_once('-') {
                 hashes.insert(hash.to_string());
@@ -1838,12 +1926,14 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn index_status(&self, registry_id: i64) -> Result<Option<IndexStatus>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT state, error, last_indexed_commit, name, description, indexed_at
-             FROM registry_index WHERE registry_id = ?1",
-            [registry_id],
-            |row| {
+        self.backend
+            .query_opt(
+                "SELECT state, error, last_indexed_commit, name, description, indexed_at
+                 FROM registry_index WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .context("loading index status")?
+            .map(|row| {
                 Ok(IndexStatus {
                     state: row.get(0)?,
                     error: row.get(1)?,
@@ -1852,10 +1942,8 @@ impl Database {
                     description: row.get(4)?,
                     indexed_at: row.get(5)?,
                 })
-            },
-        )
-        .optional()
-        .context("loading index status")
+            })
+            .transpose()
     }
 
     /// List packages with their newest indexed version.
@@ -1864,22 +1952,23 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_packages(&self, registry_id: i64) -> Result<Vec<PackageRow>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT p.name, p.description, p.license,
                     (SELECT v.version FROM package_versions v
                      WHERE v.package_id = p.id ORDER BY v.id DESC LIMIT 1)
              FROM packages p WHERE p.registry_id = ?1 ORDER BY p.name",
+            &vals![registry_id],
         )?;
-        let rows = stmt.query_map([registry_id], |row| {
-            Ok(PackageRow {
-                name: row.get(0)?,
-                description: row.get(1)?,
-                license: row.get(2)?,
-                latest_version: row.get(3)?,
+        rows.iter()
+            .map(|row| {
+                Ok(PackageRow {
+                    name: row.get(0)?,
+                    description: row.get(1)?,
+                    license: row.get(2)?,
+                    latest_version: row.get(3)?,
+                })
             })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            .collect()
     }
 
     /// Load one package's full detail.
@@ -1888,53 +1977,50 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn package_detail(&self, registry_id: i64, name: &str) -> Result<Option<PackageDetail>> {
-        let conn = self.lock();
-        let header = conn
-            .query_row(
-                "SELECT id, name, description, homepage, license, maintainer, sysroot
-                 FROM packages WHERE registry_id = ?1 AND name = ?2",
-                params![registry_id, name],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        PackageDetail {
-                            name: row.get(1)?,
-                            description: row.get(2)?,
-                            homepage: row.get(3)?,
-                            license: row.get(4)?,
-                            maintainer: row.get(5)?,
-                            sysroot: row.get::<_, i64>(6)? != 0,
-                            versions: Vec::new(),
-                        },
-                    ))
-                },
-            )
-            .optional()?;
-        let Some((package_id, mut detail)) = header else {
+        let header = self.backend.query_opt(
+            "SELECT id, name, description, homepage, license, maintainer, sysroot
+             FROM packages WHERE registry_id = ?1 AND name = ?2",
+            &vals![registry_id, name],
+        )?;
+        let Some(header) = header else {
             return Ok(None);
         };
+        let package_id: i64 = header.get(0)?;
+        let mut detail = PackageDetail {
+            name: header.get(1)?,
+            description: header.get(2)?,
+            homepage: header.get(3)?,
+            license: header.get(4)?,
+            maintainer: header.get(5)?,
+            sysroot: header.get(6)?,
+            versions: Vec::new(),
+        };
 
-        let mut stmt = conn.prepare(
+        let version_rows = self.backend.query(
             "SELECT id, version, previous FROM package_versions
              WHERE package_id = ?1 ORDER BY id DESC",
+            &vals![package_id],
         )?;
-        let versions = stmt
-            .query_map([package_id], |row| {
+        let versions = version_rows
+            .iter()
+            .map(|row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
+                    row.get::<i64>(0)?,
+                    row.get::<String>(1)?,
+                    row.get::<Option<String>>(2)?,
                 ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-        let mut platform_stmt = conn.prepare(
-            "SELECT platform, store_path, nar_hash, nar_size, closure_size, refs, images
-             FROM version_platforms WHERE version_id = ?1 ORDER BY platform",
-        )?;
         for (version_id, version, previous) in versions {
-            let platforms = platform_stmt
-                .query_map([version_id], |row| {
+            let platform_rows = self.backend.query(
+                "SELECT platform, store_path, nar_hash, nar_size, closure_size, refs, images
+                 FROM version_platforms WHERE version_id = ?1 ORDER BY platform",
+                &vals![version_id],
+            )?;
+            let platforms = platform_rows
+                .iter()
+                .map(|row| {
                     // refs/images are index-written JSON; tolerate (skip) a
                     // malformed value the same way registry rows are read.
                     let refs_json: String = row.get(5)?;
@@ -1943,13 +2029,13 @@ impl Database {
                         platform: row.get(0)?,
                         store_path: row.get(1)?,
                         nar_hash: row.get(2)?,
-                        nar_size: row.get::<_, i64>(3)? as u64,
-                        closure_size: row.get::<_, i64>(4)? as u64,
+                        nar_size: row.get(3)?,
+                        closure_size: row.get(4)?,
                         refs: serde_json::from_str(&refs_json).unwrap_or_default(),
                         images: serde_json::from_str(&images_json).unwrap_or_default(),
                     })
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+                })
+                .collect::<Result<Vec<_>>>()?;
             detail.versions.push(VersionDetail {
                 version,
                 previous,
@@ -1965,30 +2051,31 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_channels(&self, registry_id: i64) -> Result<Vec<ChannelSummary>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let channel_rows = self.backend.query(
             "SELECT id, name, frontier FROM channels WHERE registry_id = ?1 ORDER BY name",
+            &vals![registry_id],
         )?;
-        let channels = stmt
-            .query_map([registry_id], |row| {
+        let channels = channel_rows
+            .iter()
+            .map(|row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
+                    row.get::<i64>(0)?,
+                    row.get::<String>(1)?,
+                    row.get::<Option<String>>(2)?,
                 ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-        let mut partition_stmt =
-            conn.prepare("SELECT bucket, release FROM channel_partitions WHERE channel_id = ?1")?;
         let mut out = Vec::with_capacity(channels.len());
         for (channel_id, name, frontier) in channels {
             let mut partitions = vec![None; 256];
-            let rows = partition_stmt.query_map([channel_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?;
-            for row in rows {
-                let (bucket, release) = row?;
+            let rows = self.backend.query(
+                "SELECT bucket, release FROM channel_partitions WHERE channel_id = ?1",
+                &vals![channel_id],
+            )?;
+            for row in &rows {
+                let bucket: i64 = row.get(0)?;
+                let release: String = row.get(1)?;
                 if let Some(slot) = partitions.get_mut(bucket as usize) {
                     *slot = Some(release);
                 }
@@ -2008,22 +2095,23 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_releases(&self, registry_id: i64) -> Result<Vec<ReleaseRow>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT semver, tag_oid, commit_oid, signer, tagged_at, pack_present
              FROM releases WHERE registry_id = ?1 ORDER BY tagged_at DESC, semver DESC",
+            &vals![registry_id],
         )?;
-        let rows = stmt.query_map([registry_id], |row| {
-            Ok(ReleaseRow {
-                semver: row.get(0)?,
-                tag_oid: row.get(1)?,
-                commit_oid: row.get(2)?,
-                signer: row.get(3)?,
-                tagged_at: row.get(4)?,
-                pack_present: row.get::<_, i64>(5)? != 0,
+        rows.iter()
+            .map(|row| {
+                Ok(ReleaseRow {
+                    semver: row.get(0)?,
+                    tag_oid: row.get(1)?,
+                    commit_oid: row.get(2)?,
+                    signer: row.get(3)?,
+                    tagged_at: row.get(4)?,
+                    pack_present: row.get(5)?,
+                })
             })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            .collect()
     }
 
     /// The `info/refs` digest the current index was built from, when set.
@@ -2032,15 +2120,15 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn refs_digest(&self, registry_id: i64) -> Result<Option<String>> {
-        let conn = self.lock();
-        let digest: Option<Option<String>> = conn
-            .query_row(
+        let digest: Option<Option<String>> = self
+            .backend
+            .query_opt(
                 "SELECT refs_digest FROM registry_index WHERE registry_id = ?1",
-                [registry_id],
-                |row| row.get(0),
+                &vals![registry_id],
             )
-            .optional()
-            .context("loading refs digest")?;
+            .context("loading refs digest")?
+            .map(|row| row.get::<Option<String>>(0))
+            .transpose()?;
         Ok(digest.flatten())
     }
 
@@ -2050,15 +2138,14 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_roster(&self, registry_id: i64) -> Result<Vec<(String, String, String)>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT key_id, public_key, status FROM key_rosters
              WHERE registry_id = ?1 ORDER BY status, key_id",
+            &vals![registry_id],
         )?;
-        let rows = stmt.query_map([registry_id], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.iter()
+            .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .collect()
     }
 
     /// Committed `[[caches]]` entries as `(url, priority)`, highest first.
@@ -2067,14 +2154,13 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_caches(&self, registry_id: i64) -> Result<Vec<(String, u32)>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT url, priority FROM caches WHERE registry_id = ?1 ORDER BY priority DESC",
+            &vals![registry_id],
         )?;
-        let rows = stmt.query_map([registry_id], |row| {
-            Ok((row.get(0)?, row.get::<_, i64>(1)? as u32))
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.iter()
+            .map(|row| Ok((row.get(0)?, row.get::<u32>(1)?)))
+            .collect()
     }
 
     /// The committed cache-stack expression for a registry, parsed.
@@ -2092,17 +2178,16 @@ impl Database {
         &self,
         registry_id: i64,
     ) -> Result<Option<crate::stack::StackNode>> {
-        let json: Option<String> = {
-            let conn = self.lock();
-            conn.query_row(
+        let json: Option<String> = self
+            .backend
+            .query_opt(
                 "SELECT cache_stack FROM registry_index WHERE registry_id = ?1",
-                [registry_id],
-                |row| row.get(0),
+                &vals![registry_id],
             )
-            .optional()
             .context("loading registry cache stack")?
-            .flatten()
-        };
+            .map(|row| row.get::<Option<String>>(0))
+            .transpose()?
+            .flatten();
         match json {
             Some(json) => Ok(Some(crate::stack::StackNode::from_json(&json)?)),
             None => Ok(None),
@@ -2118,12 +2203,10 @@ impl Database {
     /// Returns an error on database failure, including a unique-constraint
     /// violation when `slug` is already taken.
     pub fn create_org(&self, slug: &str, name: &str) -> Result<i64> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute_insert(
             "INSERT INTO orgs (slug, name, created_at) VALUES (?1, ?2, ?3)",
-            params![slug, name, unix_now()],
-        )?;
-        Ok(conn.last_insert_rowid())
+            &vals![slug, name, unix_now()],
+        )
     }
 
     /// Look up an organization by slug.
@@ -2132,21 +2215,14 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn org_by_slug(&self, slug: &str) -> Result<Option<OrgRecord>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT id, slug, name, created_at FROM orgs WHERE slug = ?1",
-            [slug],
-            |row| {
-                Ok(OrgRecord {
-                    id: row.get(0)?,
-                    slug: row.get(1)?,
-                    name: row.get(2)?,
-                    created_at: row.get(3)?,
-                })
-            },
-        )
-        .optional()
-        .context("loading org by slug")
+        self.backend
+            .query_opt(
+                "SELECT id, slug, name, created_at FROM orgs WHERE slug = ?1",
+                &vals![slug],
+            )
+            .context("loading org by slug")?
+            .map(|row| row_to_org(&row))
+            .transpose()
     }
 
     /// Create a project under an org at a materialized path; returns its id.
@@ -2160,12 +2236,10 @@ impl Database {
     /// violation when `(org_id, path)` already exists or `org_id` does not
     /// reference an org.
     pub fn create_project(&self, org_id: i64, path: &str, name: &str) -> Result<i64> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute_insert(
             "INSERT INTO projects (org_id, path, name, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![org_id, path, name, unix_now()],
-        )?;
-        Ok(conn.last_insert_rowid())
+            &vals![org_id, path, name, unix_now()],
+        )
     }
 
     /// List an org's projects, ordered by materialized path.
@@ -2174,21 +2248,22 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_projects(&self, org_id: i64) -> Result<Vec<ProjectRecord>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT id, org_id, path, name, created_at FROM projects
              WHERE org_id = ?1 ORDER BY path",
+            &vals![org_id],
         )?;
-        let rows = stmt.query_map([org_id], |row| {
-            Ok(ProjectRecord {
-                id: row.get(0)?,
-                org_id: row.get(1)?,
-                path: row.get(2)?,
-                name: row.get(3)?,
-                created_at: row.get(4)?,
+        rows.iter()
+            .map(|row| {
+                Ok(ProjectRecord {
+                    id: row.get(0)?,
+                    org_id: row.get(1)?,
+                    path: row.get(2)?,
+                    name: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
             })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            .collect()
     }
 
     // -- tenancy: principals -------------------------------------------------
@@ -2200,12 +2275,10 @@ impl Database {
     /// Returns an error on database failure, including a unique-constraint
     /// violation when `email` is already registered.
     pub fn create_user(&self, email: &str, display_name: Option<&str>) -> Result<i64> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute_insert(
             "INSERT INTO users (email, display_name, created_at) VALUES (?1, ?2, ?3)",
-            params![email, display_name, unix_now()],
-        )?;
-        Ok(conn.last_insert_rowid())
+            &vals![email, display_name, unix_now()],
+        )
     }
 
     /// Look up a non-deleted user's id by email.
@@ -2216,14 +2289,14 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn user_by_email(&self, email: &str) -> Result<Option<i64>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT id FROM users WHERE email = ?1 AND deleted_at IS NULL",
-            [email],
-            |row| row.get(0),
-        )
-        .optional()
-        .context("loading user by email")
+        self.backend
+            .query_opt(
+                "SELECT id FROM users WHERE email = ?1 AND deleted_at IS NULL",
+                &vals![email],
+            )
+            .context("loading user by email")?
+            .map(|row| row.get(0))
+            .transpose()
     }
 
     /// Look up a non-deleted user's email by id.
@@ -2232,14 +2305,14 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn user_email(&self, user_id: i64) -> Result<Option<String>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT email FROM users WHERE id = ?1 AND deleted_at IS NULL",
-            [user_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .context("loading user email by id")
+        self.backend
+            .query_opt(
+                "SELECT email FROM users WHERE id = ?1 AND deleted_at IS NULL",
+                &vals![user_id],
+            )
+            .context("loading user email by id")?
+            .map(|row| row.get(0))
+            .transpose()
     }
 
     /// Find a user by email, creating one if absent; returns the user id.
@@ -2257,16 +2330,15 @@ impl Database {
         if let Some(id) = self.user_by_email(email)? {
             return Ok(id);
         }
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO users (email, display_name, created_at) VALUES (?1, NULL, ?2)
              ON CONFLICT(email) DO NOTHING",
-            params![email, unix_now()],
+            &vals![email, unix_now()],
         )?;
-        conn.query_row("SELECT id FROM users WHERE email = ?1", [email], |row| {
-            row.get(0)
-        })
-        .context("resolving user id after insert")
+        self.backend
+            .query_opt("SELECT id FROM users WHERE email = ?1", &vals![email])?
+            .context("resolving user id after insert")?
+            .get(0)
     }
 
     /// The requested scope and permissions of a live, unresolved device
@@ -2282,20 +2354,20 @@ impl Database {
     /// Returns an error on database failure.
     pub fn pending_device_request(&self, user_code: &str) -> Result<Option<(String, Vec<String>)>> {
         let now = unix_now();
-        let conn = self.lock();
-        let row = conn
-            .query_row(
+        let row = self
+            .backend
+            .query_opt(
                 "SELECT scope, permissions FROM device_codes
                  WHERE user_code = ?1 AND approved_by_user IS NULL AND denied = 0
                    AND expires_at > ?2",
-                params![user_code, now],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                &vals![user_code, now],
             )
-            .optional()
             .context("loading pending device request")?;
-        let Some((scope, perms_json)) = row else {
+        let Some(row) = row else {
             return Ok(None);
         };
+        let scope: String = row.get(0)?;
+        let perms_json: String = row.get(1)?;
         let perms: Vec<String> = serde_json::from_str(&perms_json).unwrap_or_default();
         Ok(Some((scope, perms)))
     }
@@ -2307,12 +2379,10 @@ impl Database {
     /// Returns an error on database failure, including a unique-constraint
     /// violation when `(org_id, name)` already exists.
     pub fn create_service_account(&self, org_id: i64, name: &str) -> Result<i64> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute_insert(
             "INSERT INTO service_accounts (org_id, name, created_at) VALUES (?1, ?2, ?3)",
-            params![org_id, name, unix_now()],
-        )?;
-        Ok(conn.last_insert_rowid())
+            &vals![org_id, name, unix_now()],
+        )
     }
 
     /// Look up a service account's id by `(org_id, name)`.
@@ -2321,14 +2391,14 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn service_account_by_name(&self, org_id: i64, name: &str) -> Result<Option<i64>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT id FROM service_accounts WHERE org_id = ?1 AND name = ?2",
-            params![org_id, name],
-            |row| row.get(0),
-        )
-        .optional()
-        .context("loading service account by name")
+        self.backend
+            .query_opt(
+                "SELECT id FROM service_accounts WHERE org_id = ?1 AND name = ?2",
+                &vals![org_id, name],
+            )
+            .context("loading service account by name")?
+            .map(|row| row.get(0))
+            .transpose()
     }
 
     // -- tenancy: memberships ------------------------------------------------
@@ -2350,14 +2420,13 @@ impl Database {
         scope: &str,
         role: &str,
     ) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO memberships
              (principal_kind, principal_id, scope, role, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(principal_kind, principal_id, scope)
              DO UPDATE SET role = excluded.role",
-            params![principal_kind, principal_id, scope, role, unix_now()],
+            &vals![principal_kind, principal_id, scope, role, unix_now()],
         )?;
         Ok(())
     }
@@ -2375,11 +2444,10 @@ impl Database {
         principal_id: i64,
         scope: &str,
     ) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "DELETE FROM memberships
              WHERE principal_kind = ?1 AND principal_id = ?2 AND scope = ?3",
-            params![principal_kind, principal_id, scope],
+            &vals![principal_kind, principal_id, scope],
         )?;
         Ok(())
     }
@@ -2398,15 +2466,14 @@ impl Database {
         principal_kind: &str,
         principal_id: i64,
     ) -> Result<Vec<(String, String)>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT scope, role FROM memberships
              WHERE principal_kind = ?1 AND principal_id = ?2 ORDER BY scope",
+            &vals![principal_kind, principal_id],
         )?;
-        let rows = stmt.query_map(params![principal_kind, principal_id], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.iter()
+            .map(|row| Ok((row.get(0)?, row.get(1)?)))
+            .collect()
     }
 
     /// List the principals granted a role directly at one scope.
@@ -2420,13 +2487,14 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_members_of_scope(&self, scope: &str) -> Result<Vec<(String, i64, String)>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT principal_kind, principal_id, role FROM memberships
              WHERE scope = ?1 ORDER BY principal_kind, principal_id",
+            &vals![scope],
         )?;
-        let rows = stmt.query_map([scope], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.iter()
+            .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .collect()
     }
 
     /// Resolve a principal's effective grants as parsed `(Scope, Role)`
@@ -2474,12 +2542,11 @@ impl Database {
         project_path: &str,
         visibility: &str,
     ) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "UPDATE registries
              SET org_id = ?2, project_path = ?3, visibility = ?4
              WHERE id = ?1",
-            params![registry_id, org_id, project_path, visibility],
+            &vals![registry_id, org_id, project_path, visibility],
         )?;
         Ok(())
     }
@@ -2553,16 +2620,15 @@ impl Database {
         if self.registry_by_slug(&slug)?.is_some() {
             bail!("a registry already exists at '{slug}'");
         }
-        let conn = self.lock();
-        conn.execute(
+        let id = self.backend.execute_insert(
             "INSERT INTO registries
              (slug, source_url, trust_keys, require_signatures, created_at,
               org_id, project_path, visibility, storage_binding_id, prefix)
              VALUES (?1, '', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
+            &vals![
                 slug,
                 serde_json::to_string(trust_keys)?,
-                require_signatures as i64,
+                require_signatures,
                 unix_now(),
                 org_id,
                 project_path,
@@ -2571,12 +2637,11 @@ impl Database {
                 prefix,
             ],
         )?;
-        let id = conn.last_insert_rowid();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO registry_index (registry_id, state)
              VALUES (?1, 'indexing')
              ON CONFLICT(registry_id) DO NOTHING",
-            [id],
+            &vals![id],
         )?;
         Ok(id)
     }
@@ -2603,13 +2668,11 @@ impl Database {
         if kind != "local_fs" {
             bail!("unsupported storage binding kind '{kind}' (only 'local_fs' is supported)");
         }
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute_insert(
             "INSERT INTO storage_bindings (org_id, name, kind, root, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![org_id, name, kind, root, unix_now()],
-        )?;
-        Ok(conn.last_insert_rowid())
+            &vals![org_id, name, kind, root, unix_now()],
+        )
     }
 
     /// Look up a storage binding by id.
@@ -2618,15 +2681,15 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn storage_binding(&self, id: i64) -> Result<Option<StorageBindingRecord>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT id, org_id, name, kind, root, created_at
-             FROM storage_bindings WHERE id = ?1",
-            [id],
-            row_to_storage_binding,
-        )
-        .optional()
-        .context("loading storage binding by id")
+        self.backend
+            .query_opt(
+                "SELECT id, org_id, name, kind, root, created_at
+                 FROM storage_bindings WHERE id = ?1",
+                &vals![id],
+            )
+            .context("loading storage binding by id")?
+            .map(|row| row_to_storage_binding(&row))
+            .transpose()
     }
 
     /// Look up a storage binding by `(org_id, name)`.
@@ -2639,15 +2702,15 @@ impl Database {
         org_id: i64,
         name: &str,
     ) -> Result<Option<StorageBindingRecord>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT id, org_id, name, kind, root, created_at
-             FROM storage_bindings WHERE org_id = ?1 AND name = ?2",
-            params![org_id, name],
-            row_to_storage_binding,
-        )
-        .optional()
-        .context("loading storage binding by name")
+        self.backend
+            .query_opt(
+                "SELECT id, org_id, name, kind, root, created_at
+                 FROM storage_bindings WHERE org_id = ?1 AND name = ?2",
+                &vals![org_id, name],
+            )
+            .context("loading storage binding by name")?
+            .map(|row| row_to_storage_binding(&row))
+            .transpose()
     }
 
     /// List an org's storage bindings, ordered by name.
@@ -2656,13 +2719,12 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_storage_bindings(&self, org_id: i64) -> Result<Vec<StorageBindingRecord>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT id, org_id, name, kind, root, created_at
              FROM storage_bindings WHERE org_id = ?1 ORDER BY name",
+            &vals![org_id],
         )?;
-        let rows = stmt.query_map([org_id], row_to_storage_binding)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.iter().map(row_to_storage_binding).collect()
     }
 
     /// Bind a registry to a storage binding and sub-prefix.
@@ -2679,10 +2741,9 @@ impl Database {
         binding_id: i64,
         prefix: &str,
     ) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "UPDATE registries SET storage_binding_id = ?2, prefix = ?3 WHERE id = ?1",
-            params![registry_id, binding_id, prefix],
+            &vals![registry_id, binding_id, prefix],
         )?;
         Ok(())
     }
@@ -2703,16 +2764,16 @@ impl Database {
     /// Returns an error on database failure (including a registry whose
     /// `storage_binding_id` points at a missing binding).
     pub fn registry_surface_root(&self, registry_id: i64) -> Result<Option<PathBuf>> {
-        let Some(registry) = ({
-            let conn = self.lock();
-            conn.query_row(
+        let registry = self
+            .backend
+            .query_opt(
                 &format!("SELECT {REGISTRY_COLUMNS} FROM registries WHERE id = ?1"),
-                [registry_id],
-                row_to_registry,
+                &vals![registry_id],
             )
-            .optional()
             .context("loading registry for surface resolution")?
-        }) else {
+            .map(|row| row_to_registry(&row))
+            .transpose()?;
+        let Some(registry) = registry else {
             return Ok(None);
         };
         if let Some(binding_id) = registry.storage_binding_id {
@@ -2763,13 +2824,13 @@ impl Database {
         // Seal the seed as a hex string so the placeholder XOR sealer (which
         // operates on UTF-8 plaintext) round-trips it losslessly.
         let secret_enc = sealer.seal(&hex::encode(seed))?;
-        let conn = self.lock();
-        conn.execute(
-            "INSERT INTO hosted_keys (org_id, key_id, public_key, secret_enc, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![org_id, key_id, public_key, secret_enc, unix_now()],
-        )
-        .with_context(|| format!("enrolling hosted key '{key_id}' in org {org_id}"))?;
+        self.backend
+            .execute(
+                "INSERT INTO hosted_keys (org_id, key_id, public_key, secret_enc, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                &vals![org_id, key_id, public_key, secret_enc, unix_now()],
+            )
+            .with_context(|| format!("enrolling hosted key '{key_id}' in org {org_id}"))?;
         Ok(public_key)
     }
 
@@ -2779,15 +2840,15 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn hosted_key(&self, id: i64) -> Result<Option<HostedKeyRecord>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT id, org_id, key_id, public_key, secret_enc, created_at
-             FROM hosted_keys WHERE id = ?1",
-            [id],
-            row_to_hosted_key,
-        )
-        .optional()
-        .context("loading hosted key by id")
+        self.backend
+            .query_opt(
+                "SELECT id, org_id, key_id, public_key, secret_enc, created_at
+                 FROM hosted_keys WHERE id = ?1",
+                &vals![id],
+            )
+            .context("loading hosted key by id")?
+            .map(|row| row_to_hosted_key(&row))
+            .transpose()
     }
 
     /// Look up a hosted key by its org and key id.
@@ -2796,15 +2857,15 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn hosted_key_by_name(&self, org_id: i64, key_id: &str) -> Result<Option<HostedKeyRecord>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT id, org_id, key_id, public_key, secret_enc, created_at
-             FROM hosted_keys WHERE org_id = ?1 AND key_id = ?2",
-            params![org_id, key_id],
-            row_to_hosted_key,
-        )
-        .optional()
-        .context("loading hosted key by name")
+        self.backend
+            .query_opt(
+                "SELECT id, org_id, key_id, public_key, secret_enc, created_at
+                 FROM hosted_keys WHERE org_id = ?1 AND key_id = ?2",
+                &vals![org_id, key_id],
+            )
+            .context("loading hosted key by name")?
+            .map(|row| row_to_hosted_key(&row))
+            .transpose()
     }
 
     /// List an org's hosted signing keys, oldest first.
@@ -2813,13 +2874,12 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_hosted_keys(&self, org_id: i64) -> Result<Vec<HostedKeyRecord>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT id, org_id, key_id, public_key, secret_enc, created_at
              FROM hosted_keys WHERE org_id = ?1 ORDER BY created_at, id",
+            &vals![org_id],
         )?;
-        let rows = stmt.query_map([org_id], row_to_hosted_key)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.iter().map(row_to_hosted_key).collect()
     }
 
     /// Unseal a hosted key into a usable Ed25519 signing key.
@@ -2873,10 +2933,9 @@ impl Database {
         registry_id: i64,
         hosted_key_id: Option<i64>,
     ) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "UPDATE registries SET hosted_key_id = ?2 WHERE id = ?1",
-            params![registry_id, hosted_key_id],
+            &vals![registry_id, hosted_key_id],
         )?;
         Ok(())
     }
@@ -2887,21 +2946,14 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn org_by_id(&self, id: i64) -> Result<Option<OrgRecord>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT id, slug, name, created_at FROM orgs WHERE id = ?1",
-            [id],
-            |row| {
-                Ok(OrgRecord {
-                    id: row.get(0)?,
-                    slug: row.get(1)?,
-                    name: row.get(2)?,
-                    created_at: row.get(3)?,
-                })
-            },
-        )
-        .optional()
-        .context("loading org by id")
+        self.backend
+            .query_opt(
+                "SELECT id, slug, name, created_at FROM orgs WHERE id = ?1",
+                &vals![id],
+            )
+            .context("loading org by id")?
+            .map(|row| row_to_org(&row))
+            .transpose()
     }
 
     /// List all organizations, ordered by slug.
@@ -2910,17 +2962,11 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_orgs(&self) -> Result<Vec<OrgRecord>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare("SELECT id, slug, name, created_at FROM orgs ORDER BY slug")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(OrgRecord {
-                id: row.get(0)?,
-                slug: row.get(1)?,
-                name: row.get(2)?,
-                created_at: row.get(3)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let rows = self.backend.query(
+            "SELECT id, slug, name, created_at FROM orgs ORDER BY slug",
+            &[],
+        )?;
+        rows.iter().map(row_to_org).collect()
     }
 
     // -- tenancy: invitations ------------------------------------------------
@@ -2945,12 +2991,11 @@ impl Database {
         token_hash: &str,
         expires_at: i64,
     ) -> Result<i64> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute_insert(
             "INSERT INTO invitations
              (org_id, email, scope, role, token_hash, created_at, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
+            &vals![
                 org_id,
                 email,
                 scope,
@@ -2959,8 +3004,7 @@ impl Database {
                 unix_now(),
                 expires_at
             ],
-        )?;
-        Ok(conn.last_insert_rowid())
+        )
     }
 
     /// Accept an invitation by its token hash, returning its details.
@@ -2977,29 +3021,29 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn accept_invitation(&self, token_hash: &str) -> Result<Option<InvitationRecord>> {
-        let conn = self.lock();
         let now = unix_now();
-        let record = conn
-            .query_row(
+        let record = self
+            .backend
+            .query_opt(
                 "SELECT id, org_id, email, scope, role FROM invitations
                  WHERE token_hash = ?1 AND accepted_at IS NULL AND expires_at > ?2",
-                params![token_hash, now],
-                |row| {
-                    Ok(InvitationRecord {
-                        id: row.get(0)?,
-                        org_id: row.get(1)?,
-                        email: row.get(2)?,
-                        scope: row.get(3)?,
-                        role: row.get(4)?,
-                    })
-                },
+                &vals![token_hash, now],
             )
-            .optional()
-            .context("loading invitation by hash")?;
+            .context("loading invitation by hash")?
+            .map(|row| -> Result<InvitationRecord> {
+                Ok(InvitationRecord {
+                    id: row.get(0)?,
+                    org_id: row.get(1)?,
+                    email: row.get(2)?,
+                    scope: row.get(3)?,
+                    role: row.get(4)?,
+                })
+            })
+            .transpose()?;
         if let Some(record) = &record {
-            conn.execute(
+            self.backend.execute(
                 "UPDATE invitations SET accepted_at = ?2 WHERE id = ?1",
-                params![record.id, now],
+                &vals![record.id, now],
             )?;
         }
         Ok(record)
@@ -3029,13 +3073,12 @@ impl Database {
         let (secret, hash) = crate::auth::token::generate_token();
         let id = uuid::Uuid::new_v4().to_string();
         let perms_json = serde_json::to_string(&permission_names(permissions))?;
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO tokens
              (id, hash, owner_kind, owner_id, scope, permissions, comment, created_at,
               expires_at, revoked_at, last_used_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL)",
-            params![
+            &vals![
                 id,
                 hash,
                 owner.kind.as_str(),
@@ -3066,33 +3109,26 @@ impl Database {
     pub fn validate_token(&self, secret: &str) -> Result<Option<TokenAuth>> {
         let hash = crate::auth::token::sha256_hex(secret);
         let now = unix_now();
-        let conn = self.lock();
-        let row = conn
-            .query_row(
+        let row = self
+            .backend
+            .query_opt(
                 "SELECT id, owner_kind, owner_id, scope, permissions, expires_at,
                         revoked_at, rotated_at
                  FROM tokens WHERE hash = ?1",
-                [&hash],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, Option<i64>>(5)?,
-                        row.get::<_, Option<i64>>(6)?,
-                        row.get::<_, Option<i64>>(7)?,
-                    ))
-                },
+                &vals![hash],
             )
-            .optional()
             .context("loading token by hash")?;
-        let Some((id, owner_kind, owner_id, scope, perms_json, expires_at, revoked_at, rotated_at)) =
-            row
-        else {
+        let Some(row) = row else {
             return Ok(None);
         };
+        let id: String = row.get(0)?;
+        let owner_kind: String = row.get(1)?;
+        let owner_id: i64 = row.get(2)?;
+        let scope: String = row.get(3)?;
+        let perms_json: String = row.get(4)?;
+        let expires_at: Option<i64> = row.get(5)?;
+        let revoked_at: Option<i64> = row.get(6)?;
+        let rotated_at: Option<i64> = row.get(7)?;
         if let Some(exp) = expires_at {
             if now >= exp {
                 return Ok(None);
@@ -3112,9 +3148,9 @@ impl Database {
             return Ok(None);
         };
         let permissions = parse_permission_names(&perms_json);
-        conn.execute(
+        self.backend.execute(
             "UPDATE tokens SET last_used_at = ?2 WHERE id = ?1",
-            params![id, now],
+            &vals![id, now],
         )?;
         Ok(Some(TokenAuth {
             token_id: id,
@@ -3132,10 +3168,9 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn revoke_token(&self, token_id: &str) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "UPDATE tokens SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
-            params![token_id, unix_now()],
+            &vals![token_id, unix_now()],
         )?;
         Ok(())
     }
@@ -3149,22 +3184,17 @@ impl Database {
         &self,
         owner: crate::domain::Principal,
     ) -> Result<Vec<(String, String, Vec<crate::domain::Permission>)>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT id, scope, permissions FROM tokens
              WHERE owner_kind = ?1 AND owner_id = ?2 AND revoked_at IS NULL
              ORDER BY created_at",
+            &vals![owner.kind.as_str(), owner.id],
         )?;
-        let rows = stmt.query_map(params![owner.kind.as_str(), owner.id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?;
         let mut out = Vec::new();
-        for row in rows {
-            let (id, scope, perms_json) = row?;
+        for row in &rows {
+            let id: String = row.get(0)?;
+            let scope: String = row.get(1)?;
+            let perms_json: String = row.get(2)?;
             out.push((id, scope, parse_permission_names(&perms_json)));
         }
         Ok(out)
@@ -3184,46 +3214,42 @@ impl Database {
     /// Returns an error on database failure or a malformed stored row.
     pub fn rotate_token(&self, token_id: &str) -> Result<Option<(String, String)>> {
         let now = unix_now();
-        let mut conn = self.lock();
-        let tx = conn.transaction()?;
-        let old = tx
-            .query_row(
+        let mut result: Option<(String, String)> = None;
+        self.backend.with_tx(&mut |tx| {
+            let old = tx.query_opt(
                 "SELECT owner_kind, owner_id, scope, permissions, comment, expires_at
                  FROM tokens WHERE id = ?1 AND revoked_at IS NULL",
-                [token_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, Option<i64>>(5)?,
-                    ))
-                },
-            )
-            .optional()
-            .context("looking up token for rotation")?;
-        let Some((owner_kind, owner_id, scope, perms_json, comment, expires_at)) = old else {
-            return Ok(None);
-        };
-        tx.execute(
-            "UPDATE tokens SET rotated_at = ?2 WHERE id = ?1",
-            params![token_id, now],
-        )?;
-        let (secret, hash) = crate::auth::token::generate_token();
-        let new_id = uuid::Uuid::new_v4().to_string();
-        tx.execute(
-            "INSERT INTO tokens
-             (id, hash, owner_kind, owner_id, scope, permissions, comment, created_at,
-              expires_at, revoked_at, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL)",
-            params![
-                new_id, hash, owner_kind, owner_id, scope, perms_json, comment, now, expires_at,
-            ],
-        )?;
-        tx.commit()?;
-        Ok(Some((new_id, secret)))
+                &vals![token_id],
+            )?;
+            let Some(old) = old else {
+                return Ok(());
+            };
+            let owner_kind: String = old.get(0)?;
+            let owner_id: i64 = old.get(1)?;
+            let scope: String = old.get(2)?;
+            let perms_json: String = old.get(3)?;
+            let comment: Option<String> = old.get(4)?;
+            let expires_at: Option<i64> = old.get(5)?;
+            tx.execute(
+                "UPDATE tokens SET rotated_at = ?2 WHERE id = ?1",
+                &vals![token_id, now],
+            )?;
+            let (secret, hash) = crate::auth::token::generate_token();
+            let new_id = uuid::Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO tokens
+                 (id, hash, owner_kind, owner_id, scope, permissions, comment, created_at,
+                  expires_at, revoked_at, last_used_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL)",
+                &vals![
+                    new_id, hash, owner_kind, owner_id, scope, perms_json, comment, now,
+                    expires_at,
+                ],
+            )?;
+            result = Some((new_id, secret));
+            Ok(())
+        })?;
+        Ok(result)
     }
 
     // -- auth: human sessions -----------------------------------------------
@@ -3241,13 +3267,12 @@ impl Database {
         let secret = crate::auth::session::new_session_secret();
         let hash = crate::auth::token::sha256_hex(&secret);
         let now = unix_now();
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO sessions
              (id_hash, user_id, created_at, last_seen_at, expires_at, auth_level,
               last_authenticated_at)
              VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?3)",
-            params![hash, user_id, now, now + ttl_secs, auth_level],
+            &vals![hash, user_id, now, now + ttl_secs, auth_level],
         )?;
         Ok(secret)
     }
@@ -3264,32 +3289,32 @@ impl Database {
     pub fn validate_session(&self, secret: &str) -> Result<Option<SessionAuth>> {
         let hash = crate::auth::token::sha256_hex(secret);
         let now = unix_now();
-        let conn = self.lock();
-        let row = conn
-            .query_row(
+        let row = self
+            .backend
+            .query_opt(
                 "SELECT user_id, auth_level, last_authenticated_at, expires_at
                  FROM sessions WHERE id_hash = ?1",
-                [&hash],
-                |row| {
-                    Ok(SessionAuth {
-                        user_id: row.get(0)?,
-                        auth_level: row.get(1)?,
-                        last_authenticated_at: row.get(2)?,
-                        expires_at: row.get(3)?,
-                    })
-                },
+                &vals![hash],
             )
-            .optional()
-            .context("loading session by hash")?;
+            .context("loading session by hash")?
+            .map(|row| -> Result<SessionAuth> {
+                Ok(SessionAuth {
+                    user_id: row.get(0)?,
+                    auth_level: row.get(1)?,
+                    last_authenticated_at: row.get(2)?,
+                    expires_at: row.get(3)?,
+                })
+            })
+            .transpose()?;
         let Some(session) = row else {
             return Ok(None);
         };
         if now >= session.expires_at {
             return Ok(None);
         }
-        conn.execute(
+        self.backend.execute(
             "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
-            params![hash, now],
+            &vals![hash, now],
         )?;
         Ok(Some(session))
     }
@@ -3303,8 +3328,8 @@ impl Database {
     /// Returns an error on database failure.
     pub fn revoke_session(&self, secret: &str) -> Result<()> {
         let hash = crate::auth::token::sha256_hex(secret);
-        let conn = self.lock();
-        conn.execute("DELETE FROM sessions WHERE id_hash = ?1", [&hash])?;
+        self.backend
+            .execute("DELETE FROM sessions WHERE id_hash = ?1", &vals![hash])?;
         Ok(())
     }
 
@@ -3314,8 +3339,8 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn revoke_all_user_sessions(&self, user_id: i64) -> Result<()> {
-        let conn = self.lock();
-        conn.execute("DELETE FROM sessions WHERE user_id = ?1", [user_id])?;
+        self.backend
+            .execute("DELETE FROM sessions WHERE user_id = ?1", &vals![user_id])?;
         Ok(())
     }
 
@@ -3329,10 +3354,9 @@ impl Database {
     /// Returns an error on database failure.
     pub fn elevate_session(&self, secret: &str) -> Result<()> {
         let hash = crate::auth::token::sha256_hex(secret);
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "UPDATE sessions SET auth_level = 1, last_authenticated_at = ?2 WHERE id_hash = ?1",
-            params![hash, unix_now()],
+            &vals![hash, unix_now()],
         )?;
         Ok(())
     }
@@ -3362,13 +3386,12 @@ impl Database {
         let now = unix_now();
         let ttl = crate::auth::device::DEVICE_CODE_TTL_SECS;
         let perms_json = serde_json::to_string(&permission_names(permissions))?;
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO device_codes
              (device_code_hash, user_code, scope, permissions, created_at, expires_at,
               approved_by_user, denied, issued_token_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 0, NULL)",
-            params![
+            &vals![
                 hash,
                 user_code,
                 crate::domain::Scope::parse(scope).as_str(),
@@ -3401,21 +3424,20 @@ impl Database {
         approver_grants: &[(crate::domain::Scope, crate::domain::Role)],
     ) -> Result<bool> {
         let now = unix_now();
-        let row = {
-            let conn = self.lock();
-            conn.query_row(
+        let row = self
+            .backend
+            .query_opt(
                 "SELECT scope, permissions FROM device_codes
                  WHERE user_code = ?1 AND approved_by_user IS NULL AND denied = 0
                    AND expires_at > ?2",
-                params![user_code, now],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                &vals![user_code, now],
             )
-            .optional()
-            .context("loading device code for approval")?
-        };
-        let Some((scope, perms_json)) = row else {
+            .context("loading device code for approval")?;
+        let Some(row) = row else {
             return Ok(false);
         };
+        let scope: String = row.get(0)?;
+        let perms_json: String = row.get(1)?;
         let requested_scope = crate::domain::Scope::parse(&scope);
         let requested = parse_permission_names(&perms_json);
         // Clamp: keep only requested permissions the approver may actually
@@ -3429,12 +3451,11 @@ impl Database {
         // Stow the minted secret on the device row: it is delivered exactly
         // once to the polling CLI by `poll_device`, never persisted in the
         // clear anywhere a human session can read it.
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "UPDATE device_codes
              SET approved_by_user = ?2, issued_token_id = ?3, issued_token_secret = ?4
              WHERE user_code = ?1",
-            params![user_code, approver.id, token_id, secret],
+            &vals![user_code, approver.id, token_id, secret],
         )?;
         Ok(true)
     }
@@ -3447,11 +3468,10 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn deny_device(&self, user_code: &str) -> Result<bool> {
-        let conn = self.lock();
-        let n = conn.execute(
+        let n = self.backend.execute(
             "UPDATE device_codes SET denied = 1
              WHERE user_code = ?1 AND approved_by_user IS NULL AND denied = 0",
-            [user_code],
+            &vals![user_code],
         )?;
         Ok(n > 0)
     }
@@ -3470,25 +3490,20 @@ impl Database {
     /// Returns an error on database failure.
     pub fn poll_device(&self, device_code_secret: &str) -> Result<DevicePollResult> {
         let hash = crate::auth::token::sha256_hex(device_code_secret);
-        let conn = self.lock();
-        let row = conn
-            .query_row(
+        let row = self
+            .backend
+            .query_opt(
                 "SELECT denied, approved_by_user, issued_token_secret
                  FROM device_codes WHERE device_code_hash = ?1",
-                [&hash],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, Option<i64>>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                },
+                &vals![hash],
             )
-            .optional()
             .context("loading device code for poll")?;
-        let Some((denied, approved_by, issued_token_secret)) = row else {
+        let Some(row) = row else {
             return Ok(DevicePollResult::Pending);
         };
+        let denied: i64 = row.get(0)?;
+        let approved_by: Option<i64> = row.get(1)?;
+        let issued_token_secret: Option<String> = row.get(2)?;
         if denied != 0 {
             return Ok(DevicePollResult::Denied);
         }
@@ -3518,11 +3533,10 @@ impl Database {
         let secret = crate::auth::magic::new_magic_secret();
         let hash = crate::auth::token::sha256_hex(&secret);
         let now = unix_now();
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO magic_links (token_hash, email, created_at, expires_at, consumed_at)
              VALUES (?1, ?2, ?3, ?4, NULL)",
-            params![
+            &vals![
                 hash,
                 email,
                 now,
@@ -3544,21 +3558,42 @@ impl Database {
     pub fn consume_magic_link(&self, secret: &str) -> Result<Option<String>> {
         let hash = crate::auth::token::sha256_hex(secret);
         let now = unix_now();
-        let conn = self.lock();
-        // Claim-then-read in one statement: the conditional UPDATE is the
-        // single-use gate, so two concurrent consumptions of the same link
-        // cannot both succeed (the second stamps zero rows). RETURNING ties
-        // the claim to the email atomically.
-        let email: Option<String> = conn
-            .query_row(
+        // Claim-then-read: the conditional UPDATE is the single-use gate, so
+        // two concurrent consumptions of the same link cannot both succeed
+        // (the second stamps zero rows). On sqlite/postgres a single
+        // `UPDATE … RETURNING email` ties the claim to the email atomically;
+        // MySQL has no `UPDATE … RETURNING`, so a transactional
+        // select-claim-then-read preserves the same single-use guarantee.
+        if self.dialect() == Dialect::Mysql {
+            let mut email: Option<String> = None;
+            self.backend.with_tx(&mut |tx| {
+                let n = tx.execute(
+                    "UPDATE magic_links SET consumed_at = ?2
+                     WHERE token_hash = ?1 AND consumed_at IS NULL AND expires_at > ?2",
+                    &vals![hash, now],
+                )?;
+                if n > 0 {
+                    let row = tx.query_opt(
+                        "SELECT email FROM magic_links WHERE token_hash = ?1",
+                        &vals![hash],
+                    )?;
+                    email = row.map(|r| r.get(0)).transpose()?;
+                }
+                Ok(())
+            })?;
+            return Ok(email);
+        }
+        let email: Option<String> = self
+            .backend
+            .query_opt(
                 "UPDATE magic_links SET consumed_at = ?2
                  WHERE token_hash = ?1 AND consumed_at IS NULL AND expires_at > ?2
                  RETURNING email",
-                params![hash, now],
-                |row| row.get(0),
+                &vals![hash, now],
             )
-            .optional()
-            .context("consuming magic link by hash")?;
+            .context("consuming magic link by hash")?
+            .map(|row| row.get(0))
+            .transpose()?;
         Ok(email)
     }
 
@@ -3577,8 +3612,7 @@ impl Database {
     /// violation when `org_id` does not reference an org.
     pub fn upsert_idp_config(&self, config: &IdpConfigRecord) -> Result<()> {
         let now = unix_now();
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO org_idp_configs
              (org_id, issuer, authorization_endpoint, token_endpoint, jwks_uri,
               client_id, client_secret_enc, scopes, groups_claim, role_map_json,
@@ -3598,7 +3632,7 @@ impl Database {
                  enforce_sso = excluded.enforce_sso,
                  default_role = excluded.default_role,
                  updated_at = excluded.updated_at",
-            params![
+            &vals![
                 config.org_id,
                 config.issuer,
                 config.authorization_endpoint,
@@ -3609,8 +3643,8 @@ impl Database {
                 config.scopes,
                 config.groups_claim,
                 config.role_map_json,
-                config.allow_jit as i64,
-                config.enforce_sso as i64,
+                config.allow_jit,
+                config.enforce_sso,
                 config.default_role,
                 now,
             ],
@@ -3624,17 +3658,17 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn idp_config(&self, org_id: i64) -> Result<Option<IdpConfigRecord>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT org_id, issuer, authorization_endpoint, token_endpoint, jwks_uri,
-                    client_id, client_secret_enc, scopes, groups_claim, role_map_json,
-                    allow_jit, enforce_sso, default_role
-             FROM org_idp_configs WHERE org_id = ?1",
-            [org_id],
-            row_to_idp_config,
-        )
-        .optional()
-        .context("loading idp config by org id")
+        self.backend
+            .query_opt(
+                "SELECT org_id, issuer, authorization_endpoint, token_endpoint, jwks_uri,
+                        client_id, client_secret_enc, scopes, groups_claim, role_map_json,
+                        allow_jit, enforce_sso, default_role
+                 FROM org_idp_configs WHERE org_id = ?1",
+                &vals![org_id],
+            )
+            .context("loading idp config by org id")?
+            .map(|row| row_to_idp_config(&row))
+            .transpose()
     }
 
     /// Claim a domain for an org with a fresh DNS-TXT challenge.
@@ -3654,15 +3688,14 @@ impl Database {
             "aos-domain-verify={}",
             crate::auth::session::new_session_secret()
         );
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO org_domains (domain, org_id, txt_challenge, verified_at)
              VALUES (?1, ?2, ?3, NULL)
              ON CONFLICT(domain) DO UPDATE SET
                  org_id = excluded.org_id,
                  txt_challenge = excluded.txt_challenge,
                  verified_at = NULL",
-            params![domain, org_id, challenge],
+            &vals![domain, org_id, challenge],
         )?;
         Ok(challenge)
     }
@@ -3674,21 +3707,21 @@ impl Database {
     /// Returns an error on database failure.
     pub fn org_domain(&self, domain: &str) -> Result<Option<OrgDomainRecord>> {
         let domain = domain.trim().to_lowercase();
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT domain, org_id, txt_challenge, verified_at FROM org_domains WHERE domain = ?1",
-            [domain],
-            |row| {
+        self.backend
+            .query_opt(
+                "SELECT domain, org_id, txt_challenge, verified_at FROM org_domains WHERE domain = ?1",
+                &vals![domain],
+            )
+            .context("loading org domain")?
+            .map(|row| -> Result<OrgDomainRecord> {
                 Ok(OrgDomainRecord {
                     domain: row.get(0)?,
                     org_id: row.get(1)?,
                     txt_challenge: row.get(2)?,
                     verified_at: row.get(3)?,
                 })
-            },
-        )
-        .optional()
-        .context("loading org domain")
+            })
+            .transpose()
     }
 
     /// Mark a claimed domain verified (stamp `verified_at = now`).
@@ -3705,10 +3738,9 @@ impl Database {
     /// Returns an error on database failure.
     pub fn verify_org_domain(&self, domain: &str) -> Result<bool> {
         let domain = domain.trim().to_lowercase();
-        let conn = self.lock();
-        let n = conn.execute(
+        let n = self.backend.execute(
             "UPDATE org_domains SET verified_at = ?2 WHERE domain = ?1",
-            params![domain, unix_now()],
+            &vals![domain, unix_now()],
         )?;
         Ok(n > 0)
     }
@@ -3723,14 +3755,14 @@ impl Database {
     /// Returns an error on database failure.
     pub fn org_for_domain(&self, domain: &str) -> Result<Option<i64>> {
         let domain = domain.trim().to_lowercase();
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT org_id FROM org_domains WHERE domain = ?1 AND verified_at IS NOT NULL",
-            [domain],
-            |row| row.get(0),
-        )
-        .optional()
-        .context("resolving org for verified domain")
+        self.backend
+            .query_opt(
+                "SELECT org_id FROM org_domains WHERE domain = ?1 AND verified_at IS NOT NULL",
+                &vals![domain],
+            )
+            .context("resolving org for verified domain")?
+            .map(|row| row.get(0))
+            .transpose()
     }
 
     /// Record an in-flight OIDC authorization-code request.
@@ -3753,12 +3785,11 @@ impl Database {
         ttl_secs: i64,
     ) -> Result<()> {
         let now = unix_now();
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO oidc_flows
              (state, org_id, nonce, code_verifier, redirect_after, created_at, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
+            &vals![
                 state,
                 org_id,
                 nonce,
@@ -3783,25 +3814,37 @@ impl Database {
     /// Returns an error on database failure.
     pub fn take_oidc_flow(&self, state: &str) -> Result<Option<OidcFlowRecord>> {
         let now = unix_now();
-        let conn = self.lock();
-        let row = conn
-            .query_row(
-                "DELETE FROM oidc_flows WHERE state = ?1
-                 RETURNING state, org_id, nonce, code_verifier, redirect_after, expires_at",
-                [state],
-                |row| {
-                    Ok(OidcFlowRecord {
-                        state: row.get(0)?,
-                        org_id: row.get(1)?,
-                        nonce: row.get(2)?,
-                        code_verifier: row.get(3)?,
-                        redirect_after: row.get(4)?,
-                        expires_at: row.get(5)?,
-                    })
-                },
-            )
-            .optional()
-            .context("consuming oidc flow by state")?;
+        // sqlite/postgres do the delete-and-read in one `DELETE … RETURNING`;
+        // MySQL lacks it, so select-then-delete inside a transaction keeps the
+        // single-use, CSRF-defeating gate (the delete claims the state).
+        let row: Option<OidcFlowRecord> = if self.dialect() == Dialect::Mysql {
+            let mut found = None;
+            self.backend.with_tx(&mut |tx| {
+                let selected = tx.query_opt(
+                    "SELECT state, org_id, nonce, code_verifier, redirect_after, expires_at
+                     FROM oidc_flows WHERE state = ?1",
+                    &vals![state],
+                )?;
+                if let Some(r) = selected {
+                    let n = tx.execute("DELETE FROM oidc_flows WHERE state = ?1", &vals![state])?;
+                    if n > 0 {
+                        found = Some(row_to_oidc_flow(&r)?);
+                    }
+                }
+                Ok(())
+            })?;
+            found
+        } else {
+            self.backend
+                .query_opt(
+                    "DELETE FROM oidc_flows WHERE state = ?1
+                     RETURNING state, org_id, nonce, code_verifier, redirect_after, expires_at",
+                    &vals![state],
+                )
+                .context("consuming oidc flow by state")?
+                .map(|row| row_to_oidc_flow(&row))
+                .transpose()?
+        };
         // Even though the row is deleted, an expired flow must not authenticate.
         match row {
             Some(flow) if now < flow.expires_at => Ok(Some(flow)),
@@ -3841,11 +3884,10 @@ impl Database {
         let now = unix_now();
         // 1. Existing identity.
         if let Some(user_id) = self.identity_user(issuer, subject)? {
-            let conn = self.lock();
-            conn.execute(
+            self.backend.execute(
                 "UPDATE user_identities SET email = ?3, last_login = ?4
                  WHERE issuer = ?1 AND subject = ?2",
-                params![issuer, subject, email, now],
+                &vals![issuer, subject, email, now],
             )?;
             return Ok(Some(IdentityLink::Existing(user_id)));
         }
@@ -3887,14 +3929,14 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn identity_user(&self, issuer: &str, subject: &str) -> Result<Option<i64>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT user_id FROM user_identities WHERE issuer = ?1 AND subject = ?2",
-            params![issuer, subject],
-            |row| row.get(0),
-        )
-        .optional()
-        .context("loading identity user")
+        self.backend
+            .query_opt(
+                "SELECT user_id FROM user_identities WHERE issuer = ?1 AND subject = ?2",
+                &vals![issuer, subject],
+            )
+            .context("loading identity user")?
+            .map(|row| row.get(0))
+            .transpose()
     }
 
     /// Insert a new `(issuer, subject)` identity for a user.
@@ -3906,11 +3948,10 @@ impl Database {
         email: Option<&str>,
         now: i64,
     ) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO user_identities (user_id, issuer, subject, email, last_login)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![user_id, issuer, subject, email, now],
+            &vals![user_id, issuer, subject, email, now],
         )?;
         Ok(())
     }
@@ -3927,10 +3968,9 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn set_registry_visibility(&self, registry_id: i64, visibility: &str) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "UPDATE registries SET visibility = ?2 WHERE id = ?1",
-            params![registry_id, visibility],
+            &vals![registry_id, visibility],
         )?;
         Ok(())
     }
@@ -3961,13 +4001,12 @@ impl Database {
         result_tag: Option<&str>,
         detail: Option<&str>,
     ) -> Result<i64> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute_insert(
             "INSERT INTO audit_log
              (change_id, actor_kind, actor_id, actor_label, action, scope,
               result_commit, result_tag, detail, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
+            &vals![
                 change_id,
                 actor_kind,
                 actor_id,
@@ -3979,8 +4018,7 @@ impl Database {
                 detail,
                 unix_now(),
             ],
-        )?;
-        Ok(conn.last_insert_rowid())
+        )
     }
 
     /// List audit entries at or below `scope`, newest first.
@@ -3995,15 +4033,16 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_audit(&self, scope: &str) -> Result<Vec<AuditRow>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT id, change_id, actor_kind, actor_label, action, scope,
                     result_commit, result_tag, detail, created_at
              FROM audit_log ORDER BY id DESC",
+            &[],
         )?;
         let target = crate::domain::Scope::parse(scope);
-        let rows = stmt.query_map([], |row| {
-            Ok(AuditRow {
+        let mut out = Vec::new();
+        for row in &rows {
+            let entry = AuditRow {
                 id: row.get(0)?,
                 change_id: row.get(1)?,
                 actor_kind: row.get(2)?,
@@ -4014,13 +4053,9 @@ impl Database {
                 result_tag: row.get(7)?,
                 detail: row.get(8)?,
                 created_at: row.get(9)?,
-            })
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            let row = row?;
-            if target.contains(&crate::domain::Scope::parse(&row.scope)) {
-                out.push(row);
+            };
+            if target.contains(&crate::domain::Scope::parse(&entry.scope)) {
+                out.push(entry);
             }
         }
         Ok(out)
@@ -4044,13 +4079,12 @@ impl Database {
         scope: &str,
         summary: Option<&str>,
     ) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "INSERT INTO config_changesets
              (change_id, actor_kind, actor_id, actor_label, scope, status,
               summary, created_at, applied_at, reverted_by_change_id)
              VALUES (?1, ?2, ?3, ?4, ?5, 'draft', ?6, ?7, NULL, NULL)",
-            params![
+            &vals![
                 change_id,
                 actor_kind,
                 actor_id,
@@ -4081,17 +4115,19 @@ impl Database {
         old_json: Option<&str>,
         new_json: Option<&str>,
     ) -> Result<i64> {
-        let conn = self.lock();
-        let seq: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM config_revisions WHERE change_id = ?1",
-            [change_id],
-            |row| row.get(0),
-        )?;
-        conn.execute(
+        let seq: i64 = self
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM config_revisions WHERE change_id = ?1",
+                &vals![change_id],
+            )?
+            .context("count query returned no row")?
+            .get(0)?;
+        self.backend.execute(
             "INSERT INTO config_revisions
              (change_id, object_type, object_id, op, old_json, new_json, seq)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
+            &vals![
                 change_id,
                 object_type,
                 object_id,
@@ -4110,16 +4146,16 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn changeset(&self, change_id: &str) -> Result<Option<ChangesetRow>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT change_id, actor_kind, actor_id, actor_label, scope, status,
-                    summary, created_at, applied_at, reverted_by_change_id
-             FROM config_changesets WHERE change_id = ?1",
-            [change_id],
-            row_to_changeset,
-        )
-        .optional()
-        .context("loading changeset by id")
+        self.backend
+            .query_opt(
+                "SELECT change_id, actor_kind, actor_id, actor_label, scope, status,
+                        summary, created_at, applied_at, reverted_by_change_id
+                 FROM config_changesets WHERE change_id = ?1",
+                &vals![change_id],
+            )
+            .context("loading changeset by id")?
+            .map(|row| row_to_changeset(&row))
+            .transpose()
     }
 
     /// List a change-set's revisions in `seq` order.
@@ -4128,24 +4164,25 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_revisions(&self, change_id: &str) -> Result<Vec<RevisionRow>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT id, change_id, object_type, object_id, op, old_json, new_json, seq
              FROM config_revisions WHERE change_id = ?1 ORDER BY seq",
+            &vals![change_id],
         )?;
-        let rows = stmt.query_map([change_id], |row| {
-            Ok(RevisionRow {
-                id: row.get(0)?,
-                change_id: row.get(1)?,
-                object_type: row.get(2)?,
-                object_id: row.get(3)?,
-                op: row.get(4)?,
-                old_json: row.get(5)?,
-                new_json: row.get(6)?,
-                seq: row.get(7)?,
+        rows.iter()
+            .map(|row| {
+                Ok(RevisionRow {
+                    id: row.get(0)?,
+                    change_id: row.get(1)?,
+                    object_type: row.get(2)?,
+                    object_id: row.get(3)?,
+                    op: row.get(4)?,
+                    old_json: row.get(5)?,
+                    new_json: row.get(6)?,
+                    seq: row.get(7)?,
+                })
             })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            .collect()
     }
 
     /// Set a change-set's lifecycle status, optionally stamping
@@ -4165,14 +4202,13 @@ impl Database {
         applied_at: Option<i64>,
         reverted_by: Option<&str>,
     ) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute(
             "UPDATE config_changesets
              SET status = ?2,
                  applied_at = COALESCE(?3, applied_at),
                  reverted_by_change_id = COALESCE(?4, reverted_by_change_id)
              WHERE change_id = ?1",
-            params![change_id, status, applied_at, reverted_by],
+            &vals![change_id, status, applied_at, reverted_by],
         )?;
         Ok(())
     }
@@ -4208,15 +4244,14 @@ impl Database {
         for revision in &revisions {
             apply_fn(revision)?;
         }
-        let mut conn = self.lock();
-        let tx = conn.transaction()?;
-        tx.execute(
-            "UPDATE config_changesets SET status = 'applied', applied_at = ?2
-             WHERE change_id = ?1",
-            params![change_id, unix_now()],
-        )?;
-        tx.commit()?;
-        Ok(())
+        self.backend.with_tx(&mut |tx| {
+            tx.execute(
+                "UPDATE config_changesets SET status = 'applied', applied_at = ?2
+                 WHERE change_id = ?1",
+                &vals![change_id, unix_now()],
+            )?;
+            Ok(())
+        })
     }
 
     /// List change-sets at or below `scope`, newest first.
@@ -4229,19 +4264,18 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_changesets(&self, scope: &str) -> Result<Vec<ChangesetRow>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT change_id, actor_kind, actor_id, actor_label, scope, status,
                     summary, created_at, applied_at, reverted_by_change_id
              FROM config_changesets ORDER BY created_at DESC, change_id DESC",
+            &[],
         )?;
         let target = crate::domain::Scope::parse(scope);
-        let rows = stmt.query_map([], row_to_changeset)?;
         let mut out = Vec::new();
-        for row in rows {
-            let row = row?;
-            if target.contains(&crate::domain::Scope::parse(&row.scope)) {
-                out.push(row);
+        for row in &rows {
+            let changeset = row_to_changeset(row)?;
+            if target.contains(&crate::domain::Scope::parse(&changeset.scope)) {
+                out.push(changeset);
             }
         }
         Ok(out)
@@ -4267,19 +4301,17 @@ impl Database {
         secret: &str,
         events: &[String],
     ) -> Result<i64> {
-        let conn = self.lock();
-        conn.execute(
+        self.backend.execute_insert(
             "INSERT INTO webhooks (org_id, url, secret, events, active, created_at)
              VALUES (?1, ?2, ?3, ?4, 1, ?5)",
-            params![
+            &vals![
                 org_id,
                 url,
                 secret,
                 serde_json::to_string(events)?,
                 unix_now()
             ],
-        )?;
-        Ok(conn.last_insert_rowid())
+        )
     }
 
     /// List an org's webhook subscriptions, oldest first.
@@ -4288,13 +4320,12 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn list_webhooks(&self, org_id: i64) -> Result<Vec<WebhookRecord>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT id, org_id, url, secret, events, active, created_at
              FROM webhooks WHERE org_id = ?1 ORDER BY id",
+            &vals![org_id],
         )?;
-        let rows = stmt.query_map([org_id], row_to_webhook)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.iter().map(row_to_webhook).collect()
     }
 
     /// Load one webhook by id, regardless of org.
@@ -4303,15 +4334,15 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn webhook(&self, id: i64) -> Result<Option<WebhookRecord>> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT id, org_id, url, secret, events, active, created_at
-             FROM webhooks WHERE id = ?1",
-            [id],
-            row_to_webhook,
-        )
-        .optional()
-        .context("loading webhook by id")
+        self.backend
+            .query_opt(
+                "SELECT id, org_id, url, secret, events, active, created_at
+                 FROM webhooks WHERE id = ?1",
+                &vals![id],
+            )
+            .context("loading webhook by id")?
+            .map(|row| row_to_webhook(&row))
+            .transpose()
     }
 
     /// Delete a webhook (and, by cascade, its deliveries); returns whether a
@@ -4321,8 +4352,9 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn delete_webhook(&self, id: i64) -> Result<bool> {
-        let conn = self.lock();
-        let n = conn.execute("DELETE FROM webhooks WHERE id = ?1", [id])?;
+        let n = self
+            .backend
+            .execute("DELETE FROM webhooks WHERE id = ?1", &vals![id])?;
         Ok(n > 0)
     }
 
@@ -4332,10 +4364,9 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn set_webhook_active(&self, id: i64, active: bool) -> Result<bool> {
-        let conn = self.lock();
-        let n = conn.execute(
+        let n = self.backend.execute(
             "UPDATE webhooks SET active = ?2 WHERE id = ?1",
-            params![id, active as i64],
+            &vals![id, active],
         )?;
         Ok(n > 0)
     }
@@ -4350,15 +4381,13 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn enqueue_delivery(&self, webhook_id: i64, event: &str, payload: &str) -> Result<i64> {
-        let conn = self.lock();
         let now = unix_now();
-        conn.execute(
+        self.backend.execute_insert(
             "INSERT INTO webhook_deliveries
              (webhook_id, event, payload, status, attempts, created_at, next_attempt_at)
              VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?4)",
-            params![webhook_id, event, payload, now],
-        )?;
-        Ok(conn.last_insert_rowid())
+            &vals![webhook_id, event, payload, now],
+        )
     }
 
     /// List deliveries that are due: `pending` and whose `next_attempt_at` is
@@ -4373,26 +4402,27 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn due_deliveries(&self, now: i64) -> Result<Vec<DueDelivery>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
+        let rows = self.backend.query(
             "SELECT d.id, d.webhook_id, d.event, d.payload, d.attempts, w.url, w.secret
              FROM webhook_deliveries d
              JOIN webhooks w ON w.id = d.webhook_id
              WHERE d.status = 'pending' AND d.next_attempt_at <= ?1 AND w.active = 1
              ORDER BY d.id",
+            &vals![now],
         )?;
-        let rows = stmt.query_map([now], |row| {
-            Ok(DueDelivery {
-                id: row.get(0)?,
-                webhook_id: row.get(1)?,
-                event: row.get(2)?,
-                payload: row.get(3)?,
-                attempts: row.get(4)?,
-                url: row.get(5)?,
-                secret: row.get(6)?,
+        rows.iter()
+            .map(|row| {
+                Ok(DueDelivery {
+                    id: row.get(0)?,
+                    webhook_id: row.get(1)?,
+                    event: row.get(2)?,
+                    payload: row.get(3)?,
+                    attempts: row.get(4)?,
+                    url: row.get(5)?,
+                    secret: row.get(6)?,
+                })
             })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            .collect()
     }
 
     /// Record the outcome of one delivery attempt.
@@ -4414,14 +4444,13 @@ impl Database {
         attempts: i64,
         next_attempt_at: Option<i64>,
     ) -> Result<()> {
-        let conn = self.lock();
         let delivered_at = (status == "delivered").then(unix_now);
-        conn.execute(
+        self.backend.execute(
             "UPDATE webhook_deliveries
              SET status = ?2, response_code = ?3, attempts = ?4,
                  next_attempt_at = ?5, delivered_at = ?6
              WHERE id = ?1",
-            params![
+            &vals![
                 id,
                 status,
                 response_code,
@@ -4442,13 +4471,14 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub fn delivery_status_counts(&self) -> Result<(u64, u64, u64)> {
-        let conn = self.lock();
-        let count = |status: &str| -> rusqlite::Result<u64> {
-            conn.query_row(
-                "SELECT COUNT(*) FROM webhook_deliveries WHERE status = ?1",
-                [status],
-                |r| r.get::<_, i64>(0).map(|n| n as u64),
-            )
+        let count = |status: &str| -> Result<u64> {
+            self.backend
+                .query_opt(
+                    "SELECT COUNT(*) FROM webhook_deliveries WHERE status = ?1",
+                    &vals![status],
+                )?
+                .context("count query returned no row")?
+                .get::<u64>(0)
         };
         Ok((count("pending")?, count("delivered")?, count("failed")?))
     }
@@ -4485,14 +4515,14 @@ fn parse_permission_names(json: &str) -> Vec<crate::domain::Permission> {
 const REGISTRY_COLUMNS: &str = "id, slug, source_url, trust_keys, require_signatures, \
      org_id, project_path, visibility, storage_binding_id, prefix, hosted_key_id";
 
-fn row_to_registry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryRecord> {
+fn row_to_registry(row: &Row) -> Result<RegistryRecord> {
     let trust_json: String = row.get(3)?;
     Ok(RegistryRecord {
         id: row.get(0)?,
         slug: row.get(1)?,
         source_url: row.get(2)?,
         trust_keys: serde_json::from_str(&trust_json).unwrap_or_default(),
-        require_signatures: row.get::<_, i64>(4)? != 0,
+        require_signatures: row.get(4)?,
         org_id: row.get(5)?,
         project_path: row.get(6)?,
         visibility: row.get(7)?,
@@ -4502,7 +4532,7 @@ fn row_to_registry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryRecord> 
     })
 }
 
-fn row_to_hosted_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<HostedKeyRecord> {
+fn row_to_hosted_key(row: &Row) -> Result<HostedKeyRecord> {
     Ok(HostedKeyRecord {
         id: row.get(0)?,
         org_id: row.get(1)?,
@@ -4513,7 +4543,7 @@ fn row_to_hosted_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<HostedKeyRecor
     })
 }
 
-fn row_to_idp_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<IdpConfigRecord> {
+fn row_to_idp_config(row: &Row) -> Result<IdpConfigRecord> {
     Ok(IdpConfigRecord {
         org_id: row.get(0)?,
         issuer: row.get(1)?,
@@ -4525,8 +4555,8 @@ fn row_to_idp_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<IdpConfigRecor
         scopes: row.get(7)?,
         groups_claim: row.get(8)?,
         role_map_json: row.get(9)?,
-        allow_jit: row.get::<_, i64>(10)? != 0,
-        enforce_sso: row.get::<_, i64>(11)? != 0,
+        allow_jit: row.get(10)?,
+        enforce_sso: row.get(11)?,
         default_role: row.get(12)?,
     })
 }
@@ -4540,7 +4570,7 @@ fn issuer_host(issuer: &str) -> String {
         .unwrap_or_else(|| issuer.replace(['/', ':'], "."))
 }
 
-fn row_to_changeset(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChangesetRow> {
+fn row_to_changeset(row: &Row) -> Result<ChangesetRow> {
     Ok(ChangesetRow {
         change_id: row.get(0)?,
         actor_kind: row.get(1)?,
@@ -4555,7 +4585,27 @@ fn row_to_changeset(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChangesetRow> {
     })
 }
 
-fn row_to_storage_binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<StorageBindingRecord> {
+fn row_to_oidc_flow(row: &Row) -> Result<OidcFlowRecord> {
+    Ok(OidcFlowRecord {
+        state: row.get(0)?,
+        org_id: row.get(1)?,
+        nonce: row.get(2)?,
+        code_verifier: row.get(3)?,
+        redirect_after: row.get(4)?,
+        expires_at: row.get(5)?,
+    })
+}
+
+fn row_to_org(row: &Row) -> Result<OrgRecord> {
+    Ok(OrgRecord {
+        id: row.get(0)?,
+        slug: row.get(1)?,
+        name: row.get(2)?,
+        created_at: row.get(3)?,
+    })
+}
+
+fn row_to_storage_binding(row: &Row) -> Result<StorageBindingRecord> {
     Ok(StorageBindingRecord {
         id: row.get(0)?,
         org_id: row.get(1)?,
@@ -4590,6 +4640,10 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The in-module migration tests exercise raw `rusqlite` access through the
+    // sqlite-only `lock()` helper, so they bind parameters with rusqlite's own
+    // `params!` macro.
+    use rusqlite::params;
 
     #[test]
     fn migrate_register_and_reopen() {

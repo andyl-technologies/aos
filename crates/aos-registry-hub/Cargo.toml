@@ -33,6 +33,15 @@ aos-package = { workspace = true }
 aos-proto = { workspace = true }
 connectrpc = { workspace = true }
 buffa = { workspace = true }
+postgres = { workspace = true, optional = true }
+mysql = { workspace = true, optional = true }
+
+[features]
+default = []
+# Enable the pure-Rust postgres / mysql Database backends (RFC-0004 phase 4).
+# sqlite is always compiled in; these are additive.
+postgres = ["dep:postgres"]
+mysql = ["dep:mysql"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
