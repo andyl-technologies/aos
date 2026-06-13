@@ -19,6 +19,9 @@ semver = { workspace = true }
 tracing = { workspace = true }
 flate2 = { workspace = true }
 ed25519-dalek = { workspace = true }
+p256 = { workspace = true }
+rsa = { workspace = true }
+ciborium = { workspace = true }
 rusqlite = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }

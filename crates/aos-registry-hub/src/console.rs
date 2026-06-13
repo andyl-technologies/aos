@@ -46,7 +46,8 @@ use axum::extract::{Form, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::Router;
+use axum::{Json, Router};
+use base64::Engine as _;
 
 use crate::auth::extract::{connect_or_csrf_ok, mint_csrf_token};
 use crate::auth::session::{set_cookie_header, COOKIE_NAME, IDLE_TIMEOUT_SECS};
@@ -78,6 +79,14 @@ pub fn router() -> Router<Arc<AppState>> {
             "/account/sessions/revoke-all",
             post(account_revoke_all_sessions),
         )
+        // Passkeys / WebAuthn (RFC-0004). The registration ceremony is
+        // session-authed (and CSRF-protected); the assertion ceremony is the
+        // pre-auth login path.
+        .route("/account/passkeys", get(passkeys))
+        .route("/account/passkeys/begin", post(passkeys_begin))
+        .route("/account/passkeys/finish", post(passkeys_finish))
+        .route("/auth/passkey/begin", post(passkey_login_begin))
+        .route("/auth/passkey/finish", post(passkey_login_finish))
         .route("/activate", get(activate_form).post(activate_submit))
         .route("/-/orgs", get(orgs))
         .route("/-/org/{org}", get(org_dashboard))
@@ -187,9 +196,15 @@ fn check_csrf(session: &Session, csrf: &str) -> Result<(), Box<Response>> {
 
 // -- login + magic link -----------------------------------------------------
 
-/// `GET /login` — the email-first login form.
+/// `GET /login` — the email-first login form, plus the passkey sign-in button.
+///
+/// Sets a per-request `script-src 'nonce-…'` CSP so the page's first-party
+/// passkey script (driving `navigator.credentials.get`) runs while every other
+/// inline script stays blocked.
 async fn login_form(State(_state): State<Arc<AppState>>) -> Response {
-    Html(console::login_page(None, Instant::now())).into_response()
+    let nonce = crate::auth::webauthn::new_challenge();
+    let html = console::login_page(None, Some(&nonce), Instant::now());
+    passkey_html_response(html, &nonce)
 }
 
 /// `POST /login` body: the email to send a magic link to.
@@ -236,6 +251,7 @@ async fn login_submit(
     if email.is_empty() || !email.contains('@') {
         return Html(console::login_page(
             Some("Enter a valid email address."),
+            None,
             Instant::now(),
         ))
         .into_response();
@@ -304,6 +320,7 @@ async fn magic_consume(
         Ok(None) => {
             return Html(console::login_page(
                 Some("That sign-in link is invalid or expired. Request a new one."),
+                None,
                 Instant::now(),
             ))
             .into_response()
@@ -417,7 +434,7 @@ async fn oidc_callback(
 
 /// Render a clean SSO error page (no stack traces).
 fn sso_error(message: &str) -> Response {
-    Html(console::login_page(Some(message), Instant::now())).into_response()
+    Html(console::login_page(Some(message), None, Instant::now())).into_response()
 }
 
 /// `GET /logout` — revoke the caller's own session and clear the cookie.
@@ -482,6 +499,240 @@ async fn account_revoke_all_sessions(
 struct CsrfForm {
     #[serde(default)]
     csrf: String,
+}
+
+// -- passkeys / WebAuthn ----------------------------------------------------
+//
+// WebAuthn is the one place the console departs from its no-JS floor: the
+// browser's `navigator.credentials` API has no form-only equivalent, so the
+// passkey pages serve a small, first-party inline script. The script is gated
+// by a per-request CSP nonce (`script-src 'nonce-…'` alongside the global
+// `default-src 'self'`), so only that exact `<script nonce=…>` runs — no other
+// inline or third-party script is permitted. The script exchanges JSON with the
+// begin/finish endpoints, base64url-encoding the binary credential fields.
+
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+
+/// `GET /account/passkeys` — list the user's passkeys and offer to add one.
+///
+/// Session-authed. Renders the per-request CSP nonce into both the response
+/// header (`script-src 'nonce-…'`) and the inline registration script.
+async fn passkeys(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let creds = match state.db.list_user_credentials(session.auth.user_id) {
+        Ok(c) => c,
+        Err(err) => return internal(err),
+    };
+    let nonce = crate::auth::webauthn::new_challenge();
+    let html = console::passkeys_page(
+        &session.email,
+        &session.csrf(),
+        &creds,
+        &nonce,
+        Instant::now(),
+    );
+    passkey_html_response(html, &nonce)
+}
+
+/// Build an `Html` response carrying the per-request passkey CSP.
+///
+/// The CSP keeps the global `default-src 'self'` and adds `script-src 'self'
+/// 'nonce-<nonce>'` so the page's single inline script runs while every other
+/// inline script stays blocked. The [`security_headers`](crate::server) layer
+/// honors this handler-set CSP instead of overwriting it.
+fn passkey_html_response(html: String, nonce: &str) -> Response {
+    let csp = format!("default-src 'self'; script-src 'self' 'nonce-{nonce}'");
+    ([(header::CONTENT_SECURITY_POLICY, csp)], Html(html)).into_response()
+}
+
+/// A passkey registration `begin` body: a CSRF token, and the optional label.
+#[derive(serde::Deserialize)]
+struct PasskeyBeginForm {
+    #[serde(default)]
+    csrf: String,
+}
+
+/// `POST /account/passkeys/begin` — stage a registration challenge (JSON).
+///
+/// Session-authed and CSRF-protected. Returns the
+/// [`RegistrationChallenge`](crate::auth::webauthn::RegistrationChallenge) the
+/// inline script feeds to `navigator.credentials.create`.
+async fn passkeys_begin(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<PasskeyBeginForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let rp = match crate::auth::webauthn::relying_party(&state.external_url) {
+        Ok(rp) => rp,
+        Err(err) => return internal(err),
+    };
+    match crate::auth::webauthn::begin_registration(
+        &state.db,
+        session.auth.user_id,
+        &session.email,
+        &rp.id,
+        "AOS Registry Hub",
+    ) {
+        Ok(challenge) => Json(challenge).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// A passkey registration `finish` body, with base64url binary fields.
+#[derive(serde::Deserialize)]
+struct PasskeyFinishBody {
+    csrf: String,
+    #[serde(default)]
+    label: Option<String>,
+    client_data_json: String,
+    attestation_object: String,
+}
+
+/// `POST /account/passkeys/finish` — verify + persist the new credential.
+///
+/// Session-authed and CSRF-protected. Decodes the base64url
+/// `clientDataJSON`/`attestationObject` the script posts, runs
+/// [`finish_registration`](crate::auth::webauthn::finish_registration), and
+/// returns `200` with the stored credential id or a `400` with the verifier's
+/// reason.
+async fn passkeys_finish(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<PasskeyFinishBody>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &body.csrf) {
+        return *resp;
+    }
+    let rp = match crate::auth::webauthn::relying_party(&state.external_url) {
+        Ok(rp) => rp,
+        Err(err) => return internal(err),
+    };
+    let (client_data_json, attestation_object) = match (
+        B64URL.decode(&body.client_data_json),
+        B64URL.decode(&body.attestation_object),
+    ) {
+        (Ok(c), Ok(a)) => (c, a),
+        _ => return (StatusCode::BAD_REQUEST, "malformed base64url fields").into_response(),
+    };
+    let response = crate::auth::webauthn::RegistrationResponse {
+        client_data_json,
+        attestation_object,
+    };
+    let label = body.label.as_deref().filter(|s| !s.is_empty());
+    match crate::auth::webauthn::finish_registration(
+        &state.db,
+        session.auth.user_id,
+        &rp.id,
+        &rp.origin,
+        &response,
+        label,
+    ) {
+        Ok(credential_id) => {
+            Json(serde_json::json!({ "credential_id": credential_id })).into_response()
+        }
+        Err(err) => {
+            tracing::warn!(error = %format!("{err:#}"), "passkey registration rejected");
+            (StatusCode::BAD_REQUEST, "passkey registration failed").into_response()
+        }
+    }
+}
+
+/// `POST /auth/passkey/begin` — stage a usernameless assertion challenge (JSON).
+///
+/// Pre-auth (the login path). Returns the
+/// [`AssertionChallenge`](crate::auth::webauthn::AssertionChallenge) the inline
+/// login script feeds to `navigator.credentials.get`.
+async fn passkey_login_begin(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    // Rate-limit assertion-challenge issuance per source IP, the same pre-auth
+    // spray bound as magic-link issuance.
+    let now = crate::server::now_secs();
+    let ip = crate::server::client_ip_from_headers(&headers);
+    if let crate::ratelimit::RateDecision::Limited { retry_after } =
+        state
+            .ratelimit
+            .check(crate::ratelimit::RateClass::MagicLinkIp, &ip, now)
+    {
+        return crate::server::too_many_requests(retry_after);
+    }
+    let rp = match crate::auth::webauthn::relying_party(&state.external_url) {
+        Ok(rp) => rp,
+        Err(err) => return internal(err),
+    };
+    match crate::auth::webauthn::begin_assertion(&state.db, &rp.id) {
+        Ok(challenge) => Json(challenge).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// A passkey login `finish` body, with base64url binary fields.
+#[derive(serde::Deserialize)]
+struct PasskeyLoginBody {
+    credential_id: String,
+    client_data_json: String,
+    authenticator_data: String,
+    signature: String,
+}
+
+/// `POST /auth/passkey/finish` — verify the assertion, sign the user in.
+///
+/// Pre-auth. On success, creates a sudo-capable session
+/// ([`Database::create_session`](crate::db::Database::create_session) with
+/// `auth_level = 1` — a passkey assertion is a fresh re-authentication), sets
+/// the `__Host-` cookie, and returns `200` so the script can redirect. A failed
+/// assertion is a `401` with no cookie.
+async fn passkey_login_finish(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PasskeyLoginBody>,
+) -> Response {
+    let rp = match crate::auth::webauthn::relying_party(&state.external_url) {
+        Ok(rp) => rp,
+        Err(err) => return internal(err),
+    };
+    let (client_data_json, authenticator_data, signature) = match (
+        B64URL.decode(&body.client_data_json),
+        B64URL.decode(&body.authenticator_data),
+        B64URL.decode(&body.signature),
+    ) {
+        (Ok(c), Ok(a), Ok(s)) => (c, a, s),
+        _ => return (StatusCode::BAD_REQUEST, "malformed base64url fields").into_response(),
+    };
+    let response = crate::auth::webauthn::AssertionResponse {
+        credential_id: body.credential_id,
+        client_data_json,
+        authenticator_data,
+        signature,
+    };
+    let user_id =
+        match crate::auth::webauthn::finish_assertion(&state.db, &rp.id, &rp.origin, &response) {
+            Ok(id) => id,
+            Err(err) => {
+                tracing::warn!(error = %format!("{err:#}"), "passkey assertion rejected");
+                return (StatusCode::UNAUTHORIZED, "passkey sign-in failed").into_response();
+            }
+        };
+    let cookie = match state.db.create_session(user_id, IDLE_TIMEOUT_SECS, 1) {
+        Ok(secret) => set_cookie_header(&secret, IDLE_TIMEOUT_SECS),
+        Err(err) => return internal(err),
+    };
+    (
+        [(header::SET_COOKIE, cookie)],
+        Json(serde_json::json!({ "ok": true })),
+    )
+        .into_response()
 }
 
 // -- device approval (RFC 8628) ---------------------------------------------
