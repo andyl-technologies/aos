@@ -513,6 +513,41 @@ async fn org_dashboard_authz_matrix() {
     assert_eq!(resp.status, StatusCode::FORBIDDEN);
     let resp = send(&app, "GET", "/-/org/acme/audit", Some(&out_cookie), None).await;
     assert_eq!(resp.status, StatusCode::NOT_FOUND);
+
+    // A viewer sees no create affordances (those need registry.configure /
+    // storage.manage) and no delete form (owner-only).
+    let resp = send(&app, "GET", "/-/org/acme", Some(&m_cookie), None).await;
+    assert!(!resp.body.contains("create a registry"), "{}", resp.body);
+    assert!(!resp.body.contains("create project"), "{}", resp.body);
+    assert!(!resp.body.contains("create binding"), "{}", resp.body);
+    assert!(!resp.body.contains("delete organization"), "{}", resp.body);
+}
+
+#[tokio::test]
+async fn org_dashboard_shows_create_affordances_to_admins() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    // An admin holds registry.configure + storage.manage but not iam.admin.
+    let admin = db.find_or_create_user("admin@acme.com").unwrap();
+    db.grant_membership("user", admin, "acme", "admin").unwrap();
+    // An owner additionally holds iam.admin (so sees the delete form).
+    let owner = db.find_or_create_user("owner@acme.com").unwrap();
+    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+
+    let a_cookie = login(&app, &db, "admin@acme.com").await;
+    let resp = send(&app, "GET", "/-/org/acme", Some(&a_cookie), None).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(resp.body.contains("create a registry"), "{}", resp.body);
+    assert!(resp.body.contains("create project"), "{}", resp.body);
+    assert!(resp.body.contains("create binding"), "{}", resp.body);
+    // An admin is NOT an owner, so the delete form stays hidden.
+    assert!(!resp.body.contains("delete organization"), "{}", resp.body);
+
+    // An owner additionally sees the typed-confirmation delete form.
+    let o_cookie = login(&app, &db, "owner@acme.com").await;
+    let resp = send(&app, "GET", "/-/org/acme", Some(&o_cookie), None).await;
+    assert!(resp.body.contains("delete organization"), "{}", resp.body);
 }
 
 #[tokio::test]
