@@ -17,12 +17,12 @@
 //!
 //! [versions.platforms.x86_64-linux]
 //! store_path = "/var/lib/store/h7j3k8l2m9n4-curl-8.5.0"
-//! nar_hash = "sha256:..."
-//! nar_size = 3145728
 //! closure_size = 52428800
 //! source_drv = "/var/lib/store/...-curl-8.5.0.drv"
 //! source_nar_hash = "sha256:..."
 //! references = ["r4q1m2kp8v3x"]
+//! # nar_hash/nar_size may appear in pre-RFC-0005 registries; newer ones
+//! # publish the output's content binding in the ca/ trust map instead.
 //! ```
 //!
 //! [`parse_registry`] walks the whole cache directory and flattens it into

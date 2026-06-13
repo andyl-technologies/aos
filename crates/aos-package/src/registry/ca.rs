@@ -89,15 +89,11 @@ impl CaEntry {
         };
 
         let mut fields = rest.split(':');
-        let (algo, digest, size) = match (
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-        ) {
-            (Some(algo), Some(digest), Some(size), None) => (algo, digest, size),
-            _ => bail!("malformed ca entry '{token}': expected nar:sha256:<hash>:<size>"),
-        };
+        let (algo, digest, size) =
+            match (fields.next(), fields.next(), fields.next(), fields.next()) {
+                (Some(algo), Some(digest), Some(size), None) => (algo, digest, size),
+                _ => bail!("malformed ca entry '{token}': expected nar:sha256:<hash>:<size>"),
+            };
         if algo != "sha256" {
             bail!("malformed ca entry '{token}': unsupported algorithm '{algo}'");
         }
@@ -656,7 +652,10 @@ mod tests {
 
         // Different bits without --bless: conflict, nothing written.
         let outcome = upsert_entry(tmp.path(), hash, nar_entry(DIGEST_B, 11), false).unwrap();
-        assert_eq!(outcome, UpsertOutcome::Conflict(vec![nar_entry(DIGEST_A, 10)]));
+        assert_eq!(
+            outcome,
+            UpsertOutcome::Conflict(vec![nar_entry(DIGEST_A, 10)])
+        );
 
         // With bless: appended.
         let outcome = upsert_entry(tmp.path(), hash, nar_entry(DIGEST_B, 11), true).unwrap();

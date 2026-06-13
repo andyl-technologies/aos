@@ -1,8 +1,8 @@
 # RFC-0005: The `ca/` trust map — content-addressed closure validation
 
-- **Status:** Proposed
+- **Status:** Proposed (implementation in the same PR)
 - **Date:** 2026-06-12
-- **PR:** _(pending)_
+- **PR:** [#98](https://github.com/andyl-technologies/aos/pull/98)
 - **Audience:** anyone working on `crates/aos-package/` (the `apr`
   publish pipeline and the `apm` download/verify pipeline) or the
   registry docs under `docs/registry/`.
@@ -248,7 +248,7 @@ the fields whose job it was doing partially:
 |---|---|
 | `nar_hash` | **Removed.** Redundant with the root's `ca/` entry, and worse: single-valued (cannot express multiple blessed rebuilds) and a second signed source that can disagree with the first. One authority. |
 | `nar_size` | **Removed.** Sizes pair 1:1 with blessed hashes (different bits → different size), so they live inside each `nar:` entry. |
-| `download_hash`, `download_size` | **Removed.** They describe one particular compressed artifact, which is cache-/compression-specific. Post-download verification against the blessed NAR hash subsumes them; the decompression cap (§2.4) covers the unverified-input window they used to pre-check. They remain available, unauthenticated, in narinfos for planning and early-fail. |
+| `download_hash`, `download_size` | **Removed from the documented schema.** (Implementation note: these appeared in `repo-layout.md`'s TARGET example but were never read or written by the code — the removal is doc-only.) They describe one particular compressed artifact, which is cache-/compression-specific. Post-download verification against the blessed NAR hash subsumes them; the decompression cap (§2.4) covers the unverified-input window they would pre-check. They remain available, unauthenticated, in narinfos for planning and early-fail. |
 | `store_path`, `references`, `closure_size`, `source_drv`, `source_nar_hash` | **Unchanged.** (`references` overlaps with the `closures/` root line and could fold away later, but that is graph shape, not content trust — out of scope here.) |
 
 The narinfo emitter (`docs/registry/nix-cache-compatibility.md` §6)

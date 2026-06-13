@@ -219,9 +219,7 @@ pub fn verify_nar_blessed(path: &Path, blessed: &[CaEntry]) -> Result<String> {
         .filter_map(CaEntry::nar_size)
         .max()
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no usable blessed entries: every ca/ entry is of an unrecognised type"
-            )
+            anyhow::anyhow!("no usable blessed entries: every ca/ entry is of an unrecognised type")
         })?;
 
     let file = File::open(path)

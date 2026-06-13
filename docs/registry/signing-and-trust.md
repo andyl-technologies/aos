@@ -50,6 +50,12 @@ Key consequences:
 - **Channel partition tags are AOS-only.** They live *outside* the ref namespace at
   `/channels/<name>/<00..ff>` (256 files), so they never appear in `info/refs` and a
   stock dumb clone never sees them.
+- **The tree binds content, not just names.** The signed commit's tree carries the
+  `ca/` trust map (blessed content addresses for every published closure member,
+  [`repo-layout.md`](repo-layout.md) §5b, RFC-0005), so the signature vouches for the
+  exact NAR bytes of the whole dependency graph — input-addressed store-path names
+  alone would only bind the graph's *shape*. Cache-served narinfos are advisory
+  transport metadata, never a trust source.
 
 ---
 
@@ -576,7 +582,8 @@ bytes.
 | Is the frontier branch trustworthy? | `refs/heads/<channel>` — **unsigned pointer** | **no** (convenience only) |
 | Is this pointer fresh? | low CDN TTL on `/channels` + consumer max-staleness policy + monotonic floor (no in-band expiry) | freshness, not forgery |
 | Could I be downgraded? | consumer **monotonic floor** (semver); abort = **fix-forward** | yes |
-| NAR substitution from same origin? | narinfo `Sig:` reusing the **one** Ed25519 key | yes |
+| Are these NAR bytes the published bytes? | `ca/` trust map in the signed tree: decompressed SHA-256 + size must match a blessed entry; unmapped path = hard failure when the map is published (RFC-0005) | yes — roots content at the tag signature |
+| NAR substitution from same origin? | `ca/` trust map (above); narinfo `Sig:` reusing the **one** Ed25519 key remains for stock-Nix consumers | yes |
 
 ---
 

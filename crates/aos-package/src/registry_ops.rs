@@ -3831,9 +3831,10 @@ pub async fn run_ca(config: &ApmConfig, command: &CaCommand, printer: &Printer) 
             let mut report = CaWriteReport::default();
             for root in &roots {
                 printer.info(&format!("Mapping closure of {root}"));
-                report.merge(write_ca_entries(&dir, root, *bless).with_context(|| {
-                    format!("writing ca/ trust-map entries for {root}")
-                })?);
+                report.merge(
+                    write_ca_entries(&dir, root, *bless)
+                        .with_context(|| format!("writing ca/ trust-map entries for {root}"))?,
+                );
             }
             printer.kv("Roots", &roots.len().to_string());
             printer.kv("CA entries", &report.summary());
