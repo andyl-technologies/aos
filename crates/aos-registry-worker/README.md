@@ -30,8 +30,17 @@ porting the whole hub.
   registry's R2 surface into D1 (`src/indexer.rs`), reusing
   `aos-registry-surface` — the *exact* verifier the native hub indexer and `apm`
   run — to verify the HEAD commit signature, every release tag (signature + name
-  binding), and every channel partition. Fail-closed: an unverifiable surface is
-  recorded `failed`, never `fresh`.
+  binding + commit target), and every channel partition. A partition must point
+  at a *known* release *tag object*: a partition targeting a non-tag object or
+  an unknown/forged tag oid fails the whole index (the same hard checks the
+  native `resolve_channels` makes — never a silent skip). Channels are also
+  guarded by a monotonic anti-rollback floor (the `channel_floors` table,
+  matching the native hub's "system of record"): a channel whose frontier fell
+  below its recorded floor is rejected before any row is written, and a clean
+  index raises the floor (only ever upward). The per-decision verification logic
+  is factored into `src/indexlogic.rs` so it is unit-tested natively against the
+  same rules. Fail-closed: an unverifiable or rolled-back surface is recorded
+  `failed`, never `fresh`.
 
 The Worker serves **public registries anonymously**; the D1 read queries filter
 on `visibility = 'public'`.

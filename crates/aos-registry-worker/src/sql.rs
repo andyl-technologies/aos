@@ -31,7 +31,14 @@
 //! releases             — verified signed release tags
 //! key_rosters          — the trust roster mirror (public data)
 //! caches               — committed [[caches]] entries
+//! channel_floors       — per-channel anti-rollback floors (indexer state)
 //! ```
+//!
+//! `channel_floors` is the one *write*-side table the indexer needs on the
+//! Worker: it is the native hub's anti-rollback "system of record" for
+//! channels (a monotonic floor the frontier may never drop below). The read
+//! path never queries it; it exists so the Cron indexer's fail-closed rollback
+//! guard ([`crate::indexer`]) matches the native hub.
 //!
 //! The `INTEGER PRIMARY KEY` rows are sqlite rowid aliases (D1 supports them),
 //! and every placeholder is sqlite's numbered `?N` form, which D1 binds
@@ -130,6 +137,12 @@ CREATE TABLE IF NOT EXISTS caches (
     registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
     url         TEXT NOT NULL,
     priority    INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS channel_floors (
+    registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
+    channel     TEXT NOT NULL,
+    floor       TEXT NOT NULL,
+    PRIMARY KEY (registry_id, channel)
 );
 ";
 
@@ -316,6 +329,134 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         no_comments.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The Worker's read/indexer tables expose exactly the column set the
+    /// native hub schema gives them, so a future edit to either schema that
+    /// changes a shared column is caught offline.
+    ///
+    /// # Why a pinned contract rather than a direct cross-link
+    ///
+    /// The native hub's applied schema lives in `aos_registry_hub::db`'s
+    /// `MIGRATIONS` constant, which is **private** (not `pub`), so the Worker
+    /// cannot reference it even with a native dev-dependency on the hub crate —
+    /// and that crate pulls axum/tokio/rusqlite, a heavy tree to add to the
+    /// Worker's native test build for one constant. Instead the expected column
+    /// set for every shared table is pinned here, transcribed from the native
+    /// `MIGRATIONS` (its v1 base plus the `ALTER … ADD COLUMN` migrations that
+    /// add `releases.pack_present`, `registry_index.refs_digest`,
+    /// `registries.visibility`, and `registries.prefix`). The Worker keeps a
+    /// strict *subset* of the native columns (the read path never needs the
+    /// tenancy/IAM columns), so each entry below is asserted to be present and
+    /// the Worker's tables must not introduce a column the native schema lacks.
+    /// If the native schema gains or renames a read-path column, update this
+    /// contract in the same change — the test then enforces the two stay
+    /// consistent.
+    #[test]
+    fn read_tables_match_native_column_contract() {
+        use std::collections::BTreeSet;
+
+        // (table, the native columns the Worker mirrors). These are transcribed
+        // from `aos_registry_hub::db::MIGRATIONS`; see the doc above.
+        let expected: &[(&str, &[&str])] = &[
+            (
+                "registries",
+                &[
+                    "id",
+                    "slug",
+                    "source_url",
+                    "trust_keys",
+                    "require_signatures",
+                    "created_at",
+                    "visibility",
+                    "prefix",
+                ],
+            ),
+            (
+                "registry_index",
+                &[
+                    "registry_id",
+                    "state",
+                    "error",
+                    "last_indexed_commit",
+                    "name",
+                    "description",
+                    "indexed_at",
+                    "refs_digest",
+                ],
+            ),
+            (
+                "packages",
+                &[
+                    "id",
+                    "registry_id",
+                    "name",
+                    "description",
+                    "homepage",
+                    "license",
+                    "maintainer",
+                    "sysroot",
+                ],
+            ),
+            (
+                "package_versions",
+                &["id", "package_id", "version", "previous"],
+            ),
+            (
+                "version_platforms",
+                &[
+                    "id",
+                    "version_id",
+                    "platform",
+                    "store_path",
+                    "nar_hash",
+                    "nar_size",
+                    "closure_size",
+                    "refs",
+                    "images",
+                ],
+            ),
+            ("channels", &["id", "registry_id", "name", "frontier"]),
+            ("channel_partitions", &["channel_id", "bucket", "release"]),
+            (
+                "releases",
+                &[
+                    "id",
+                    "registry_id",
+                    "semver",
+                    "tag_oid",
+                    "commit_oid",
+                    "signer",
+                    "tagged_at",
+                    "pack_present",
+                ],
+            ),
+            (
+                "key_rosters",
+                &["registry_id", "key_id", "public_key", "status"],
+            ),
+            ("caches", &["registry_id", "url", "priority"]),
+            ("channel_floors", &["registry_id", "channel", "floor"]),
+        ];
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        for (table, native_cols) in expected {
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap();
+            let actual: BTreeSet<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            let native: BTreeSet<String> = native_cols.iter().map(|c| (*c).to_string()).collect();
+            assert_eq!(
+                actual, native,
+                "table `{table}` columns drifted from the native hub contract"
+            );
+        }
     }
 
     /// Private/internal registries are invisible to the public read path: the

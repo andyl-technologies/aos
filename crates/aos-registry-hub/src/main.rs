@@ -573,6 +573,21 @@ async fn main() -> Result<()> {
                                 tracing::warn!(error = %format!("{err:#}"), "org purge failed");
                             }
                         }
+                        // Retention: prune repair-job history past the window so
+                        // the append-only audit table cannot grow without bound.
+                        let cutoff = now_secs() - REPAIR_JOB_RETENTION_SECS;
+                        match db.prune_repair_jobs(cutoff) {
+                            Ok(pruned) if pruned > 0 => {
+                                tracing::info!(pruned, "pruned old repair jobs");
+                            }
+                            Ok(_) => {}
+                            Err(err) => {
+                                tracing::warn!(
+                                    error = %format!("{err:#}"),
+                                    "repair-job prune failed"
+                                );
+                            }
+                        }
                     }
                 });
             }
@@ -600,7 +615,14 @@ async fn main() -> Result<()> {
                 .await
                 .with_context(|| format!("binding {listen}"))?;
             tracing::info!(%listen, root = %root.display(), "aos-registry-hub serving");
-            axum::serve(listener, router(state)).await?;
+            // `into_make_service_with_connect_info` injects the TCP peer
+            // address as `ConnectInfo<SocketAddr>` so the rate limiter keys on
+            // the real client when no trusted proxy fronts the hub.
+            axum::serve(
+                listener,
+                router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await?;
         }
         Command::Registry { command } => {
             let root = resolve_root(cli.root, false)?;
@@ -1483,6 +1505,13 @@ fn mint_token(
     println!("secret (shown once): {secret}");
     Ok(())
 }
+
+/// How long a `repair_jobs` history row is retained before the serve loop
+/// prunes it (30 days).
+///
+/// The repair-job table is an append-only audit; this retention bounds its
+/// growth while keeping recent history for the health page.
+const REPAIR_JOB_RETENTION_SECS: i64 = 30 * 86_400;
 
 /// Current Unix time in seconds.
 fn now_secs() -> i64 {

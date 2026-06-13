@@ -34,6 +34,9 @@ async fn serve_file(State(root): State<Arc<PathBuf>>, AxPath(path): AxPath<Strin
 
 #[tokio::test]
 async fn frontend_probe_records_status_and_health_page_renders_it() {
+    // The frontend points at a `127.0.0.1` test server; opt out of the SSRF
+    // local/internal-address rejection (production never sets this).
+    std::env::set_var("AOS_HUB_ALLOW_LOCAL_REMOTES", "1");
     let dir = tempfile::tempdir().unwrap();
     let surface = dir.path().join("surface");
     std::fs::create_dir_all(&surface).unwrap();

@@ -42,6 +42,9 @@ use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
 use aos_registry_surface::tag::verify_signed_tag;
 use aos_registry_surface::tagobject::TagTarget;
 
+use crate::indexlogic::{
+    advance_frontier, floor_decision, resolve_partition_release, should_raise_floor, FloorDecision,
+};
 use crate::keymap;
 use crate::model::Registry;
 
@@ -135,8 +138,10 @@ async fn index_releases(
         let payload = read_loose(bucket, registry, &oid.to_hex(), ObjectKind::Tag).await?;
         let signed = verify_signed_tag(&payload, name, trust_keys)
             .with_context(|| format!("verifying release tag '{name}'"))?;
+        // A release tag must target a commit (mirrors the native indexer); a
+        // release pointing elsewhere is a hard failure, not a silent skip.
         if signed.tag.target_type != TagTarget::Commit {
-            continue;
+            return Err(anyhow!("release tag '{name}' does not target a commit"));
         }
         let commit_oid = signed.tag.object.clone();
         write_release(db, registry.id, name, &oid.to_hex(), &commit_oid).await?;
@@ -146,6 +151,15 @@ async fn index_releases(
 }
 
 /// Resolve each channel's 256 partitions and write the channel rows.
+///
+/// Mirrors the native hub's `resolve_channels` + `enforce_floors` +
+/// `raise_floors`: every partition's signed tag is verified, then required to
+/// (1) target a release **tag object** and (2) name a known verified release
+/// (an unknown or non-tag target is a hard failure, never a silent skip), and
+/// the channel's new frontier is checked against the recorded anti-rollback
+/// floor before any rows are written. A channel whose frontier dropped below
+/// its floor fails the index (fail closed); after a clean write the floor is
+/// raised (only ever upward) to the new frontier.
 async fn index_channels(
     db: &D1Database,
     bucket: &Bucket,
@@ -156,8 +170,10 @@ async fn index_channels(
 ) -> Result<()> {
     clear_table(db, "channels", registry.id).await?;
     for name in refs.branches.keys() {
-        let channel_id = write_channel(db, registry.id, name).await?;
-        let mut frontier: Option<String> = None;
+        // Resolve and verify the channel fully in memory first, so the
+        // anti-rollback floor is enforced *before* any row is written.
+        let mut buckets: Vec<(usize, String)> = Vec::new();
+        let mut frontier: Option<semver::Version> = None;
         for bucket_idx in 0..PARTITIONS {
             let path = format!("channels/{name}/{bucket_idx:02x}");
             let Some(payload) = fetch_bytes(bucket, registry, &path).await? else {
@@ -165,24 +181,38 @@ async fn index_channels(
             };
             let signed = verify_signed_tag(&payload, name, trust_keys)
                 .with_context(|| format!("verifying partition {path}"))?;
-            // The partition points at a release tag object; map it to a semver.
-            let target = signed.tag.object.clone();
-            if let Some(release) = releases.get(&target) {
-                write_partition(db, channel_id, bucket_idx, release).await?;
-                // The frontier is the highest semver mapped on the channel.
-                let higher = frontier
-                    .as_ref()
-                    .and_then(|f| semver::Version::parse(f).ok())
-                    .zip(semver::Version::parse(release).ok())
-                    .map(|(cur, new)| new > cur)
-                    .unwrap_or(true);
-                if higher {
-                    frontier = Some(release.clone());
-                }
-            }
+            // Enforce the native hub's two target checks: the partition must
+            // point at a *known* release *tag object*. A forged or dangling
+            // pointer fails the whole index for this registry.
+            let release = resolve_partition_release(&path, &signed, releases)?;
+            advance_frontier(&mut frontier, release);
+            buckets.push((bucket_idx, release.clone()));
         }
-        if let Some(frontier) = frontier {
-            set_channel_frontier(db, channel_id, &frontier).await?;
+        let frontier = frontier.map(|v| v.to_string());
+
+        // Anti-rollback floor: reject a channel whose frontier fell below the
+        // recorded floor before touching the index (fail closed).
+        let floor = channel_floor(db, registry.id, name).await?;
+        if floor_decision(frontier.as_deref(), floor.as_deref()) == FloorDecision::Rollback {
+            // Both are Some here (Rollback requires it), but format defensively.
+            return Err(anyhow!(
+                "channel '{name}' frontier {} is below the recorded floor {}: refusing rollback",
+                frontier.as_deref().unwrap_or("?"),
+                floor.as_deref().unwrap_or("?"),
+            ));
+        }
+
+        // Write the verified channel, its partitions, and its frontier.
+        let channel_id = write_channel(db, registry.id, name).await?;
+        for (bucket_idx, release) in &buckets {
+            write_partition(db, channel_id, *bucket_idx, release).await?;
+        }
+        if let Some(frontier) = &frontier {
+            set_channel_frontier(db, channel_id, frontier).await?;
+            // Raise (never lower) the floor to the new frontier.
+            if should_raise_floor(frontier, floor.as_deref()) {
+                set_channel_floor(db, registry.id, name, frontier).await?;
+            }
         }
     }
     Ok(())
@@ -366,6 +396,36 @@ async fn set_channel_frontier(db: &D1Database, channel_id: i64, frontier: &str) 
         db,
         "UPDATE channels SET frontier = ?2 WHERE id = ?1",
         &[channel_id.into(), frontier.into()],
+    )
+    .await
+}
+
+/// Read a channel's recorded anti-rollback floor (the highest frontier ever
+/// indexed for it), or `None` if it has never been indexed.
+async fn channel_floor(db: &D1Database, registry_id: i64, channel: &str) -> Result<Option<String>> {
+    db.prepare("SELECT floor FROM channel_floors WHERE registry_id = ?1 AND channel = ?2")
+        .bind(&[registry_id.into(), channel.into()])
+        .map_err(|e| anyhow!("bind channel floor: {e}"))?
+        .first(Some("floor"))
+        .await
+        .map_err(|e| anyhow!("channel floor: {e}"))
+}
+
+/// Raise (overwrite) a channel's anti-rollback floor.
+///
+/// The caller only ever passes a frontier that is strictly greater than the
+/// recorded floor (see [`should_raise_floor`]); the floor only moves upward.
+async fn set_channel_floor(
+    db: &D1Database,
+    registry_id: i64,
+    channel: &str,
+    floor: &str,
+) -> Result<()> {
+    run(
+        db,
+        "INSERT INTO channel_floors (registry_id, channel, floor) VALUES (?1, ?2, ?3) \
+         ON CONFLICT(registry_id, channel) DO UPDATE SET floor = excluded.floor",
+        &[registry_id.into(), channel.into(), floor.into()],
     )
     .await
 }

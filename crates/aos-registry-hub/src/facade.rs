@@ -72,16 +72,20 @@
 //!
 //! # Quotas
 //!
-//! Before writing, an org-owned registry's upload is checked against its org's
-//! quota ([`crate::db::Database::would_exceed_quota`] for bytes, plus the
-//! object-count cap): an over-quota `PUT` is rejected `507 Insufficient
-//! Storage`, the same contract as `aos-server`'s `max_paths`. After a
-//! successful write of a *new* object (an overwrite does not double-count),
-//! the org's running usage is incremented
-//! ([`crate::db::Database::add_org_usage`]). Usage is **approximate** — it
-//! counts bytes as written; a re-index/GC reconciliation that rebuilds it from
-//! the surface is a later refinement, so a deleted object's bytes linger.
-//! Unowned phase-1 registries (no `org_id`) have no quota and are unaffected.
+//! Before writing, an org-owned registry's upload atomically checks *and*
+//! reserves its quota in one transaction
+//! ([`crate::db::Database::reserve_org_usage`]): the byte and object-count caps
+//! are read and the delta applied together, so two concurrent uploads cannot
+//! both observe headroom and then both consume it (the check-then-write TOCTOU
+//! is closed). An over-quota `PUT` is rejected `507 Insufficient Storage`, the
+//! same contract as `aos-server`'s `max_paths`. The reservation charges the
+//! *delta*: a brand-new object's full size, or, on an overwrite, the new size
+//! minus the old (which may be negative when shrinking). A reservation made for
+//! a write that is then rejected (publish-lease conflict, write failure) is
+//! released. Usage remains **approximate** — a re-index/GC reconciliation that
+//! rebuilds it from the surface is a later refinement, so a *deleted* object's
+//! bytes linger. Unowned phase-1 registries (no `org_id`) have no quota and are
+//! unaffected.
 //!
 //! # Index-after-flip
 //!
@@ -224,6 +228,16 @@ fn resolve_writable(
         Ok(None) => return Err(Box::new(StatusCode::NOT_FOUND.into_response())),
         Err(err) => return Err(Box::new(internal(err))),
     };
+    // A registry owned by a soft-deleted org stops serving immediately and must
+    // not accept uploads: a deleted org's registry is indistinguishable from one
+    // that never existed (`404`), the same contract the read facade enforces.
+    if let Some(org_id) = registry.org_id {
+        match state.db.org_is_active(org_id) {
+            Ok(true) => {}
+            Ok(false) => return Err(Box::new(StatusCode::NOT_FOUND.into_response())),
+            Err(err) => return Err(Box::new(internal(err))),
+        }
+    }
     // A managed registry has a storage binding; that is what makes it
     // writable. Unowned phase-1 registries (no binding) are read-only.
     if registry.storage_binding_id.is_none() {
@@ -327,10 +341,38 @@ pub async fn put_machine_path(
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     }
 
-    // Quota gate (org-owned registries only): reject an over-quota write with
-    // 507 before any bytes land, matching aos-server's `max_paths` contract.
+    let target = match safe_join(&root, path) {
+        Ok(target) => target,
+        Err(_) => return (StatusCode::BAD_REQUEST, "unsafe surface path").into_response(),
+    };
+    // The old on-disk size, if any, drives the overwrite delta below. Read it
+    // before reserving and before writing so an overwrite charges only the
+    // size change, and a brand-new object charges its full size.
+    let old_len: Option<i64> = match std::fs::metadata(&target) {
+        Ok(meta) => Some(meta.len() as i64),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return internal(err.into()),
+    };
+    let existed = old_len.is_some();
+    let new_len = body.len() as i64;
+    // Charge the *delta*: new size minus old size on an overwrite (which may be
+    // negative when shrinking), or the full size for a new object. Not counting
+    // overwrite growth was an undercount; usage is still not fully reconciled
+    // without a GC/re-index pass (a deleted object's bytes linger), as the
+    // module docs note.
+    let delta_bytes = new_len - old_len.unwrap_or(0);
+    let delta_objects = i64::from(!existed);
+
+    // Quota gate (org-owned registries only): atomically check *and* reserve
+    // the delta, rejecting an over-quota write with 507 before any bytes land
+    // (matching aos-server's `max_paths` contract). The reserve-then-write
+    // order closes the check-then-write TOCTOU window two concurrent uploads
+    // could otherwise race through.
     if let Some(org_id) = registry.org_id {
-        match quota_check(state, org_id, body.len() as i64) {
+        match state
+            .db
+            .reserve_org_usage(org_id, delta_bytes, delta_objects)
+        {
             Ok(true) => {}
             Ok(false) => {
                 return (
@@ -346,6 +388,9 @@ pub async fn put_machine_path(
     let mutable = is_mutable_pointer(path);
     if mutable {
         if let Err(holder) = state.leases.acquire(registry.id, &token_id, unix_now()) {
+            // Release the reservation we just made: this write is rejected, so
+            // its bytes never land.
+            release_reservation(state, &registry, delta_bytes, delta_objects);
             tracing::warn!(
                 slug = %registry.slug,
                 %path,
@@ -360,28 +405,11 @@ pub async fn put_machine_path(
         }
     }
 
-    let target = match safe_join(&root, path) {
-        Ok(target) => target,
-        Err(_) => return (StatusCode::BAD_REQUEST, "unsafe surface path").into_response(),
-    };
-    let existed = target.exists();
     if let Err(err) = write_atomic(&target, &body).await {
+        // The write failed after reserving; give the reservation back so a
+        // failed upload does not permanently consume quota.
+        release_reservation(state, &registry, delta_bytes, delta_objects);
         return internal(err);
-    }
-
-    // Account a *new* object's bytes against the org's running usage. An
-    // overwrite is not double-counted (the prior bytes were already counted);
-    // a usage-update failure is logged, not fatal, since the bytes have landed.
-    if !existed {
-        if let Some(org_id) = registry.org_id {
-            if let Err(err) = state.db.add_org_usage(org_id, body.len() as i64, 1) {
-                tracing::warn!(
-                    slug = %registry.slug,
-                    error = %format!("{err:#}"),
-                    "recording org usage after upload failed"
-                );
-            }
-        }
     }
 
     // A pointer that completes a publish re-indexes inline so the index is
@@ -492,26 +520,32 @@ async fn write_atomic(target: &std::path::Path, bytes: &[u8]) -> anyhow::Result<
     Ok(())
 }
 
-/// Whether an org may accept `additional_bytes` more under its quota.
+/// Give a previously-made quota reservation back, best-effort.
 ///
-/// Returns `Ok(true)` when the write fits both the byte cap
-/// ([`crate::db::Database::would_exceed_quota`]) and the object-count cap, and
-/// `Ok(false)` when either would be exceeded. An org with no quota row, or
-/// `NULL` caps, always fits.
-///
-/// # Errors
-///
-/// Returns an error on database failure.
-fn quota_check(state: &AppState, org_id: i64, additional_bytes: i64) -> anyhow::Result<bool> {
-    if state.db.would_exceed_quota(org_id, additional_bytes)? {
-        return Ok(false);
+/// Called when a write is rejected *after* its quota was atomically reserved
+/// (a publish-lease conflict or a write failure), so a rejected upload does not
+/// permanently consume an org's quota. Applies the inverse of the reservation
+/// deltas; a failure is logged, not fatal (usage is approximate and reconciled
+/// by re-index/GC). No-op for an unowned registry (`org_id` is `None`).
+fn release_reservation(
+    state: &AppState,
+    registry: &RegistryRecord,
+    delta_bytes: i64,
+    delta_objects: i64,
+) {
+    let Some(org_id) = registry.org_id else {
+        return;
+    };
+    if let Err(err) = state
+        .db
+        .reserve_org_usage(org_id, -delta_bytes, -delta_objects)
+    {
+        tracing::warn!(
+            slug = %registry.slug,
+            error = %format!("{err:#}"),
+            "releasing quota reservation after a rejected upload failed"
+        );
     }
-    if let Some(max_objects) = state.db.org_quota(org_id)?.max_objects {
-        if state.db.org_usage(org_id)?.object_count.saturating_add(1) > max_objects {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }
 
 /// Current Unix time in seconds.

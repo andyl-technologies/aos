@@ -284,18 +284,28 @@ impl RegistryRpc {
     }
 
     /// Authorize a read of `registry` over a Connect context, following
-    /// registry visibility.
+    /// registry visibility and the owning org's lifecycle.
     ///
-    /// A `public` registry (and any unowned phase-1 registry) reads
-    /// anonymously. An `internal` or `private` registry requires a bearer JWT
-    /// granting [`Permission::Read`] on the registry scope (intersected with
-    /// the owner's current grants by [`Self::require_permission`]).
+    /// A registry owned by a soft-deleted org returns `NotFound`: a deleted
+    /// org stops serving immediately, so its registries must be indistinguishable
+    /// from never having existed (the same contract the browse/read facade
+    /// enforces). For a live org, a `public` registry (and any unowned phase-1
+    /// registry) reads anonymously; an `internal` or `private` registry requires
+    /// a bearer JWT granting [`Permission::Read`] on the registry scope
+    /// (intersected with the owner's current grants by
+    /// [`Self::require_permission`]).
     ///
     /// # Errors
     ///
-    /// Returns `Unauthenticated`/`PermissionDenied` when a non-public registry
-    /// is read without sufficient authority.
+    /// Returns `NotFound` when the owning org is soft-deleted, and
+    /// `Unauthenticated`/`PermissionDenied` when a non-public registry is read
+    /// without sufficient authority.
     fn require_read(&self, ctx: &Context, registry: &RegistryRecord) -> Result<(), ConnectError> {
+        if let Some(org_id) = registry.org_id {
+            if !self.db.org_is_active(org_id).map_err(internal)? {
+                return Err(not_found("registry"));
+            }
+        }
         if registry.visibility == "public" || registry.org_id.is_none() {
             return Ok(());
         }
@@ -385,16 +395,22 @@ impl RegistryService for RegistryRpc {
 
     /// `GetRegistry` — one registry by slug.
     ///
+    /// Reads follow registry visibility (and the owning org's lifecycle): a
+    /// private/internal registry requires `Read`, and a registry owned by a
+    /// soft-deleted org returns `NotFound`.
+    ///
     /// # Errors
     ///
-    /// Returns `NotFound` for an unknown slug and `Internal` on database
-    /// failure.
+    /// Returns `NotFound` for an unknown slug or a soft-deleted owning org,
+    /// `Unauthenticated`/`PermissionDenied` when a non-public registry is read
+    /// without sufficient authority, and `Internal` on database failure.
     async fn get_registry(
         &self,
         ctx: Context,
         req: OwnedView<GetRegistryRequestView<'static>>,
     ) -> Result<(GetRegistryResponse, Context), ConnectError> {
         let record = self.registry_or_not_found(req.slug)?;
+        self.require_read(&ctx, &record)?;
         let status = self.db.index_status(record.id).map_err(internal)?;
         Ok((
             GetRegistryResponse {
@@ -407,16 +423,23 @@ impl RegistryService for RegistryRpc {
 
     /// `ListReleases` — verified signed releases, newest first.
     ///
+    /// Reads follow registry visibility (and the owning org's lifecycle): a
+    /// private/internal registry requires `Read`, and a registry owned by a
+    /// soft-deleted org returns `NotFound`.
+    ///
     /// # Errors
     ///
-    /// Returns `NotFound` for an unknown slug, `InvalidArgument` for a
-    /// malformed `page_token`, and `Internal` on database failure.
+    /// Returns `NotFound` for an unknown slug or a soft-deleted owning org,
+    /// `Unauthenticated`/`PermissionDenied` when a non-public registry is read
+    /// without sufficient authority, `InvalidArgument` for a malformed
+    /// `page_token`, and `Internal` on database failure.
     async fn list_releases(
         &self,
         ctx: Context,
         req: OwnedView<ListReleasesRequestView<'static>>,
     ) -> Result<(ListReleasesResponse, Context), ConnectError> {
         let record = self.registry_or_not_found(req.slug)?;
+        self.require_read(&ctx, &record)?;
         let releases: Vec<Release> = self
             .db
             .list_releases(record.id)

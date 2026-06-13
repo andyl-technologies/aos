@@ -223,14 +223,21 @@ fn PackageView(name: String, registry: String) -> impl IntoView {
 /// platforms table with narinfo permalinks.
 #[component]
 fn PackageBody(pkg: PackageSnapshot) -> impl IntoView {
-    let homepage = pkg.homepage.clone();
+    // Only http(s) homepages become links; any other scheme renders as text.
+    let homepage_link = crate::model::homepage_href(pkg.homepage.as_deref());
+    let homepage_text = pkg.homepage.clone();
     view! {
         <h1>{pkg.name.clone()}</h1>
         <p>{pkg.description.clone()}</p>
         <table>
-            {homepage.map(|url| view! {
-                <tr><th>"Homepage"</th><td><a href=url.clone()>{url.clone()}</a></td></tr>
-            })}
+            {match homepage_link {
+                Some(url) => view! {
+                    <tr><th>"Homepage"</th><td><a href=url.clone()>{url.clone()}</a></td></tr>
+                }.into_any(),
+                None => homepage_text.map(|url| view! {
+                    <tr><th>"Homepage"</th><td>{url}</td></tr>
+                }).into_any(),
+            }}
             <tr><th>"License"</th><td>{pkg.license.clone()}</td></tr>
             <tr><th>"Maintainer"</th><td>{pkg.maintainer.clone()}</td></tr>
         </table>

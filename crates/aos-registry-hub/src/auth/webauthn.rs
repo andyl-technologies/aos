@@ -426,11 +426,30 @@ pub fn decode_cose_key(cbor: &[u8]) -> Result<VerifyingPublicKey> {
         }
         // RSA, RS256.
         3 => {
+            use rsa::traits::PublicKeyParts as _;
             use rsa::BigUint;
             let n = bytes(-1).ok_or_else(|| anyhow!("RSA key has no modulus n"))?;
             let e = bytes(-2).ok_or_else(|| anyhow!("RSA key has no exponent e"))?;
-            let key = rsa::RsaPublicKey::new(BigUint::from_bytes_be(n), BigUint::from_bytes_be(e))
-                .context("invalid RSA public key")?;
+            let modulus = BigUint::from_bytes_be(n);
+            let exponent = BigUint::from_bytes_be(e);
+            let key =
+                rsa::RsaPublicKey::new(modulus, exponent).context("invalid RSA public key")?;
+            // Reject weak/degenerate RSA parameters that the `rsa` constructor
+            // would otherwise accept: a short modulus is brute-forceable, and a
+            // small/even public exponent is a classic RSA pitfall. Require a
+            // >= 2048-bit modulus and an odd exponent of at least 65537 (F4).
+            if key.n().bits() < 2048 {
+                bail!("RSA modulus is {} bits (require >= 2048)", key.n().bits());
+            }
+            let e = key.e();
+            if e < &BigUint::from(65_537u32) {
+                bail!("RSA public exponent is too small (require >= 65537)");
+            }
+            // Odd iff the least-significant byte is odd.
+            let lsb = e.to_bytes_le().first().copied().unwrap_or(0);
+            if lsb & 1 == 0 {
+                bail!("RSA public exponent must be odd");
+            }
             Ok(VerifyingPublicKey::Rsa(Box::new(key)))
         }
         other => bail!("unsupported COSE key type kty={other}"),
@@ -1163,5 +1182,59 @@ mod tests {
         let p = SoftAuthenticator::p256(b"x");
         let key = decode_cose_key(&p.cose_public_key()).unwrap();
         assert!(matches!(key, VerifyingPublicKey::P256(_)));
+    }
+
+    /// Build a COSE RSA (kty=3) key CBOR with modulus `n` and exponent `e`.
+    fn cose_rsa(n: &[u8], e: &[u8]) -> Vec<u8> {
+        use ciborium::value::{Integer, Value};
+        let map = vec![
+            (
+                Value::Integer(Integer::from(1)),
+                Value::Integer(Integer::from(3)),
+            ), // kty = RSA
+            (
+                Value::Integer(Integer::from(3)),
+                Value::Integer(Integer::from(-257)),
+            ), // alg RS256
+            (Value::Integer(Integer::from(-1)), Value::Bytes(n.to_vec())), // n
+            (Value::Integer(Integer::from(-2)), Value::Bytes(e.to_vec())), // e
+        ];
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(map), &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn cose_rsa_rejects_weak_modulus_and_exponent() {
+        // A 1024-bit modulus (128 bytes, high bit set) with F4 exponent: too
+        // short, rejected.
+        let mut small_n = vec![0u8; 128];
+        small_n[0] = 0x80;
+        let f4 = 65_537u32.to_be_bytes().to_vec();
+        let f4 = f4.into_iter().skip_while(|&b| b == 0).collect::<Vec<_>>();
+        assert!(
+            decode_cose_key(&cose_rsa(&small_n, &f4)).is_err(),
+            "a 1024-bit modulus must be rejected"
+        );
+
+        // A 2048-bit modulus (256 bytes, high bit set) with F4 is accepted.
+        let mut big_n = vec![0u8; 256];
+        big_n[0] = 0x80;
+        big_n[255] = 1; // odd modulus, as RSA moduli are
+        assert!(
+            decode_cose_key(&cose_rsa(&big_n, &f4)).is_ok(),
+            "a 2048-bit modulus with F4 exponent must be accepted"
+        );
+
+        // A 2048-bit modulus with an even exponent (2) is rejected.
+        assert!(
+            decode_cose_key(&cose_rsa(&big_n, &[2])).is_err(),
+            "an even/small exponent must be rejected"
+        );
+        // Exponent 3 (odd but < 65537) is rejected.
+        assert!(
+            decode_cose_key(&cose_rsa(&big_n, &[3])).is_err(),
+            "a small exponent must be rejected"
+        );
     }
 }

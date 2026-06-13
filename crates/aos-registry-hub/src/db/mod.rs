@@ -2620,6 +2620,24 @@ impl Database {
             .collect()
     }
 
+    /// Prune `repair_jobs` rows older than `created_before`, returning the
+    /// number deleted.
+    ///
+    /// `repair_jobs` is an unbounded append-only audit of every repair attempt;
+    /// without retention it grows without limit on a busy hub. The serve loop
+    /// calls this periodically with `now - retention_window` so the table keeps
+    /// only recent history (the health page already pages with a `LIMIT`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn prune_repair_jobs(&self, created_before: i64) -> Result<u64> {
+        self.backend.execute(
+            "DELETE FROM repair_jobs WHERE created_at < ?1",
+            &vals![created_before],
+        )
+    }
+
     /// Records (upserting) the latest freshness probe of one cache endpoint.
     ///
     /// One row is kept per `(registry_id, cache_url)`; re-probing overwrites
@@ -2688,11 +2706,14 @@ impl Database {
     ///
     /// Idempotent: re-running for the same registry updates the upstream URL,
     /// mode, verify flag, and schedule, preserving the last-sync record. `mode`
-    /// must be `full` or `pullthrough`.
+    /// must be `full` or `pullthrough`. The `upstream_url` is validated as a
+    /// safe remote target ([`crate::fetch::is_safe_remote_url`]) so a mirror
+    /// can never be pointed at the local filesystem or an internal address.
     ///
     /// # Errors
     ///
-    /// Returns an error for an unrecognized `mode` or on database failure.
+    /// Returns an error for an unrecognized `mode`, an unsafe (local/internal
+    /// or non-HTTP) `upstream_url`, or on database failure.
     pub fn create_mirror_source(
         &self,
         registry_id: i64,
@@ -2704,6 +2725,8 @@ impl Database {
         if !matches!(mode, "full" | "pullthrough") {
             bail!("unsupported mirror mode '{mode}' (expected full or pullthrough)");
         }
+        crate::fetch::is_safe_remote_url(upstream_url)
+            .with_context(|| format!("rejecting mirror upstream '{upstream_url}'"))?;
         self.backend.execute(
             "INSERT INTO mirror_sources
              (registry_id, upstream_url, mode, verify, schedule_secs)
@@ -2821,12 +2844,16 @@ impl Database {
     /// Create a frontend serving a registry; returns its new id.
     ///
     /// `mode` must be `direct` or `proxied`. The `(domain, base_path)` pair is
-    /// unique across all frontends.
+    /// unique across all frontends. The frontend's probe URL (its `domain`,
+    /// defaulting to `https://` when no scheme is given) is validated as a safe
+    /// remote target ([`crate::fetch::is_safe_remote_url`]) so a frontend can
+    /// never be pointed at the local filesystem or an internal address.
     ///
     /// # Errors
     ///
     /// Returns an error for an unrecognized `mode`, a `(domain, base_path)`
-    /// collision, or on database failure.
+    /// collision, an unsafe (local/internal or non-HTTP) `domain`, or on
+    /// database failure.
     #[allow(clippy::too_many_arguments)]
     pub fn create_frontend(
         &self,
@@ -2843,6 +2870,8 @@ impl Database {
         if !matches!(mode, "direct" | "proxied") {
             bail!("unsupported frontend mode '{mode}' (expected direct or proxied)");
         }
+        crate::fetch::is_safe_remote_url(&frontend_probe_url(domain))
+            .with_context(|| format!("rejecting frontend domain '{domain}'"))?;
         self.backend.execute_insert(
             "INSERT INTO frontends
              (registry_id, domain, base_path, mode, serves_git, serves_cache,
@@ -4187,6 +4216,11 @@ impl Database {
     /// no quota row) never exceeds. The object-count cap is checked separately
     /// by the caller against [`Database::org_quota`]/[`Database::org_usage`].
     ///
+    /// This is a *read-only* check and is therefore racy against concurrent
+    /// writers; the upload facade reserves atomically with
+    /// [`Database::reserve_org_usage`] instead. This method is retained for
+    /// read-only quota reporting.
+    ///
     /// # Errors
     ///
     /// Returns an error on database failure.
@@ -4197,6 +4231,86 @@ impl Database {
         };
         let used = self.org_usage(org_id)?.used_bytes;
         Ok(used.saturating_add(additional_bytes) > max_bytes)
+    }
+
+    /// Atomically check an org's quota and, if the write fits, reserve it.
+    ///
+    /// In a single transaction this reads the org's `max_bytes`/`max_objects`
+    /// caps and current usage, decides whether applying `delta_bytes` (which
+    /// may be negative on a shrinking overwrite) and `delta_objects` keeps both
+    /// dimensions within their caps, and — only when it fits — updates
+    /// `org_usage` by the deltas. Returns `true` when the reservation was made,
+    /// `false` when it would exceed a cap (no update performed).
+    ///
+    /// Folding the check and the update into one transaction closes the
+    /// check-then-write TOCTOU window that a separate `would_exceed_quota`
+    /// followed by `add_org_usage` left open: two concurrent uploads can no
+    /// longer both observe headroom and then both consume it. Usage is clamped
+    /// at zero so a negative delta never drives the stored total below zero.
+    ///
+    /// A `NULL`/absent cap is unlimited for that dimension. An org with no
+    /// `org_usage` row is treated as zero usage and a row is inserted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn reserve_org_usage(
+        &self,
+        org_id: i64,
+        delta_bytes: i64,
+        delta_objects: i64,
+    ) -> Result<bool> {
+        let now = unix_now();
+        let mut fit = false;
+        self.backend.with_tx(&mut |tx| {
+            // Read caps and current usage inside the transaction.
+            let caps = tx.query_opt(
+                "SELECT max_bytes, max_objects FROM org_quotas WHERE org_id = ?1",
+                &vals![org_id],
+            )?;
+            let (max_bytes, max_objects): (Option<i64>, Option<i64>) = match caps {
+                Some(row) => (row.get(0)?, row.get(1)?),
+                None => (None, None),
+            };
+            let usage = tx.query_opt(
+                "SELECT used_bytes, object_count FROM org_usage WHERE org_id = ?1",
+                &vals![org_id],
+            )?;
+            let (used_bytes, object_count): (i64, i64) = match usage {
+                Some(row) => (row.get(0)?, row.get(1)?),
+                None => (0, 0),
+            };
+
+            let new_bytes = used_bytes.saturating_add(delta_bytes).max(0);
+            let new_objects = object_count.saturating_add(delta_objects).max(0);
+
+            if let Some(max) = max_bytes {
+                if new_bytes > max {
+                    fit = false;
+                    return Ok(());
+                }
+            }
+            if let Some(max) = max_objects {
+                if new_objects > max {
+                    fit = false;
+                    return Ok(());
+                }
+            }
+
+            // It fits: reserve by writing the new absolute totals.
+            tx.execute(
+                "INSERT INTO org_usage (org_id, used_bytes, object_count, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(org_id) DO UPDATE SET
+                     used_bytes = ?2,
+                     object_count = ?3,
+                     updated_at = ?4",
+                &vals![org_id, new_bytes, new_objects, now],
+            )?;
+            fit = true;
+            Ok(())
+        })?;
+        Ok(fit)
     }
 
     /// Read an instance-config value by key.
@@ -5604,12 +5718,19 @@ impl Database {
         Ok(())
     }
 
-    /// Consume a WebAuthn challenge by value, returning it exactly once.
+    /// Consume a WebAuthn challenge by value *and kind*, returning it once.
     ///
     /// Deletes the row and returns it (`DELETE … RETURNING` on sqlite/postgres,
     /// a select-then-delete transaction on MySQL), so a replayed challenge finds
     /// nothing — the single-use, anti-replay gate. Returns `Ok(None)` for an
     /// unknown, already-consumed, expired, or wrong-`kind` challenge.
+    ///
+    /// The delete is scoped to **both** `challenge` and `kind`: a submission of
+    /// a known challenge value through the *other* ceremony's endpoint (the
+    /// wrong `kind`) matches no row and therefore deletes nothing, so it cannot
+    /// consume a victim's in-flight challenge of the other kind. (A challenge is
+    /// a 256-bit random value, so a cross-kind collision is implausible, but the
+    /// kind-scoped delete makes the property explicit and robust.)
     ///
     /// # Errors
     ///
@@ -5625,13 +5746,13 @@ impl Database {
             self.backend.with_tx(&mut |tx| {
                 let selected = tx.query_opt(
                     "SELECT challenge, user_id, kind, expires_at
-                     FROM webauthn_challenges WHERE challenge = ?1",
-                    &vals![challenge],
+                     FROM webauthn_challenges WHERE challenge = ?1 AND kind = ?2",
+                    &vals![challenge, kind],
                 )?;
                 if let Some(r) = selected {
                     let n = tx.execute(
-                        "DELETE FROM webauthn_challenges WHERE challenge = ?1",
-                        &vals![challenge],
+                        "DELETE FROM webauthn_challenges WHERE challenge = ?1 AND kind = ?2",
+                        &vals![challenge, kind],
                     )?;
                     if n > 0 {
                         found = Some(row_to_webauthn_challenge(&r)?);
@@ -5643,18 +5764,18 @@ impl Database {
         } else {
             self.backend
                 .query_opt(
-                    "DELETE FROM webauthn_challenges WHERE challenge = ?1
+                    "DELETE FROM webauthn_challenges WHERE challenge = ?1 AND kind = ?2
                      RETURNING challenge, user_id, kind, expires_at",
-                    &vals![challenge],
+                    &vals![challenge, kind],
                 )
                 .context("consuming webauthn challenge")?
                 .map(|row| row_to_webauthn_challenge(&row))
                 .transpose()?
         };
-        // The row is deleted, but an expired or mismatched-kind challenge must
-        // not authenticate.
+        // The row is deleted (already kind-scoped), but an expired challenge
+        // must still not authenticate.
         match row {
-            Some(rec) if now < rec.expires_at && rec.kind == kind => Ok(Some(rec)),
+            Some(rec) if now < rec.expires_at => Ok(Some(rec)),
             _ => Ok(None),
         }
     }
@@ -6550,6 +6671,20 @@ fn row_to_mirror_source(row: &Row) -> Result<MirrorSource> {
         last_sync_error: row.get(6)?,
         upstream_frontier: row.get(7)?,
     })
+}
+
+/// The URL a frontend's machine surface is probed at, from its `domain`.
+///
+/// Mirrors the probe's scheme rule (see `crate::probe`): a `domain` that
+/// already carries an `http://`/`https://` scheme is used as-is; otherwise
+/// `https://` is prepended. Used to validate a frontend domain as a safe
+/// remote target at creation.
+fn frontend_probe_url(domain: &str) -> String {
+    if domain.starts_with("http://") || domain.starts_with("https://") {
+        domain.to_string()
+    } else {
+        format!("https://{}", domain.trim_end_matches('/'))
+    }
 }
 
 /// Map a `frontends` row into a [`FrontendRecord`] (columns in the order
@@ -7634,6 +7769,73 @@ mod tests {
     }
 
     #[test]
+    fn take_webauthn_challenge_is_scoped_by_kind() {
+        let db = Database::open_in_memory().unwrap();
+        // A registration challenge is in flight for a victim.
+        db.create_webauthn_challenge("chal-abc", Some(1), "registration", 300)
+            .unwrap();
+
+        // Submitting that known challenge value through the *assertion* endpoint
+        // (wrong kind) consumes nothing and leaves the row intact.
+        assert!(db
+            .take_webauthn_challenge("chal-abc", "assertion")
+            .unwrap()
+            .is_none());
+
+        // The registration challenge is still consumable via its own kind.
+        let taken = db
+            .take_webauthn_challenge("chal-abc", "registration")
+            .unwrap()
+            .expect("registration challenge survived the cross-kind attempt");
+        assert_eq!(taken.kind, "registration");
+
+        // And it is single-use: a second take finds nothing.
+        assert!(db
+            .take_webauthn_challenge("chal-abc", "registration")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn prune_repair_jobs_removes_old_rows() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db
+            .register_registry("demo", "/srv/demo", &[], false)
+            .unwrap();
+        // An old job (created_at = 100) and a recent one (created_at = 10_000).
+        db.record_repair_job(
+            id,
+            "file:///c",
+            "old01",
+            "file:///s",
+            "done",
+            None,
+            100,
+            Some(101),
+        )
+        .unwrap();
+        db.record_repair_job(
+            id,
+            "file:///c",
+            "new01",
+            "file:///s",
+            "done",
+            None,
+            10_000,
+            Some(10_001),
+        )
+        .unwrap();
+        assert_eq!(db.list_repair_jobs(id, 10).unwrap().len(), 2);
+
+        // Pruning everything created before 1_000 removes only the old row.
+        let pruned = db.prune_repair_jobs(1_000).unwrap();
+        assert_eq!(pruned, 1);
+        let remaining = db.list_repair_jobs(id, 10).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].store_hash, "new01");
+    }
+
+    #[test]
     fn v4_database_migrates_to_v5() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hub.db");
@@ -7932,6 +8134,51 @@ mod tests {
     }
 
     #[test]
+    fn reserve_org_usage_is_atomic_and_charges_deltas() {
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        db.set_org_quota(
+            org,
+            &OrgQuota {
+                max_bytes: Some(100),
+                max_objects: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // First reservation of 60 bytes / 1 object fits and is recorded.
+        assert!(db.reserve_org_usage(org, 60, 1).unwrap());
+        assert_eq!(db.org_usage(org).unwrap().used_bytes, 60);
+        assert_eq!(db.org_usage(org).unwrap().object_count, 1);
+
+        // A second reservation that would push past the byte cap (60+50 > 100)
+        // is rejected and leaves usage untouched — the check-and-reserve is one
+        // step, so it cannot be raced through.
+        assert!(!db.reserve_org_usage(org, 50, 1).unwrap());
+        assert_eq!(db.org_usage(org).unwrap().used_bytes, 60);
+        assert_eq!(db.org_usage(org).unwrap().object_count, 1);
+
+        // A reservation that fits the byte cap but exceeds the object cap is
+        // rejected too (object_count 1 + 2 > 2).
+        assert!(!db.reserve_org_usage(org, 10, 2).unwrap());
+        assert_eq!(db.org_usage(org).unwrap().object_count, 1);
+
+        // 40 more bytes lands exactly at the cap and a 2nd object.
+        assert!(db.reserve_org_usage(org, 40, 1).unwrap());
+        assert_eq!(db.org_usage(org).unwrap().used_bytes, 100);
+        assert_eq!(db.org_usage(org).unwrap().object_count, 2);
+
+        // A shrinking overwrite charges a negative delta and frees room; usage
+        // never goes below zero.
+        assert!(db.reserve_org_usage(org, -30, 0).unwrap());
+        assert_eq!(db.org_usage(org).unwrap().used_bytes, 70);
+        assert!(db.reserve_org_usage(org, -1_000, -10).unwrap());
+        assert_eq!(db.org_usage(org).unwrap().used_bytes, 0);
+        assert_eq!(db.org_usage(org).unwrap().object_count, 0);
+    }
+
+    #[test]
     fn signup_policy_defaults_invite_only_and_round_trips() {
         let db = Database::open_in_memory().unwrap();
         assert_eq!(db.signup_policy().unwrap(), SignupPolicy::InviteOnly);
@@ -7963,6 +8210,51 @@ mod tests {
         assert!(db.restore_org(org).unwrap());
         assert!(db.org_by_slug("acme").unwrap().is_some());
         assert_eq!(db.list_registries().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn mirror_and_frontend_creation_reject_unsafe_targets() {
+        // The lib test binary never sets the escape hatch.
+        assert!(std::env::var_os("AOS_HUB_ALLOW_LOCAL_REMOTES").is_none());
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        let reg = db
+            .create_managed_registry(org, "infra/prod", "cdn", "public", None, "", &[], false)
+            .unwrap();
+
+        // A file:// or loopback mirror upstream is rejected at creation.
+        assert!(db
+            .create_mirror_source(reg, "file:///srv/secret", "full", true, 3600)
+            .is_err());
+        assert!(db
+            .create_mirror_source(reg, "http://127.0.0.1/", "full", true, 3600)
+            .is_err());
+        assert!(db
+            .create_mirror_source(reg, "http://169.254.169.254/", "full", true, 3600)
+            .is_err());
+
+        // A loopback frontend domain is rejected at creation.
+        assert!(db
+            .create_frontend(reg, "127.0.0.1", "", "direct", true, true, false, 100, true)
+            .is_err());
+        assert!(db
+            .create_frontend(
+                reg,
+                "http://10.0.0.1",
+                "",
+                "direct",
+                true,
+                true,
+                false,
+                100,
+                true
+            )
+            .is_err());
+
+        // A public literal mirror passes creation (no DNS needed).
+        assert!(db
+            .create_mirror_source(reg, "https://93.184.216.34/", "full", true, 3600)
+            .is_ok());
     }
 
     #[test]

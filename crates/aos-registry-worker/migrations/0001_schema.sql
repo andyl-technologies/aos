@@ -93,3 +93,9 @@ CREATE TABLE IF NOT EXISTS caches (
     url         TEXT NOT NULL,
     priority    INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS channel_floors (
+    registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
+    channel     TEXT NOT NULL,
+    floor       TEXT NOT NULL,
+    PRIMARY KEY (registry_id, channel)
+);

@@ -132,9 +132,56 @@ pub struct PackageSnapshot {
     pub versions: Vec<PackageVersion>,
 }
 
+/// Return a package homepage only when it is safe to render as a link.
+///
+/// A package-declared `homepage` is untrusted registry content. HTML-attribute
+/// escaping (`& < > " '`) does not neutralize a dangerous URL *scheme*, so a
+/// value like `javascript:alert(1)` would otherwise become a clickable,
+/// script-executing `<a href>` on a CSP-less static frontend. This guard
+/// mirrors the hub's server-rendered pages: only `http://` and `https://`
+/// homepages yield an href; everything else returns [`None`] and the caller
+/// renders the value as plain text instead.
+///
+/// # Examples
+///
+/// ```
+/// use aos_registry_spa::model::homepage_href;
+///
+/// assert_eq!(
+///     homepage_href(Some("https://curl.se")),
+///     Some("https://curl.se".to_string())
+/// );
+/// assert_eq!(homepage_href(Some("javascript:alert(1)")), None);
+/// assert_eq!(homepage_href(None), None);
+/// ```
+#[must_use]
+pub fn homepage_href(homepage: Option<&str>) -> Option<String> {
+    homepage
+        .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn homepage_href_only_accepts_http_schemes() {
+        assert_eq!(
+            homepage_href(Some("https://curl.se")),
+            Some("https://curl.se".to_string())
+        );
+        assert_eq!(
+            homepage_href(Some("http://example.org")),
+            Some("http://example.org".to_string())
+        );
+        // Dangerous and unknown schemes are rejected — rendered as text only.
+        assert_eq!(homepage_href(Some("javascript:alert(1)")), None);
+        assert_eq!(homepage_href(Some("data:text/html,<script>")), None);
+        assert_eq!(homepage_href(Some("ftp://example.org")), None);
+        assert_eq!(homepage_href(Some("")), None);
+        assert_eq!(homepage_href(None), None);
+    }
 
     #[test]
     fn config_parses_with_optional_fields_absent() {

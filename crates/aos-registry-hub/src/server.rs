@@ -24,10 +24,11 @@
 //! default-src 'self'`, `X-Content-Type-Options: nosniff`) per RFC-0004's
 //! asset policy, and the whole router sits behind a panic-catching layer.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
@@ -80,6 +81,14 @@ pub struct AppState {
     /// Process-local rate limiter for the pre-auth endpoints (device
     /// authorization, magic-link issuance, token exchange, browse/search).
     pub ratelimit: Arc<crate::ratelimit::RateLimiter>,
+    /// Whether the hub is fronted by a reverse proxy whose `X-Forwarded-For`
+    /// header may be trusted to carry the real client IP.
+    ///
+    /// `false` by default: a directly-exposed hub ignores the (forgeable)
+    /// header and rate-limits on the real TCP peer address. Set `true` only
+    /// when a proxy that strips inbound `X-Forwarded-For` and appends the true
+    /// client hop sits in front. See [`crate::ratelimit`] for the trust model.
+    pub trusted_proxy: bool,
 }
 
 impl AppState {
@@ -98,6 +107,7 @@ impl AppState {
             jwt_keys: crate::auth::jwt::JwtKeys::random(),
             access_token_ttl: ACCESS_TOKEN_TTL_SECS,
             ratelimit: Arc::clone(&ratelimit),
+            trusted_proxy: false,
         });
         AppState {
             db,
@@ -111,6 +121,7 @@ impl AppState {
             sealer: crate::auth::oidc::dev_sealer(),
             http: crate::fetch::hardened_client(),
             ratelimit,
+            trusted_proxy: false,
         }
     }
 }
@@ -340,17 +351,49 @@ pub(crate) fn too_many_requests(retry_after: i64) -> Response {
         .into_response()
 }
 
-/// Resolve the request's client IP from `X-Forwarded-For` (last hop) or, when
-/// absent, a best-effort empty peer.
+/// The connecting client's TCP peer address, when the serving stack provides
+/// it via [`ConnectInfo`].
 ///
-/// The axum router does not expose the TCP peer address inside a plain handler
-/// without a `ConnectInfo` extractor, so the forwarded header is the primary
-/// signal in the common proxied deployment; absent it, the limiter keys on an
-/// empty string (a single shared bucket) which is conservative — it cannot
-/// under-count. See [`crate::ratelimit`] for the trust model.
-pub(crate) fn client_ip_from_headers(headers: &HeaderMap) -> String {
+/// An infallible [`FromRequestParts`](axum::extract::FromRequestParts)
+/// extractor: it reads the [`ConnectInfo<SocketAddr>`] extension injected by
+/// `into_make_service_with_connect_info` in production, and is simply `None`
+/// when no connect-info is present (e.g. `Router::oneshot` in tests). Used as
+/// the safe rate-limit key when the deployment does not trust a proxy.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PeerAddr(pub Option<SocketAddr>);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for PeerAddr {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(PeerAddr(
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ci| ci.0),
+        ))
+    }
+}
+
+/// Resolve the request's client IP for rate-limiting from the TCP `peer`
+/// address and, only when the deployment trusts its proxy, `X-Forwarded-For`.
+///
+/// `peer` is the real connecting address (from the `ConnectInfo` extractor);
+/// it is the limiter key whenever `trusted_proxy` is `false`, so a forged
+/// `X-Forwarded-For` cannot mint a fresh per-IP bucket. When `trusted_proxy`
+/// is `true` the last forwarded hop is honored instead. See [`crate::ratelimit`]
+/// for the trust model.
+pub(crate) fn client_ip_for(
+    headers: &HeaderMap,
+    peer: Option<SocketAddr>,
+    trusted_proxy: bool,
+) -> String {
     let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
-    crate::ratelimit::client_ip(xff, "")
+    let peer = peer.map(|p| p.ip().to_string()).unwrap_or_default();
+    crate::ratelimit::client_ip(xff, &peer, trusted_proxy)
 }
 
 pub(crate) fn load_registry(
@@ -392,10 +435,11 @@ struct DeviceAuthForm {
 /// grants clamp them at `/activate`.
 async fn device_authorization(
     State(state): State<Arc<AppState>>,
+    PeerAddr(peer): PeerAddr,
     headers: HeaderMap,
     axum::extract::Form(form): axum::extract::Form<DeviceAuthForm>,
 ) -> Response {
-    let ip = client_ip_from_headers(&headers);
+    let ip = client_ip_for(&headers, peer, state.trusted_proxy);
     if let crate::ratelimit::RateDecision::Limited { retry_after } = state.ratelimit.check(
         crate::ratelimit::RateClass::DeviceAuthorization,
         &ip,
@@ -1028,6 +1072,12 @@ async fn pull_through_machine_path(
         Ok(_) => return None,
         Err(err) => return Some(internal(err)),
     };
+    // Defense in depth: a pull-through fetch reaches out over the network, so
+    // re-validate the configured upstream is a safe remote target before each
+    // request (creation already validated it).
+    if let Err(err) = crate::fetch::is_safe_remote_url(&source.upstream_url) {
+        return Some(internal(err));
+    }
     let fetch = match crate::fetch::fetch_for_url(&source.upstream_url) {
         Ok(fetch) => fetch,
         Err(err) => return Some(internal(err)),

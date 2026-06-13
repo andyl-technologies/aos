@@ -380,10 +380,15 @@ fn record_commit_provenance(
     let message = commit_message(&commit.signed_payload);
     if let Some(change_id) = crate::gitwrite::extract_change_id_trailer(&message) {
         // A trailer naming a known change request: mark it applied, linking
-        // the promoting commit. An unknown id is treated as a no-trailer
-        // commit (external) below.
+        // the promoting commit. An unknown id — *or* a change-set whose target
+        // scope is not within this registry — is treated as a no-trailer
+        // (external) commit below, so a commit on registry B cannot mark a
+        // change request scoped to registry A as applied by carrying A's id.
         match db.changeset(&change_id) {
-            Ok(Some(_)) => {
+            Ok(Some(changeset))
+                if crate::domain::Scope::parse(&registry.slug)
+                    .contains(&crate::domain::Scope::parse(&changeset.scope)) =>
+            {
                 if let Err(err) = db.mark_changeset_applied_commit(&change_id, commit_oid_hex) {
                     tracing::warn!(
                         slug = %registry.slug,
@@ -393,6 +398,17 @@ fn record_commit_provenance(
                     );
                 }
                 return;
+            }
+            Ok(Some(changeset)) => {
+                // The trailer references a real change-set scoped outside this
+                // registry: do not apply it; fall through to the external-commit
+                // audit so the foreign change request is untouched.
+                tracing::warn!(
+                    slug = %registry.slug,
+                    %change_id,
+                    changeset_scope = %changeset.scope,
+                    "ignoring change-id trailer whose scope is not within this registry"
+                );
             }
             Ok(None) => {}
             Err(err) => tracing::warn!(

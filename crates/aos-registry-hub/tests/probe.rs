@@ -29,11 +29,13 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         jwt_keys: JwtKeys::from_secret(b"probe-test-secret-32byte-key!!!!"),
         access_token_ttl: 900,
         ratelimit: aos_registry_hub::ratelimit::RateLimiter::new().into(),
+        trusted_proxy: false,
     });
     Arc::new(AppState {
         db,
         external_url: "http://127.0.0.1:8420".into(),
         ratelimit: auth.ratelimit.clone(),
+        trusted_proxy: false,
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),

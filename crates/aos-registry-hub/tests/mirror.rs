@@ -36,7 +36,11 @@ async fn serve_file(State(root): State<Arc<PathBuf>>, AxPath(path): AxPath<Strin
 
 /// Stand up a real upstream HTTP server over `surface` on an ephemeral port,
 /// returning its base URL.
+///
+/// Also opts out of the SSRF local/internal-address rejection so the mirror
+/// can be pointed at the `127.0.0.1` test server (production never sets this).
 async fn serve_upstream(surface: PathBuf) -> String {
+    std::env::set_var("AOS_HUB_ALLOW_LOCAL_REMOTES", "1");
     let app = axum::Router::new()
         .route("/{*path}", get(serve_file))
         .with_state(Arc::new(surface));
