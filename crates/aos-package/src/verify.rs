@@ -7,6 +7,12 @@
 //!   `.nar.zst` as downloaded — catches corrupted or tampered transfers.
 //! - **Layer 4b** ([`verify_nar_hash`]): SHA-256 of the *decompressed* NAR
 //!   stream — catches a valid-zstd-but-wrong-content substitution.
+//! - **Layer 4c** ([`verify_nar_blessed`]): the decompressed NAR's SHA-256
+//!   and size must match a *blessed* `ca/` trust-map entry from the signed
+//!   registry tree (RFC-0005) — unlike 4a/4b, whose expected values come
+//!   from the unauthenticated narinfo, this roots the bytes at the
+//!   registry signature. Decompression is capped at the largest blessed
+//!   size so untrusted compressed input cannot expand unboundedly.
 //! - **Layer 5** ([`verify_store_path`]): the path reported by
 //!   `nix-store --import` must equal the path the registry promised.
 //! - **Post-install** ([`verify_installed`]): re-dump an installed store
@@ -28,6 +34,8 @@ use sha2::{Digest, Sha256};
 
 use aos_core::error::AosError;
 use aos_core::nix::aos_nix_env;
+
+use crate::registry::ca::CaEntry;
 
 // ---------------------------------------------------------------------------
 // SHA-256 computation
@@ -179,6 +187,85 @@ pub fn verify_nar_hash(path: &Path, expected: &str) -> Result<()> {
         .into());
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Layer 4c: blessed-content verification against the ca/ trust map
+// ---------------------------------------------------------------------------
+
+/// Verify a downloaded `.nar.zst` against a blessed entry set (Layer 4c).
+///
+/// Streams zstd decompression of the file at `path`, counting bytes and
+/// computing SHA-256, and accepts iff some `nar:` entry in `blessed`
+/// matches both the digest and the exact size. Decompression aborts as
+/// soon as the stream exceeds the largest blessed size, bounding the
+/// output produced from not-yet-verified input.
+///
+/// On success, returns the verified NAR hash as `"sha256:<hex>"`.
+///
+/// # Errors
+///
+/// Returns an error when `blessed` contains no `nar:` entries (entries of
+/// only unknown future types cannot satisfy validation), when the file
+/// cannot be opened or is not valid zstd, when the decompressed stream
+/// exceeds every blessed size, or — as [`AosError::HashMismatch`] — when
+/// the digest/size pair matches no blessed entry.
+pub fn verify_nar_blessed(path: &Path, blessed: &[CaEntry]) -> Result<String> {
+    let cap = blessed
+        .iter()
+        .filter_map(CaEntry::nar_size)
+        .max()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no usable blessed entries: every ca/ entry is of an unrecognised type"
+            )
+        })?;
+
+    let file = File::open(path)
+        .with_context(|| format!("opening {} for blessed NAR verification", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut decoder = zstd::stream::read::Decoder::new(reader)
+        .with_context(|| format!("creating zstd decoder for {}", path.display()))?;
+
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; HASH_BUF_SIZE];
+    let mut total: u64 = 0;
+    loop {
+        let n = decoder
+            .read(&mut buf)
+            .with_context(|| format!("decompressing {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > cap {
+            bail!(
+                "decompressed NAR from {} exceeds the largest blessed size ({cap} bytes); \
+                 refusing to continue decompressing untrusted input",
+                path.display(),
+            );
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    let actual = format!("sha256:{}", hex::encode(hasher.finalize()));
+    if blessed
+        .iter()
+        .any(|entry| entry.matches_nar(&actual, total))
+    {
+        return Ok(actual);
+    }
+
+    let expected = blessed
+        .iter()
+        .map(|entry| entry.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(AosError::HashMismatch {
+        expected,
+        actual: format!("{actual} ({total} bytes)"),
+    }
+    .into())
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +578,97 @@ mod tests {
         let stream_hash = sha256_stream(content.as_slice()).unwrap();
         let file_hash = sha256_file(tmp.path()).unwrap();
         assert_eq!(stream_hash, file_hash);
+    }
+
+    /// Write zstd-compressed content to a temp file and return the file
+    /// plus the content's `sha256:<hex>` hash.
+    fn zstd_fixture(content: &[u8]) -> (tempfile::NamedTempFile, String) {
+        let hash = sha256_stream(content).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        {
+            let file = File::create(tmp.path()).unwrap();
+            let mut encoder = zstd::stream::write::Encoder::new(file, 3).unwrap();
+            encoder.write_all(content).unwrap();
+            encoder.finish().unwrap();
+        }
+        (tmp, hash)
+    }
+
+    #[test]
+    fn verify_nar_blessed_accepts_matching_entry() {
+        let content = b"blessed NAR content";
+        let (tmp, hash) = zstd_fixture(content);
+        let blessed = vec![CaEntry::from_nar_hash(&hash, content.len() as u64).unwrap()];
+
+        let verified = verify_nar_blessed(tmp.path(), &blessed).unwrap();
+        assert_eq!(verified, hash);
+    }
+
+    #[test]
+    fn verify_nar_blessed_accepts_any_of_multiple_entries() {
+        let content = b"second blessed realisation";
+        let (tmp, hash) = zstd_fixture(content);
+        let other = sha256_stream(b"first realisation".as_slice()).unwrap();
+        let blessed = vec![
+            CaEntry::from_nar_hash(&other, 17).unwrap(),
+            CaEntry::from_nar_hash(&hash, content.len() as u64).unwrap(),
+        ];
+
+        assert!(verify_nar_blessed(tmp.path(), &blessed).is_ok());
+    }
+
+    #[test]
+    fn verify_nar_blessed_rejects_wrong_content() {
+        let content = b"tampered NAR content";
+        let (tmp, _) = zstd_fixture(content);
+        let other = sha256_stream(b"the blessed bytes".as_slice()).unwrap();
+        let blessed = vec![CaEntry::from_nar_hash(&other, content.len() as u64).unwrap()];
+
+        let err = verify_nar_blessed(tmp.path(), &blessed).unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<AosError>(),
+            Some(AosError::HashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_nar_blessed_rejects_size_mismatch_with_right_hash() {
+        // Same digest but a wrong blessed size must not verify.
+        let content = b"size matters";
+        let (tmp, hash) = zstd_fixture(content);
+        let blessed = vec![CaEntry::from_nar_hash(&hash, content.len() as u64 + 1).unwrap()];
+
+        // The stream (12 bytes) stays under the cap (13) but the exact-size
+        // match fails.
+        let err = verify_nar_blessed(tmp.path(), &blessed).unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<AosError>(),
+            Some(AosError::HashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_nar_blessed_aborts_past_size_cap() {
+        // A stream larger than every blessed size aborts decompression.
+        let content = vec![0x5au8; 4096];
+        let (tmp, _) = zstd_fixture(&content);
+        let other = sha256_stream(b"small".as_slice()).unwrap();
+        let blessed = vec![CaEntry::from_nar_hash(&other, 5).unwrap()];
+
+        let err = verify_nar_blessed(tmp.path(), &blessed).unwrap_err();
+        assert!(format!("{err:#}").contains("largest blessed size"));
+    }
+
+    #[test]
+    fn verify_nar_blessed_requires_a_usable_entry() {
+        let (tmp, _) = zstd_fixture(b"anything");
+        let blessed = vec![CaEntry::Unknown("ca:fixed:r:sha256:future".to_string())];
+
+        let err = verify_nar_blessed(tmp.path(), &blessed).unwrap_err();
+        assert!(format!("{err:#}").contains("no usable blessed entries"));
+
+        let err = verify_nar_blessed(tmp.path(), &[]).unwrap_err();
+        assert!(format!("{err:#}").contains("no usable blessed entries"));
     }
 
     #[test]

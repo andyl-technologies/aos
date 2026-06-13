@@ -124,7 +124,7 @@ Example bucket `ca/r4`:
 
 ```
 r4q1m2kp8v3x nar:sha256:1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy:1048576
-r4z9w2n3p7c5 nar:sha256:0c7n5whyvfyqap5jr6xj2omimi80wabqy9v5cxpfwpji2j91kjex:393216 nar:sha256:1d9p7xjzxhzscr7lt8zl4qokok02ydhs01w7ezrhyrlk4lb3mlgz:393218
+r4z9w2n3p7c5 nar:sha256:0c7n5whyvfyqap5jr6xj21mimi80wabqy9v5cxpfwpji2j91kjcx:393216 nar:sha256:1d9p7xjzxhzscr7l18zl4qpkpk02ydhs01w7czrhyrlk4lb3mlgz:393218
 ```
 
 (The second line shows a path blessed twice — two builders produced
