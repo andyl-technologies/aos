@@ -129,8 +129,13 @@ pub async fn serve_machine_path(registry: &RegistryRecord, path: &str) -> Respon
     let root = source.strip_prefix("file://").unwrap_or(source);
 
     // Directory paths get a Debian-style autoindex instead of a file read.
+    // The same symlink containment that protects file reads applies here:
+    // a symlinked directory escaping the surface root is never listed.
     if let Ok(full) = safe_join(std::path::Path::new(root), path.trim_end_matches('/')) {
         if full.is_dir() {
+            if !dir_is_contained(std::path::Path::new(root), &full) {
+                return StatusCode::NOT_FOUND.into_response();
+            }
             if !path.ends_with('/') {
                 // Redirect to the trailing-slash form so the autoindex's
                 // relative links resolve under the directory.
@@ -150,6 +155,7 @@ pub async fn serve_machine_path(registry: &RegistryRecord, path: &str) -> Respon
 
     let fetch = LocalFsFetch::new(root);
     match fetch.fetch(path).await {
+        // Symlink containment for file reads happens inside LocalFsFetch.
         Ok(Some(bytes)) => {
             let mut response = bytes.into_response();
             let headers = response.headers_mut();
@@ -168,6 +174,17 @@ pub async fn serve_machine_path(registry: &RegistryRecord, path: &str) -> Respon
             tracing::warn!(%path, error = %format!("{err:#}"), "facade read failed");
             StatusCode::BAD_GATEWAY.into_response()
         }
+    }
+}
+
+/// Whether a directory, after resolving symlinks, still lives under the
+/// surface root — the directory analogue of `LocalFsFetch`'s file-read
+/// containment, so a symlinked directory cannot leak outside entry names
+/// through the autoindex.
+fn dir_is_contained(root: &std::path::Path, dir: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(root), std::fs::canonicalize(dir)) {
+        (Ok(root), Ok(dir)) => dir.starts_with(&root),
+        _ => false,
     }
 }
 
@@ -289,6 +306,25 @@ mod tests {
         ] {
             assert_eq!(cache_control(mutable), MUTABLE_CACHE_CONTROL, "{mutable}");
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn autoindex_refuses_symlinked_directory_escape() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), b"top secret").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("channels")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("channels/stable")).unwrap();
+        let registry = RegistryRecord {
+            id: 1,
+            slug: "demo".into(),
+            source_url: dir.path().display().to_string(),
+            trust_keys: vec![],
+            require_signatures: false,
+        };
+        let response = serve_machine_path(&registry, "channels/stable/").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
