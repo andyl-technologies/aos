@@ -62,5 +62,6 @@ in {
     aos.roles.k3s-combined.bundle = true;
     aos.roles.test-http-server.bundle = true;
     aos.roles.apm-systemd-client-test.bundle = true;
+    aos.roles.aos-test-agent.bundle = true;
   };
 }
