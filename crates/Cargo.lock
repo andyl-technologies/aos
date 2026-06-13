@@ -296,6 +296,7 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "hmac 0.12.1",
  "http 1.4.1",
  "jsonwebtoken",
  "rand",

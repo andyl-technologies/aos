@@ -618,12 +618,30 @@ pub fn change_registry_visibility(
         "registry",
         &record.slug,
         ConfigOp::Update,
-        Some(serde_json::json!({ "visibility": old_visibility })),
+        Some(serde_json::json!({ "visibility": old_visibility.clone() })),
         Some(serde_json::json!({ "visibility": new_visibility })),
     )?;
     apply(db, &change_id, "registry.visibility", |_rev| {
         db.set_registry_visibility(registry_id, new_visibility)
     })?;
+
+    // Notify subscribers of the visibility flip. Additive and non-fatal: the
+    // change is already applied and audited; a webhook failure must not undo it.
+    if let Some(org_id) = record.org_id {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let event = crate::webhook::WebhookEvent::VisibilityChanged {
+            registry: record.slug.clone(),
+            old: old_visibility,
+            new: new_visibility.to_string(),
+            at: now,
+        };
+        if let Err(err) = crate::webhook::dispatch(db, org_id, &event) {
+            tracing::warn!(slug = %record.slug, error = %format!("{err:#}"), "dispatching registry.visibility_changed webhook");
+        }
+    }
     Ok(change_id)
 }
 

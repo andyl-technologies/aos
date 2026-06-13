@@ -76,6 +76,24 @@ service ChannelService {
   rpc GetChannel(GetChannelRequest) returns (GetChannelResponse);
 }
 
+// Outbound webhook subscriptions (RFC-0004 phase 4 "webhooks/notifications").
+// An org subscribes an HTTP endpoint to a set of registry event types; the hub
+// HMAC-signs and delivers each matching event. All three RPCs are admin-only:
+// they require members.manage on the org scope (managing notification
+// endpoints is an org-administration surface, alongside member and token
+// management).
+service WebhookService {
+  // Create a webhook under an org. The returned secret is shown once and is
+  // the HMAC-SHA256 key deliveries are signed under. Requires members.manage
+  // on the org scope.
+  rpc CreateWebhook(CreateWebhookRequest) returns (CreateWebhookResponse);
+  // List an org's webhook subscriptions. Requires members.manage on the org
+  // scope. Secrets are never returned by list.
+  rpc ListWebhooks(ListWebhooksRequest) returns (ListWebhooksResponse);
+  // Delete a webhook by id. Requires members.manage on the owning org's scope.
+  rpc DeleteWebhook(DeleteWebhookRequest) returns (DeleteWebhookResponse);
+}
+
 message ListRegistriesRequest {
   uint32 page_size = 1;
   string page_token = 2;
@@ -465,4 +483,54 @@ message RevertChangesetRequest {
 message RevertChangesetResponse {
   // The newly drafted-and-applied revert change-set.
   Changeset changeset = 1;
+}
+
+// -- Webhooks (phase 4) ----------------------------------------------------
+
+// One webhook subscription. The secret is omitted from list responses and
+// returned only once, on creation.
+message Webhook {
+  int64 id = 1;
+  string org_slug = 2;
+  // Destination URL each subscribed event is POSTed to.
+  string url = 3;
+  // Subscribed event-type strings; empty means all events.
+  repeated string events = 4;
+  // Whether the subscription currently receives deliveries.
+  bool active = 5;
+  // Unix seconds the subscription was created.
+  int64 created_at = 6;
+}
+
+message CreateWebhookRequest {
+  string org_slug = 1;
+  // Destination URL.
+  string url = 2;
+  // Event-type strings to subscribe to; empty subscribes to all events.
+  repeated string events = 3;
+  // Optional shared HMAC secret; a random one is generated when empty.
+  string secret = 4;
+}
+
+message CreateWebhookResponse {
+  Webhook webhook = 1;
+  // The HMAC-SHA256 signing secret, returned exactly once.
+  string secret = 2;
+}
+
+message ListWebhooksRequest {
+  string org_slug = 1;
+}
+
+message ListWebhooksResponse {
+  repeated Webhook webhooks = 1;
+}
+
+message DeleteWebhookRequest {
+  int64 id = 1;
+}
+
+message DeleteWebhookResponse {
+  // Whether a webhook was removed.
+  bool deleted = 1;
 }

@@ -131,7 +131,7 @@ impl SearchParams {
 pub fn router(state: Arc<AppState>) -> Router {
     use aos_proto::aos::registry::v1::{
         AuditServiceExt, ChannelServiceExt, ConfigServiceExt, OrgServiceExt, PackageServiceExt,
-        ProjectServiceExt, RegistryServiceExt, StorageServiceExt,
+        ProjectServiceExt, RegistryServiceExt, StorageServiceExt, WebhookServiceExt,
     };
     let rpc = Arc::new(crate::rpc::RegistryRpc {
         db: Arc::clone(&state.db),
@@ -145,7 +145,8 @@ pub fn router(state: Arc<AppState>) -> Router {
     let connect_router = AuditServiceExt::register(Arc::clone(&rpc), connect_router);
     let connect_router = ConfigServiceExt::register(Arc::clone(&rpc), connect_router);
     let connect_router = PackageServiceExt::register(Arc::clone(&rpc), connect_router);
-    let connect_router = ChannelServiceExt::register(rpc, connect_router);
+    let connect_router = ChannelServiceExt::register(Arc::clone(&rpc), connect_router);
+    let connect_router = WebhookServiceExt::register(rpc, connect_router);
     let connect_paths: Vec<String> = connect_router
         .methods()
         .map(|method| format!("/{method}"))
@@ -159,6 +160,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
         .route("/", get(instance_home))
         .route("/healthz", get(healthz))
+        .route("/metrics", get(metrics))
         .route("/_assets/style.css", get(stylesheet))
         .route("/_assets/jetbrains-mono-regular.woff2", get(font_regular))
         .route("/_assets/jetbrains-mono-bold.woff2", get(font_bold))
@@ -242,6 +244,97 @@ async fn healthz(State(state): State<Arc<AppState>>) -> Response {
         Ok(regs) => (StatusCode::OK, format!("ok ({} registries)\n", regs.len())).into_response(),
         Err(err) => internal(err),
     }
+}
+
+/// The Prometheus text-exposition `/metrics` endpoint.
+///
+/// Hand-formats the [exposition format] (no client dependency, per the
+/// hermetic build) from live database counts: total registries and a
+/// per-`state` breakdown, the webhook-delivery queue depth by lifecycle, and a
+/// `build_info` gauge carrying the crate version as a label. Every series is
+/// preceded by its `# HELP`/`# TYPE` lines.
+///
+/// [exposition format]: https://prometheus.io/docs/instrumenting/exposition_formats/
+async fn metrics(State(state): State<Arc<AppState>>) -> Response {
+    let body = match render_metrics(&state) {
+        Ok(body) => body,
+        Err(err) => return internal(err),
+    };
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
+}
+
+/// Render the `/metrics` exposition body from current database state.
+///
+/// # Errors
+///
+/// Returns an error on database failure.
+fn render_metrics(state: &AppState) -> Result<String, anyhow::Error> {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+
+    let registries = state.db.list_registries()?;
+    let mut by_state: BTreeMap<String, u64> = BTreeMap::new();
+    for registry in &registries {
+        let label = state
+            .db
+            .index_status(registry.id)?
+            .map(|s| s.state)
+            .unwrap_or_else(|| "indexing".to_string());
+        *by_state.entry(label).or_default() += 1;
+    }
+    let (pending, delivered, failed) = state.db.delivery_status_counts()?;
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "# HELP aos_registry_hub_registries_total Registered registries.\n\
+         # TYPE aos_registry_hub_registries_total gauge\n\
+         aos_registry_hub_registries_total {}",
+        registries.len()
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_registry_hub_registries_by_state Registered registries by index state.\n\
+         # TYPE aos_registry_hub_registries_by_state gauge"
+    );
+    // Always emit the four known states (zero when absent) so a scrape never
+    // loses a series, then any other state the index reports.
+    for known in ["fresh", "indexing", "stale", "failed"] {
+        let n = by_state.remove(known).unwrap_or(0);
+        let _ = writeln!(
+            out,
+            "aos_registry_hub_registries_by_state{{state=\"{known}\"}} {n}"
+        );
+    }
+    for (extra, n) in &by_state {
+        let _ = writeln!(
+            out,
+            "aos_registry_hub_registries_by_state{{state=\"{extra}\"}} {n}"
+        );
+    }
+    let _ = writeln!(
+        out,
+        "# HELP aos_registry_hub_webhook_deliveries Webhook deliveries by status.\n\
+         # TYPE aos_registry_hub_webhook_deliveries gauge\n\
+         aos_registry_hub_webhook_deliveries{{status=\"pending\"}} {pending}\n\
+         aos_registry_hub_webhook_deliveries{{status=\"delivered\"}} {delivered}\n\
+         aos_registry_hub_webhook_deliveries{{status=\"failed\"}} {failed}"
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_registry_hub_build_info Build information.\n\
+         # TYPE aos_registry_hub_build_info gauge\n\
+         aos_registry_hub_build_info{{version=\"{}\"}} 1",
+        env!("CARGO_PKG_VERSION")
+    );
+    Ok(out)
 }
 
 async fn stylesheet() -> Response {

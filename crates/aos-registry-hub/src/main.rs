@@ -110,6 +110,38 @@ enum Command {
         #[command(subcommand)]
         command: ChannelCommand,
     },
+    /// Manage an org's outbound webhooks.
+    Webhook {
+        #[command(subcommand)]
+        command: WebhookCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum WebhookCommand {
+    /// Subscribe an org's endpoint to registry events (prints the secret once).
+    Add {
+        /// Owning org slug.
+        org: String,
+        /// Destination URL events are POSTed to.
+        url: String,
+        /// Event type to subscribe to (repeatable; omit for all events).
+        #[arg(long = "event")]
+        events: Vec<String>,
+        /// Shared HMAC secret (a random one is generated when omitted).
+        #[arg(long)]
+        secret: Option<String>,
+    },
+    /// List an org's webhook subscriptions (secrets are not shown).
+    List {
+        /// Owning org slug.
+        org: String,
+    },
+    /// Remove a webhook by id.
+    Rm {
+        /// Webhook id.
+        id: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -377,6 +409,12 @@ async fn main() -> Result<()> {
                 });
             }
 
+            // Drain the outbound-webhook delivery queue in the background.
+            tokio::spawn(aos_registry_hub::webhook::run_delivery_worker(
+                Arc::clone(&db),
+                aos_registry_hub::fetch::hardened_client(),
+            ));
+
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen}"));
             let mut app_state = AppState::new(db, external_url);
             // In dev mode the "check your email" page shows the magic link
@@ -628,6 +666,63 @@ async fn main() -> Result<()> {
             let root = resolve_root(cli.root, false)?;
             let db = Database::open(&root.join("hub.db"))?;
             run_channel_command(&db, command).await?;
+        }
+        Command::Webhook { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            run_webhook_command(&db, command)?;
+        }
+    }
+    Ok(())
+}
+
+/// Handle the `webhook add`/`list`/`rm` subcommands.
+///
+/// `add` creates a subscription (generating a random HMAC secret when none is
+/// supplied) and prints the secret exactly once; `list` shows an org's hooks
+/// without their secrets; `rm` deletes one by id.
+fn run_webhook_command(db: &Database, command: WebhookCommand) -> Result<()> {
+    match command {
+        WebhookCommand::Add {
+            org,
+            url,
+            events,
+            secret,
+        } => {
+            let org_record = db
+                .org_by_slug(&org)?
+                .with_context(|| format!("no org '{org}'"))?;
+            let secret =
+                secret.unwrap_or_else(|| aos_registry_hub::auth::token::generate_token().0);
+            let id = db.create_webhook(org_record.id, &url, &secret, &events)?;
+            let subscribed = if events.is_empty() {
+                "all events".to_string()
+            } else {
+                events.join(", ")
+            };
+            println!("created webhook {id} for org '{org}' -> {url} ({subscribed})");
+            println!("signing secret (shown once): {secret}");
+        }
+        WebhookCommand::List { org } => {
+            let org_record = db
+                .org_by_slug(&org)?
+                .with_context(|| format!("no org '{org}'"))?;
+            for hook in db.list_webhooks(org_record.id)? {
+                let events = if hook.events.is_empty() {
+                    "*".to_string()
+                } else {
+                    hook.events.join(",")
+                };
+                let state = if hook.active { "active" } else { "disabled" };
+                println!("{}\t{}\t{}\t{}", hook.id, hook.url, events, state);
+            }
+        }
+        WebhookCommand::Rm { id } => {
+            if db.delete_webhook(id)? {
+                println!("removed webhook {id}");
+            } else {
+                anyhow::bail!("no webhook with id {id}");
+            }
         }
     }
     Ok(())
@@ -1001,7 +1096,8 @@ fn resolve_root(root: Option<PathBuf>, dev: bool) -> Result<PathBuf> {
 /// `/-/` namespace.
 fn validate_slug(slug: &str) -> Result<()> {
     const RESERVED: &[&str] = &[
-        "_assets", "healthz", "-", "login", "activate", "account", "new", "oauth2", "api",
+        "_assets", "healthz", "metrics", "-", "login", "activate", "account", "new", "oauth2",
+        "api",
     ];
     if slug.is_empty()
         || RESERVED.contains(&slug)

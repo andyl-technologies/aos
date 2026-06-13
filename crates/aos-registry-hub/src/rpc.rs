@@ -1124,6 +1124,143 @@ impl ChannelService for RegistryRpc {
     }
 }
 
+impl WebhookService for RegistryRpc {
+    /// `CreateWebhook` — subscribe an org's HTTP endpoint to registry events.
+    ///
+    /// The webhook is created under the named org subscribed to `events` (an
+    /// empty list subscribes to all event types). A `secret` may be supplied;
+    /// otherwise a random `aos_`-prefixed one is generated. The signing secret
+    /// is returned exactly once in [`CreateWebhookResponse::secret`] — it is
+    /// never echoed by [`Self::list_webhooks`].
+    ///
+    /// Authz: requires [`Permission::MembersManage`] (admin+) on the org scope
+    /// — managing notification endpoints is an org-administration surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `PermissionDenied` when the caller lacks `members.manage` on the org,
+    /// `NotFound` for an unknown org, `InvalidArgument` for an empty URL, and
+    /// `Internal` on database failure.
+    async fn create_webhook(
+        &self,
+        ctx: Context,
+        req: OwnedView<CreateWebhookRequestView<'static>>,
+    ) -> Result<(CreateWebhookResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        let org = self.org_or_not_found(req.org_slug)?;
+        self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))?;
+        if req.url.is_empty() {
+            return Err(invalid("webhook url is required"));
+        }
+        let secret = if req.secret.is_empty() {
+            crate::auth::token::generate_token().0
+        } else {
+            req.secret.to_string()
+        };
+        let events: Vec<String> = req.events.iter().map(|s| s.to_string()).collect();
+        let id = self
+            .db
+            .create_webhook(org.id, req.url, &secret, &events)
+            .map_err(internal)?;
+        Ok((
+            CreateWebhookResponse {
+                webhook: MessageField::some(Webhook {
+                    id,
+                    org_slug: org.slug,
+                    url: req.url.to_string(),
+                    events,
+                    active: true,
+                    ..Default::default()
+                }),
+                secret,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    /// `ListWebhooks` — an org's webhook subscriptions (secrets omitted).
+    ///
+    /// Authz: requires [`Permission::MembersManage`] on the org scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `PermissionDenied` when the caller lacks `members.manage` on the org,
+    /// `NotFound` for an unknown org, and `Internal` on database failure.
+    async fn list_webhooks(
+        &self,
+        ctx: Context,
+        req: OwnedView<ListWebhooksRequestView<'static>>,
+    ) -> Result<(ListWebhooksResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        let org = self.org_or_not_found(req.org_slug)?;
+        self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))?;
+        let webhooks: Vec<Webhook> = self
+            .db
+            .list_webhooks(org.id)
+            .map_err(internal)?
+            .into_iter()
+            .map(|w| Webhook {
+                id: w.id,
+                org_slug: org.slug.clone(),
+                url: w.url,
+                events: w.events,
+                active: w.active,
+                created_at: w.created_at,
+                ..Default::default()
+            })
+            .collect();
+        Ok((
+            ListWebhooksResponse {
+                webhooks,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    /// `DeleteWebhook` — remove a webhook (and its queued deliveries) by id.
+    ///
+    /// Authz: requires [`Permission::MembersManage`] on the *owning org's*
+    /// scope, resolved from the webhook's `org_id` so the check binds to the
+    /// resource being deleted rather than a caller-supplied scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `NotFound` for an unknown webhook id or its (vanished) org,
+    /// `PermissionDenied` when the caller lacks `members.manage` on the owning
+    /// org, and `Internal` on database failure.
+    async fn delete_webhook(
+        &self,
+        ctx: Context,
+        req: OwnedView<DeleteWebhookRequestView<'static>>,
+    ) -> Result<(DeleteWebhookResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        let webhook = self
+            .db
+            .webhook(req.id)
+            .map_err(internal)?
+            .ok_or_else(|| not_found("webhook"))?;
+        let org = self
+            .db
+            .org_by_id(webhook.org_id)
+            .map_err(internal)?
+            .ok_or_else(|| not_found("org"))?;
+        self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))?;
+        let deleted = self.db.delete_webhook(req.id).map_err(internal)?;
+        Ok((
+            DeleteWebhookResponse {
+                deleted,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+}
+
 fn channel_message(channel: crate::db::ChannelSummary) -> Channel {
     Channel {
         name: channel.name,

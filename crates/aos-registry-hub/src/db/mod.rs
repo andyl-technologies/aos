@@ -231,6 +231,29 @@
 //! ([`crate::surface::tag::verify_signed_tag`]) as any client's. The
 //! operations a hosted key unlocks live in [`crate::signing`]; this module
 //! only stores and lists the rows.
+//!
+//! # Outbound webhooks (v11)
+//!
+//! Phase 4 adds **webhooks** (RFC-0004 "webhooks/notifications"). An org
+//! subscribes an HTTP endpoint to a set of registry event types; each event
+//! the hub raises ([`crate::webhook::WebhookEvent`]) fans out into a durable
+//! at-least-once delivery queue.
+//!
+//! ```text
+//! webhooks            id 1  org_id 1  url "https://ci.acme/aos-hook"
+//!                     secret "<shared>"  events '["index.completed"]'  active 1
+//!
+//! webhook_deliveries  id 1  webhook_id 1  event "index.completed"
+//!                     payload '{"registry":"acme/cdn",…}'  status pending
+//!                     attempts 0  next_attempt_at 1730000000
+//! ```
+//!
+//! `secret` is stored as plaintext (not a hash): the subscriber needs the same
+//! secret to verify the `X-AOS-Signature` HMAC. A delivery walks `pending ->
+//! delivered | failed`; a non-2xx response increments `attempts` and schedules
+//! `next_attempt_at` with exponential backoff up to the attempt cap. The
+//! dispatch/delivery logic lives in [`crate::webhook`]; this module only
+//! stores and lists the rows.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -639,6 +662,48 @@ const MIGRATIONS: &[&str] = &[
         UNIQUE (org_id, key_id)
     );
     ALTER TABLE registries ADD COLUMN hosted_key_id INTEGER;
+    ",
+    // v11: outbound webhooks (RFC-0004 phase 4 \"webhooks/notifications\").
+    // The system of record for an org's HTTP notification subscriptions plus
+    // the at-least-once delivery queue that fans registry events out to them.
+    //
+    // - webhooks: one subscription. `events` is a JSON array of the event-type
+    //   strings the hook wants (e.g. [\"index.completed\",\"channel.advanced\"]);
+    //   an empty array means \"all events\". `secret` is the shared secret the
+    //   HMAC-SHA256 body signature (X-AOS-Signature) is computed under — it is
+    //   sent to the subscriber's own endpoint, so unlike a credential hash it is
+    //   stored as the plaintext the signature needs.
+    // - webhook_deliveries: the durable delivery queue. Each row is one
+    //   attempt-bearing delivery of one event payload to one webhook. `status`
+    //   walks pending -> delivered | failed; a non-2xx response increments
+    //   `attempts` and schedules `next_attempt_at` with exponential backoff
+    //   until the attempt cap, after which it is marked failed. The queue is
+    //   the source of truth for the delivery worker and the /metrics gauges.
+    "
+    CREATE TABLE webhooks (
+        id          INTEGER PRIMARY KEY,
+        org_id      INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+        url         TEXT NOT NULL,
+        secret      TEXT NOT NULL,                -- HMAC-SHA256 signing secret (shared with subscriber)
+        events      TEXT NOT NULL,                -- JSON array of subscribed event-type strings ([] = all)
+        active      INTEGER NOT NULL DEFAULT 1,
+        created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX webhooks_org_idx ON webhooks (org_id);
+    CREATE TABLE webhook_deliveries (
+        id              INTEGER PRIMARY KEY,
+        webhook_id      INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+        event           TEXT NOT NULL,            -- the event-type string
+        payload         TEXT NOT NULL,            -- the JSON body, as signed and POSTed
+        status          TEXT NOT NULL,            -- pending|delivered|failed
+        response_code   INTEGER,                  -- last HTTP status observed, when any
+        attempts        INTEGER NOT NULL DEFAULT 0,
+        created_at      INTEGER NOT NULL,
+        delivered_at    INTEGER,                  -- set when status becomes delivered
+        next_attempt_at INTEGER                   -- earliest retry time for a pending row
+    );
+    CREATE INDEX webhook_deliveries_due_idx
+        ON webhook_deliveries (status, next_attempt_at);
     ",
 ];
 
@@ -1160,6 +1225,74 @@ pub struct RevisionRow {
     pub new_json: Option<String>,
     /// Ordinal of this revision within its change-set, from `0`.
     pub seq: i64,
+}
+
+/// One webhook subscription (system-of-record row).
+///
+/// An org's HTTP notification endpoint plus the event types it wants and the
+/// shared secret its deliveries are HMAC-signed under (see [`crate::webhook`]).
+#[derive(Debug, Clone)]
+pub struct WebhookRecord {
+    /// Database id.
+    pub id: i64,
+    /// Owning org id.
+    pub org_id: i64,
+    /// Destination URL each subscribed event is `POST`ed to.
+    pub url: String,
+    /// The HMAC-SHA256 signing secret shared with the subscriber.
+    pub secret: String,
+    /// Subscribed event-type strings; empty means *all* events.
+    pub events: Vec<String>,
+    /// Whether the subscription currently receives deliveries.
+    pub active: bool,
+    /// Unix time the subscription was created.
+    pub created_at: i64,
+}
+
+impl WebhookRecord {
+    /// Whether this webhook is subscribed to `event_type`.
+    ///
+    /// An empty subscription list matches every event.
+    #[must_use]
+    pub fn subscribes_to(&self, event_type: &str) -> bool {
+        self.events.is_empty() || self.events.iter().any(|e| e == event_type)
+    }
+}
+
+/// A due delivery joined with its webhook's URL and secret.
+///
+/// Produced by [`Database::due_deliveries`]; the [delivery worker]
+/// (`crate::webhook::deliver_one`) needs the URL and secret alongside the
+/// payload to sign and `POST` it.
+#[derive(Debug, Clone)]
+pub struct DueDelivery {
+    /// The `webhook_deliveries` row id.
+    pub id: i64,
+    /// The webhook this delivery targets.
+    pub webhook_id: i64,
+    /// The event-type string, mirrored into the `X-AOS-Event` header.
+    pub event: String,
+    /// The exact JSON body to sign and `POST`.
+    pub payload: String,
+    /// How many attempts have already been made (for backoff scheduling).
+    pub attempts: i64,
+    /// The destination URL.
+    pub url: String,
+    /// The HMAC-SHA256 signing secret.
+    pub secret: String,
+}
+
+fn row_to_webhook(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRecord> {
+    let events_json: String = row.get(4)?;
+    Ok(WebhookRecord {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        url: row.get(2)?,
+        secret: row.get(3)?,
+        events: serde_json::from_str(&events_json).unwrap_or_default(),
+        active: row.get::<_, i64>(5)? != 0,
+        created_at: row.get(6)?,
+    })
 }
 
 /// The hub database handle.
@@ -4112,6 +4245,212 @@ impl Database {
             }
         }
         Ok(out)
+    }
+
+    // -- webhooks -----------------------------------------------------------
+
+    /// Create a webhook subscription under an org; returns its id.
+    ///
+    /// `events` is the set of event-type strings the hook subscribes to (an
+    /// empty slice subscribes to *all* events). `secret` is the shared HMAC
+    /// secret the [`X-AOS-Signature`](crate::webhook) header is computed under;
+    /// it is stored as plaintext because the subscriber needs the same secret
+    /// to verify deliveries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn create_webhook(
+        &self,
+        org_id: i64,
+        url: &str,
+        secret: &str,
+        events: &[String],
+    ) -> Result<i64> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO webhooks (org_id, url, secret, events, active, created_at)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+            params![
+                org_id,
+                url,
+                secret,
+                serde_json::to_string(events)?,
+                unix_now()
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// List an org's webhook subscriptions, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_webhooks(&self, org_id: i64) -> Result<Vec<WebhookRecord>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, org_id, url, secret, events, active, created_at
+             FROM webhooks WHERE org_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map([org_id], row_to_webhook)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Load one webhook by id, regardless of org.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn webhook(&self, id: i64) -> Result<Option<WebhookRecord>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT id, org_id, url, secret, events, active, created_at
+             FROM webhooks WHERE id = ?1",
+            [id],
+            row_to_webhook,
+        )
+        .optional()
+        .context("loading webhook by id")
+    }
+
+    /// Delete a webhook (and, by cascade, its deliveries); returns whether a
+    /// row was removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn delete_webhook(&self, id: i64) -> Result<bool> {
+        let conn = self.lock();
+        let n = conn.execute("DELETE FROM webhooks WHERE id = ?1", [id])?;
+        Ok(n > 0)
+    }
+
+    /// Enable or disable a webhook; returns whether a row was updated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn set_webhook_active(&self, id: i64, active: bool) -> Result<bool> {
+        let conn = self.lock();
+        let n = conn.execute(
+            "UPDATE webhooks SET active = ?2 WHERE id = ?1",
+            params![id, active as i64],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Enqueue one pending delivery of `event`/`payload` to a webhook.
+    ///
+    /// The row starts `pending` with `attempts = 0` and `next_attempt_at`
+    /// equal to now, so the delivery worker picks it up on its next sweep.
+    /// Returns the delivery id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn enqueue_delivery(&self, webhook_id: i64, event: &str, payload: &str) -> Result<i64> {
+        let conn = self.lock();
+        let now = unix_now();
+        conn.execute(
+            "INSERT INTO webhook_deliveries
+             (webhook_id, event, payload, status, attempts, created_at, next_attempt_at)
+             VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?4)",
+            params![webhook_id, event, payload, now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// List deliveries that are due: `pending` and whose `next_attempt_at` is
+    /// at or before `now`, joined with their (active) webhook's URL and secret,
+    /// oldest first.
+    ///
+    /// Deliveries whose webhook has since been deleted or deactivated are
+    /// excluded — a disabled subscription stops receiving without leaving its
+    /// queued rows stuck.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn due_deliveries(&self, now: i64) -> Result<Vec<DueDelivery>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT d.id, d.webhook_id, d.event, d.payload, d.attempts, w.url, w.secret
+             FROM webhook_deliveries d
+             JOIN webhooks w ON w.id = d.webhook_id
+             WHERE d.status = 'pending' AND d.next_attempt_at <= ?1 AND w.active = 1
+             ORDER BY d.id",
+        )?;
+        let rows = stmt.query_map([now], |row| {
+            Ok(DueDelivery {
+                id: row.get(0)?,
+                webhook_id: row.get(1)?,
+                event: row.get(2)?,
+                payload: row.get(3)?,
+                attempts: row.get(4)?,
+                url: row.get(5)?,
+                secret: row.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Record the outcome of one delivery attempt.
+    ///
+    /// `status` is the new lifecycle state (`delivered`, `failed`, or
+    /// `pending` for a scheduled retry), `response_code` the observed HTTP
+    /// status (or `None` when the request never completed), `attempts` the new
+    /// attempt count, and `next_attempt_at` the earliest retry time for a row
+    /// left `pending`. `delivered_at` is stamped iff `status == "delivered"`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn mark_delivery(
+        &self,
+        id: i64,
+        status: &str,
+        response_code: Option<i64>,
+        attempts: i64,
+        next_attempt_at: Option<i64>,
+    ) -> Result<()> {
+        let conn = self.lock();
+        let delivered_at = (status == "delivered").then(unix_now);
+        conn.execute(
+            "UPDATE webhook_deliveries
+             SET status = ?2, response_code = ?3, attempts = ?4,
+                 next_attempt_at = ?5, delivered_at = ?6
+             WHERE id = ?1",
+            params![
+                id,
+                status,
+                response_code,
+                attempts,
+                next_attempt_at,
+                delivered_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Count webhook deliveries grouped by lifecycle status.
+    ///
+    /// Returns `(pending, delivered, failed)` totals across all webhooks,
+    /// powering the `/metrics` gauges.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn delivery_status_counts(&self) -> Result<(u64, u64, u64)> {
+        let conn = self.lock();
+        let count = |status: &str| -> rusqlite::Result<u64> {
+            conn.query_row(
+                "SELECT COUNT(*) FROM webhook_deliveries WHERE status = ?1",
+                [status],
+                |r| r.get::<_, i64>(0).map(|n| n as u64),
+            )
+        };
+        Ok((count("pending")?, count("delivered")?, count("failed")?))
     }
 }
 

@@ -51,9 +51,13 @@
 //! - [`signing`] — hub-side hosted-key signing: signs release tags and
 //!   channel partitions for opt-in registries, writing surface objects the
 //!   indexer's own verifier accepts.
-//! - [`rpc`] — the `aos.registry.v1` ConnectRPC read-path services.
+//! - [`rpc`] — the `aos.registry.v1` ConnectRPC read-path services plus the
+//!   tenancy and webhook write-path services.
+//! - [`webhook`] — outbound webhooks: the [`webhook::WebhookEvent`] taxonomy,
+//!   HMAC-signed delivery, and the background delivery worker.
 //! - [`ui`] — server-rendered HTML pages.
-//! - [`server`] — axum router assembly tying the above together.
+//! - [`server`] — axum router assembly tying the above together (including the
+//!   `/healthz` and Prometheus `/metrics` observability endpoints).
 
 pub mod auth;
 pub mod compat;
@@ -71,3 +75,4 @@ pub mod stack;
 pub mod surface;
 pub mod ui;
 pub mod validation;
+pub mod webhook;
