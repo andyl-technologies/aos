@@ -1,4 +1,4 @@
-# RFC-0005 — Test plan
+# RFC-0006 — Test plan
 
 Every phase is CI-gated. The tests extend the existing image-boot fleet
 harness ([RFC-0003](../0003-install-from-image.md),

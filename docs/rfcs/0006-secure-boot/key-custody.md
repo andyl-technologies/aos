@@ -1,4 +1,4 @@
-# RFC-0005 — Key custody
+# RFC-0006 — Key custody
 
 The central decision. Secure Boot only means something if the key that makes
 a binary bootable is harder to obtain than the thing it protects. So the

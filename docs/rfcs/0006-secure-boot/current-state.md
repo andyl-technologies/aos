@@ -1,4 +1,4 @@
-# RFC-0005 — Current state
+# RFC-0006 — Current state
 
 What exists and what is absent, file:line grounded as of this branch
 (master + [RFC-0003](../0003-install-from-image.md) / #100). This is the

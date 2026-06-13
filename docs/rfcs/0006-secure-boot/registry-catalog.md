@@ -1,4 +1,4 @@
-# RFC-0005 — Registry as the validation catalog
+# RFC-0006 — Registry as the validation catalog
 
 Phase 4. The fleet concern: give the registry a record of the Secure Boot
 signing facts for every published component, so `apm` can validate a download
