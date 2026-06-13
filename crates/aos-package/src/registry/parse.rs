@@ -92,8 +92,16 @@ struct PlatformEntry {
     /// Absolute store path of the built output.
     store_path: String,
     /// NAR hash of the output (`sha256:...`).
+    ///
+    /// Legacy (pre-RFC-0005) field: newer registries publish the hash in
+    /// the `ca/` trust map instead, and consumers backfill it from there.
+    #[serde(default)]
     nar_hash: String,
     /// Uncompressed NAR size in bytes.
+    ///
+    /// Legacy (pre-RFC-0005) field, superseded by the `ca/` trust map like
+    /// `nar_hash`.
+    #[serde(default)]
     nar_size: u64,
     /// Total uncompressed size of the runtime closure in bytes.
     closure_size: u64,

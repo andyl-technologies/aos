@@ -155,12 +155,12 @@ impl NarInfoSigner {
     /// `1;<store_path>;<nar_hash>;<nar_size>;<refs,comma,separated>`.
     ///
     /// `refs` must be full store paths. The NAR hash is normalised to
-    /// Nix's base32 `sha256:` form (see `nar_hash_for_fingerprint`) so
+    /// Nix's base32 `sha256:` form (see `normalize_sha256_nix32`) so
     /// the signature verifies against stock Nix regardless of whether
     /// the caller holds an SRI, hex, or base32 hash.
     pub fn fingerprint(store_path: &str, nar_hash: &str, nar_size: i64, refs: &[String]) -> String {
         let refs_str = refs.join(",");
-        let nar_hash = nar_hash_for_fingerprint(nar_hash);
+        let nar_hash = normalize_sha256_nix32(nar_hash);
         format!("1;{store_path};{nar_hash};{nar_size};{refs_str}")
     }
 }
@@ -168,14 +168,13 @@ impl NarInfoSigner {
 /// Nix's custom base32 alphabet (omits `e`, `o`, `t`, `u`).
 const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
-/// Normalises a SHA-256 NAR hash to Nix's base32 `sha256:` form for use
-/// in a signing fingerprint.
+/// Normalises a SHA-256 NAR hash to Nix's base32 `sha256:` form.
 ///
 /// Accepts SRI (`sha256-<base64>`), hex (`sha256:<64 hex digits>`), or
 /// already-base32 (`sha256:<base32>`) input; anything unrecognised is
-/// returned unchanged so signing degrades gracefully rather than
-/// failing.
-fn nar_hash_for_fingerprint(hash: &str) -> String {
+/// returned unchanged so callers (signing fingerprints, `ca/` trust-map
+/// comparisons) degrade gracefully rather than failing.
+pub fn normalize_sha256_nix32(hash: &str) -> String {
     if let Some(encoded) = hash.strip_prefix("sha256-") {
         if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) {
             if bytes.len() == 32 {
@@ -466,14 +465,14 @@ mod tests {
     }
 
     #[test]
-    fn nar_hash_for_fingerprint_normalizes_sha256_hash_formats() {
+    fn normalize_sha256_nix32_normalizes_sha256_hash_formats() {
         let sri = "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=";
         let hex = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
         let nix32 = "sha256:1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s";
 
-        assert_eq!(nar_hash_for_fingerprint(sri), nix32);
-        assert_eq!(nar_hash_for_fingerprint(hex), nix32);
-        assert_eq!(nar_hash_for_fingerprint(nix32), nix32);
+        assert_eq!(normalize_sha256_nix32(sri), nix32);
+        assert_eq!(normalize_sha256_nix32(hex), nix32);
+        assert_eq!(normalize_sha256_nix32(nix32), nix32);
     }
 
     #[test]

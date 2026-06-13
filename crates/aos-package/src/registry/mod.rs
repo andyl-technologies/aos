@@ -10,13 +10,15 @@
 //!   priority registry that offers a package wins.
 //! - Submodules implement the moving parts: [`git`] (git/dumb-HTTP sync with
 //!   signature and fast-forward verification), [`parse`] (package TOML
-//!   schema), [`closures`] (precomputed closure files), [`channel`] and
+//!   schema), [`closures`] (precomputed closure files), [`ca`] (the `ca/`
+//!   trust map of blessed content addresses), [`channel`] and
 //!   [`verify`] (channel rollout partitions and signed tag chains), [`keys`]
 //!   (the committed `keys.toml` trust roster), [`fetch`] and [`pack`]
 //!   (delta/full-pack object transfer), [`objectstore`] and [`static_upload`]
 //!   (the producer-side static dumb-HTTP origin), [`nixcache`] (static Nix
 //!   binary-cache generation), and [`state`] (persisted sync state).
 
+pub mod ca;
 pub mod channel;
 pub mod closures;
 pub mod fetch;
@@ -52,6 +54,8 @@ pub struct Registry {
     hash_index: HashMap<String, PackageMeta>,
     /// Precomputed closures keyed by store path hash.
     closures: HashMap<String, ClosureMeta>,
+    /// The registry's `ca/` trust map of blessed content addresses.
+    ca: ca::CaMap,
 }
 
 impl Registry {
@@ -66,15 +70,15 @@ impl Registry {
     /// # Errors
     ///
     /// Returns an error if the registry tracking config is invalid, the
-    /// `packages/` directory cannot be read, or any package TOML file inside
-    /// it fails to parse.
+    /// `packages/` directory cannot be read, any package TOML file inside
+    /// it fails to parse, or a present `ca/` trust map is malformed.
     pub fn load(cache_dir: &Path, config: &RegistryConfig, platform: &str) -> Result<Self> {
         let registry_dir = cache_dir.join(&config.name);
         let version_req = match config.tracking_mode()? {
             TrackingMode::Version(req) => Some(req),
             _ => None,
         };
-        let (packages, hash_index) =
+        let (mut packages, mut hash_index) =
             parse_registry_matching(&registry_dir, platform, version_req.as_ref()).with_context(
                 || {
                     format!(
@@ -87,12 +91,31 @@ impl Registry {
 
         let closures = load_closures(&registry_dir).unwrap_or_default();
 
+        // The trust map is signed security data: a malformed bucket fails
+        // the registry load rather than degrading silently.
+        let ca = ca::CaMap::load(&registry_dir)
+            .with_context(|| format!("loading ca/ trust map for registry '{}'", config.name))?;
+
+        // Package TOMLs no longer carry nar_hash/nar_size — the ca/ map is
+        // the single authority. Backfill the in-memory metas from the
+        // root's blessed entry so display and verify consumers keep
+        // working; legacy registries still populate them from the TOML.
+        for meta in packages.values_mut().chain(hash_index.values_mut()) {
+            enrich_meta_from_ca(meta, &ca);
+        }
+
         Ok(Self {
             config: config.clone(),
             packages,
             hash_index,
             closures,
+            ca,
         })
+    }
+
+    /// Returns the registry's `ca/` trust map of blessed content addresses.
+    pub fn ca_map(&self) -> &ca::CaMap {
+        &self.ca
     }
 
     /// Looks up the newest version of a package by name.
@@ -233,6 +256,32 @@ impl RegistrySet {
 
 /// Re-export `store_path_hash` for use by other modules.
 pub use parse::store_path_hash;
+
+/// Fill a meta's `nar_hash`/`nar_size` from the trust map when the TOML did
+/// not carry them (post-RFC-0005 registries). The first `nar:` blessed
+/// entry supplies the display/verify values; verification proper checks the
+/// full blessed set, not this single value.
+fn enrich_meta_from_ca(meta: &mut PackageMeta, ca: &ca::CaMap) {
+    if !meta.nar_hash.is_empty() && meta.nar_size != 0 {
+        return;
+    }
+    let Some(entries) = ca.get(store_path_hash(&meta.store_path)) else {
+        return;
+    };
+    let Some(entry) = entries.iter().find(|entry| entry.nar_hash().is_some()) else {
+        return;
+    };
+    if meta.nar_hash.is_empty() {
+        if let Some(hash) = entry.nar_hash() {
+            meta.nar_hash = hash;
+        }
+    }
+    if meta.nar_size == 0 {
+        if let Some(size) = entry.nar_size() {
+            meta.nar_size = size;
+        }
+    }
+}
 
 #[cfg(test)]
 pub(crate) mod tests {
