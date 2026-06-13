@@ -3764,6 +3764,7 @@ pub async fn run_web(config: &ApmConfig, command: &WebCommand, printer: &Printer
             name,
             hub_url,
             accent,
+            spa_dist,
             upload_urls,
             auth,
             registry,
@@ -3777,6 +3778,7 @@ pub async fn run_web(config: &ApmConfig, command: &WebCommand, printer: &Printer
                 name: name.clone().unwrap_or_default(),
                 accent: accent.clone(),
                 hub_url: hub_url.clone(),
+                spa_dist: spa_dist.clone(),
             };
             let written = webgen::generate_web_surface(&dir, &output_dir, web_config)?;
 

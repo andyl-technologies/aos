@@ -2,7 +2,10 @@
 //!
 //! Everything `apm` reads over dumb-HTTP, readable in-process and without
 //! the git CLI — which is what lets the same code run on a native server,
-//! a Cloudflare Worker, and (eventually) in a visitor's browser:
+//! a Cloudflare Worker, and (now) a visitor's browser. The dependency-light,
+//! no-IO core lives in the standalone [`aos_registry_surface`] crate so it
+//! compiles to `wasm32-unknown-unknown` and the registry web-surface SPA
+//! (`aos-registry-spa`) can reuse the *exact* verifier the hub indexer runs:
 //!
 //! - [`object`] — SHA-256 loose objects: inflate, hash-verify, and parse
 //!   commits, trees, and tags.
@@ -11,17 +14,18 @@
 //! - [`tag`] — signed tag payloads: channel partitions and release tags,
 //!   with name binding.
 //! - [`refs`] — `info/refs` and `HEAD` parsing.
-//! - [`load`] — walking a verified commit's tree into the committed
-//!   registry files (`registry.toml`, `keys.toml`, packages, closures).
+//!
+//! Those four modules are re-exported from [`aos_registry_surface`]; only
+//! [`load`] stays here, because tree-walking depends on the hub's
+//! [`crate::fetch::SurfaceFetch`] transport and `aos-package`'s
+//! committed-file parsers, neither of which belongs in the pure core.
 //!
 //! Format parsers are shared with `aos-package` wherever they exist there
 //! (tag headers, package TOML, `keys.toml`, `registry.toml`), so this
 //! reader and `apm` cannot silently diverge on committed formats. The
-//! parts implemented here — loose objects, SSHSIG, refs — are the parts
-//! `apm` delegates to the git CLI.
+//! parts implemented in the surface crate — loose objects, SSHSIG, refs —
+//! are the parts `apm` delegates to the git CLI.
 
 pub mod load;
-pub mod object;
-pub mod refs;
-pub mod sshsig;
-pub mod tag;
+
+pub use aos_registry_surface::{object, refs, sshsig, tag};

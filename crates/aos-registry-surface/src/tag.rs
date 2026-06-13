@@ -6,14 +6,14 @@
 //! tags are the same bytes wrapped as loose `tag` objects. In both cases
 //! the signature covers everything before the armor block.
 //!
-//! Header parsing is shared with `apm` via
-//! [`aos_package::registry::verify::parse_tag_object`] so the two readers
-//! cannot drift on the format.
+//! Header parsing is shared with `apm` via [`crate::tagobject`] (which
+//! `aos_package::registry::verify` re-exports) so the two readers cannot
+//! drift on the format.
 
 use anyhow::{bail, Context, Result};
-use aos_package::registry::verify::{parse_tag_object, verify_name_binding, TagObject};
 
 use super::sshsig;
+use super::tagobject::{parse_tag_object, verify_name_binding, TagObject};
 
 const ARMOR_BEGIN: &str = "-----BEGIN SSH SIGNATURE-----";
 
@@ -96,8 +96,8 @@ pub fn render_tag_payload(
 
 #[cfg(test)]
 mod tests {
+    use super::super::tagobject::TagTarget;
     use super::*;
-    use aos_package::registry::verify::TagTarget;
 
     fn signed_payload(name: &str, target_type: &str) -> Vec<u8> {
         let key = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
