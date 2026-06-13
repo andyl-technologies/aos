@@ -20,7 +20,8 @@ use crate::db::{
 use crate::db::{PlatformDetail, VersionDetail};
 use crate::stack::StackNode;
 use crate::ui::render::{
-    ago, escape, human_size, key_fingerprint, live_table, page, table, StateLine,
+    ago, datalist, escape, human_size, key_fingerprint, live_table, page, table, urlencode, Pager,
+    StateLine,
 };
 
 /// Glyph palette for the partition grid: one glyph per release, assigned
@@ -29,6 +30,11 @@ const GRID_GLYPHS: [char; 6] = ['■', '▣', '▥', '▤', '▧', '▢'];
 
 /// Rows per page on the HTML package index.
 pub const PACKAGES_PER_PAGE: usize = 100;
+
+/// Rows per page on the general management lists (registries, organizations,
+/// members, audit) — smaller than the package index, since these are scanned
+/// rather than searched.
+pub const LIST_PER_PAGE: usize = 50;
 
 fn state_line(status: Option<&IndexStatus>, started: Instant) -> StateLine {
     match status {
@@ -49,11 +55,6 @@ fn registry_crumbs(slug: &str, tail: &[(String, String)]) -> Vec<(String, String
     ];
     crumbs.extend_from_slice(tail);
     crumbs
-}
-
-/// Percent-encode a string for use in a query component.
-fn urlencode(text: &str) -> String {
-    url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
 }
 
 /// Split a `name:Ed25519:<base64>` trust anchor into `(name, base64)`.
@@ -131,6 +132,7 @@ fn validation_cells(run: Option<&ValidationRunRow>) -> [String; 4] {
 pub fn instance_home(
     rows: &[(RegistryRecord, Option<IndexStatus>)],
     query: Option<&str>,
+    page_number: usize,
     started: Instant,
 ) -> String {
     let needle = query.map(str::to_lowercase);
@@ -154,7 +156,12 @@ pub fn instance_home(
         })
         .collect();
 
-    let body_rows: Vec<Vec<String>> = matches
+    // Paginate the filtered set. The live-search enhancement only filters the
+    // visible page, so it bows out (in app.js) when a pager is present and the
+    // `?q=` server filter takes over for cross-page search.
+    let pager = Pager::new(page_number, LIST_PER_PAGE, matches.len());
+    let body_rows: Vec<Vec<String>> = pager
+        .slice(&matches)
         .iter()
         .map(|(reg, status)| {
             let (state, class) = match status.as_ref().map(|s| s.state.as_str()) {
@@ -209,6 +216,10 @@ pub fn instance_home(
             &body_rows,
             "registries",
         ));
+        let query_str = query
+            .map(|q| format!("q={}", urlencode(q)))
+            .unwrap_or_default();
+        body.push_str(&pager.nav("/", &query_str));
     }
     page(
         "registries",
@@ -465,29 +476,65 @@ impl PackageSort {
     }
 }
 
+/// The package-index filter state, counts, and the facet value lists that
+/// back the `<datalist>` autocompletes.
+///
+/// The handler computes this from the request's `?q=`/`?license=`/`?platform=`/
+/// `?sort=`/`?page=` parameters and the registry's package set; the page
+/// renders the controls, the result line, and the pager from it. `licenses`
+/// and `platforms` are the distinct, sorted facet values across the whole
+/// registry — they populate the native autocomplete lists, so filtering needs
+/// no JavaScript.
+#[derive(Debug, Clone, Copy)]
+pub struct PackageBrowse<'a> {
+    /// The `?q=` free-text query (name/description/license substring).
+    pub query: Option<&'a str>,
+    /// The active `?sort=` order.
+    pub sort: PackageSort,
+    /// The `?license=` exact-match facet.
+    pub license: Option<&'a str>,
+    /// The `?platform=` exact-match facet (e.g. `x86_64-linux`).
+    pub platform: Option<&'a str>,
+    /// The clamped 1-based page number.
+    pub page_number: usize,
+    /// Count of packages matching the filters (across all pages).
+    pub total_matches: usize,
+    /// Count of packages in the registry, before filtering.
+    pub total_all: usize,
+    /// Distinct licenses across the registry (sorted), for autocomplete.
+    pub licenses: &'a [String],
+    /// Distinct platforms across the registry (sorted), for autocomplete.
+    pub platforms: &'a [String],
+}
+
 /// The package index page: one pre-filtered, pre-sorted, pre-sliced page.
 ///
-/// `rows` is the current page after the handler applies the `?q=`/`?license=`
-/// filters, the `?sort=` order, and the `?page=` slice; `total_matches` and
-/// `total_all` carry the counts for the result line. Each row shows the
-/// package name, latest version, license (a link that sets the `?license=`
+/// `rows` is the current page after the handler applies the filters in
+/// [`PackageBrowse`], the sort order, and the `?page=` slice. Each row shows
+/// the package name, latest version, license (a link that sets the `?license=`
 /// filter), the latest version's closure size, its platform list, and the
-/// description, so the index reads like a release-engineering inventory.
-/// The search box, the sort `<select>`, and the pagination links are plain
-/// GET controls that preserve `q`/`sort`/`license` across navigation.
-#[allow(clippy::too_many_arguments)]
+/// description, so the index reads like a release-engineering inventory. The
+/// search box, the license/platform filters (with `<datalist>` autocomplete),
+/// the sort `<select>`, and the pagination links are plain GET controls that
+/// preserve every facet across navigation.
 pub fn package_index(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     rows: &[PackageRow],
-    query: Option<&str>,
-    sort: PackageSort,
-    license: Option<&str>,
-    page_number: usize,
-    total_matches: usize,
-    total_all: usize,
+    browse: &PackageBrowse<'_>,
     started: Instant,
 ) -> String {
+    let PackageBrowse {
+        query,
+        sort,
+        license,
+        platform,
+        page_number,
+        total_matches,
+        total_all,
+        licenses,
+        platforms: platform_facets,
+    } = *browse;
     let slug = &registry.slug;
     let body_rows: Vec<Vec<String>> = rows
         .iter()
@@ -531,13 +578,28 @@ pub fn package_index(
 
     let mut body = format!("<h1>Packages ({total_all})</h1>\n");
 
-    // The search + sort form is one GET form: q, sort, and the active license
-    // facet all round-trip so a search keeps its facet and order.
+    // The search + filter + sort form is one GET form: q, the license and
+    // platform facets, and the sort order all round-trip so each control keeps
+    // the others. The license/platform inputs are `list=`-bound to a
+    // <datalist> of the registry's distinct values, giving native
+    // autocomplete with no JavaScript.
     body.push_str("<form method=\"get\" class=\"pkg-search\">");
     let _ = write!(
         body,
         "<input type=\"search\" name=\"q\" value=\"{}\" placeholder=\"search packages\"> ",
         escape(query.unwrap_or("")),
+    );
+    let _ = write!(
+        body,
+        "<input type=\"text\" name=\"license\" list=\"licenses\" value=\"{}\" \
+         placeholder=\"license\"> ",
+        escape(license.unwrap_or("")),
+    );
+    let _ = write!(
+        body,
+        "<input type=\"text\" name=\"platform\" list=\"platforms\" value=\"{}\" \
+         placeholder=\"platform\"> ",
+        escape(platform.unwrap_or("")),
     );
     body.push_str("<label>sort <select name=\"sort\">");
     for (variant, label) in [
@@ -553,23 +615,23 @@ pub fn package_index(
         );
     }
     body.push_str("</select></label> ");
-    if let Some(license) = license {
-        let _ = write!(
-            body,
-            "<input type=\"hidden\" name=\"license\" value=\"{}\">",
-            escape(license),
-        );
-    }
     body.push_str("<button>search</button></form>\n");
 
-    // The result line: a count, plus any active query/license facet.
-    if query.is_some() || license.is_some() {
+    // The autocomplete sources for the license/platform inputs above.
+    body.push_str(&datalist("licenses", licenses));
+    body.push_str(&datalist("platforms", platform_facets));
+
+    // The result line: a count, plus any active query/license/platform facet.
+    if query.is_some() || license.is_some() || platform.is_some() {
         let mut facets = Vec::new();
         if let Some(query) = query {
             facets.push(format!("matching \"{}\"", escape(query)));
         }
         if let Some(license) = license {
             facets.push(format!("licensed {}", escape(license)));
+        }
+        if let Some(platform) = platform {
+            facets.push(format!("on {}", escape(platform)));
         }
         let _ = writeln!(
             body,
@@ -598,41 +660,24 @@ pub fn package_index(
         ));
     }
 
-    // Carry q/sort/license across pagination so paging never re-sorts or
-    // drops a facet.
-    let mut suffix = String::new();
+    // Carry q/sort/license/platform across pagination so paging never re-sorts
+    // or drops a facet. The query has no leading separator; Pager::nav appends
+    // `&page=N` itself.
+    let mut params: Vec<String> = Vec::new();
     if let Some(query) = query {
-        let _ = write!(suffix, "&q={}", urlencode(query));
+        params.push(format!("q={}", urlencode(query)));
     }
     if sort != PackageSort::Name {
-        let _ = write!(suffix, "&sort={}", sort.token());
+        params.push(format!("sort={}", sort.token()));
     }
     if let Some(license) = license {
-        let _ = write!(suffix, "&license={}", urlencode(license));
+        params.push(format!("license={}", urlencode(license)));
     }
-
-    let pages = total_matches.div_ceil(PACKAGES_PER_PAGE).max(1);
-    if pages > 1 {
-        body.push_str("<p class=\"pager\">");
-        if page_number > 1 {
-            let _ = write!(
-                body,
-                "<a href=\"/{}/-/packages?page={}{suffix}\">← prev</a> ",
-                escape(slug),
-                page_number - 1,
-            );
-        }
-        let _ = write!(body, "page {page_number} of {pages}");
-        if page_number < pages {
-            let _ = write!(
-                body,
-                " <a href=\"/{}/-/packages?page={}{suffix}\">next →</a>",
-                escape(slug),
-                page_number + 1,
-            );
-        }
-        body.push_str("</p>\n");
+    if let Some(platform) = platform {
+        params.push(format!("platform={}", urlencode(platform)));
     }
+    let pager = Pager::new(page_number, PACKAGES_PER_PAGE, total_matches);
+    body.push_str(&pager.nav(&format!("/{slug}/-/packages"), &params.join("&")));
 
     page(
         &format!("{slug} packages"),
@@ -1935,13 +1980,13 @@ mod tests {
                 indexed_at: None,
             }),
         )];
-        let html = instance_home(&rows, None, Instant::now());
+        let html = instance_home(&rows, None, 1, Instant::now());
         assert!(html.contains("&lt;bad&amp;state&gt;"));
         assert!(!html.contains("<bad&state>"));
 
-        let html = instance_home(&rows, Some("fixture"), Instant::now());
+        let html = instance_home(&rows, Some("fixture"), 1, Instant::now());
         assert!(html.contains("1 of 1 registries match"));
-        let html = instance_home(&rows, Some("zzz"), Instant::now());
+        let html = instance_home(&rows, Some("zzz"), 1, Instant::now());
         assert!(html.contains("0 of 1 registries match"));
         assert!(html.contains("No registries match."));
     }
@@ -1958,17 +2003,24 @@ mod tests {
                 platforms: vec!["x86_64-linux".into()],
             })
             .collect();
+        let licenses = vec!["MIT".to_string()];
+        let platforms = vec!["x86_64-linux".to_string()];
         // 250 matches across 3 pages; this is page 2.
         let html = package_index(
             &registry(),
             None,
             &rows,
-            Some("pkg"),
-            PackageSort::Size,
-            None,
-            2,
-            250,
-            300,
+            &PackageBrowse {
+                query: Some("pkg"),
+                sort: PackageSort::Size,
+                license: None,
+                platform: None,
+                page_number: 2,
+                total_matches: 250,
+                total_all: 300,
+                licenses: &licenses,
+                platforms: &platforms,
+            },
             Instant::now(),
         );
         // The total count leads the page; the result line names the facet.
@@ -1981,21 +2033,32 @@ mod tests {
         assert!(html.contains("<select name=\"sort\">"));
         assert!(html.contains("<option value=\"size\" selected>"));
         assert!(html.contains("page 2 of 3"));
-        // Pagination preserves q + sort.
-        assert!(html.contains("?page=1&q=pkg&sort=size"));
-        assert!(html.contains("?page=3&q=pkg&sort=size"));
+        // The filter inputs are backed by <datalist> autocomplete sources.
+        assert!(html.contains("<datalist id=\"licenses\">"));
+        assert!(html.contains("<datalist id=\"platforms\">"));
+        assert!(html.contains("name=\"license\" list=\"licenses\""));
+        assert!(html.contains("name=\"platform\" list=\"platforms\""));
+        // Pagination preserves q + sort across the prev/next links (the query
+        // is HTML-escaped in the href, and `page` is appended last).
+        assert!(html.contains("?q=pkg&amp;sort=size&amp;page=1"));
+        assert!(html.contains("?q=pkg&amp;sort=size&amp;page=3"));
 
         // A single page in default order renders no pager and a clean count.
         let html = package_index(
             &registry(),
             None,
             &rows,
-            None,
-            PackageSort::Name,
-            None,
-            1,
-            3,
-            3,
+            &PackageBrowse {
+                query: None,
+                sort: PackageSort::Name,
+                license: None,
+                platform: None,
+                page_number: 1,
+                total_matches: 3,
+                total_all: 3,
+                licenses: &licenses,
+                platforms: &platforms,
+            },
             Instant::now(),
         );
         assert!(!html.contains("class=\"pager\""));
@@ -2003,20 +2066,27 @@ mod tests {
         // The license cell links to its own facet.
         assert!(html.contains("?license=MIT"));
 
-        // The license facet is named in the result line and is clearable.
+        // The license + platform facets are named in the result line and are
+        // clearable.
         let html = package_index(
             &registry(),
             None,
             &rows,
-            None,
-            PackageSort::Name,
-            Some("MIT"),
-            1,
-            3,
-            3,
+            &PackageBrowse {
+                query: None,
+                sort: PackageSort::Name,
+                license: Some("MIT"),
+                platform: Some("x86_64-linux"),
+                page_number: 1,
+                total_matches: 3,
+                total_all: 3,
+                licenses: &licenses,
+                platforms: &platforms,
+            },
             Instant::now(),
         );
         assert!(html.contains("licensed MIT"));
+        assert!(html.contains("on x86_64-linux"));
         assert!(html.contains("clear filters"));
     }
 

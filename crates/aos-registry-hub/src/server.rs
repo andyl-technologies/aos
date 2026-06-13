@@ -205,6 +205,9 @@ struct SearchParams {
     sort: Option<String>,
     /// Package-index license facet (exact SPDX identifier match).
     license: Option<String>,
+    /// Package-index platform facet (exact platform tuple, e.g.
+    /// `x86_64-linux`).
+    platform: Option<String>,
 }
 
 /// Optional channel-calculator query parameter (`?bucket=`).
@@ -225,6 +228,37 @@ impl SearchParams {
             .as_deref()
             .map(str::trim)
             .filter(|l| !l.is_empty())
+    }
+
+    /// The trimmed, non-empty platform facet, if any.
+    fn platform(&self) -> Option<&str> {
+        self.platform
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+    }
+
+    /// Parse the recognized keys from a raw URL query string.
+    ///
+    /// Used on the nested-canonical (`org/registry`) path, where the index is
+    /// reached through [`render_page`] rather than an axum `Query` extractor,
+    /// so the query must be parsed by hand. Unknown keys are ignored.
+    fn from_query(query: Option<&str>) -> Self {
+        let mut params = SearchParams::default();
+        let Some(query) = query else {
+            return params;
+        };
+        for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+            match key.as_ref() {
+                "q" => params.q = Some(value.into_owned()),
+                "sort" => params.sort = Some(value.into_owned()),
+                "license" => params.license = Some(value.into_owned()),
+                "platform" => params.platform = Some(value.into_owned()),
+                "page" => params.page = value.parse().ok(),
+                _ => {}
+            }
+        }
+        params
     }
 }
 
@@ -673,7 +707,13 @@ async fn instance_home(
         Ok::<_, anyhow::Error>(rows)
     })();
     match result {
-        Ok(rows) => Html(pages::instance_home(&rows, params.query(), started)).into_response(),
+        Ok(rows) => Html(pages::instance_home(
+            &rows,
+            params.query(),
+            params.page.unwrap_or(1).max(1),
+            started,
+        ))
+        .into_response(),
         Err(err) => internal(err),
     }
 }
@@ -748,6 +788,155 @@ async fn registry_home(
     respond_page(result)
 }
 
+/// A comparable sort key for a version string, for semver-ish ordering.
+///
+/// The key is `(release numbers, release-rank, original string)`:
+///
+/// - **release numbers** are the unsigned integer runs of the part before any
+///   `-` pre-release suffix, so `"1.10.0"` yields `[1, 10, 0]` and sorts above
+///   `"1.9.0"`'s `[1, 9, 0]` (a lexical compare would invert this).
+/// - **release-rank** is `1` for a plain release and `0` for a pre-release (a
+///   non-empty `-` suffix), so `1.0.0` sorts above `1.0.0-rc1` per semver.
+/// - the **original string** is a stable final tiebreaker.
+///
+/// A missing or number-free version yields an empty number list, which sorts
+/// lowest.
+fn version_key(version: Option<&str>) -> (Vec<u64>, u8, String) {
+    let raw = version.unwrap_or("");
+    let (core, has_pre) = match raw.split_once('-') {
+        Some((core, pre)) => (core, !pre.is_empty()),
+        None => (raw, false),
+    };
+    let mut numbers = Vec::new();
+    let mut current = String::new();
+    for ch in core.chars() {
+        if ch.is_ascii_digit() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            if let Ok(n) = current.parse::<u64>() {
+                numbers.push(n);
+            }
+            current.clear();
+        }
+    }
+    if let Ok(n) = current.parse::<u64>() {
+        numbers.push(n);
+    }
+    let release_rank = u8::from(!has_pre);
+    (numbers, release_rank, raw.to_string())
+}
+
+/// Render the package index for one registry: apply the `?q=`/`?license=`/
+/// `?platform=` filters, the `?sort=` order, and the `?page=` slice, then
+/// build the page.
+///
+/// Shared by the flat [`package_index`] route and the nested-canonical
+/// [`render_page`] path so both honor the query string identically — the
+/// org-scoped (`org/registry`) URLs reach the index through `render_page`.
+///
+/// # Errors
+///
+/// Returns an error if loading the registry's package list fails.
+fn package_index_html(
+    state: &AppState,
+    registry: &RegistryRecord,
+    status: Option<&IndexStatus>,
+    params: &SearchParams,
+    started: Instant,
+) -> Result<String, anyhow::Error> {
+    let all = state.db.list_packages(registry.id)?;
+    let total_all = all.len();
+    let query = params.query();
+    let license = params.license();
+    let platform = params.platform();
+    let sort = pages::PackageSort::parse(params.sort.as_deref());
+
+    // The distinct license and platform values across the whole registry back
+    // the filter inputs' native autocomplete, so they are computed before
+    // filtering (the suggestion set should not shrink as you type).
+    let mut licenses: Vec<String> = all
+        .iter()
+        .map(|p| p.license.clone())
+        .filter(|l| !l.is_empty())
+        .collect();
+    licenses.sort_unstable();
+    licenses.dedup();
+    let mut platforms: Vec<String> = all
+        .iter()
+        .flat_map(|p| p.platforms.iter().cloned())
+        .collect();
+    platforms.sort_unstable();
+    platforms.dedup();
+
+    // The `?q=` substring matches name, description, and license; the
+    // `?license=` and `?platform=` facets are exact (case-insensitive) matches.
+    let mut filtered: Vec<PackageRow> = all
+        .into_iter()
+        .filter(|p| match query {
+            None => true,
+            Some(query) => {
+                let needle = query.to_lowercase();
+                p.name.to_lowercase().contains(&needle)
+                    || p.description.to_lowercase().contains(&needle)
+                    || p.license.to_lowercase().contains(&needle)
+            }
+        })
+        .filter(|p| match license {
+            None => true,
+            Some(license) => p.license.eq_ignore_ascii_case(license),
+        })
+        .filter(|p| match platform {
+            None => true,
+            Some(platform) => p
+                .platforms
+                .iter()
+                .any(|pl| pl.eq_ignore_ascii_case(platform)),
+        })
+        .collect();
+    match sort {
+        pages::PackageSort::Name => {}
+        pages::PackageSort::Size => filtered.sort_by(|a, b| {
+            b.closure_size
+                .unwrap_or(0)
+                .cmp(&a.closure_size.unwrap_or(0))
+                .then_with(|| a.name.cmp(&b.name))
+        }),
+        // Version order is semver-aware (descending), so "1.10.0" sorts above
+        // "1.9.0" rather than below it as a lexical compare would.
+        pages::PackageSort::Version => filtered.sort_by(|a, b| {
+            version_key(b.latest_version.as_deref())
+                .cmp(&version_key(a.latest_version.as_deref()))
+                .then_with(|| a.name.cmp(&b.name))
+        }),
+    }
+    let total_matches = filtered.len();
+    let page_number = params.page.unwrap_or(1).max(1);
+    let start = (page_number - 1)
+        .saturating_mul(pages::PACKAGES_PER_PAGE)
+        .min(total_matches);
+    let end = start
+        .saturating_add(pages::PACKAGES_PER_PAGE)
+        .min(total_matches);
+    let browse = pages::PackageBrowse {
+        query,
+        sort,
+        license,
+        platform,
+        page_number,
+        total_matches,
+        total_all,
+        licenses: &licenses,
+        platforms: &platforms,
+    };
+    Ok(pages::package_index(
+        registry,
+        status,
+        &filtered[start..end],
+        &browse,
+        started,
+    ))
+}
+
 async fn package_index(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
@@ -758,63 +947,13 @@ async fn package_index(
         let Some((registry, status)) = load_registry(&state, &slug)? else {
             return Ok(None);
         };
-        let all = state.db.list_packages(registry.id)?;
-        let total_all = all.len();
-        let query = params.query();
-        let license = params.license();
-        let sort = pages::PackageSort::parse(params.sort.as_deref());
-        // The `?q=` substring matches name, description, and license; the
-        // `?license=` facet is an exact (case-insensitive) license match.
-        let mut filtered: Vec<PackageRow> = all
-            .into_iter()
-            .filter(|p| match query {
-                None => true,
-                Some(query) => {
-                    let needle = query.to_lowercase();
-                    p.name.to_lowercase().contains(&needle)
-                        || p.description.to_lowercase().contains(&needle)
-                        || p.license.to_lowercase().contains(&needle)
-                }
-            })
-            .filter(|p| match license {
-                None => true,
-                Some(license) => p.license.eq_ignore_ascii_case(license),
-            })
-            .collect();
-        match sort {
-            pages::PackageSort::Name => {}
-            pages::PackageSort::Size => filtered.sort_by(|a, b| {
-                b.closure_size
-                    .unwrap_or(0)
-                    .cmp(&a.closure_size.unwrap_or(0))
-                    .then_with(|| a.name.cmp(&b.name))
-            }),
-            pages::PackageSort::Version => filtered.sort_by(|a, b| {
-                b.latest_version
-                    .cmp(&a.latest_version)
-                    .then_with(|| a.name.cmp(&b.name))
-            }),
-        }
-        let total_matches = filtered.len();
-        let page_number = params.page.unwrap_or(1).max(1);
-        let start = (page_number - 1)
-            .saturating_mul(pages::PACKAGES_PER_PAGE)
-            .min(total_matches);
-        let end = start
-            .saturating_add(pages::PACKAGES_PER_PAGE)
-            .min(total_matches);
-        Ok::<_, anyhow::Error>(Some(pages::package_index(
+        Ok::<_, anyhow::Error>(Some(package_index_html(
+            &state,
             &registry,
             status.as_ref(),
-            &filtered[start..end],
-            query,
-            sort,
-            license,
-            page_number,
-            total_matches,
-            total_all,
+            &params,
             started,
-        )))
+        )?))
     })();
     respond_page(result)
 }
@@ -1329,12 +1468,16 @@ async fn resolve_nested(
             Some(page) => page,
             None => return StatusCode::NOT_FOUND.into_response(),
         };
+        // Parse the query by hand: this nested path has no axum `Query`
+        // extractor, so the package index's search/filter/sort/page controls
+        // would otherwise be silently dropped on org-scoped registry URLs.
+        let params = SearchParams::from_query(uri.query());
         return match state.db.registry_by_slug(slug) {
             Ok(Some(registry)) => {
                 if let Err(deny) = authorize_registry_read(state, &registry, headers) {
                     return *deny;
                 }
-                render_page(state, &registry, page, headers, started).await
+                render_page(state, &registry, page, &params, headers, started).await
             }
             Ok(None) => StatusCode::NOT_FOUND.into_response(),
             Err(err) => internal(err),
@@ -1350,7 +1493,8 @@ async fn resolve_nested(
                 return *deny;
             }
             if tail.is_empty() {
-                render_page(state, &registry, PageKind::Home, headers, started).await
+                let params = SearchParams::from_query(uri.query());
+                render_page(state, &registry, PageKind::Home, &params, headers, started).await
             } else {
                 serve_registry_machine_path(state, &registry, &tail).await
             }
@@ -1405,10 +1549,15 @@ pub(crate) fn resolve_by_prefix(
 }
 
 /// Render one registry page, reusing the same renderers as the flat routes.
+///
+/// `params` carries the parsed query string; only [`PageKind::Packages`] reads
+/// it (for search/filter/sort/page), but it is threaded through uniformly so
+/// the nested-canonical path honors the same controls as the flat route.
 async fn render_page(
     state: &AppState,
     registry: &RegistryRecord,
     page: PageKind,
+    params: &SearchParams,
     headers: &HeaderMap,
     started: Instant,
 ) -> Response {
@@ -1425,22 +1574,13 @@ async fn render_page(
                 headers,
                 started,
             )?),
-            PageKind::Packages => {
-                let all = state.db.list_packages(registry.id)?;
-                let total = all.len();
-                Some(pages::package_index(
-                    registry,
-                    status.as_ref(),
-                    &all,
-                    None,
-                    pages::PackageSort::Name,
-                    None,
-                    1,
-                    total,
-                    total,
-                    started,
-                ))
-            }
+            PageKind::Packages => Some(package_index_html(
+                state,
+                registry,
+                status.as_ref(),
+                params,
+                started,
+            )?),
             PageKind::Package(name) => match state.db.package_detail(registry.id, name)? {
                 Some(detail) => {
                     let closure = resolve_package_closure(&state.db, registry.id, name, &detail)?;
@@ -1755,5 +1895,23 @@ fn respond_page(result: Result<Option<String>, anyhow::Error>) -> Response {
         Ok(Some(html)) => Html(html).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => internal(err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_key;
+
+    #[test]
+    fn version_key_orders_numerically_not_lexically() {
+        // The lexical trap: "1.9.0" > "1.10.0" as strings, but 1.10 is newer.
+        assert!(version_key(Some("1.10.0")) > version_key(Some("1.9.0")));
+        assert!(version_key(Some("2.0.0")) > version_key(Some("1.99.99")));
+        // A missing version sorts below any real one.
+        assert!(version_key(Some("0.0.1")) > version_key(None));
+        // A shared numeric prefix falls back to the original string.
+        assert!(version_key(Some("1.0.0")) > version_key(Some("1.0.0-rc1")));
+        // Leading non-digits (a "v" prefix) are tolerated.
+        assert_eq!(version_key(Some("v1.2.3")).0, vec![1, 2, 3]);
     }
 }

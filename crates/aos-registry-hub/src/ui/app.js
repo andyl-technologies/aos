@@ -26,6 +26,11 @@
     var list = document.querySelector("[data-live-list]");
     if (!input || !list) return;
 
+    // A pager means the list is server-paginated: filtering only the visible
+    // page would hide matches on other pages, so leave the form as a plain
+    // server `?q=` submit (the count and button stay) and don't enhance.
+    if (document.querySelector(".pager")) return;
+
     var rows = Array.prototype.slice.call(list.querySelectorAll("tbody tr"));
     var count = document.querySelector("[data-live-count]");
     var noun = list.getAttribute("data-live-noun") || "rows";
