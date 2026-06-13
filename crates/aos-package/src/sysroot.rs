@@ -826,8 +826,8 @@ async fn download_image(
     }
 
     // Import NAR to get the store path, then copy image file out. The
-    // expected NAR hash is the image entry from the signed package TOML —
-    // not the cache-served narinfo — so the bytes are rooted at the
+    // expected NAR hash is the image entry from the signed package TOML -
+    // not the cache-served narinfo - so the bytes are rooted at the
     // registry signature (images sit outside the ca/ trust map).
     let result = &results[0];
     verify_download_hash(&result.local_path, &result.download_hash)?;

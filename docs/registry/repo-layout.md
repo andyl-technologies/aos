@@ -142,7 +142,7 @@ with `apr trust pin --replace`; the `# revoked:` masking excludes the bad key
 without touching the image-baked file.
 
 > **Defence-in-depth note:** even an authenticated-but-wrong cache pointer can't serve
-> bad bytes — every downloaded NAR's decompressed SHA-256 and size must match a
+> bad bytes - every downloaded NAR's decompressed SHA-256 and size must match a
 > blessed NAR in the signed `store/` graph (§5; `verify_downloads`,
 > `crates/aos-package/src/verify.rs`). So the trust that matters is the
 > *tag/commit* chain (which `keys.toml` governs), not the cache list.
@@ -180,33 +180,33 @@ source_nar_hash = "sha256:<hex>"
 ```
 
 The output's **content binding (`nar_hash`/`nar_size`) and dependency edges
-(`references`) are not here** — they live in the `store/` realisation graph
+(`references`) are not here** - they live in the `store/` realisation graph
 (§5), the single authority for blessed bytes and dependency shape (RFC-0005).
 Pre-RFC-0005 registries still carry these fields per platform entry; the
 parser treats them as optional legacy fields and consumers backfill the
 in-memory metadata from `store/` when absent. `store_path` still anchors the
 package to its IA hash (and thus its `store/` record); sources
-(`source_nar_hash`) and sysroot images keep their hashes in the TOML — they
+(`source_nar_hash`) and sysroot images keep their hashes in the TOML - they
 sit outside the runtime closure the graph covers.
 
 ---
 
-## 5. `store/<2-char>/<ia-hash>` — the realisation graph (RFC-0005)
+## 5. `store/<2-char>/<ia-hash>` - the realisation graph (RFC-0005)
 
 Input-addressed store-path hashes promise *how* a path was built, not *what
 bits* it contains. The `store/` graph closes that gap: one file per IA store
 path records, for every blessed build, its exact NAR bytes, its
 content-addressed (CA) realisation, and the realisations of its direct
 dependencies. The node is a Nix-style realisation, so the realisation graph
-*is* the closure graph — content addresses on the nodes, dependency CA pins
-on the edges — and consumers validate exact bytes against the signed tree
+*is* the closure graph - content addresses on the nodes, dependency CA pins
+on the edges - and consumers validate exact bytes against the signed tree
 instead of trusting cache-served narinfos
 (`crates/aos-package/src/registry/store.rs`; design record:
 [RFC-0005](../rfcs/0005-ca-trust-map.md)).
 
 One file per IA store path, named by the IA hash, sharded git-style
 (`store/<first-2>/<ia-hash>`). Each file is a sequence of realisation
-records — a `ca:`/`nar:` header line starts a record, `ia:` lines are its
+records - a `ca:`/`nar:` header line starts a record, `ia:` lines are its
 dependency edges:
 
 ```
@@ -216,7 +216,7 @@ ca:sha256:<ca-hash> nar:sha256:<nar-hash>:<size>
 ```
 
 An input-addressed-only path (or a pure-IA registry, `content_addressed =
-false`) carries no `ca:` — the header is just the NAR and edges are bare IA
+false`) carries no `ca:` - the header is just the NAR and edges are bare IA
 hashes. A path maps to **0..N** blessed NARs and **0..M** CA realisations;
 the dedup is per realisation, so reproducible nodes are shared across
 otherwise-divergent trees. The token prefix disambiguates header from edge;
@@ -238,7 +238,7 @@ blank lines and `#` comments are ignored.
   the same transaction.
 - **Semantics**: append-mostly; removal is revocation and carries the same
   review weight as a `keys.toml` retirement. Deliberately **no `store/**
-  -diff`** gitattribute — content-address changes are the highest-value
+  -diff`** gitattribute - content-address changes are the highest-value
   security-review surface and must show as readable diffs.
 
 ---

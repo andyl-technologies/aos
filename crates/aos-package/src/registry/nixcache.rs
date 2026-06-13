@@ -89,7 +89,7 @@ pub async fn generate_static_cache(
 
     // The store/ realisation graph is the authority for blessed output bytes
     // (RFC-0005). Generation reads the local store, so guard against emitting
-    // a narinfo+NAR for a path whose local bytes were never blessed — every
+    // a narinfo+NAR for a path whose local bytes were never blessed - every
     // enforcing consumer would reject it. Paths outside the graph (sources,
     // images) are unaffected.
     let store_graph =
@@ -125,7 +125,7 @@ pub async fn generate_static_cache(
         {
             bail!(
                 "refusing to publish {}: local NAR ({} / {} bytes) is not blessed in store/ \
-                 — `apr store bless` it or rebuild to a blessed realisation",
+                 - `apr store bless` it or rebuild to a blessed realisation",
                 info.path,
                 info.nar_hash,
                 info.nar_size,

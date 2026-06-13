@@ -101,7 +101,7 @@ pub fn resolve_closure(
 /// Build a `ResolvedClosure` by walking the `store/` graph's dependency edges
 /// depth-first (post-order), resolving each member hash to its `PackageMeta`.
 /// Members not published as packages (anonymous store paths, system libs) are
-/// skipped — their bytes are still fetched via the narinfo closure at download
+/// skipped - their bytes are still fetched via the narinfo closure at download
 /// time and verified against the graph.
 fn resolve_via_store(
     registries: &RegistrySet,
@@ -477,7 +477,7 @@ mod tests {
         assert_eq!(resolved.root.name, "curl");
 
         // curl's record names 4 deps, but only zlib is published as a
-        // package — the other 3 are unresolvable and skipped.
+        // package - the other 3 are unresolvable and skipped.
         let names: Vec<&str> = resolved.closure.iter().map(|m| m.name.as_str()).collect();
         assert!(names.contains(&"curl"));
         assert!(names.contains(&"zlib"));

@@ -98,7 +98,7 @@ It does **not** specify the implementation tasks; those are enumerated in the
 | [README.md](README.md) | This file — purpose, audience map, glossary, doc index, one-paragraph overview. |
 | [architecture.md](architecture.md) | Git-repo-over-dumb-HTTP; superset of git **and** Nix; the three ref layers; how `apm` and stock git both consume; the asymmetric-cost philosophy. |
 | [current-state.md](current-state.md) | The as-built implementation, grounded in code (`crates/aos-package/`) — git-native sync, signed tags, channel partitions, release orchestration, static origin/cache upload, and object-store helpers. |
-| [repo-layout.md](repo-layout.md) | The **committed git tree** a commit contains (`registry.toml` + `keys.toml` + `packages/` + `store/` realisation graph) and the tree↔HTTP mapping — distinct from the served object store. |
+| [repo-layout.md](repo-layout.md) | The **committed git tree** a commit contains (`registry.toml` + `keys.toml` + `packages/` + `store/` realisation graph) and the tree↔HTTP mapping - distinct from the served object store. |
 | [http-layout.md](http-layout.md) | The full HTTP/object layout, CDN TTLs, the single root sha256 loose-object store, `info/refs` / `HEAD` / relative `info/alternates`, and the stock git dumb-HTTP compatibility surface. |
 | [versioning-and-channels.md](versioning-and-channels.md) | Semver (no `v` prefix), channels-as-branches, the frontier head, the 256-partition rollout, deterministic bucket selection, and anti-rollback. |
 | [packs-and-deltas.md](packs-and-deltas.md) | `git pack-objects`, thin vs full packs, the guaranteed delta-scheme graph, client resolution + retention, and the `--compression=0` + zstd trick. |

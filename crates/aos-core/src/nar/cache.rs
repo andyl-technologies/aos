@@ -208,7 +208,7 @@ pub fn normalize_sha256_nix32(hash: &str) -> String {
 /// encoding whose spare high bits are non-zero (which no valid Nix
 /// encoder produces), or for a length that does not round-trip a whole
 /// number of bytes (e.g. lengths `1, 3, 6, …` where the top digit would
-/// have no byte to land in). The output length is `len * 5 / 8` bytes —
+/// have no byte to land in). The output length is `len * 5 / 8` bytes -
 /// pass a 52-char digest to get the 32 bytes of a SHA-256.
 ///
 /// Never panics: every buffer index is bounds-checked rather than indexed

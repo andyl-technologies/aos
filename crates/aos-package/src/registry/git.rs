@@ -1208,7 +1208,7 @@ async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> R
 /// Extract the `store/` realisation graph from a git tree (RFC-0005).
 ///
 /// Presence semantics matter here: a registry without a committed `store/`
-/// tree must yield NO local `store/` directory — an empty directory would
+/// tree must yield NO local `store/` directory - an empty directory would
 /// read as a present-but-empty (i.e. malformed/stripped) graph and flip
 /// consumer enforcement on against a legacy registry.
 async fn extract_store(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {

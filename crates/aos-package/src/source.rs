@@ -111,7 +111,7 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
 
     // The source registry publishes a graph but has no record for this path:
     // same stripped/malformed condition the install path rejects
-    // (verify_downloads) — surface it clearly rather than verifying against an
+    // (verify_downloads) - surface it clearly rather than verifying against an
     // empty enriched hash.
     if blessed.is_empty() && source_graph_present {
         bail!(
