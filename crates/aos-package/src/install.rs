@@ -221,11 +221,15 @@ pub async fn run(
             .collect()
     };
 
-    // Trust-map totality (RFC-0005 §2.4/§2.8): every closure member from a
-    // registry that publishes a ca/ map must carry a blessed entry — checked
-    // over the WHOLE closure, including members already in the local store
-    // (which never reach the download/verify path), so a stripped or partial
-    // map fails loudly rather than slipping through on an upgrade.
+    // Trust-map totality (RFC-0005 §2.4/§2.8): every member of these
+    // closures from a registry that publishes a ca/ map must carry a
+    // blessed entry — checked over the closures as they stand here,
+    // including members already in the local store (which never reach the
+    // download/verify path), so a stripped or partial map fails loudly
+    // rather than slipping through on an upgrade. With --no-deps the
+    // closures were already pruned to the requested roots above, so only
+    // those are checked (their dependencies were verified at their own
+    // install time).
     let trust_members: Vec<(&str, &str)> = closures
         .iter()
         .flat_map(|closure| {
