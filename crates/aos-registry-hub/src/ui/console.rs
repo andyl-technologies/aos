@@ -11,8 +11,10 @@
 //! - **Org/project**: the user's org list, a per-org dashboard (projects,
 //!   registries, members, storage bindings, tokens), and the org audit feed.
 //! - **Registry management**: per-registry token management, the channel
-//!   rollout console (prepared `apr` operations for BYO-key orgs), the key
-//!   roster with the rotation wizard, and the publish-pipeline status view.
+//!   rollout console (prepared `apr` operations for BYO-key orgs, or a direct
+//!   hub-signed advance form when a hosted key is bound), the key roster with
+//!   the rotation wizard, the org hosted-key enrollment page, and the
+//!   publish-pipeline status view.
 //!
 //! # CSRF
 //!
@@ -25,8 +27,8 @@ use std::fmt::Write as _;
 use std::time::Instant;
 
 use crate::db::{
-    AuditRow, ChangesetRow, ChannelSummary, IndexStatus, OrgRecord, ProjectRecord, RegistryRecord,
-    ReleaseRow, StorageBindingRecord,
+    AuditRow, ChangesetRow, ChannelSummary, HostedKeyRecord, IndexStatus, OrgRecord, ProjectRecord,
+    RegistryRecord, ReleaseRow, StorageBindingRecord,
 };
 use crate::domain::{iam, Permission, Role, Scope};
 use crate::ui::render::{
@@ -636,7 +638,9 @@ pub fn channel_console(
     channel: &ChannelSummary,
     csrf: &str,
     can_advance: bool,
+    hosted_key: Option<&str>,
     prepared: Option<(&str, &str)>,
+    advanced: Option<&str>,
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
@@ -647,6 +651,26 @@ pub fn channel_console(
         escape(&channel.name),
         escape(channel.frontier.as_deref().unwrap_or("—")),
     );
+
+    // Mode banner: which signing path this registry uses.
+    match hosted_key {
+        Some(key_id) => {
+            let _ = writeln!(
+                body,
+                "<p class=\"notice\">Signing with hosted key <code>{}</code>: a web advance is \
+                 signed and applied directly by the hub.</p>",
+                escape(key_id),
+            );
+        }
+        None => body.push_str(
+            "<p class=\"dim\">Prepared for CLI signing: this registry has no hosted key, so a web \
+             advance records a prepared operation you sign and push locally.</p>\n",
+        ),
+    }
+
+    if let Some(message) = advanced {
+        let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(message));
+    }
 
     if let Some((change_id, command)) = prepared {
         let _ = write!(
@@ -659,24 +683,42 @@ pub fn channel_console(
     }
 
     if can_advance {
+        let action_path = if hosted_key.is_some() {
+            "advance"
+        } else {
+            "console"
+        };
+        let button = if hosted_key.is_some() {
+            "advance"
+        } else {
+            "prepare advance"
+        };
         body.push_str("<h2>Advance</h2>\n");
         let _ = write!(
             body,
-            "<form class=\"console\" method=\"post\" action=\"/{slug}/-/channels/{name}/console\">\n{csrf}\
+            "<form class=\"console\" method=\"post\" action=\"/{slug}/-/channels/{name}/{action}\">\n{csrf}\
              <label>release <input type=\"text\" name=\"release\" required \
              placeholder=\"1.4.2\"></label>\n\
              <label>partitions (1–256) <input type=\"text\" name=\"partitions\" value=\"256\"></label>\n\
-             <button>prepare advance</button>\n</form>\n",
+             <button>{button}</button>\n</form>\n",
             slug = escape(slug),
             name = escape(&channel.name),
+            action = action_path,
             csrf = csrf_field(csrf),
         );
-        body.push_str(
-            "<p class=\"dim\">Web edits are change requests: this records a prepared operation and \
-             renders the <code>apr channel advance --from-hub</code> command. The maintainer signs \
-             the partition tags locally and pushes. A direct web-button advance needs a hosted \
-             signing key (phase 4).</p>\n",
-        );
+        if hosted_key.is_some() {
+            body.push_str(
+                "<p class=\"dim\">The hub signs the partition tags with the registry's hosted key \
+                 and writes them to the surface, then re-indexes. Every advance is audited.</p>\n",
+            );
+        } else {
+            body.push_str(
+                "<p class=\"dim\">Web edits are change requests: this records a prepared operation \
+                 and renders the <code>apr channel advance --from-hub</code> command. The \
+                 maintainer signs the partition tags locally and pushes. A direct web-button \
+                 advance needs a hosted signing key.</p>\n",
+            );
+        }
     } else {
         body.push_str("<p class=\"dim\">Read-only: you need a maintainer role to advance.</p>\n");
     }
@@ -812,6 +854,123 @@ pub fn keys_rotate_page(email: &str, registry: &RegistryRecord, started: Instant
             (format!("/{slug}/"), slug.clone()),
             (format!("/{slug}/-/keys"), "keys".into()),
             (String::new(), "rotate".into()),
+        ],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// The org hosted-key enrollment page.
+///
+/// Hosted keys are an explicit org opt-in (RFC-0004 Open Question 1): the hub
+/// holds an Ed25519 signing key so it can advance channels and re-sign tags
+/// directly from the web. This page lists the org's enrolled keys (showing the
+/// public trusted-key line to publish/pin), offers a create form, and — per
+/// owned registry — an attach form binding a key to a registry. `created`
+/// echoes the public line of a just-created key so it can be copied once.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn org_hosted_keys_page(
+    email: &str,
+    org: &OrgRecord,
+    csrf: &str,
+    keys: &[HostedKeyRecord],
+    registries: &[RegistryRecord],
+    created: Option<&str>,
+    started: Instant,
+) -> String {
+    let org_slug = &org.slug;
+    let mut body = format!("<h1>Hosted signing keys · {}</h1>\n", escape(&org.name));
+    body.push_str(
+        "<p class=\"dim\">A hosted key lets the hub sign channel advances and tag re-signs \
+         directly from the web. The seed is held sealed and every use is audited. Pin the public \
+         line below as a registry trust anchor so the hub's signatures verify.</p>\n",
+    );
+
+    if let Some(line) = created {
+        let _ = write!(
+            body,
+            "<p class=\"notice\">Key created. Publish and pin this trusted-key line as a registry \
+             anchor:</p>\n<pre>{}</pre>\n",
+            escape(line),
+        );
+    }
+
+    if keys.is_empty() {
+        body.push_str("<p class=\"dim\">No hosted keys enrolled.</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = keys
+            .iter()
+            .map(|k| {
+                vec![
+                    escape(&k.key_id),
+                    format!("<code>{}</code>", escape(&k.public_key)),
+                ]
+            })
+            .collect();
+        body.push_str(&table(&["key id", "public trusted-key line"], &rows));
+    }
+
+    body.push_str("<h2>Enroll a key</h2>\n");
+    let _ = write!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/keys\">\n{csrf}\
+         <input type=\"hidden\" name=\"op\" value=\"create\">\n\
+         <label>key id <input type=\"text\" name=\"key_id\" required placeholder=\"acme-release\"></label>\n\
+         <button>enroll</button>\n</form>\n",
+        org = escape(org_slug),
+        csrf = csrf_field(csrf),
+    );
+
+    body.push_str("<h2>Attach to a registry</h2>\n");
+    if registries.is_empty() {
+        body.push_str("<p class=\"dim\">No registries owned by this org.</p>\n");
+    } else if keys.is_empty() {
+        body.push_str("<p class=\"dim\">Enroll a key first, then attach it to a registry.</p>\n");
+    } else {
+        let mut key_options = String::new();
+        for k in keys {
+            let _ = write!(
+                key_options,
+                "<option value=\"{id}\">{label}</option>",
+                id = k.id,
+                label = escape(&k.key_id),
+            );
+        }
+        for registry in registries {
+            let attached = match registry.hosted_key_id {
+                Some(id) => keys
+                    .iter()
+                    .find(|k| k.id == id)
+                    .map(|k| format!(" · attached: {}", k.key_id))
+                    .unwrap_or_default(),
+                None => String::new(),
+            };
+            let _ = write!(
+                body,
+                "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/keys\">\n{csrf}\
+                 <input type=\"hidden\" name=\"op\" value=\"attach\">\n\
+                 <input type=\"hidden\" name=\"registry\" value=\"{slug}\">\n\
+                 <label>{slug_label}{attached} <select name=\"hosted_key_id\">{options}\
+                 <option value=\"\">— detach —</option></select></label>\n\
+                 <button>attach</button>\n</form>\n",
+                org = escape(org_slug),
+                csrf = csrf_field(csrf),
+                slug = escape(&registry.slug),
+                slug_label = escape(&registry.slug),
+                attached = escape(&attached),
+                options = key_options,
+            );
+        }
+    }
+
+    page_with_session(
+        &format!("{org_slug} hosted keys"),
+        &[
+            ("/-/orgs".into(), "orgs".into()),
+            (format!("/-/org/{org_slug}"), org_slug.clone()),
+            (String::new(), "hosted keys".into()),
         ],
         &body,
         &StateLine::timed(started),

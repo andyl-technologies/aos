@@ -1109,6 +1109,7 @@ mod tests {
             visibility: "public".into(),
             storage_binding_id: None,
             prefix: String::new(),
+            hosted_key_id: None,
         }
     }
 

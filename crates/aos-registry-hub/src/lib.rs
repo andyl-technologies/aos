@@ -48,6 +48,9 @@
 //! - [`compat`] — the machine-path read facade.
 //! - [`facade`] — the machine-path write facade: authenticated surface
 //!   uploads, the publish lease, and index-after-flip.
+//! - [`signing`] — hub-side hosted-key signing: signs release tags and
+//!   channel partitions for opt-in registries, writing surface objects the
+//!   indexer's own verifier accepts.
 //! - [`rpc`] — the `aos.registry.v1` ConnectRPC read-path services.
 //! - [`ui`] — server-rendered HTML pages.
 //! - [`server`] — axum router assembly tying the above together.
@@ -63,6 +66,7 @@ pub mod fetch;
 pub mod indexer;
 pub mod rpc;
 pub mod server;
+pub mod signing;
 pub mod stack;
 pub mod surface;
 pub mod ui;
