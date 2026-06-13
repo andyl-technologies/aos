@@ -322,8 +322,7 @@ pub async fn sync_git(
     let packages_dir = registry_cache_dir.join("packages");
     let old_packages = count_toml_files(&packages_dir).await;
     extract_packages(&repo_dir, &new_commit, &packages_dir).await?;
-    extract_closures(&repo_dir, &new_commit, &registry_cache_dir.join("closures")).await?;
-    extract_ca(&repo_dir, &new_commit, &registry_cache_dir.join("ca")).await?;
+    extract_store(&repo_dir, &new_commit, &registry_cache_dir.join("store")).await?;
     let new_packages = count_toml_files(&packages_dir).await;
 
     // Step 7b: Materialise root registry files so resolve_mirror and trust
@@ -1206,19 +1205,14 @@ async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> R
     extract_tree_dir(repo_dir, commit, "packages", output_dir, true).await
 }
 
-/// Extract precomputed closure adjacency files from a git tree.
-async fn extract_closures(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
-    extract_tree_dir(repo_dir, commit, "closures", output_dir, true).await
-}
-
-/// Extract the `ca/` trust map from a git tree (RFC-0005).
+/// Extract the `store/` realisation graph from a git tree (RFC-0005).
 ///
-/// Presence semantics matter here: a registry without a committed `ca/`
-/// tree must yield NO local `ca/` directory — an empty directory would
-/// read as a present-but-empty (i.e. malformed/stripped) trust map and
-/// flip consumer enforcement on against a legacy registry.
-async fn extract_ca(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
-    extract_tree_dir(repo_dir, commit, "ca", output_dir, false).await
+/// Presence semantics matter here: a registry without a committed `store/`
+/// tree must yield NO local `store/` directory — an empty directory would
+/// read as a present-but-empty (i.e. malformed/stripped) graph and flip
+/// consumer enforcement on against a legacy registry.
+async fn extract_store(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
+    extract_tree_dir(repo_dir, commit, "store", output_dir, false).await
 }
 
 /// Replace `output_dir` with the contents of `commit:tree_path/`.
@@ -1226,8 +1220,8 @@ async fn extract_ca(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<
 /// The existing directory is removed first so deletions in the registry
 /// propagate. When the tree path is absent from the commit,
 /// `create_empty_when_absent` selects between leaving an empty directory
-/// (the historical behavior for `packages/`/`closures/`) and leaving no
-/// directory at all (required for `ca/`, where presence is meaningful).
+/// (the historical behavior for `packages/`) and leaving no directory at
+/// all (required for `store/`, where presence is meaningful).
 async fn extract_tree_dir(
     repo_dir: &Path,
     commit: &str,
@@ -2208,12 +2202,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn extract_ca_preserves_presence_semantics() {
+    async fn extract_store_preserves_presence_semantics() {
         let tmp = tempfile::TempDir::new().unwrap();
         let work_dir = tmp.path().join("work");
         init_repo(&work_dir).await;
 
-        // Commit 1: a registry WITHOUT a ca/ tree (legacy).
+        // Commit 1: a registry WITHOUT a store/ tree (legacy).
         tokio::fs::create_dir_all(work_dir.join("packages").join("c"))
             .await
             .unwrap();
@@ -2225,45 +2219,48 @@ mod tests {
         .unwrap();
         let legacy_commit = commit_all(&work_dir, "legacy").await;
 
-        // Commit 2: add a ca/ bucket.
-        tokio::fs::create_dir_all(work_dir.join("ca"))
+        // Commit 2: add a sharded store/ record.
+        tokio::fs::create_dir_all(work_dir.join("store").join("r4"))
             .await
             .unwrap();
         tokio::fs::write(
-            work_dir.join("ca").join("r4"),
-            "r4q1m2kp8v3x nar:sha256:1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy:10\n",
+            work_dir.join("store").join("r4").join("r4q1m2kp8v3x"),
+            "nar:sha256:1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy:10\n",
         )
         .await
         .unwrap();
-        let mapped_commit = commit_all(&work_dir, "add ca").await;
+        let mapped_commit = commit_all(&work_dir, "add store").await;
 
-        // Commit 3: remove the ca/ tree again.
-        tokio::fs::remove_dir_all(work_dir.join("ca"))
+        // Commit 3: remove the store/ tree again.
+        tokio::fs::remove_dir_all(work_dir.join("store"))
             .await
             .unwrap();
-        let removed_commit = commit_all(&work_dir, "drop ca").await;
+        let removed_commit = commit_all(&work_dir, "drop store").await;
 
-        let ca_dir = tmp.path().join("out-ca");
+        let store_dir = tmp.path().join("out-store");
 
-        // Absent tree → NO local ca/ directory (so CaMap reads not-present).
-        extract_ca(&work_dir, &legacy_commit, &ca_dir)
+        // Absent tree → NO local store/ directory (StoreMap reads not-present).
+        extract_store(&work_dir, &legacy_commit, &store_dir)
             .await
             .unwrap();
-        assert!(!ca_dir.exists(), "absent ca/ must leave no directory");
+        assert!(!store_dir.exists(), "absent store/ must leave no directory");
 
         // Present tree → extracted.
-        extract_ca(&work_dir, &mapped_commit, &ca_dir)
-            .await
-            .unwrap();
-        assert!(ca_dir.join("r4").exists(), "present ca/ must be extracted");
-
-        // Dropped between syncs → stale local ca/ is removed.
-        extract_ca(&work_dir, &removed_commit, &ca_dir)
+        extract_store(&work_dir, &mapped_commit, &store_dir)
             .await
             .unwrap();
         assert!(
-            !ca_dir.exists(),
-            "dropping ca/ upstream must remove the stale local directory"
+            store_dir.join("r4").join("r4q1m2kp8v3x").exists(),
+            "present store/ must be extracted"
+        );
+
+        // Dropped between syncs → stale local store/ is removed.
+        extract_store(&work_dir, &removed_commit, &store_dir)
+            .await
+            .unwrap();
+        assert!(
+            !store_dir.exists(),
+            "dropping store/ upstream must remove the stale local directory"
         );
     }
 

@@ -783,11 +783,11 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: CacheCommand,
     },
-    /// Maintain the ca/ trust map of blessed content addresses
-    Ca {
-        /// The trust-map operation to run
+    /// Maintain the store/ realisation graph (blessed bytes + content addresses)
+    Store {
+        /// The realisation-graph operation to run
         #[command(subcommand)]
-        command: CaCommand,
+        command: StoreCommand,
     },
     /// Static git-origin upload operations
     Origin {
@@ -1136,16 +1136,13 @@ pub enum ChannelCommand {
     },
 }
 
-/// `ca/` trust-map subcommands (RFC-0005).
+/// `store/` realisation-graph subcommands (RFC-0005).
 #[derive(Subcommand)]
-pub enum CaCommand {
-    /// Bless a store path's local content into the trust map
+pub enum StoreCommand {
+    /// Bless a store path's local content (whole closure) into the graph
     Bless {
-        /// Nix store path whose local bytes to bless
+        /// Nix store path whose closure to record
         store_path: String,
-        /// Bless the whole runtime closure, not just the path itself
-        #[arg(long)]
-        recursive: bool,
         /// Skip creating a git commit
         #[arg(long)]
         no_commit: bool,
@@ -1162,13 +1159,13 @@ pub enum CaCommand {
         #[arg(long)]
         registry: Option<String>,
     },
-    /// Revoke blessed content (stops the bytes verifying on next sync)
+    /// Revoke a blessed realisation (stops the bytes verifying on next sync)
     Revoke {
         /// Store path or bare store-path hash to revoke
         store_path: String,
-        /// Specific entry token to revoke (all entries if omitted)
+        /// Specific CA realisation to revoke (all realisations if omitted)
         #[arg(long)]
-        entry: Option<String>,
+        realisation: Option<String>,
         /// Skip creating a git commit
         #[arg(long)]
         no_commit: bool,
@@ -1185,7 +1182,7 @@ pub enum CaCommand {
         #[arg(long)]
         registry: Option<String>,
     },
-    /// Check trust-map health and closure coverage
+    /// Check graph health and closure coverage
     Verify {
         /// Also recompute local store NAR hashes and require blessed matches
         #[arg(long)]
@@ -1194,9 +1191,9 @@ pub enum CaCommand {
         #[arg(long)]
         registry: Option<String>,
     },
-    /// Map every published closure from the local Nix store in one pass
+    /// Record every published closure from the local Nix store in one pass
     Backfill {
-        /// Bless additional content for paths already mapped to different
+        /// Bless additional content for paths already recorded with different
         /// bits instead of failing
         #[arg(long)]
         bless: bool,
@@ -1991,7 +1988,9 @@ async fn run_registry(
         RegistryCommand::Cache { command } => {
             registry_ops::run_cache(config, command, printer).await
         }
-        RegistryCommand::Ca { command } => registry_ops::run_ca(config, command, printer).await,
+        RegistryCommand::Store { command } => {
+            registry_ops::run_store(config, command, printer).await
+        }
         RegistryCommand::Origin { command } => {
             registry_ops::run_origin(config, command, printer).await
         }

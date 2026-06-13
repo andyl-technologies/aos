@@ -697,15 +697,22 @@ async fn signed_channel_http_e2e_advances_persisted_bucket() -> Result<()> {
     assert_eq!(package.version, "1.1.0");
     assert_eq!(package.store_path, v2_store_path);
     let store_hash = store_path_hash(&v2_store_path);
-    let closure = registry
-        .get_closure(store_hash)
-        .expect("closure was materialized from the committed tree");
-    assert!(closure.contains(store_hash));
+    assert!(
+        registry.store_map().is_present(),
+        "store/ realisation graph materialized from the committed tree"
+    );
+    assert!(
+        registry.store_map().get(store_hash).is_some(),
+        "root has a store/ record"
+    );
+    assert!(
+        !registry.store_map().blessed_nars(store_hash).is_empty(),
+        "root record carries a blessed NAR"
+    );
 
     let registry_root = fixture.registries_dir().join("aos-core");
     assert!(registry_root.join("registry.toml").exists());
     assert!(registry_root.join("keys.toml").exists());
-    assert!(registry_root.join(".gitattributes").exists());
     let roster = keys::load_keys_toml(&registry_root)?.expect("keys.toml loaded");
     assert_eq!(roster.active.len(), 1);
     assert_eq!(roster.active[0].key, fixture.trusted_key());

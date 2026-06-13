@@ -95,29 +95,28 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
     let pkg_meta = resolve_installed_package_meta(&reg_set, package, installed)?;
 
-    // Prefer the signed ca/ trust map: a path may have multiple blessed
-    // realisations, and an honest install matching any of them is intact.
-    // Fall back to the (legacy or enriched) single TOML nar_hash only when
-    // the registry publishes no map for this path.
+    // Prefer the signed store/ graph: a path may have multiple blessed NARs,
+    // and an honest install matching any of them is intact. Fall back to the
+    // (legacy or enriched) single TOML nar_hash only when the registry
+    // publishes no graph for this path.
     let installed_hash = store_path_hash(&pkg_meta.store_path);
-    let source_map_present = reg_set
+    let source_graph_present = reg_set
         .get_registry(&installed_apm.registry)
-        .map(|reg| reg.ca_map().is_present())
+        .map(|reg| reg.store_map().is_present())
         .unwrap_or(false);
     let blessed = reg_set
         .get_registry(&installed_apm.registry)
-        .and_then(|reg| reg.ca_map().get(installed_hash))
-        .map(<[_]>::to_vec)
+        .map(|reg| reg.store_map().blessed_nars(installed_hash))
         .unwrap_or_default();
 
-    // The source registry publishes a trust map but has no entry for this
-    // path: same stripped/malformed-map condition the install path rejects
-    // (verify_downloads) — surface it clearly rather than verifying against
-    // an empty enriched hash.
-    if blessed.is_empty() && source_map_present {
+    // The source registry publishes a graph but has no record for this path:
+    // same stripped/malformed condition the install path rejects
+    // (verify_downloads) — surface it clearly rather than verifying against an
+    // empty enriched hash.
+    if blessed.is_empty() && source_graph_present {
         bail!(
-            "no ca/ trust-map entry for installed '{package}' ({installed_hash}); the registry \
-             '{}' may be malformed or its trust map stripped",
+            "no store/ record for installed '{package}' ({installed_hash}); the registry \
+             '{}' may be malformed or its realisation graph stripped",
             installed_apm.registry,
         );
     }
@@ -131,7 +130,7 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
             "Expected NAR hash",
             &blessed
                 .iter()
-                .filter_map(crate::registry::ca::CaEntry::nar_hash)
+                .map(|nar| nar.nar_hash())
                 .collect::<Vec<_>>()
                 .join(", "),
         );
