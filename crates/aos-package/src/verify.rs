@@ -88,7 +88,7 @@ pub fn sha256_stream(mut reader: impl Read) -> Result<String> {
 /// Convert a SHA-256 hash into a lowercase hex digest.
 ///
 /// Accepts the AOS internal `sha256:<hex>` form, Nix's base32
-/// `sha256:<52-char-nix32>` form (used by the `ca/` trust map and Nix
+/// `sha256:<52-char-nix32>` form (used by the `store/` graph and Nix
 /// signing fingerprints), and the Nix SRI `sha256-<base64>` form emitted
 /// by `nix path-info --json`. A bare value with neither prefix is assumed
 /// to already be hex and is lowercased unchecked.
@@ -200,7 +200,7 @@ pub fn verify_nar_hash(path: &Path, expected: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Layer 4c: blessed-content verification against the ca/ trust map
+// Layer 4c: blessed-content verification against the store/ graph
 // ---------------------------------------------------------------------------
 
 /// Format a blessed NAR set for diagnostics.

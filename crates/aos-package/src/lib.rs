@@ -592,10 +592,14 @@ pub enum RegistryCommand {
         /// Image format for each --image (repeatable, paired with --image)
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
-        /// Bless additional content for paths already mapped to different
-        /// bits in ca/ instead of failing
+        /// Bless additional content for paths already recorded with different
+        /// bits in the store/ graph instead of failing
         #[arg(long)]
         bless: bool,
+        /// Write input-addressed records only, even on a content-addressed
+        /// registry (skip computing CA realisations for this publish)
+        #[arg(long = "no-ca")]
+        no_ca: bool,
         /// Skip creating a git commit
         #[arg(long)]
         no_commit: bool,
@@ -835,8 +839,8 @@ pub enum RegistryCommand {
         /// Image format for each --image (repeatable, paired with --image)
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
-        /// Bless additional content for paths already mapped to different
-        /// bits in ca/ when --store-path is used
+        /// Bless additional content for paths already recorded with different
+        /// bits in the store/ graph when --store-path is used
         #[arg(long)]
         bless: bool,
         /// Custom publish commit message when --store-path is used
@@ -1814,6 +1818,7 @@ async fn run_registry(
             images,
             image_formats,
             bless,
+            no_ca,
             no_commit,
             message,
             key,
@@ -1836,6 +1841,7 @@ async fn run_registry(
                 images,
                 image_formats,
                 *bless,
+                *no_ca,
                 *no_commit,
                 message.as_deref(),
                 key.as_deref(),

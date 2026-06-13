@@ -1,11 +1,11 @@
 //! Package registry loading, resolution, and synchronization.
 //!
-//! A registry is a git repository of per-package TOML metadata files plus
-//! optional precomputed closure files, mirrored into a local cache directory
-//! by `apm update`. This module ties the pieces together:
+//! A registry is a git repository of per-package TOML metadata files plus a
+//! `store/` realisation graph, mirrored into a local cache directory by
+//! `apm update`. This module ties the pieces together:
 //!
 //! - [`Registry`] loads one registry's cache and answers name, store-path
-//!   hash, and closure lookups for a single platform.
+//!   hash, and realisation-graph lookups for a single platform.
 //! - [`RegistrySet`] layers multiple registries by priority so the highest
 //!   priority registry that offers a package wins.
 //! - Submodules implement the moving parts: [`git`] (git/dumb-HTTP sync with
@@ -247,17 +247,31 @@ impl RegistrySet {
         &self.registries
     }
 
-    /// Builds the per-path trust context for a transaction (RFC-0005).
+    /// Builds the per-transaction trust context, seeded from the **whole
+    /// graph closure** of each root (RFC-0005 §2.6).
     ///
-    /// `members` pairs each closure member's store-path hash with the name
-    /// of the registry that resolved it, so each path is judged against
-    /// *that* registry's graph (never a cross-registry union). Members from
-    /// registries not present in the set contribute nothing.
-    pub fn trust_context<'a>(&'a self, members: &[(&str, &str)]) -> store::TrustContext<'a> {
+    /// `roots` pairs each closure root's store-path hash with the name of the
+    /// registry that resolved it. For a registry that publishes a `store/`
+    /// graph, every member reachable from the root by dependency edges —
+    /// including anonymous, non-package members — is attributed to that
+    /// registry's graph, so totality and download verification cover every
+    /// byte that gets imported, not just the published packages. A legacy
+    /// registry (no graph) contributes nothing, so its members fall through
+    /// to the unauthenticated narinfo path. Each path is judged against
+    /// *that* registry's graph (never a cross-registry union).
+    pub fn trust_context_for_roots<'a>(
+        &'a self,
+        roots: &[(&str, &str)],
+    ) -> store::TrustContext<'a> {
         let mut ctx = store::TrustContext::new();
-        for (registry_name, store_path_hash) in members {
+        for (registry_name, root_hash) in roots {
             if let Some(registry) = self.get_registry(registry_name) {
-                ctx.insert((*store_path_hash).to_string(), registry.store_map());
+                let map = registry.store_map();
+                if map.is_present() {
+                    for member in map.reachable(root_hash) {
+                        ctx.insert(member, map);
+                    }
+                }
             }
         }
         ctx
@@ -267,15 +281,25 @@ impl RegistrySet {
 /// Re-export `store_path_hash` for use by other modules.
 pub use parse::store_path_hash;
 
-/// Fill a meta's `nar_hash`/`nar_size` from the realisation graph when the
-/// TOML did not carry them (post-RFC-0005 registries). A blessed NAR supplies
-/// the display/verify values; verification proper checks the full blessed
-/// set, not this single value.
+/// Fill a meta's `nar_hash`/`nar_size`/`references` from the realisation
+/// graph when the TOML did not carry them (post-RFC-0005 registries). A
+/// blessed NAR supplies the display/verify values and the graph's edges
+/// supply `references`; verification proper checks the full blessed set and
+/// the whole graph closure, not these single values. RFC-0005 §2.8 step 1
+/// requires this backfill so sysroot containment/lock checks and size
+/// summaries keep working when the TOML omits the legacy fields.
 fn enrich_meta_from_store(meta: &mut PackageMeta, store: &StoreMap) {
+    let hash = store_path_hash(&meta.store_path);
+    if meta.references.is_empty() {
+        let deps = store.direct_deps(hash);
+        if !deps.is_empty() {
+            meta.references = deps;
+        }
+    }
     if !meta.nar_hash.is_empty() && meta.nar_size != 0 {
         return;
     }
-    let nars = store.blessed_nars(store_path_hash(&meta.store_path));
+    let nars = store.blessed_nars(hash);
     let Some(nar) = nars.first() else {
         return;
     };

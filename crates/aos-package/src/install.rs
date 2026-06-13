@@ -221,26 +221,22 @@ pub async fn run(
             .collect()
     };
 
-    // Trust-map totality (RFC-0005 §2.4/§2.8): every member of these
-    // closures from a registry that publishes a ca/ map must carry a
-    // blessed entry - checked over the closures as they stand here,
-    // including members already in the local store (which never reach the
-    // download/verify path), so a stripped or partial map fails loudly
-    // rather than slipping through on an upgrade. With --no-deps the
-    // closures were already pruned to the requested roots above, so only
-    // those are checked (their dependencies were verified at their own
-    // install time).
-    let trust_members: Vec<(&str, &str)> = closures
+    // Trust-graph totality (RFC-0005 §2.6): seed the context from the WHOLE
+    // graph closure of each root (every reachable member, including
+    // anonymous non-package store paths), so a stripped or partial graph
+    // fails loudly and every byte that gets imported is enforced - not just
+    // the resolved packages. Covers members already in the local store too,
+    // which never reach the download/verify path.
+    let trust_roots: Vec<(&str, &str)> = closures
         .iter()
-        .flat_map(|closure| {
-            let registry = closure.registry_name.as_str();
-            closure
-                .closure
-                .iter()
-                .map(move |meta| (registry, store_path_hash(&meta.store_path)))
+        .map(|closure| {
+            (
+                closure.registry_name.as_str(),
+                store_path_hash(&closure.root.store_path),
+            )
         })
         .collect();
-    let trust_ctx = registries.trust_context(&trust_members);
+    let trust_ctx = registries.trust_context_for_roots(&trust_roots);
     trust_ctx.enforce_totality()?;
 
     // Step 5: Fetch narinfo for each missing path so the summary can show
@@ -322,7 +318,7 @@ pub async fn run(
         .await?;
         downloaded_count = results.len();
 
-        // Verify downloads against each path's source-registry ca/ trust
+        // Verify downloads against each path's source-registry store/ graph
         // map (RFC-0005), falling back to narinfo hashes for legacy
         // registries. Closure totality was already enforced above.
         printer.step(4, 7, "Verifying downloads...");

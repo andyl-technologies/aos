@@ -172,7 +172,7 @@ const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 ///
 /// Accepts SRI (`sha256-<base64>`), hex (`sha256:<64 hex digits>`), or
 /// already-base32 (`sha256:<base32>`) input; anything unrecognised is
-/// returned unchanged so callers (signing fingerprints, `ca/` trust-map
+/// returned unchanged so callers (signing fingerprints, `store/` graph
 /// comparisons) degrade gracefully rather than failing.
 pub fn normalize_sha256_nix32(hash: &str) -> String {
     if let Some(encoded) = hash.strip_prefix("sha256-") {

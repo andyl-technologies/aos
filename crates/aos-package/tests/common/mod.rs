@@ -190,15 +190,23 @@ key = "{}"
         Ok(store_path)
     }
 
+    /// Write a `store/<shard>/<hash>` realisation record for the path: a
+    /// leaf IA-only record carrying one blessed NAR (RFC-0005). Named
+    /// `write_closure` for historical call-site compatibility.
     pub fn write_closure(&self, store_path: &str) -> Result<()> {
         let hash = store_path
             .strip_prefix("/nix/store/")
             .and_then(|rest| rest.split_once('-'))
             .map(|(hash, _)| hash)
             .ok_or_else(|| anyhow::anyhow!("invalid store path {store_path}"))?;
-        let dir = self.source.join("closures");
+        let dir = self.source.join("store").join(&hash[..2]);
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        fs::write(dir.join(hash), format!("{hash}\n")).context("writing closure file")?;
+        // A valid 52-char nixbase32 SHA-256 plus a size; no dependency edges.
+        fs::write(
+            dir.join(hash),
+            "nar:sha256:1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy:1\n",
+        )
+        .context("writing store record")?;
         Ok(())
     }
 
