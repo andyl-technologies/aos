@@ -37,12 +37,17 @@
 //!   the CSRF-checked POST flows.
 //! - [`domain`] — tenancy/IAM domain model: orgs, projects, principals,
 //!   and the pure role/permission/scope authorization kernel.
+//! - [`export`] — org backup/export: a portable JSON bundle of the SQL system
+//!   of record (secrets redacted) plus copyable registry surfaces.
 //! - [`auth`] — authentication: provisioning tokens, JWTs, human sessions,
 //!   device-code, magic-link, and per-org OIDC SSO flows, and the axum
 //!   extractors that gate requests.
 //! - [`indexer`] — fetch → verify → load → index orchestration.
 //! - [`stack`] — the nestable try/mirror cache-stack expression and its
 //!   committed TOML encoding.
+//! - [`ratelimit`] — in-memory per-endpoint fixed-window rate limiting for the
+//!   pre-auth surfaces (device-authorization, magic-link issuance, token
+//!   exchange, anonymous browse/search).
 //! - [`validation`] — presence- and integrity-depth cache consistency
 //!   validation, stack-aware coverage, and repair planning.
 //! - [`compat`] — the machine-path read facade.
@@ -65,10 +70,12 @@ pub mod config;
 pub mod console;
 pub mod db;
 pub mod domain;
+pub mod export;
 pub mod facade;
 pub mod fetch;
 pub mod indexer;
 pub mod probe;
+pub mod ratelimit;
 pub mod rpc;
 pub mod server;
 pub mod signing;

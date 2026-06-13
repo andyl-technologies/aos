@@ -444,6 +444,37 @@ mod tests {
     }
 
     #[test]
+    fn v13_operations_migration_translates_for_every_dialect() {
+        // The v13 operations migration must split and translate cleanly on
+        // postgres and mysql (the dialect contract tests need a live server;
+        // this is the offline translation-only smoke check).
+        let v13 = crate::db::MIGRATIONS
+            .last()
+            .expect("at least one migration");
+        for stmt in crate::db::backend::split_statements(v13) {
+            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
+                dialect
+                    .translate(&stmt)
+                    .unwrap_or_else(|e| panic!("v13 stmt failed for {dialect:?}: {e}\n{stmt}"));
+            }
+        }
+        // Spot-check the org_quotas FK primary key maps to a plain column, not
+        // an autoincrement (it carries an explicit value on every write).
+        let create = crate::db::backend::split_statements(v13)
+            .into_iter()
+            .find(|s| s.contains("CREATE TABLE org_quotas"))
+            .expect("org_quotas DDL present");
+        let pg = Dialect::Postgres.translate(&create).unwrap().sql;
+        // org_id is `INTEGER PRIMARY KEY REFERENCES`, so it follows the same
+        // BIGSERIAL spelling the existing per-org tables use; the upsert always
+        // supplies org_id explicitly so the serial default is never taken.
+        assert!(
+            pg.contains("BIGSERIAL PRIMARY KEY REFERENCES orgs(id)"),
+            "{pg}"
+        );
+    }
+
+    #[test]
     fn mysql_upsert_do_update() {
         let src =
             "INSERT INTO t (a, b) VALUES (?1, ?2) ON CONFLICT(a) DO UPDATE SET b = excluded.b";

@@ -238,6 +238,41 @@ impl RegistryRpc {
         }
     }
 
+    /// Whether `claims`'s principal may create an org under `invite_only`.
+    ///
+    /// Permitted when the caller is an existing member of some org, holds a
+    /// live invitation for their email, or is an instance admin (an
+    /// `iam.admin`-bearing grant at the instance root). Service-account
+    /// callers are permitted (a CI principal acts on behalf of an already
+    /// provisioned org).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    fn signup_permitted(&self, claims: &Claims) -> Result<bool, anyhow::Error> {
+        let Some(principal) = claims_principal(claims) else {
+            return Ok(false);
+        };
+        if principal.kind != PrincipalKind::User {
+            return Ok(true);
+        }
+        if self.db.user_has_any_membership(principal.id)? {
+            return Ok(true);
+        }
+        // Instance admin: an iam.admin grant at the instance root.
+        let grants = self.db.effective_scopes(principal)?;
+        if iam::allow(&grants, Permission::IamAdmin, &Scope::root()) {
+            return Ok(true);
+        }
+        // A live invitation for the caller's email.
+        if let Some(email) = self.db.user_email(principal.id)? {
+            if self.db.has_pending_invitation(&email)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Resolve an org by slug or map a miss to `NotFound`.
     fn org_or_not_found(&self, slug: &str) -> Result<crate::db::OrgRecord, ConnectError> {
         self.db
@@ -450,6 +485,17 @@ impl OrgService for RegistryRpc {
         let claims = self.require_claims(&ctx)?;
         if req.slug.is_empty() || req.name.is_empty() {
             return Err(invalid("org slug and name are required"));
+        }
+        // Instance signup policy: `open` lets any authenticated principal
+        // create an org; `invite_only` requires the caller to already be a
+        // member, hold a live invitation, or be an instance admin.
+        if self.db.signup_policy().map_err(internal)? == crate::db::SignupPolicy::InviteOnly
+            && !self.signup_permitted(&claims).map_err(internal)?
+        {
+            return Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "org creation is invite-only on this instance",
+            ));
         }
         let id = self
             .db

@@ -115,6 +115,22 @@ enum Command {
         #[command(subcommand)]
         command: WebhookCommand,
     },
+    /// Instance-wide settings (signup policy).
+    Instance {
+        #[command(subcommand)]
+        command: InstanceCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum InstanceCommand {
+    /// Set the instance signup policy: open or invite_only.
+    SetSignupPolicy {
+        /// New policy: `open` or `invite_only`.
+        policy: String,
+    },
+    /// Show the current instance signup policy.
+    ShowSignupPolicy,
 }
 
 #[derive(Subcommand)]
@@ -298,6 +314,46 @@ enum OrgCommand {
     },
     /// List organizations.
     List,
+    /// Set per-org quota caps (omit a flag to leave that cap unlimited).
+    SetQuota {
+        /// Org slug.
+        org: String,
+        /// Maximum total stored bytes.
+        #[arg(long = "max-bytes")]
+        max_bytes: Option<i64>,
+        /// Maximum total stored objects.
+        #[arg(long = "max-objects")]
+        max_objects: Option<i64>,
+        /// Maximum number of registries.
+        #[arg(long = "max-registries")]
+        max_registries: Option<i64>,
+        /// Maximum number of active tokens.
+        #[arg(long = "max-tokens")]
+        max_tokens: Option<i64>,
+    },
+    /// Export an org's SoR + registry surfaces to a directory.
+    Export {
+        /// Org slug.
+        org: String,
+        /// Output directory (manifest.json + per-registry surface copies).
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Soft-delete an org with a grace window (default 30 days).
+    Delete {
+        /// Org slug.
+        org: String,
+        /// Grace window in days before the org is eligible for hard purge.
+        #[arg(long, default_value_t = 30)]
+        grace_days: i64,
+    },
+    /// Restore a soft-deleted org within its grace window.
+    Restore {
+        /// Org slug.
+        org: String,
+    },
+    /// Hard-purge every soft-deleted org past its grace window now.
+    Purge,
 }
 
 #[derive(Subcommand)]
@@ -405,6 +461,17 @@ async fn main() -> Result<()> {
                     loop {
                         tick.tick().await;
                         index_all(&db).await;
+                        // Offboarding: hard-purge orgs past their grace window.
+                        match aos_registry_hub::export::purge_expired_orgs(&db, now_secs()) {
+                            Ok(purged) => {
+                                for slug in &purged {
+                                    tracing::info!(org = %slug, "purged expired org");
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!(error = %format!("{err:#}"), "org purge failed");
+                            }
+                        }
                     }
                 });
             }
@@ -551,6 +618,85 @@ async fn main() -> Result<()> {
                     for org in db.list_orgs()? {
                         println!("{}\t{}", org.slug, org.name);
                     }
+                }
+                OrgCommand::SetQuota {
+                    org,
+                    max_bytes,
+                    max_objects,
+                    max_registries,
+                    max_tokens,
+                } => {
+                    let org_record = db
+                        .org_by_slug(&org)?
+                        .with_context(|| format!("no org '{org}'"))?;
+                    db.set_org_quota(
+                        org_record.id,
+                        &aos_registry_hub::db::OrgQuota {
+                            max_bytes,
+                            max_objects,
+                            max_registries,
+                            max_tokens,
+                        },
+                    )?;
+                    println!("set quota for org '{org}'");
+                }
+                OrgCommand::Export { org, output } => {
+                    run_org_export(&db, &org, &output)?;
+                }
+                OrgCommand::Delete { org, grace_days } => {
+                    let org_record = db
+                        .org_by_slug_including_deleted(&org)?
+                        .with_context(|| format!("no org '{org}'"))?;
+                    let grace_secs = grace_days.max(0) * 86_400;
+                    if db.soft_delete_org(org_record.id, grace_secs)? {
+                        println!(
+                            "soft-deleted org '{org}' (grace {grace_days}d); it stops serving now \
+                             and is purgeable after the grace window. Run `org export` first to \
+                             keep a copy, or `org restore {org}` to undo."
+                        );
+                    } else {
+                        println!("org '{org}' is already soft-deleted");
+                    }
+                }
+                OrgCommand::Restore { org } => {
+                    let org_record = db
+                        .org_by_slug_including_deleted(&org)?
+                        .with_context(|| format!("no org '{org}'"))?;
+                    if db.restore_org(org_record.id)? {
+                        println!("restored org '{org}'");
+                    } else {
+                        println!("org '{org}' was not soft-deleted");
+                    }
+                }
+                OrgCommand::Purge => {
+                    let purged = aos_registry_hub::export::purge_expired_orgs(&db, now_secs())?;
+                    if purged.is_empty() {
+                        println!("no orgs past their grace window");
+                    } else {
+                        for slug in &purged {
+                            println!("purged org '{slug}'");
+                        }
+                    }
+                }
+            }
+        }
+        Command::Instance { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            match command {
+                InstanceCommand::SetSignupPolicy { policy } => {
+                    let parsed = match policy.as_str() {
+                        "open" => aos_registry_hub::db::SignupPolicy::Open,
+                        "invite_only" => aos_registry_hub::db::SignupPolicy::InviteOnly,
+                        other => {
+                            anyhow::bail!("invalid policy '{other}': open or invite_only")
+                        }
+                    };
+                    db.set_signup_policy(parsed)?;
+                    println!("signup policy set to {}", parsed.as_str());
+                }
+                InstanceCommand::ShowSignupPolicy => {
+                    println!("{}", db.signup_policy()?.as_str());
                 }
             }
         }
@@ -992,6 +1138,13 @@ fn mint_token(
         perms.push(perm);
     }
 
+    // Per-org active-token quota (NULL/unset = unlimited).
+    if let Some(max_tokens) = db.org_quota(org.id)?.max_tokens {
+        if db.org_active_token_count(org.id)? >= max_tokens {
+            anyhow::bail!("org active-token quota of {max_tokens} reached");
+        }
+    }
+
     // Find or create the owning service account.
     let sa_id = match db.service_account_by_name(org.id, owner)? {
         Some(id) => id,
@@ -1037,6 +1190,42 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Export an org's SoR manifest and registry surfaces to `output`.
+///
+/// Writes `output/manifest.json` (the redacted SQL system of record) plus one
+/// directory per registry under `output/registries/<slug-with-slashes>/`,
+/// each a portable, re-servable surface copy.
+fn run_org_export(db: &Database, org: &str, output: &Path) -> Result<()> {
+    use aos_registry_hub::export::{export_org, export_registry_surface};
+
+    std::fs::create_dir_all(output)
+        .with_context(|| format!("creating export dir {}", output.display()))?;
+    let manifest = export_org(db, org)?;
+    let manifest_path = output.join("manifest.json");
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
+        .with_context(|| format!("writing {}", manifest_path.display()))?;
+    println!("wrote {}", manifest_path.display());
+
+    // Copy each registry's surface (resolved through its storage binding).
+    let org_record = db
+        .org_by_slug_including_deleted(org)?
+        .with_context(|| format!("no org '{org}'"))?;
+    for registry in db.list_registries_including_org(org_record.id)? {
+        let dest = output
+            .join("registries")
+            .join(registry.slug.replace('/', "_"));
+        let copied = export_registry_surface(db, registry.id, &dest)?;
+        if copied > 0 {
+            println!(
+                "copied {copied} surface files for '{}' -> {}",
+                registry.slug,
+                dest.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Index every registered registry, logging failures without aborting;

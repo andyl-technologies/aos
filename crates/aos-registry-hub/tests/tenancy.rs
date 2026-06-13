@@ -31,10 +31,12 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
         access_token_ttl: 900,
+        ratelimit: aos_registry_hub::ratelimit::RateLimiter::new().into(),
     });
     Arc::new(AppState {
         db,
         external_url: "http://127.0.0.1:8420".into(),
+        ratelimit: auth.ratelimit.clone(),
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
@@ -410,6 +412,11 @@ async fn instance_home_lists_only_visible_registries() {
 #[tokio::test]
 async fn rpc_create_org_project_binding_registry_happy_path() {
     let db = Arc::new(Database::open_in_memory().unwrap());
+    // Open signup so a fresh, unaffiliated founder may bootstrap the org.
+    // (The default instance policy is invite-only; the operations test suite
+    // covers the gating.)
+    db.set_signup_policy(aos_registry_hub::db::SignupPolicy::Open)
+        .unwrap();
     // A user principal to act as the org bootstrapper.
     let user = db.create_user("founder@acme.com", None).unwrap();
     let app = router(app_state(Arc::clone(&db)));
