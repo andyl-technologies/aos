@@ -448,9 +448,10 @@ mod tests {
         // The v13 operations migration must split and translate cleanly on
         // postgres and mysql (the dialect contract tests need a live server;
         // this is the offline translation-only smoke check).
+        // v13 is the 13th migration (index 12); `.last()` now points at v14.
         let v13 = crate::db::MIGRATIONS
-            .last()
-            .expect("at least one migration");
+            .get(12)
+            .expect("v13 operations migration");
         for stmt in crate::db::backend::split_statements(v13) {
             for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
                 dialect
@@ -472,6 +473,35 @@ mod tests {
             pg.contains("BIGSERIAL PRIMARY KEY REFERENCES orgs(id)"),
             "{pg}"
         );
+    }
+
+    #[test]
+    fn v14_repair_jobs_migration_translates_for_every_dialect() {
+        // The v14 repair_jobs migration must split and translate cleanly on
+        // every dialect — its column names avoid SQL reserved words and it uses
+        // the standard INTEGER PRIMARY KEY / TEXT shapes.
+        let v14 = crate::db::MIGRATIONS
+            .get(13)
+            .expect("v14 repair_jobs migration");
+        for stmt in crate::db::backend::split_statements(v14) {
+            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
+                dialect
+                    .translate(&stmt)
+                    .unwrap_or_else(|e| panic!("v14 stmt failed for {dialect:?}: {e}\n{stmt}"));
+            }
+        }
+        let create = crate::db::backend::split_statements(v14)
+            .into_iter()
+            .find(|s| s.contains("CREATE TABLE repair_jobs"))
+            .expect("repair_jobs DDL present");
+        // The synthetic id is an autoincrement PK on every dialect.
+        let pg = Dialect::Postgres.translate(&create).unwrap().sql;
+        assert!(pg.contains("BIGSERIAL PRIMARY KEY"), "{pg}");
+        let my = Dialect::Mysql.translate(&create).unwrap().sql;
+        assert!(my.contains("BIGINT AUTO_INCREMENT PRIMARY KEY"), "{my}");
+        // TEXT columns narrow to an indexable VARCHAR on mysql.
+        assert!(my.contains("VARCHAR(255)"), "{my}");
+        assert!(!my.contains("TEXT"), "all TEXT narrowed on mysql: {my}");
     }
 
     #[test]

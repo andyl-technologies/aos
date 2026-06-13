@@ -120,6 +120,36 @@ enum Command {
         #[command(subcommand)]
         command: InstanceCommand,
     },
+    /// Run consistency validation and repairs against a registry's caches.
+    Validate {
+        #[command(subcommand)]
+        command: ValidateCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ValidateCommand {
+    /// Run validation at a depth: presence (default), integrity, or deep.
+    Run {
+        /// Canonical registry slug to validate.
+        canonical: String,
+        /// Validation depth: presence | integrity | deep.
+        #[arg(long, default_value = "presence")]
+        depth: String,
+    },
+    /// Plan and execute repairs for a registry's missing cache objects.
+    ///
+    /// Copies missing objects from a cache that has them into caches that are
+    /// missing them. file:// targets are repaired by copy; hub-served http
+    /// facade targets by authenticated PUT; other http targets are left
+    /// plan-only.
+    Repair {
+        /// Canonical registry slug to repair.
+        canonical: String,
+        /// Externally reachable base URL identifying this hub's facade caches.
+        #[arg(long)]
+        external_url: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -697,6 +727,63 @@ async fn main() -> Result<()> {
                 }
                 InstanceCommand::ShowSignupPolicy => {
                     println!("{}", db.signup_policy()?.as_str());
+                }
+            }
+        }
+        Command::Validate { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            match command {
+                ValidateCommand::Run { canonical, depth } => {
+                    let registry = db
+                        .registry_by_slug(&canonical)?
+                        .with_context(|| format!("no registry '{canonical}'"))?;
+                    let depth = parse_depth(&depth)?;
+                    let summaries =
+                        aos_registry_hub::validation::validate_registry(&db, &registry, depth)
+                            .await?;
+                    for summary in &summaries {
+                        println!(
+                            "{}\tchecked={}\tmissing={}\tcorrupt={}\tcoverage={:.0}%\treachable={}",
+                            summary.cache_url,
+                            summary.checked,
+                            summary.missing,
+                            summary.corrupt,
+                            summary.coverage_percent,
+                            summary.reachable,
+                        );
+                    }
+                }
+                ValidateCommand::Repair {
+                    canonical,
+                    external_url,
+                } => {
+                    let registry = db
+                        .registry_by_slug(&canonical)?
+                        .with_context(|| format!("no registry '{canonical}'"))?;
+                    // Validate presence first so the repair plan reflects the
+                    // current cache state.
+                    aos_registry_hub::validation::validate_presence(&db, &registry).await?;
+                    let external_url =
+                        external_url.unwrap_or_else(|| "http://127.0.0.1:8420".to_string());
+                    let db = std::sync::Arc::new(db);
+                    let authorizer = aos_registry_hub::server::HubRepairAuthorizer::new(
+                        std::sync::Arc::clone(&db),
+                        aos_registry_hub::auth::jwt::JwtKeys::random(),
+                        external_url,
+                    );
+                    let client = aos_registry_hub::fetch::hardened_client();
+                    let summary = aos_registry_hub::validation::run_repairs(
+                        &db,
+                        &client,
+                        &registry,
+                        &authorizer,
+                    )
+                    .await?;
+                    println!(
+                        "repairs: {} done, {} plan-only, {} failed",
+                        summary.done, summary.plan_only, summary.failed,
+                    );
                 }
             }
         }
@@ -1313,6 +1400,17 @@ fn resolve_root(root: Option<PathBuf>, dev: bool) -> Result<PathBuf> {
     std::fs::create_dir_all(&root)
         .with_context(|| format!("creating hub root {}", root.display()))?;
     Ok(root)
+}
+
+/// Parse a validation-depth CLI argument.
+fn parse_depth(depth: &str) -> Result<aos_registry_hub::validation::ValidationDepth> {
+    use aos_registry_hub::validation::ValidationDepth;
+    match depth {
+        "presence" => Ok(ValidationDepth::Presence),
+        "integrity" => Ok(ValidationDepth::Integrity),
+        "deep" => Ok(ValidationDepth::Deep),
+        other => anyhow::bail!("invalid depth '{other}': presence, integrity, or deep"),
+    }
 }
 
 /// Reject slugs that would collide with reserved top-level routes or the

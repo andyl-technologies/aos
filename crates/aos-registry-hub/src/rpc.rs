@@ -43,12 +43,22 @@ const DEFAULT_PAGE_SIZE: u32 = 500;
 /// Hard ceiling on page size.
 const MAX_PAGE_SIZE: u32 = 1000;
 
+/// Default lifetime, in seconds, of a minted upload credential (1 hour).
+///
+/// A `MintUploadCredentials` token is a short-lived provisioning secret
+/// scoped to one registry; it lives only long enough for a producer to drive a
+/// publish.
+pub const UPLOAD_CREDENTIAL_TTL_SECS: i64 = 3600;
+
 /// Shared implementation state for all registry-hub ConnectRPC services.
 pub struct RegistryRpc {
     /// The hub database.
     pub db: Arc<Database>,
     /// HS256 keys for verifying the bearer JWT on mutating RPCs.
     pub jwt_keys: JwtKeys,
+    /// The externally reachable base URL, used to build the canonical upload
+    /// URL returned by `MintUploadCredentials`.
+    pub external_url: String,
 }
 
 fn internal(err: anyhow::Error) -> ConnectError {
@@ -1305,6 +1315,82 @@ impl WebhookService for RegistryRpc {
             ctx,
         ))
     }
+}
+
+impl PublishService for RegistryRpc {
+    /// `MintUploadCredentials` — issue a short-lived, registry-scoped upload
+    /// credential.
+    ///
+    /// The caller must already hold `publish` on the registry's canonical
+    /// scope (the same right the upload facade requires). On success the hub
+    /// mints a fresh provisioning token *owned by the calling principal*,
+    /// scoped to exactly that registry with only the `publish` permission and a
+    /// short expiry ([`UPLOAD_CREDENTIAL_TTL_SECS`]). The response carries that
+    /// token (shown once), the canonical facade `upload_url`
+    /// (`{external_url}/{slug}`), and the expiry — so a producer can
+    /// `apr origin upload --upload-url <upload_url> --token <token>` (or
+    /// exchange the token at `/oauth2/token` for a bearer JWT).
+    ///
+    /// Token ownership keeps the credential clamped: it deadens the instant the
+    /// owner's `publish` grant is removed, so a minted credential never
+    /// outlives the authority that minted it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `NotFound` for an unknown registry slug, `PermissionDenied` when the
+    /// caller lacks `publish` on the registry scope or has no resolvable
+    /// principal, and `Internal` on database failure.
+    async fn mint_upload_credentials(
+        &self,
+        ctx: Context,
+        req: OwnedView<MintUploadCredentialsRequestView<'static>>,
+    ) -> Result<(MintUploadCredentialsResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        let registry = self.registry_or_not_found(req.slug)?;
+        let scope = Scope::parse(&registry.slug);
+        self.require_permission(&claims, Permission::Publish, &scope)?;
+
+        let Some(owner) = claims_principal(&claims) else {
+            return Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "unknown principal kind",
+            ));
+        };
+        let expires_at = unix_now() + UPLOAD_CREDENTIAL_TTL_SECS;
+        let (_id, secret) = self
+            .db
+            .create_token(
+                owner,
+                &registry.slug,
+                &[Permission::Publish],
+                Some("upload credential (MintUploadCredentials)"),
+                Some(expires_at),
+            )
+            .map_err(internal)?;
+        let upload_url = format!(
+            "{}/{}",
+            self.external_url.trim_end_matches('/'),
+            registry.slug
+        );
+        Ok((
+            MintUploadCredentialsResponse {
+                token: secret,
+                upload_url,
+                expires_at,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+}
+
+/// Current Unix time in seconds (saturating at 0 before the epoch).
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn channel_message(channel: crate::db::ChannelSummary) -> Channel {

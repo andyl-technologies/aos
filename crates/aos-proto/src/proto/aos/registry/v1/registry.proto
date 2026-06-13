@@ -4,7 +4,8 @@ package aos.registry.v1;
 // Read-path services of the registry hub (RFC-0004). Phase 1 exposes the
 // verified index — registries, packages, channels, releases — to browsers,
 // CLIs, and third parties over one schema. Write-path services
-// (PublishService, ConfigService, …) arrive with hub phase 2+.
+// (ConfigService, PublishService, …) arrive with hub phase 2+; PublishService
+// mints short-lived, registry-scoped upload credentials.
 //
 // All list RPCs paginate: pass the previous response's next_page_token to
 // continue; an empty token means the listing is complete.
@@ -74,6 +75,18 @@ service PackageService {
 service ChannelService {
   rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
   rpc GetChannel(GetChannelRequest) returns (GetChannelResponse);
+}
+
+// The managed write path (RFC-0004 "API: aos.registry.v1"). This phase
+// implements credential minting: a producer with publish rights requests a
+// short-lived, registry-scoped upload credential instead of using the upload
+// facade directly. Requires publish on the registry's canonical scope.
+service PublishService {
+  // Mint a short-lived provisioning credential scoped to one registry with
+  // only the publish permission, plus the canonical upload URL to push the
+  // surface to. Requires publish on the registry's canonical scope.
+  rpc MintUploadCredentials(MintUploadCredentialsRequest)
+      returns (MintUploadCredentialsResponse);
 }
 
 // Outbound webhook subscriptions (RFC-0004 phase 4 "webhooks/notifications").
@@ -483,6 +496,24 @@ message RevertChangesetRequest {
 message RevertChangesetResponse {
   // The newly drafted-and-applied revert change-set.
   Changeset changeset = 1;
+}
+
+// -- Publish: upload-credential minting ------------------------------------
+
+message MintUploadCredentialsRequest {
+  // Canonical registry slug to mint an upload credential for.
+  string slug = 1;
+}
+
+message MintUploadCredentialsResponse {
+  // The provisioning-token secret (aos_-prefixed), shown exactly once. Hand
+  // it to `apr origin upload --token <token>` or exchange it at
+  // /oauth2/token for a bearer JWT.
+  string token = 1;
+  // Canonical facade base URL to upload the registry surface to.
+  string upload_url = 2;
+  // Unix seconds the credential expires.
+  int64 expires_at = 3;
 }
 
 // -- Webhooks (phase 4) ----------------------------------------------------

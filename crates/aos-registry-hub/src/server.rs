@@ -37,11 +37,14 @@ use tower_http::catch_panic::CatchPanicLayer;
 use crate::auth::extract::AuthState;
 use crate::compat;
 use crate::db::{Database, IndexStatus, PackageRow, RegistryRecord};
-use crate::domain::{Permission, Scope};
+use crate::domain::{Permission, Principal, Scope};
 use crate::ui::{pages, STYLESHEET};
 
 /// Lifetime, in seconds, of a hub access token minted at `/oauth2/token`.
 const ACCESS_TOKEN_TTL_SECS: i64 = 900;
+
+/// Maximum repair-job rows shown in the per-registry health-page history.
+const HEALTH_REPAIR_JOB_LIMIT: i64 = 50;
 
 /// Shared state for all handlers.
 pub struct AppState {
@@ -112,6 +115,75 @@ impl AppState {
     }
 }
 
+/// A [`RepairAuthorizer`](crate::validation::RepairAuthorizer) for the hub's
+/// own managed registry facade URLs.
+///
+/// An http repair target is hub-writable when its URL is a registry's
+/// canonical facade base (`{external_url}/{slug}`). For such a target the
+/// authorizer mints an internal short-lived bearer JWT granting `publish` on
+/// that registry's scope — the same authorization a producer obtains through
+/// `MintUploadCredentials`. For any other URL it returns `None`, so
+/// [`crate::validation::run_repairs`] leaves it plan-only.
+pub struct HubRepairAuthorizer {
+    db: Arc<Database>,
+    jwt_keys: crate::auth::jwt::JwtKeys,
+    external_url: String,
+}
+
+impl HubRepairAuthorizer {
+    /// Build an authorizer over the hub's database, signing keys, and base URL.
+    #[must_use]
+    pub fn new(
+        db: Arc<Database>,
+        jwt_keys: crate::auth::jwt::JwtKeys,
+        external_url: String,
+    ) -> HubRepairAuthorizer {
+        HubRepairAuthorizer {
+            db,
+            jwt_keys,
+            external_url,
+        }
+    }
+}
+
+impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
+    fn credential_for(
+        &self,
+        target_cache_url: &str,
+    ) -> anyhow::Result<Option<crate::validation::RepairCredential>> {
+        let base = self.external_url.trim_end_matches('/');
+        let target = target_cache_url.trim_end_matches('/');
+        // The target must be one of this hub's facade base URLs:
+        // {external_url}/{slug}.
+        let Some(slug) = target.strip_prefix(base).map(|s| s.trim_start_matches('/')) else {
+            return Ok(None);
+        };
+        // The registry must exist and be writable (have a storage binding).
+        let Some(registry) = self.db.registry_by_slug(slug)? else {
+            return Ok(None);
+        };
+        if registry.storage_binding_id.is_none() {
+            return Ok(None);
+        }
+        // Mint an internal bearer JWT granting publish on the registry scope.
+        // The facade authorizes on the JWT's own claims, so a synthetic
+        // system-owned TokenAuth suffices.
+        let auth = crate::db::TokenAuth {
+            token_id: "hub-repair".to_string(),
+            owner: Principal::service_account(0),
+            scope: Scope::parse(&registry.slug),
+            permissions: vec![Permission::Publish],
+        };
+        let jwt = self
+            .jwt_keys
+            .mint(&auth, crate::rpc::UPLOAD_CREDENTIAL_TTL_SECS)?;
+        Ok(Some(crate::validation::RepairCredential {
+            upload_url: format!("{base}/{}", registry.slug),
+            bearer_jwt: jwt,
+        }))
+    }
+}
+
 /// Optional search/pagination query parameters (`?q=`, `?page=`).
 #[derive(Debug, Default, serde::Deserialize)]
 struct SearchParams {
@@ -141,11 +213,13 @@ impl SearchParams {
 pub fn router(state: Arc<AppState>) -> Router {
     use aos_proto::aos::registry::v1::{
         AuditServiceExt, ChannelServiceExt, ConfigServiceExt, OrgServiceExt, PackageServiceExt,
-        ProjectServiceExt, RegistryServiceExt, StorageServiceExt, WebhookServiceExt,
+        ProjectServiceExt, PublishServiceExt, RegistryServiceExt, StorageServiceExt,
+        WebhookServiceExt,
     };
     let rpc = Arc::new(crate::rpc::RegistryRpc {
         db: Arc::clone(&state.db),
         jwt_keys: state.auth.jwt_keys.clone(),
+        external_url: state.external_url.clone(),
     });
     let connect_router = connectrpc::Router::new();
     let connect_router = RegistryServiceExt::register(Arc::clone(&rpc), connect_router);
@@ -156,6 +230,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let connect_router = ConfigServiceExt::register(Arc::clone(&rpc), connect_router);
     let connect_router = PackageServiceExt::register(Arc::clone(&rpc), connect_router);
     let connect_router = ChannelServiceExt::register(Arc::clone(&rpc), connect_router);
+    let connect_router = PublishServiceExt::register(Arc::clone(&rpc), connect_router);
     let connect_router = WebhookServiceExt::register(rpc, connect_router);
     let connect_paths: Vec<String> = connect_router
         .methods()
@@ -721,16 +796,27 @@ async fn health_page(State(state): State<Arc<AppState>>, Path(slug): Path<String
             } else {
                 Vec::new()
             };
-            runs.push((run, missing));
+            // Deep runs can also carry `corrupt` findings; load them so the
+            // page flags corruption distinctly from absence.
+            let corrupt = if run.missing > 0 {
+                state.db.validation_corrupt(run.id)?
+            } else {
+                Vec::new()
+            };
+            runs.push((run, missing, corrupt));
         }
         let stack = state.db.registry_cache_stack(registry.id)?;
         let probes = state.db.list_cache_probes(registry.id)?;
+        let repair_jobs = state
+            .db
+            .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)?;
         Ok::<_, anyhow::Error>(Some(pages::health_page(
             &registry,
             status.as_ref(),
             &runs,
             stack.as_ref(),
             &probes,
+            &repair_jobs,
             started,
         )))
     })();
@@ -1148,16 +1234,25 @@ async fn render_page(
                     } else {
                         Vec::new()
                     };
-                    runs.push((run, missing));
+                    let corrupt = if run.missing > 0 {
+                        state.db.validation_corrupt(run.id)?
+                    } else {
+                        Vec::new()
+                    };
+                    runs.push((run, missing, corrupt));
                 }
                 let stack = state.db.registry_cache_stack(registry.id)?;
                 let probes = state.db.list_cache_probes(registry.id)?;
+                let repair_jobs = state
+                    .db
+                    .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)?;
                 Some(pages::health_page(
                     registry,
                     status.as_ref(),
                     &runs,
                     stack.as_ref(),
                     &probes,
+                    &repair_jobs,
                     started,
                 ))
             }
