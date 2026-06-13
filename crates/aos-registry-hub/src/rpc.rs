@@ -701,6 +701,275 @@ impl StorageService for RegistryRpc {
     }
 }
 
+impl AuditService for RegistryRpc {
+    /// `ListAudit` — recent audit entries at a scope, newest first.
+    ///
+    /// Authz mirrors phase-2c: the caller must hold `audit.read` (admin+) on
+    /// the queried scope, checked through [`RegistryRpc::require_permission`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `PermissionDenied` when the caller lacks `audit.read` on the scope,
+    /// `InvalidArgument` for a malformed `page_token`, and `Internal` on
+    /// database failure.
+    async fn list_audit(
+        &self,
+        ctx: Context,
+        req: OwnedView<ListAuditRequestView<'static>>,
+    ) -> Result<(ListAuditResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        let scope = Scope::parse(req.scope);
+        self.require_permission(&claims, Permission::AuditRead, &scope)?;
+        let entries: Vec<AuditEntry> = self
+            .db
+            .list_audit(req.scope)
+            .map_err(internal)?
+            .into_iter()
+            .map(|row| AuditEntry {
+                change_id: row.change_id.unwrap_or_default(),
+                actor_label: row.actor_label,
+                action: row.action,
+                scope: row.scope,
+                result_commit: row.result_commit.unwrap_or_default(),
+                result_tag: row.result_tag.unwrap_or_default(),
+                detail: row.detail.unwrap_or_default(),
+                created_at: row.created_at,
+                ..Default::default()
+            })
+            .collect();
+        let (entries, next_page_token) = paginate(entries, req.page_size, req.page_token)?;
+        Ok((
+            ListAuditResponse {
+                entries,
+                next_page_token,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+}
+
+impl ConfigService for RegistryRpc {
+    /// `ListChangesets` — change-sets at a scope, newest first.
+    ///
+    /// Reads require `audit.read` on the scope (RFC-0004 "Access matrix":
+    /// ConfigService reads are an admin+ surface, same as the audit feed).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `PermissionDenied` when the caller lacks `audit.read` on the scope,
+    /// `InvalidArgument` for a malformed `page_token`, and `Internal` on
+    /// database failure.
+    async fn list_changesets(
+        &self,
+        ctx: Context,
+        req: OwnedView<ListChangesetsRequestView<'static>>,
+    ) -> Result<(ListChangesetsResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        let scope = Scope::parse(req.scope);
+        self.require_permission(&claims, Permission::AuditRead, &scope)?;
+        let changesets: Vec<Changeset> = self
+            .db
+            .list_changesets(req.scope)
+            .map_err(internal)?
+            .into_iter()
+            .map(changeset_message)
+            .collect();
+        let (changesets, next_page_token) = paginate(changesets, req.page_size, req.page_token)?;
+        Ok((
+            ListChangesetsResponse {
+                changesets,
+                next_page_token,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    /// `GetChangeset` — one change-set's revisions and semantic diffs.
+    ///
+    /// Loads the change-set summary plus its revisions, each rendered with
+    /// the field-level diff [`crate::config::semantic_diff`] produces (the
+    /// terraform-plan review view). Reads require `audit.read` on the
+    /// change-set's recorded scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `NotFound` for an unknown `change_id`, `PermissionDenied` when the
+    /// caller lacks `audit.read` on the change-set's scope, and `Internal`
+    /// on database failure.
+    async fn get_changeset(
+        &self,
+        ctx: Context,
+        req: OwnedView<GetChangesetRequestView<'static>>,
+    ) -> Result<(GetChangesetResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        let summary = self
+            .db
+            .changeset(req.change_id)
+            .map_err(internal)?
+            .ok_or_else(|| not_found("changeset"))?;
+        self.require_permission(
+            &claims,
+            Permission::AuditRead,
+            &Scope::parse(&summary.scope),
+        )?;
+        let change_id = crate::config::ChangeId(summary.change_id.clone());
+        let revisions: Vec<Revision> = crate::config::review(&self.db, &change_id)
+            .map_err(internal)?
+            .into_iter()
+            .map(|(revision, diffs)| Revision {
+                object_type: revision.object_type,
+                object_id: revision.object_id,
+                op: revision.op.as_str().to_string(),
+                diffs: diffs
+                    .into_iter()
+                    .map(|d| FieldDiff {
+                        field: d.field,
+                        old: d.old.unwrap_or_default(),
+                        new: d.new.unwrap_or_default(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .collect();
+        Ok((
+            GetChangesetResponse {
+                changeset: MessageField::some(changeset_message(summary)),
+                revisions,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    /// `RevertChangeset` — draft and apply a forward revert of a change-set.
+    ///
+    /// Drafts the snapshot-targeted forward revert
+    /// ([`crate::config::revert`]) and immediately applies it, returning the
+    /// new revert change-set. The revert re-enters the same apply path, so a
+    /// `registry`-visibility revision's revert calls
+    /// [`crate::db::Database::set_registry_visibility`] again.
+    ///
+    /// Authz approximation: the RFC requires "the same permission the
+    /// original change required". This is approximated as `registry.configure`
+    /// on the change-set's scope — the admin+ verb that gates the SQL-backed
+    /// configuration this engine records. A future refinement could store
+    /// the exact permission per change-set.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `NotFound` for an unknown `change_id`, `PermissionDenied` when the
+    /// caller lacks `registry.configure` on the change-set's scope,
+    /// `FailedPrecondition` when the change-set has no revisions to revert,
+    /// and `Internal` on database failure.
+    async fn revert_changeset(
+        &self,
+        ctx: Context,
+        req: OwnedView<RevertChangesetRequestView<'static>>,
+    ) -> Result<(RevertChangesetResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        let summary = self
+            .db
+            .changeset(req.change_id)
+            .map_err(internal)?
+            .ok_or_else(|| not_found("changeset"))?;
+        let scope = Scope::parse(&summary.scope);
+        self.require_permission(&claims, Permission::RegistryConfigure, &scope)?;
+
+        let Some(actor) = claims_principal(&claims) else {
+            return Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "unknown principal kind",
+            ));
+        };
+        let actor_label = format!("{}:{}", claims.owner_kind, claims.owner_id);
+        let original = crate::config::ChangeId(summary.change_id.clone());
+
+        // Draft the forward revert; live state for conflict detection comes
+        // from the registries table (the object type this phase mutates
+        // through the engine).
+        let draft = crate::config::revert(
+            &self.db,
+            &original,
+            &actor,
+            &actor_label,
+            |object_type, object_id| {
+                if object_type == "registry" {
+                    self.db
+                        .registry_by_slug(object_id)
+                        .ok()
+                        .flatten()
+                        .map(|r| serde_json::json!({ "visibility": r.visibility }))
+                } else {
+                    None
+                }
+            },
+        )
+        .map_err(|e| ConnectError::new(ErrorCode::FailedPrecondition, format!("{e:#}")))?;
+
+        // Apply the revert draft: re-run each revision's live mutation.
+        crate::config::apply(&self.db, &draft.change_id, "changeset.revert", |rev| {
+            apply_revert_revision(&self.db, rev)
+        })
+        .map_err(internal)?;
+
+        let reverted = self
+            .db
+            .changeset(draft.change_id.as_str())
+            .map_err(internal)?
+            .ok_or_else(|| internal(anyhow::anyhow!("revert change-set vanished")))?;
+        Ok((
+            RevertChangesetResponse {
+                changeset: MessageField::some(changeset_message(reverted)),
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+}
+
+/// Apply one revision of a revert draft to its live object.
+///
+/// Only `registry`-visibility revisions carry a live mutation this phase;
+/// `token`/`invitation` exemption revisions are records-only (no live
+/// credential or grant is resurrected), so they apply as no-ops.
+fn apply_revert_revision(db: &Database, revision: &crate::config::Revision) -> anyhow::Result<()> {
+    if revision.object_type == "registry" {
+        if let Some(visibility) = revision
+            .new_json
+            .as_ref()
+            .and_then(|v| v.get("visibility"))
+            .and_then(|v| v.as_str())
+        {
+            if let Some(record) = db.registry_by_slug(&revision.object_id)? {
+                db.set_registry_visibility(record.id, visibility)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Map a stored change-set summary row to its wire message.
+fn changeset_message(row: crate::db::ChangesetRow) -> Changeset {
+    Changeset {
+        change_id: row.change_id,
+        actor_label: row.actor_label,
+        scope: row.scope,
+        status: row.status,
+        summary: row.summary.unwrap_or_default(),
+        created_at: row.created_at,
+        applied_at: row.applied_at.unwrap_or_default(),
+        reverted_by_change_id: row.reverted_by_change_id.unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
 impl PackageService for RegistryRpc {
     /// `ListPackages` — package summaries with the newest version.
     ///
