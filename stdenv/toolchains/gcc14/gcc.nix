@@ -30,7 +30,7 @@
   };
 
   isl-src = builtins.fetchTarball {
-    url = "https://libisl.sourceforge.io/isl-0.26.tar.xz";
+    url = "https://downloads.sourceforge.net/project/libisl/isl-0.26.tar.xz";
     sha256 = "01krva4ax8zvi365akpzdv8r3a3gdl8sqcdgsg2kxmcy810gay0k";
   };
 in
