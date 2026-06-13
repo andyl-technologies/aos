@@ -8,6 +8,47 @@
 //! touching handlers.
 
 use std::fmt::Write as _;
+use std::sync::OnceLock;
+
+/// The operator-configurable masthead brand (company/instance name).
+///
+/// Set once at server startup via [`set_brand`]; defaults to empty. When
+/// empty the masthead shows only the page crumbs (e.g. "log in"); when set,
+/// the name leads the masthead and titles every page.
+static BRAND: OnceLock<String> = OnceLock::new();
+
+/// Set the masthead brand once, at startup.
+///
+/// A no-op if called more than once (the first value wins), so it is safe
+/// to call unconditionally from `serve`.
+pub fn set_brand(name: impl Into<String>) {
+    let _ = BRAND.set(name.into());
+}
+
+/// The configured brand, or `""` when unset.
+#[must_use]
+pub fn brand() -> &'static str {
+    BRAND.get().map(String::as_str).unwrap_or("")
+}
+
+/// The masthead brand element for `brand`: a home link, or empty when unset.
+fn brand_span(brand: &str) -> String {
+    if brand.is_empty() {
+        String::new()
+    } else {
+        format!("<a class=\"brand\" href=\"/\">{}</a>", escape(brand))
+    }
+}
+
+/// The `<title>` text: `"<page> — <brand>"`, or `"<page> — Registry Hub"`
+/// when no brand is configured.
+fn page_title(brand: &str, title: &str) -> String {
+    if brand.is_empty() {
+        format!("{} — Registry Hub", escape(title))
+    } else {
+        format!("{} — {}", escape(title), escape(brand))
+    }
+}
 
 /// Escape text for HTML element and attribute contexts.
 pub fn escape(text: &str) -> String {
@@ -151,16 +192,20 @@ pub fn page_with_session(
         let _ = write!(statline, " · rendered {}ms", started.elapsed().as_millis());
     }
 
+    // The brand is operator-configurable (default empty): when set it
+    // leads the masthead and titles every page; when empty the crumbs lead.
+    let brand_span = brand_span(brand());
+    let page_title = page_title(brand(), title);
+
     format!(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{title} — AOS Registry Hub</title>\n\
+         <title>{page_title}</title>\n\
          <link rel=\"stylesheet\" href=\"/_assets/style.css\">\n</head>\n<body>\n\
-         <header class=\"masthead\"><span class=\"brand\">AOS REGISTRY HUB</span>\
+         <header class=\"masthead\">{brand_span}\
          <span class=\"crumbs\">{crumb_html}</span>{session}</header>\n\
          <main>\n{body}\n</main>\n\
          <footer class=\"statline\">{statline}</footer>\n</body>\n</html>\n",
-        title = escape(title),
         session = session.render(),
     )
 }
@@ -270,11 +315,25 @@ mod tests {
                 started: Some(std::time::Instant::now()),
             },
         );
-        assert!(html.contains("demo — AOS Registry Hub"));
+        // No brand configured in tests -> the neutral default title.
+        assert!(html.contains("demo — Registry Hub"));
         assert!(html.contains("surface abababababab"));
         assert!(html.contains("<p>body</p>"));
         assert!(html.contains("registries</a>"));
         assert!(html.contains("rendered"), "footer carries render time");
+    }
+
+    #[test]
+    fn brand_span_and_title_reflect_the_configured_brand() {
+        // Empty brand: no masthead brand element, neutral page title.
+        assert_eq!(brand_span(""), "");
+        assert_eq!(page_title("", "log in"), "log in — Registry Hub");
+        // Configured brand: a home-linked element + branded title, escaped.
+        assert_eq!(
+            brand_span("Acme <Co>"),
+            "<a class=\"brand\" href=\"/\">Acme &lt;Co&gt;</a>"
+        );
+        assert_eq!(page_title("Acme", "log in"), "log in — Acme");
     }
 
     #[test]

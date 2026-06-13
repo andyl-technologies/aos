@@ -65,16 +65,23 @@ a:hover { text-decoration: underline; }
 
 header.masthead {
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
   align-items: baseline;
+  gap: 0.4rem 1.1rem;
   border-bottom: 2px solid var(--ink);
   padding-bottom: 0.4rem;
   margin-bottom: 1.2rem;
 }
-header.masthead .brand { font-weight: 700; letter-spacing: 0.05em; }
+header.masthead .brand {
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--ink);
+}
 header.masthead .crumbs { color: var(--dim); }
 header.masthead .crumbs a { color: var(--ink); }
-header.masthead .session { color: var(--dim); margin-left: auto; padding-left: 1rem; }
+/* Push the session indicator to the far right; the flex gap keeps the
+ * brand and crumbs spaced apart on the left. */
+header.masthead .session { color: var(--dim); margin-left: auto; }
 
 h1, h2 {
   font-size: 1rem;
@@ -151,29 +158,48 @@ pre.partition-grid { line-height: 1.15; letter-spacing: 0.18em; }
 
 .rollout-bar { color: var(--ok); }
 
-/* Producer console: forms, notices, and confirmation gates. The no-JS
- * tier is the floor, so every mutation is a plain form + redirect. */
-form.console { margin: 0.6rem 0 1.2rem; }
-form.console label { display: block; margin: 0.3rem 0; }
-form.console input[type="text"],
-form.console input[type="email"],
-form.console select {
-  font: inherit;
-  padding: 0.2rem 0.4rem;
-  border: 1px solid var(--rule);
-  background: var(--paper);
-  color: var(--ink);
-  min-width: 18rem;
-}
-form.console button {
+/* Form controls — styled GLOBALLY so every button and input looks the
+ * same on every page (search boxes, the bucket calculator, passkey
+ * buttons, and the producer console alike), not just inside .console. */
+button,
+input[type="submit"],
+input[type="button"] {
   font: inherit;
   padding: 0.25rem 0.9rem;
   border: 1px solid var(--ink);
   background: var(--paper);
   color: var(--ink);
   cursor: pointer;
+  line-height: 1.2;
+  vertical-align: baseline;
 }
-form.console button:hover { background: color-mix(in srgb, var(--ink) 8%, var(--paper)); }
+button:hover,
+input[type="submit"]:hover,
+input[type="button"]:hover {
+  background: color-mix(in srgb, var(--ink) 8%, var(--paper));
+}
+button:disabled { color: var(--dim); border-color: var(--rule); cursor: default; }
+
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="search"],
+select {
+  font: inherit;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+/* Producer console: the no-JS tier is the floor, so every mutation is a
+ * plain form + redirect. Layout only — the control styling is global. */
+form.console { margin: 0.6rem 0 1.2rem; }
+form.console label { display: block; margin: 0.3rem 0; }
+form.console input[type="text"],
+form.console input[type="email"],
+form.console input[type="password"],
+form.console select { min-width: 18rem; }
 
 p.notice {
   border-left: 3px solid var(--ok);

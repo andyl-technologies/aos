@@ -51,6 +51,9 @@ enum Command {
         /// Externally reachable base URL for setup snippets.
         #[arg(long)]
         external_url: Option<String>,
+        /// Masthead brand (company/operator name); overrides the stored one.
+        #[arg(long)]
+        brand: Option<String>,
         /// Seconds between background re-index runs (0 disables).
         #[arg(long, default_value_t = 60)]
         reindex_interval: u64,
@@ -229,6 +232,13 @@ enum InstanceCommand {
     },
     /// Show the current instance signup policy.
     ShowSignupPolicy,
+    /// Set the masthead brand (company/operator name; empty to clear).
+    SetBrand {
+        /// The brand text; pass "" to clear and show only page crumbs.
+        brand: String,
+    },
+    /// Show the current masthead brand.
+    ShowBrand,
 }
 
 #[derive(Subcommand)]
@@ -544,6 +554,7 @@ async fn main() -> Result<()> {
             listen,
             dev,
             external_url,
+            brand,
             reindex_interval,
         } => {
             let root = resolve_root(cli.root, dev)?;
@@ -610,6 +621,14 @@ async fn main() -> Result<()> {
             if !dev {
                 app_state.sealer = aos_registry_hub::auth::seal::instance_sealer(&root)?.into();
             }
+            // Masthead brand (operator/company name): the --brand flag wins,
+            // else the persisted instance_config['brand'], else empty (the
+            // masthead then shows only the page crumbs).
+            let brand = match brand {
+                Some(brand) => brand,
+                None => state_brand(&app_state)?,
+            };
+            aos_registry_hub::ui::render::set_brand(brand);
             let state = Arc::new(app_state);
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await
@@ -820,6 +839,17 @@ async fn main() -> Result<()> {
                 }
                 InstanceCommand::ShowSignupPolicy => {
                     println!("{}", db.signup_policy()?.as_str());
+                }
+                InstanceCommand::SetBrand { brand } => {
+                    db.instance_config_set("brand", &brand)?;
+                    if brand.is_empty() {
+                        println!("brand cleared");
+                    } else {
+                        println!("brand set to {brand:?}");
+                    }
+                }
+                InstanceCommand::ShowBrand => {
+                    println!("{}", db.instance_config_get("brand")?.unwrap_or_default());
                 }
             }
         }
@@ -1519,6 +1549,14 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// The persisted masthead brand (`instance_config['brand']`), or empty.
+fn state_brand(app_state: &AppState) -> Result<String> {
+    Ok(app_state
+        .db
+        .instance_config_get("brand")?
+        .unwrap_or_default())
 }
 
 /// Export an org's SoR manifest and registry surfaces to `output`.
