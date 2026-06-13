@@ -15,7 +15,8 @@
 //!   (the committed `keys.toml` trust roster), [`fetch`] and [`pack`]
 //!   (delta/full-pack object transfer), [`objectstore`] and [`static_upload`]
 //!   (the producer-side static dumb-HTTP origin), [`nixcache`] (static Nix
-//!   binary-cache generation), and [`state`] (persisted sync state).
+//!   binary-cache generation), [`webgen`] (the static no-JS web surface),
+//!   and [`state`] (persisted sync state).
 
 pub mod channel;
 pub mod closures;
@@ -29,6 +30,7 @@ pub mod parse;
 pub mod state;
 pub mod static_upload;
 pub mod verify;
+pub mod webgen;
 
 use std::collections::HashMap;
 use std::path::Path;

@@ -35,7 +35,8 @@
 //!   a retirement); [`run_trust`] manages the consumer-side pinned trust
 //!   store.
 //! - **Distribution**: [`run_cache`] generates and uploads the static Nix
-//!   binary cache; [`run_origin`] uploads the static git origin files.
+//!   binary cache; [`run_origin`] uploads the static git origin files;
+//!   [`run_web`] generates and uploads the static no-JS web surface.
 //!
 //! After any operation that adds commits or moves refs, the static
 //! dumb-HTTP object store metadata is refreshed so plain-file origins stay
@@ -66,6 +67,7 @@ use crate::registry::pack;
 use crate::registry::state;
 use crate::registry::static_upload;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
+use crate::registry::webgen::{self, WebConfig};
 use crate::security::{
     KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key, verify_tag_signature,
 };
@@ -78,7 +80,7 @@ use crate::types::{
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
-    TrustCommand, UploadConfigField,
+    TrustCommand, UploadConfigField, WebCommand,
 };
 
 // ---------------------------------------------------------------------------
@@ -3462,6 +3464,76 @@ pub async fn run_cache(
                     "uploaded": !upload_urls.is_empty(),
                     "cache_pointer_updated": cache_pointer_updated,
                     "committed": committed,
+                }));
+            }
+
+            Ok(())
+        }
+    }
+}
+
+/// `apr web` subcommands for the static on-CDN web surface.
+///
+/// `generate` renders the committed registry tree into the no-JS web
+/// surface — `index.html`, `web/config.json`, `web/index.json`, per-package
+/// `web/packages/<name>.json` snapshots, and `browse/<name>.html` static
+/// pages — into `--output` (defaulting to a `web` directory beside the
+/// registry clone), then optionally uploads it to each `--upload-url`
+/// (falling back to the `upload_urls` persisted by `apr origin config` when
+/// no flag is given), reusing the same static-upload path as
+/// `apr cache generate` / `apr origin upload`.
+///
+/// The SPA dist (the WASM app) is out of scope here: this command emits the
+/// content-bearing no-JS floor that the SPA progressively enhances when it
+/// is dropped in alongside.
+///
+/// # Errors
+///
+/// Fails when web-surface generation or an upload fails.
+pub async fn run_web(config: &ApmConfig, command: &WebCommand, printer: &Printer) -> Result<()> {
+    match command {
+        WebCommand::Generate {
+            output,
+            name,
+            hub_url,
+            accent,
+            upload_urls,
+            auth,
+            registry,
+        } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            let output_dir = output.clone().unwrap_or_else(|| dir.join("web"));
+            let upload_urls = resolve_upload_urls(config, &registry_name, upload_urls);
+
+            let web_config = WebConfig {
+                name: name.clone().unwrap_or_default(),
+                accent: accent.clone(),
+                hub_url: hub_url.clone(),
+            };
+            let written = webgen::generate_web_surface(&dir, &output_dir, web_config)?;
+
+            printer.success(&format!(
+                "Generated web surface: {} file(s) in {}",
+                written.len(),
+                output_dir.display(),
+            ));
+
+            if !upload_urls.is_empty() {
+                let auth = auth
+                    .auth_options_with_config(registry_upload_auth_config(config, &registry_name));
+                webgen::upload_web_surface_to_all(&output_dir, &upload_urls, &auth, printer)
+                    .await?;
+            }
+
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "web_generate",
+                    "registry": registry_name,
+                    "output_dir": output_dir.to_string_lossy().to_string(),
+                    "files": written.len(),
+                    "upload_urls": upload_urls,
+                    "uploaded": !upload_urls.is_empty(),
                 }));
             }
 
