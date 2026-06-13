@@ -6,14 +6,18 @@
 //! - **System of record** — `registries`, `channel_floors`, the
 //!   phase-2a tenancy tables `orgs`, `projects`, `users`,
 //!   `user_identities`, `service_accounts`, `memberships`, and
-//!   `invitations`, and the phase-2b authentication tables `tokens`,
-//!   `sessions`, `device_codes`, and `magic_links`: facts that exist
-//!   nowhere on the surface (slug, source URL, trust anchors, the
-//!   anti-rollback floor each channel has reached, the
-//!   org → project → registry hierarchy and who may act on it, plus the
+//!   `invitations`, the phase-2b authentication tables `tokens`,
+//!   `sessions`, `device_codes`, and `magic_links`, and the phase-2c
+//!   `storage_bindings` table (with the `registries.storage_binding_id`
+//!   and `registries.prefix` columns that bind a managed registry's
+//!   surface to a binding root): facts that exist nowhere on the surface
+//!   (slug, source URL, trust anchors, the anti-rollback floor each
+//!   channel has reached, the org → project → registry hierarchy and who
+//!   may act on it, where each managed registry's bytes live, plus the
 //!   credentials principals authenticate with). Losing these loses real
 //!   state; floors in particular survive every re-index, and
-//!   ownership/grants/credentials are never rebuildable from the surface.
+//!   ownership/grants/storage/credentials are never rebuildable from the
+//!   surface.
 //! - **Rebuildable index** — `registry_index`, `packages`,
 //!   `package_versions`, `version_platforms`, `channels`,
 //!   `channel_partitions`, `releases`, `key_rosters`, `caches`: derived
@@ -59,8 +63,49 @@
 //! Existing phase-1 `registries` rows acquire `org_id IS NULL`,
 //! `project_path = ''`, and `visibility = 'public'` — the RFC's
 //! instance-level *unowned public registry* that phase 2 adopts unchanged.
+//!
+//! # Storage bindings (v5)
+//!
+//! Phase 2c adds the storage system of record (RFC-0004 "Storage:
+//! `StorageBinding` and shared buckets"). A registry never owns a bucket
+//! directly; it references a **storage binding** plus a sub-prefix, and
+//! its on-disk surface lives at `{binding.root}/{prefix}`:
+//!
+//! ```text
+//! storage_bindings   id  org_id  name      kind        root
+//!                    1   acme    primary   local_fs    /srv/aos-hub
+//!
+//! registries (managed)  slug "acme/infra/prod/cdn"
+//!                       storage_binding_id = 1
+//!                       prefix = "infra/prod/cdn"
+//!                       surface root -> /srv/aos-hub/infra/prod/cdn
+//! ```
+//!
+//! `kind` is the binding backend; only `local_fs` (a filesystem path in
+//! `root`) is implemented in this phase — S3/R2 kinds are later phases,
+//! modeled by the column but rejected by [`Database::create_storage_binding`].
+//!
+//! Phase-1 `file://` registries keep `storage_binding_id NULL` and
+//! `prefix = ''`; their `source_url` path remains the surface, served
+//! exactly as before. [`Database::registry_surface_root`] resolves the
+//! on-disk surface directory for either shape, with the binding taking
+//! precedence over `source_url`.
+//!
+//! ## Canonical registry identity
+//!
+//! Phase-1 registries are addressed by a flat `slug`; phase-2 managed
+//! registries are addressed by the canonical path
+//! `{org}/{project_path}/{registry}`. Rather than add a second identifier
+//! column (and the awkward partial-unique index that phase-1 `NULL`
+//! ownership would require), a managed registry stores its **full
+//! canonical path as its `slug`** — `"acme/infra/prod/cdn"`, or
+//! `"acme/cdn"` when `project_path` is empty. The existing
+//! `UNIQUE(slug)` constraint then enforces canonical uniqueness for free,
+//! one router shape ([`Database::registry_by_slug`]) resolves both flat
+//! and nested registries, and [`Database::registry_by_scope`] simply
+//! builds the canonical string and delegates to it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
@@ -303,6 +348,27 @@ const MIGRATIONS: &[&str] = &[
         consumed_at INTEGER
     );
     ",
+    // v5: storage system of record (RFC-0004 "Storage: StorageBinding and
+    // shared buckets"). A binding is a named backend rooted at some
+    // location under an org; a managed registry references a binding plus a
+    // sub-prefix, so its surface lives at {binding.root}/{prefix}. Only the
+    // local_fs kind is implemented this phase (root = filesystem path);
+    // S3/R2 kinds are modeled by the column for later phases. Phase-1
+    // file:// registries keep storage_binding_id NULL and prefix '' — their
+    // source_url path stays the surface.
+    "
+    CREATE TABLE storage_bindings (
+        id          INTEGER PRIMARY KEY,
+        org_id      INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL,
+        kind        TEXT NOT NULL,                -- 'local_fs' (S3/R2 later)
+        root        TEXT NOT NULL,                -- filesystem path for local_fs
+        created_at  INTEGER NOT NULL,
+        UNIQUE (org_id, name)
+    );
+    ALTER TABLE registries ADD COLUMN storage_binding_id INTEGER;
+    ALTER TABLE registries ADD COLUMN prefix TEXT NOT NULL DEFAULT '';
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -311,13 +377,52 @@ pub struct RegistryRecord {
     /// Database id.
     pub id: i64,
     /// URL path slug the registry is served under.
+    ///
+    /// For phase-1 unowned registries this is a flat slug (`"cdn"`); for
+    /// phase-2 managed registries it is the full canonical path
+    /// (`"acme/infra/prod/cdn"`) — see the [module docs](self).
     pub slug: String,
     /// Surface source: `file://` path or `http(s)://` base URL.
+    ///
+    /// Empty (`""`) for a managed registry, whose surface is located via
+    /// its storage binding instead (see [`RegistryRecord::storage_binding_id`]).
     pub source_url: String,
     /// Pinned trust anchors in `name:Ed25519:<base64>` form.
     pub trust_keys: Vec<String>,
     /// Whether indexing fails closed on missing/invalid signatures.
     pub require_signatures: bool,
+    /// Owning org id, or `None` for an instance-level unowned registry.
+    pub org_id: Option<i64>,
+    /// Owning project's materialized path (`""` for an org-root registry).
+    pub project_path: String,
+    /// Visibility: `public`, `internal`, or `private`.
+    pub visibility: String,
+    /// Storage binding this managed registry's surface lives under, or
+    /// `None` for a phase-1 `file://`/`http` registry.
+    pub storage_binding_id: Option<i64>,
+    /// Sub-prefix under the binding root (`""` when unbound).
+    pub prefix: String,
+}
+
+/// A storage binding (system-of-record row): a named backend an org's
+/// managed registries place their surfaces under.
+///
+/// A registry's surface lives at `{root}/{prefix}` (see
+/// [`Database::registry_surface_root`]).
+#[derive(Debug, Clone)]
+pub struct StorageBindingRecord {
+    /// Database id.
+    pub id: i64,
+    /// Owning org id.
+    pub org_id: i64,
+    /// Binding name, unique within the org.
+    pub name: String,
+    /// Backend kind; `local_fs` is the only kind implemented this phase.
+    pub kind: String,
+    /// Backend root: a filesystem path for `local_fs`.
+    pub root: String,
+    /// Unix time the binding was created.
+    pub created_at: i64,
 }
 
 /// An organization (tenant boundary) system-of-record row.
@@ -684,8 +789,7 @@ impl Database {
     pub fn registry_by_slug(&self, slug: &str) -> Result<Option<RegistryRecord>> {
         let conn = self.lock();
         conn.query_row(
-            "SELECT id, slug, source_url, trust_keys, require_signatures
-             FROM registries WHERE slug = ?1",
+            &format!("SELECT {REGISTRY_COLUMNS} FROM registries WHERE slug = ?1"),
             [slug],
             row_to_registry,
         )
@@ -700,10 +804,9 @@ impl Database {
     /// Returns an error on database failure.
     pub fn list_registries(&self) -> Result<Vec<RegistryRecord>> {
         let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, slug, source_url, trust_keys, require_signatures
-             FROM registries ORDER BY slug",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {REGISTRY_COLUMNS} FROM registries ORDER BY slug"
+        ))?;
         let rows = stmt.query_map([], row_to_registry)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -1632,6 +1735,283 @@ impl Database {
         Ok(())
     }
 
+    /// Resolve a managed registry by its canonical `{org}/{project_path}/{name}`
+    /// coordinates.
+    ///
+    /// Builds the canonical slug (`"{org}/{name}"` when `project_path` is
+    /// empty, otherwise `"{org}/{project_path}/{name}"`) and delegates to
+    /// [`Database::registry_by_slug`] — managed registries store their full
+    /// canonical path as their slug (see the [module docs](self)). Returns
+    /// `Ok(None)` when no registry has that canonical path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn registry_by_scope(
+        &self,
+        org_slug: &str,
+        project_path: &str,
+        name: &str,
+    ) -> Result<Option<RegistryRecord>> {
+        self.registry_by_slug(&canonical_slug(org_slug, project_path, name))
+    }
+
+    /// Create a managed (org-owned, storage-bound) registry; returns its id.
+    ///
+    /// The registry is stored with its full canonical path
+    /// (`{org}/{project_path}/{name}`) as its slug, an empty `source_url`
+    /// (its surface is located via the binding), and the given ownership,
+    /// storage binding, prefix, and trust configuration. Canonical
+    /// uniqueness is enforced both by the up-front
+    /// [`Database::registry_by_scope`] check and by the underlying
+    /// `UNIQUE(slug)` constraint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a registry already exists at the canonical
+    /// path, or on database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_managed_registry(
+        &self,
+        org_id: i64,
+        project_path: &str,
+        name: &str,
+        visibility: &str,
+        binding_id: Option<i64>,
+        prefix: &str,
+        trust_keys: &[String],
+        require_signatures: bool,
+    ) -> Result<i64> {
+        let org_slug = self
+            .org_by_id(org_id)?
+            .with_context(|| format!("no org with id {org_id}"))?
+            .slug;
+        let slug = canonical_slug(&org_slug, project_path, name);
+        if self.registry_by_slug(&slug)?.is_some() {
+            bail!("a registry already exists at '{slug}'");
+        }
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO registries
+             (slug, source_url, trust_keys, require_signatures, created_at,
+              org_id, project_path, visibility, storage_binding_id, prefix)
+             VALUES (?1, '', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                slug,
+                serde_json::to_string(trust_keys)?,
+                require_signatures as i64,
+                unix_now(),
+                org_id,
+                project_path,
+                visibility,
+                binding_id,
+                prefix,
+            ],
+        )?;
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO registry_index (registry_id, state)
+             VALUES (?1, 'indexing')
+             ON CONFLICT(registry_id) DO NOTHING",
+            [id],
+        )?;
+        Ok(id)
+    }
+
+    // -- storage bindings ----------------------------------------------------
+
+    /// Create a storage binding under an org; returns its new id.
+    ///
+    /// Only `local_fs` is a valid `kind` this phase (where `root` is a
+    /// filesystem path); other kinds are rejected up front.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported `kind`, on a unique-constraint
+    /// violation when `(org_id, name)` already exists, or on database
+    /// failure.
+    pub fn create_storage_binding(
+        &self,
+        org_id: i64,
+        name: &str,
+        kind: &str,
+        root: &str,
+    ) -> Result<i64> {
+        if kind != "local_fs" {
+            bail!("unsupported storage binding kind '{kind}' (only 'local_fs' is supported)");
+        }
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO storage_bindings (org_id, name, kind, root, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![org_id, name, kind, root, unix_now()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Look up a storage binding by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn storage_binding(&self, id: i64) -> Result<Option<StorageBindingRecord>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT id, org_id, name, kind, root, created_at
+             FROM storage_bindings WHERE id = ?1",
+            [id],
+            row_to_storage_binding,
+        )
+        .optional()
+        .context("loading storage binding by id")
+    }
+
+    /// Look up a storage binding by `(org_id, name)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn storage_binding_by_name(
+        &self,
+        org_id: i64,
+        name: &str,
+    ) -> Result<Option<StorageBindingRecord>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT id, org_id, name, kind, root, created_at
+             FROM storage_bindings WHERE org_id = ?1 AND name = ?2",
+            params![org_id, name],
+            row_to_storage_binding,
+        )
+        .optional()
+        .context("loading storage binding by name")
+    }
+
+    /// List an org's storage bindings, ordered by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_storage_bindings(&self, org_id: i64) -> Result<Vec<StorageBindingRecord>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, org_id, name, kind, root, created_at
+             FROM storage_bindings WHERE org_id = ?1 ORDER BY name",
+        )?;
+        let rows = stmt.query_map([org_id], row_to_storage_binding)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Bind a registry to a storage binding and sub-prefix.
+    ///
+    /// After this, [`Database::registry_surface_root`] resolves the
+    /// registry's surface to `{binding.root}/{prefix}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn set_registry_storage(
+        &self,
+        registry_id: i64,
+        binding_id: i64,
+        prefix: &str,
+    ) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE registries SET storage_binding_id = ?2, prefix = ?3 WHERE id = ?1",
+            params![registry_id, binding_id, prefix],
+        )?;
+        Ok(())
+    }
+
+    /// Resolve the on-disk surface directory for a registry, if any.
+    ///
+    /// Precedence:
+    ///
+    /// 1. **Storage-bound** (`storage_binding_id` set) — the binding's
+    ///    `root` joined with the registry's `prefix`. This wins even if a
+    ///    `source_url` is also present.
+    /// 2. **`file://` (or bare-path) source** — the `source_url` path.
+    /// 3. **`http(s)://` source** — `Ok(None)`; the surface is remote and
+    ///    has no local directory (the facade redirects upstream).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure (including a registry whose
+    /// `storage_binding_id` points at a missing binding).
+    pub fn registry_surface_root(&self, registry_id: i64) -> Result<Option<PathBuf>> {
+        let Some(registry) = ({
+            let conn = self.lock();
+            conn.query_row(
+                &format!("SELECT {REGISTRY_COLUMNS} FROM registries WHERE id = ?1"),
+                [registry_id],
+                row_to_registry,
+            )
+            .optional()
+            .context("loading registry for surface resolution")?
+        }) else {
+            return Ok(None);
+        };
+        if let Some(binding_id) = registry.storage_binding_id {
+            let binding = self.storage_binding(binding_id)?.with_context(|| {
+                format!("registry {registry_id} bound to missing storage binding {binding_id}")
+            })?;
+            let mut path = PathBuf::from(binding.root);
+            if !registry.prefix.is_empty() {
+                path.push(&registry.prefix);
+            }
+            return Ok(Some(path));
+        }
+        let source = registry.source_url.as_str();
+        if source.is_empty() || source.starts_with("http://") || source.starts_with("https://") {
+            return Ok(None);
+        }
+        let path = source.strip_prefix("file://").unwrap_or(source);
+        Ok(Some(PathBuf::from(path)))
+    }
+
+    /// Look up an organization by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn org_by_id(&self, id: i64) -> Result<Option<OrgRecord>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT id, slug, name, created_at FROM orgs WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(OrgRecord {
+                    id: row.get(0)?,
+                    slug: row.get(1)?,
+                    name: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .context("loading org by id")
+    }
+
+    /// List all organizations, ordered by slug.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_orgs(&self) -> Result<Vec<OrgRecord>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT id, slug, name, created_at FROM orgs ORDER BY slug")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(OrgRecord {
+                id: row.get(0)?,
+                slug: row.get(1)?,
+                name: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     // -- tenancy: invitations ------------------------------------------------
 
     /// Create an invitation; returns its new id.
@@ -2291,6 +2671,11 @@ fn parse_permission_names(json: &str) -> Vec<crate::domain::Permission> {
         .collect()
 }
 
+/// The column list every `RegistryRecord` query selects, in the order
+/// [`row_to_registry`] reads.
+const REGISTRY_COLUMNS: &str = "id, slug, source_url, trust_keys, require_signatures, \
+     org_id, project_path, visibility, storage_binding_id, prefix";
+
 fn row_to_registry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryRecord> {
     let trust_json: String = row.get(3)?;
     Ok(RegistryRecord {
@@ -2299,7 +2684,37 @@ fn row_to_registry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryRecord> 
         source_url: row.get(2)?,
         trust_keys: serde_json::from_str(&trust_json).unwrap_or_default(),
         require_signatures: row.get::<_, i64>(4)? != 0,
+        org_id: row.get(5)?,
+        project_path: row.get(6)?,
+        visibility: row.get(7)?,
+        storage_binding_id: row.get(8)?,
+        prefix: row.get(9)?,
     })
+}
+
+fn row_to_storage_binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<StorageBindingRecord> {
+    Ok(StorageBindingRecord {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        name: row.get(2)?,
+        kind: row.get(3)?,
+        root: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
+/// Builds a managed registry's canonical slug from its coordinates.
+///
+/// `"{org}/{project_path}/{name}"`, collapsing to `"{org}/{name}"` when
+/// `project_path` is empty. The `project_path` is normalized of leading
+/// and trailing slashes so `"infra/"` and `"/infra"` build identically.
+fn canonical_slug(org_slug: &str, project_path: &str, name: &str) -> String {
+    let project_path = project_path.trim_matches('/');
+    if project_path.is_empty() {
+        format!("{org_slug}/{name}")
+    } else {
+        format!("{org_slug}/{project_path}/{name}")
+    }
 }
 
 fn unix_now() -> i64 {
@@ -2986,6 +3401,210 @@ mod tests {
             db.validation_missing(run).unwrap(),
             vec!["aaa".to_string(), "bbb".to_string()]
         );
+    }
+
+    #[test]
+    fn v4_database_migrates_to_v5() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.db");
+        // Build a v4 database by hand with one phase-1 file:// registry row.
+        {
+            let conn = Connection::open(&path).unwrap();
+            for migration in &MIGRATIONS[..4] {
+                conn.execute_batch(migration).unwrap();
+            }
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (4);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO registries (slug, source_url, created_at)
+                 VALUES ('legacy', 'file:///srv/legacy', 0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Reopening migrates to v5: the storage table exists and the
+        // phase-1 registry's new columns default to unbound.
+        let db = Database::open(&path).unwrap();
+        let conn = db.lock();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM storage_bindings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "storage_bindings should start empty");
+        let (binding, prefix): (Option<i64>, String) = conn
+            .query_row(
+                "SELECT storage_binding_id, prefix FROM registries WHERE slug = 'legacy'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(binding, None);
+        assert_eq!(prefix, "");
+        drop(conn);
+
+        // The legacy registry's surface is still its source_url path.
+        let legacy = db.registry_by_slug("legacy").unwrap().unwrap();
+        assert_eq!(
+            db.registry_surface_root(legacy.id).unwrap(),
+            Some(PathBuf::from("/srv/legacy"))
+        );
+    }
+
+    #[test]
+    fn storage_bindings_crud_and_kind_validation() {
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        let id = db
+            .create_storage_binding(org, "primary", "local_fs", "/srv/aos-hub")
+            .unwrap();
+        let binding = db.storage_binding(id).unwrap().unwrap();
+        assert_eq!(binding.name, "primary");
+        assert_eq!(binding.kind, "local_fs");
+        assert_eq!(binding.root, "/srv/aos-hub");
+        assert_eq!(
+            db.storage_binding_by_name(org, "primary")
+                .unwrap()
+                .unwrap()
+                .id,
+            id
+        );
+        assert!(db.storage_binding_by_name(org, "nope").unwrap().is_none());
+
+        db.create_storage_binding(org, "secondary", "local_fs", "/srv/other")
+            .unwrap();
+        let all = db.list_storage_bindings(org).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].name, "primary");
+        assert_eq!(all[1].name, "secondary");
+
+        // Unsupported kinds are rejected up front.
+        assert!(db
+            .create_storage_binding(org, "r2", "external_r2", "s3://bucket")
+            .is_err());
+    }
+
+    #[test]
+    fn surface_root_precedence_managed_file_and_http() {
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        let binding = db
+            .create_storage_binding(org, "primary", "local_fs", "/srv/aos-hub")
+            .unwrap();
+
+        // Managed: binding root joined with prefix.
+        let managed = db
+            .create_managed_registry(
+                org,
+                "infra/prod",
+                "cdn",
+                "private",
+                Some(binding),
+                "infra/prod/cdn",
+                &[],
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            db.registry_surface_root(managed).unwrap(),
+            Some(PathBuf::from("/srv/aos-hub/infra/prod/cdn"))
+        );
+
+        // file:// source (no binding): the source path.
+        let file = db
+            .register_registry("filereg", "file:///srv/file", &[], false)
+            .unwrap();
+        assert_eq!(
+            db.registry_surface_root(file).unwrap(),
+            Some(PathBuf::from("/srv/file"))
+        );
+
+        // bare path source: also a local surface.
+        let bare = db
+            .register_registry("barereg", "/srv/bare", &[], false)
+            .unwrap();
+        assert_eq!(
+            db.registry_surface_root(bare).unwrap(),
+            Some(PathBuf::from("/srv/bare"))
+        );
+
+        // http source: no local surface.
+        let http = db
+            .register_registry("httpreg", "https://cdn.example/", &[], false)
+            .unwrap();
+        assert_eq!(db.registry_surface_root(http).unwrap(), None);
+
+        // Binding wins even when a source_url is also present.
+        db.set_registry_storage(file, binding, "moved").unwrap();
+        assert_eq!(
+            db.registry_surface_root(file).unwrap(),
+            Some(PathBuf::from("/srv/aos-hub/moved"))
+        );
+
+        // Unknown registry id: None.
+        assert_eq!(db.registry_surface_root(9999).unwrap(), None);
+    }
+
+    #[test]
+    fn managed_registry_canonical_slug_and_scope_lookup() {
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+
+        // With a project path.
+        let cdn = db
+            .create_managed_registry(org, "infra/prod", "cdn", "public", None, "", &[], true)
+            .unwrap();
+        let record = db.registry_by_slug("acme/infra/prod/cdn").unwrap().unwrap();
+        assert_eq!(record.id, cdn);
+        assert_eq!(
+            record.source_url, "",
+            "managed registries have no source_url"
+        );
+        assert_eq!(record.org_id, Some(org));
+        assert_eq!(record.project_path, "infra/prod");
+        assert_eq!(record.visibility, "public");
+        // registry_by_scope builds the same canonical slug.
+        assert_eq!(
+            db.registry_by_scope("acme", "infra/prod", "cdn")
+                .unwrap()
+                .unwrap()
+                .id,
+            cdn
+        );
+        // project_path normalization: leading/trailing slashes collapse.
+        assert_eq!(
+            db.registry_by_scope("acme", "/infra/prod/", "cdn")
+                .unwrap()
+                .unwrap()
+                .id,
+            cdn
+        );
+
+        // Org-root registry (empty project path) -> "acme/web".
+        let web = db
+            .create_managed_registry(org, "", "web", "internal", None, "", &[], true)
+            .unwrap();
+        assert_eq!(db.registry_by_slug("acme/web").unwrap().unwrap().id, web);
+        assert_eq!(
+            db.registry_by_scope("acme", "", "web").unwrap().unwrap().id,
+            web
+        );
+
+        // Duplicate canonical path is rejected.
+        assert!(db
+            .create_managed_registry(org, "infra/prod", "cdn", "public", None, "", &[], true)
+            .is_err());
+
+        // A flat phase-1 slug coexists and resolves by its bare slug.
+        db.register_registry("legacy", "/srv/legacy", &[], false)
+            .unwrap();
+        assert!(db.registry_by_slug("legacy").unwrap().is_some());
+        assert!(db
+            .registry_by_scope("acme", "", "legacy")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

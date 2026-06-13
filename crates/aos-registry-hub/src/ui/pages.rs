@@ -940,6 +940,11 @@ mod tests {
             source_url: "/srv/demo".into(),
             trust_keys: vec!["demo:Ed25519:AAAA".into()],
             require_signatures: true,
+            org_id: None,
+            project_path: String::new(),
+            visibility: "public".into(),
+            storage_binding_id: None,
+            prefix: String::new(),
         }
     }
 

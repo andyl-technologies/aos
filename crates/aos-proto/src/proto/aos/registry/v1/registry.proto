@@ -13,6 +13,34 @@ service RegistryService {
   rpc ListRegistries(ListRegistriesRequest) returns (ListRegistriesResponse);
   rpc GetRegistry(GetRegistryRequest) returns (GetRegistryResponse);
   rpc ListReleases(ListReleasesRequest) returns (ListReleasesResponse);
+  // Create an org-owned, storage-bound managed registry (phase 2c). Write
+  // path: requires a bearer JWT with registry.configure on the org scope.
+  rpc CreateRegistry(CreateRegistryRequest) returns (CreateRegistryResponse);
+}
+
+// Orgs, membership, and invitations (RFC-0004 "Tenancy and IAM").
+service OrgService {
+  // Create an org. Any authenticated principal may bootstrap one; the
+  // caller becomes its Owner.
+  rpc CreateOrg(CreateOrgRequest) returns (CreateOrgResponse);
+  rpc GetOrg(GetOrgRequest) returns (GetOrgResponse);
+  rpc ListOrgs(ListOrgsRequest) returns (ListOrgsResponse);
+}
+
+// Project-tree CRUD (RFC-0004 "Tenancy and IAM").
+service ProjectService {
+  // Create a project at a materialized path under an org. Requires
+  // registry.configure on the org scope.
+  rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse);
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+}
+
+// Storage bindings (RFC-0004 "Storage: StorageBinding and shared buckets").
+service StorageService {
+  // Create a storage binding under an org. Requires registry.configure on
+  // the org scope. Only the local_fs kind is supported this phase.
+  rpc CreateBinding(CreateBindingRequest) returns (CreateBindingResponse);
+  rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse);
 }
 
 service PackageService {
@@ -189,4 +217,120 @@ message Release {
   string signer = 4;
   // Tagger timestamp, Unix seconds.
   int64 tagged_at = 5;
+}
+
+// -- Tenancy: orgs and projects (phase 2c) ---------------------------------
+
+// An organization: the tenant boundary.
+message Org {
+  string slug = 1;
+  string name = 2;
+  // Unix seconds the org was created.
+  int64 created_at = 3;
+}
+
+message CreateOrgRequest {
+  string slug = 1;
+  string name = 2;
+}
+
+message CreateOrgResponse {
+  Org org = 1;
+}
+
+message GetOrgRequest {
+  string slug = 1;
+}
+
+message GetOrgResponse {
+  Org org = 1;
+}
+
+message ListOrgsRequest {
+  uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListOrgsResponse {
+  repeated Org orgs = 1;
+  string next_page_token = 2;
+}
+
+// A project: a materialized-path node within an org.
+message Project {
+  string org_slug = 1;
+  // Materialized path within the org ("" for an org-root project).
+  string path = 2;
+  string name = 3;
+}
+
+message CreateProjectRequest {
+  string org_slug = 1;
+  string path = 2;
+  string name = 3;
+}
+
+message CreateProjectResponse {
+  Project project = 1;
+}
+
+message ListProjectsRequest {
+  string org_slug = 1;
+}
+
+message ListProjectsResponse {
+  repeated Project projects = 1;
+}
+
+// -- Storage bindings (phase 2c) -------------------------------------------
+
+// A storage binding: a named backend an org's registries place surfaces in.
+message Binding {
+  string org_slug = 1;
+  string name = 2;
+  // Backend kind; "local_fs" is the only kind supported this phase.
+  string kind = 3;
+  // Backend root: a filesystem path for local_fs.
+  string root = 4;
+}
+
+message CreateBindingRequest {
+  string org_slug = 1;
+  string name = 2;
+  string kind = 3;
+  string root = 4;
+}
+
+message CreateBindingResponse {
+  Binding binding = 1;
+}
+
+message ListBindingsRequest {
+  string org_slug = 1;
+}
+
+message ListBindingsResponse {
+  repeated Binding bindings = 1;
+}
+
+// -- Managed registry creation (phase 2c) ----------------------------------
+
+message CreateRegistryRequest {
+  string org_slug = 1;
+  // Owning project's materialized path ("" for an org-root registry).
+  string project_path = 2;
+  // Registry name (the last canonical-path segment).
+  string name = 3;
+  // Visibility: public | internal | private (defaults to private).
+  string visibility = 4;
+  // Storage binding name within the org; empty for an unbound registry.
+  string binding_name = 5;
+  // Sub-prefix under the binding root.
+  string prefix = 6;
+  // Pinned trust anchors in name:Ed25519:<base64> form.
+  repeated string trust_keys = 7;
+}
+
+message CreateRegistryResponse {
+  Registry registry = 1;
 }

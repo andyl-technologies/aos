@@ -57,10 +57,10 @@ async fn serve_fixture(surface: &Path, fixture: &common::Fixture) -> (axum::Rout
     index_and_record(&db, &LocalFsFetch::new(surface), &registry)
         .await
         .unwrap();
-    let app = router(Arc::new(AppState {
-        db: Arc::clone(&db),
-        external_url: "http://127.0.0.1:8420".into(),
-    }));
+    let app = router(Arc::new(AppState::new(
+        Arc::clone(&db),
+        "http://127.0.0.1:8420".into(),
+    )));
     (app, db)
 }
 

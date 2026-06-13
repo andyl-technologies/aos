@@ -7,9 +7,18 @@
 //! the rebuildable index — these RPCs never touch a registry surface
 //! directly, so they are as fast and as available as the database.
 //!
-//! Phase-1 hub content is read-only and public, matching the anonymous
-//! browse pages; per-registry visibility enforcement arrives with tenancy
-//! (RFC-0004 phase 2). List RPCs paginate with opaque offset tokens.
+//! Phase-1 read-path RPCs are public, matching the anonymous browse pages.
+//! Phase-2c adds the tenancy write-path services — [`OrgService`],
+//! [`ProjectService`], [`StorageService`], and `RegistryService.CreateRegistry`
+//! — which mutate the system of record and so are *authenticated*: the
+//! caller presents the same `Authorization: Bearer <jwt>` it would on a
+//! machine path, read out of the Connect [`Context`] (mirroring
+//! `aos-server`'s `require_rpc_claims`). `CreateOrg` is the bootstrap
+//! exception — any authenticated principal may create an org and is granted
+//! `Owner` on it — while the other mutations require the caller's JWT to
+//! carry `registry.configure` on the org scope.
+//!
+//! List RPCs paginate with opaque offset tokens.
 
 // `ConnectError`'s size is fixed by the connectrpc service traits, which
 // return it un-boxed; boxing the local helpers would only add unwrapping
@@ -19,21 +28,27 @@
 use std::sync::Arc;
 
 use aos_proto::aos::registry::v1::*;
+use axum::http::header;
 use buffa::view::OwnedView;
 use buffa::MessageField;
 use connectrpc::{ConnectError, Context, ErrorCode};
 
+use crate::auth::jwt::{Claims, JwtKeys};
+use crate::auth::permission_from_str;
 use crate::db::{Database, IndexStatus, RegistryRecord};
+use crate::domain::{iam, Permission, Principal, PrincipalKind, Scope};
 
 /// Default page size when a list request leaves `page_size` at zero.
 const DEFAULT_PAGE_SIZE: u32 = 500;
 /// Hard ceiling on page size.
 const MAX_PAGE_SIZE: u32 = 1000;
 
-/// Shared implementation state for all three services.
+/// Shared implementation state for all registry-hub ConnectRPC services.
 pub struct RegistryRpc {
     /// The hub database.
     pub db: Arc<Database>,
+    /// HS256 keys for verifying the bearer JWT on mutating RPCs.
+    pub jwt_keys: JwtKeys,
 }
 
 fn internal(err: anyhow::Error) -> ConnectError {
@@ -43,6 +58,10 @@ fn internal(err: anyhow::Error) -> ConnectError {
 
 fn not_found(what: &str) -> ConnectError {
     ConnectError::new(ErrorCode::NotFound, format!("{what} not found"))
+}
+
+fn invalid(msg: impl Into<String>) -> ConnectError {
+    ConnectError::new(ErrorCode::InvalidArgument, msg.into())
 }
 
 /// Slice one page out of `items` using an opaque offset token.
@@ -137,6 +156,112 @@ impl RegistryRpc {
             ..Default::default()
         })
     }
+
+    /// Decode and verify the bearer JWT carried by a mutating RPC.
+    ///
+    /// Mirrors `aos-server`'s `require_rpc_claims`: pulls
+    /// `Authorization: Bearer <jwt>` out of the Connect [`Context`] and
+    /// verifies it with the hub's HS256 keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` when the header is missing, not ASCII, not
+    /// a `Bearer` token, or fails JWT verification.
+    fn require_claims(&self, ctx: &Context) -> Result<Claims, ConnectError> {
+        let header = ctx
+            .header(&header::AUTHORIZATION)
+            .ok_or_else(|| {
+                ConnectError::new(ErrorCode::Unauthenticated, "missing Authorization header")
+            })?
+            .to_str()
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::Unauthenticated,
+                    "invalid Authorization header encoding",
+                )
+            })?;
+        let token = header.strip_prefix("Bearer ").ok_or_else(|| {
+            ConnectError::new(
+                ErrorCode::Unauthenticated,
+                "Authorization header must start with Bearer",
+            )
+        })?;
+        self.jwt_keys
+            .verify(token)
+            .map_err(|e| ConnectError::new(ErrorCode::Unauthenticated, e.to_string()))
+    }
+
+    /// Require that a verified caller holds `perm` on `scope`.
+    ///
+    /// Combines the JWT's *own* grant (scope-contains plus explicit verbs)
+    /// with the owner's *current* memberships: the action is allowed only if
+    /// both the token and the principal's live grants cover it, so a revoked
+    /// role denies immediately even on an unexpired token.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PermissionDenied` when either the token or the principal's
+    /// current memberships fail to authorize the action, and `Internal` on a
+    /// database failure while loading memberships.
+    fn require_permission(
+        &self,
+        claims: &Claims,
+        perm: Permission,
+        scope: &Scope,
+    ) -> Result<(), ConnectError> {
+        let token_ok = Scope::parse(&claims.scope).contains(scope)
+            && claims
+                .perms
+                .iter()
+                .filter_map(|p| permission_from_str(p))
+                .any(|p| p == perm);
+        if !token_ok {
+            return Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                format!("{} permission required", perm.as_str()),
+            ));
+        }
+        let Some(principal) = claims_principal(claims) else {
+            return Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "unknown principal kind",
+            ));
+        };
+        let grants = self.db.effective_scopes(principal).map_err(internal)?;
+        if iam::allow(&grants, perm, scope) {
+            Ok(())
+        } else {
+            Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                format!("{} permission required", perm.as_str()),
+            ))
+        }
+    }
+
+    /// Resolve an org by slug or map a miss to `NotFound`.
+    fn org_or_not_found(&self, slug: &str) -> Result<crate::db::OrgRecord, ConnectError> {
+        self.db
+            .org_by_slug(slug)
+            .map_err(internal)?
+            .ok_or_else(|| not_found("org"))
+    }
+}
+
+/// Map a JWT's owner claims to a domain [`Principal`], if the kind is known.
+fn claims_principal(claims: &Claims) -> Option<Principal> {
+    PrincipalKind::parse(&claims.owner_kind).map(|kind| Principal {
+        kind,
+        id: claims.owner_id,
+    })
+}
+
+fn org_message(org: &crate::db::OrgRecord) -> Org {
+    Org {
+        slug: org.slug.clone(),
+        name: org.name.clone(),
+        created_at: org.created_at,
+        ..Default::default()
+    }
 }
 
 impl RegistryService for RegistryRpc {
@@ -221,6 +346,354 @@ impl RegistryService for RegistryRpc {
             ListReleasesResponse {
                 releases,
                 next_page_token,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    /// `CreateRegistry` — create an org-owned, storage-bound managed
+    /// registry (phase 2c write path).
+    ///
+    /// The registry is created at the canonical path
+    /// `{org}/{project_path}/{name}` with the given visibility, optionally
+    /// bound to a named storage binding plus prefix, and indexed lazily by
+    /// the background re-indexer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `PermissionDenied` when the caller lacks `registry.configure` on the
+    /// org scope, `NotFound` for an unknown org or `binding_name`,
+    /// `InvalidArgument` for a missing name or bad visibility,
+    /// `AlreadyExists` when a registry occupies the canonical path, and
+    /// `Internal` on database failure.
+    async fn create_registry(
+        &self,
+        ctx: Context,
+        req: OwnedView<CreateRegistryRequestView<'static>>,
+    ) -> Result<(CreateRegistryResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        let org = self.org_or_not_found(req.org_slug)?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&org.slug),
+        )?;
+        if req.name.is_empty() {
+            return Err(invalid("registry name is required"));
+        }
+        let visibility = match req.visibility {
+            "" => "private",
+            v @ ("public" | "internal" | "private") => v,
+            other => return Err(invalid(format!("invalid visibility '{other}'"))),
+        };
+        let binding_id = if req.binding_name.is_empty() {
+            None
+        } else {
+            Some(
+                self.db
+                    .storage_binding_by_name(org.id, req.binding_name)
+                    .map_err(internal)?
+                    .ok_or_else(|| not_found("storage binding"))?
+                    .id,
+            )
+        };
+        let trust_keys: Vec<String> = req.trust_keys.iter().map(|s| s.to_string()).collect();
+        let id = self
+            .db
+            .create_managed_registry(
+                org.id,
+                req.project_path,
+                req.name,
+                visibility,
+                binding_id,
+                req.prefix,
+                &trust_keys,
+                true,
+            )
+            .map_err(|e| ConnectError::new(ErrorCode::AlreadyExists, format!("{e:#}")))?;
+        let record = self
+            .db
+            .registry_by_scope(&org.slug, req.project_path, req.name)
+            .map_err(internal)?
+            .ok_or_else(|| internal(anyhow::anyhow!("registry {id} vanished after creation")))?;
+        let status = self.db.index_status(record.id).map_err(internal)?;
+        Ok((
+            CreateRegistryResponse {
+                registry: MessageField::some(self.registry_message(&record, status)?),
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+}
+
+impl OrgService for RegistryRpc {
+    /// `CreateOrg` — create an organization and grant the caller `Owner`.
+    ///
+    /// The bootstrap exception: any authenticated principal may create an
+    /// org. When the caller's JWT owner is a user, that user is granted the
+    /// `Owner` role at the new org's scope so they can immediately configure
+    /// it; a service-account caller creates the org without an auto-grant.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `InvalidArgument` for an empty slug or name, `AlreadyExists` when the
+    /// slug is taken, and `Internal` on database failure.
+    async fn create_org(
+        &self,
+        ctx: Context,
+        req: OwnedView<CreateOrgRequestView<'static>>,
+    ) -> Result<(CreateOrgResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        if req.slug.is_empty() || req.name.is_empty() {
+            return Err(invalid("org slug and name are required"));
+        }
+        let id = self
+            .db
+            .create_org(req.slug, req.name)
+            .map_err(|e| ConnectError::new(ErrorCode::AlreadyExists, format!("{e:#}")))?;
+        // Auto-grant the creating user Owner on the new org.
+        if let Some(principal) = claims_principal(&claims) {
+            if principal.kind == PrincipalKind::User {
+                self.db
+                    .grant_membership(
+                        principal.kind.as_str(),
+                        principal.id,
+                        req.slug,
+                        crate::domain::Role::Owner.as_str(),
+                    )
+                    .map_err(internal)?;
+            }
+        }
+        let org = self
+            .db
+            .org_by_id(id)
+            .map_err(internal)?
+            .ok_or_else(|| internal(anyhow::anyhow!("org {id} vanished after creation")))?;
+        Ok((
+            CreateOrgResponse {
+                org: MessageField::some(org_message(&org)),
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    /// `GetOrg` — look up an organization by slug.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` for an unknown slug and `Internal` on database
+    /// failure.
+    async fn get_org(
+        &self,
+        ctx: Context,
+        req: OwnedView<GetOrgRequestView<'static>>,
+    ) -> Result<(GetOrgResponse, Context), ConnectError> {
+        let org = self.org_or_not_found(req.slug)?;
+        Ok((
+            GetOrgResponse {
+                org: MessageField::some(org_message(&org)),
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    /// `ListOrgs` — every organization, ordered by slug.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidArgument` for a malformed `page_token` and `Internal`
+    /// on database failure.
+    async fn list_orgs(
+        &self,
+        ctx: Context,
+        req: OwnedView<ListOrgsRequestView<'static>>,
+    ) -> Result<(ListOrgsResponse, Context), ConnectError> {
+        let orgs: Vec<Org> = self
+            .db
+            .list_orgs()
+            .map_err(internal)?
+            .iter()
+            .map(org_message)
+            .collect();
+        let (orgs, next_page_token) = paginate(orgs, req.page_size, req.page_token)?;
+        Ok((
+            ListOrgsResponse {
+                orgs,
+                next_page_token,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+}
+
+impl ProjectService for RegistryRpc {
+    /// `CreateProject` — create a project at a materialized path under an org.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `PermissionDenied` when the caller lacks `registry.configure` on the
+    /// org scope, `NotFound` for an unknown org, `InvalidArgument` for an
+    /// empty name, `AlreadyExists` when `(org, path)` exists, and `Internal`
+    /// on database failure.
+    async fn create_project(
+        &self,
+        ctx: Context,
+        req: OwnedView<CreateProjectRequestView<'static>>,
+    ) -> Result<(CreateProjectResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        let org = self.org_or_not_found(req.org_slug)?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&org.slug),
+        )?;
+        if req.name.is_empty() {
+            return Err(invalid("project name is required"));
+        }
+        self.db
+            .create_project(org.id, req.path, req.name)
+            .map_err(|e| ConnectError::new(ErrorCode::AlreadyExists, format!("{e:#}")))?;
+        Ok((
+            CreateProjectResponse {
+                project: MessageField::some(Project {
+                    org_slug: org.slug,
+                    path: req.path.to_string(),
+                    name: req.name.to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    /// `ListProjects` — an org's projects, ordered by materialized path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` for an unknown org and `Internal` on database
+    /// failure.
+    async fn list_projects(
+        &self,
+        ctx: Context,
+        req: OwnedView<ListProjectsRequestView<'static>>,
+    ) -> Result<(ListProjectsResponse, Context), ConnectError> {
+        let org = self.org_or_not_found(req.org_slug)?;
+        let projects: Vec<Project> = self
+            .db
+            .list_projects(org.id)
+            .map_err(internal)?
+            .into_iter()
+            .map(|p| Project {
+                org_slug: org.slug.clone(),
+                path: p.path,
+                name: p.name,
+                ..Default::default()
+            })
+            .collect();
+        Ok((
+            ListProjectsResponse {
+                projects,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+}
+
+impl StorageService for RegistryRpc {
+    /// `CreateBinding` — create a storage binding under an org.
+    ///
+    /// Only the `local_fs` kind is supported this phase (where `root` is a
+    /// filesystem path).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `PermissionDenied` when the caller lacks `registry.configure` on the
+    /// org scope, `NotFound` for an unknown org, `InvalidArgument` for an
+    /// empty name/root or unsupported kind, `AlreadyExists` when
+    /// `(org, name)` exists, and `Internal` on database failure.
+    async fn create_binding(
+        &self,
+        ctx: Context,
+        req: OwnedView<CreateBindingRequestView<'static>>,
+    ) -> Result<(CreateBindingResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
+        let org = self.org_or_not_found(req.org_slug)?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&org.slug),
+        )?;
+        if req.name.is_empty() || req.root.is_empty() {
+            return Err(invalid("binding name and root are required"));
+        }
+        let kind = if req.kind.is_empty() {
+            "local_fs"
+        } else {
+            req.kind
+        };
+        self.db
+            .create_storage_binding(org.id, req.name, kind, req.root)
+            .map_err(|e| {
+                if kind == "local_fs" {
+                    ConnectError::new(ErrorCode::AlreadyExists, format!("{e:#}"))
+                } else {
+                    invalid(format!("{e:#}"))
+                }
+            })?;
+        Ok((
+            CreateBindingResponse {
+                binding: MessageField::some(Binding {
+                    org_slug: org.slug,
+                    name: req.name.to_string(),
+                    kind: kind.to_string(),
+                    root: req.root.to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    /// `ListBindings` — an org's storage bindings, ordered by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` for an unknown org and `Internal` on database
+    /// failure.
+    async fn list_bindings(
+        &self,
+        ctx: Context,
+        req: OwnedView<ListBindingsRequestView<'static>>,
+    ) -> Result<(ListBindingsResponse, Context), ConnectError> {
+        let org = self.org_or_not_found(req.org_slug)?;
+        let bindings: Vec<Binding> = self
+            .db
+            .list_storage_bindings(org.id)
+            .map_err(internal)?
+            .into_iter()
+            .map(|b| Binding {
+                org_slug: org.slug.clone(),
+                name: b.name,
+                kind: b.kind,
+                root: b.root,
+                ..Default::default()
+            })
+            .collect();
+        Ok((
+            ListBindingsResponse {
+                bindings,
                 ..Default::default()
             },
             ctx,

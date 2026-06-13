@@ -34,9 +34,14 @@ use axum::routing::get;
 use axum::Router;
 use tower_http::catch_panic::CatchPanicLayer;
 
+use crate::auth::extract::AuthState;
 use crate::compat;
 use crate::db::{Database, IndexStatus, PackageRow, RegistryRecord};
+use crate::domain::{Permission, Scope};
 use crate::ui::{pages, STYLESHEET};
+
+/// Lifetime, in seconds, of a hub access token minted at `/oauth2/token`.
+const ACCESS_TOKEN_TTL_SECS: i64 = 900;
 
 /// Shared state for all handlers.
 pub struct AppState {
@@ -44,6 +49,26 @@ pub struct AppState {
     pub db: Arc<Database>,
     /// The externally reachable base URL, used in setup snippets.
     pub external_url: String,
+    /// Authentication state: JWT keys and the access-token TTL, shared with
+    /// the `/oauth2/token` exchange and the mutating ConnectRPC services.
+    pub auth: Arc<AuthState>,
+}
+
+impl AppState {
+    /// Builds an [`AppState`] with ephemeral JWT keys.
+    ///
+    /// Convenience for dev mode and tests; production may construct the
+    /// struct directly to supply stable keys (so minted access tokens
+    /// survive a restart).
+    #[must_use]
+    pub fn new(db: Arc<Database>, external_url: String) -> AppState {
+        let auth = Arc::new(AuthState::new(Arc::clone(&db), ACCESS_TOKEN_TTL_SECS));
+        AppState {
+            db,
+            external_url,
+            auth,
+        }
+    }
 }
 
 /// Optional search/pagination query parameters (`?q=`, `?page=`).
@@ -73,23 +98,30 @@ impl SearchParams {
 /// static-over-dynamic precedence keeps them from being shadowed by the
 /// `/{slug}/{*path}` facade wildcard.
 pub fn router(state: Arc<AppState>) -> Router {
+    use aos_proto::aos::registry::v1::{
+        ChannelServiceExt, OrgServiceExt, PackageServiceExt, ProjectServiceExt, RegistryServiceExt,
+        StorageServiceExt,
+    };
     let rpc = Arc::new(crate::rpc::RegistryRpc {
         db: Arc::clone(&state.db),
+        jwt_keys: state.auth.jwt_keys.clone(),
     });
     let connect_router = connectrpc::Router::new();
-    let connect_router = aos_proto::aos::registry::v1::RegistryServiceExt::register(
-        Arc::clone(&rpc),
-        connect_router,
-    );
-    let connect_router =
-        aos_proto::aos::registry::v1::PackageServiceExt::register(Arc::clone(&rpc), connect_router);
-    let connect_router =
-        aos_proto::aos::registry::v1::ChannelServiceExt::register(rpc, connect_router);
+    let connect_router = RegistryServiceExt::register(Arc::clone(&rpc), connect_router);
+    let connect_router = OrgServiceExt::register(Arc::clone(&rpc), connect_router);
+    let connect_router = ProjectServiceExt::register(Arc::clone(&rpc), connect_router);
+    let connect_router = StorageServiceExt::register(Arc::clone(&rpc), connect_router);
+    let connect_router = PackageServiceExt::register(Arc::clone(&rpc), connect_router);
+    let connect_router = ChannelServiceExt::register(rpc, connect_router);
     let connect_paths: Vec<String> = connect_router
         .methods()
         .map(|method| format!("/{method}"))
         .collect();
     let connect_service = connect_router.into_axum_service();
+
+    // The `/oauth2/token` exchange fragment runs on Arc<AuthState>; bind its
+    // state up front so it merges into the AppState-typed router below.
+    let oauth2 = crate::auth::extract::oauth2_router().with_state(Arc::clone(&state.auth));
 
     let mut router = Router::new()
         .route("/", get(instance_home))
@@ -110,7 +142,13 @@ pub fn router(state: Arc<AppState>) -> Router {
     for path in connect_paths {
         router = router.route_service(&path, connect_service.clone());
     }
+    // The nested-canonical catch-all is registered last: axum's
+    // static-over-dynamic precedence keeps the explicit routes above
+    // (healthz, _assets, oauth2, RPC method paths, the flat `/{slug}` shapes)
+    // winning, and only requests matching none of them reach the resolver.
+    router = router.fallback(get(nested_catch_all));
     router
+        .merge(oauth2)
         .with_state(state)
         // Panics become plain 500s instead of dropped connections; the
         // security-header layer wraps everything (including those 500s).
@@ -445,14 +483,439 @@ async fn health_page(State(state): State<Arc<AppState>>, Path(slug): Path<String
     respond_page(result)
 }
 
+/// The `/{slug}/{*path}` route: a flat phase-1 machine path, or — when the
+/// single-segment slug names no registry — the entry point to nested
+/// canonical resolution.
+///
+/// Axum captures `acme/infra/prod/cdn/HEAD` here as `slug = "acme"`,
+/// `path = "infra/prod/cdn/HEAD"` because a single-segment slug cannot span
+/// `/`. So a flat registry resolves directly, and everything else
+/// (including every nested registry and `/-/` page) falls through to
+/// [`resolve_nested`] over the reconstructed full path.
 async fn machine_path(
     State(state): State<Arc<AppState>>,
     Path((slug, path)): Path<(String, String)>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
 ) -> Response {
     match state.db.registry_by_slug(&slug) {
-        Ok(Some(registry)) => compat::serve_machine_path(&registry, &path).await,
+        Ok(Some(registry)) => {
+            if let Err(deny) = authorize_registry_read(&state, &registry, &headers) {
+                return *deny;
+            }
+            serve_registry_machine_path(&state, &registry, &path).await
+        }
+        // Not a flat registry: resolve as a nested canonical path.
+        Ok(None) => resolve_nested(&state, &uri, &headers, Instant::now()).await,
+        Err(err) => internal(err),
+    }
+}
+
+/// Serve a machine path for a registry, resolving a managed registry's
+/// surface from its storage binding.
+///
+/// Phase-1 `file://`/`http` registries carry their surface in `source_url`
+/// and serve straight through [`compat::serve_machine_path`]. Managed
+/// registries (empty `source_url`) instead resolve their on-disk surface
+/// via [`crate::db::Database::registry_surface_root`]; the resolved path is
+/// spliced into a `source_url` so the same byte-faithful facade serves it.
+/// (The full managed upload/serve facade is phase 2d; this is the read
+/// path the nested URL space needs now.)
+async fn serve_registry_machine_path(
+    state: &AppState,
+    registry: &RegistryRecord,
+    path: &str,
+) -> Response {
+    if !registry.source_url.is_empty() {
+        return compat::serve_machine_path(registry, path).await;
+    }
+    match state.db.registry_surface_root(registry.id) {
+        Ok(Some(root)) => {
+            let mut resolved = registry.clone();
+            resolved.source_url = root.to_string_lossy().into_owned();
+            compat::serve_machine_path(&resolved, path).await
+        }
+        // No local surface (unbound managed registry): nothing to serve.
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => internal(err),
+    }
+}
+
+/// The page kind a registry URL's `/-/` namespace addresses.
+enum PageKind {
+    Home,
+    Packages,
+    Package(String),
+    Channels,
+    Channel(String),
+    Releases,
+    Health,
+}
+
+/// Resolve a request path into `(registry, page-or-machine)` for the
+/// nested-canonical URL space, then render it with visibility enforced.
+///
+/// This is the catch-all for registries whose slug contains slashes
+/// (`acme/infra/prod/cdn`) — axum single-segment routes cannot match them,
+/// so the flat `/{slug}/…` routes above only serve phase-1 registries. The
+/// path is split on the reserved `/-/` marker: the left side (trailing
+/// slash trimmed) is the registry's canonical path and the right side is a
+/// human page. With no `/-/`, the path resolves by longest registry-slug
+/// prefix — an exact match is the registry home, and any remainder is a
+/// machine path served through the facade.
+async fn nested_catch_all(
+    State(state): State<Arc<AppState>>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+) -> Response {
+    resolve_nested(&state, &uri, &headers, Instant::now()).await
+}
+
+/// Resolve and render a request in the nested-canonical URL space.
+///
+/// Shared by [`nested_catch_all`] (the router fallback) and the
+/// `/{slug}/{*path}` handler when its flat slug names no registry. See
+/// [`nested_catch_all`] for the splitting rules.
+async fn resolve_nested(
+    state: &AppState,
+    uri: &axum::http::Uri,
+    headers: &HeaderMap,
+    started: Instant,
+) -> Response {
+    let raw = uri.path().trim_start_matches('/');
+    let decoded = percent_decode(raw);
+
+    // Human pages live behind the reserved `/-/` marker.
+    if let Some((left, right)) = decoded.split_once("/-/") {
+        let slug = left.trim_end_matches('/');
+        let page = match parse_page(right) {
+            Some(page) => page,
+            None => return StatusCode::NOT_FOUND.into_response(),
+        };
+        return match state.db.registry_by_slug(slug) {
+            Ok(Some(registry)) => {
+                if let Err(deny) = authorize_registry_read(state, &registry, headers) {
+                    return *deny;
+                }
+                render_page(state, &registry, page, headers, started).await
+            }
+            Ok(None) => StatusCode::NOT_FOUND.into_response(),
+            Err(err) => internal(err),
+        };
+    }
+
+    // No `/-/`: either a registry home (exact slug, trailing slash trimmed)
+    // or a machine path (slug + remainder). Resolve by longest slug prefix.
+    let trimmed = decoded.trim_end_matches('/');
+    match resolve_by_prefix(state, trimmed) {
+        Ok(Some((registry, tail))) => {
+            if let Err(deny) = authorize_registry_read(state, &registry, headers) {
+                return *deny;
+            }
+            if tail.is_empty() {
+                render_page(state, &registry, PageKind::Home, headers, started).await
+            } else {
+                serve_registry_machine_path(state, &registry, &tail).await
+            }
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// Parse the portion of a URL after the `/-/` marker into a [`PageKind`].
+fn parse_page(rest: &str) -> Option<PageKind> {
+    let rest = rest.trim_end_matches('/');
+    match rest {
+        "packages" => Some(PageKind::Packages),
+        "channels" => Some(PageKind::Channels),
+        "releases" => Some(PageKind::Releases),
+        "health" => Some(PageKind::Health),
+        _ => {
+            if let Some(name) = rest.strip_prefix("packages/") {
+                (!name.contains('/')).then(|| PageKind::Package(name.to_string()))
+            } else if let Some(name) = rest.strip_prefix("channels/") {
+                (!name.contains('/')).then(|| PageKind::Channel(name.to_string()))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Resolve the longest registry slug that is a path-segment prefix of
+/// `path`, returning the registry and the remaining machine-path tail.
+///
+/// `acme/infra/prod/cdn/objects/ab` resolves to registry
+/// `acme/infra/prod/cdn` with tail `objects/ab`; an exact match yields an
+/// empty tail (the registry home). Matching is on `/` boundaries, so
+/// `acme/infra/prod/cdn-staging` never resolves to `acme/infra/prod/cdn`.
+fn resolve_by_prefix(
+    state: &AppState,
+    path: &str,
+) -> Result<Option<(RegistryRecord, String)>, anyhow::Error> {
+    let mut candidate = path;
+    loop {
+        if let Some(registry) = state.db.registry_by_slug(candidate)? {
+            let tail = path[candidate.len()..].trim_start_matches('/').to_string();
+            return Ok(Some((registry, tail)));
+        }
+        match candidate.rsplit_once('/') {
+            Some((head, _)) => candidate = head,
+            None => return Ok(None),
+        }
+    }
+}
+
+/// Render one registry page, reusing the same renderers as the flat routes.
+async fn render_page(
+    state: &AppState,
+    registry: &RegistryRecord,
+    page: PageKind,
+    headers: &HeaderMap,
+    started: Instant,
+) -> Response {
+    let status = match state.db.index_status(registry.id) {
+        Ok(status) => status,
+        Err(err) => return internal(err),
+    };
+    let result = (|| {
+        Ok::<_, anyhow::Error>(match &page {
+            PageKind::Home => Some(render_home(state, registry, status.as_ref(), started)?),
+            PageKind::Packages => {
+                let all = state.db.list_packages(registry.id)?;
+                let total = all.len();
+                Some(pages::package_index(
+                    registry,
+                    status.as_ref(),
+                    &all,
+                    None,
+                    1,
+                    total,
+                    total,
+                    started,
+                ))
+            }
+            PageKind::Package(name) => state
+                .db
+                .package_detail(registry.id, name)?
+                .map(|detail| pages::package_page(registry, status.as_ref(), &detail, started)),
+            PageKind::Channels => {
+                let channels = state.db.list_channels(registry.id)?;
+                Some(pages::channels_index(
+                    registry,
+                    status.as_ref(),
+                    &channels,
+                    started,
+                ))
+            }
+            PageKind::Channel(name) => {
+                let channels = state.db.list_channels(registry.id)?;
+                match channels.into_iter().find(|c| &c.name == name) {
+                    Some(channel) => {
+                        let floor = state.db.channel_floor(registry.id, name)?;
+                        Some(pages::channel_page(
+                            registry,
+                            status.as_ref(),
+                            &channel,
+                            floor.as_deref(),
+                            None,
+                            started,
+                        ))
+                    }
+                    None => None,
+                }
+            }
+            PageKind::Releases => {
+                let releases = state.db.list_releases(registry.id)?;
+                Some(pages::releases_page(
+                    registry,
+                    status.as_ref(),
+                    &releases,
+                    started,
+                ))
+            }
+            PageKind::Health => {
+                let mut runs = Vec::new();
+                for run in state.db.latest_validation_runs(registry.id)? {
+                    let missing = if run.missing > 0 {
+                        state.db.validation_missing(run.id)?
+                    } else {
+                        Vec::new()
+                    };
+                    runs.push((run, missing));
+                }
+                Some(pages::health_page(
+                    registry,
+                    status.as_ref(),
+                    &runs,
+                    started,
+                ))
+            }
+        })
+    })();
+    let _ = headers;
+    respond_page(result)
+}
+
+/// Render a registry home page (shared by flat and nested routes).
+fn render_home(
+    state: &AppState,
+    registry: &RegistryRecord,
+    status: Option<&IndexStatus>,
+    started: Instant,
+) -> Result<String, anyhow::Error> {
+    let channels = state.db.list_channels(registry.id)?;
+    let packages = state.db.list_packages(registry.id)?;
+    let caches = state.db.list_caches(registry.id)?;
+    let roster = state.db.list_roster(registry.id)?;
+    let validations = state.db.latest_validation_runs(registry.id)?;
+    let external = format!(
+        "{}/{}",
+        state.external_url.trim_end_matches('/'),
+        registry.slug
+    );
+    Ok(pages::registry_home(
+        registry,
+        status,
+        &channels,
+        &packages,
+        &caches,
+        &roster,
+        &validations,
+        &external,
+        started,
+    ))
+}
+
+/// Authorize a read against a registry's visibility, or return the denial.
+///
+/// - **public** (and every phase-1 unowned registry) — anonymous reads pass.
+/// - **internal** — requires a valid session whose user is a member of the
+///   owning org (any role, via an effective grant at or above the org scope).
+/// - **private** — requires `Read` at the registry's canonical scope, held
+///   either by the session user's current memberships or by a bearer JWT.
+///
+/// Unauthorized `internal`/`private` reads return **404, not 403**, so the
+/// existence of a hidden registry is never disclosed. The check reads the
+/// session cookie and `Authorization` header directly from `headers` (it is
+/// not an extractor) so it composes inside the catch-all and the flat
+/// handlers alike.
+///
+/// # Errors
+///
+/// Returns the denial [`Response`] (a 404) in the `Err` arm when the read is
+/// not authorized; `Ok(())` means the caller may proceed. The denial is
+/// boxed to keep the common `Ok` path small.
+fn authorize_registry_read(
+    state: &AppState,
+    registry: &RegistryRecord,
+    headers: &HeaderMap,
+) -> Result<(), Box<Response>> {
+    let denied = || Box::new(StatusCode::NOT_FOUND.into_response());
+    match registry.visibility.as_str() {
+        // Public (and any unowned phase-1 registry) is always readable.
+        "public" => Ok(()),
+        "internal" => {
+            let Some(org_id) = registry.org_id else {
+                return Ok(());
+            };
+            if session_is_org_member(state, headers, org_id) {
+                Ok(())
+            } else {
+                Err(denied())
+            }
+        }
+        // Private (or any unknown visibility, fail closed): require Read on
+        // the registry scope from a session or a bearer token.
+        _ => {
+            let scope = Scope::parse(&registry.slug);
+            if session_allows_read(state, headers, &scope)
+                || bearer_allows_read(state, headers, &scope)
+            {
+                Ok(())
+            } else {
+                Err(denied())
+            }
+        }
+    }
+}
+
+/// Whether the request's session user holds any membership covering `org_id`.
+fn session_is_org_member(state: &AppState, headers: &HeaderMap, org_id: i64) -> bool {
+    let Some(org) = state.db.org_by_id(org_id).ok().flatten() else {
+        return false;
+    };
+    let scope = Scope::parse(&org.slug);
+    session_allows_read(state, headers, &scope)
+}
+
+/// Whether the request's session user may `Read` at `scope` under their
+/// current memberships.
+fn session_allows_read(state: &AppState, headers: &HeaderMap, scope: &Scope) -> bool {
+    let Some(secret) = session_secret_from_cookies(headers) else {
+        return false;
+    };
+    let Ok(Some(session)) = state.db.validate_session(&secret) else {
+        return false;
+    };
+    crate::auth::extract::session_allows(&state.db, &session, Permission::Read, scope)
+        .unwrap_or(false)
+}
+
+/// Whether a bearer JWT in `headers` grants `Read` at `scope`.
+fn bearer_allows_read(state: &AppState, headers: &HeaderMap, scope: &Scope) -> bool {
+    let Some(value) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let Some(token) = value.strip_prefix("Bearer ") else {
+        return false;
+    };
+    match state.auth.jwt_keys.verify(token) {
+        Ok(claims) => crate::auth::extract::token_allows(&claims, Permission::Read, scope),
+        Err(_) => false,
+    }
+}
+
+/// Extract the `__Host-aos_session` cookie value from a request's headers.
+fn session_secret_from_cookies(headers: &HeaderMap) -> Option<String> {
+    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
+    let prefix = format!("{}=", crate::auth::session::COOKIE_NAME);
+    cookies
+        .split(';')
+        .map(str::trim)
+        .find_map(|pair| pair.strip_prefix(&prefix).map(str::to_string))
+}
+
+/// Percent-decode a URL path, leaving invalid sequences as-is.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push(hi * 16 + lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Hex digit value, or `None` for a non-hex byte.
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     }
 }
 

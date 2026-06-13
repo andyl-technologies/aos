@@ -71,10 +71,10 @@ async fn fixture_surface_indexes_and_serves() {
     );
 
     // Serve and exercise every audience.
-    let app = router(Arc::new(AppState {
-        db: Arc::clone(&db),
-        external_url: "http://127.0.0.1:8420".into(),
-    }));
+    let app = router(Arc::new(AppState::new(
+        Arc::clone(&db),
+        "http://127.0.0.1:8420".into(),
+    )));
 
     // Machine surface: byte-faithful with the right header classes.
     let (status, headers, body) = get(&app, "/demo/HEAD").await;
@@ -231,10 +231,7 @@ async fn connectrpc_read_path_serves_index() {
         .await
         .unwrap();
 
-    let app = router(Arc::new(AppState {
-        db,
-        external_url: "http://127.0.0.1:8420".into(),
-    }));
+    let app = router(Arc::new(AppState::new(db, "http://127.0.0.1:8420".into())));
 
     let post = |uri: &'static str, body: &'static str| {
         let app = app.clone();

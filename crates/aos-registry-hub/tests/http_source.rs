@@ -69,10 +69,7 @@ async fn http_source_indexes_and_facade_redirects() {
     );
 
     // The facade redirects machine paths to the upstream.
-    let app = router(Arc::new(AppState {
-        db,
-        external_url: "http://127.0.0.1:8420".into(),
-    }));
+    let app = router(Arc::new(AppState::new(db, "http://127.0.0.1:8420".into())));
     let response = app
         .clone()
         .oneshot(
