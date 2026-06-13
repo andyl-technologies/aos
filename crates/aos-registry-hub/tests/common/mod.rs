@@ -71,11 +71,12 @@ impl Fixture {
         let ident = "AOS Test <test@aos> 1770000000 +0000";
         let unsigned = format!("tree {tree}\nauthor {ident}\ncommitter {ident}\n\n{message}\n");
         let armor = sshsig::sign_armored(unsigned.as_bytes(), &self.key);
-        // The armored signature becomes a multi-line gpgsig header with
+        // The armored signature becomes a multi-line gpgsig-sha256 header
+        // (the SHA-256-repo form real git writes) with
         // continuation lines prefixed by one space.
         let mut armor_lines = armor.lines();
         let first = armor_lines.next().expect("armor has lines");
-        let mut gpgsig = format!("gpgsig {first}\n");
+        let mut gpgsig = format!("gpgsig-sha256 {first}\n");
         for line in armor_lines {
             gpgsig.push(' ');
             gpgsig.push_str(line);

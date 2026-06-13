@@ -1,10 +1,25 @@
 /* aos-registry-hub — "release-engineering paper" (RFC-0004).
  *
  * One monospace face, ink on paper, tables and rules as layout, color
- * strictly semantic. Every asset is first-party; the JetBrains Mono woff2
- * ships with the asset pipeline (phase 1 follow-up) — until then the
- * system monospace stack carries the same design.
+ * strictly semantic. Every asset is first-party: JetBrains Mono (OFL)
+ * is embedded in the binary and served from /_assets/ — no font CDNs.
  */
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/_assets/jetbrains-mono-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/_assets/jetbrains-mono-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
 
 :root {
   --paper: #fcfcf9;

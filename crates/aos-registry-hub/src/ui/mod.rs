@@ -15,3 +15,11 @@ pub mod render;
 
 /// The single first-party stylesheet, embedded at build time.
 pub const STYLESHEET: &str = include_str!("style.css");
+
+/// JetBrains Mono Regular (OFL), self-hosted per the first-party asset
+/// policy — no font CDNs, ever. License: `assets/OFL.txt`.
+pub const FONT_REGULAR: &[u8] = include_bytes!("assets/JetBrainsMono-Regular.woff2");
+/// JetBrains Mono Bold (OFL), self-hosted.
+pub const FONT_BOLD: &[u8] = include_bytes!("assets/JetBrainsMono-Bold.woff2");
+/// The SIL Open Font License text for the embedded fonts.
+pub const FONT_LICENSE: &str = include_str!("assets/OFL.txt");
