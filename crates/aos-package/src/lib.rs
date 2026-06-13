@@ -1236,6 +1236,12 @@ pub enum WebCommand {
         /// Optional accent color for the SPA theme, recorded in config.json
         #[arg(long)]
         accent: Option<String>,
+        /// Optional path to a built Leptos CSR SPA dist (the output of
+        /// `trunk build --release` in crates/aos-registry-spa); when given,
+        /// its wasm/js/css are staged into web/ and the generated pages load
+        /// them, progressively enhancing the no-JS floor
+        #[arg(long = "spa-dist")]
+        spa_dist: Option<PathBuf>,
         /// Backend URL to upload generated files to; repeat for multiple
         /// destinations (file://, s3://, sftp://, http://; default: the
         /// upload_urls persisted by `origin config`)

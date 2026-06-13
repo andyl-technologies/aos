@@ -34,6 +34,7 @@ url = { workspace = true }
 reqwest = { workspace = true }
 async-trait = { workspace = true }
 aos-package = { workspace = true }
+aos-registry-surface = { workspace = true }
 aos-proto = { workspace = true }
 connectrpc = { workspace = true }
 buffa = { workspace = true }

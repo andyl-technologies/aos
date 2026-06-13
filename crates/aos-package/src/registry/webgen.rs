@@ -6,11 +6,20 @@
 //! of content-bearing HTML pages and JSON snapshots a registry serves
 //! directly from its own object store, with **zero hub in the serving
 //! path**. The artifacts produced here are the *no-JS tier* (RFC-0004's
-//! tier 3): real, content-bearing pages that a future Leptos-CSR WASM SPA
-//! progressively enhances when it is dropped in alongside. This generator
-//! never emits the SPA dist (`web/app-<hash>_bg.wasm` and friends) — that
-//! artifact is embedded into `apr` and added later; here the floor is the
-//! deliverable.
+//! tier 3): real, content-bearing pages that the Leptos-CSR WASM SPA
+//! (`aos-registry-spa`) progressively enhances when it is dropped in
+//! alongside — the floor is always the deliverable.
+//!
+//! When [`WebConfig::spa_dist`] points at a built SPA dist (the output of
+//! `trunk build --release` in `crates/aos-registry-spa`), the generator
+//! also stages that dist's hash-named `web/app-<hash>_bg.wasm`,
+//! `web/app-<hash>.js`, and `web/style-<hash>.css`, and injects a
+//! same-origin `<script type="module">` loader plus stylesheet `<link>`
+//! into every generated page so the CSR SPA mounts over the no-JS floor.
+//! The SPA is built separately (Rust→wasm via `trunk`, not by this native
+//! crate's build, to avoid a build-graph cycle); `apr web generate
+//! --spa-dist <dir>` then ships it. The page bytes stay content-bearing
+//! either way — curl and lynx always see real content.
 //!
 //! [`generate_web_surface`] writes the following layout under the output
 //! directory, mirroring the upload classes in
@@ -108,6 +117,17 @@ pub struct WebConfig {
     /// (search, auth, publish status). Absent means a fully standalone,
     /// same-origin-only surface.
     pub hub_url: Option<String>,
+    /// Optional path to a built SPA dist directory (the output of
+    /// `trunk build --release` in `crates/aos-registry-spa`).
+    ///
+    /// When set, [`generate_web_surface`] copies the dist's hash-named
+    /// `*_bg.wasm`, `*.js`, and `*.css` into `web/` (normalized to the
+    /// RFC-0004 names `app-<hash>_bg.wasm`, `app-<hash>.js`,
+    /// `style-<hash>.css`) and injects a same-origin `<script
+    /// type="module">` loader and stylesheet `<link>` into every generated
+    /// page, so the CSR SPA progressively enhances the no-JS floor. Absent,
+    /// only the no-JS tier is emitted.
+    pub spa_dist: Option<PathBuf>,
 }
 
 /// One package's newest version and summary, for `index.json`.
@@ -229,8 +249,22 @@ pub fn generate_web_surface(
 
     let mut written = Vec::new();
 
-    // index.html — the content-bearing no-JS home page.
-    let index_html = render_index_html(&config.name, registry_description.as_deref(), &packages);
+    // Stage the Leptos CSR SPA dist (if provided) into web/ and resolve the
+    // same-origin asset names the page loaders reference. Absent, every
+    // page stays the strictly first-party no-JS floor.
+    let spa = match &config.spa_dist {
+        Some(dist) => Some(stage_spa_dist(dist, output_dir, &mut written)?),
+        None => None,
+    };
+
+    // index.html — the content-bearing no-JS home page, progressively
+    // enhanced by the SPA loader when `spa` is present.
+    let index_html = render_index_html(
+        &config.name,
+        registry_description.as_deref(),
+        &packages,
+        spa.as_ref(),
+    );
     written.push(write_file(output_dir, "index.html", &index_html)?);
 
     // web/config.json — branding defaults.
@@ -269,7 +303,7 @@ pub fn generate_web_surface(
         let rel = format!("web/packages/{}.json", pkg.newest.name);
         written.push(write_file(output_dir, &rel, &to_json_pretty(&snapshot)?)?);
 
-        let html = render_browse_html(&config.name, pkg);
+        let html = render_browse_html(&config.name, pkg, spa.as_ref());
         let rel = format!("browse/{}.html", pkg.newest.name);
         written.push(write_file(output_dir, &rel, &html)?);
     }
@@ -559,7 +593,12 @@ a{color:inherit}\
 .note{font-size:.85rem;opacity:.8;margin-top:2rem;border-top:1px solid #8884;padding-top:.5rem}";
 
 /// Render the content-bearing `index.html` home page.
-fn render_index_html(name: &str, description: Option<&str>, packages: &[MergedPackage]) -> String {
+fn render_index_html(
+    name: &str,
+    description: Option<&str>,
+    packages: &[MergedPackage],
+    spa: Option<&SpaAssets>,
+) -> String {
     let mut body = String::new();
     body.push_str(&format!("<h1>{}</h1>\n", escape(name)));
     if let Some(description) = description {
@@ -594,11 +633,11 @@ fn render_index_html(name: &str, description: Option<&str>, packages: &[MergedPa
          app is present it progressively enhances this same URL.</p>\n",
     );
 
-    page(&format!("{name} — registry"), &body)
+    page(&format!("{name} — registry"), &body, spa)
 }
 
 /// Render the per-package `browse/<name>.html` static page.
-fn render_browse_html(registry_name: &str, pkg: &MergedPackage) -> String {
+fn render_browse_html(registry_name: &str, pkg: &MergedPackage, spa: Option<&SpaAssets>) -> String {
     let name = &pkg.newest.name;
     let mut body = String::new();
     body.push_str(&format!(
@@ -655,17 +694,155 @@ fn render_browse_html(registry_name: &str, pkg: &MergedPackage) -> String {
          Nix binary cache surface on the same origin.</p>\n",
     );
 
-    page(&format!("{} — {registry_name}", name), &body)
+    page(&format!("{} — {registry_name}", name), &body, spa)
 }
 
 /// Wrap rendered `body` HTML in the shared, first-party page shell.
-fn page(title: &str, body: &str) -> String {
+///
+/// When `spa` is present, the page's `<head>` additionally carries the
+/// SPA's stylesheet `<link>` and a `<script type="module">` loader that
+/// boots the WASM app from same-origin `web/` assets. The body content is
+/// emitted unconditionally — the SPA mounts over the no-JS floor, never
+/// replaces it as the served bytes — so curl, lynx, and a scripting-blocked
+/// browser still see real content.
+fn page(title: &str, body: &str, spa: Option<&SpaAssets>) -> String {
+    let head_extra = spa.map(SpaAssets::head_markup).unwrap_or_default();
     format!(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{title}</title>\n<style>{PAGE_STYLE}</style>\n</head>\n<body>\n{body}</body>\n</html>\n",
+         <title>{title}</title>\n<style>{PAGE_STYLE}</style>\n{head_extra}</head>\n<body>\n{body}</body>\n</html>\n",
         title = escape(title),
     )
+}
+
+/// The same-origin asset names of a staged SPA dist, referenced by the page
+/// loaders.
+///
+/// All three are first-party files under the registry's own `web/` prefix —
+/// never an off-origin URL — so they satisfy the strict asset policy and a
+/// `default-src 'self'` CSP (the hub additionally allows
+/// `'wasm-unsafe-eval'` on these paths to run the WASM; see
+/// `aos_registry_hub::compat`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpaAssets {
+    /// The `web/app-<hash>.js` wasm-bindgen glue path (relative to root).
+    js: String,
+    /// The `web/app-<hash>_bg.wasm` module path (relative to root).
+    wasm: String,
+    /// The `web/style-<hash>.css` stylesheet path (relative to root).
+    css: String,
+}
+
+impl SpaAssets {
+    /// The `<head>` markup that loads the SPA: a same-origin stylesheet link
+    /// and an ES-module loader that initializes the WASM and mounts the app.
+    ///
+    /// The module script is first-party (same-origin `web/`), so it needs no
+    /// nonce under `default-src 'self'`; the hub permits `'wasm-unsafe-eval'`
+    /// on the web-surface paths so the module's `WebAssembly` instantiation
+    /// runs on Chromium.
+    fn head_markup(&self) -> String {
+        format!(
+            "<link rel=\"stylesheet\" href=\"/{css}\">\n\
+             <script type=\"module\">\n\
+             import init from '/{js}';\n\
+             init({{ module_or_path: '/{wasm}' }});\n\
+             </script>\n",
+            css = self.css,
+            js = self.js,
+            wasm = self.wasm,
+        )
+    }
+}
+
+/// Copy a built SPA dist into `output_dir/web/`, normalizing the filenames
+/// to the RFC-0004 artifact shape and returning the same-origin paths the
+/// page loaders reference.
+///
+/// `trunk build --release` emits hash-named `<bin>-<hash>.js`,
+/// `<bin>-<hash>_bg.wasm`, and `<name>-<hash>.css` under its `dist/`. This
+/// stages exactly those three into `web/app-<hash>.js`,
+/// `web/app-<hash>_bg.wasm`, and `web/style-<hash>.css` (hash preserved so
+/// they keep their immutable cache class), pushing each onto `written`.
+///
+/// # Errors
+///
+/// Returns an error when `dist` is unreadable or does not contain exactly
+/// one `_bg.wasm`, one non-snippet `.js`, and one `.css` file.
+fn stage_spa_dist(dist: &Path, output_dir: &Path, written: &mut Vec<PathBuf>) -> Result<SpaAssets> {
+    let mut wasm_src = None;
+    let mut js_src = None;
+    let mut css_src = None;
+
+    for entry in
+        std::fs::read_dir(dist).with_context(|| format!("reading SPA dist {}", dist.display()))?
+    {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with("_bg.wasm") {
+            wasm_src = Some((entry.path(), name));
+        } else if name.ends_with(".css") {
+            css_src = Some((entry.path(), name));
+        } else if name.ends_with(".js") && !name.ends_with("snippets.js") {
+            // The single wasm-bindgen glue module (Trunk emits exactly one
+            // top-level `.js` alongside the `_bg.wasm`).
+            js_src = Some((entry.path(), name));
+        }
+    }
+
+    let (wasm_path, wasm_name) =
+        wasm_src.context("SPA dist has no *_bg.wasm (did `trunk build` run?)")?;
+    let (js_path, _) = js_src.context("SPA dist has no wasm-bindgen *.js glue")?;
+    let (css_path, css_name) = css_src.context("SPA dist has no *.css stylesheet")?;
+
+    // Reuse the wasm hash for the js name so the pair stays grouped, and the
+    // css hash for the stylesheet. Hash extraction is best-effort: the names
+    // are immutable regardless, so any unparsed name falls back to the
+    // dist filename.
+    let hash = wasm_name
+        .strip_suffix("_bg.wasm")
+        .and_then(|stem| stem.rsplit('-').next())
+        .unwrap_or("spa");
+    let css_hash = css_name
+        .strip_suffix(".css")
+        .and_then(|stem| stem.rsplit('-').next())
+        .unwrap_or(hash);
+
+    let wasm_rel = format!("web/app-{hash}_bg.wasm");
+    let js_rel = format!("web/app-{hash}.js");
+    let css_rel = format!("web/style-{css_hash}.css");
+
+    copy_into(&wasm_path, output_dir, &wasm_rel, written)?;
+    copy_into(&js_path, output_dir, &js_rel, written)?;
+    copy_into(&css_path, output_dir, &css_rel, written)?;
+
+    Ok(SpaAssets {
+        js: js_rel,
+        wasm: wasm_rel,
+        css: css_rel,
+    })
+}
+
+/// Copy one source file to `relative_path` under `output_dir`, recording it
+/// in `written`.
+fn copy_into(
+    source: &Path,
+    output_dir: &Path,
+    relative_path: &str,
+    written: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let dest = output_dir.join(relative_path);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::copy(source, &dest)
+        .with_context(|| format!("copying {} to {}", source.display(), dest.display()))?;
+    written.push(dest);
+    Ok(())
 }
 
 /// Extract the hash component from a store path for narinfo permalinks.
@@ -943,6 +1120,7 @@ references = []
             name: "Acme Registry".to_string(),
             accent: Some("#3366ff".to_string()),
             hub_url: Some("https://hub.example.com".to_string()),
+            spa_dist: None,
         };
         generate_web_surface(reg.path(), out.path(), config).unwrap();
 
@@ -1008,6 +1186,72 @@ references = []
             read(out.path(), "web/index.json"),
             read(dest.path(), "web/index.json"),
         );
+    }
+
+    #[test]
+    fn spa_dist_is_staged_and_pages_load_it() {
+        let reg = make_registry(REGISTRY_META, &[("curl", CURL_TOML)]);
+        let out = TempDir::new().unwrap();
+
+        // A fake `trunk build` dist: the three hash-named artifacts.
+        let dist = TempDir::new().unwrap();
+        std::fs::write(
+            dist.path().join("aos-registry-spa-deadbeef_bg.wasm"),
+            b"\0asm",
+        )
+        .unwrap();
+        std::fs::write(
+            dist.path().join("aos-registry-spa-deadbeef.js"),
+            "export default 1;",
+        )
+        .unwrap();
+        std::fs::write(dist.path().join("app-cafef00d.css"), "body{}").unwrap();
+
+        let config = WebConfig {
+            spa_dist: Some(dist.path().to_path_buf()),
+            ..WebConfig::default()
+        };
+        let written = generate_web_surface(reg.path(), out.path(), config).unwrap();
+
+        // The three assets are staged into web/ with normalized names.
+        for rel in [
+            "web/app-deadbeef_bg.wasm",
+            "web/app-deadbeef.js",
+            "web/style-cafef00d.css",
+        ] {
+            assert!(out.path().join(rel).is_file(), "missing staged {rel}");
+            assert!(
+                written.iter().any(|p| p.ends_with(rel)),
+                "{rel} not returned"
+            );
+        }
+
+        // index.html still carries real content AND now loads the SPA from
+        // same-origin web/ assets (no off-origin URL).
+        let index = read(out.path(), "index.html");
+        assert!(index.contains("curl"), "no-JS content preserved");
+        assert!(index.contains("<script type=\"module\">"));
+        assert!(index.contains("/web/app-deadbeef.js"));
+        assert!(index.contains("/web/app-deadbeef_bg.wasm"));
+        assert!(index.contains("/web/style-cafef00d.css"));
+        // First-party only: the loader references no off-origin URL.
+        assert!(!index.contains("http://") && !index.contains("https://"));
+
+        // Browse pages get the loader too.
+        let browse = read(out.path(), "browse/curl.html");
+        assert!(browse.contains("/web/app-deadbeef.js"));
+        assert!(browse.contains("curl"));
+    }
+
+    #[test]
+    fn no_spa_dist_keeps_pure_no_js_floor() {
+        let reg = make_registry(REGISTRY_META, &[("curl", CURL_TOML)]);
+        let out = TempDir::new().unwrap();
+        generate_web_surface(reg.path(), out.path(), WebConfig::default()).unwrap();
+        let index = read(out.path(), "index.html");
+        // No SPA loader and no stylesheet link when no dist is provided.
+        assert!(!index.contains("<script"));
+        assert!(!index.contains("<link"));
     }
 
     #[test]

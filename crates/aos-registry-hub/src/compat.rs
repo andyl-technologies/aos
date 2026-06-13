@@ -102,6 +102,33 @@ pub fn content_type(path: &str) -> &'static str {
     }
 }
 
+/// The `Content-Security-Policy` for a web-surface path that boots the SPA,
+/// or `None` for every other machine path.
+///
+/// The global security-header layer ([`crate::server`]) applies the strict
+/// `default-src 'self'` everywhere by default. The on-CDN Leptos-CSR SPA
+/// (RFC-0004's web surface) is the one exception: running WebAssembly on
+/// Chromium requires `'wasm-unsafe-eval'` in `script-src`, and the SPA's
+/// ES-module loader is a same-origin (`'self'`) first-party script with no
+/// inline body, so no nonce is needed. This relaxation is scoped to the
+/// exact paths that execute the SPA — the proxied `index.html`, the
+/// `browse/<name>.html` pages, and the `web/app-*.js`/`web/app-*_bg.wasm`
+/// assets — so every other response (narinfos, objects, JSON snapshots,
+/// the human `/-/` namespace) keeps the strict default.
+///
+/// On a *direct* frontend the SPA is served by plain static hosting with no
+/// hub in the path, so no hub CSP applies; this header only matters on a
+/// *hub-proxied* frontend, where the hub serves these bytes.
+pub fn web_surface_csp(path: &str) -> Option<&'static str> {
+    let runs_spa = path == "index.html"
+        || (path.starts_with("browse/") && path.ends_with(".html"))
+        || (path.starts_with("web/") && (path.ends_with(".js") || path.ends_with(".wasm")));
+    runs_spa.then_some(
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
+         style-src 'self' 'unsafe-inline'; connect-src 'self'",
+    )
+}
+
 /// Serve one machine path for a registry.
 ///
 /// `file://` (or bare-path) sources are served from disk, with directory
@@ -167,6 +194,15 @@ pub async fn serve_machine_path(registry: &RegistryRecord, path: &str) -> Respon
                 header::CACHE_CONTROL,
                 HeaderValue::from_static(cache_control(path)),
             );
+            // Web-surface paths that boot the SPA get the relaxed CSP that
+            // permits same-origin WASM; every other path keeps the strict
+            // `default-src 'self'` the global header layer applies.
+            if let Some(csp) = web_surface_csp(path) {
+                headers.insert(
+                    header::CONTENT_SECURITY_POLICY,
+                    HeaderValue::from_static(csp),
+                );
+            }
             response
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -323,6 +359,69 @@ mod tests {
         ] {
             assert_eq!(cache_control(mutable), MUTABLE_CACHE_CONTROL, "{mutable}");
         }
+    }
+
+    #[test]
+    fn web_surface_csp_relaxes_only_spa_executing_paths() {
+        // Paths that boot the SPA get 'wasm-unsafe-eval' in script-src.
+        for spa_path in [
+            "index.html",
+            "browse/curl.html",
+            "web/app-ab12cd.js",
+            "web/app-ab12cd_bg.wasm",
+        ] {
+            let csp = web_surface_csp(spa_path).unwrap_or_default();
+            assert!(csp.contains("wasm-unsafe-eval"), "{spa_path}: {csp}");
+            assert!(csp.contains("default-src 'self'"), "{spa_path}");
+        }
+        // Every other machine path keeps the strict default (None → the
+        // global `default-src 'self'`).
+        for strict in [
+            "web/config.json",
+            "web/index.json",
+            "web/packages/curl.json",
+            "web/style-ab12cd.css",
+            "objects/ab/cd",
+            "abcd.narinfo",
+            "HEAD",
+        ] {
+            assert!(web_surface_csp(strict).is_none(), "{strict}");
+        }
+    }
+
+    #[tokio::test]
+    async fn serves_index_html_with_relaxed_spa_csp() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            b"<!DOCTYPE html><h1>reg</h1>",
+        )
+        .unwrap();
+        let registry = test_registry(dir.path().display().to_string());
+        let response = serve_machine_path(&registry, "index.html").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let csp = response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(csp.contains("wasm-unsafe-eval"), "got: {csp}");
+    }
+
+    #[tokio::test]
+    async fn serves_json_snapshot_without_spa_csp() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("web")).unwrap();
+        std::fs::write(dir.path().join("web/index.json"), b"{}").unwrap();
+        let registry = test_registry(dir.path().display().to_string());
+        let response = serve_machine_path(&registry, "web/index.json").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        // The facade sets no CSP here; the global layer applies the strict
+        // default. So the per-response header is absent.
+        assert!(response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .is_none());
     }
 
     #[cfg(unix)]

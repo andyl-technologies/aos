@@ -8,6 +8,7 @@ aos-core = { workspace = true }
 aos-cache = { workspace = true }
 aos-net = { workspace = true }
 aos-systemd = { workspace = true }
+aos-registry-surface = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
