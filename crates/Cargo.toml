@@ -10,6 +10,7 @@ members = [
     "aos-remote",
     "aos-doc",
     "aos-package",
+    "aos-registry-hub",
     "aos-systemd",
 ]
 
@@ -77,6 +78,9 @@ clap_complete = "4"
 toml = "0.8"
 semver = "1"
 
+# Registry hub (pure-Rust zlib for git loose objects; wasm-clean rust backend)
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
 # Dev
 tempfile = "3"
 libc = "0.2"
@@ -103,4 +107,5 @@ aos-cache = { path = "aos-cache" }
 aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
 aos-package = { path = "aos-package" }
+aos-registry-hub = { path = "aos-registry-hub" }
 aos-systemd = { path = "aos-systemd" }

@@ -44,82 +44,82 @@ use crate::types::{PackageMeta, SysrootImageEntry, package_name_bucket, validate
 // ---------------------------------------------------------------------------
 
 /// Top-level package TOML file from a registry.
-#[derive(Debug, Deserialize)]
-struct PackageToml {
+#[derive(Debug, Clone, Deserialize)]
+pub struct PackageToml {
     /// The `[package]` header with name and descriptive metadata.
-    package: PackageHeader,
+    pub package: PackageHeader,
     /// All published `[[versions]]` entries, oldest layout order preserved.
     #[serde(default)]
-    versions: Vec<VersionEntry>,
+    pub versions: Vec<VersionEntry>,
 }
 
 /// The `[package]` header section of a package TOML file.
-#[derive(Debug, Deserialize)]
-struct PackageHeader {
+#[derive(Debug, Clone, Deserialize)]
+pub struct PackageHeader {
     /// Package name; must match the TOML file's basename.
-    name: String,
+    pub name: String,
     /// One-line human-readable description, searched by `apm search`.
-    description: String,
+    pub description: String,
     /// Optional upstream homepage URL.
     #[serde(default)]
-    homepage: Option<String>,
+    pub homepage: Option<String>,
     /// SPDX-style license identifier.
-    license: String,
+    pub license: String,
     /// Maintainer name or team handle.
-    maintainer: String,
+    pub maintainer: String,
     /// Whether this package is a system toplevel (sysroot).
     #[serde(default)]
-    sysroot: bool,
+    pub sysroot: bool,
 }
 
 /// One `[[versions]]` entry of a package TOML file.
-#[derive(Debug, Deserialize)]
-struct VersionEntry {
+#[derive(Debug, Clone, Deserialize)]
+pub struct VersionEntry {
     /// Version string; semver when possible, calver otherwise.
-    version: String,
+    pub version: String,
     /// Previous version in the version chain (for sysroot packages).
     #[serde(default)]
-    previous: Option<String>,
+    pub previous: Option<String>,
     /// Per-platform artifacts, keyed by platform triple
     /// (e.g. `x86_64-linux`).
     #[serde(default)]
-    platforms: HashMap<String, PlatformEntry>,
+    pub platforms: HashMap<String, PlatformEntry>,
 }
 
 /// A `[versions.platforms.<platform>]` artifact entry.
-#[derive(Debug, Deserialize)]
-struct PlatformEntry {
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlatformEntry {
     /// Absolute store path of the built output.
-    store_path: String,
+    pub store_path: String,
     /// NAR hash of the output (`sha256:...`).
-    nar_hash: String,
+    pub nar_hash: String,
     /// Uncompressed NAR size in bytes.
-    nar_size: u64,
+    pub nar_size: u64,
     /// Total uncompressed size of the runtime closure in bytes.
-    closure_size: u64,
+    pub closure_size: u64,
     /// Store path of the derivation that produced the output.
-    source_drv: String,
+    pub source_drv: String,
     /// NAR hash of the source derivation closure.
-    source_nar_hash: String,
+    pub source_nar_hash: String,
     /// Store path hashes of direct runtime references.
     #[serde(default)]
-    references: Vec<String>,
+    pub references: Vec<String>,
     /// Pre-compiled images (only for sysroot packages).
     #[serde(default)]
-    images: Vec<ImageEntry>,
+    pub images: Vec<ImageEntry>,
 }
 
 /// A pre-compiled image entry within a platform entry.
-#[derive(Debug, Deserialize)]
-struct ImageEntry {
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImageEntry {
     /// Image format identifier (e.g. `qcow2`).
-    format: String,
+    pub format: String,
     /// Absolute store path of the image artifact.
-    store_path: String,
+    pub store_path: String,
     /// NAR hash of the image (`sha256:...`).
-    nar_hash: String,
+    pub nar_hash: String,
     /// Uncompressed NAR size of the image in bytes.
-    nar_size: u64,
+    pub nar_size: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +220,22 @@ pub(crate) fn parse_registry_matching(
 pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<PackageMeta>> {
     let metas = parse_package_toml_versions(content, platform)?;
     Ok(newest_version(&metas))
+}
+
+/// Parse a single package TOML file into its full multi-platform document.
+///
+/// Unlike [`parse_package_toml`], which flattens to the newest version for
+/// one platform, this returns the complete file: every version and every
+/// platform entry, exactly as committed. Consumers that index or display a
+/// whole registry (rather than resolve one install) need the unflattened
+/// view — the registry hub's indexer is the canonical caller.
+///
+/// # Errors
+///
+/// Returns an error if `content` is not valid package TOML or the declared
+/// package name is not path-safe.
+pub fn parse_package_file(content: &str) -> Result<PackageToml> {
+    parse_package_toml_document(content)
 }
 
 /// Validate one package TOML file's declared name and shard path.
