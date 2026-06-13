@@ -60,10 +60,75 @@ enum Command {
         #[command(subcommand)]
         command: RegistryCommand,
     },
+    /// Manage organizations.
+    Org {
+        #[command(subcommand)]
+        command: OrgCommand,
+    },
+    /// Manage projects within an org.
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
+    /// Manage storage bindings within an org.
+    Binding {
+        #[command(subcommand)]
+        command: BindingCommand,
+    },
     /// Re-index one registry (or all) now.
     Index {
         /// Registry slug; omit to index everything.
         slug: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum OrgCommand {
+    /// Create an organization.
+    Add {
+        /// URL-safe org slug.
+        slug: String,
+        /// Human-readable org name.
+        name: String,
+    },
+    /// List organizations.
+    List,
+}
+
+#[derive(Subcommand)]
+enum ProjectCommand {
+    /// Create a project at a materialized path under an org.
+    Add {
+        /// Owning org slug.
+        org: String,
+        /// Materialized path (use "" for an org-root project).
+        path: String,
+        /// Human-readable project name.
+        name: String,
+    },
+    /// List an org's projects.
+    List {
+        /// Owning org slug.
+        org: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum BindingCommand {
+    /// Create a local_fs storage binding under an org.
+    Add {
+        /// Owning org slug.
+        org: String,
+        /// Binding name, unique within the org.
+        name: String,
+        /// Filesystem path the binding roots at.
+        #[arg(long)]
+        root: String,
+    },
+    /// List an org's storage bindings.
+    List {
+        /// Owning org slug.
+        org: String,
     },
 }
 
@@ -81,6 +146,23 @@ enum RegistryCommand {
         /// Index without signature verification (displayed as unverified).
         #[arg(long)]
         no_verify: bool,
+    },
+    /// Create a managed (org-owned, storage-bound) registry.
+    Create {
+        /// Canonical path: org/project/name (project may be empty: org//name).
+        path: String,
+        /// Storage binding name within the org (omit for unbound).
+        #[arg(long)]
+        binding: Option<String>,
+        /// Sub-prefix under the binding root.
+        #[arg(long, default_value = "")]
+        prefix: String,
+        /// Visibility: public, internal, or private.
+        #[arg(long, default_value = "private")]
+        visibility: String,
+        /// Trust anchor in name:Ed25519:<base64> form (repeatable).
+        #[arg(long = "trust-key")]
+        trust_keys: Vec<String>,
     },
     /// List registered registries.
     List,
@@ -116,7 +198,7 @@ async fn main() -> Result<()> {
             }
 
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen}"));
-            let state = Arc::new(AppState { db, external_url });
+            let state = Arc::new(AppState::new(db, external_url));
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await
                 .with_context(|| format!("binding {listen}"))?;
@@ -152,6 +234,45 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+                RegistryCommand::Create {
+                    path,
+                    binding,
+                    prefix,
+                    visibility,
+                    trust_keys,
+                } => {
+                    let (org_slug, project_path, name) = parse_canonical_path(&path)?;
+                    let org = db
+                        .org_by_slug(org_slug)?
+                        .with_context(|| format!("no org '{org_slug}'"))?;
+                    let binding_id = match &binding {
+                        Some(name) => Some(
+                            db.storage_binding_by_name(org.id, name)?
+                                .with_context(|| {
+                                    format!("no storage binding '{name}' in org '{org_slug}'")
+                                })?
+                                .id,
+                        ),
+                        None => None,
+                    };
+                    let id = db.create_managed_registry(
+                        org.id,
+                        project_path,
+                        name,
+                        &visibility,
+                        binding_id,
+                        &prefix,
+                        &trust_keys,
+                        true,
+                    )?;
+                    let registry = db
+                        .registry_by_scope(org_slug, project_path, name)?
+                        .context("registry vanished after creation")?;
+                    println!(
+                        "created managed registry '{}' (id {id}, {visibility})",
+                        registry.slug
+                    );
+                }
                 RegistryCommand::List => {
                     for registry in db.list_registries()? {
                         let state = db
@@ -159,6 +280,68 @@ async fn main() -> Result<()> {
                             .map(|s| s.state)
                             .unwrap_or_else(|| "unknown".into());
                         println!("{}\t{}\t{}", registry.slug, registry.source_url, state);
+                    }
+                }
+            }
+        }
+        Command::Org { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            match command {
+                OrgCommand::Add { slug, name } => {
+                    let id = db.create_org(&slug, &name)?;
+                    println!("created org '{slug}' (id {id})");
+                }
+                OrgCommand::List => {
+                    for org in db.list_orgs()? {
+                        println!("{}\t{}", org.slug, org.name);
+                    }
+                }
+            }
+        }
+        Command::Project { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            match command {
+                ProjectCommand::Add { org, path, name } => {
+                    let org_record = db
+                        .org_by_slug(&org)?
+                        .with_context(|| format!("no org '{org}'"))?;
+                    let id = db.create_project(org_record.id, &path, &name)?;
+                    println!("created project '{org}/{path}' (id {id})");
+                }
+                ProjectCommand::List { org } => {
+                    let org_record = db
+                        .org_by_slug(&org)?
+                        .with_context(|| format!("no org '{org}'"))?;
+                    for project in db.list_projects(org_record.id)? {
+                        println!("{}\t{}", project.path, project.name);
+                    }
+                }
+            }
+        }
+        Command::Binding { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            match command {
+                BindingCommand::Add {
+                    org,
+                    name,
+                    root: binding_root,
+                } => {
+                    let org_record = db
+                        .org_by_slug(&org)?
+                        .with_context(|| format!("no org '{org}'"))?;
+                    let id =
+                        db.create_storage_binding(org_record.id, &name, "local_fs", &binding_root)?;
+                    println!("created binding '{org}/{name}' (id {id}) -> {binding_root}");
+                }
+                BindingCommand::List { org } => {
+                    let org_record = db
+                        .org_by_slug(&org)?
+                        .with_context(|| format!("no org '{org}'"))?;
+                    for binding in db.list_storage_bindings(org_record.id)? {
+                        println!("{}\t{}\t{}", binding.name, binding.kind, binding.root);
                     }
                 }
             }
@@ -273,6 +456,33 @@ fn validate_slug(slug: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Parse a `org/project…/name` canonical path into its `(org, project_path,
+/// name)` parts.
+///
+/// The first segment is the org, the last is the registry name, and
+/// everything in between (joined with `/`) is the project's materialized
+/// path — empty for an org-root registry, which is written `org//name` or
+/// just `org/name`.
+///
+/// # Errors
+///
+/// Returns an error when the path has fewer than two `/`-separated segments
+/// (no org and name) or any non-project segment is empty.
+fn parse_canonical_path(path: &str) -> Result<(&str, &str, &str), anyhow::Error> {
+    let trimmed = path.trim_matches('/');
+    let (org, rest) = trimmed
+        .split_once('/')
+        .with_context(|| format!("canonical path '{path}' must be org/project/name"))?;
+    let (project_path, name) = match rest.rsplit_once('/') {
+        Some((project, name)) => (project, name),
+        None => ("", rest),
+    };
+    if org.is_empty() || name.is_empty() {
+        anyhow::bail!("canonical path '{path}' must have a non-empty org and name");
+    }
+    Ok((org, project_path, name))
 }
 
 fn tracing_subscriber_init() {

@@ -237,6 +237,22 @@ async fn autoindex(slug: &str, path: &str, dir: &std::path::Path) -> Response {
 mod tests {
     use super::*;
 
+    /// A minimal phase-1 `file://`-style registry record for facade tests.
+    fn test_registry(source_url: String) -> RegistryRecord {
+        RegistryRecord {
+            id: 1,
+            slug: "demo".into(),
+            source_url,
+            trust_keys: vec![],
+            require_signatures: false,
+            org_id: None,
+            project_path: String::new(),
+            visibility: "public".into(),
+            storage_binding_id: None,
+            prefix: String::new(),
+        }
+    }
+
     #[test]
     fn machine_paths_are_recognized() {
         for path in [
@@ -316,13 +332,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("channels")).unwrap();
         std::os::unix::fs::symlink(outside.path(), dir.path().join("channels/stable")).unwrap();
-        let registry = RegistryRecord {
-            id: 1,
-            slug: "demo".into(),
-            source_url: dir.path().display().to_string(),
-            trust_keys: vec![],
-            require_signatures: false,
-        };
+        let registry = test_registry(dir.path().display().to_string());
         let response = serve_machine_path(&registry, "channels/stable/").await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
@@ -333,13 +343,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("channels/stable")).unwrap();
         std::fs::write(dir.path().join("channels/stable/00"), b"payload").unwrap();
         std::fs::write(dir.path().join("channels/stable/<evil>"), b"x").unwrap();
-        let registry = RegistryRecord {
-            id: 1,
-            slug: "demo".into(),
-            source_url: dir.path().display().to_string(),
-            trust_keys: vec![],
-            require_signatures: false,
-        };
+        let registry = test_registry(dir.path().display().to_string());
 
         // Trailing-slash directory: an HTML listing with relative links.
         let response = serve_machine_path(&registry, "channels/stable/").await;
