@@ -330,6 +330,84 @@ async fn internal_registry_requires_org_membership() {
 }
 
 #[tokio::test]
+async fn instance_home_lists_only_visible_registries() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let org = db.create_org("acme", "Acme, Inc.").unwrap();
+
+    // One registry per visibility level, all under acme. No binding/surface is
+    // needed: the instance home only lists records and their index state.
+    let mk = |project: &str, name: &str, vis: &str| {
+        db.create_managed_registry(org, project, name, vis, None, "", &[], false)
+            .unwrap();
+        format!("acme/{project}/{name}")
+    };
+    let public = mk("p", "pub", "public");
+    let internal = mk("i", "int", "internal");
+    let private = mk("s", "sec", "private");
+
+    let app = router(app_state(Arc::clone(&db)));
+
+    // Anonymous: only the public registry's slug appears in the listing.
+    let (status, body) = get(&app, "/", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(&public), "public must be listed: {body}");
+    assert!(
+        !body.contains(&internal),
+        "internal must be hidden from anon: {body}"
+    );
+    assert!(
+        !body.contains(&private),
+        "private must be hidden from anon: {body}"
+    );
+
+    // The same hiding applies under the ?q= search.
+    let (status, body) = get(&app, "/?q=acme", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(&public), "{body}");
+    assert!(!body.contains(&internal), "{body}");
+    assert!(!body.contains(&private), "{body}");
+
+    // An outsider with no acme grant: still only the public registry, same as
+    // an anonymous caller (a valid session does not by itself reveal anything).
+    let outsider = db.create_user("ext@other.com", None).unwrap();
+    let outsider_session = db.create_session(outsider, 3600, 0).unwrap();
+    let outsider_cookie = format!("__Host-aos_session={outsider_session}");
+    let (status, body) = get(&app, "/", Some(&outsider_cookie), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(&public), "{body}");
+    assert!(
+        !body.contains(&internal),
+        "outsider hidden internal: {body}"
+    );
+    assert!(!body.contains(&private), "outsider hidden private: {body}");
+
+    // A member of acme (org Viewer grant): the org-scoped Read covers internal
+    // and the private registry's sub-scope alike, so all three are listed.
+    let member = db.create_user("dev@acme.com", None).unwrap();
+    db.grant_membership("user", member, "acme", Role::Viewer.as_str())
+        .unwrap();
+    let session = db.create_session(member, 3600, 0).unwrap();
+    let cookie = format!("__Host-aos_session={session}");
+    let (status, body) = get(&app, "/", Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(&public), "{body}");
+    assert!(body.contains(&internal), "member sees internal: {body}");
+    assert!(body.contains(&private), "org member sees private: {body}");
+
+    // A bearer token granting Read only on the private scope reveals exactly
+    // that registry (plus the always-public one), not the internal one.
+    let token = bearer(Principal::user(outsider), &private, &[Permission::Read]);
+    let (status, body) = get(&app, "/", None, Some(&token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(&public), "{body}");
+    assert!(body.contains(&private), "granted private is listed: {body}");
+    assert!(
+        !body.contains(&internal),
+        "registry-scoped token does not reveal internal: {body}"
+    );
+}
+
+#[tokio::test]
 async fn rpc_create_org_project_binding_registry_happy_path() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     // A user principal to act as the org bootstrapper.

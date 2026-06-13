@@ -42,6 +42,7 @@ pub mod extract;
 pub mod jwt;
 pub mod magic;
 pub mod oidc;
+pub mod seal;
 pub mod session;
 pub mod token;
 

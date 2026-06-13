@@ -15,7 +15,7 @@
 //! `serve --dev` boots zero-config with a root under the current
 //! directory and a periodic background re-index.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -420,6 +420,13 @@ async fn main() -> Result<()> {
             // In dev mode the "check your email" page shows the magic link
             // inline (the default LogMailer logs rather than sends).
             app_state.dev = dev;
+            // Seal at-rest secrets (OIDC client secrets, hosted-key seeds) with
+            // a real AES-256-GCM sealer keyed by the persisted instance key.
+            // `--dev` keeps the reproducible XOR placeholder so local testing
+            // does not depend on a generated key file.
+            if !dev {
+                app_state.sealer = aos_registry_hub::auth::seal::instance_sealer(&root)?.into();
+            }
             let state = Arc::new(app_state);
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await
@@ -650,7 +657,7 @@ async fn main() -> Result<()> {
         Command::Idp { command } => {
             let root = resolve_root(cli.root, false)?;
             let db = Database::open(&root.join("hub.db"))?;
-            run_idp_command(&db, command)?;
+            run_idp_command(&db, &root, command)?;
         }
         Command::Domain { command } => {
             let root = resolve_root(cli.root, false)?;
@@ -660,12 +667,12 @@ async fn main() -> Result<()> {
         Command::HostedKey { command } => {
             let root = resolve_root(cli.root, false)?;
             let db = Database::open(&root.join("hub.db"))?;
-            run_hosted_key_command(&db, command)?;
+            run_hosted_key_command(&db, &root, command)?;
         }
         Command::Channel { command } => {
             let root = resolve_root(cli.root, false)?;
             let db = Database::open(&root.join("hub.db"))?;
-            run_channel_command(&db, command).await?;
+            run_channel_command(&db, &root, command).await?;
         }
         Command::Webhook { command } => {
             let root = resolve_root(cli.root, false)?;
@@ -732,16 +739,17 @@ fn run_webhook_command(db: &Database, command: WebhookCommand) -> Result<()> {
 ///
 /// `create` enrolls a key and prints its public trusted-key line (the only
 /// time the public anchor is surfaced for copying); `attach` binds a key to a
-/// registry; `list` shows an org's keys. The seed is sealed with the
-/// placeholder sealer (matching the server's dev default).
-fn run_hosted_key_command(db: &Database, command: HostedKeyCommand) -> Result<()> {
-    use aos_registry_hub::auth::oidc;
+/// registry; `list` shows an org's keys. The seed is sealed with the same
+/// [`instance_sealer`](aos_registry_hub::auth::seal::instance_sealer) the
+/// server uses, so the seed round-trips between this CLI and `serve`.
+fn run_hosted_key_command(db: &Database, root: &Path, command: HostedKeyCommand) -> Result<()> {
+    use aos_registry_hub::auth::seal::instance_sealer;
     match command {
         HostedKeyCommand::Create { org, key_id } => {
             let org_record = db
                 .org_by_slug(&org)?
                 .with_context(|| format!("no org '{org}'"))?;
-            let sealer = oidc::dev_sealer();
+            let sealer = instance_sealer(root)?;
             let public = db.create_hosted_key(sealer.as_ref(), org_record.id, &key_id)?;
             println!("enrolled hosted key '{key_id}' in org '{org}'");
             println!("pin this trusted-key line as a registry anchor:");
@@ -779,8 +787,8 @@ fn run_hosted_key_command(db: &Database, command: HostedKeyCommand) -> Result<()
 ///
 /// This is the hosted-key path. It errors clearly when the registry has no
 /// hosted key, pointing at the prepared-operation/CLI flow instead.
-async fn run_channel_command(db: &Database, command: ChannelCommand) -> Result<()> {
-    use aos_registry_hub::auth::oidc;
+async fn run_channel_command(db: &Database, root: &Path, command: ChannelCommand) -> Result<()> {
+    use aos_registry_hub::auth::seal::instance_sealer;
     match command {
         ChannelCommand::Advance {
             canonical,
@@ -798,7 +806,7 @@ async fn run_channel_command(db: &Database, command: ChannelCommand) -> Result<(
                      attach a hosted key with `hosted-key attach`"
                 );
             }
-            let sealer = oidc::dev_sealer();
+            let sealer = instance_sealer(root)?;
             let when = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
@@ -828,11 +836,12 @@ async fn run_channel_command(db: &Database, command: ChannelCommand) -> Result<(
 
 /// Handle the `idp set`/`idp show` subcommands.
 ///
-/// `set` seals the client secret with the placeholder sealer (matching the
-/// server's dev default) before storing it; `show` prints the configuration
-/// with the secret redacted.
-fn run_idp_command(db: &Database, command: IdpCommand) -> Result<()> {
-    use aos_registry_hub::auth::oidc;
+/// `set` seals the client secret with the same
+/// [`instance_sealer`](aos_registry_hub::auth::seal::instance_sealer) the
+/// server uses before storing it, so the secret round-trips to `serve`;
+/// `show` prints the configuration with the secret redacted.
+fn run_idp_command(db: &Database, root: &Path, command: IdpCommand) -> Result<()> {
+    use aos_registry_hub::auth::seal::instance_sealer;
     use aos_registry_hub::db::IdpConfigRecord;
     match command {
         IdpCommand::Set(args) => {
@@ -860,7 +869,7 @@ fn run_idp_command(db: &Database, command: IdpCommand) -> Result<()> {
             if aos_registry_hub::domain::Role::parse(&default_role).is_none() {
                 anyhow::bail!("invalid --default-role '{default_role}'");
             }
-            let sealer = oidc::dev_sealer();
+            let sealer = instance_sealer(root)?;
             let client_secret_enc = match &client_secret {
                 Some(secret) => Some(sealer.seal(secret)?),
                 None => None,
@@ -1050,10 +1059,35 @@ async fn index_all(db: &Database) {
             }
         };
         match index_and_record(db, fetch.as_ref(), &registry).await {
-            Ok(_) => run_presence_validation(db, &registry).await,
+            Ok(_) => {
+                run_presence_validation(db, &registry).await;
+                run_cache_probes(db, &registry).await;
+            }
             Err(err) => {
                 tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "index failed");
             }
+        }
+    }
+}
+
+/// Probe each committed cache's freshness for one registry, logging a one-line
+/// summary per cache; probe failures are logged, never fatal.
+async fn run_cache_probes(db: &Database, registry: &RegistryRecord) {
+    let http = aos_registry_hub::fetch::hardened_client();
+    match aos_registry_hub::probe::probe_caches(db, &http, registry).await {
+        Ok(probes) => {
+            for probe in &probes {
+                tracing::info!(
+                    slug = %registry.slug,
+                    cache = %probe.cache_url,
+                    status = %probe.status.as_str(),
+                    latency_ms = probe.latency_ms,
+                    "cache freshness probe"
+                );
+            }
+        }
+        Err(err) => {
+            tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "cache probe failed");
         }
     }
 }

@@ -80,7 +80,7 @@ pub fn sign_release_tag(
     raw_payload.extend_from_slice(armor.as_bytes());
     raw_payload.push(b'\n');
     let oid = hash_object(ObjectKind::Tag, &raw_payload);
-    let loose_bytes = encode_loose(ObjectKind::Tag, &raw_payload);
+    let loose_bytes = encode_loose(ObjectKind::Tag, &raw_payload)?;
     Ok(SignedTagBytes {
         oid,
         loose_bytes,

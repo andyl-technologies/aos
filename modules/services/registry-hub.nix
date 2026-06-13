@@ -88,13 +88,31 @@ in {
       wantedBy = ["multi-user.target"];
       after = ["network-online.target"];
       wants = ["network-online.target"];
+      # Restart hardening. The hub exposes /healthz but does not yet emit
+      # sd_notify READY=1/WATCHDOG=1, so a Type=notify readiness gate and
+      # WatchdogSec are not wired up — that needs sd_notify support in the
+      # binary (the `sd-notify` crate would do it). Until then we keep
+      # Type=simple and harden the restart policy: always restart, back off,
+      # and cap the restart rate so a crash loop surfaces as a failed unit
+      # rather than spinning forever.
+      #
+      # TODO(rfc-0004): add sd_notify to `serve` (emit READY=1 after the
+      # listener binds, WATCHDOG=1 periodically) and switch to Type=notify +
+      # WatchdogSec for true readiness/liveness supervision.
+      unitConfig = {
+        # Cap the restart rate: more than 5 starts in 60s fails the unit
+        # (so a crash loop surfaces as `failed`, not an endless respawn).
+        StartLimitIntervalSec = 60;
+        StartLimitBurst = 5;
+      };
       serviceConfig = {
+        Type = "simple";
         ExecStart =
           "${cfg.package}/bin/aos-registry-hub"
           + " --root ${lib.escapeShellArg cfg.root}"
           + " serve --listen ${lib.escapeShellArg cfg.listen}"
           + externalArg;
-        Restart = "on-failure";
+        Restart = "always";
         RestartSec = "5s";
         User = "aos-registry-hub";
         Group = "aos-registry-hub";
