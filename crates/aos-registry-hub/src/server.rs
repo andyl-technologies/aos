@@ -52,6 +52,9 @@ pub struct AppState {
     /// Authentication state: JWT keys and the access-token TTL, shared with
     /// the `/oauth2/token` exchange and the mutating ConnectRPC services.
     pub auth: Arc<AuthState>,
+    /// Per-registry publish leases held by the upload facade
+    /// ([`crate::facade`]); process-local for phase 1/2.
+    pub leases: crate::facade::LeaseMap,
 }
 
 impl AppState {
@@ -67,6 +70,7 @@ impl AppState {
             db,
             external_url,
             auth,
+            leases: crate::facade::LeaseMap::new(),
         }
     }
 }
@@ -138,7 +142,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/{slug}/-/channels/{name}", get(channel_page))
         .route("/{slug}/-/releases", get(releases_page))
         .route("/{slug}/-/health", get(health_page))
-        .route("/{slug}/{*path}", get(machine_path));
+        .route(
+            "/{slug}/{*path}",
+            get(machine_path)
+                .put(put_machine_path)
+                .head(head_machine_path),
+        );
     for path in connect_paths {
         router = router.route_service(&path, connect_service.clone());
     }
@@ -146,7 +155,9 @@ pub fn router(state: Arc<AppState>) -> Router {
     // static-over-dynamic precedence keeps the explicit routes above
     // (healthz, _assets, oauth2, RPC method paths, the flat `/{slug}` shapes)
     // winning, and only requests matching none of them reach the resolver.
-    router = router.fallback(get(nested_catch_all));
+    // The fallback handles every method so nested-canonical registries
+    // (slugs with slashes) accept the upload facade's PUT/HEAD too.
+    router = router.fallback(nested_catch_all);
     router
         .merge(oauth2)
         .with_state(state)
@@ -511,6 +522,72 @@ async fn machine_path(
     }
 }
 
+/// The `PUT /{slug}/{*path}` route: write one surface file to a managed
+/// registry through the upload facade.
+///
+/// A flat single-segment slug that names a registry writes directly; any
+/// other shape (a nested-canonical slug, or no flat match) is resolved by
+/// longest registry-slug prefix and the remaining tail is the surface
+/// path. The body extractor is last so axum buffers it only for the write
+/// methods.
+async fn put_machine_path(
+    State(state): State<Arc<AppState>>,
+    Path((slug, path)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    match resolve_write_target(&state, &slug, &path) {
+        Ok(Some((registry_slug, tail))) => {
+            crate::facade::put_machine_path(&state, &registry_slug, &tail, &headers, body).await
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// The `HEAD /{slug}/{*path}` route: probe whether a managed registry's
+/// surface file exists, so an uploader can skip it.
+async fn head_machine_path(
+    State(state): State<Arc<AppState>>,
+    Path((slug, path)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    match resolve_write_target(&state, &slug, &path) {
+        Ok(Some((registry_slug, tail))) => {
+            crate::facade::head_machine_path(&state, &registry_slug, &tail, &headers).await
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// Resolve a `PUT`/`HEAD` request's `(slug, path)` capture into the target
+/// registry slug and the surface-relative tail.
+///
+/// A flat slug that names a registry wins directly (tail = `path`);
+/// otherwise the full `{slug}/{path}` is resolved by longest
+/// registry-slug prefix, exactly as [`resolve_by_prefix`] does for reads.
+/// `Ok(None)` means no registry owns the path.
+///
+/// # Errors
+///
+/// Returns an error on database failure.
+fn resolve_write_target(
+    state: &AppState,
+    slug: &str,
+    path: &str,
+) -> Result<Option<(String, String)>, anyhow::Error> {
+    if state.db.registry_by_slug(slug)?.is_some() {
+        return Ok(Some((slug.to_string(), path.to_string())));
+    }
+    let full = format!("{slug}/{path}");
+    let decoded = percent_decode(&full);
+    match resolve_by_prefix(state, decoded.trim_end_matches('/'))? {
+        Some((registry, tail)) if !tail.is_empty() => Ok(Some((registry.slug, tail))),
+        _ => Ok(None),
+    }
+}
+
 /// Serve a machine path for a registry, resolving a managed registry's
 /// surface from its storage binding.
 ///
@@ -565,10 +642,47 @@ enum PageKind {
 /// machine path served through the facade.
 async fn nested_catch_all(
     State(state): State<Arc<AppState>>,
+    method: axum::http::Method,
     uri: axum::http::Uri,
     headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> Response {
-    resolve_nested(&state, &uri, &headers, Instant::now()).await
+    // The fallback receives every method; route the upload facade's
+    // PUT/HEAD to a nested registry's surface, and everything else to the
+    // read resolver.
+    match method {
+        axum::http::Method::PUT | axum::http::Method::HEAD => {
+            resolve_nested_write(&state, &method, &uri, &headers, body).await
+        }
+        _ => resolve_nested(&state, &uri, &headers, Instant::now()).await,
+    }
+}
+
+/// Resolve a nested-canonical `PUT`/`HEAD` into the write facade.
+///
+/// Splits the request path by longest registry-slug prefix (the same rule
+/// reads use) and dispatches the surface tail to [`crate::facade`]. A path
+/// that resolves to a registry home (empty tail) or names no registry is a
+/// `404`.
+async fn resolve_nested_write(
+    state: &AppState,
+    method: &axum::http::Method,
+    uri: &axum::http::Uri,
+    headers: &HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let decoded = percent_decode(uri.path().trim_start_matches('/'));
+    let target = match resolve_by_prefix(state, decoded.trim_end_matches('/')) {
+        Ok(Some((registry, tail))) if !tail.is_empty() => (registry.slug, tail),
+        Ok(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => return internal(err),
+    };
+    let (slug, tail) = target;
+    if method == axum::http::Method::PUT {
+        crate::facade::put_machine_path(state, &slug, &tail, headers, body).await
+    } else {
+        crate::facade::head_machine_path(state, &slug, &tail, headers).await
+    }
 }
 
 /// Resolve and render a request in the nested-canonical URL space.

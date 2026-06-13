@@ -80,6 +80,36 @@ enum Command {
         /// Registry slug; omit to index everything.
         slug: Option<String>,
     },
+    /// Manage provisioning tokens.
+    Token {
+        #[command(subcommand)]
+        command: TokenCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum TokenCommand {
+    /// Mint a provisioning token scoped to a registry canonical path.
+    ///
+    /// The secret is printed exactly once and never stored in plaintext;
+    /// the token is owned by an auto-created `publisher` service account in
+    /// the registry's org. Use the secret with
+    /// `apr origin upload --upload-url http://hub/<path> \
+    ///  --header "Authorization: Bearer <secret>"` after exchanging it at
+    /// `/oauth2/token`, or pass the exchanged JWT directly.
+    Mint {
+        /// Canonical registry path: org/project/name (project may be empty).
+        path: String,
+        /// Permission verb to grant (repeatable): publish, read.
+        #[arg(long = "permission", default_values_t = vec!["publish".to_string()])]
+        permissions: Vec<String>,
+        /// Days until the token expires (omit for a non-expiring token).
+        #[arg(long)]
+        expires_days: Option<i64>,
+        /// Service account that owns the token (auto-created in the org).
+        #[arg(long, default_value = "publisher")]
+        owner: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -373,8 +403,98 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Command::Token { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            match command {
+                TokenCommand::Mint {
+                    path,
+                    permissions,
+                    expires_days,
+                    owner,
+                } => mint_token(&db, &path, &permissions, expires_days, &owner)?,
+            }
+        }
     }
     Ok(())
+}
+
+/// Mint a provisioning token scoped to a registry's canonical path.
+///
+/// The token is owned by the `owner` service account in the registry's org
+/// (auto-created if absent), is granted the requested permissions at the
+/// registry scope (so the JWT it exchanges for authorizes the upload
+/// facade), and is also recorded as a membership of the service account at
+/// that scope. The secret is printed exactly once.
+fn mint_token(
+    db: &Database,
+    path: &str,
+    permissions: &[String],
+    expires_days: Option<i64>,
+    owner: &str,
+) -> Result<()> {
+    let (org_slug, project_path, name) = parse_canonical_path(path)?;
+    let org = db
+        .org_by_slug(org_slug)?
+        .with_context(|| format!("no org '{org_slug}'"))?;
+    let canonical = if project_path.is_empty() {
+        format!("{org_slug}/{name}")
+    } else {
+        format!("{org_slug}/{project_path}/{name}")
+    };
+
+    let mut perms = Vec::new();
+    for verb in permissions {
+        let perm = aos_registry_hub::auth::permission_from_str(verb)
+            .with_context(|| format!("unknown permission '{verb}' (expected publish or read)"))?;
+        perms.push(perm);
+    }
+
+    // Find or create the owning service account.
+    let sa_id = match db.service_account_by_name(org.id, owner)? {
+        Some(id) => id,
+        None => db.create_service_account(org.id, owner)?,
+    };
+    let principal = aos_registry_hub::domain::Principal::service_account(sa_id);
+
+    // Grant the service account a maintainer role at the registry scope so
+    // its effective authority covers the token's grants.
+    db.grant_membership(
+        "service_account",
+        sa_id,
+        &canonical,
+        aos_registry_hub::domain::Role::Maintainer.as_str(),
+    )?;
+
+    let expires_at = expires_days.map(|days| now_secs() + days * 86_400);
+    let (token_id, secret) = db.create_token(
+        principal,
+        &canonical,
+        &perms,
+        Some(&format!("publisher token for {canonical}")),
+        expires_at,
+    )?;
+
+    println!("minted token {token_id} for '{canonical}' (owner service account '{owner}')");
+    println!("scope: {canonical}");
+    println!(
+        "permissions: {}",
+        perms
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!("secret (shown once): {secret}");
+    Ok(())
+}
+
+/// Current Unix time in seconds.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Index every registered registry, logging failures without aborting;

@@ -36,7 +36,9 @@
 //!   requests.
 //! - [`indexer`] — fetch → verify → load → index orchestration.
 //! - [`validation`] — presence-depth cache consistency validation.
-//! - [`compat`] — the machine-path facade.
+//! - [`compat`] — the machine-path read facade.
+//! - [`facade`] — the machine-path write facade: authenticated surface
+//!   uploads, the publish lease, and index-after-flip.
 //! - [`rpc`] — the `aos.registry.v1` ConnectRPC read-path services.
 //! - [`ui`] — server-rendered HTML pages.
 //! - [`server`] — axum router assembly tying the above together.
@@ -45,6 +47,7 @@ pub mod auth;
 pub mod compat;
 pub mod db;
 pub mod domain;
+pub mod facade;
 pub mod fetch;
 pub mod indexer;
 pub mod rpc;
