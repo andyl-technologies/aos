@@ -45,6 +45,7 @@ postgres = ["dep:postgres"]
 mysql = ["dep:mysql"]
 
 [dev-dependencies]
+aos-cache = { workspace = true }
 tempfile = { workspace = true }
 tower = { workspace = true }
 http = { workspace = true }

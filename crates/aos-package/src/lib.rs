@@ -785,6 +785,12 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: OriginCommand,
     },
+    /// Static web-surface operations (the on-CDN no-JS browse pages)
+    Web {
+        /// The web operation to run
+        #[command(subcommand)]
+        command: WebCommand,
+    },
     /// Run the ordered producer release pipeline
     Release {
         /// Semver release tag, with no `v` prefix
@@ -1150,6 +1156,46 @@ pub enum CacheCommand {
         /// Do not commit registry.toml after updating [[caches]]
         #[arg(long)]
         no_commit: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Static web-surface subcommands.
+///
+/// The web surface is RFC-0004's on-CDN, no-JS browse tier: a registry
+/// serves content-bearing `index.html`, JSON snapshots under `web/`, and
+/// `browse/<name>.html` pages from its own bucket, with zero hub in the
+/// serving path. `apr web generate` is the producer-side analogue of
+/// `apr cache generate`.
+#[derive(Subcommand)]
+pub enum WebCommand {
+    /// Generate the static no-JS web surface (index.html, JSON snapshots,
+    /// browse pages) from the committed registry tree
+    Generate {
+        /// Output directory for the generated web surface (default: a
+        /// `web` directory beside the registry clone)
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Branding name shown on pages and in config.json (default: the
+        /// registry.toml name)
+        #[arg(long)]
+        name: Option<String>,
+        /// Optional hub base URL the SPA connects to, recorded in config.json
+        #[arg(long = "hub-url")]
+        hub_url: Option<String>,
+        /// Optional accent color for the SPA theme, recorded in config.json
+        #[arg(long)]
+        accent: Option<String>,
+        /// Backend URL to upload generated files to; repeat for multiple
+        /// destinations (file://, s3://, sftp://, http://; default: the
+        /// upload_urls persisted by `origin config`)
+        #[arg(long = "upload-url")]
+        upload_urls: Vec<String>,
+        /// Authentication and backend-specific upload options
+        #[command(flatten)]
+        auth: CacheUploadAuthArgs,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1896,6 +1942,7 @@ async fn run_registry(
         RegistryCommand::Origin { command } => {
             registry_ops::run_origin(config, command, printer).await
         }
+        RegistryCommand::Web { command } => registry_ops::run_web(config, command, printer).await,
         RegistryCommand::Release {
             semver,
             store_path,
