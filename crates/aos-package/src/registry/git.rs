@@ -2178,6 +2178,95 @@ mod tests {
         assert!(content.contains("curl"));
     }
 
+    /// Init a non-bare repo with a configured identity at `dir`.
+    async fn init_repo(dir: &Path) {
+        tokio::fs::create_dir_all(dir).await.unwrap();
+        assert!(
+            git(dir)
+                .args(["init"])
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+        let _ = git(dir)
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .await;
+        let _ = git(dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .await;
+    }
+
+    async fn commit_all(dir: &Path, message: &str) -> String {
+        let _ = git(dir).args(["add", "-A"]).output().await;
+        let _ = git(dir).args(["commit", "-m", message]).output().await;
+        let output = git(dir).args(["rev-parse", "HEAD"]).output().await.unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn extract_ca_preserves_presence_semantics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        init_repo(&work_dir).await;
+
+        // Commit 1: a registry WITHOUT a ca/ tree (legacy).
+        tokio::fs::create_dir_all(work_dir.join("packages").join("c"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            work_dir.join("packages").join("c").join("curl.toml"),
+            "[package]\nname = \"curl\"\n",
+        )
+        .await
+        .unwrap();
+        let legacy_commit = commit_all(&work_dir, "legacy").await;
+
+        // Commit 2: add a ca/ bucket.
+        tokio::fs::create_dir_all(work_dir.join("ca"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            work_dir.join("ca").join("r4"),
+            "r4q1m2kp8v3x nar:sha256:1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy:10\n",
+        )
+        .await
+        .unwrap();
+        let mapped_commit = commit_all(&work_dir, "add ca").await;
+
+        // Commit 3: remove the ca/ tree again.
+        tokio::fs::remove_dir_all(work_dir.join("ca"))
+            .await
+            .unwrap();
+        let removed_commit = commit_all(&work_dir, "drop ca").await;
+
+        let ca_dir = tmp.path().join("out-ca");
+
+        // Absent tree → NO local ca/ directory (so CaMap reads not-present).
+        extract_ca(&work_dir, &legacy_commit, &ca_dir)
+            .await
+            .unwrap();
+        assert!(!ca_dir.exists(), "absent ca/ must leave no directory");
+
+        // Present tree → extracted.
+        extract_ca(&work_dir, &mapped_commit, &ca_dir)
+            .await
+            .unwrap();
+        assert!(ca_dir.join("r4").exists(), "present ca/ must be extracted");
+
+        // Dropped between syncs → stale local ca/ is removed.
+        extract_ca(&work_dir, &removed_commit, &ca_dir)
+            .await
+            .unwrap();
+        assert!(
+            !ca_dir.exists(),
+            "dropping ca/ upstream must remove the stale local directory"
+        );
+    }
+
     #[tokio::test]
     async fn fast_forward_with_real_commits() {
         let tmp = tempfile::TempDir::new().unwrap();
