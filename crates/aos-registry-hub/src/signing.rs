@@ -270,6 +270,23 @@ pub async fn advance_channel(
         Some(&detail),
     )?;
 
+    // Notify subscribers of the advance. Additive and non-fatal: a webhook
+    // failure never undoes the partitions just written.
+    if let Some(org_id) = registry.org_id {
+        let event = crate::webhook::WebhookEvent::ChannelAdvanced {
+            registry: registry.slug.clone(),
+            channel: channel_name.to_string(),
+            release: target_semver.to_string(),
+            moved,
+            at_target,
+            rollout_percent,
+            at: when,
+        };
+        if let Err(err) = crate::webhook::dispatch(db, org_id, &event) {
+            tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "dispatching channel.advanced webhook");
+        }
+    }
+
     Ok(AdvanceResult {
         channel: channel_name.to_string(),
         release: target_semver.to_string(),

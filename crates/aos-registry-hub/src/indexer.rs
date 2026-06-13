@@ -90,8 +90,18 @@ pub async fn index_and_record(
     fetch: &dyn SurfaceFetch,
     registry: &RegistryRecord,
 ) -> Result<IndexOutcome> {
+    // Snapshot the release set before indexing so a successful run can raise a
+    // `release.published` webhook for each newly indexed release.
+    let prior_releases: std::collections::HashSet<String> = db
+        .list_releases(registry.id)
+        .map(|rows| rows.into_iter().map(|r| r.semver).collect())
+        .unwrap_or_default();
+
     match index_registry(db, fetch, registry).await {
-        Ok(outcome) => Ok(outcome),
+        Ok(outcome) => {
+            dispatch_index_events(db, registry, &outcome, &prior_releases);
+            Ok(outcome)
+        }
         Err(err) => {
             let detail = format!("{err:#}");
             if crate::fetch::is_fetch_error(&err) {
@@ -102,6 +112,62 @@ pub async fn index_and_record(
             Err(err)
         }
     }
+}
+
+/// Fan out the webhook events a successful index raises: one `index.completed`
+/// plus a `release.published` for each release newly present since `prior`.
+///
+/// Only org-owned registries have webhook subscriptions, so this is a no-op
+/// for unowned phase-1 registries. Dispatch failures are logged, never
+/// propagated — a webhook problem must not fail or roll back an index.
+fn dispatch_index_events(
+    db: &Database,
+    registry: &RegistryRecord,
+    outcome: &IndexOutcome,
+    prior: &std::collections::HashSet<String>,
+) {
+    let Some(org_id) = registry.org_id else {
+        return;
+    };
+    let now = unix_now();
+    let event = crate::webhook::WebhookEvent::IndexCompleted {
+        registry: registry.slug.clone(),
+        commit: outcome.commit.clone(),
+        packages: outcome.packages,
+        releases: outcome.releases,
+        channels: outcome.channels,
+        incremental: outcome.incremental,
+        at: now,
+    };
+    if let Err(err) = crate::webhook::dispatch(db, org_id, &event) {
+        tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "dispatching index.completed webhook");
+    }
+
+    // `release.published` for each newly indexed release.
+    if let Ok(releases) = db.list_releases(registry.id) {
+        for release in releases {
+            if prior.contains(&release.semver) {
+                continue;
+            }
+            let event = crate::webhook::WebhookEvent::ReleasePublished {
+                registry: registry.slug.clone(),
+                semver: release.semver.clone(),
+                commit: release.commit_oid.clone(),
+                at: now,
+            };
+            if let Err(err) = crate::webhook::dispatch(db, org_id, &event) {
+                tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "dispatching release.published webhook");
+            }
+        }
+    }
+}
+
+/// Current Unix time in seconds.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Index one registered registry surface into the database.
