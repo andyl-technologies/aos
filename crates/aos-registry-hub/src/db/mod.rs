@@ -1767,6 +1767,80 @@ impl Database {
         .context("loading user by email")
     }
 
+    /// Look up a non-deleted user's email by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn user_email(&self, user_id: i64) -> Result<Option<String>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT email FROM users WHERE id = ?1 AND deleted_at IS NULL",
+            [user_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("loading user email by id")
+    }
+
+    /// Find a user by email, creating one if absent; returns the user id.
+    ///
+    /// The human-login path: a magic link or an invitation accepts an email
+    /// and needs the user row whether or not it already exists. The lookup
+    /// and insert run under one connection lock, so two concurrent first
+    /// sign-ins for the same address resolve to one row (the second insert
+    /// hits the `UNIQUE(email)` constraint and falls back to the lookup).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn find_or_create_user(&self, email: &str) -> Result<i64> {
+        if let Some(id) = self.user_by_email(email)? {
+            return Ok(id);
+        }
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO users (email, display_name, created_at) VALUES (?1, NULL, ?2)
+             ON CONFLICT(email) DO NOTHING",
+            params![email, unix_now()],
+        )?;
+        conn.query_row("SELECT id FROM users WHERE email = ?1", [email], |row| {
+            row.get(0)
+        })
+        .context("resolving user id after insert")
+    }
+
+    /// The requested scope and permissions of a live, unresolved device
+    /// grant, looked up by its `user_code`.
+    ///
+    /// Returns `Ok(None)` when the code is unknown, already approved or
+    /// denied, or expired — the same fail-closed shape as approval. Used by
+    /// the `/activate` page to show what the CLI is asking for before the
+    /// human approves. Permissions come back as their wire-name strings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn pending_device_request(&self, user_code: &str) -> Result<Option<(String, Vec<String>)>> {
+        let now = unix_now();
+        let conn = self.lock();
+        let row = conn
+            .query_row(
+                "SELECT scope, permissions FROM device_codes
+                 WHERE user_code = ?1 AND approved_by_user IS NULL AND denied = 0
+                   AND expires_at > ?2",
+                params![user_code, now],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .context("loading pending device request")?;
+        let Some((scope, perms_json)) = row else {
+            return Ok(None);
+        };
+        let perms: Vec<String> = serde_json::from_str(&perms_json).unwrap_or_default();
+        Ok(Some((scope, perms)))
+    }
+
     /// Create a service account under an org; returns the new id.
     ///
     /// # Errors

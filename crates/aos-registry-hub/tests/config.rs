@@ -35,6 +35,8 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         external_url: "http://127.0.0.1:8420".into(),
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
+        mailer: std::sync::Arc::new(aos_registry_hub::auth::magic::LogMailer),
+        dev: false,
     })
 }
 

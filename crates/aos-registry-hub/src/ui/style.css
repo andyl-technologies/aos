@@ -74,6 +74,7 @@ header.masthead {
 header.masthead .brand { font-weight: 700; letter-spacing: 0.05em; }
 header.masthead .crumbs { color: var(--dim); }
 header.masthead .crumbs a { color: var(--ink); }
+header.masthead .session { color: var(--dim); margin-left: auto; padding-left: 1rem; }
 
 h1, h2 {
   font-size: 1rem;
@@ -149,3 +150,47 @@ pre.partition-grid { line-height: 1.15; letter-spacing: 0.18em; }
 }
 
 .rollout-bar { color: var(--ok); }
+
+/* Producer console: forms, notices, and confirmation gates. The no-JS
+ * tier is the floor, so every mutation is a plain form + redirect. */
+form.console { margin: 0.6rem 0 1.2rem; }
+form.console label { display: block; margin: 0.3rem 0; }
+form.console input[type="text"],
+form.console input[type="email"],
+form.console select {
+  font: inherit;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+  min-width: 18rem;
+}
+form.console button {
+  font: inherit;
+  padding: 0.25rem 0.9rem;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+}
+form.console button:hover { background: color-mix(in srgb, var(--ink) 8%, var(--paper)); }
+
+p.notice {
+  border-left: 3px solid var(--ok);
+  padding: 0.4rem 0.8rem;
+  margin: 0.6rem 0;
+  background: color-mix(in srgb, var(--ok) 6%, var(--paper));
+}
+p.confirm {
+  border-left: 3px solid var(--warn);
+  padding: 0.4rem 0.8rem;
+  margin: 0.6rem 0;
+  background: color-mix(in srgb, var(--warn) 6%, var(--paper));
+}
+.secret {
+  display: block;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--bad);
+  background: color-mix(in srgb, var(--bad) 5%, var(--paper));
+  word-break: break-all;
+}

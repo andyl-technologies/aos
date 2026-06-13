@@ -49,11 +49,61 @@ impl StateLine {
     }
 }
 
+/// The masthead session indicator: the logged-in email plus a logout link,
+/// or a "log in" link for an anonymous visitor.
+///
+/// Passed to [`page_with_session`] so every authenticated producer-console
+/// page shows who is signed in (RFC-0004's masthead "[log in]" affordance).
+/// `None` renders the anonymous indicator; the browse pages pass `None` and
+/// remain unchanged.
+#[derive(Debug, Default, Clone)]
+pub struct SessionIndicator {
+    /// The signed-in user's email, or `None` when anonymous.
+    pub email: Option<String>,
+}
+
+impl SessionIndicator {
+    /// A session indicator for the signed-in user `email`.
+    #[must_use]
+    pub fn signed_in(email: impl Into<String>) -> Self {
+        Self {
+            email: Some(email.into()),
+        }
+    }
+
+    /// Renders the indicator as the right-hand masthead HTML fragment.
+    fn render(&self) -> String {
+        match &self.email {
+            Some(email) => format!(
+                "<span class=\"session\">{} · <a href=\"/logout\">log out</a></span>",
+                escape(email),
+            ),
+            None => "<span class=\"session\"><a href=\"/login\">log in</a></span>".to_string(),
+        }
+    }
+}
+
 /// Render a complete page in the shared layout.
 ///
 /// `crumbs` is the masthead trail as `(href, label)` pairs; the final
-/// crumb should be the current page (empty href renders unlinked).
+/// crumb should be the current page (empty href renders unlinked). The
+/// masthead carries the anonymous session indicator; use
+/// [`page_with_session`] to show the signed-in identity.
 pub fn page(title: &str, crumbs: &[(String, String)], body: &str, state: &StateLine) -> String {
+    page_with_session(title, crumbs, body, state, &SessionIndicator::default())
+}
+
+/// Render a complete page, threading a masthead session indicator.
+///
+/// Identical to [`page`] but renders `session` on the right of the masthead
+/// — the signed-in email and a logout link, or the anonymous "log in" link.
+pub fn page_with_session(
+    title: &str,
+    crumbs: &[(String, String)],
+    body: &str,
+    state: &StateLine,
+    session: &SessionIndicator,
+) -> String {
     let mut crumb_html = String::new();
     for (i, (href, label)) in crumbs.iter().enumerate() {
         if i > 0 {
@@ -107,10 +157,11 @@ pub fn page(title: &str, crumbs: &[(String, String)], body: &str, state: &StateL
          <title>{title} — AOS Registry Hub</title>\n\
          <link rel=\"stylesheet\" href=\"/_assets/style.css\">\n</head>\n<body>\n\
          <header class=\"masthead\"><span class=\"brand\">AOS REGISTRY HUB</span>\
-         <span class=\"crumbs\">{crumb_html}</span></header>\n\
+         <span class=\"crumbs\">{crumb_html}</span>{session}</header>\n\
          <main>\n{body}\n</main>\n\
          <footer class=\"statline\">{statline}</footer>\n</body>\n</html>\n",
         title = escape(title),
+        session = session.render(),
     )
 }
 

@@ -163,6 +163,9 @@ impl Fixture {
 /// Layout: `curl 8.5.0` for `x86_64-linux`, release `1.0.0`, channel
 /// `stable` fully rolled out, roster with one active key, one committed
 /// cache, plus the nix-cache files.
+// Not every test binary that compiles this shared module calls this builder
+// (the same pre-existing pattern as `standard_registry_versioned`).
+#[allow(dead_code)]
 pub fn standard_registry(root: &Path) -> Fixture {
     standard_registry_versioned(root, "1.0.0")
 }
