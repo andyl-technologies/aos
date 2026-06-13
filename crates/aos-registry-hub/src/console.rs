@@ -577,12 +577,16 @@ async fn passkeys_begin(
         Ok(rp) => rp,
         Err(err) => return internal(err),
     };
+    let rp_name = match crate::ui::render::brand() {
+        "" => "Registry Hub",
+        brand => brand,
+    };
     match crate::auth::webauthn::begin_registration(
         &state.db,
         session.auth.user_id,
         &session.email,
         &rp.id,
-        "AOS Registry Hub",
+        rp_name,
     ) {
         Ok(challenge) => Json(challenge).into_response(),
         Err(err) => internal(err),
