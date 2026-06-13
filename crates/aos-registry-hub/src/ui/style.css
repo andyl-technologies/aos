@@ -22,15 +22,18 @@
 }
 
 :root {
-  --paper: #fcfcf9;
-  --ink: #1a1a17;
-  --rule: #c9c9c2;
-  --dim: #6b6b64;
-  --ok: #00794c;
-  --warn: #b56a00;
+  /* Warm "paper" off-white, not stark white. */
+  --paper: #f9f9f6;
+  --ink: #1f1d18;
+  --rule: #d8d4c8;
+  --dim: #6e6a5e;
+  --ok: #1c6f4a;
+  --warn: #9c5a00;
   --bad: #b3261e;
-  --link: #00449e;
-  --accent: #7c4dbe;
+  /* A warm clay/terracotta as the primary — complements the cream paper
+   * and the warm ink (and isn't blue). Deep enough for AA link contrast. */
+  --link: #b0492e;
+  --accent: #b0492e;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -42,8 +45,9 @@
     --ok: #3fb950;
     --warn: #d29922;
     --bad: #f85149;
-    --link: #58a6ff;
-    --accent: #b392f0;
+    /* Lighter clay for contrast on the dark phosphor scheme. */
+    --link: #e08a6a;
+    --accent: #e08a6a;
   }
 }
 
@@ -52,13 +56,15 @@
 body {
   font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 14px;
-  line-height: 1.45;
+  line-height: 1.65;
   background: var(--paper);
   color: var(--ink);
   margin: 0 auto;
-  padding: 1.5rem 1rem 3rem;
-  max-width: 72rem;
+  padding: 2.25rem 1.5rem 5rem;
+  max-width: 74rem;
 }
+
+p { margin: 0.7rem 0; }
 
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -67,10 +73,10 @@ header.masthead {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.4rem 1.1rem;
+  gap: 0.5rem 1.4rem;
   border-bottom: 2px solid var(--ink);
-  padding-bottom: 0.4rem;
-  margin-bottom: 1.2rem;
+  padding-bottom: 0.7rem;
+  margin-bottom: 2rem;
 }
 header.masthead .brand {
   font-weight: 700;
@@ -92,19 +98,19 @@ h1, h2 {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   border-bottom: 1px solid var(--rule);
-  padding-bottom: 0.25rem;
-  margin: 1.6rem 0 0.6rem;
+  padding-bottom: 0.4rem;
+  margin: 2.4rem 0 1rem;
 }
-h1 { font-size: 1.15rem; }
+h1 { font-size: 1.15rem; margin-top: 0.5rem; }
 
 table {
   border-collapse: collapse;
   width: 100%;
-  margin: 0.4rem 0 1rem;
+  margin: 0.6rem 0 1.6rem;
 }
 th, td {
   text-align: left;
-  padding: 0.25rem 0.9rem 0.25rem 0;
+  padding: 0.45rem 1.1rem 0.45rem 0;
   border-bottom: 1px solid var(--rule);
   vertical-align: top;
 }
@@ -122,11 +128,12 @@ code, pre {
   background: color-mix(in srgb, var(--ink) 6%, var(--paper));
   border: 1px solid var(--rule);
 }
-code { padding: 0 0.25rem; }
+code { padding: 0.05rem 0.3rem; }
 pre {
-  padding: 0.6rem 0.8rem;
+  padding: 0.9rem 1.1rem;
+  line-height: 1.5;
   overflow-x: auto;
-  margin: 0.4rem 0 1rem;
+  margin: 0.7rem 0 1.6rem;
 }
 
 .ok { color: var(--ok); }
@@ -241,8 +248,8 @@ select {
 
 /* Producer console: the no-JS tier is the floor, so every mutation is a
  * plain form + redirect. Layout only — the control styling is global. */
-form.console { margin: 0.6rem 0 1.2rem; }
-form.console label { display: block; margin: 0.3rem 0; }
+form.console { margin: 0.9rem 0 1.8rem; }
+form.console label { display: block; margin: 0.6rem 0; }
 form.console input[type="text"],
 form.console input[type="email"],
 form.console input[type="password"],
