@@ -140,22 +140,47 @@ pub fn encode_loose(kind: ObjectKind, content: &[u8]) -> Vec<u8> {
     encoder.finish().expect("finish Vec encoder")
 }
 
+/// Maximum inflated size of a loose object (64 MiB).
+///
+/// Registry objects are commits, trees, tags, and small TOML blobs; a
+/// loose object inflating past this cap is treated as hostile (a zlib
+/// bomb) rather than read into memory.
+pub const MAX_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Decode a zlib-compressed loose object into its kind and content.
 ///
 /// The decoded bytes are verified against `expected` when given, so a
-/// corrupted or substituted object is rejected at read time.
+/// corrupted or substituted object is rejected at read time. Inflation is
+/// bounded by [`MAX_OBJECT_BYTES`] so a hostile surface cannot zlib-bomb
+/// the reader.
 ///
 /// # Errors
 ///
-/// Returns an error if the zlib stream is invalid, the header is malformed,
-/// the declared length disagrees with the content, or the content hashes to
-/// a different oid than `expected`.
+/// Returns an error if the zlib stream is invalid, the inflated size
+/// exceeds [`MAX_OBJECT_BYTES`], the header is malformed, the declared
+/// length disagrees with the content, or the content hashes to a
+/// different oid than `expected`.
 pub fn decode_loose(compressed: &[u8], expected: Option<Oid>) -> Result<(ObjectKind, Vec<u8>)> {
-    let mut decoder = flate2::read::ZlibDecoder::new(compressed);
+    decode_loose_with_limit(compressed, expected, MAX_OBJECT_BYTES)
+}
+
+/// [`decode_loose`] with an explicit inflation cap (factored for tests).
+fn decode_loose_with_limit(
+    compressed: &[u8],
+    expected: Option<Oid>,
+    limit: u64,
+) -> Result<(ObjectKind, Vec<u8>)> {
+    // Read at most limit + 1 bytes: landing past the limit proves the
+    // stream inflates beyond the cap without materializing the rest.
+    let decoder = flate2::read::ZlibDecoder::new(compressed);
     let mut raw = Vec::new();
     decoder
+        .take(limit.saturating_add(1))
         .read_to_end(&mut raw)
         .context("inflating loose object")?;
+    if raw.len() as u64 > limit {
+        bail!("loose object inflates past the {limit}-byte cap");
+    }
 
     let nul = raw
         .iter()
@@ -378,6 +403,17 @@ mod tests {
         let (kind, decoded) = decode_loose(&compressed, Some(oid)).unwrap();
         assert_eq!(kind, ObjectKind::Blob);
         assert_eq!(decoded, content);
+    }
+
+    #[test]
+    fn decode_enforces_inflation_cap() {
+        // Highly compressible content well past a tiny test cap.
+        let content = vec![0u8; 4096];
+        let compressed = encode_loose(ObjectKind::Blob, &content);
+        let err = decode_loose_with_limit(&compressed, None, 64).unwrap_err();
+        assert!(err.to_string().contains("cap"), "got: {err:#}");
+        // The same object decodes fine under a sufficient cap.
+        assert!(decode_loose_with_limit(&compressed, None, 8192).is_ok());
     }
 
     #[test]

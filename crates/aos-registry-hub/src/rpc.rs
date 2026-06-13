@@ -11,6 +11,11 @@
 //! browse pages; per-registry visibility enforcement arrives with tenancy
 //! (RFC-0004 phase 2). List RPCs paginate with opaque offset tokens.
 
+// `ConnectError`'s size is fixed by the connectrpc service traits, which
+// return it un-boxed; boxing the local helpers would only add unwrapping
+// noise at every `?` site.
+#![allow(clippy::result_large_err)]
+
 use std::sync::Arc;
 
 use aos_proto::aos::registry::v1::*;
@@ -136,6 +141,11 @@ impl RegistryRpc {
 
 impl RegistryService for RegistryRpc {
     /// `ListRegistries` — every registered registry with index status.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidArgument` for a malformed `page_token` and
+    /// `Internal` on database failure.
     async fn list_registries(
         &self,
         ctx: Context,
@@ -159,6 +169,11 @@ impl RegistryService for RegistryRpc {
     }
 
     /// `GetRegistry` — one registry by slug.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` for an unknown slug and `Internal` on database
+    /// failure.
     async fn get_registry(
         &self,
         ctx: Context,
@@ -176,6 +191,11 @@ impl RegistryService for RegistryRpc {
     }
 
     /// `ListReleases` — verified signed releases, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` for an unknown slug, `InvalidArgument` for a
+    /// malformed `page_token`, and `Internal` on database failure.
     async fn list_releases(
         &self,
         ctx: Context,
@@ -210,6 +230,11 @@ impl RegistryService for RegistryRpc {
 
 impl PackageService for RegistryRpc {
     /// `ListPackages` — package summaries with the newest version.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` for an unknown slug, `InvalidArgument` for a
+    /// malformed `page_token`, and `Internal` on database failure.
     async fn list_packages(
         &self,
         ctx: Context,
@@ -241,6 +266,11 @@ impl PackageService for RegistryRpc {
     }
 
     /// `GetPackage` — full version × platform detail for one package.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` for an unknown slug or package name and
+    /// `Internal` on database failure.
     async fn get_package(
         &self,
         ctx: Context,
@@ -294,22 +324,29 @@ impl PackageService for RegistryRpc {
 
 impl ChannelService for RegistryRpc {
     /// `ListChannels` — channels with full partition maps.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` for an unknown slug, `InvalidArgument` for a
+    /// malformed `page_token`, and `Internal` on database failure.
     async fn list_channels(
         &self,
         ctx: Context,
         req: OwnedView<ListChannelsRequestView<'static>>,
     ) -> Result<(ListChannelsResponse, Context), ConnectError> {
         let record = self.registry_or_not_found(req.slug)?;
-        let channels = self
+        let channels: Vec<Channel> = self
             .db
             .list_channels(record.id)
             .map_err(internal)?
             .into_iter()
             .map(channel_message)
             .collect();
+        let (channels, next_page_token) = paginate(channels, req.page_size, req.page_token)?;
         Ok((
             ListChannelsResponse {
                 channels,
+                next_page_token,
                 ..Default::default()
             },
             ctx,
@@ -317,6 +354,11 @@ impl ChannelService for RegistryRpc {
     }
 
     /// `GetChannel` — one channel's partition map by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` for an unknown slug or channel name and
+    /// `Internal` on database failure.
     async fn get_channel(
         &self,
         ctx: Context,

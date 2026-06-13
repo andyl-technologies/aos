@@ -26,7 +26,7 @@ pub fn escape(text: &str) -> String {
 }
 
 /// Data for the footer state line ("expose state" — every page carries
-/// the surface commit, index freshness, and hub version).
+/// the surface commit, index freshness, render time, and hub version).
 #[derive(Debug, Default, Clone)]
 pub struct StateLine {
     /// Indexed surface commit (short form is rendered).
@@ -35,6 +35,18 @@ pub struct StateLine {
     pub indexed_at: Option<i64>,
     /// Index state when not `fresh`.
     pub state: Option<String>,
+    /// Handler entry time; when set, the footer shows "rendered NNms".
+    pub started: Option<std::time::Instant>,
+}
+
+impl StateLine {
+    /// A state line that only carries the render-time clock.
+    pub fn timed(started: std::time::Instant) -> Self {
+        Self {
+            started: Some(started),
+            ..Self::default()
+        }
+    }
 }
 
 /// Render a complete page in the shared layout.
@@ -85,6 +97,9 @@ pub fn page(title: &str, crumbs: &[(String, String)], body: &str, state: &StateL
         statline.push_str(" · ");
     }
     let _ = write!(statline, "aos-registry-hub {}", env!("CARGO_PKG_VERSION"));
+    if let Some(started) = state.started {
+        let _ = write!(statline, " · rendered {}ms", started.elapsed().as_millis());
+    }
 
     format!(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
@@ -118,6 +133,46 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     }
     out.push_str("</tbody>\n</table>\n");
     out
+}
+
+/// Format a Unix timestamp as a coarse relative age ("38s ago",
+/// "4m ago", "3h ago", "2d ago").
+///
+/// Timestamps in the future (clock skew) render as "0s ago".
+pub fn ago(unix: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let delta = (now - unix).max(0);
+    if delta < 60 {
+        format!("{delta}s ago")
+    } else if delta < 3600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86400 {
+        format!("{}h ago", delta / 3600)
+    } else {
+        format!("{}d ago", delta / 86400)
+    }
+}
+
+/// The ssh-keygen-style SHA-256 fingerprint of a base64 key blob.
+///
+/// Decodes `b64`, hashes the raw blob, and renders the digest as
+/// `SHA256:<base64-no-pad>` — the same form `ssh-keygen -lf` prints. When
+/// `b64` is not valid base64, the raw string bytes are hashed instead so
+/// every anchor still gets a stable fingerprint.
+pub fn key_fingerprint(b64: &str) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .unwrap_or_else(|_| b64.as_bytes().to_vec());
+    let digest = sha2::Sha256::digest(&blob);
+    format!(
+        "SHA256:{}",
+        base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest)
+    )
 }
 
 /// Format a byte count for humans (binary units, one decimal).
@@ -161,12 +216,42 @@ mod tests {
                 surface_commit: Some("ab".repeat(32)),
                 indexed_at: Some(1),
                 state: Some("fresh".into()),
+                started: Some(std::time::Instant::now()),
             },
         );
         assert!(html.contains("demo — AOS Registry Hub"));
         assert!(html.contains("surface abababababab"));
         assert!(html.contains("<p>body</p>"));
         assert!(html.contains("registries</a>"));
+        assert!(html.contains("rendered"), "footer carries render time");
+    }
+
+    #[test]
+    fn ago_picks_units() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert_eq!(ago(now - 38), "38s ago");
+        assert_eq!(ago(now - 4 * 60), "4m ago");
+        assert_eq!(ago(now - 3 * 3600), "3h ago");
+        assert_eq!(ago(now - 2 * 86400), "2d ago");
+        assert_eq!(ago(now + 500), "0s ago", "future timestamps clamp");
+    }
+
+    #[test]
+    fn key_fingerprint_is_sha256_base64_no_pad() {
+        // sha256("") = 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU (no pad).
+        assert_eq!(
+            key_fingerprint(""),
+            "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+        );
+        // A valid base64 blob is decoded before hashing: "AAAA" = 3 zero
+        // bytes, not the 4 ASCII characters.
+        assert_ne!(key_fingerprint("AAAA"), key_fingerprint("\0\0\0\0"));
+        assert!(key_fingerprint("AAAA").starts_with("SHA256:"));
+        // Invalid base64 falls back to hashing the raw string, stably.
+        assert_eq!(key_fingerprint("!!"), key_fingerprint("!!"));
     }
 
     #[test]

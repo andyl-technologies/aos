@@ -6,6 +6,7 @@ description = "Multi-tenant AOS registry management WebUI and read index (RFC-00
 
 [dependencies]
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
@@ -19,6 +20,7 @@ ed25519-dalek = { workspace = true }
 rusqlite = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
+tower-http = { workspace = true, features = ["catch-panic"] }
 clap = { workspace = true }
 url = { workspace = true }
 reqwest = { workspace = true }

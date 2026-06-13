@@ -30,6 +30,7 @@
   --warn: #b56a00;
   --bad: #b3261e;
   --link: #00449e;
+  --accent: #7c4dbe;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -42,6 +43,7 @@
     --warn: #d29922;
     --bad: #f85149;
     --link: #58a6ff;
+    --accent: #b392f0;
   }
 }
 
@@ -122,8 +124,21 @@ pre {
 .dim { color: var(--dim); }
 
 /* The 16x16 channel partition grid: glyph + color per release, so the
- * encoding survives monochrome and colorblind rendering. */
+ * encoding survives monochrome and colorblind rendering. r0..r5 follow
+ * the legend's frontier-first release order; the glyph alone is
+ * sufficient — color is reinforcement, never the only channel. */
 pre.partition-grid { line-height: 1.15; letter-spacing: 0.18em; }
+.r0 { color: var(--ok); }
+.r1 { color: var(--link); }
+.r2 { color: var(--warn); }
+.r3 { color: var(--bad); }
+.r4 { color: var(--accent); }
+.r5 { color: var(--dim); }
+
+/* The bucket-calculator's grid cell marker: inverse video, so the hit
+ * survives monochrome rendering too. */
+.hit { background: var(--ink); }
+.hit span { color: var(--paper); }
 
 .statline {
   margin-top: 2.5rem;
