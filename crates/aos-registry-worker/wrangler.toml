@@ -1,0 +1,48 @@
+# Cloudflare Workers config for the AOS registry hub read-path Worker
+# (RFC-0004). Build the wasm with the cargo target, then `wrangler deploy`.
+#
+# Live validation requires a Cloudflare account: this file references a D1
+# database id, an R2 bucket, and a KV namespace id that must be provisioned in
+# your account (the placeholder ids below are not real). None of this can be
+# validated in a sandbox — see README.md.
+
+name = "aos-registry-hub"
+main = "build/worker/shim.mjs"
+compatibility_date = "2024-09-23"
+
+# Build the Rust cdylib to wasm with the workers-rs wasm-pack pipeline.
+# `worker-build` (installed via `cargo install worker-build`) wraps
+# `cargo build --target wasm32-unknown-unknown` + wasm-bindgen and emits the JS
+# shim wrangler loads.
+[build]
+command = "worker-build --release"
+
+# The D1 (sqlite) database. The binding name must match
+# `handlers::bindings::D1` (REGISTRY_DB). Apply the schema with
+# `wrangler d1 migrations apply aos-registry-hub` (reads migrations/).
+[[d1_databases]]
+binding = "REGISTRY_DB"
+database_name = "aos-registry-hub"
+database_id = "00000000-0000-0000-0000-000000000000"  # replace with your D1 id
+migrations_dir = "migrations"
+
+# The R2 bucket that holds the registry surfaces (the zero-egress facade
+# source). The binding name must match `handlers::bindings::R2`
+# (REGISTRY_BUCKET). Registries are prefixes within this shared bucket.
+[[r2_buckets]]
+binding = "REGISTRY_BUCKET"
+bucket_name = "aos-registry-surfaces"
+
+# KV for human sessions (RFC-0004 "KV holds sessions"). The read path does not
+# require it for public registries; it is bound here for the deferred
+# private-registry auth path. The binding name matches
+# `handlers::bindings::KV_SESSIONS` (SESSIONS).
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "00000000000000000000000000000000"  # replace with your KV namespace id
+
+# The Cron trigger that drives the indexer (RFC-0004 "Cron Triggers/Queues
+# drive the indexer"). Every 15 minutes re-walks every public registry's R2
+# surface into D1. Fires the `scheduled` event handler.
+[triggers]
+crons = ["*/15 * * * *"]

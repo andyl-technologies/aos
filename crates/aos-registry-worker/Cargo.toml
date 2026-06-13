@@ -1,0 +1,45 @@
+[package]
+name = "aos-registry-worker"
+version = "0.1.0"
+edition = "2021"
+description = "The Cloudflare Workers read-path target for the AOS registry hub (RFC-0004): an R2-backed machine facade, a D1-backed browse UI and JSON read API, and a Cron-triggered indexer — reusing the pure, wasm-clean aos-registry-surface reader"
+
+# A `cdylib` for the wasm32 Workers runtime; an `rlib` so the pure modules
+# (sql, keymap, render, model) compile and test on the native host. The crate
+# is a workspace member, but only its pure modules build for the native target
+# — the worker glue (handlers, D1/R2/KV access, the indexer) is gated behind
+# `#[cfg(target_arch = "wasm32")]`, exactly like the sibling `aos-registry-spa`
+# crate. Build the deployable wasm with
+# `cargo build -p aos-registry-worker --target wasm32-unknown-unknown`.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The pure, wasm-clean registry reader — the exact verifier the native hub
+# indexer and `apm` run. Reused here for object/tag/refs parsing and Ed25519
+# signature verification in the Cron indexer, so the Worker's read of the
+# surface cannot drift from the rest of AOS.
+aos-registry-surface = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+hex = { workspace = true }
+# Trust-anchor fingerprints in the browse UI (key_fingerprint), matching the
+# native hub's ssh-keygen-style SHA256 form. Both are wasm-clean.
+base64 = { workspace = true }
+sha2 = { workspace = true }
+# Semver ordering for the Cron indexer (release-tag classification + channel
+# frontier selection), matching the native indexer.
+semver = { workspace = true }
+
+# The Workers runtime bindings (workers-rs). `d1` enables the D1 sqlite driver
+# binding; the default features carry R2, KV, the Router, and the event macros.
+# This dependency only links into the wasm32 target; on native it resolves but
+# its glue is never referenced (the worker modules are cfg-gated out).
+worker = { version = "0.4", features = ["d1"] }
+
+[dev-dependencies]
+# The native unit tests run the worker's schema migrations through a real
+# sqlite engine to prove D1 (sqlite-dialect) compatibility.
+rusqlite = { workspace = true }

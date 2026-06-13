@@ -13,11 +13,16 @@
   postgres + mysql `Database` backends behind a dialect trait (validated
   against live servers). Plus the phase-major `apr` upload fix and
   `apr web generate`. ~865 tests across the hub and `aos-package`.
-  Explicitly deferred to RFC-future (not in the shipped phases): the
-  Cloudflare Workers / D1 / R2 target and the Leptos-CSR WASM SPA web
-  surface (the no-JS static tier ships); passkeys/WebAuthn; mirroring
-  (full/derived/pull-through); validation deep depth and HTTP-cache
-  repair; git-backed change requests; quotas/backup/offboarding.
+  The Cloudflare Workers / D1 / R2 **read path** is now spiked in
+  `crates/aos-registry-worker` (the R2 zero-egress facade, the D1-backed
+  no-JS browse UI + JSON read API, and a Cron-trigger indexer reusing
+  `aos-registry-surface`); it compiles to `wasm32-unknown-unknown` via
+  `workers-rs` and serves public registries. Explicitly deferred to
+  RFC-future (not in the shipped phases): the Cloudflare Workers
+  **write/console/auth** path (native-only today) and the Leptos-CSR WASM
+  SPA web surface (the no-JS static tier ships); passkeys/WebAuthn;
+  mirroring (full/derived/pull-through); validation deep depth and
+  HTTP-cache repair; git-backed change requests; quotas/backup/offboarding.
 - **Date:** 2026-06-12
 - **PR:** [#99](https://github.com/andyl-technologies/aos/pull/99)
 - **Audience:** anyone working on `crates/aos-package/` (the `apr`/`apm`
