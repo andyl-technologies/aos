@@ -10,7 +10,7 @@
 //!   priority registry that offers a package wins.
 //! - Submodules implement the moving parts: [`git`] (git/dumb-HTTP sync with
 //!   signature and fast-forward verification), [`parse`] (package TOML
-//!   schema), [`store`] (the `store/` realisation graph — dependency shape,
+//!   schema), [`store`] (the `store/` realisation graph - dependency shape,
 //!   blessed NAR bytes, and content addresses), [`channel`] and
 //!   [`verify`] (channel rollout partitions and signed tag chains), [`keys`]
 //!   (the committed `keys.toml` trust roster), [`fetch`] and [`pack`]
@@ -92,7 +92,7 @@ impl Registry {
         let store = StoreMap::load(&registry_dir)
             .with_context(|| format!("loading store/ graph for registry '{}'", config.name))?;
 
-        // Package TOMLs no longer carry nar_hash/nar_size/references — the
+        // Package TOMLs no longer carry nar_hash/nar_size/references - the
         // graph is the single authority. Backfill the in-memory metas from a
         // root realisation so display/verify consumers keep working; legacy
         // registries still populate them from the TOML.
@@ -555,7 +555,7 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let core = make_registry(&tmp, "aos-core", 500, &[("curl", CURL_TOML)]);
 
-        // No store/ dir — graph reads as not-present (legacy registry).
+        // No store/ dir - graph reads as not-present (legacy registry).
         assert!(!core.store_map().is_present());
         assert!(core.store_map().get("h7j3k8l2m9n4").is_none());
     }

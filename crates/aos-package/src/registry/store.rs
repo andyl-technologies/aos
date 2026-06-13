@@ -7,8 +7,8 @@
 //! store path records, for every blessed build, its exact NAR bytes, its
 //! content-addressed (CA) realisation, and the realisations of its direct
 //! dependencies. The node is a Nix-style realisation, so the realisation
-//! graph *is* the closure graph — content addresses on the nodes, dependency
-//! CA pins on the edges — and a consumer validates exact bytes against signed
+//! graph *is* the closure graph - content addresses on the nodes, dependency
+//! CA pins on the edges - and a consumer validates exact bytes against signed
 //! data instead of trusting cache-served narinfos.
 //!
 //! # Layout
@@ -30,7 +30,7 @@
 //!   ia:sha256:<dep-ia>/ca:sha256:<dep-ca>
 //! ```
 //!
-//! An input-addressed-only path carries no content address — the header is
+//! An input-addressed-only path carries no content address - the header is
 //! just the NAR and edges are bare IA hashes:
 //!
 //! ```text
@@ -73,7 +73,7 @@ fn is_nix32_digest(s: &str) -> bool {
 }
 
 /// Validate an input-addressed store-path hash: nixbase32, at least two
-/// characters (so it can be sharded). Length is not pinned to 32 — Nix uses
+/// characters (so it can be sharded). Length is not pinned to 32 - Nix uses
 /// 32, but the value is whatever the store assigns and shorter forms appear in
 /// tests.
 fn is_store_hash(s: &str) -> bool {
@@ -400,7 +400,7 @@ pub fn entry_path(registry_dir: &Path, ia_hash: &str) -> Result<PathBuf> {
 ///
 /// Distinguishes "the registry publishes no graph at all" (legacy;
 /// [`StoreMap::is_present`] is `false`) from "the graph exists but has no
-/// record for a hash" (malformed or downgrade-stripped — a hard failure when
+/// record for a hash" (malformed or downgrade-stripped - a hard failure when
 /// enforcement is on).
 #[derive(Debug, Default)]
 pub struct StoreMap {
@@ -525,7 +525,7 @@ impl StoreMap {
 /// Per-path blessed-bytes lookup for one install/upgrade transaction.
 ///
 /// Each closure member is attributed to the registry that resolved it, and
-/// trust decisions are made per path against *that* registry's graph — never
+/// trust decisions are made per path against *that* registry's graph - never
 /// a cross-registry union. Enforcement is therefore per-source-registry:
 ///
 /// - The path's registry publishes a graph → the path is **enforced**: a
@@ -541,8 +541,8 @@ pub struct TrustContext<'a> {
     /// Member store-path hash → every registry graph that attributed it.
     ///
     /// A hash may be contributed by more than one registry (IA hashes are
-    /// shared content). Tracking *all* of them — not a single last-write-wins
-    /// slot — keeps enforcement from being disabled by a legacy (no-graph)
+    /// shared content). Tracking *all* of them - not a single last-write-wins
+    /// slot - keeps enforcement from being disabled by a legacy (no-graph)
     /// registry that also carries a path a mapped registry blesses: presence
     /// is sticky across attributions.
     by_hash: BTreeMap<String, Vec<&'a StoreMap>>,
@@ -641,7 +641,7 @@ pub enum UpsertOutcome {
 /// when `bless` is explicitly set; otherwise the conflict is reported and the
 /// file is left untouched.
 ///
-/// "Differs" is judged by the realisation's identity — its `ca` if present,
+/// "Differs" is judged by the realisation's identity - its `ca` if present,
 /// else its `nar`: a record may legitimately hold several realisations (one
 /// per blessed build), but re-publishing the *same* realisation key with
 /// changed content is the mismatch.
@@ -673,7 +673,7 @@ pub fn upsert_realisation(
     } else {
         // A realisation sharing an existing key (its `ca`, or its `nar` when
         // IA-only) but carrying different content is the publish-time mismatch
-        // this graph exists to catch — refuse unless explicitly blessing. A
+        // this graph exists to catch - refuse unless explicitly blessing. A
         // genuinely new key (e.g. the first CA realisation of a path that had
         // only an IA record, or an independent rebuild) is additive.
         let same_key = |existing: &Realisation| match (&existing.ca, &realisation.ca) {
@@ -757,7 +757,7 @@ mod tests {
     pub(crate) const D_A: &str = "1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy";
     pub(crate) const D_B: &str = "0c7n5whyvfyqap5jr6xj21mimi80wabqy9v5cxpfwpji2j91kjcx";
     pub(crate) const D_C: &str = "47xzgayn52idl4q3660qphz1wibz372fiv3q7jz8k7njhsdsfiwv";
-    // Store-path hashes (ia:, filenames) — short nixbase32, as in fixtures.
+    // Store-path hashes (ia:, filenames) - short nixbase32, as in fixtures.
     const DEP_IA: &str = "r4q1m2kp8v3x";
 
     fn nar(d: &str, size: u64) -> NarBytes {
@@ -980,7 +980,7 @@ mod tests {
         sticky.enforce_totality().unwrap();
 
         // A mapped registry missing a record for one of its members is a
-        // stripping signature — totality fails.
+        // stripping signature - totality fails.
         let mut stripped = TrustContext::new();
         stripped.insert("unmapped00000".to_string(), &present);
         assert!(stripped.enforced("unmapped00000"));

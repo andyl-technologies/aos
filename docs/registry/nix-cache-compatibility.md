@@ -383,7 +383,7 @@ The `NarInfo` struct itself carries no `System` / `CA` fields
 round trip is lossless for the fields AOS uses.
 
 > **Trust note (RFC-0005):** for the AOS consumer, narinfos are **advisory
-> transport metadata** — they supply the NAR URL, compression, and sizes for
+> transport metadata** - they supply the NAR URL, compression, and sizes for
 > planning, plus the `FileHash` integrity precheck. The *trust decision* for
 > the decompressed bytes is the registry's signed `store/` realisation graph
 > ([`repo-layout.md`](repo-layout.md) §5): every downloaded NAR's

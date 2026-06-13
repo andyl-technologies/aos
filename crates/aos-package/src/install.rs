@@ -223,7 +223,7 @@ pub async fn run(
 
     // Trust-map totality (RFC-0005 §2.4/§2.8): every member of these
     // closures from a registry that publishes a ca/ map must carry a
-    // blessed entry — checked over the closures as they stand here,
+    // blessed entry - checked over the closures as they stand here,
     // including members already in the local store (which never reach the
     // download/verify path), so a stripped or partial map fails loudly
     // rather than slipping through on an upgrade. With --no-deps the

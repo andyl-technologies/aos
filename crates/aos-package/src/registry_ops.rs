@@ -779,7 +779,7 @@ impl StoreWriteReport {
 /// `content_addressed`, also its CA realisation and pinned dependency CAs
 /// (from `nix store make-content-addressed`). A member already recorded with
 /// *different* content for the same realisation fails the whole write unless
-/// `bless` is set — an unexpected mismatch at publish time is exactly the
+/// `bless` is set - an unexpected mismatch at publish time is exactly the
 /// divergence the graph exists to surface, so it is never merged silently.
 ///
 /// When `content_addressed` is requested but the local Nix cannot compute CA
@@ -866,7 +866,7 @@ fn write_store_files(
 }
 
 /// Collect every unique `store_path` from the registry's package TOML
-/// files (runtime closure roots only — sources and images are covered by
+/// files (runtime closure roots only - sources and images are covered by
 /// their own TOML hashes, not the trust map).
 fn collect_package_store_paths(dir: &Path) -> Result<Vec<String>> {
     let packages_dir = dir.join("packages");
@@ -1726,7 +1726,7 @@ fn package_platform_table(
     table.insert("store_path".into(), toml::Value::String(info.path.clone()));
     // No nar_hash/nar_size/references here: the output's content binding and
     // dependency edges live in the store/ realisation graph (RFC-0005), the
-    // single authority. Sources and images keep their hashes below — they sit
+    // single authority. Sources and images keep their hashes below - they sit
     // outside the runtime closure the graph covers.
     table.insert(
         "closure_size".into(),
@@ -2376,7 +2376,7 @@ pub async fn verify(
 
     // The store/ realisation graph, for coverage checks below (RFC-0005). A
     // malformed graph is an error; an absent one downgrades to a warning
-    // (legacy registry — consumers fall back to unauthenticated narinfo).
+    // (legacy registry - consumers fall back to unauthenticated narinfo).
     let store_graph = match StoreMap::load(&dir) {
         Ok(map) => {
             if !map.is_present() {
@@ -2894,7 +2894,7 @@ fn collect_cache_validation_entries(
 
     // Newer registries record output NAR hashes in the store/ graph rather
     // than the package TOML; load it once for the fallback. A malformed graph
-    // is a hard error (matching Registry::load) — silently treating it as
+    // is a hard error (matching Registry::load) - silently treating it as
     // absent would validate nothing on a post-RFC registry.
     let store_graph = StoreMap::load(dir).context("loading store/ graph for cache validation")?;
 
@@ -2968,7 +2968,7 @@ fn collect_cache_validation_entries_from_package(
             };
             // Acceptable hashes: the legacy TOML nar_hash, or ALL blessed
             // NARs from the store/ graph (a cache may legitimately serve any
-            // of them — RFC-0005 §2.3).
+            // of them - RFC-0005 §2.3).
             let mut nar_hashes: Vec<String> = entry
                 .get("nar_hash")
                 .and_then(|v| v.as_str())
@@ -3624,7 +3624,7 @@ pub async fn run_channel(
 ///
 /// Fails when cache generation, an upload, the pointer commit, or the
 /// object-store refresh fails.
-/// `apr store` — maintains the registry's `store/` realisation graph
+/// `apr store` - maintains the registry's `store/` realisation graph
 /// (RFC-0005).
 ///
 /// The graph is append-mostly: `bless` adds a realisation computed from the
@@ -3849,7 +3849,7 @@ fn resolve_optional_signing_key(
     }
 }
 
-/// `apr store verify` — checks graph health: record parseability, coverage of
+/// `apr store verify` - checks graph health: record parseability, coverage of
 /// every published closure member (reachable via dependency edges), and (with
 /// `deep`) agreement with the local Nix store's actual NAR hashes.
 fn store_verify(dir: &Path, registry_name: &str, deep: bool, printer: &Printer) -> Result<()> {

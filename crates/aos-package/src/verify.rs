@@ -9,7 +9,7 @@
 //!   stream — catches a valid-zstd-but-wrong-content substitution.
 //! - **Layer 4c** ([`verify_nar_blessed`]): the decompressed NAR's SHA-256
 //!   and size must match a *blessed* NAR in the signed `store/` realisation
-//!   graph (RFC-0005) — unlike 4a/4b, whose expected values come from the
+//!   graph (RFC-0005) - unlike 4a/4b, whose expected values come from the
 //!   unauthenticated narinfo, this roots the bytes at the registry
 //!   signature. Decompression is capped at the largest blessed size so
 //!   untrusted compressed input cannot expand unboundedly.
@@ -226,7 +226,7 @@ fn describe_blessed(blessed: &[NarBytes]) -> String {
 ///
 /// Returns an error when `blessed` is empty, when the file cannot be opened
 /// or is not valid zstd, when the decompressed stream exceeds every blessed
-/// size, or — as [`AosError::HashMismatch`] — when the digest/size pair
+/// size, or - as [`AosError::HashMismatch`] - when the digest/size pair
 /// matches no blessed NAR.
 pub fn verify_nar_blessed(path: &Path, blessed: &[NarBytes]) -> Result<String> {
     let cap =
@@ -276,7 +276,7 @@ pub fn verify_nar_blessed(path: &Path, blessed: &[NarBytes]) -> Result<String> {
 /// Verify a batch of downloaded NARs before import (Layers 4a + 4c/4b).
 ///
 /// Every result gets the compressed-file check (Layer 4a) against the
-/// narinfo `FileHash` it was downloaded under — an integrity precheck, not
+/// narinfo `FileHash` it was downloaded under - an integrity precheck, not
 /// a trust decision. The trust decision is per path, judged against the
 /// path's *own* source registry via `ctx`:
 ///
@@ -429,7 +429,7 @@ pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Resu
 ///
 /// The multi-realisation analogue of [`verify_installed`]: re-dumps the
 /// path and accepts iff *some* blessed NAR matches the freshly computed
-/// digest and exact size — a path matching any blessed realisation is
+/// digest and exact size - a path matching any blessed realisation is
 /// intact, even when it is not the realisation a single-valued display
 /// hash would name.
 ///
@@ -438,7 +438,7 @@ pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Resu
 /// # Errors
 ///
 /// Returns an error when `blessed` is empty, when `nix-store --dump` fails,
-/// or — as [`AosError::HashMismatch`] — when no blessed NAR matches.
+/// or - as [`AosError::HashMismatch`] - when no blessed NAR matches.
 pub async fn verify_installed_blessed(store_path: &str, blessed: &[NarBytes]) -> Result<String> {
     if blessed.is_empty() {
         bail!("no blessed NAR to verify {store_path} against");
