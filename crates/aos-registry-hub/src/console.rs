@@ -56,6 +56,9 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/login", get(login_form).post(login_submit))
         .route("/auth/magic", get(magic_consume))
+        .route("/auth/sso", post(login_sso))
+        .route("/auth/oidc/start", get(oidc_start))
+        .route("/auth/oidc/callback", get(oidc_callback))
         .route("/logout", get(logout))
         .route("/account", get(account))
         .route(
@@ -172,11 +175,33 @@ struct LoginForm {
     email: String,
 }
 
-/// `POST /login` — issue a magic link and show the "check your email" page.
+/// Resolve the org whose **verified** domain captures `email`, together with
+/// whether that org has an OIDC IdP configured and enforces SSO.
 ///
-/// The address is not revealed as known/unknown: a link is always issued and
-/// the confirmation is identical either way. In dev mode the page also shows
-/// the link inline (the [`LogMailer`] does not send mail).
+/// Returns `(org_slug, enforce_sso)` when the email's domain is captured by an
+/// org *and* that org has an IdP; `None` otherwise (no capture, or a captured
+/// domain whose org has no IdP — which falls back to magic links).
+fn sso_target(state: &AppState, email: &str) -> Option<(String, bool)> {
+    let domain = email.rsplit_once('@').map(|(_, d)| d.to_lowercase())?;
+    let org_id = state.db.org_for_domain(&domain).ok().flatten()?;
+    let config = state.db.idp_config(org_id).ok().flatten()?;
+    let org = state.db.org_by_id(org_id).ok().flatten()?;
+    Some((org.slug, config.enforce_sso))
+}
+
+/// `POST /login` — route to SSO or issue a magic link.
+///
+/// Email-first routing (RFC-0004 "domain capture"): when the typed email's
+/// domain is captured by an org with an OIDC IdP, the response depends on the
+/// org's `enforce_sso`:
+///
+/// - **enforced** — redirect straight into the OIDC flow (`/auth/oidc/start`);
+///   magic links are not offered.
+/// - **not enforced** — show a two-step page offering an "Sign in with SSO"
+///   button *and* a magic link, keeping the no-JS floor.
+///
+/// Otherwise a magic link is issued and the "check your email" page shown. The
+/// address is never revealed as known/unknown.
 ///
 /// [`LogMailer`]: crate::auth::magic::LogMailer
 async fn login_submit(State(state): State<Arc<AppState>>, Form(form): Form<LoginForm>) -> Response {
@@ -184,6 +209,20 @@ async fn login_submit(State(state): State<Arc<AppState>>, Form(form): Form<Login
     if email.is_empty() || !email.contains('@') {
         return Html(console::login_page(
             Some("Enter a valid email address."),
+            Instant::now(),
+        ))
+        .into_response();
+    }
+    // Domain capture: route to the org's IdP when one is configured.
+    if let Some((org_slug, enforce_sso)) = sso_target(&state, &email) {
+        let start = format!("/auth/oidc/start?org={}", urlencode(&org_slug));
+        if enforce_sso {
+            return Redirect::to(&start).into_response();
+        }
+        return Html(console::login_sso_page(
+            &email,
+            &org_slug,
+            &start,
             Instant::now(),
         ))
         .into_response();
@@ -240,6 +279,103 @@ async fn magic_consume(
         Err(err) => return internal(err),
     };
     ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
+}
+
+// -- OIDC single sign-on ----------------------------------------------------
+
+/// `POST /auth/sso` body: the org to begin an SSO login against.
+#[derive(serde::Deserialize)]
+struct SsoForm {
+    org: String,
+}
+
+/// `POST /auth/sso` — the no-JS "Sign in with SSO" button target.
+///
+/// Reached from the two-step login page when SSO is offered but not enforced;
+/// it simply begins the OIDC flow for the named org, mirroring a `GET` of
+/// `/auth/oidc/start?org=…`.
+async fn login_sso(State(state): State<Arc<AppState>>, Form(form): Form<SsoForm>) -> Response {
+    begin_oidc(&state, &form.org, None).await
+}
+
+/// `GET /auth/oidc/start?org=` query.
+#[derive(serde::Deserialize)]
+struct OidcStartQuery {
+    org: String,
+    #[serde(default)]
+    next: Option<String>,
+}
+
+/// `GET /auth/oidc/start?org=<slug>` — redirect into the org's IdP.
+///
+/// Looks up the org and stages the authorization-code + PKCE flow, then
+/// 302-redirects the browser to the IdP's authorization endpoint. An unknown
+/// org or an org without an IdP renders a clean error page (no stack trace).
+async fn oidc_start(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<OidcStartQuery>,
+) -> Response {
+    begin_oidc(&state, &query.org, query.next.as_deref()).await
+}
+
+/// Shared "begin OIDC login" helper for the `GET` and `POST` entry points.
+async fn begin_oidc(state: &AppState, org_slug: &str, next: Option<&str>) -> Response {
+    let org = match state.db.org_by_slug(org_slug) {
+        Ok(Some(org)) => org,
+        Ok(None) => return sso_error("That organization does not exist."),
+        Err(err) => return internal(err),
+    };
+    match crate::auth::oidc::begin_login(&state.db, &state.external_url, org.id, next) {
+        Ok(redirect) => Redirect::to(&redirect.url).into_response(),
+        Err(err) => {
+            tracing::warn!(error = %format!("{err:#}"), org = %org_slug, "oidc begin failed");
+            sso_error("Single sign-on is not configured for that organization.")
+        }
+    }
+}
+
+/// `GET /auth/oidc/callback?code=&state=` — complete the OIDC login.
+///
+/// Consumes the staged flow, exchanges the code, verifies the id_token, and on
+/// success creates a sudo-capable session and redirects to the flow's
+/// `redirect_after` (or `/`). Every failure renders a clean error page rather
+/// than leaking internals.
+async fn oidc_callback(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<crate::auth::oidc::CallbackParams>,
+) -> Response {
+    let login = match crate::auth::oidc::complete_login(
+        &state.db,
+        state.sealer.as_ref(),
+        &state.http,
+        &state.external_url,
+        &params,
+    )
+    .await
+    {
+        Ok(login) => login,
+        Err(err) => {
+            tracing::warn!(error = %format!("{err:#}"), "oidc callback failed");
+            return sso_error("Sign-in could not be completed. Please try again.");
+        }
+    };
+    // A fresh SSO sign-in is a re-authentication: the session is sudo-capable.
+    let cookie = match state.db.create_session(login.user_id, IDLE_TIMEOUT_SECS, 1) {
+        Ok(secret) => set_cookie_header(&secret, IDLE_TIMEOUT_SECS),
+        Err(err) => return internal(err),
+    };
+    // Honor the staged redirect only for same-origin relative paths (a leading
+    // single `/`), so a forged `next` can never bounce the browser off-site.
+    let target = login
+        .redirect_after
+        .filter(|p| p.starts_with('/') && !p.starts_with("//"))
+        .unwrap_or_else(|| "/".to_string());
+    ([(header::SET_COOKIE, cookie)], Redirect::to(&target)).into_response()
+}
+
+/// Render a clean SSO error page (no stack traces).
+fn sso_error(message: &str) -> Response {
+    Html(console::login_page(Some(message), Instant::now())).into_response()
 }
 
 /// `GET /logout` — revoke the caller's own session and clear the cookie.

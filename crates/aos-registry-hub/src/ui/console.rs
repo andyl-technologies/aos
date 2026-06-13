@@ -112,6 +112,46 @@ pub fn login_sent_page(email: &str, dev_link: Option<&str>, started: Instant) ->
     )
 }
 
+/// The two-step "single sign-on available" page (domain capture, not
+/// enforced).
+///
+/// Shown after `POST /login` when the typed email's domain is captured by an
+/// org that has an OIDC IdP but does *not* enforce SSO: it offers a "Sign in
+/// with SSO" button (`POST /auth/sso` with the org slug — no-JS) alongside a
+/// fall-back link to request a magic link. `start_url` is the
+/// `/auth/oidc/start?org=…` link the GET entry point uses.
+#[must_use]
+pub fn login_sso_page(email: &str, org_slug: &str, start_url: &str, started: Instant) -> String {
+    let mut body = String::from("<h1>Single sign-on available</h1>\n");
+    let _ = writeln!(
+        body,
+        "<p><code>{}</code> signs in through <strong>{}</strong>'s identity \
+         provider.</p>",
+        escape(email),
+        escape(org_slug),
+    );
+    let _ = writeln!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"/auth/sso\">\n\
+         <input type=\"hidden\" name=\"org\" value=\"{}\">\n\
+         <button>sign in with SSO</button>\n</form>",
+        escape(org_slug),
+    );
+    let _ = writeln!(
+        body,
+        "<p class=\"dim\">Or <a href=\"/login\">use a one-time email link</a> \
+         instead. (<a href=\"{}\">direct SSO link</a>)</p>",
+        escape(start_url),
+    );
+    page_with_session(
+        "single sign-on",
+        &[(String::new(), "log in".into())],
+        &body,
+        &StateLine::timed(started),
+        &SessionIndicator::default(),
+    )
+}
+
 /// The account profile page: email, active sessions, tokens, passkeys.
 ///
 /// `tokens` are `(id, scope, permissions)` tuples across every scope the

@@ -66,6 +66,14 @@ pub struct AppState {
     ///
     /// [`LogMailer`]: crate::auth::magic::LogMailer
     pub dev: bool,
+    /// Sealer for OIDC client secrets at rest (per-org SSO).
+    ///
+    /// Defaults to the placeholder [`crate::auth::oidc::XorSealer`]; a
+    /// production deployment supplies a real AEAD/KMS sealer.
+    pub sealer: Arc<dyn crate::auth::oidc::SecretSealer>,
+    /// Hardened HTTP client for hub-originated OIDC requests (token exchange,
+    /// JWKS fetch), with the same timeouts as the surface fetcher.
+    pub http: reqwest::Client,
 }
 
 impl AppState {
@@ -86,6 +94,10 @@ impl AppState {
             leases: crate::facade::LeaseMap::new(),
             mailer: Arc::new(crate::auth::magic::LogMailer),
             dev: false,
+            // A deterministic placeholder sealer for dev/tests; production
+            // supplies a real one via the struct literal.
+            sealer: crate::auth::oidc::dev_sealer(),
+            http: crate::fetch::hardened_client(),
         }
     }
 }
