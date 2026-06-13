@@ -184,11 +184,10 @@ pub async fn sync_git(
 
     let channel_roster_head = if let TrackingMode::Channel(channel_name) = tracking_mode {
         if !fetched_roster_head {
-            Some(resolve_ref_to_commit(
-                &repo_dir,
-                &format!("refs/remotes/origin/{channel_name}"),
+            Some(
+                resolve_ref_to_commit(&repo_dir, &format!("refs/remotes/origin/{channel_name}"))
+                    .await?,
             )
-            .await?)
         } else {
             None
         }

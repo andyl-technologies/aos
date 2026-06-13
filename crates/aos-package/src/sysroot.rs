@@ -1940,7 +1940,9 @@ mod tests {
         // not its target. Canonicalizing must yield the target so it
         // compares equal to what resolve_kernel_path stores.
         let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("01234567890123456789012345678901-linux-6.12.1");
+        let target = dir
+            .path()
+            .join("01234567890123456789012345678901-linux-6.12.1");
         std::fs::create_dir(&target).unwrap();
         let link = dir.path().join("kernel");
         std::os::unix::fs::symlink(&target, &link).unwrap();
@@ -1966,10 +1968,7 @@ mod tests {
         );
 
         let gone = "/nix/store/gcd-toplevel/kernel".to_string();
-        assert_eq!(
-            canonicalize_kernel_path(&Some(gone.clone())),
-            Some(gone)
-        );
+        assert_eq!(canonicalize_kernel_path(&Some(gone.clone())), Some(gone));
         assert_eq!(canonicalize_kernel_path(&None), None);
     }
 

@@ -26,8 +26,10 @@ anything being placed in the tag message (tags are pure pointers — see
 │   ├── a/apache.toml
 │   ├── c/curl.toml
 │   └── <first-letter>/<name>.toml    ← per-package metadata, sharded by first letter
-└── closures/
-    └── <hash>                         ← dependency adjacency list
+├── closures/
+│   └── <hash>                         ← dependency adjacency list
+└── ca/
+    └── <2-char-prefix>                ← trust map: blessed content addresses (RFC-0005)
 ```
 
 This is **almost unchanged** from today's code — the git-native redesign changed
@@ -142,9 +144,10 @@ with `apr trust pin --replace`; the `# revoked:` masking excludes the bad key
 without touching the image-baked file.
 
 > **Defence-in-depth note:** even an authenticated-but-wrong cache pointer can't serve
-> bad bytes — NARs are content-addressed and SHA-256-verified on download
-> (`download_one`, `download.rs:191-204`). So the trust that matters is the *tag/commit* chain (which
-> `keys.toml` governs), not the cache list.
+> bad bytes — every downloaded NAR's decompressed SHA-256 and size must match a
+> blessed `ca/` trust-map entry from the signed tree (§5b; `verify_downloads`,
+> `crates/aos-package/src/verify.rs`). So the trust that matters is the
+> *tag/commit* chain (which `keys.toml` governs), not the cache list.
 
 ---
 
@@ -171,20 +174,21 @@ previous = "8.4.0"                      # version chain (sysroot packages)
 
 [versions.platforms.x86_64-linux]
 store_path    = "/nix/store/<hash>-curl-8.5.0"
-nar_hash      = "sha256:<hex>"          # uncompressed NAR
-nar_size      = 1048576
-download_hash = "sha256:<hex>"          # compressed .nar.zst
-download_size = 393216
 closure_size  = 5242880
 source_drv    = "/nix/store/<hash>-curl-8.5.0.drv"
 source_nar_hash = "sha256:<hex>"
 references    = ["<hash>", "<hash>"]    # direct runtime deps (store-path hashes)
-# [[versions.platforms.x86_64-linux.images]]  ← pre-built images (sysroot packages only)
+# [[versions.platforms.x86_64-linux.images]]  ← pre-built images (sysroot packages
+#                                               only; image entries keep nar_hash/nar_size)
 ```
 
-This is the data a narinfo emitter reads (see
-[`nix-cache-compatibility.md`](nix-cache-compatibility.md) §6) and unchanged by the
-git-native redesign.
+The output's **content binding (`nar_hash`/`nar_size`) is not here** — it
+lives in the `ca/` trust map (§5b), the single authority for blessed bytes
+(RFC-0005). Pre-RFC-0005 registries still carry `nar_hash`/`nar_size` per
+platform entry; the parser treats them as optional legacy fields and
+consumers backfill the in-memory metadata from `ca/` when absent. Sources
+(`source_nar_hash`) and sysroot images keep their hashes in the TOML — they
+sit outside the runtime closure the trust map covers.
 
 ---
 
@@ -204,6 +208,42 @@ waste effort delta-diffing these (they pack/transfer better untouched).
 
 ---
 
+## 5b. `ca/<2-char-prefix>` — the trust map (RFC-0005)
+
+Input-addressed store-path hashes promise *how* a path was built, not *what
+bits* it contains. The `ca/` directory closes that gap: it maps every IA
+hash in a published closure to one or more **blessed** content addresses,
+so consumers validate the exact bytes of every closure member against the
+signed tree instead of trusting cache-served narinfos
+(`crates/aos-package/src/registry/ca.rs`; design record:
+[RFC-0005](../rfcs/0005-ca-trust-map.md)).
+
+At most 1024 bucket files, named by the first two nixbase32 characters of
+the IA hash, each holding sorted lines:
+
+```
+<ia-hash> nar:sha256:<52-char-nixbase32>:<nar-size-bytes> [...more entries]
+```
+
+Multiple entries per line are multiple blessed realisations (independent
+builders, non-reproducible rebuilds). Entry types are dispatched on the
+first `:` segment; `ca:` is reserved for Nix experimental-CA-store interop.
+
+- **Producer**: `apr publish` upserts an entry for every runtime-closure
+  member and *refuses* on a content mismatch unless `--bless` is given;
+  `apr ca bless/revoke/verify/backfill` maintain the map directly.
+- **Consumer**: `apm` verifies each downloaded NAR's decompressed SHA-256
+  and size against the blessed set (`verify_downloads`,
+  `crates/aos-package/src/verify.rs`). When every involved registry
+  publishes a map, an unmapped path is a **hard failure**; a registry with
+  no `ca/` at all falls back to narinfo hashes with a warning.
+- **Semantics**: append-mostly; removal is revocation and carries the same
+  review weight as a `keys.toml` retirement. Deliberately **no
+  `ca/** -diff`** gitattribute — blessing changes are the highest-value
+  security-review surface and must show as readable one-line diffs.
+
+---
+
 ## 6. Tree ↔ HTTP mapping
 
 The files above are **never served as literal HTTP paths**. They are encoded inside git
@@ -215,13 +255,14 @@ objects; the consumer fetches the objects and reconstructs the tree:
         ▼
      commit ──► TREE  ┌─ registry.toml  → [[caches]]
                       ├─ keys.toml      → trust roster
-                      ├─ packages/*     → package metadata + NAR hashes
-                      └─ closures/*     → dependency graph
+                      ├─ packages/*     → package metadata
+                      ├─ closures/*     → dependency graph
+                      └─ ca/*           → blessed content addresses
 ```
 
 | This doc (git **tree**) | [`http-layout.md`](http-layout.md) (served **object store**) |
 |---|---|
-| `registry.toml`, `keys.toml`, `packages/`, `closures/` | encoded inside git objects under `/objects/` |
+| `registry.toml`, `keys.toml`, `packages/`, `closures/`, `ca/` | encoded inside git objects under `/objects/` |
 | a commit's working-tree content | `/objects/` (loose + packs), `refs` (`info/refs`), `HEAD` |
 | read after assembling objects | `/releases/<…>/objects/pack/*` transfer those objects efficiently |
 | authenticated by the signed tag (Merkle) | content-addressed; tags/commits verified by `keys.toml`-rostered keys |
@@ -237,9 +278,10 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 |---|---|
 | `registry.toml` | `[registry]` + `[[caches]]` (no signing pubkey) |
 | `keys.toml` | emitted by `apr create` as a schema-1 roster; maintained by `apr keys generate/list/add/retire` (signed roster commits, survivor-vouched + re-signed retirement); **consumed by clients** during sync (`pin_rotated_keys`) as the authoritative trusted-key set |
-| `packages/<x>/<name>.toml` | nested `PackageToml` |
+| `packages/<x>/<name>.toml` | nested `PackageToml` (`nar_hash`/`nar_size` legacy-optional, superseded by `ca/`) |
 | `closures/<hash>` | adjacency list |
-| `.gitattributes` | `closures/** -diff` |
+| `ca/<2-char-prefix>` | trust map of blessed content addresses (RFC-0005); written by `apr publish`, maintained by `apr ca`, enforced by `apm` |
+| `.gitattributes` | `closures/** -diff` (deliberately **not** `ca/`) |
 | bootstrap trust | out-of-band anchor — image-baked `aos.apm.registries` → `trusted-keys.d`, or `apr trust pin`, or `[registry.signing] public_key` when the store is empty — then `keys.toml` overlap rotation in-band (no silent TOFU) |
 
 See also: [`signing-and-trust.md`](signing-and-trust.md) (keys, rotation/revocation),

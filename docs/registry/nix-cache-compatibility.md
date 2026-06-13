@@ -365,7 +365,7 @@ into `NarInfo` and reads exactly these fields (`crates/aos-package/src/download.
 | `StorePath` | `<store_dir>/<basename(store_path)>` | Full store path; `basename` comes from `aos-core::nar::info`. |
 | `URL` | `nar_url(store_path, nar_hash, compression)` | Relative to the cache URL; `nar/{store_hash}-{nar_hash with ':' -> '-'}.{ext}`. The consumer joins it via `join_cache_url`. |
 | `Compression` | `NarCompression::{None,Zstd,Xz}.name()` | `zstd`, `xz`, or `none`. |
-| `FileHash` | compressed-bytes SHA-256 computed by `registry::nixcache` | Always emitted. Consumer treats it as authoritative for the download. |
+| `FileHash` | compressed-bytes SHA-256 computed by `registry::nixcache` | Always emitted. Consumer verifies the wire bytes against it (integrity precheck). |
 | `FileSize` | compressed-byte length computed by `registry::nixcache` | Always emitted. |
 | `NarHash` | `nix path-info --json` `narHash` | Hash of the **uncompressed** NAR, straight from the local Nix store. |
 | `NarSize` | `nix path-info --json` `narSize` | Size in bytes of the uncompressed NAR. |
@@ -381,6 +381,17 @@ Stock-Nix fields AOS does **not** emit:
 The `NarInfo` struct itself carries no `System` / `CA` fields
 (`info.rs:5-16`), and `parse()` ignores any unknown keys (`info.rs:61`), so the
 round trip is lossless for the fields AOS uses.
+
+> **Trust note (RFC-0005):** for the AOS consumer, narinfos are **advisory
+> transport metadata** — they supply the NAR URL, compression, and sizes for
+> planning, plus the `FileHash` integrity precheck. The *trust decision* for
+> the decompressed bytes is the registry's signed `ca/` trust map
+> ([`repo-layout.md`](repo-layout.md) §5b): every downloaded NAR's
+> uncompressed SHA-256 and size must match a blessed entry, and a narinfo
+> `NarHash` disagreeing with `ca/` always resolves in favor of `ca/`. Only
+> registries that publish no map at all fall back to trusting `NarHash`
+> (with a warning). Stock-Nix consumers, which cannot read `ca/`, keep the
+> narinfo `Sig:` Ed25519 signature (§8) as their substitution defence.
 
 ### 6.1 Example static narinfo
 
