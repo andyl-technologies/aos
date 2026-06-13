@@ -252,6 +252,25 @@ impl RegistrySet {
     pub fn registries(&self) -> &[Registry] {
         &self.registries
     }
+
+    /// Builds the blessed-content policy for a transaction that resolves
+    /// packages from the named registries (RFC-0005).
+    ///
+    /// Duplicate names collapse; names not present in the set contribute
+    /// nothing (resolution cannot have produced packages from them).
+    pub fn ca_policy(&self, registry_names: &[&str]) -> ca::CaPolicy<'_> {
+        let mut seen = std::collections::HashSet::new();
+        let mut maps = Vec::new();
+        for name in registry_names {
+            if !seen.insert(*name) {
+                continue;
+            }
+            if let Some(registry) = self.get_registry(name) {
+                maps.push(registry.ca_map());
+            }
+        }
+        ca::CaPolicy::from_maps(maps)
+    }
 }
 
 /// Re-export `store_path_hash` for use by other modules.

@@ -66,7 +66,7 @@ use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::{filter_missing, import_nar};
 use crate::types::{PackageMeta, ProfileScope, SystemGeneration, SystemGenerationState};
 use crate::unit_diff::{self, UnitDiff};
-use crate::verify::{verify_download_hash, verify_nar_hash};
+use crate::verify::{verify_download_hash, verify_downloads, verify_nar_hash};
 
 // ---------------------------------------------------------------------------
 // Kernel upgrade mode
@@ -247,14 +247,14 @@ pub async fn install_system(
         )
         .await?;
 
-        // Step 6: Verify and import.
+        // Step 6: Verify (against the registries' ca/ trust maps, RFC-0005)
+        // and import.
         printer.step(5, 8, "Verifying...");
-        for result in &results {
-            verify_download_hash(&result.local_path, &result.download_hash)
-                .with_context(|| format!("verifying download for {}", result.store_path))?;
-            verify_nar_hash(&result.local_path, &result.nar_hash)
-                .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
-        }
+        let registry_names: Vec<&str> = closures
+            .iter()
+            .map(|closure| closure.registry_name.as_str())
+            .collect();
+        verify_downloads(&results, &registries.ca_policy(&registry_names), printer)?;
 
         printer.step(6, 8, "Importing...");
         for result in &results {
@@ -815,10 +815,14 @@ async fn download_image(
         bail!("image download failed");
     }
 
-    // Import NAR to get the store path, then copy image file out.
+    // Import NAR to get the store path, then copy image file out. The
+    // expected NAR hash is the image entry from the signed package TOML —
+    // not the cache-served narinfo — so the bytes are rooted at the
+    // registry signature (images sit outside the ca/ trust map).
     let result = &results[0];
     verify_download_hash(&result.local_path, &result.download_hash)?;
-    verify_nar_hash(&result.local_path, &result.nar_hash)?;
+    verify_nar_hash(&result.local_path, &img.nar_hash)
+        .with_context(|| format!("verifying image NAR for {}", img.store_path))?;
     import_nar(
         &result.local_path,
         &result.store_path,

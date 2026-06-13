@@ -34,8 +34,11 @@ use sha2::{Digest, Sha256};
 
 use aos_core::error::AosError;
 use aos_core::nix::aos_nix_env;
+use aos_core::output::Printer;
 
-use crate::registry::ca::CaEntry;
+use crate::download::DownloadResult;
+use crate::registry::ca::{CaEntry, CaPolicy};
+use crate::registry::store_path_hash;
 
 // ---------------------------------------------------------------------------
 // SHA-256 computation
@@ -266,6 +269,65 @@ pub fn verify_nar_blessed(path: &Path, blessed: &[CaEntry]) -> Result<String> {
         actual: format!("{actual} ({total} bytes)"),
     }
     .into())
+}
+
+/// Verify a batch of downloaded NARs before import (Layers 4a + 4c/4b).
+///
+/// Every result gets the compressed-file check (Layer 4a) against the
+/// narinfo `FileHash` it was downloaded under — an integrity precheck, not
+/// a trust decision. The trust decision is per path:
+///
+/// - A blessed `ca/` entry set exists → Layer 4c, the signed trust map is
+///   authoritative ([`verify_nar_blessed`]).
+/// - No entry and the transaction is enforcing (every involved registry
+///   publishes a map) → hard failure. A gap in a published map is
+///   indistinguishable from a stripping attack.
+/// - No entry and some involved registry predates the trust map → legacy
+///   Layer 4b against the unauthenticated narinfo `NarHash`, with a
+///   one-time warning.
+///
+/// # Errors
+///
+/// Returns an error on the first result that fails its applicable checks.
+pub fn verify_downloads(
+    results: &[DownloadResult],
+    policy: &CaPolicy<'_>,
+    printer: &Printer,
+) -> Result<()> {
+    let mut warned_legacy = false;
+    for result in results {
+        verify_download_hash(&result.local_path, &result.download_hash)
+            .with_context(|| format!("verifying download for {}", result.store_path))?;
+
+        let ia_hash = store_path_hash(&result.store_path);
+        let blessed = policy.blessed(ia_hash);
+        if !blessed.is_empty() {
+            verify_nar_blessed(&result.local_path, &blessed).with_context(|| {
+                format!(
+                    "verifying {} against the registry ca/ trust map",
+                    result.store_path
+                )
+            })?;
+        } else if policy.enforcing() {
+            bail!(
+                "no ca/ trust-map entry for {} in any involved registry; refusing to \
+                 install content the registry signature does not vouch for \
+                 (the registry may be malformed or its trust map stripped)",
+                result.store_path,
+            );
+        } else {
+            if !warned_legacy {
+                printer.warning(
+                    "registry publishes no ca/ trust map; verifying NARs against \
+                     unauthenticated cache narinfo hashes",
+                );
+                warned_legacy = true;
+            }
+            verify_nar_hash(&result.local_path, &result.nar_hash)
+                .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -669,6 +731,99 @@ mod tests {
 
         let err = verify_nar_blessed(tmp.path(), &[]).unwrap_err();
         assert!(format!("{err:#}").contains("no usable blessed entries"));
+    }
+
+    /// Build a `DownloadResult` whose local file holds zstd-compressed
+    /// `content`, with narinfo-style hashes filled in.
+    fn download_result_fixture(
+        store_path: &str,
+        content: &[u8],
+        narinfo_nar_hash: &str,
+    ) -> (tempfile::NamedTempFile, DownloadResult) {
+        let (tmp, _) = zstd_fixture(content);
+        let download_hash = sha256_file(tmp.path()).unwrap();
+        let result = DownloadResult {
+            store_path: store_path.to_string(),
+            local_path: tmp.path().to_path_buf(),
+            download_hash,
+            nar_hash: narinfo_nar_hash.to_string(),
+            references: Vec::new(),
+            deriver: None,
+        };
+        (tmp, result)
+    }
+
+    #[test]
+    fn verify_downloads_uses_blessed_entries_over_narinfo() {
+        use crate::registry::ca::{CaMap, upsert_entry};
+
+        let content = b"trusted bytes";
+        let store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pkg-1.0";
+        let nar_hash = sha256_stream(content.as_slice()).unwrap();
+        // The narinfo lies; only the trust map is right.
+        let (_tmp, result) = download_result_fixture(store_path, content, "sha256:bogus");
+
+        let reg = tempfile::TempDir::new().unwrap();
+        upsert_entry(
+            reg.path(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            CaEntry::from_nar_hash(&nar_hash, content.len() as u64).unwrap(),
+            false,
+        )
+        .unwrap();
+        let map = CaMap::load(reg.path()).unwrap();
+        let policy = CaPolicy::from_maps(vec![&map]);
+        let printer = Printer::new(0, true, false);
+
+        verify_downloads(std::slice::from_ref(&result), &policy, &printer).unwrap();
+    }
+
+    #[test]
+    fn verify_downloads_enforcing_rejects_unmapped_path() {
+        use crate::registry::ca::{CaMap, upsert_entry};
+
+        let content = b"unmapped bytes";
+        let store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-pkg-1.0";
+        let nar_hash = sha256_stream(content.as_slice()).unwrap();
+        let (_tmp, result) = download_result_fixture(store_path, content, &nar_hash);
+
+        // The map exists but covers a different hash: enforcing, no entry.
+        let reg = tempfile::TempDir::new().unwrap();
+        upsert_entry(
+            reg.path(),
+            "cccccccccccccccccccccccccccccccc",
+            CaEntry::from_nar_hash(&nar_hash, content.len() as u64).unwrap(),
+            false,
+        )
+        .unwrap();
+        let map = CaMap::load(reg.path()).unwrap();
+        let policy = CaPolicy::from_maps(vec![&map]);
+        let printer = Printer::new(0, true, false);
+
+        let err = verify_downloads(std::slice::from_ref(&result), &policy, &printer).unwrap_err();
+        assert!(format!("{err:#}").contains("no ca/ trust-map entry"));
+    }
+
+    #[test]
+    fn verify_downloads_legacy_falls_back_to_narinfo_hash() {
+        use crate::registry::ca::CaMap;
+
+        let content = b"legacy registry bytes";
+        let store_path = "/nix/store/dddddddddddddddddddddddddddddddd-pkg-1.0";
+        let nar_hash = sha256_stream(content.as_slice()).unwrap();
+        let (_tmp, result) = download_result_fixture(store_path, content, &nar_hash);
+
+        // No ca/ directory at all: legacy registry, narinfo hash decides.
+        let reg = tempfile::TempDir::new().unwrap();
+        let map = CaMap::load(reg.path()).unwrap();
+        let policy = CaPolicy::from_maps(vec![&map]);
+        let printer = Printer::new(0, true, false);
+
+        verify_downloads(std::slice::from_ref(&result), &policy, &printer).unwrap();
+
+        // And a lying narinfo still fails in legacy mode.
+        let (_tmp2, bad) = download_result_fixture(store_path, content, "sha256:bogus");
+        assert!(verify_downloads(std::slice::from_ref(&bad), &policy, &printer).is_err());
     }
 
     #[test]

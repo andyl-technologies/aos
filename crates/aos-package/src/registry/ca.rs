@@ -374,41 +374,25 @@ impl CaMap {
 
 /// The blessed-content lookup for one install/upgrade transaction.
 ///
-/// Built from the synced caches of every registry involved in the
-/// transaction. Enforcement is all-or-nothing per transaction: when every
-/// involved registry publishes a `ca/` map, a path without a blessed entry
-/// is a hard failure (a partial map is indistinguishable from a stripping
-/// attack); when any involved registry predates the trust map, missing
-/// entries fall back to the legacy narinfo hash with a warning.
+/// Borrows the loaded trust maps of every registry involved in the
+/// transaction (see [`RegistrySet::ca_policy`]). Enforcement is
+/// all-or-nothing per transaction: when every involved registry publishes
+/// a `ca/` map, a path without a blessed entry is a hard failure (a
+/// partial map is indistinguishable from a stripping attack); when any
+/// involved registry predates the trust map, missing entries fall back to
+/// the legacy narinfo hash with a warning.
+///
+/// [`RegistrySet::ca_policy`]: crate::registry::RegistrySet::ca_policy
 #[derive(Debug, Default)]
-pub struct CaPolicy {
-    maps: Vec<CaMap>,
+pub struct CaPolicy<'a> {
+    maps: Vec<&'a CaMap>,
     enforcing: bool,
 }
 
-impl CaPolicy {
-    /// Load the trust maps of the named registries from the consumer cache
-    /// base directory (`<cache>/<registry-name>/ca/`).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a present `ca/` directory fails to load — a
-    /// registry that advertises a map must have a readable one.
-    pub fn load(cache_base: &Path, registry_names: &[String]) -> Result<Self> {
-        let mut maps = Vec::with_capacity(registry_names.len());
-        for name in registry_names {
-            let map = CaMap::load(&cache_base.join(name))
-                .with_context(|| format!("loading ca/ trust map for registry '{name}'"))?;
-            maps.push(map);
-        }
-        let enforcing = !maps.is_empty() && maps.iter().all(CaMap::is_present);
-        Ok(Self { maps, enforcing })
-    }
-
-    /// Build a policy directly from loaded maps (used by tests and callers
-    /// that already hold a [`CaMap`]).
-    pub fn from_maps(maps: Vec<CaMap>) -> Self {
-        let enforcing = !maps.is_empty() && maps.iter().all(CaMap::is_present);
+impl<'a> CaPolicy<'a> {
+    /// Build a policy from the involved registries' loaded maps.
+    pub fn from_maps(maps: Vec<&'a CaMap>) -> Self {
+        let enforcing = !maps.is_empty() && maps.iter().all(|map| map.is_present());
         Self { maps, enforcing }
     }
 
@@ -420,18 +404,18 @@ impl CaPolicy {
 
     /// Whether any involved registry publishes a trust map.
     pub fn any_present(&self) -> bool {
-        self.maps.iter().any(CaMap::is_present)
+        self.maps.iter().any(|map| map.is_present())
     }
 
     /// The union of blessed entries for an IA hash across the involved
-    /// registries. Returns an empty slice-vec when no registry maps it.
-    pub fn blessed(&self, ia_hash: &str) -> Vec<&CaEntry> {
-        let mut out: Vec<&CaEntry> = Vec::new();
+    /// registries. Returns an empty vec when no registry maps it.
+    pub fn blessed(&self, ia_hash: &str) -> Vec<CaEntry> {
+        let mut out: Vec<CaEntry> = Vec::new();
         for map in &self.maps {
             if let Some(list) = map.get(ia_hash) {
                 for entry in list {
-                    if !out.contains(&entry) {
-                        out.push(entry);
+                    if !out.contains(entry) {
+                        out.push(entry.clone());
                     }
                 }
             }
@@ -729,15 +713,15 @@ mod tests {
         let without_map = TempDir::new().unwrap();
         std::fs::create_dir_all(without_map.path()).unwrap();
 
-        let enforcing = CaPolicy::from_maps(vec![CaMap::load(with_map.path()).unwrap()]);
+        let present = CaMap::load(with_map.path()).unwrap();
+        let absent = CaMap::load(without_map.path()).unwrap();
+
+        let enforcing = CaPolicy::from_maps(vec![&present]);
         assert!(enforcing.enforcing());
         assert_eq!(enforcing.blessed("r4q1m2kp8v3x").len(), 1);
         assert!(enforcing.blessed("missing000000").is_empty());
 
-        let mixed = CaPolicy::from_maps(vec![
-            CaMap::load(with_map.path()).unwrap(),
-            CaMap::load(without_map.path()).unwrap(),
-        ]);
+        let mixed = CaPolicy::from_maps(vec![&present, &absent]);
         assert!(!mixed.enforcing());
         assert!(mixed.any_present());
 

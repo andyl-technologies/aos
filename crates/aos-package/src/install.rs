@@ -45,7 +45,7 @@ use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_closure, res
 use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
-use super::verify::{verify_download_hash, verify_nar_hash};
+use super::verify::verify_downloads;
 use aos_core::error::AosError;
 use aos_core::nar::info as narinfo;
 use aos_core::output::{OutputMode, Printer};
@@ -300,14 +300,14 @@ pub async fn run(
         .await?;
         downloaded_count = results.len();
 
-        // Verify downloads.
+        // Verify downloads against the involved registries' ca/ trust maps
+        // (RFC-0005), falling back to narinfo hashes for legacy registries.
         printer.step(4, 7, "Verifying downloads...");
-        for result in &results {
-            verify_download_hash(&result.local_path, &result.download_hash)
-                .with_context(|| format!("verifying download for {}", result.store_path))?;
-            verify_nar_hash(&result.local_path, &result.nar_hash)
-                .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
-        }
+        let registry_names: Vec<&str> = closures
+            .iter()
+            .map(|closure| closure.registry_name.as_str())
+            .collect();
+        verify_downloads(&results, &registries.ca_policy(&registry_names), printer)?;
 
         if download_only {
             if json_mode {
