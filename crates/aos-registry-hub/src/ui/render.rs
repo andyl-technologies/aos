@@ -249,7 +249,8 @@ pub fn page_with_session(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <title>{page_title}</title>\n\
-         <link rel=\"stylesheet\" href=\"/_assets/style.css\">\n</head>\n<body>\n\
+         <link rel=\"stylesheet\" href=\"/_assets/style.css\">\n\
+         <script src=\"/_assets/app.js\" defer></script>\n</head>\n<body>\n\
          <header class=\"masthead\">{brand_span}\
          <span class=\"crumbs\">{crumb_html}</span>{session}</header>\n\
          <main>\n{body}\n</main>\n\
@@ -277,6 +278,20 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     }
     out.push_str("</tbody>\n</table>\n");
     out
+}
+
+/// Render a table tagged for the live-search enhancement (`search.js`).
+///
+/// Identical to [`table`] but adds `data-live-list` and a `data-live-noun`
+/// so the client script can filter the `<tbody>` rows in place; `noun` is
+/// the plural label shown in the result count ("registries", "packages").
+pub fn live_table(headers: &[&str], rows: &[Vec<String>], noun: &str) -> String {
+    let plain = table(headers, rows);
+    plain.replacen(
+        "<table>",
+        &format!("<table data-live-list data-live-noun=\"{}\">", escape(noun)),
+        1,
+    )
 }
 
 /// Format a Unix timestamp as a coarse relative age ("38s ago",

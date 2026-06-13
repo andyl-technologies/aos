@@ -23,6 +23,12 @@ pub mod render;
 /// The single first-party stylesheet, embedded at build time.
 pub const STYLESHEET: &str = include_str!("style.css");
 
+/// First-party progressive-enhancement bundle (live search + the TOML
+/// config editor), served at `/_assets/app.js`. Same-origin, so it loads
+/// under the strict `default-src 'self'` CSP with no nonce; every behavior
+/// is an enhancement over a form/textarea that already works without JS.
+pub const APP_JS: &str = include_str!("app.js");
+
 /// JetBrains Mono Regular (OFL), self-hosted per the first-party asset
 /// policy — no font CDNs, ever. License: `assets/OFL.txt`.
 pub const FONT_REGULAR: &[u8] = include_bytes!("assets/JetBrainsMono-Regular.woff2");
