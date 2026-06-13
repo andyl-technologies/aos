@@ -210,3 +210,89 @@ async fn untrusted_key_fails_closed() {
     let err = index_and_record(&db, &fetch, &registry).await.unwrap_err();
     assert!(format!("{err:#}").contains("not trusted"), "got: {err:#}");
 }
+
+#[tokio::test]
+async fn connectrpc_read_path_serves_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("surface");
+    std::fs::create_dir_all(&surface).unwrap();
+    let fixture = common::standard_registry(&surface);
+
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.register_registry(
+        "demo",
+        surface.to_str().unwrap(),
+        std::slice::from_ref(&fixture.trust_key),
+        true,
+    )
+    .unwrap();
+    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
+        .await
+        .unwrap();
+
+    let app = router(Arc::new(AppState {
+        db,
+        external_url: "http://127.0.0.1:8420".into(),
+    }));
+
+    let post = |uri: &'static str, body: &'static str| {
+        let app = app.clone();
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (status, String::from_utf8(bytes.to_vec()).unwrap())
+        }
+    };
+
+    // PackageService over Connect-JSON.
+    let (status, body) = post(
+        "/aos.registry.v1.PackageService/ListPackages",
+        r#"{"slug":"demo"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(body.contains("curl"), "body: {body}");
+    assert!(body.contains("8.5.0"), "body: {body}");
+
+    // ChannelService returns the full partition map.
+    let (status, body) = post(
+        "/aos.registry.v1.ChannelService/GetChannel",
+        r#"{"slug":"demo","name":"stable"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(body.contains("1.0.0"), "body: {body}");
+
+    // RegistryService reports verified index state and trust anchors.
+    let (status, body) = post(
+        "/aos.registry.v1.RegistryService/GetRegistry",
+        r#"{"slug":"demo"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(body.contains("fresh"), "body: {body}");
+    assert!(body.contains("AAAAC3NzaC1lZDI1NTE5"), "body: {body}");
+
+    // Unknown registries are NotFound, not empty success.
+    let (status, body) = post(
+        "/aos.registry.v1.RegistryService/GetRegistry",
+        r#"{"slug":"missing"}"#,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "body: {body}");
+    assert!(body.contains("not_found"), "body: {body}");
+}

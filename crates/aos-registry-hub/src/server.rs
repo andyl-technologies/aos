@@ -39,8 +39,31 @@ pub struct AppState {
 }
 
 /// Build the complete hub router.
+///
+/// `aos.registry.v1` ConnectRPC method paths are static two-segment
+/// routes (`/aos.registry.v1.RegistryService/ListRegistries`), so axum's
+/// static-over-dynamic precedence keeps them from being shadowed by the
+/// `/{slug}/{*path}` facade wildcard.
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let rpc = Arc::new(crate::rpc::RegistryRpc {
+        db: Arc::clone(&state.db),
+    });
+    let connect_router = connectrpc::Router::new();
+    let connect_router = aos_proto::aos::registry::v1::RegistryServiceExt::register(
+        Arc::clone(&rpc),
+        connect_router,
+    );
+    let connect_router =
+        aos_proto::aos::registry::v1::PackageServiceExt::register(Arc::clone(&rpc), connect_router);
+    let connect_router =
+        aos_proto::aos::registry::v1::ChannelServiceExt::register(rpc, connect_router);
+    let connect_paths: Vec<String> = connect_router
+        .methods()
+        .map(|method| format!("/{method}"))
+        .collect();
+    let connect_service = connect_router.into_axum_service();
+
+    let mut router = Router::new()
         .route("/", get(instance_home))
         .route("/healthz", get(healthz))
         .route("/_assets/style.css", get(stylesheet))
@@ -51,8 +74,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/{slug}/-/channels", get(channels_index))
         .route("/{slug}/-/channels/{name}", get(channel_page))
         .route("/{slug}/-/releases", get(releases_page))
-        .route("/{slug}/{*path}", get(machine_path))
-        .with_state(state)
+        .route("/{slug}/{*path}", get(machine_path));
+    for path in connect_paths {
+        router = router.route_service(&path, connect_service.clone());
+    }
+    router.with_state(state)
 }
 
 /// Map an internal error into a 500 with a terse body.

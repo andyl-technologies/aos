@@ -285,10 +285,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-package",
+ "aos-proto",
  "async-trait",
  "axum",
  "base64",
+ "buffa",
  "clap",
+ "connectrpc",
  "ed25519-dalek",
  "flate2",
  "futures",
