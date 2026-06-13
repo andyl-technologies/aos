@@ -486,6 +486,17 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX config_revisions_change_idx ON config_revisions (change_id, seq);
     ",
+    // v8: committed cache-stack expression (RFC-0004 \"Cache stores, stacks,
+    // and consistency validation\"). When a registry's committed
+    // registry.toml carries a [cache_stack] section, the indexer parses it
+    // into the nestable try/mirror model and stores it here as JSON (see
+    // crate::stack), so stack-aware coverage validation can recover the
+    // mirror groups without re-reading the surface. NULL for registries that
+    // only use the flat [[caches]] list; the flattened endpoints still
+    // populate the caches table either way, so the column is purely additive.
+    "
+    ALTER TABLE registry_index ADD COLUMN cache_stack TEXT;
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -775,7 +786,15 @@ pub struct IndexSnapshot {
     /// Committed registry description.
     pub description: Option<String>,
     /// Committed `[[caches]]` entries as `(url, priority)`.
+    ///
+    /// When the snapshot carries a [`Self::cache_stack`], the stack's
+    /// flattened endpoints are folded into this list (union, for display and
+    /// for stack-unaware clients).
     pub caches: Vec<(String, u32)>,
+    /// The committed `[cache_stack]` expression as compact JSON
+    /// ([`crate::stack::StackNode::to_json`]), or `None` when the registry
+    /// uses only the flat `[[caches]]` list.
+    pub cache_stack: Option<String>,
     /// Roster entries as `(key_id, public_key, status)`.
     pub roster: Vec<(String, String, String)>,
     /// Full package documents.
@@ -1135,14 +1154,15 @@ impl Database {
         tx.execute(
             "INSERT INTO registry_index
              (registry_id, state, error, last_indexed_commit, name, description,
-              indexed_at, refs_digest)
-             VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6)
+              indexed_at, refs_digest, cache_stack)
+             VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(registry_id) DO UPDATE SET
                  state = 'fresh', error = NULL,
                  last_indexed_commit = excluded.last_indexed_commit,
                  name = excluded.name, description = excluded.description,
                  indexed_at = excluded.indexed_at,
-                 refs_digest = excluded.refs_digest",
+                 refs_digest = excluded.refs_digest,
+                 cache_stack = excluded.cache_stack",
             params![
                 registry_id,
                 snapshot.commit,
@@ -1150,6 +1170,7 @@ impl Database {
                 snapshot.description,
                 unix_now(),
                 snapshot.refs_digest,
+                snapshot.cache_stack,
             ],
         )?;
         tx.commit()?;
@@ -1648,6 +1669,38 @@ impl Database {
             Ok((row.get(0)?, row.get::<_, i64>(1)? as u32))
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The committed cache-stack expression for a registry, parsed.
+    ///
+    /// Returns the stored stack ([`crate::stack::StackNode`]) when the
+    /// registry's committed `registry.toml` carried a `[cache_stack]` section
+    /// at index time, or `None` when it uses only the flat `[[caches]]` list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, or when the stored stack JSON
+    /// fails to parse (an internal-consistency error — the indexer only ever
+    /// stores well-formed JSON).
+    pub fn registry_cache_stack(
+        &self,
+        registry_id: i64,
+    ) -> Result<Option<crate::stack::StackNode>> {
+        let json: Option<String> = {
+            let conn = self.lock();
+            conn.query_row(
+                "SELECT cache_stack FROM registry_index WHERE registry_id = ?1",
+                [registry_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("loading registry cache stack")?
+            .flatten()
+        };
+        match json {
+            Some(json) => Ok(Some(crate::stack::StackNode::from_json(&json)?)),
+            None => Ok(None),
+        }
     }
 
     // -- tenancy: orgs and projects -----------------------------------------
@@ -3448,6 +3501,7 @@ mod tests {
                 partitions: vec![Some("1.0.0".into()); 256],
             }],
             refs_digest: Some("d".repeat(64)),
+            cache_stack: None,
         };
         db.apply_snapshot(id, &snapshot).unwrap();
         db.apply_snapshot(id, &snapshot).unwrap();
@@ -3656,6 +3710,48 @@ mod tests {
         assert!(id > 0);
         assert_eq!(db.list_audit("acme").unwrap().len(), 1);
         assert_eq!(db.list_changesets("acme").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn v7_database_migrates_to_v8_and_stores_cache_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.db");
+        // Build a v7 database by hand (apply migrations v1..=v7).
+        {
+            let conn = Connection::open(&path).unwrap();
+            for m in &MIGRATIONS[..7] {
+                conn.execute_batch(m).unwrap();
+            }
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (7);",
+            )
+            .unwrap();
+        }
+
+        // Reopening migrates to v8; registry_index gains the cache_stack
+        // column, which round-trips a parsed stack through a snapshot.
+        let db = Database::open(&path).unwrap();
+        let id = db
+            .register_registry("demo", "/srv/demo", &[], false)
+            .unwrap();
+        assert!(db.registry_cache_stack(id).unwrap().is_none());
+
+        let stack = crate::stack::StackNode::Mirror(vec![
+            crate::stack::StackNode::Endpoint("https://a".into()),
+            crate::stack::StackNode::Endpoint("https://b".into()),
+        ]);
+        db.apply_snapshot(
+            id,
+            &IndexSnapshot {
+                commit: "c".repeat(64),
+                name: "demo".into(),
+                cache_stack: Some(stack.to_json().unwrap()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(db.registry_cache_stack(id).unwrap(), Some(stack));
     }
 
     #[test]

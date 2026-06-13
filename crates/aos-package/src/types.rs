@@ -1231,6 +1231,15 @@ pub struct RegistryRootConfig {
     /// registry should use.
     #[serde(default)]
     pub caches: Vec<CacheEntry>,
+    /// Optional committed `[cache_stack]` expression: the nestable
+    /// try/mirror cache stack (RFC-0004). Carried as a raw [`toml::Value`]
+    /// so stack-unaware tooling round-trips it untouched while the hub
+    /// parses it into its own model; absent for registries that only use the
+    /// flat `[[caches]]` list. The section, when present, flattens to the
+    /// same priority list `[[caches]]` would carry, keeping old clients
+    /// working unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_stack: Option<toml::Value>,
 }
 
 /// Registry metadata in `registry.toml`.

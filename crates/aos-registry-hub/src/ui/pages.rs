@@ -16,6 +16,7 @@ use crate::db::{
     ChannelSummary, IndexStatus, PackageDetail, PackageRow, RegistryRecord, ReleaseRow,
     ValidationRunRow,
 };
+use crate::stack::StackNode;
 use crate::ui::render::{ago, escape, human_size, key_fingerprint, page, table, StateLine};
 
 /// Glyph palette for the partition grid: one glyph per release, assigned
@@ -934,12 +935,60 @@ pub fn releases_page(
     )
 }
 
+/// Render a committed cache stack as an ASCII tree of `try`/`mirror`/endpoint
+/// nodes, annotating each endpoint with the coverage its latest run reported.
+///
+/// `coverage_by_url` maps a cache URL to a short coverage label (e.g.
+/// `"100%"`, `"50%"`, `"unreachable"`); endpoints absent from the map render
+/// without an annotation. Mirror groups are labeled so a member shortfall
+/// reads as a replication failure rather than a fall-through.
+fn render_cache_stack(stack: &StackNode, coverage_by_url: &BTreeMap<&str, String>) -> String {
+    fn walk(
+        node: &StackNode,
+        prefix: &str,
+        coverage_by_url: &BTreeMap<&str, String>,
+        out: &mut String,
+    ) {
+        match node {
+            StackNode::Endpoint(url) => {
+                let note = coverage_by_url
+                    .get(url.as_str())
+                    .map(|c| format!("  [{}]", escape(c)))
+                    .unwrap_or_default();
+                let _ = writeln!(out, "{prefix}{}{note}", escape(url));
+            }
+            StackNode::Try(members) | StackNode::Mirror(members) => {
+                let kind = if matches!(node, StackNode::Mirror(_)) {
+                    "mirror (every member must be complete)"
+                } else {
+                    "try (fall-through; first hit wins)"
+                };
+                let _ = writeln!(out, "{prefix}{kind}");
+                let child_prefix = format!("{prefix}  ");
+                for member in members {
+                    walk(member, &child_prefix, coverage_by_url, out);
+                }
+            }
+        }
+    }
+    let mut out = String::from("<h2>Cache stack</h2>\n<pre class=\"cache-stack\">");
+    walk(stack, "", coverage_by_url, &mut out);
+    out.push_str("</pre>\n");
+    out
+}
+
 /// The health page: the cache × coverage validation matrix plus the
 /// missing-hash drill-down for each cache with gaps.
+///
+/// When the registry committed a `[cache_stack]`, the stack is rendered as an
+/// ASCII tree with per-endpoint coverage, and any `mirror` group whose
+/// members are not individually complete is flagged as a replication
+/// shortfall above the matrix.
 pub fn health_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     runs: &[(ValidationRunRow, Vec<String>)],
+    stack: Option<&StackNode>,
     started: Instant,
 ) -> String {
     /// Missing hashes shown per cache before collapsing to "and N more".
@@ -947,6 +996,50 @@ pub fn health_page(
 
     let slug = &registry.slug;
     let mut body = String::from("<h1>Health</h1>\n");
+
+    // Per-cache coverage labels, keyed by URL, drawn from the latest runs.
+    let coverage_by_url: BTreeMap<&str, String> = runs
+        .iter()
+        .map(|(run, _)| {
+            let label = if !run.reachable {
+                "unreachable".to_string()
+            } else if run.checked == 0 {
+                "n/a".to_string()
+            } else {
+                let covered = run.checked.saturating_sub(run.missing);
+                format!("{:.0}%", covered as f64 * 100.0 / run.checked as f64)
+            };
+            (run.cache_url.as_str(), label)
+        })
+        .collect();
+
+    if let Some(stack) = stack {
+        body.push_str(&render_cache_stack(stack, &coverage_by_url));
+        // Flag mirror groups whose members are not all complete.
+        let missing_by_url: BTreeMap<&str, u64> = runs
+            .iter()
+            .map(|(run, _)| (run.cache_url.as_str(), run.missing))
+            .collect();
+        let mut shortfalls = String::new();
+        for (group_index, group) in stack.mirror_groups().iter().enumerate() {
+            for member in group {
+                let missing = missing_by_url.get(member.as_str()).copied().unwrap_or(0);
+                if missing > 0 {
+                    let _ = writeln!(
+                        shortfalls,
+                        "<li>mirror group {group_index}: <code>{}</code> missing {missing}</li>",
+                        escape(member),
+                    );
+                }
+            }
+        }
+        if !shortfalls.is_empty() {
+            body.push_str("<h2>Mirror replication shortfalls</h2>\n<ul class=\"shortfall\">\n");
+            body.push_str(&shortfalls);
+            body.push_str("</ul>\n");
+        }
+    }
+
     if runs.is_empty() {
         body.push_str("<p class=\"dim\">No validation runs recorded yet.</p>\n");
     } else {
@@ -1243,12 +1336,59 @@ mod tests {
             finished_at: 0,
         };
         let missing: Vec<String> = (0..150).map(|i| format!("hash{i:03}")).collect();
-        let html = health_page(&registry(), None, &[(run, missing)], Instant::now());
+        let html = health_page(&registry(), None, &[(run, missing)], None, Instant::now());
         assert!(html.contains("Missing from https://cache.example"));
         assert!(html.contains("hash000"));
         assert!(html.contains("hash099"));
         assert!(!html.contains("hash100"), "capped at 100 entries");
         assert!(html.contains("… and 50 more"));
         assert!(html.contains("⚠ 150 missing"));
+    }
+
+    #[test]
+    fn health_page_renders_stack_tree_and_mirror_shortfall() {
+        let runs = vec![
+            (
+                ValidationRunRow {
+                    id: 1,
+                    cache_url: "https://a".into(),
+                    depth: "presence".into(),
+                    checked: 2,
+                    missing: 0,
+                    reachable: true,
+                    finished_at: 0,
+                },
+                Vec::new(),
+            ),
+            (
+                ValidationRunRow {
+                    id: 2,
+                    cache_url: "https://b".into(),
+                    depth: "presence".into(),
+                    checked: 2,
+                    missing: 1,
+                    reachable: true,
+                    finished_at: 0,
+                },
+                vec!["xyz".into()],
+            ),
+        ];
+        let stack = StackNode::Try(vec![
+            StackNode::Mirror(vec![
+                StackNode::Endpoint("https://a".into()),
+                StackNode::Endpoint("https://b".into()),
+            ]),
+            StackNode::Endpoint("https://c".into()),
+        ]);
+        let html = health_page(&registry(), None, &runs, Some(&stack), Instant::now());
+        assert!(html.contains("Cache stack"));
+        assert!(html.contains("try (fall-through"));
+        assert!(html.contains("mirror (every member must be complete)"));
+        // Per-endpoint coverage annotations.
+        assert!(html.contains("https://a  [100%]"));
+        assert!(html.contains("https://b  [50%]"));
+        // The incomplete mirror member is flagged as a shortfall.
+        assert!(html.contains("Mirror replication shortfalls"));
+        assert!(html.contains("mirror group 0: <code>https://b</code> missing 1"));
     }
 }

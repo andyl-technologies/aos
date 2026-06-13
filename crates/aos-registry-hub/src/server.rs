@@ -507,10 +507,12 @@ async fn health_page(State(state): State<Arc<AppState>>, Path(slug): Path<String
             };
             runs.push((run, missing));
         }
+        let stack = state.db.registry_cache_stack(registry.id)?;
         Ok::<_, anyhow::Error>(Some(pages::health_page(
             &registry,
             status.as_ref(),
             &runs,
+            stack.as_ref(),
             started,
         )))
     })();
@@ -930,10 +932,12 @@ async fn render_page(
                     };
                     runs.push((run, missing));
                 }
+                let stack = state.db.registry_cache_stack(registry.id)?;
                 Some(pages::health_page(
                     registry,
                     status.as_ref(),
                     &runs,
+                    stack.as_ref(),
                     started,
                 ))
             }

@@ -41,7 +41,10 @@
 //!   device-code and magic-link flows, and the axum extractors that gate
 //!   requests.
 //! - [`indexer`] — fetch → verify → load → index orchestration.
-//! - [`validation`] — presence-depth cache consistency validation.
+//! - [`stack`] — the nestable try/mirror cache-stack expression and its
+//!   committed TOML encoding.
+//! - [`validation`] — presence- and integrity-depth cache consistency
+//!   validation, stack-aware coverage, and repair planning.
 //! - [`compat`] — the machine-path read facade.
 //! - [`facade`] — the machine-path write facade: authenticated surface
 //!   uploads, the publish lease, and index-after-flip.
@@ -60,6 +63,7 @@ pub mod fetch;
 pub mod indexer;
 pub mod rpc;
 pub mod server;
+pub mod stack;
 pub mod surface;
 pub mod ui;
 pub mod validation;

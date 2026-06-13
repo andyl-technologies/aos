@@ -33,8 +33,11 @@ use anyhow::{bail, Context, Result};
 use aos_package::registry::verify::TagTarget;
 use sha2::{Digest, Sha256};
 
+use aos_package::types::RegistryRootConfig;
+
 use crate::db::{ChannelSummary, Database, IndexSnapshot, RegistryRecord, ReleaseRow};
 use crate::fetch::SurfaceFetch;
+use crate::stack;
 use crate::surface::load::{load_registry_tree, ObjectReader};
 use crate::surface::object::ObjectKind;
 use crate::surface::refs::{parse_head, parse_info_refs, Refs};
@@ -228,16 +231,20 @@ pub async fn index_registry(
         resolve_channels(fetch, registry, &branch_names, &trusted, &tag_to_semver).await?;
     enforce_floors(db, registry.id, &channels)?;
 
+    // A committed [cache_stack] (RFC-0004) is parsed into the nestable
+    // try/mirror model: its JSON is stored for stack-aware validation, and
+    // its flattened endpoints are folded into the [[caches]] union so
+    // stack-unaware clients and the display table keep working unchanged. A
+    // malformed stack is logged and ignored (the flat [[caches]] list still
+    // applies) rather than failing the whole index.
+    let (caches, cache_stack) = resolve_cache_layout(registry, &tree.root);
+
     let snapshot = IndexSnapshot {
         commit: commit_oid.to_hex(),
         name: tree.root.registry.name.clone(),
         description: tree.root.registry.description.clone(),
-        caches: tree
-            .root
-            .caches
-            .iter()
-            .map(|c| (c.url.clone(), c.priority))
-            .collect(),
+        caches,
+        cache_stack,
         roster: roster_rows,
         packages: tree.packages,
         releases,
@@ -433,6 +440,76 @@ fn raise_floors(db: &Database, registry_id: i64, channels: &[ChannelSummary]) ->
         }
     }
     Ok(())
+}
+
+/// Resolve a registry's committed cache layout into the `[[caches]]` union
+/// and the optional stored cache-stack JSON.
+///
+/// The flat committed `[[caches]]` entries always contribute. When a
+/// `[cache_stack]` section is present and parses, its flattened endpoints are
+/// merged in (the highest priority among the flat entry and the stack's
+/// descending order wins per URL), and the parsed stack is serialized to JSON
+/// for [`Database::registry_cache_stack`]. A malformed `[cache_stack]` is
+/// logged and ignored — the flat list still applies, so an authoring mistake
+/// never strands a registry's index.
+///
+/// The stack's base priority is one above the highest flat `[[caches]]`
+/// priority (or its [`aos_package::types`] default when there are none), so a
+/// committed stack is consulted ahead of bare flat entries by a stack-unaware
+/// client.
+fn resolve_cache_layout(
+    registry: &RegistryRecord,
+    root: &RegistryRootConfig,
+) -> (Vec<(String, u32)>, Option<String>) {
+    use std::collections::BTreeMap;
+
+    // Start from the flat [[caches]] union, keeping the highest priority per
+    // URL.
+    let mut by_url: BTreeMap<String, u32> = BTreeMap::new();
+    for cache in &root.caches {
+        by_url
+            .entry(cache.url.clone())
+            .and_modify(|p| *p = (*p).max(cache.priority))
+            .or_insert(cache.priority);
+    }
+
+    let mut cache_stack_json = None;
+    if let Some(value) = &root.cache_stack {
+        match stack::parse_cache_stack(value.clone()) {
+            Ok(node) => {
+                let base = by_url
+                    .values()
+                    .copied()
+                    .max()
+                    .unwrap_or(100)
+                    .saturating_add(1);
+                for (url, priority) in stack::to_priority_caches(&node, base) {
+                    by_url
+                        .entry(url)
+                        .and_modify(|p| *p = (*p).max(priority))
+                        .or_insert(priority);
+                }
+                match node.to_json() {
+                    Ok(json) => cache_stack_json = Some(json),
+                    Err(err) => tracing::warn!(
+                        slug = %registry.slug,
+                        error = %format!("{err:#}"),
+                        "serializing committed cache_stack; storing flat caches only"
+                    ),
+                }
+            }
+            Err(err) => tracing::warn!(
+                slug = %registry.slug,
+                error = %format!("{err:#}"),
+                "ignoring malformed committed [cache_stack]; using flat [[caches]]"
+            ),
+        }
+    }
+
+    // Highest priority first, ties broken by URL for determinism.
+    let mut caches: Vec<(String, u32)> = by_url.into_iter().collect();
+    caches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    (caches, cache_stack_json)
 }
 
 /// Parse a tag payload without verification (`require_signatures = false`),
