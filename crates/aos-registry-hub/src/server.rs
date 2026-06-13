@@ -719,6 +719,7 @@ async fn registry_home(
         let roster = state.db.list_roster(registry.id)?;
         let validations = state.db.latest_validation_runs(registry.id)?;
         let external = format!("{}/{slug}", state.external_url.trim_end_matches('/'));
+        let manage_link = registry_manage_link(&state, &registry, &headers);
         Ok::<_, anyhow::Error>(Some(pages::registry_home(
             &registry,
             status.as_ref(),
@@ -728,6 +729,7 @@ async fn registry_home(
             &roster,
             &validations,
             &external,
+            manage_link,
             started,
         )))
     })();
@@ -1404,7 +1406,13 @@ async fn render_page(
     };
     let result = (|| {
         Ok::<_, anyhow::Error>(match &page {
-            PageKind::Home => Some(render_home(state, registry, status.as_ref(), started)?),
+            PageKind::Home => Some(render_home(
+                state,
+                registry,
+                status.as_ref(),
+                headers,
+                started,
+            )?),
             PageKind::Packages => {
                 let all = state.db.list_packages(registry.id)?;
                 let total = all.len();
@@ -1515,6 +1523,7 @@ fn render_home(
     state: &AppState,
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
+    headers: &HeaderMap,
     started: Instant,
 ) -> Result<String, anyhow::Error> {
     let channels = state.db.list_channels(registry.id)?;
@@ -1536,8 +1545,35 @@ fn render_home(
         &roster,
         &validations,
         &external,
+        registry_manage_link(state, registry, headers),
         started,
     ))
+}
+
+/// Whether the request's session user may *manage* `registry` — i.e. holds
+/// `registry.configure` at its canonical scope — so the registry home renders
+/// the "manage this registry" link.
+///
+/// Returns `false` for an anonymous request or any database error: the link is
+/// a pure discoverability affordance, so a lookup failure quietly hides it.
+fn registry_manage_link(state: &AppState, registry: &RegistryRecord, headers: &HeaderMap) -> bool {
+    let Some(secret) = session_secret_from_cookies(headers) else {
+        return false;
+    };
+    let Ok(Some(session)) = state.db.validate_session(&secret) else {
+        return false;
+    };
+    let Ok(grants) = state
+        .db
+        .effective_scopes(crate::domain::Principal::user(session.user_id))
+    else {
+        return false;
+    };
+    crate::domain::iam::allow(
+        &grants,
+        crate::domain::Permission::RegistryConfigure,
+        &crate::domain::Scope::parse(&registry.slug),
+    )
 }
 
 /// Authorize a read against a registry's visibility, or return the denial.

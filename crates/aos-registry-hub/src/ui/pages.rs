@@ -221,6 +221,7 @@ pub fn registry_home(
     roster: &[(String, String, String)],
     validations: &[ValidationRunRow],
     external_url: &str,
+    manage_link: bool,
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
@@ -230,6 +231,16 @@ pub fn registry_home(
         .and_then(|s| s.name.as_deref())
         .unwrap_or(slug.as_str());
     let _ = write!(body, "<h1>Registry {}</h1>", escape(display_name));
+    // A signed-in caller holding `registry.configure` here gets a link to the
+    // management landing page (the no-JS console's entry point for editing
+    // this registry); anonymous and unauthorized readers never see it.
+    if manage_link {
+        let _ = write!(
+            body,
+            "\n<p><a href=\"/{}/-/settings\">manage this registry →</a></p>",
+            escape(slug),
+        );
+    }
     if let Some(at) = status.and_then(|s| s.indexed_at) {
         let _ = write!(body, "\n<p class=\"dim\">indexed {}</p>", ago(at));
     }
@@ -1698,6 +1709,7 @@ mod tests {
             &[("alice".into(), "demo:Ed25519:<k>".into(), "active".into())],
             &[],
             "http://127.0.0.1:8420/demo",
+            false,
             Instant::now(),
         );
         assert!(html.contains("&lt;k&gt;"));

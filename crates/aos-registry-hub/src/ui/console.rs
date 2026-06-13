@@ -500,9 +500,17 @@ pub fn activate_page(
 }
 
 /// The user's org list, derived from their memberships.
+///
+/// `can_create` reveals the "create an organization" link to a caller the
+/// instance signup policy permits to create one (open signup, an existing
+/// member, an invitee, or an instance admin); the link targets the
+/// [`new_org_page`] form at `/new`.
 #[must_use]
-pub fn orgs_page(email: &str, orgs: &[OrgRecord], started: Instant) -> String {
+pub fn orgs_page(email: &str, orgs: &[OrgRecord], can_create: bool, started: Instant) -> String {
     let mut body = String::from("<h1>Organizations</h1>\n");
+    if can_create {
+        body.push_str("<p><a href=\"/new\">+ create an organization</a></p>\n");
+    }
     if orgs.is_empty() {
         body.push_str("<p class=\"dim\">You are not a member of any organization.</p>\n");
     } else {
@@ -530,6 +538,47 @@ pub fn orgs_page(email: &str, orgs: &[OrgRecord], started: Instant) -> String {
     )
 }
 
+/// The "create an organization" form (`/new`).
+///
+/// A CSRF-protected `POST /new` form taking a slug and a display name. The
+/// page is only reached by a caller the signup policy permits (the handler
+/// gates `GET`/`POST` identically); `error` renders an inline rejection (a bad
+/// slug, a taken slug, or a policy denial re-rendered as a message).
+#[must_use]
+pub fn new_org_page(email: &str, csrf: &str, error: Option<&str>, started: Instant) -> String {
+    let mut body = String::from("<h1>Create an organization</h1>\n");
+    body.push_str(
+        "<p class=\"dim\">An organization is your tenant boundary: it owns projects, \
+         storage bindings, and registries. You become its first owner.</p>\n",
+    );
+    if let Some(error) = error {
+        let _ = writeln!(body, "<p class=\"bad\">{}</p>", escape(error));
+    }
+    body.push_str("<form class=\"console\" method=\"post\" action=\"/new\">\n");
+    body.push_str(&csrf_field(csrf));
+    body.push_str(
+        "<label>slug <input type=\"text\" name=\"slug\" required \
+         placeholder=\"acme\"></label>\n\
+         <label>display name <input type=\"text\" name=\"name\" required \
+         placeholder=\"Acme, Inc.\"></label>\n\
+         <button>create organization</button>\n</form>\n",
+    );
+    body.push_str(
+        "<p class=\"dim\">The slug is the URL-safe handle every registry under the org \
+         is addressed by; it cannot be changed later.</p>\n",
+    );
+    page_with_session(
+        "create organization",
+        &[
+            ("/-/orgs".into(), "organizations".into()),
+            (String::new(), "new".into()),
+        ],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
 /// A member row for the org dashboard: principal label, kind, and role.
 #[derive(Debug, Clone)]
 pub struct MemberRow {
@@ -546,7 +595,11 @@ pub struct MemberRow {
 /// The org dashboard: projects, registries, members, bindings, audit link.
 ///
 /// `can_manage_members` gates the member-management controls (invite/remove)
-/// to admins; a viewer sees the lists without the forms. `owner_count` is the
+/// to admins; a viewer sees the lists without the forms. `can_configure` gates
+/// the create affordances — the "create registry" link and the inline
+/// create-project/create-binding forms — to a caller holding
+/// `registry.configure`/`storage.manage` at the org scope. `can_delete` gates
+/// the typed-confirmation org-delete form to an org owner. `owner_count` is the
 /// number of org owners, used to hard-block removing the last one.
 #[allow(clippy::too_many_arguments)]
 #[must_use]
@@ -560,20 +613,25 @@ pub fn org_dashboard(
     bindings: &[StorageBindingRecord],
     can_manage_members: bool,
     can_read_audit: bool,
+    can_configure: bool,
+    can_delete: bool,
     owner_count: usize,
     started: Instant,
 ) -> String {
+    let slug = &org.slug;
     let mut body = format!("<h1>{}</h1>\n", escape(&org.name));
     let _ = writeln!(
         body,
-        "<p class=\"dim\"><code>{}</code> · <a href=\"/-/org/{}/audit\">{}</a></p>",
-        escape(&org.slug),
-        escape(&org.slug),
+        "<p class=\"dim\"><code>{}</code> · <a href=\"/-/org/{}/audit\">{}</a> · \
+         <a href=\"/-/org/{}/keys\">hosted keys →</a></p>",
+        escape(slug),
+        escape(slug),
         if can_read_audit {
             "audit feed →"
         } else {
             "audit (admin only)"
         },
+        escape(slug),
     );
 
     body.push_str("<h2>Registries</h2>\n");
@@ -583,13 +641,26 @@ pub fn org_dashboard(
         let rows: Vec<Vec<String>> = registries
             .iter()
             .map(|reg| {
+                let manage = if can_configure {
+                    format!("<a href=\"/{}/-/settings\">manage →</a>", escape(&reg.slug))
+                } else {
+                    String::new()
+                };
                 vec![
                     format!("<a href=\"/{0}/\">{0}</a>", escape(&reg.slug)),
                     escape(&reg.visibility),
+                    manage,
                 ]
             })
             .collect();
-        body.push_str(&table(&["registry", "visibility"], &rows));
+        body.push_str(&table(&["registry", "visibility", ""], &rows));
+    }
+    if can_configure {
+        let _ = writeln!(
+            body,
+            "<p><a href=\"/-/org/{}/registries/new\">+ create a registry</a></p>",
+            escape(slug),
+        );
     }
 
     body.push_str("<h2>Projects</h2>\n");
@@ -607,6 +678,22 @@ pub fn org_dashboard(
             .collect();
         body.push_str(&table(&["path", "name"], &rows));
     }
+    if can_configure {
+        body.push_str("<h3>Create a project</h3>\n");
+        let _ = write!(
+            body,
+            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/projects\">\n{csrf}\
+             <label>path <input type=\"text\" name=\"path\" placeholder=\"infra/prod\"></label>\n\
+             <label>name <input type=\"text\" name=\"name\" required placeholder=\"Production\"></label>\n\
+             <button>create project</button>\n</form>\n",
+            org = escape(slug),
+            csrf = csrf_field(csrf),
+        );
+        body.push_str(
+            "<p class=\"dim\">The path is the materialized prefix registries are nested under \
+             (leave blank for an org-root project).</p>\n",
+        );
+    }
 
     body.push_str("<h2>Storage bindings</h2>\n");
     if bindings.is_empty() {
@@ -623,6 +710,24 @@ pub fn org_dashboard(
             })
             .collect();
         body.push_str(&table(&["name", "kind", "root"], &rows));
+    }
+    if can_configure {
+        body.push_str("<h3>Create a storage binding</h3>\n");
+        let _ = write!(
+            body,
+            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/bindings\">\n{csrf}\
+             <label>name <input type=\"text\" name=\"name\" required placeholder=\"primary\"></label>\n\
+             <label>root path <input type=\"text\" name=\"root\" required \
+             placeholder=\"/srv/registries/acme\"></label>\n\
+             <button>create binding</button>\n</form>\n",
+            org = escape(slug),
+            csrf = csrf_field(csrf),
+        );
+        body.push_str(
+            "<p class=\"dim\">A binding is a named <code>local_fs</code> backend; its root must be \
+             an absolute path with no <code>..</code> components. Managed registries place their \
+             surfaces under it.</p>\n",
+        );
     }
 
     body.push_str("<h2>Members</h2>\n");
@@ -676,6 +781,22 @@ pub fn org_dashboard(
         );
     }
 
+    if can_delete {
+        body.push_str("<h2 class=\"danger\">Delete organization</h2>\n");
+        let _ = write!(
+            body,
+            "<p class=\"dim\">Soft-deletes the org and everything it owns, opening a 30-day grace \
+             window before permanent purge. The org stops serving immediately. Type the slug \
+             <code>{slug}</code> to confirm.</p>\n\
+             <form class=\"console\" method=\"post\" action=\"/-/org/{slug}/delete\">\n{csrf}\
+             <label>confirm slug <input type=\"text\" name=\"confirm\" required \
+             placeholder=\"{slug}\"></label>\n\
+             <button class=\"danger\">delete organization</button>\n</form>\n",
+            slug = escape(slug),
+            csrf = csrf_field(csrf),
+        );
+    }
+
     page_with_session(
         &org.name,
         &[
@@ -723,6 +844,257 @@ pub fn audit_page(email: &str, org: &OrgRecord, rows: &[AuditRow], started: Inst
             (format!("/-/org/{}", org.slug), org.slug.clone()),
             (String::new(), "audit".into()),
         ],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// The "create a registry" form (`/-/org/{org}/registries/new`).
+///
+/// The full create form for an org admin: a name, a project `<select>` from
+/// the org's projects, a storage-binding `<select>`, a visibility `<select>`,
+/// a trust-anchors textarea (one `name:Ed25519:<base64>` line each), and a
+/// require-signatures checkbox. When the org has no storage bindings yet the
+/// form is replaced by a prompt to create one first (a registry's surface
+/// lives on a binding). `error` renders an inline rejection.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn new_registry_page(
+    email: &str,
+    org: &OrgRecord,
+    csrf: &str,
+    projects: &[ProjectRecord],
+    bindings: &[StorageBindingRecord],
+    error: Option<&str>,
+    started: Instant,
+) -> String {
+    let org_slug = &org.slug;
+    let mut body = format!("<h1>Create a registry · {}</h1>\n", escape(&org.name));
+    if let Some(error) = error {
+        let _ = writeln!(body, "<p class=\"bad\">{}</p>", escape(error));
+    }
+
+    if bindings.is_empty() {
+        let _ = writeln!(
+            body,
+            "<p class=\"warn\">This organization has no storage bindings yet. A managed registry's \
+             surface lives on a binding, so <a href=\"/-/org/{org}\">create one first</a>.</p>",
+            org = escape(org_slug),
+        );
+        return page_with_session(
+            &format!("{org_slug} · new registry"),
+            &[
+                ("/-/orgs".into(), "organizations".into()),
+                (format!("/-/org/{org_slug}"), org_slug.clone()),
+                (String::new(), "new registry".into()),
+            ],
+            &body,
+            &StateLine::timed(started),
+            &indicator(email),
+        );
+    }
+
+    // Project options: an org-root choice plus every materialized-path project.
+    let mut project_options = String::from("<option value=\"\">(org root)</option>");
+    for p in projects {
+        if p.path.is_empty() {
+            continue;
+        }
+        let _ = write!(
+            project_options,
+            "<option value=\"{path}\">{path}</option>",
+            path = escape(&p.path),
+        );
+    }
+    let mut binding_options = String::new();
+    for b in bindings {
+        let _ = write!(
+            binding_options,
+            "<option value=\"{name}\">{name}</option>",
+            name = escape(&b.name),
+        );
+    }
+
+    let _ = write!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/registries\">\n{csrf}\
+         <label>name <input type=\"text\" name=\"name\" required placeholder=\"cdn\"></label>\n\
+         <label>project <select name=\"project_path\">{projects}</select></label>\n\
+         <label>storage binding <select name=\"binding\">{bindings}</select></label>\n\
+         <label>visibility <select name=\"visibility\">\
+         <option value=\"private\">private</option>\
+         <option value=\"internal\">internal</option>\
+         <option value=\"public\">public</option></select></label>\n\
+         <label>prefix (optional) <input type=\"text\" name=\"prefix\" placeholder=\"cdn\"></label>\n\
+         <label>trust anchors\n<textarea name=\"trust_keys\" rows=\"4\" cols=\"80\" \
+         placeholder=\"release:Ed25519:base64...\"></textarea></label>\n\
+         <label><input type=\"checkbox\" name=\"require_signatures\" value=\"1\" checked> \
+         require signatures</label>\n\
+         <button>create registry</button>\n</form>\n",
+        org = escape(org_slug),
+        csrf = csrf_field(csrf),
+        projects = project_options,
+        bindings = binding_options,
+    );
+    body.push_str(
+        "<p class=\"dim\">The registry is created at <code>{org}/{project}/{name}</code> and \
+         indexed lazily from its binding's surface. One trust anchor per line, in \
+         <code>name:Ed25519:&lt;base64&gt;</code> form.</p>\n",
+    );
+
+    page_with_session(
+        &format!("{org_slug} · new registry"),
+        &[
+            ("/-/orgs".into(), "organizations".into()),
+            (format!("/-/org/{org_slug}"), org_slug.clone()),
+            (String::new(), "new registry".into()),
+        ],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// The per-registry settings / management landing page (`/{slug}/-/settings`).
+///
+/// The "manage this registry" hub: it shows the current visibility with a
+/// change form (a confirmation-gated [`config::change_registry_visibility`]
+/// change-set), the read-only storage binding/prefix and trust anchors, a link
+/// hub to every per-registry management page (tokens, keys, channels, changes,
+/// publishes, health, packages), and — for an org owner/admin — a
+/// typed-confirmation delete form. `binding` is the resolved
+/// `(name, root, prefix)` of the registry's storage binding, when bound.
+/// `can_delete` gates the delete form. `result` echoes a just-applied
+/// visibility change-set id.
+///
+/// [`config::change_registry_visibility`]: crate::config::change_registry_visibility
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn registry_settings_page(
+    email: &str,
+    registry: &RegistryRecord,
+    csrf: &str,
+    binding: Option<(&str, &str, &str)>,
+    can_delete: bool,
+    result: Option<&str>,
+    started: Instant,
+) -> String {
+    let slug = &registry.slug;
+    let mut body = format!("<h1>Manage · {}</h1>\n", escape(slug));
+
+    if let Some(change_id) = result {
+        let _ = writeln!(
+            body,
+            "<p class=\"good\">Visibility updated · change <code>{}</code>.</p>",
+            escape(change_id),
+        );
+    }
+
+    // Visibility: the one in-place edit on this page.
+    body.push_str("<h2>Visibility</h2>\n");
+    let _ = writeln!(
+        body,
+        "<p>current <strong>{}</strong></p>",
+        escape(&registry.visibility),
+    );
+    let mut options = String::new();
+    for v in ["public", "internal", "private"] {
+        let selected = if v == registry.visibility {
+            " selected"
+        } else {
+            ""
+        };
+        let _ = write!(options, "<option value=\"{v}\"{selected}>{v}</option>");
+    }
+    let _ = write!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/visibility\">\n{csrf}\
+         <label>visibility <select name=\"visibility\">{options}</select></label>\n\
+         <button>change visibility</button>\n</form>\n",
+        slug = escape(slug),
+        csrf = csrf_field(csrf),
+        options = options,
+    );
+    body.push_str(
+        "<p class=\"dim\">A confirmation-gated change-set, recorded in the audit feed. \
+         <strong>public</strong> exposes every package and channel to anonymous consumers; \
+         <strong>private</strong> breaks anonymous reads (consumers need a read token).</p>\n",
+    );
+
+    // Storage (read-only).
+    body.push_str("<h2>Storage</h2>\n");
+    match binding {
+        Some((name, root, prefix)) => {
+            let _ = writeln!(
+                body,
+                "<p>binding <code>{}</code> · root <code>{}</code> · prefix <code>{}</code></p>",
+                escape(name),
+                escape(root),
+                escape(if prefix.is_empty() { "(none)" } else { prefix }),
+            );
+        }
+        None => body
+            .push_str("<p class=\"dim\">No storage binding (a phase-1 source-URL registry).</p>\n"),
+    }
+
+    // Trust anchors (read-only — editing is the signed keys.toml flow).
+    body.push_str("<h2>Trust anchors</h2>\n");
+    if registry.trust_keys.is_empty() {
+        body.push_str("<p class=\"warn\">No pinned trust anchors.</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = registry
+            .trust_keys
+            .iter()
+            .map(|k| vec![format!("<code>{}</code>", escape(k))])
+            .collect();
+        body.push_str(&table(&["pinned anchor"], &rows));
+    }
+    let _ = writeln!(
+        body,
+        "<p class=\"dim\">Editing the roster is the signed <code>keys.toml</code> flow: see \
+         the <a href=\"/{slug}/-/keys\">key roster</a> and propose roster edits as a \
+         <a href=\"/{slug}/-/settings/config\">config change request</a>.</p>",
+        slug = escape(slug),
+    );
+
+    // The management link hub.
+    body.push_str("<h2>Manage this registry</h2>\n");
+    let _ = write!(
+        body,
+        "<ul class=\"manage-links\">\n\
+         <li><a href=\"/{slug}/-/settings/tokens\">tokens</a></li>\n\
+         <li><a href=\"/{slug}/-/keys\">keys</a></li>\n\
+         <li><a href=\"/{slug}/-/changes\">change requests</a></li>\n\
+         <li><a href=\"/{slug}/-/settings/config\">config</a></li>\n\
+         <li><a href=\"/{slug}/-/publishes\">publishes</a></li>\n\
+         <li><a href=\"/{slug}/-/health\">health</a></li>\n\
+         <li><a href=\"/{slug}/-/packages\">packages</a></li>\n\
+         <li><a href=\"/{slug}/\">registry home</a></li>\n\
+         </ul>\n",
+        slug = escape(slug),
+    );
+
+    if can_delete {
+        body.push_str("<h2 class=\"danger\">Remove registry</h2>\n");
+        let _ = write!(
+            body,
+            "<p class=\"dim\">Unregisters this registry and drops its rebuildable index. The \
+             surface content on the storage binding is left in place. Type the registry name \
+             <code>{slug}</code> to confirm.</p>\n\
+             <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/delete\">\n{csrf}\
+             <label>confirm name <input type=\"text\" name=\"confirm\" required \
+             placeholder=\"{slug}\"></label>\n\
+             <button class=\"danger\">remove registry</button>\n</form>\n",
+            slug = escape(slug),
+            csrf = csrf_field(csrf),
+        );
+    }
+
+    let crumbs = registry_crumbs(slug);
+    page_with_session(
+        &format!("manage · {slug}"),
+        &crumbs,
         &body,
         &StateLine::timed(started),
         &indicator(email),

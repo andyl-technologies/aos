@@ -90,11 +90,20 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/auth/passkey/begin", post(passkey_login_begin))
         .route("/auth/passkey/finish", post(passkey_login_finish))
         .route("/activate", get(activate_form).post(activate_submit))
+        .route("/new", get(new_org_form).post(new_org_submit))
         .route("/-/orgs", get(orgs))
         .route("/-/org/{org}", get(org_dashboard))
         .route("/-/org/{org}/audit", get(org_audit))
         .route("/-/org/{org}/members", post(org_invite_member))
         .route("/-/org/{org}/members/remove", post(org_remove_member))
+        .route("/-/org/{org}/projects", post(org_create_project))
+        .route("/-/org/{org}/bindings", post(org_create_binding))
+        .route("/-/org/{org}/registries/new", get(org_new_registry_form))
+        .route("/-/org/{org}/registries", post(org_create_registry))
+        .route("/-/org/{org}/delete", post(org_delete))
+        .route("/{slug}/-/settings", get(registry_settings))
+        .route("/{slug}/-/settings/visibility", post(registry_visibility))
+        .route("/{slug}/-/settings/delete", post(registry_delete))
         .route("/{slug}/-/settings/tokens", get(tokens).post(tokens_create))
         .route("/{slug}/-/settings/tokens/revoke", post(tokens_revoke))
         .route("/{slug}/-/settings/tokens/rotate", post(tokens_rotate))
@@ -995,12 +1004,48 @@ async fn orgs(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respons
                 orgs.push(org);
             }
         }
-        Ok::<_, anyhow::Error>(orgs)
+        let can_create = may_create_org(&state.db, &session)?;
+        Ok::<_, anyhow::Error>((orgs, can_create))
     })();
     match result {
-        Ok(orgs) => Html(console::orgs_page(&session.email, &orgs, Instant::now())).into_response(),
+        Ok((orgs, can_create)) => Html(console::orgs_page(
+            &session.email,
+            &orgs,
+            can_create,
+            Instant::now(),
+        ))
+        .into_response(),
         Err(err) => internal(err),
     }
+}
+
+/// Whether the instance signup policy permits `session`'s user to create an
+/// org — the web equivalent of [`crate::rpc`]'s `signup_permitted`.
+///
+/// Under [`crate::db::SignupPolicy::Open`] any signed-in user may create one.
+/// Under `InviteOnly`, the user must already be a member of some org, hold a
+/// live invitation for their email, or be an instance admin (an `iam.admin`
+/// grant at the instance root).
+///
+/// # Errors
+///
+/// Returns an error on database failure.
+fn may_create_org(db: &Database, session: &Session) -> anyhow::Result<bool> {
+    if db.signup_policy()? == crate::db::SignupPolicy::Open {
+        return Ok(true);
+    }
+    let user_id = session.auth.user_id;
+    if db.user_has_any_membership(user_id)? {
+        return Ok(true);
+    }
+    let grants = session.grants(db)?;
+    if iam::allow(&grants, Permission::IamAdmin, &Scope::root()) {
+        return Ok(true);
+    }
+    if db.has_pending_invitation(&session.email)? {
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// `GET /-/org/{org}` — the org dashboard.
@@ -1034,6 +1079,12 @@ async fn org_dashboard(
         let owner_count = members.iter().filter(|m| m.role == "owner").count();
         let can_manage = session.allows(&state.db, Permission::MembersManage, &scope);
         let can_audit = session.allows(&state.db, Permission::AuditRead, &scope);
+        // RegistryConfigure gates project/registry creation; StorageManage gates
+        // binding creation. Both belong to admin+, so a single "can configure"
+        // flag drives every create affordance on the dashboard.
+        let can_configure = session.allows(&state.db, Permission::RegistryConfigure, &scope);
+        // Org deletion is owner-only (it needs the owner-exclusive iam.admin).
+        let can_delete = session.allows(&state.db, Permission::IamAdmin, &scope);
         Ok::<_, anyhow::Error>(Some(console::org_dashboard(
             &session.email,
             &org,
@@ -1044,6 +1095,8 @@ async fn org_dashboard(
             &bindings,
             can_manage,
             can_audit,
+            can_configure,
+            can_delete,
             owner_count,
             Instant::now(),
         )))
@@ -1242,6 +1295,756 @@ async fn org_remove_member(
     }
 }
 
+// -- create organization ----------------------------------------------------
+
+/// `GET /new` — the create-organization form.
+///
+/// Session-authed and signup-gated: a user the instance signup policy forbids
+/// from creating an org (invite-only, and not a member/invitee/admin) gets the
+/// form replaced by an explanatory `403`, mirroring [`crate::rpc`]'s
+/// `CreateOrg` policy.
+async fn new_org_form(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    match may_create_org(&state.db, &session) {
+        Ok(true) => Html(console::new_org_page(
+            &session.email,
+            &session.csrf(),
+            None,
+            Instant::now(),
+        ))
+        .into_response(),
+        Ok(false) => (
+            StatusCode::FORBIDDEN,
+            "org creation is invite-only on this instance",
+        )
+            .into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /new` form: the new org's slug and display name.
+#[derive(serde::Deserialize)]
+struct NewOrgForm {
+    #[serde(default)]
+    csrf: String,
+    slug: String,
+    name: String,
+}
+
+/// `POST /new` — create an org and auto-grant the caller `Owner`.
+///
+/// CSRF-checked and signup-gated (the same policy as [`new_org_form`] and the
+/// `CreateOrg` RPC). On success the caller becomes the org's first owner (the
+/// web equivalent of the RPC auto-grant), the creation is audited, and the
+/// browser is redirected to the new org's dashboard. A bad/taken slug
+/// re-renders the form with an inline error.
+async fn new_org_submit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<NewOrgForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    match may_create_org(&state.db, &session) {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::FORBIDDEN,
+                "org creation is invite-only on this instance",
+            )
+                .into_response()
+        }
+        Err(err) => return internal(err),
+    }
+    let slug = form.slug.trim();
+    let name = form.name.trim();
+    let reject = |message: &str| {
+        Html(console::new_org_page(
+            &session.email,
+            &session.csrf(),
+            Some(message),
+            Instant::now(),
+        ))
+        .into_response()
+    };
+    if slug.is_empty() || name.is_empty() {
+        return reject("Enter both a slug and a display name.");
+    }
+    // The slug becomes a scope segment and a URL path, so constrain it to a
+    // conservative URL-safe charset (no slashes, spaces, or control chars).
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return reject("The slug may contain only letters, digits, '-', and '_'.");
+    }
+    let result = (|| {
+        if state.db.org_by_slug_including_deleted(slug)?.is_some() {
+            return Ok(Err("That slug is already taken."));
+        }
+        state.db.create_org(slug, name)?;
+        // Auto-grant the creator Owner (mirrors CreateOrg's bootstrap grant).
+        state
+            .db
+            .grant_membership("user", session.auth.user_id, slug, Role::Owner.as_str())?;
+        state.db.record_audit(
+            "user",
+            Some(session.auth.user_id),
+            &session.email,
+            "org.create",
+            slug,
+            None,
+            None,
+            None,
+            Some(name),
+        )?;
+        Ok::<Result<(), &str>, anyhow::Error>(Ok(()))
+    })();
+    match result {
+        Ok(Ok(())) => Redirect::to(&format!("/-/org/{slug}")).into_response(),
+        Ok(Err(message)) => reject(message),
+        Err(err) => internal(err),
+    }
+}
+
+// -- create project / binding / registry under an org -----------------------
+
+/// `POST /-/org/{org}/projects` form: a materialized path and a display name.
+#[derive(serde::Deserialize)]
+struct NewProjectForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    path: String,
+    name: String,
+}
+
+/// `POST /-/org/{org}/projects` — create a project under an org.
+///
+/// CSRF-checked and `RegistryConfigure`-gated at the org scope (matching the
+/// `CreateProject` RPC). Audited, then redirects to the org dashboard.
+async fn org_create_project(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    Form(form): Form<NewProjectForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::RegistryConfigure) {
+        return *deny;
+    }
+    let name = form.name.trim();
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "project name is required").into_response();
+    }
+    let path = form.path.trim().trim_matches('/');
+    let result = (|| {
+        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+            return Ok(false);
+        };
+        state.db.create_project(org.id, path, name)?;
+        state.db.record_audit(
+            "user",
+            Some(session.auth.user_id),
+            &session.email,
+            "project.create",
+            &org_slug,
+            None,
+            None,
+            None,
+            Some(name),
+        )?;
+        Ok::<_, anyhow::Error>(true)
+    })();
+    match result {
+        Ok(true) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        // A duplicate (org, path) is an operator error, not a fault.
+        Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
+    }
+}
+
+/// `POST /-/org/{org}/bindings` form: a name and an absolute root path.
+#[derive(serde::Deserialize)]
+struct NewBindingForm {
+    #[serde(default)]
+    csrf: String,
+    name: String,
+    root: String,
+}
+
+/// `POST /-/org/{org}/bindings` — create a `local_fs` storage binding.
+///
+/// CSRF-checked and `StorageManage`-gated at the org scope. The root must be an
+/// absolute path with no `..` components (a binding root relocates a whole
+/// surface tree, so it is validated up front). Audited, then redirects to the
+/// dashboard.
+async fn org_create_binding(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    Form(form): Form<NewBindingForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::StorageManage) {
+        return *deny;
+    }
+    let name = form.name.trim();
+    let root = form.root.trim();
+    if name.is_empty() || root.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "binding name and root are required",
+        )
+            .into_response();
+    }
+    // The root must be an absolute path with no traversal components.
+    let path = std::path::Path::new(root);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "root must be an absolute path with no '..' components",
+        )
+            .into_response();
+    }
+    let result = (|| {
+        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+            return Ok(false);
+        };
+        state
+            .db
+            .create_storage_binding(org.id, name, "local_fs", root)?;
+        state.db.record_audit(
+            "user",
+            Some(session.auth.user_id),
+            &session.email,
+            "binding.create",
+            &org_slug,
+            None,
+            None,
+            None,
+            Some(name),
+        )?;
+        Ok::<_, anyhow::Error>(true)
+    })();
+    match result {
+        Ok(true) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
+    }
+}
+
+/// `GET /-/org/{org}/registries/new` — the create-registry form.
+///
+/// `RegistryConfigure`-gated at the org scope (a member without it gets `403`,
+/// a non-member `404`). Renders the project/binding selects from the org's
+/// current projects and bindings; with no bindings the form prompts to create
+/// one first.
+async fn org_new_registry_form(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::RegistryConfigure) {
+        return *deny;
+    }
+    let result = (|| {
+        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+            return Ok(None);
+        };
+        let projects = state.db.list_projects(org.id)?;
+        let bindings = state.db.list_storage_bindings(org.id)?;
+        Ok::<_, anyhow::Error>(Some(console::new_registry_page(
+            &session.email,
+            &org,
+            &session.csrf(),
+            &projects,
+            &bindings,
+            None,
+            Instant::now(),
+        )))
+    })();
+    match result {
+        Ok(Some(html)) => Html(html).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /-/org/{org}/registries` form: the new managed registry's fields.
+#[derive(serde::Deserialize)]
+struct NewRegistryForm {
+    #[serde(default)]
+    csrf: String,
+    name: String,
+    #[serde(default)]
+    project_path: String,
+    binding: String,
+    #[serde(default)]
+    visibility: String,
+    #[serde(default)]
+    prefix: String,
+    #[serde(default)]
+    trust_keys: String,
+    #[serde(default)]
+    require_signatures: Option<String>,
+}
+
+/// `POST /-/org/{org}/registries` — create a managed registry.
+///
+/// CSRF-checked and `RegistryConfigure`-gated at the org scope (mirroring the
+/// `CreateRegistry` RPC). Resolves the chosen binding by name, parses the
+/// trust-anchor textarea (one `name:Ed25519:<base64>` line each), creates the
+/// registry, audits it, and redirects to the new registry's home. A
+/// duplicate canonical path or bad binding re-renders the form with an inline
+/// error.
+async fn org_create_registry(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    Form(form): Form<NewRegistryForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::RegistryConfigure) {
+        return *deny;
+    }
+    let Some(org) = (match state.db.org_by_slug(&org_slug) {
+        Ok(org) => org,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    let reject = |state: &AppState, message: &str| {
+        let projects = state.db.list_projects(org.id).unwrap_or_default();
+        let bindings = state.db.list_storage_bindings(org.id).unwrap_or_default();
+        Html(console::new_registry_page(
+            &session.email,
+            &org,
+            &session.csrf(),
+            &projects,
+            &bindings,
+            Some(message),
+            Instant::now(),
+        ))
+        .into_response()
+    };
+
+    let name = form.name.trim();
+    if name.is_empty() {
+        return reject(&state, "Registry name is required.");
+    }
+    let visibility = match form.visibility.trim() {
+        "" => "private",
+        v @ ("public" | "internal" | "private") => v,
+        _ => return reject(&state, "Invalid visibility."),
+    };
+    // Resolve the storage binding by name within the org.
+    let binding_id = match state
+        .db
+        .storage_binding_by_name(org.id, form.binding.trim())
+    {
+        Ok(Some(b)) => b.id,
+        Ok(None) => return reject(&state, "Choose a storage binding."),
+        Err(err) => return internal(err),
+    };
+    let project_path = form.project_path.trim().trim_matches('/');
+    let prefix = form.prefix.trim();
+    // One trust anchor per non-empty line.
+    let trust_keys: Vec<String> = form
+        .trust_keys
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    let require_signatures = form.require_signatures.is_some();
+
+    let created = state.db.create_managed_registry(
+        org.id,
+        project_path,
+        name,
+        visibility,
+        Some(binding_id),
+        prefix,
+        &trust_keys,
+        require_signatures,
+    );
+    match created {
+        Ok(_) => {}
+        Err(err) => return reject(&state, &format!("{err:#}")),
+    }
+    let canonical = match state.db.registry_by_scope(&org.slug, project_path, name) {
+        Ok(Some(reg)) => reg.slug,
+        Ok(None) => return internal(anyhow::anyhow!("registry vanished after creation")),
+        Err(err) => return internal(err),
+    };
+    if let Err(err) = state.db.record_audit(
+        "user",
+        Some(session.auth.user_id),
+        &session.email,
+        "registry.create",
+        &canonical,
+        None,
+        None,
+        None,
+        Some(visibility),
+    ) {
+        return internal(err);
+    }
+    Redirect::to(&format!("/{canonical}/")).into_response()
+}
+
+/// `POST /-/org/{org}/delete` form: the typed-confirmation slug.
+#[derive(serde::Deserialize)]
+struct OrgDeleteForm {
+    #[serde(default)]
+    csrf: String,
+    confirm: String,
+}
+
+/// Soft-delete grace window: 30 days (matches the offboarding default).
+const ORG_DELETE_GRACE_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// `POST /-/org/{org}/delete` — soft-delete an org behind a typed confirmation.
+///
+/// Owner-only (`IamAdmin` at the org scope) and CSRF-checked. The `confirm`
+/// field must exactly equal the org slug. Calls the existing
+/// [`crate::db::Database::soft_delete_org`] (a 30-day grace window), audits the
+/// deletion, and redirects to `/-/orgs`.
+async fn org_delete(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    Form(form): Form<OrgDeleteForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::IamAdmin) {
+        return *deny;
+    }
+    if form.confirm.trim() != org_slug {
+        return (
+            StatusCode::BAD_REQUEST,
+            "type the organization slug to confirm",
+        )
+            .into_response();
+    }
+    let result = (|| {
+        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+            return Ok(false);
+        };
+        let deleted = state.db.soft_delete_org(org.id, ORG_DELETE_GRACE_SECS)?;
+        if deleted {
+            state.db.record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "org.delete",
+                &org_slug,
+                None,
+                None,
+                None,
+                None,
+            )?;
+        }
+        Ok::<_, anyhow::Error>(deleted)
+    })();
+    match result {
+        Ok(_) => Redirect::to("/-/orgs").into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// Gate a mutation on `perm` at an org `scope`: `403` for a member who lacks
+/// it, `404` for a non-member (existence undisclosed), `None` when allowed.
+///
+/// The shared authz shape for the org-scoped create/delete handlers, matching
+/// the `404`-private / `403`-forbidden discipline the read pages use.
+fn require_org_perm(
+    state: &AppState,
+    session: &Session,
+    scope: &Scope,
+    perm: Permission,
+) -> Option<Box<Response>> {
+    if session.allows(&state.db, perm, scope) {
+        return None;
+    }
+    if session.allows(&state.db, Permission::Read, scope) {
+        Some(Box::new(
+            (StatusCode::FORBIDDEN, "insufficient permission").into_response(),
+        ))
+    } else {
+        Some(Box::new(StatusCode::NOT_FOUND.into_response()))
+    }
+}
+
+// -- registry settings / management landing ---------------------------------
+
+/// `GET /{slug}/-/settings` — the registry management landing page.
+async fn registry_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    registry_settings_view(&state, &session, &registry, None)
+}
+
+/// Render the registry settings landing page, optionally echoing a
+/// just-applied visibility change-set id.
+///
+/// `RegistryConfigure`-gated: a member without it gets `403`, a non-member of a
+/// private registry's org gets `404`.
+fn registry_settings_view(
+    state: &AppState,
+    session: &Session,
+    registry: &RegistryRecord,
+    result: Option<&str>,
+) -> Response {
+    let scope = Scope::parse(&registry.slug);
+    if let Some(deny) = require_org_perm(state, session, &scope, Permission::RegistryConfigure) {
+        return *deny;
+    }
+    let result_outcome = (|| {
+        // Resolve the storage binding (name, root, prefix) when bound.
+        let binding = match registry.storage_binding_id {
+            Some(id) => state
+                .db
+                .storage_binding(id)?
+                .map(|b| (b.name, b.root, registry.prefix.clone())),
+            None => None,
+        };
+        // Deletion is owner-only (the iam.admin verb).
+        let can_delete = session.allows(&state.db, Permission::IamAdmin, &scope);
+        let binding_ref = binding
+            .as_ref()
+            .map(|(n, r, p)| (n.as_str(), r.as_str(), p.as_str()));
+        Ok::<_, anyhow::Error>(console::registry_settings_page(
+            &session.email,
+            registry,
+            &session.csrf(),
+            binding_ref,
+            can_delete,
+            result,
+            Instant::now(),
+        ))
+    })();
+    match result_outcome {
+        Ok(html) => Html(html).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /{slug}/-/settings/visibility` form: the new visibility.
+#[derive(serde::Deserialize)]
+struct VisibilityForm {
+    #[serde(default)]
+    csrf: String,
+    visibility: String,
+}
+
+/// `POST /{slug}/-/settings/visibility` — change a registry's visibility.
+async fn registry_visibility(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<VisibilityForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    registry_visibility_action(&state, &session, &registry, &form.csrf, &form.visibility)
+}
+
+/// The visibility-change action: CSRF + `RegistryConfigure` gate, then route
+/// the flip through the audited change-set engine and re-render the settings
+/// page with the new change id.
+fn registry_visibility_action(
+    state: &AppState,
+    session: &Session,
+    registry: &RegistryRecord,
+    csrf: &str,
+    visibility: &str,
+) -> Response {
+    if let Err(resp) = check_csrf(session, csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&registry.slug);
+    if let Some(deny) = require_org_perm(state, session, &scope, Permission::RegistryConfigure) {
+        return *deny;
+    }
+    let visibility = match visibility.trim() {
+        v @ ("public" | "internal" | "private") => v,
+        _ => return (StatusCode::BAD_REQUEST, "invalid visibility").into_response(),
+    };
+    let change_id = match config::change_registry_visibility(
+        &state.db,
+        &session.principal(),
+        &session.email,
+        registry.id,
+        visibility,
+    ) {
+        Ok(id) => id,
+        Err(err) => return internal(err),
+    };
+    // Re-read so the page shows the new visibility.
+    let updated = match state.db.registry_by_slug(&registry.slug) {
+        Ok(Some(reg)) => reg,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => return internal(err),
+    };
+    registry_settings_view(state, session, &updated, Some(change_id.0.as_str()))
+}
+
+/// `POST /{slug}/-/settings/delete` form: the typed-confirmation name.
+#[derive(serde::Deserialize)]
+struct RegistryDeleteForm {
+    #[serde(default)]
+    csrf: String,
+    confirm: String,
+}
+
+/// `POST /{slug}/-/settings/delete` — unregister a registry.
+async fn registry_delete(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<RegistryDeleteForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    registry_delete_action(&state, &session, &registry, &form.csrf, &form.confirm)
+}
+
+/// The registry-delete action: CSRF + owner/admin (`IamAdmin`) gate and a
+/// typed-confirmation match on the registry slug, then remove the row.
+///
+/// Deletion is owner/admin-level: it requires `IamAdmin` at the registry's
+/// canonical scope (an org owner holds it everywhere beneath the org). The
+/// `confirm` field must exactly equal the registry slug. Removes the
+/// `registries` row (cascading its rebuildable index; surface content on the
+/// binding is left in place), audits it, and redirects to the owning org's
+/// dashboard (or `/` for an unowned registry).
+fn registry_delete_action(
+    state: &AppState,
+    session: &Session,
+    registry: &RegistryRecord,
+    csrf: &str,
+    confirm: &str,
+) -> Response {
+    if let Err(resp) = check_csrf(session, csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&registry.slug);
+    if let Some(deny) = require_org_perm(state, session, &scope, Permission::IamAdmin) {
+        return *deny;
+    }
+    if confirm.trim() != registry.slug {
+        return (StatusCode::BAD_REQUEST, "type the registry name to confirm").into_response();
+    }
+    let result = (|| {
+        let removed = state.db.delete_registry(registry.id)?;
+        if removed {
+            state.db.record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "registry.delete",
+                &registry.slug,
+                None,
+                None,
+                None,
+                None,
+            )?;
+        }
+        // Redirect to the owning org's dashboard when known.
+        let target = match registry.org_id {
+            Some(org_id) => match state.db.org_by_id(org_id)? {
+                Some(org) => format!("/-/org/{}", org.slug),
+                None => "/".to_string(),
+            },
+            None => "/".to_string(),
+        };
+        Ok::<_, anyhow::Error>(target)
+    })();
+    match result {
+        Ok(target) => Redirect::to(&target).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
 /// Whether the `/-/` tail `right` (with the given method) names a
 /// producer-console page, as opposed to a consumer browse page.
 ///
@@ -1255,6 +2058,10 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
         // The config-edit page is GET (form) + POST (submit); the change-request
         // list is GET-only.
         "settings/config" => true,
+        // The settings landing page is GET-only; visibility and delete are
+        // POST-only mutations.
+        "settings" => !is_post,
+        "settings/visibility" | "settings/delete" => is_post,
         "changes" => !is_post,
         "keys" | "keys/rotate" | "publishes" => !is_post,
         other => {
@@ -1280,12 +2087,14 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
 /// The flat `/{slug}/-/…` console routes capture only a single-segment slug,
 /// so a registry whose canonical path has slashes (`acme/infra/prod/cdn`)
 /// never matches them and lands in [`crate::server`]'s catch-all. This
-/// function recognizes the console `/-/` sub-paths there — `settings/tokens`
-/// (and `/revoke`, `/rotate`), `settings/config` (GET form + POST submit),
-/// `changes` (GET), `channels/{name}/console`, `channels/{name}/advance` (the
-/// POST-only direct hosted-key advance), `keys`, `keys/rotate`, `publishes`—
-/// for both `GET` and `POST`, resolving the registry by longest-prefix over the
-/// path before the `/-/` marker.
+/// function recognizes the console `/-/` sub-paths there — `settings`
+/// (the GET management landing), `settings/visibility` and `settings/delete`
+/// (POST-only mutations), `settings/tokens` (and `/revoke`, `/rotate`),
+/// `settings/config` (GET form + POST submit), `changes` (GET),
+/// `channels/{name}/console`, `channels/{name}/advance` (the POST-only direct
+/// hosted-key advance), `keys`, `keys/rotate`, `publishes`— for both `GET` and
+/// `POST`, resolving the registry by longest-prefix over the path before the
+/// `/-/` marker.
 ///
 /// Returns `None` when the path is not a console page (so the caller falls
 /// back to the browse-page resolver), `Some(response)` otherwise.
@@ -1360,6 +2169,21 @@ pub(crate) async fn dispatch_nested(
             )
             .await
         }
+        ("settings", false) => registry_settings_view(state, &session, &registry, None),
+        ("settings/visibility", true) => registry_visibility_action(
+            state,
+            &session,
+            &registry,
+            field(&fields, "csrf"),
+            field(&fields, "visibility"),
+        ),
+        ("settings/delete", true) => registry_delete_action(
+            state,
+            &session,
+            &registry,
+            field(&fields, "csrf"),
+            field(&fields, "confirm"),
+        ),
         ("changes", false) => changes_view(state, &session, &registry),
         ("keys", false) => keys_view(state, &session, &registry, headers),
         ("keys/rotate", false) => keys_rotate_view(state, &session, &registry, headers),

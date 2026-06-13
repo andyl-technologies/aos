@@ -4087,6 +4087,30 @@ impl Database {
         Ok(id)
     }
 
+    /// Delete a registry row, cascading its rebuildable index.
+    ///
+    /// Removes the `registries` row by id; the index tables
+    /// (`registry_index`, `packages`, `channels`, the roster, validation runs,
+    /// …) all carry `ON DELETE CASCADE` foreign keys on `registries(id)`, so
+    /// they are removed in the same statement. This is the registry analog of
+    /// the org [`Database::hard_purge_org`] hard delete.
+    ///
+    /// This does **not** delete the registry's surface content on the storage
+    /// binding's backend (the `{root}/{prefix}` directory): that content lives
+    /// outside SQL and is left in place, so the same surface can be re-bound by
+    /// a new managed registry later. Returns `Ok(false)` when no registry has
+    /// the given id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn delete_registry(&self, registry_id: i64) -> Result<bool> {
+        let n = self
+            .backend
+            .execute("DELETE FROM registries WHERE id = ?1", &vals![registry_id])?;
+        Ok(n > 0)
+    }
+
     // -- storage bindings ----------------------------------------------------
 
     /// Create a storage binding under an org; returns its new id.
