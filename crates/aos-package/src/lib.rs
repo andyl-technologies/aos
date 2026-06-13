@@ -773,6 +773,12 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: ChannelCommand,
     },
+    /// Git-backed config change requests (hub `refs/hub/changes/*`)
+    Change {
+        /// The change-request operation to run
+        #[command(subcommand)]
+        command: ChangeCommand,
+    },
     /// Static Nix-cache operations
     Cache {
         /// The cache operation to run
@@ -1122,6 +1128,48 @@ pub enum ChannelCommand {
     Status {
         /// Channel name
         channel: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Git-backed config change-request subcommands.
+///
+/// A hub commits web edits to committed config as *change requests* under
+/// `refs/hub/changes/<id>`, signed by a non-roster draft-signing key (so they
+/// never verify for consumers). These subcommands let a maintainer list, review
+/// the diff of, and **promote** a change request — re-signing the same tree
+/// with a roster key onto the tracked branch.
+#[derive(Subcommand)]
+pub enum ChangeCommand {
+    /// List the registry's open change requests
+    List {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show a change request's diff vs the current branch HEAD
+    Show {
+        /// The change-request id (the `refs/hub/changes/<id>` suffix)
+        id: String,
+        /// Show only file stats
+        #[arg(long)]
+        stat: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Promote a change request: re-sign its tree onto the branch and push
+    Merge {
+        /// The change-request id to promote
+        id: String,
+        /// Signing key file (an SSH private key) to re-sign with
+        #[arg(long)]
+        key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1935,6 +1983,9 @@ async fn run_registry(
         }
         RegistryCommand::Channel { command } => {
             registry_ops::run_channel(config, command, printer).await
+        }
+        RegistryCommand::Change { command } => {
+            registry_ops::run_change(config, command, printer).await
         }
         RegistryCommand::Cache { command } => {
             registry_ops::run_cache(config, command, printer).await

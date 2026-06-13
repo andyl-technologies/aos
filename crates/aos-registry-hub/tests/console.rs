@@ -512,3 +512,111 @@ async fn org_dashboard_authz_matrix() {
     let resp = send(&app, "GET", "/-/org/acme/audit", Some(&out_cookie), None).await;
     assert_eq!(resp.status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn config_edit_and_change_request_console_flow() {
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("surface");
+    std::fs::create_dir_all(&surface).unwrap();
+    let fixture = common::standard_registry(&surface);
+    let db = serve_managed(&surface, &fixture, "public").await;
+    let app = router(app_state(Arc::clone(&db)));
+
+    // An Owner on the org may edit config and view change requests.
+    let owner = db.find_or_create_user("owner@acme.com").unwrap();
+    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let cookie = login(&app, &db, "owner@acme.com").await;
+
+    // The config-edit page renders the current committed registry.toml.
+    let resp = send(
+        &app,
+        "GET",
+        "/acme/infra/prod/cdn/-/settings/config",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(resp.body.contains("Fixture registry"), "{}", resp.body);
+    assert!(resp.body.contains("submit change request"), "{}", resp.body);
+
+    // A POST without CSRF is rejected.
+    let resp = send(
+        &app,
+        "POST",
+        "/acme/infra/prod/cdn/-/settings/config",
+        Some(&cookie),
+        Some("contents=whatever"),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+
+    // A valid submission creates a draft change request and echoes the merge
+    // command.
+    let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
+    let new_toml = "[registry]\nname = \"demo\"\ndescription = \"console edit\"\n";
+    let form = format!(
+        "csrf={csrf}&contents={}",
+        url::form_urlencoded::byte_serialize(new_toml.as_bytes()).collect::<String>()
+    );
+    let resp = send(
+        &app,
+        "POST",
+        "/acme/infra/prod/cdn/-/settings/config",
+        Some(&cookie),
+        Some(&form),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(resp.body.contains("apr change merge"), "{}", resp.body);
+
+    // A git-backed draft change-set now exists for the registry.
+    let drafts: Vec<_> = db
+        .list_changesets("acme/infra/prod/cdn")
+        .unwrap()
+        .into_iter()
+        .filter(|cs| cs.git_ref.is_some())
+        .collect();
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(drafts[0].status, "draft");
+
+    // The change-requests list page shows the draft with its diff.
+    let resp = send(
+        &app,
+        "GET",
+        "/acme/infra/prod/cdn/-/changes",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(resp.body.contains("Change requests"), "{}", resp.body);
+    assert!(resp.body.contains("console edit"), "{}", resp.body);
+    assert!(resp.body.contains("apr change merge"), "{}", resp.body);
+
+    // A developer (no registry.configure) cannot submit a change request.
+    let dev = db.find_or_create_user("dev@acme.com").unwrap();
+    db.grant_membership("user", dev, "acme/infra/prod/cdn", "developer")
+        .unwrap();
+    let dcookie = login(&app, &db, "dev@acme.com").await;
+    let dcsrf = mint_csrf_token(dcookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
+    let resp = send(
+        &app,
+        "POST",
+        "/acme/infra/prod/cdn/-/settings/config",
+        Some(&dcookie),
+        Some(&format!("csrf={dcsrf}&contents=x")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    // And cannot view the change-request list (needs audit.read).
+    let resp = send(
+        &app,
+        "GET",
+        "/acme/infra/prod/cdn/-/changes",
+        Some(&dcookie),
+        None,
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+}

@@ -505,6 +505,37 @@ mod tests {
     }
 
     #[test]
+    fn v15_change_request_columns_migration_translates_for_every_dialect() {
+        // The v15 migration adds git_ref/git_commit to config_changesets via
+        // plain ALTER TABLE ... ADD COLUMN ... TEXT; the column names avoid
+        // reserved words and translate cleanly on every dialect.
+        let v15 = crate::db::MIGRATIONS
+            .get(14)
+            .expect("v15 change-request columns migration");
+        let stmts = crate::db::backend::split_statements(v15);
+        assert_eq!(stmts.len(), 2, "two ALTER statements: {stmts:?}");
+        for stmt in &stmts {
+            assert!(
+                stmt.contains("ALTER TABLE config_changesets ADD COLUMN"),
+                "{stmt}"
+            );
+            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
+                dialect
+                    .translate(stmt)
+                    .unwrap_or_else(|e| panic!("v15 stmt failed for {dialect:?}: {e}\n{stmt}"));
+            }
+        }
+        // The added TEXT column narrows to VARCHAR on mysql (added columns are
+        // not PKs, so no autoincrement spelling is involved).
+        let git_ref = stmts
+            .iter()
+            .find(|s| s.contains("git_ref"))
+            .expect("git_ref ALTER present");
+        let my = Dialect::Mysql.translate(git_ref).unwrap().sql;
+        assert!(my.contains("VARCHAR(255)"), "{my}");
+    }
+
+    #[test]
     fn mysql_upsert_do_update() {
         let src =
             "INSERT INTO t (a, b) VALUES (?1, ?2) ON CONFLICT(a) DO UPDATE SET b = excluded.b";

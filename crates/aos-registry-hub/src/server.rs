@@ -212,9 +212,9 @@ impl SearchParams {
 /// `/{slug}/{*path}` facade wildcard.
 pub fn router(state: Arc<AppState>) -> Router {
     use aos_proto::aos::registry::v1::{
-        AuditServiceExt, ChannelServiceExt, ConfigServiceExt, OrgServiceExt, PackageServiceExt,
-        ProjectServiceExt, PublishServiceExt, RegistryServiceExt, StorageServiceExt,
-        WebhookServiceExt,
+        AuditServiceExt, ChannelServiceExt, ConfigServiceExt, GitServiceExt, OrgServiceExt,
+        PackageServiceExt, ProjectServiceExt, PublishServiceExt, RegistryServiceExt,
+        StorageServiceExt, WebhookServiceExt,
     };
     let rpc = Arc::new(crate::rpc::RegistryRpc {
         db: Arc::clone(&state.db),
@@ -231,6 +231,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let connect_router = PackageServiceExt::register(Arc::clone(&rpc), connect_router);
     let connect_router = ChannelServiceExt::register(Arc::clone(&rpc), connect_router);
     let connect_router = PublishServiceExt::register(Arc::clone(&rpc), connect_router);
+    let connect_router = GitServiceExt::register(Arc::clone(&rpc), connect_router);
     let connect_router = WebhookServiceExt::register(rpc, connect_router);
     let connect_paths: Vec<String> = connect_router
         .methods()

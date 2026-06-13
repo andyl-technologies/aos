@@ -89,6 +89,23 @@ service PublishService {
       returns (MintUploadCredentialsResponse);
 }
 
+// Git read API for the UI and remote `apr` (RFC-0004 "API: aos.registry.v1"
+// GitService; "Configuration management" git-backed change requests). Reads of
+// the committed history and config diffs require `read` (or `audit.read` for the
+// change-request list) on the registry's scope, following registry visibility.
+service GitService {
+  // The committed commit log of a registry's tracked branch, newest first.
+  // Requires `read` on the registry scope.
+  rpc GitLog(GitLogRequest) returns (GitLogResponse);
+  // A textual unified-ish diff of the committed config files (registry.toml,
+  // keys.toml, packages/) between two commits. Requires `read`.
+  rpc GitDiff(GitDiffRequest) returns (GitDiffResponse);
+  // The registry's draft git-backed change requests with their file diffs and
+  // the `apr change merge` command that promotes each. Requires `audit.read`.
+  rpc ListChangeRequests(ListChangeRequestsRequest)
+      returns (ListChangeRequestsResponse);
+}
+
 // Outbound webhook subscriptions (RFC-0004 phase 4 "webhooks/notifications").
 // An org subscribes an HTTP endpoint to a set of registry event types; the hub
 // HMAC-signs and delivers each matching event. All three RPCs are admin-only:
@@ -564,4 +581,86 @@ message DeleteWebhookRequest {
 message DeleteWebhookResponse {
   // Whether a webhook was removed.
   bool deleted = 1;
+}
+
+// -- Git read API + change requests ----------------------------------------
+
+// One commit in a registry's committed history.
+message GitCommit {
+  // Commit object id (64-hex sha256).
+  string oid = 1;
+  // Parent commit oids, in header order.
+  repeated string parents = 2;
+  // Commit message (full body).
+  string message = 3;
+  // Committer identity line ("Name <email>").
+  string author = 4;
+  // Committer timestamp, Unix seconds.
+  int64 when = 5;
+  // The AOS-Change-Id trailer when the commit carries one ("" otherwise).
+  string change_id = 6;
+}
+
+message GitLogRequest {
+  string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message GitLogResponse {
+  repeated GitCommit commits = 1;
+  string next_page_token = 2;
+}
+
+message GitDiffRequest {
+  string slug = 1;
+  // Base commit oid (64-hex). Empty diffs the whole tree as additions.
+  string from_oid = 2;
+  // Target commit oid (64-hex). Empty defaults to the current HEAD.
+  string to_oid = 3;
+}
+
+message GitDiffResponse {
+  // A textual unified-ish diff of the committed config files between the two
+  // commits.
+  string diff = 1;
+}
+
+// One git-backed change request: a draft change-set with the hub's signed
+// draft commit and ref, its file diff, and the promotion command.
+message ChangeRequest {
+  // The change-set id (also the AOS-Change-Id trailer and ref suffix).
+  string change_id = 1;
+  // The draft ref the hub wrote (refs/hub/changes/<change_id>).
+  string git_ref = 2;
+  // The signed draft-commit oid the ref points at.
+  string git_commit = 3;
+  // Lifecycle status: draft | applied | reverted.
+  string status = 4;
+  // One-line human summary.
+  string summary = 5;
+  // Human label of the actor that opened the change request.
+  string actor_label = 6;
+  // Unix seconds the change request was created.
+  int64 created_at = 7;
+  // The committed file each revision edits, with its semantic diff.
+  repeated FileDiff file_diffs = 8;
+  // The `apr change merge <change_id>` command a maintainer runs to promote it.
+  string merge_command = 9;
+}
+
+// One edited committed file within a change request, with a unified diff.
+message FileDiff {
+  // The committed file path (e.g. "registry.toml").
+  string path = 1;
+  // A textual unified-ish diff of the file's old vs new contents.
+  string diff = 2;
+}
+
+message ListChangeRequestsRequest {
+  string slug = 1;
+}
+
+message ListChangeRequestsResponse {
+  repeated ChangeRequest change_requests = 1;
 }

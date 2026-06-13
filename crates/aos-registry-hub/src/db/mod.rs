@@ -856,6 +856,19 @@ const MIGRATIONS: &[&str] = &[
         finished_at      INTEGER
     );
     ",
+    // v15: git-backed configuration change requests (RFC-0004 "Configuration
+    // management", git-backed path). A SQL-only change-set leaves both columns
+    // NULL; a git-backed change request records the draft ref the hub wrote and
+    // the signed commit oid it points at, so the console and `apr change` can
+    // surface and promote it. The draft commit is signed by a per-instance
+    // draft-signing key kept in instance_config under 'draft_signing_key' — a
+    // sealed Ed25519 seed that is deliberately NOT in any registry's roster, so
+    // a draft never verifies for consumers until a maintainer re-signs it with
+    // a roster key (`apr change merge`).
+    "
+    ALTER TABLE config_changesets ADD COLUMN git_ref TEXT;
+    ALTER TABLE config_changesets ADD COLUMN git_commit TEXT;
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -1494,6 +1507,12 @@ pub struct ChangesetRow {
     pub applied_at: Option<i64>,
     /// The change-set that reverted this one, or `None`.
     pub reverted_by_change_id: Option<String>,
+    /// Draft ref the hub wrote for a git-backed change request
+    /// (`refs/hub/changes/<change_id>`), or `None` for a SQL-only change-set.
+    pub git_ref: Option<String>,
+    /// Signed draft-commit oid the [`Self::git_ref`] points at, or `None` for
+    /// a SQL-only change-set.
+    pub git_commit: Option<String>,
 }
 
 /// One revision row within a change-set (system-of-record).
@@ -3662,6 +3681,60 @@ impl Database {
         Ok(())
     }
 
+    /// The instance-config key the sealed draft-signing seed is stored under.
+    const DRAFT_SIGNING_KEY: &'static str = "draft_signing_key";
+
+    /// Load (or, on first use, generate and persist) the per-instance
+    /// draft-signing key.
+    ///
+    /// Web edits to git-backed config are committed as change requests to
+    /// `refs/hub/changes/<change_id>`, signed by this key (RFC-0004
+    /// "Configuration management", git-backed path). The key is deliberately
+    /// **not** in any registry's roster — a draft never verifies for consumers
+    /// until a maintainer re-signs it with a roster key (`apr change merge`) —
+    /// so it carries no consumption trust; it exists only to produce a
+    /// well-formed signed commit object the hub and `apr` can fetch and diff.
+    ///
+    /// The seed is sealed at rest with the instance [`SecretSealer`] exactly as
+    /// hosted keys are ([`Self::create_hosted_key`]): the 32-byte seed is
+    /// hex-encoded, then sealed, then stored as the `draft_signing_key`
+    /// instance-config value. Returns the usable signing key together with its
+    /// public trusted-key line (named `aos-hub-draft`), for surfacing in the UI
+    /// and for round-trip verification in tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, or when an existing sealed value
+    /// cannot be unsealed or decoded into a 32-byte seed (tampering or a key
+    /// mismatch).
+    pub fn get_or_create_draft_signing_key(
+        &self,
+        sealer: &dyn crate::auth::oidc::SecretSealer,
+    ) -> Result<(ed25519_dalek::SigningKey, String)> {
+        let seed: [u8; 32] = match self.instance_config_get(Self::DRAFT_SIGNING_KEY)? {
+            Some(sealed) => {
+                let seed_hex = sealer
+                    .unseal(&sealed)
+                    .context("unsealing the draft-signing key")?;
+                hex::decode(seed_hex.trim())
+                    .context("decoding the draft-signing key seed")?
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("draft-signing key seed is not 32 bytes"))?
+            }
+            None => {
+                use rand::Rng as _;
+                let seed: [u8; 32] = rand::rng().random();
+                let sealed = sealer.seal(&hex::encode(seed))?;
+                self.instance_config_set(Self::DRAFT_SIGNING_KEY, &sealed)?;
+                seed
+            }
+        };
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let public_line =
+            crate::surface::sshsig::trusted_key_line("aos-hub-draft", &signing_key.verifying_key());
+        Ok((signing_key, public_line))
+    }
+
     /// The instance's signup policy (defaulting to invite-only when unset).
     ///
     /// Reads the `signup_policy` instance-config key and parses it through
@@ -5197,6 +5270,51 @@ impl Database {
         Ok(())
     }
 
+    /// Create a git-backed change-request change-set in `draft` status.
+    ///
+    /// Identical to [`Self::create_changeset`] but additionally records the
+    /// draft ref (`refs/hub/changes/<change_id>`) the hub wrote and the signed
+    /// draft-commit oid it points at (RFC-0004 "Configuration management",
+    /// git-backed path). These columns are `NULL` for SQL-only change-sets;
+    /// their presence is what marks a change-set as a git-backed change request
+    /// the console and `apr change` surface and promote.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a primary-key collision
+    /// on `change_id`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_git_changeset(
+        &self,
+        change_id: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        scope: &str,
+        summary: Option<&str>,
+        git_ref: &str,
+        git_commit: &str,
+    ) -> Result<()> {
+        self.backend.execute(
+            "INSERT INTO config_changesets
+             (change_id, actor_kind, actor_id, actor_label, scope, status,
+              summary, created_at, applied_at, reverted_by_change_id, git_ref, git_commit)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'draft', ?6, ?7, NULL, NULL, ?8, ?9)",
+            &vals![
+                change_id,
+                actor_kind,
+                actor_id,
+                actor_label,
+                scope,
+                summary,
+                unix_now(),
+                git_ref,
+                git_commit,
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Append a revision to a change-set; returns the assigned `seq`.
     ///
     /// The `seq` is the next ordinal for the change-set (its current
@@ -5248,9 +5366,7 @@ impl Database {
     pub fn changeset(&self, change_id: &str) -> Result<Option<ChangesetRow>> {
         self.backend
             .query_opt(
-                "SELECT change_id, actor_kind, actor_id, actor_label, scope, status,
-                        summary, created_at, applied_at, reverted_by_change_id
-                 FROM config_changesets WHERE change_id = ?1",
+                &format!("SELECT {CHANGESET_COLUMNS} FROM config_changesets WHERE change_id = ?1"),
                 &vals![change_id],
             )
             .context("loading changeset by id")?
@@ -5313,6 +5429,51 @@ impl Database {
         Ok(())
     }
 
+    /// Mark a git-backed change request applied, linking the promoting commit.
+    ///
+    /// Called by the indexer when it re-walks a registry surface and finds the
+    /// verified HEAD commit carries an `AOS-Change-Id: <change_id>` trailer
+    /// matching a `draft` change request (RFC-0004 "Configuration management",
+    /// cross-referencing): the maintainer's `apr change merge` re-signed and
+    /// pushed the draft, so the change request is now live. Stamps
+    /// `status = 'applied'`, `applied_at = now`, and rewrites `git_commit` to
+    /// the *promoting* (roster-signed) commit oid — the draft commit is
+    /// superseded. Idempotent: re-marking an already-applied row is a harmless
+    /// no-op on a status-guarded `UPDATE`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn mark_changeset_applied_commit(&self, change_id: &str, commit_oid: &str) -> Result<()> {
+        self.backend.execute(
+            "UPDATE config_changesets
+             SET status = 'applied', applied_at = ?2, git_commit = ?3
+             WHERE change_id = ?1 AND status = 'draft'",
+            &vals![change_id, unix_now(), commit_oid],
+        )?;
+        Ok(())
+    }
+
+    /// Whether an audit row already records `result_commit`.
+    ///
+    /// The indexer synthesizes one `external` audit entry per out-of-band
+    /// (direct-publish) commit it observes; this check keeps that synthesis
+    /// idempotent across re-indexes, so the same commit is never audited twice
+    /// (RFC-0004 "Configuration management", cross-referencing).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn audit_exists_for_commit(&self, action: &str, result_commit: &str) -> Result<bool> {
+        Ok(self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM audit_log WHERE action = ?1 AND result_commit = ?2 LIMIT 1",
+                &vals![action, result_commit],
+            )?
+            .is_some())
+    }
+
     /// Apply a change-set atomically: run `apply_fn` for each revision in
     /// `seq` order inside one transaction, then stamp `status = 'applied'`
     /// and `applied_at = now`.
@@ -5365,9 +5526,10 @@ impl Database {
     /// Returns an error on database failure.
     pub fn list_changesets(&self, scope: &str) -> Result<Vec<ChangesetRow>> {
         let rows = self.backend.query(
-            "SELECT change_id, actor_kind, actor_id, actor_label, scope, status,
-                    summary, created_at, applied_at, reverted_by_change_id
-             FROM config_changesets ORDER BY created_at DESC, change_id DESC",
+            &format!(
+                "SELECT {CHANGESET_COLUMNS} FROM config_changesets \
+                 ORDER BY created_at DESC, change_id DESC"
+            ),
             &[],
         )?;
         let target = crate::domain::Scope::parse(scope);
@@ -5670,6 +5832,10 @@ fn issuer_host(issuer: &str) -> String {
         .unwrap_or_else(|| issuer.replace(['/', ':'], "."))
 }
 
+/// The `config_changesets` columns, in the order [`row_to_changeset`] reads.
+const CHANGESET_COLUMNS: &str = "change_id, actor_kind, actor_id, actor_label, scope, status, \
+     summary, created_at, applied_at, reverted_by_change_id, git_ref, git_commit";
+
 fn row_to_changeset(row: &Row) -> Result<ChangesetRow> {
     Ok(ChangesetRow {
         change_id: row.get(0)?,
@@ -5682,6 +5848,8 @@ fn row_to_changeset(row: &Row) -> Result<ChangesetRow> {
         created_at: row.get(7)?,
         applied_at: row.get(8)?,
         reverted_by_change_id: row.get(9)?,
+        git_ref: row.get(10)?,
+        git_commit: row.get(11)?,
     })
 }
 
@@ -6088,6 +6256,105 @@ mod tests {
         let all = db.list_audit("").unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].action, "b", "newest first");
+    }
+
+    #[test]
+    fn draft_signing_key_is_generated_once_and_persists() {
+        let db = Database::open_in_memory().unwrap();
+        let sealer = crate::auth::oidc::dev_sealer();
+        let (key1, line1) = db.get_or_create_draft_signing_key(sealer.as_ref()).unwrap();
+        // A second call returns the same key (persisted seed), not a fresh one.
+        let (key2, line2) = db.get_or_create_draft_signing_key(sealer.as_ref()).unwrap();
+        assert_eq!(key1.to_bytes(), key2.to_bytes());
+        assert_eq!(line1, line2);
+        assert!(line1.starts_with("aos-hub-draft:Ed25519:"));
+        // The stored value is sealed, not the raw seed.
+        let stored = db
+            .instance_config_get("draft_signing_key")
+            .unwrap()
+            .unwrap();
+        assert_ne!(stored, hex::encode(key1.to_bytes()));
+    }
+
+    #[test]
+    fn git_changeset_records_ref_and_commit() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_git_changeset(
+            "ch-1",
+            "user",
+            Some(7),
+            "alice@acme.com",
+            "acme/cdn",
+            Some("edit registry.toml"),
+            "refs/hub/changes/ch-1",
+            "abc123",
+        )
+        .unwrap();
+        let cs = db.changeset("ch-1").unwrap().unwrap();
+        assert_eq!(cs.status, "draft");
+        assert_eq!(cs.git_ref.as_deref(), Some("refs/hub/changes/ch-1"));
+        assert_eq!(cs.git_commit.as_deref(), Some("abc123"));
+        // A plain change-set leaves both columns NULL.
+        db.create_changeset("ch-2", "user", Some(7), "alice@acme.com", "acme", None)
+            .unwrap();
+        let plain = db.changeset("ch-2").unwrap().unwrap();
+        assert!(plain.git_ref.is_none());
+        assert!(plain.git_commit.is_none());
+    }
+
+    #[test]
+    fn mark_changeset_applied_commit_links_promoting_commit() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_git_changeset(
+            "ch-3",
+            "user",
+            Some(7),
+            "alice@acme.com",
+            "acme/cdn",
+            Some("edit"),
+            "refs/hub/changes/ch-3",
+            "draftoid",
+        )
+        .unwrap();
+        db.mark_changeset_applied_commit("ch-3", "rosteroid")
+            .unwrap();
+        let cs = db.changeset("ch-3").unwrap().unwrap();
+        assert_eq!(cs.status, "applied");
+        assert!(cs.applied_at.is_some());
+        assert_eq!(cs.git_commit.as_deref(), Some("rosteroid"));
+        // Re-marking an applied row is a no-op (status-guarded UPDATE).
+        db.mark_changeset_applied_commit("ch-3", "otheroid")
+            .unwrap();
+        let again = db.changeset("ch-3").unwrap().unwrap();
+        assert_eq!(again.git_commit.as_deref(), Some("rosteroid"));
+    }
+
+    #[test]
+    fn audit_exists_for_commit_is_specific_to_action_and_commit() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(!db
+            .audit_exists_for_commit("index.external_commit", "oid-1")
+            .unwrap());
+        db.record_audit(
+            "key",
+            None,
+            "key:abc",
+            "index.external_commit",
+            "acme/cdn",
+            None,
+            Some("oid-1"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(db
+            .audit_exists_for_commit("index.external_commit", "oid-1")
+            .unwrap());
+        // A different commit, or a different action, does not match.
+        assert!(!db
+            .audit_exists_for_commit("index.external_commit", "oid-2")
+            .unwrap());
+        assert!(!db.audit_exists_for_commit("index", "oid-1").unwrap());
     }
 
     #[test]

@@ -1108,3 +1108,160 @@ pub fn changeset_rows(changesets: &[ChangesetRow]) -> Vec<Vec<String>> {
         })
         .collect()
 }
+
+/// The git-backed config-edit page for a registry (RFC-0004 "Configuration
+/// management").
+///
+/// Renders a textarea pre-filled with the current committed `registry.toml`
+/// and a submit button that posts the edit as a *change request* — the hub
+/// commits the edit, draft-signed, to `refs/hub/changes/<id>` for a maintainer
+/// to review and promote with `apr change merge`. After a submit, `result`
+/// carries the new change id and the merge command to echo. `can_edit` gates
+/// the form behind `registry.configure`.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn config_edit_page(
+    email: &str,
+    registry: &RegistryRecord,
+    csrf: &str,
+    current_toml: &str,
+    can_edit: bool,
+    result: Option<(&str, &str)>,
+    started: Instant,
+) -> String {
+    let slug = &registry.slug;
+    let mut body = format!("<h1>Edit config: {}</h1>\n", escape(slug));
+    body.push_str(
+        "<p class=\"dim\">Web edits to committed config are <strong>change \
+         requests</strong>. The hub commits the edit, draft-signed by a key \
+         that is not in the roster, to <code>refs/hub/changes/&lt;id&gt;</code>. \
+         A maintainer reviews and promotes it locally with \
+         <code>apr change merge</code>; roster keys never leave their machine.</p>\n",
+    );
+
+    if let Some((change_id, merge_command)) = result {
+        let _ = write!(
+            body,
+            "<p class=\"good\">Change request <code>{}</code> created. Promote it with:</p>\n\
+             <pre>{}</pre>\n\
+             <p><a href=\"/{}/-/changes\">view change requests</a></p>\n",
+            escape(change_id),
+            escape(merge_command),
+            escape(slug),
+        );
+    }
+
+    if can_edit {
+        let _ = write!(
+            body,
+            "<form class=\"console\" method=\"post\" action=\"/{}/-/settings/config\">\n{}\
+             <label>registry.toml\n<textarea name=\"contents\" rows=\"18\" cols=\"80\" required>{}</textarea></label>\n\
+             <button>submit change request</button>\n</form>\n",
+            escape(slug),
+            csrf_field(csrf),
+            escape(current_toml),
+        );
+    } else {
+        body.push_str(
+            "<p class=\"dim\">You need <code>registry.configure</code> to propose a change.</p>\n",
+        );
+        let _ = writeln!(body, "<pre>{}</pre>", escape(current_toml));
+    }
+
+    let crumbs = registry_crumbs(slug);
+    page_with_session(
+        &format!("edit config · {slug}"),
+        &crumbs,
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// The change-requests list page for a registry (RFC-0004 "Configuration
+/// management" git-backed path).
+///
+/// Lists the registry's git-backed change requests (drafts with a `refs/hub`
+/// commit, plus their applied/reverted history) with each edited file's
+/// unified diff and the `apr change merge` command that promotes a draft.
+#[must_use]
+pub fn changes_page(
+    email: &str,
+    registry: &RegistryRecord,
+    requests: &[ChangeRequestView],
+    started: Instant,
+) -> String {
+    let slug = &registry.slug;
+    let mut body = format!("<h1>Change requests: {}</h1>\n", escape(slug));
+    body.push_str(&format!(
+        "<p><a href=\"/{}/-/settings/config\">propose a config change</a></p>\n",
+        escape(slug),
+    ));
+    if requests.is_empty() {
+        body.push_str("<p class=\"dim\">No change requests yet.</p>\n");
+    }
+    for req in requests {
+        let _ = write!(
+            body,
+            "<section class=\"change\">\n<h2><code>{}</code> <span class=\"dim\">{}</span></h2>\n\
+             <p>{}</p>\n<p class=\"dim\">by {} · commit <code>{}</code></p>\n",
+            escape(&req.change_id),
+            escape(&req.status),
+            escape(&req.summary),
+            escape(&req.actor_label),
+            escape(&req.git_commit),
+        );
+        for (path, diff) in &req.file_diffs {
+            let _ = write!(
+                body,
+                "<h3>{}</h3>\n<pre class=\"diff\">{}</pre>\n",
+                escape(path),
+                escape(diff),
+            );
+        }
+        if req.status == "draft" {
+            let _ = write!(
+                body,
+                "<p class=\"dim\">promote with:</p>\n<pre>{}</pre>\n",
+                escape(&req.merge_command),
+            );
+        }
+        body.push_str("</section>\n");
+    }
+
+    let crumbs = registry_crumbs(slug);
+    page_with_session(
+        &format!("change requests · {slug}"),
+        &crumbs,
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// A rendered change request for [`changes_page`].
+pub struct ChangeRequestView {
+    /// The change-set id.
+    pub change_id: String,
+    /// Lifecycle status: draft | applied | reverted.
+    pub status: String,
+    /// One-line summary.
+    pub summary: String,
+    /// Human label of the actor that opened it.
+    pub actor_label: String,
+    /// The signed draft-commit oid.
+    pub git_commit: String,
+    /// Per-edited-file `(path, unified diff)`.
+    pub file_diffs: Vec<(String, String)>,
+    /// The `apr change merge` command that promotes a draft.
+    pub merge_command: String,
+}
+
+/// Breadcrumbs for a per-registry console page: the registry home plus the
+/// current page is appended by the caller's title.
+fn registry_crumbs(slug: &str) -> Vec<(String, String)> {
+    vec![
+        (String::new(), "registries".to_string()),
+        (format!("/{slug}/"), slug.to_string()),
+    ]
+}

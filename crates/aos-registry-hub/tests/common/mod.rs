@@ -176,6 +176,18 @@ pub fn standard_registry(root: &Path) -> Fixture {
 // builders (the same pre-existing pattern as the rest of this file).
 #[allow(dead_code)]
 pub fn standard_registry_versioned(root: &Path, semver: &str) -> Fixture {
+    standard_registry_with_commit_message(root, semver, &format!("release {semver}"))
+}
+
+/// [`standard_registry_versioned`] with an explicit HEAD commit message, so a
+/// test can embed an `AOS-Change-Id` trailer (for the indexer's change-request
+/// cross-referencing) or otherwise control the committed message.
+#[allow(dead_code)]
+pub fn standard_registry_with_commit_message(
+    root: &Path,
+    semver: &str,
+    commit_message: &str,
+) -> Fixture {
     let fixture = Fixture::new(root);
 
     let registry_toml = fixture.put_blob(
@@ -206,7 +218,7 @@ pub fn standard_registry_versioned(root: &Path, semver: &str) -> Fixture {
         ("40000", "packages", packages),
     ]);
 
-    let commit = fixture.put_signed_commit(root_tree, &format!("release {semver}"));
+    let commit = fixture.put_signed_commit(root_tree, commit_message);
     let release_tag = fixture.put_release_tag(semver, commit);
     fixture.put_channel("stable", release_tag);
     fixture.put_refs(

@@ -326,7 +326,157 @@ pub async fn index_registry(
     };
     db.apply_snapshot(registry.id, &snapshot)?;
     raise_floors(db, registry.id, &snapshot.channels)?;
+
+    // Cross-reference the verified HEAD commit with the change-set log
+    // (RFC-0004 "Configuration management"): a commit carrying an
+    // `AOS-Change-Id` trailer that names a known draft change request marks it
+    // applied (a maintainer promoted the draft via `apr change merge`); a
+    // verified commit *without* a known trailer is an out-of-band publish, for
+    // which we synthesize one idempotent `external` audit entry so the feed is
+    // complete over managed and direct changes alike.
+    record_commit_provenance(
+        db,
+        registry,
+        &commit,
+        &snapshot.commit,
+        &roster_lookup(&snapshot.roster),
+    );
+
     Ok(outcome)
+}
+
+/// A roster public-key → key-id map for resolving a commit signer to a roster
+/// identity (RFC-0004: the external audit entry resolves the signing-key
+/// fingerprint to a roster id where possible).
+///
+/// `roster` is the `(key_id, trusted-key-line, status)` set the index built;
+/// only active entries with key material contribute, keyed on the base64 blob
+/// (what [`sshsig_signer`] returns from a signature).
+fn roster_lookup(roster: &[(String, String, String)]) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for (key_id, line, status) in roster {
+        if status != "active" || line.is_empty() {
+            continue;
+        }
+        if let Some(base64) = line.rsplit(':').next() {
+            map.insert(base64.to_string(), key_id.clone());
+        }
+    }
+    map
+}
+
+/// Match the verified HEAD commit to the change-set log and record provenance.
+///
+/// Failures here are logged, never propagated: provenance recording is an
+/// audit-completeness nicety layered over a snapshot that already committed —
+/// a database hiccup must not fail the index or roll back the snapshot.
+fn record_commit_provenance(
+    db: &Database,
+    registry: &RegistryRecord,
+    commit: &crate::surface::object::Commit,
+    commit_oid_hex: &str,
+    roster: &BTreeMap<String, String>,
+) {
+    let message = commit_message(&commit.signed_payload);
+    if let Some(change_id) = crate::gitwrite::extract_change_id_trailer(&message) {
+        // A trailer naming a known change request: mark it applied, linking
+        // the promoting commit. An unknown id is treated as a no-trailer
+        // commit (external) below.
+        match db.changeset(&change_id) {
+            Ok(Some(_)) => {
+                if let Err(err) = db.mark_changeset_applied_commit(&change_id, commit_oid_hex) {
+                    tracing::warn!(
+                        slug = %registry.slug,
+                        %change_id,
+                        error = %format!("{err:#}"),
+                        "marking change request applied from trailer"
+                    );
+                }
+                return;
+            }
+            Ok(None) => {}
+            Err(err) => tracing::warn!(
+                slug = %registry.slug,
+                %change_id,
+                error = %format!("{err:#}"),
+                "looking up change request from trailer"
+            ),
+        }
+    }
+
+    // No known trailer: synthesize an idempotent `external` audit entry.
+    synthesize_external_audit(db, registry, commit, commit_oid_hex, roster);
+}
+
+/// Synthesize one `index.external_commit` audit row for an out-of-band commit.
+///
+/// Idempotent: skipped when an audit row already records this commit, so
+/// re-indexing the same surface never duplicates the entry.
+fn synthesize_external_audit(
+    db: &Database,
+    registry: &RegistryRecord,
+    commit: &crate::surface::object::Commit,
+    commit_oid_hex: &str,
+    roster: &BTreeMap<String, String>,
+) {
+    const ACTION: &str = "index.external_commit";
+    match db.audit_exists_for_commit(ACTION, commit_oid_hex) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(err) => {
+            tracing::warn!(
+                slug = %registry.slug,
+                error = %format!("{err:#}"),
+                "checking for an existing external-commit audit row"
+            );
+            return;
+        }
+    }
+
+    // Resolve the signer to a roster id where possible; otherwise label by the
+    // signing-key fingerprint (its base64 blob), or `unsigned`.
+    let signer_base64 = commit.signature.as_deref().and_then(sshsig_signer);
+    let actor_label = match &signer_base64 {
+        Some(base64) => match roster.get(base64) {
+            Some(key_id) => format!("roster:{key_id}"),
+            None => format!("key:{base64}"),
+        },
+        None => "unsigned".to_string(),
+    };
+    let detail = serde_json::json!({
+        "observed": "surface",
+        "note": "out-of-band commit (not authored via the hub)",
+    })
+    .to_string();
+    if let Err(err) = db.record_audit(
+        "key",
+        None,
+        &actor_label,
+        ACTION,
+        &registry.slug,
+        None,
+        Some(commit_oid_hex),
+        None,
+        Some(&detail),
+    ) {
+        tracing::warn!(
+            slug = %registry.slug,
+            error = %format!("{err:#}"),
+            "synthesizing external-commit audit row"
+        );
+    }
+}
+
+/// Extract the commit message body from a commit's signed payload.
+///
+/// The payload is `headers\n\nmessage`; the message is everything after the
+/// first blank line.
+fn commit_message(signed_payload: &[u8]) -> String {
+    let text = String::from_utf8_lossy(signed_payload);
+    match text.split_once("\n\n") {
+        Some((_headers, message)) => message.to_string(),
+        None => String::new(),
+    }
 }
 
 /// The incremental fast path: `info/refs` is byte-identical to the fresh
