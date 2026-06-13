@@ -38,8 +38,8 @@
 //! - [`domain`] — tenancy/IAM domain model: orgs, projects, principals,
 //!   and the pure role/permission/scope authorization kernel.
 //! - [`auth`] — authentication: provisioning tokens, JWTs, human sessions,
-//!   device-code and magic-link flows, and the axum extractors that gate
-//!   requests.
+//!   device-code, magic-link, and per-org OIDC SSO flows, and the axum
+//!   extractors that gate requests.
 //! - [`indexer`] — fetch → verify → load → index orchestration.
 //! - [`stack`] — the nestable try/mirror cache-stack expression and its
 //!   committed TOML encoding.

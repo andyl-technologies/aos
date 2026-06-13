@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 use aos_registry_hub::db::{Database, RegistryRecord};
 use aos_registry_hub::fetch::fetch_for_url;
@@ -89,6 +89,95 @@ enum Command {
     Audit {
         /// Scope path to filter on (use "" for instance-wide).
         scope: String,
+    },
+    /// Configure an org's OIDC single sign-on identity provider.
+    Idp {
+        #[command(subcommand)]
+        command: IdpCommand,
+    },
+    /// Capture and verify email domains for SSO routing.
+    Domain {
+        #[command(subcommand)]
+        command: DomainCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum IdpCommand {
+    /// Set (or replace) an org's OIDC identity provider.
+    Set(Box<IdpSetArgs>),
+    /// Show an org's configured IdP (the client secret is never printed).
+    Show {
+        /// Owning org slug.
+        org: String,
+    },
+}
+
+/// Arguments for `idp set` (boxed in [`IdpCommand`] to keep variants small).
+#[derive(Args)]
+struct IdpSetArgs {
+    /// Owning org slug.
+    org: String,
+    /// IdP issuer (the id_token `iss`).
+    #[arg(long)]
+    issuer: String,
+    /// OAuth2 authorization endpoint.
+    #[arg(long = "auth-url")]
+    auth_url: String,
+    /// OAuth2 token endpoint.
+    #[arg(long = "token-url")]
+    token_url: String,
+    /// JWKS endpoint (RS256 signing keys).
+    #[arg(long = "jwks-uri")]
+    jwks_uri: String,
+    /// OAuth2 client id.
+    #[arg(long = "client-id")]
+    client_id: String,
+    /// OAuth2 client secret (sealed at rest; omit for a public client).
+    #[arg(long = "client-secret")]
+    client_secret: Option<String>,
+    /// Space-separated scopes to request.
+    #[arg(long, default_value = "openid email profile")]
+    scopes: String,
+    /// id_token claim carrying the user's groups.
+    #[arg(long = "groups-claim")]
+    groups_claim: Option<String>,
+    /// group->role mapping as a JSON object (e.g. '{"admins":"admin"}').
+    #[arg(long = "role-map", default_value = "{}")]
+    role_map: String,
+    /// Force org members through SSO (email-first login redirects).
+    #[arg(long = "enforce-sso")]
+    enforce_sso: bool,
+    /// Disable just-in-time provisioning of unknown identities.
+    #[arg(long = "no-jit")]
+    no_jit: bool,
+    /// Role a JIT user receives when no group maps.
+    #[arg(long = "default-role", default_value = "viewer")]
+    default_role: String,
+}
+
+#[derive(Subcommand)]
+enum DomainCommand {
+    /// Claim a domain for an org and print the DNS-TXT challenge to publish.
+    Add {
+        /// Owning org slug.
+        org: String,
+        /// Email domain to capture (e.g. acme.com).
+        domain: String,
+    },
+    /// Verify a claimed domain.
+    ///
+    /// Offline-testable: pass `--txt <value>` to supply the resolved TXT
+    /// record; it is matched against the stored challenge before the domain is
+    /// marked verified. With no `--txt`, the domain is marked verified
+    /// unconditionally (operators wire a real DNS resolver here).
+    Verify {
+        /// Domain to verify.
+        domain: String,
+        /// The TXT record value resolved from DNS (matched against the
+        /// challenge).
+        #[arg(long)]
+        txt: Option<String>,
     },
 }
 
@@ -469,6 +558,142 @@ async fn main() -> Result<()> {
                     entry.scope,
                     entry.change_id.as_deref().unwrap_or("-"),
                 );
+            }
+        }
+        Command::Idp { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            run_idp_command(&db, command)?;
+        }
+        Command::Domain { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            run_domain_command(&db, command)?;
+        }
+    }
+    Ok(())
+}
+
+/// Handle the `idp set`/`idp show` subcommands.
+///
+/// `set` seals the client secret with the placeholder sealer (matching the
+/// server's dev default) before storing it; `show` prints the configuration
+/// with the secret redacted.
+fn run_idp_command(db: &Database, command: IdpCommand) -> Result<()> {
+    use aos_registry_hub::auth::oidc;
+    use aos_registry_hub::db::IdpConfigRecord;
+    match command {
+        IdpCommand::Set(args) => {
+            let IdpSetArgs {
+                org,
+                issuer,
+                auth_url,
+                token_url,
+                jwks_uri,
+                client_id,
+                client_secret,
+                scopes,
+                groups_claim,
+                role_map,
+                enforce_sso,
+                no_jit,
+                default_role,
+            } = *args;
+            let org_record = db
+                .org_by_slug(&org)?
+                .with_context(|| format!("no org '{org}'"))?;
+            // Validate the role map and default role parse before storing.
+            let _: serde_json::Value = serde_json::from_str(&role_map)
+                .with_context(|| "--role-map must be a JSON object")?;
+            if aos_registry_hub::domain::Role::parse(&default_role).is_none() {
+                anyhow::bail!("invalid --default-role '{default_role}'");
+            }
+            let sealer = oidc::dev_sealer();
+            let client_secret_enc = match &client_secret {
+                Some(secret) => Some(sealer.seal(secret)?),
+                None => None,
+            };
+            db.upsert_idp_config(&IdpConfigRecord {
+                org_id: org_record.id,
+                issuer,
+                authorization_endpoint: auth_url,
+                token_endpoint: token_url,
+                jwks_uri,
+                client_id,
+                client_secret_enc,
+                scopes,
+                groups_claim,
+                role_map_json: role_map,
+                allow_jit: !no_jit,
+                enforce_sso,
+                default_role,
+            })?;
+            println!("configured OIDC IdP for org '{org}'");
+        }
+        IdpCommand::Show { org } => {
+            let org_record = db
+                .org_by_slug(&org)?
+                .with_context(|| format!("no org '{org}'"))?;
+            match db.idp_config(org_record.id)? {
+                Some(config) => {
+                    println!("issuer:        {}", config.issuer);
+                    println!("authorize:     {}", config.authorization_endpoint);
+                    println!("token:         {}", config.token_endpoint);
+                    println!("jwks:          {}", config.jwks_uri);
+                    println!("client_id:     {}", config.client_id);
+                    println!(
+                        "client_secret: {}",
+                        if config.client_secret_enc.is_some() {
+                            "(sealed)"
+                        } else {
+                            "(none)"
+                        }
+                    );
+                    println!("scopes:        {}", config.scopes);
+                    println!(
+                        "groups_claim:  {}",
+                        config.groups_claim.as_deref().unwrap_or("-")
+                    );
+                    println!("role_map:      {}", config.role_map_json);
+                    println!("allow_jit:     {}", config.allow_jit);
+                    println!("enforce_sso:   {}", config.enforce_sso);
+                    println!("default_role:  {}", config.default_role);
+                }
+                None => println!("org '{org}' has no OIDC IdP configured"),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Handle the `domain add`/`domain verify` subcommands.
+fn run_domain_command(db: &Database, command: DomainCommand) -> Result<()> {
+    match command {
+        DomainCommand::Add { org, domain } => {
+            let org_record = db
+                .org_by_slug(&org)?
+                .with_context(|| format!("no org '{org}'"))?;
+            let challenge = db.add_org_domain(org_record.id, &domain)?;
+            println!("claimed '{domain}' for org '{org}' (unverified)");
+            println!("publish this TXT record at the domain, then run `domain verify`:");
+            println!("  {challenge}");
+        }
+        DomainCommand::Verify { domain, txt } => {
+            let record = db
+                .org_domain(&domain)?
+                .with_context(|| format!("domain '{domain}' is not claimed by any org"))?;
+            if let Some(txt) = &txt {
+                if txt.trim() != record.txt_challenge {
+                    anyhow::bail!(
+                        "TXT value does not match the challenge for '{domain}' (expected '{}')",
+                        record.txt_challenge
+                    );
+                }
+            }
+            if db.verify_org_domain(&domain)? {
+                println!("verified '{domain}'");
+            } else {
+                println!("domain '{domain}' is not claimed");
             }
         }
     }

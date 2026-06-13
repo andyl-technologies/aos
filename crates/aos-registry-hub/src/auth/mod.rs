@@ -14,8 +14,9 @@
 //!   window that `aos-server` recorded but ignored.
 //! - **Humans** carry opaque [cookie sessions](session)
 //!   (`__Host-aos_session`) with a sudo `auth_level`, obtained through the
-//!   [device-authorization flow](device) (RFC 8628) for the CLI or
-//!   [email magic links](magic) for the browser.
+//!   [device-authorization flow](device) (RFC 8628) for the CLI, [email magic
+//!   links](magic) for the browser, or — per org — [OIDC single sign-on](oidc)
+//!   (authorization-code + PKCE, domain-captured email-first routing).
 //!
 //! # Module map
 //!
@@ -25,6 +26,8 @@
 //! - [`device`] — RFC 8628 device-code and user-code minting.
 //! - [`magic`] — single-use email magic-link secrets and the [`magic::Mailer`]
 //!   delivery trait.
+//! - [`oidc`] — per-org OIDC SSO: the authorization-code + PKCE flow, JWKS-backed
+//!   RS256 id_token verification, and the [`oidc::SecretSealer`] seam.
 //! - [`extract`] — the axum extractors and middleware that gate requests:
 //!   [`extract::BearerAuth`], [`extract::SessionAuth`],
 //!   [`extract::MaybeSession`], plus the `/oauth2/token` handler.
@@ -38,6 +41,7 @@ pub mod device;
 pub mod extract;
 pub mod jwt;
 pub mod magic;
+pub mod oidc;
 pub mod session;
 pub mod token;
 

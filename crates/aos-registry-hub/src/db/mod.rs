@@ -17,7 +17,11 @@
 //!   credentials principals authenticate with), and the phase-3a
 //!   configuration-history tables `audit_log`, `config_changesets`, and
 //!   `config_revisions` (the append-only record of every SQL-backed
-//!   mutation, who performed it, and the before/after object snapshots):
+//!   mutation, who performed it, and the before/after object snapshots), and
+//!   the phase-3d per-org SSO tables `org_idp_configs`, `org_domains`, and
+//!   `oidc_flows` (each org's OIDC identity provider with its sealed client
+//!   secret, the DNS-TXT-captured domains that route email-first logins to
+//!   it, and the short-lived in-flight authorization-code requests):
 //!   facts that exist nowhere on the surface (slug, source URL, trust
 //!   anchors, the anti-rollback floor each channel has reached, the
 //!   org → project → registry hierarchy and who may act on it, where each
@@ -164,6 +168,38 @@
 //! "issue replacement" note (a no-op create), and a `membership` delete
 //! reverts to an *invitation* rather than a silent re-admit. These are
 //! encoded as operation/notes by [`crate::config::revert`].
+//!
+//! # Per-org OIDC SSO (v9)
+//!
+//! Phase 3d adds per-org single sign-on (RFC-0004 "Per-org OIDC SSO"). Three
+//! tables hold facts that exist nowhere on the surface: an org's identity
+//! provider, the domains it has captured, and the in-flight login state.
+//!
+//! ```text
+//! org_idp_configs   org_id 1  issuer "https://idp.acme.example"
+//!                   authorization_endpoint ".../authorize"
+//!                   token_endpoint ".../token"  jwks_uri ".../jwks"
+//!                   client_id "hub"  client_secret_enc "<sealed>"
+//!                   scopes "openid email profile"  groups_claim "groups"
+//!                   role_map_json '{"acme-admins":"admin"}'
+//!                   allow_jit 1  enforce_sso 1  default_role "viewer"
+//!
+//! org_domains       domain "acme.com"  org_id 1
+//!                   txt_challenge "aos-domain-verify=<random>"
+//!                   verified_at 1730000000        -- NULL until verified
+//!
+//! oidc_flows        state "<opaque>"  org_id 1  nonce "<opaque>"
+//!                   code_verifier "<43..128 chars>"  redirect_after "/"
+//!                   created_at 1730000000  expires_at 1730000600
+//! ```
+//!
+//! Login keys identities on `(issuer, subject)` — never bare email — through
+//! [`Database::link_or_create_identity`]: an existing `(iss, sub)` resolves to
+//! its user, an IdP-verified email on a captured domain links to an existing
+//! user, and otherwise a fresh user + identity is provisioned (when
+//! `allow_jit`). The OIDC flow itself — PKCE, the authorization URL, the token
+//! exchange, and JWKS-backed RS256 id_token verification — lives in
+//! [`crate::auth::oidc`]; this module only stores and lists the rows.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -497,6 +533,59 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE registry_index ADD COLUMN cache_stack TEXT;
     ",
+    // v9: per-org OIDC SSO (RFC-0004 \"Per-org OIDC SSO\"). Three
+    // system-of-record tables that exist nowhere on the registry surface:
+    //
+    // - org_idp_configs: one IdP per org. The authorization-code + PKCE
+    //   endpoints, client id, and the sealed client secret (client_secret_enc;
+    //   see crate::auth::oidc::SecretSealer), plus the groups->role mapping
+    //   (role_map_json) re-evaluated on every SSO login, and the enforce_sso /
+    //   allow_jit policy flags. Encrypted at rest; the column never holds the
+    //   plaintext secret.
+    // - org_domains: DNS-TXT domain capture. A domain is claimed by an org
+    //   with a txt_challenge the org publishes; verified_at is stamped once the
+    //   challenge is observed (the actual DNS lookup is the caller's, kept
+    //   offline-testable — see Database::verify_org_domain). Only verified
+    //   domains route email-first logins to the org's IdP.
+    // - oidc_flows: short-lived in-flight authorization-code requests, keyed by
+    //   the opaque `state`. Holds the PKCE code_verifier and the nonce the
+    //   id_token is checked against; single-use (deleted on callback) and
+    //   garbage by expires_at (~10 min TTL).
+    "
+    CREATE TABLE org_idp_configs (
+        org_id                INTEGER PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+        issuer                TEXT NOT NULL,
+        authorization_endpoint TEXT NOT NULL,
+        token_endpoint        TEXT NOT NULL,
+        jwks_uri              TEXT NOT NULL,
+        client_id             TEXT NOT NULL,
+        client_secret_enc     TEXT,                       -- sealed; never plaintext
+        scopes                TEXT NOT NULL DEFAULT 'openid email profile',
+        groups_claim          TEXT,
+        role_map_json         TEXT NOT NULL DEFAULT '{}',
+        allow_jit             INTEGER NOT NULL DEFAULT 1,
+        enforce_sso           INTEGER NOT NULL DEFAULT 0,
+        default_role          TEXT NOT NULL DEFAULT 'viewer',
+        created_at            INTEGER NOT NULL,
+        updated_at            INTEGER NOT NULL
+    );
+    CREATE TABLE org_domains (
+        domain       TEXT PRIMARY KEY,
+        org_id       INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+        txt_challenge TEXT NOT NULL,
+        verified_at  INTEGER
+    );
+    CREATE INDEX org_domains_org_idx ON org_domains (org_id);
+    CREATE TABLE oidc_flows (
+        state          TEXT PRIMARY KEY,
+        org_id         INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+        nonce          TEXT NOT NULL,
+        code_verifier  TEXT NOT NULL,
+        redirect_after TEXT,
+        created_at     INTEGER NOT NULL,
+        expires_at     INTEGER NOT NULL
+    );
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -594,6 +683,109 @@ pub struct InvitationRecord {
     pub scope: String,
     /// Role the resulting grant confers.
     pub role: String,
+}
+
+/// An org's OIDC identity-provider configuration (system-of-record row).
+///
+/// Mirrors the `org_idp_configs` row one-to-one. The client secret is held
+/// **sealed** in [`IdpConfigRecord::client_secret_enc`]; unseal it through a
+/// [`crate::auth::oidc::SecretSealer`] only at the moment of the token
+/// exchange, never store or log the plaintext.
+#[derive(Debug, Clone)]
+pub struct IdpConfigRecord {
+    /// Owning org id (the table's primary key — one IdP per org).
+    pub org_id: i64,
+    /// The IdP's issuer identifier; the `iss` claim every id_token must carry.
+    pub issuer: String,
+    /// The OAuth2 authorization endpoint the browser is redirected to.
+    pub authorization_endpoint: String,
+    /// The OAuth2 token endpoint the authorization code is exchanged at.
+    pub token_endpoint: String,
+    /// The JWKS endpoint whose keys verify the id_token signature.
+    pub jwks_uri: String,
+    /// The client id registered with the IdP for this hub.
+    pub client_id: String,
+    /// The sealed client secret, or `None` for a public client.
+    ///
+    /// Sealed by a [`crate::auth::oidc::SecretSealer`]; never the plaintext.
+    pub client_secret_enc: Option<String>,
+    /// The space-separated scope string requested at authorization.
+    pub scopes: String,
+    /// The id_token claim carrying the user's groups, or `None` to skip
+    /// group→role mapping.
+    pub groups_claim: Option<String>,
+    /// The `group -> role` mapping as a JSON object string, applied on every
+    /// SSO login.
+    pub role_map_json: String,
+    /// Whether an unknown `(iss, sub)` may be just-in-time provisioned.
+    pub allow_jit: bool,
+    /// Whether members of the org are forced through SSO (email-first login
+    /// on a captured domain redirects to the IdP rather than offering magic
+    /// links).
+    pub enforce_sso: bool,
+    /// The role a JIT-provisioned user receives at the org scope when no
+    /// group mapping applies.
+    pub default_role: String,
+}
+
+/// A captured (DNS-TXT-verifiable) email domain bound to an org.
+#[derive(Debug, Clone)]
+pub struct OrgDomainRecord {
+    /// The fully-qualified domain (lowercased).
+    pub domain: String,
+    /// The org that claimed the domain.
+    pub org_id: i64,
+    /// The TXT record value the org must publish to prove control.
+    pub txt_challenge: String,
+    /// Unix time the domain was verified, or `None` while unverified.
+    pub verified_at: Option<i64>,
+}
+
+/// An in-flight OIDC authorization-code request (system-of-record row).
+///
+/// Created at [`crate::auth::oidc::begin_login`] and consumed exactly once at
+/// the callback by [`Database::take_oidc_flow`]; carries the PKCE
+/// `code_verifier` and the `nonce` the returned id_token is checked against.
+#[derive(Debug, Clone)]
+pub struct OidcFlowRecord {
+    /// The opaque CSRF `state` value echoed back by the IdP.
+    pub state: String,
+    /// The org whose IdP this flow targets.
+    pub org_id: i64,
+    /// The nonce bound into the authorization request; the id_token's `nonce`
+    /// claim must equal it.
+    pub nonce: String,
+    /// The PKCE code verifier whose S256 challenge was sent at authorization.
+    pub code_verifier: String,
+    /// Where to send the browser after a successful login, or `None` for the
+    /// instance home.
+    pub redirect_after: Option<String>,
+    /// Unix time the flow expires; a callback after this is rejected.
+    pub expires_at: i64,
+}
+
+/// The outcome of [`Database::link_or_create_identity`]: the resolved user and
+/// how the identity was reconciled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityLink {
+    /// An existing `(iss, sub)` identity resolved to this user id.
+    Existing(i64),
+    /// A verified email on a captured domain linked to an existing user.
+    Linked(i64),
+    /// A fresh user and identity were provisioned (JIT).
+    Created(i64),
+}
+
+impl IdentityLink {
+    /// The resolved user id, regardless of how it was reconciled.
+    #[must_use]
+    pub fn user_id(&self) -> i64 {
+        match self {
+            IdentityLink::Existing(id) | IdentityLink::Linked(id) | IdentityLink::Created(id) => {
+                *id
+            }
+        }
+    }
 }
 
 /// A validated provisioning token: who owns it and what it may do.
@@ -3008,6 +3200,359 @@ impl Database {
         Ok(email)
     }
 
+    // -- auth: per-org OIDC SSO ---------------------------------------------
+
+    /// Create or replace an org's OIDC identity-provider configuration.
+    ///
+    /// One IdP per org (the `org_id` primary key); re-calling overwrites the
+    /// existing configuration and bumps `updated_at`. `client_secret_enc`
+    /// must already be **sealed** by a [`crate::auth::oidc::SecretSealer`] —
+    /// this method stores the value verbatim and never sees the plaintext.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a foreign-key
+    /// violation when `org_id` does not reference an org.
+    pub fn upsert_idp_config(&self, config: &IdpConfigRecord) -> Result<()> {
+        let now = unix_now();
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO org_idp_configs
+             (org_id, issuer, authorization_endpoint, token_endpoint, jwks_uri,
+              client_id, client_secret_enc, scopes, groups_claim, role_map_json,
+              allow_jit, enforce_sso, default_role, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
+             ON CONFLICT(org_id) DO UPDATE SET
+                 issuer = excluded.issuer,
+                 authorization_endpoint = excluded.authorization_endpoint,
+                 token_endpoint = excluded.token_endpoint,
+                 jwks_uri = excluded.jwks_uri,
+                 client_id = excluded.client_id,
+                 client_secret_enc = excluded.client_secret_enc,
+                 scopes = excluded.scopes,
+                 groups_claim = excluded.groups_claim,
+                 role_map_json = excluded.role_map_json,
+                 allow_jit = excluded.allow_jit,
+                 enforce_sso = excluded.enforce_sso,
+                 default_role = excluded.default_role,
+                 updated_at = excluded.updated_at",
+            params![
+                config.org_id,
+                config.issuer,
+                config.authorization_endpoint,
+                config.token_endpoint,
+                config.jwks_uri,
+                config.client_id,
+                config.client_secret_enc,
+                config.scopes,
+                config.groups_claim,
+                config.role_map_json,
+                config.allow_jit as i64,
+                config.enforce_sso as i64,
+                config.default_role,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Load an org's OIDC identity-provider configuration, if configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn idp_config(&self, org_id: i64) -> Result<Option<IdpConfigRecord>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT org_id, issuer, authorization_endpoint, token_endpoint, jwks_uri,
+                    client_id, client_secret_enc, scopes, groups_claim, role_map_json,
+                    allow_jit, enforce_sso, default_role
+             FROM org_idp_configs WHERE org_id = ?1",
+            [org_id],
+            row_to_idp_config,
+        )
+        .optional()
+        .context("loading idp config by org id")
+    }
+
+    /// Claim a domain for an org with a fresh DNS-TXT challenge.
+    ///
+    /// Returns the generated `txt_challenge` value the org must publish as a
+    /// TXT record at the domain to prove control; the domain starts
+    /// **unverified** (`verified_at` NULL) until [`Database::verify_org_domain`]
+    /// stamps it. Re-claiming a domain rotates its challenge and resets it to
+    /// unverified.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn add_org_domain(&self, org_id: i64, domain: &str) -> Result<String> {
+        let domain = domain.trim().to_lowercase();
+        let challenge = format!(
+            "aos-domain-verify={}",
+            crate::auth::session::new_session_secret()
+        );
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO org_domains (domain, org_id, txt_challenge, verified_at)
+             VALUES (?1, ?2, ?3, NULL)
+             ON CONFLICT(domain) DO UPDATE SET
+                 org_id = excluded.org_id,
+                 txt_challenge = excluded.txt_challenge,
+                 verified_at = NULL",
+            params![domain, org_id, challenge],
+        )?;
+        Ok(challenge)
+    }
+
+    /// Look up a claimed domain (verified or not).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn org_domain(&self, domain: &str) -> Result<Option<OrgDomainRecord>> {
+        let domain = domain.trim().to_lowercase();
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT domain, org_id, txt_challenge, verified_at FROM org_domains WHERE domain = ?1",
+            [domain],
+            |row| {
+                Ok(OrgDomainRecord {
+                    domain: row.get(0)?,
+                    org_id: row.get(1)?,
+                    txt_challenge: row.get(2)?,
+                    verified_at: row.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .context("loading org domain")
+    }
+
+    /// Mark a claimed domain verified (stamp `verified_at = now`).
+    ///
+    /// This is the **persistence hook**: the actual DNS-TXT lookup is the
+    /// caller's responsibility (an ops tool or the CLI resolving the TXT
+    /// record and matching it against [`OrgDomainRecord::txt_challenge`]).
+    /// Keeping the lookup outside the database makes the capture flow
+    /// offline-testable and lets a real resolver drop in without touching the
+    /// store. Returns `Ok(false)` when no such domain is claimed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn verify_org_domain(&self, domain: &str) -> Result<bool> {
+        let domain = domain.trim().to_lowercase();
+        let conn = self.lock();
+        let n = conn.execute(
+            "UPDATE org_domains SET verified_at = ?2 WHERE domain = ?1",
+            params![domain, unix_now()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Resolve the org that owns a **verified** domain, if any.
+    ///
+    /// Only verified domains route logins; an unverified claim returns
+    /// `Ok(None)` so a forged claim cannot capture another org's users.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn org_for_domain(&self, domain: &str) -> Result<Option<i64>> {
+        let domain = domain.trim().to_lowercase();
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT org_id FROM org_domains WHERE domain = ?1 AND verified_at IS NOT NULL",
+            [domain],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("resolving org for verified domain")
+    }
+
+    /// Record an in-flight OIDC authorization-code request.
+    ///
+    /// Stores the opaque `state`, the `nonce` the id_token will be checked
+    /// against, and the PKCE `code_verifier`, with an `expires_at` `ttl_secs`
+    /// from now. The row is consumed exactly once at the callback by
+    /// [`Database::take_oidc_flow`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a `state` collision.
+    pub fn create_oidc_flow(
+        &self,
+        state: &str,
+        org_id: i64,
+        nonce: &str,
+        code_verifier: &str,
+        redirect_after: Option<&str>,
+        ttl_secs: i64,
+    ) -> Result<()> {
+        let now = unix_now();
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO oidc_flows
+             (state, org_id, nonce, code_verifier, redirect_after, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                state,
+                org_id,
+                nonce,
+                code_verifier,
+                redirect_after,
+                now,
+                now + ttl_secs
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Consume an OIDC flow by its `state`, returning it exactly once.
+    ///
+    /// Deletes the row and returns it in one statement (`DELETE … RETURNING`),
+    /// so a replayed or forged `state` finds nothing — the single-use,
+    /// CSRF-defeating gate. Returns `Ok(None)` for an unknown, already-consumed,
+    /// or expired flow.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn take_oidc_flow(&self, state: &str) -> Result<Option<OidcFlowRecord>> {
+        let now = unix_now();
+        let conn = self.lock();
+        let row = conn
+            .query_row(
+                "DELETE FROM oidc_flows WHERE state = ?1
+                 RETURNING state, org_id, nonce, code_verifier, redirect_after, expires_at",
+                [state],
+                |row| {
+                    Ok(OidcFlowRecord {
+                        state: row.get(0)?,
+                        org_id: row.get(1)?,
+                        nonce: row.get(2)?,
+                        code_verifier: row.get(3)?,
+                        redirect_after: row.get(4)?,
+                        expires_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .context("consuming oidc flow by state")?;
+        // Even though the row is deleted, an expired flow must not authenticate.
+        match row {
+            Some(flow) if now < flow.expires_at => Ok(Some(flow)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Reconcile an OIDC identity to a hub user, JIT-provisioning if allowed.
+    ///
+    /// Identities are keyed on `(issuer, subject)` — never bare email — so an
+    /// IdP that recycles an email address can never silently take over another
+    /// user's account. Resolution, in order:
+    ///
+    /// 1. An existing `(issuer, subject)` identity resolves to its user
+    ///    ([`IdentityLink::Existing`]); its `email`/`last_login` are refreshed.
+    /// 2. Otherwise, when `email` is IdP-*verified* and its domain is captured
+    ///    by `org_id`, the identity links to the existing user with that email
+    ///    ([`IdentityLink::Linked`]).
+    /// 3. Otherwise, when `allow_jit`, a fresh user and identity are created
+    ///    ([`IdentityLink::Created`]).
+    ///
+    /// Returns `Ok(None)` when no identity exists, no auto-link applies, and
+    /// `allow_jit` is false — the caller rejects the login.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn link_or_create_identity(
+        &self,
+        issuer: &str,
+        subject: &str,
+        email: Option<&str>,
+        email_verified: bool,
+        org_id: i64,
+        allow_jit: bool,
+    ) -> Result<Option<IdentityLink>> {
+        let now = unix_now();
+        // 1. Existing identity.
+        if let Some(user_id) = self.identity_user(issuer, subject)? {
+            let conn = self.lock();
+            conn.execute(
+                "UPDATE user_identities SET email = ?3, last_login = ?4
+                 WHERE issuer = ?1 AND subject = ?2",
+                params![issuer, subject, email, now],
+            )?;
+            return Ok(Some(IdentityLink::Existing(user_id)));
+        }
+        // 2. Auto-link a verified email on a captured domain to an existing user.
+        if email_verified {
+            if let Some(addr) = email {
+                let domain = addr.rsplit_once('@').map(|(_, d)| d.to_lowercase());
+                let captured = match &domain {
+                    Some(d) => self.org_for_domain(d)? == Some(org_id),
+                    None => false,
+                };
+                if captured {
+                    if let Some(user_id) = self.user_by_email(addr)? {
+                        self.insert_identity(issuer, subject, user_id, email, now)?;
+                        return Ok(Some(IdentityLink::Linked(user_id)));
+                    }
+                }
+            }
+        }
+        // 3. JIT-provision a brand-new user + identity.
+        if !allow_jit {
+            return Ok(None);
+        }
+        // A user needs an email (the users table requires a unique address);
+        // synthesize a stable, non-colliding pseudo-address from the identity
+        // when the IdP supplies none, so JIT never fails for a bare profile.
+        let user_email = match email {
+            Some(addr) => addr.to_string(),
+            None => format!("{subject}@{}", issuer_host(issuer)),
+        };
+        let user_id = self.find_or_create_user(&user_email)?;
+        self.insert_identity(issuer, subject, user_id, email, now)?;
+        Ok(Some(IdentityLink::Created(user_id)))
+    }
+
+    /// The user id linked to an `(issuer, subject)` identity, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn identity_user(&self, issuer: &str, subject: &str) -> Result<Option<i64>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT user_id FROM user_identities WHERE issuer = ?1 AND subject = ?2",
+            params![issuer, subject],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("loading identity user")
+    }
+
+    /// Insert a new `(issuer, subject)` identity for a user.
+    fn insert_identity(
+        &self,
+        issuer: &str,
+        subject: &str,
+        user_id: i64,
+        email: Option<&str>,
+        now: i64,
+    ) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO user_identities (user_id, issuer, subject, email, last_login)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![user_id, issuer, subject, email, now],
+        )?;
+        Ok(())
+    }
+
     // -- registry config setters --------------------------------------------
 
     /// Set a registry's visibility (`public`, `internal`, or `private`).
@@ -3386,6 +3931,33 @@ fn row_to_registry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryRecord> 
         storage_binding_id: row.get(8)?,
         prefix: row.get(9)?,
     })
+}
+
+fn row_to_idp_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<IdpConfigRecord> {
+    Ok(IdpConfigRecord {
+        org_id: row.get(0)?,
+        issuer: row.get(1)?,
+        authorization_endpoint: row.get(2)?,
+        token_endpoint: row.get(3)?,
+        jwks_uri: row.get(4)?,
+        client_id: row.get(5)?,
+        client_secret_enc: row.get(6)?,
+        scopes: row.get(7)?,
+        groups_claim: row.get(8)?,
+        role_map_json: row.get(9)?,
+        allow_jit: row.get::<_, i64>(10)? != 0,
+        enforce_sso: row.get::<_, i64>(11)? != 0,
+        default_role: row.get(12)?,
+    })
+}
+
+/// The host portion of an issuer URL, for synthesizing a JIT pseudo-email
+/// when the IdP supplies no address. Falls back to the raw issuer string.
+fn issuer_host(issuer: &str) -> String {
+    url::Url::parse(issuer)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_else(|| issuer.replace(['/', ':'], "."))
 }
 
 fn row_to_changeset(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChangesetRow> {
