@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** 2026-06-13
-- **PR:** _(pending)_
+- **PR:** [#102](https://github.com/andyl-technologies/aos/pull/102)
 - **Audience:** anyone working on `pkgs/boot/`, `pkgs/system/systemd.nix`,
   `pkgs/kernel/`, `modules/security/`, `modules/services/ignition.nix`,
   `crates/aos-package/`, `lib/testing/`, or release/key operations.
