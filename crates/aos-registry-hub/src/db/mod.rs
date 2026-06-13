@@ -1006,6 +1006,14 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE users ADD COLUMN password_hash TEXT;
     ",
+    // v19: record the source derivation store path per platform artifact, so
+    // the package detail page can surface and link the derivation that
+    // produced each output (RFC-0004 "package browser" parity with the
+    // nixos-search source/derivation link). The column defaults to the empty
+    // string for rows written before this migration; re-indexing backfills it.
+    "
+    ALTER TABLE version_platforms ADD COLUMN source_drv TEXT NOT NULL DEFAULT '';
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -1424,6 +1432,12 @@ pub struct PackageRow {
     pub license: String,
     /// Latest indexed version string.
     pub latest_version: Option<String>,
+    /// Closure size in bytes of the latest version's primary platform
+    /// artifact (the platform that sorts first), or `None` when the latest
+    /// version has no platform artifacts.
+    pub closure_size: Option<u64>,
+    /// Platform triples published for the latest version, sorted.
+    pub platforms: Vec<String>,
 }
 
 /// Full package detail for the package page.
@@ -1456,6 +1470,15 @@ pub struct VersionDetail {
     pub platforms: Vec<PlatformDetail>,
 }
 
+/// One resolved closure edge: a store-hash prefix and the package that
+/// publishes it, when resolvable within the same registry.
+///
+/// `(hash, name, version)` — `name` and `version` are `Some` when some package
+/// in the registry owns the store path with this hash prefix, and `None` for a
+/// hash that points outside the registry's package set (e.g. a stdenv path).
+/// Returned in input order by [`Database::resolve_reference_names`].
+pub type ResolvedReference = (String, Option<String>, Option<String>);
+
 /// One platform artifact row.
 #[derive(Debug, Clone)]
 pub struct PlatformDetail {
@@ -1469,6 +1492,9 @@ pub struct PlatformDetail {
     pub nar_size: u64,
     /// Closure size in bytes.
     pub closure_size: u64,
+    /// Store path of the derivation that produced this output, or empty when
+    /// the index did not record one (rows written before schema v19).
+    pub source_drv: String,
     /// Referenced store hashes (the `refs` JSON column).
     pub refs: Vec<String>,
     /// Sysroot disk images (the `images` JSON column).
@@ -2196,8 +2222,8 @@ impl Database {
                         tx.execute(
                             "INSERT INTO version_platforms
                              (version_id, platform, store_path, nar_hash, nar_size,
-                              closure_size, refs, images)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                              closure_size, refs, images, source_drv)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                             &vals![
                                 version_id,
                                 platform,
@@ -2207,6 +2233,7 @@ impl Database {
                                 entry.closure_size,
                                 serde_json::to_string(&entry.references)?,
                                 serde_json::Value::Array(images).to_string(),
+                                entry.source_drv,
                             ],
                         )?;
                     }
@@ -3074,7 +3101,7 @@ impl Database {
     /// Returns an error on database failure.
     pub fn list_packages(&self, registry_id: i64) -> Result<Vec<PackageRow>> {
         let rows = self.backend.query(
-            "SELECT p.name, p.description, p.license,
+            "SELECT p.id, p.name, p.description, p.license,
                     (SELECT v.version FROM package_versions v
                      WHERE v.package_id = p.id ORDER BY v.id DESC LIMIT 1)
              FROM packages p WHERE p.registry_id = ?1 ORDER BY p.name",
@@ -3082,11 +3109,34 @@ impl Database {
         )?;
         rows.iter()
             .map(|row| {
+                let package_id: i64 = row.get(0)?;
+                // Closure size + platform list of the newest version, used to
+                // make index rows scannable. One small query per package keeps
+                // the join dialect-portable; the registry's package set is in
+                // the low hundreds, so the cost is negligible.
+                let platform_rows = self.backend.query(
+                    "SELECT vp.platform, vp.closure_size
+                     FROM version_platforms vp
+                     WHERE vp.version_id = (SELECT MAX(v.id) FROM package_versions v
+                                            WHERE v.package_id = ?1)
+                     ORDER BY vp.platform",
+                    &vals![package_id],
+                )?;
+                let mut platforms = Vec::with_capacity(platform_rows.len());
+                let mut closure_size = None;
+                for prow in &platform_rows {
+                    platforms.push(prow.get::<String>(0)?);
+                    if closure_size.is_none() {
+                        closure_size = Some(prow.get::<u64>(1)?);
+                    }
+                }
                 Ok(PackageRow {
-                    name: row.get(0)?,
-                    description: row.get(1)?,
-                    license: row.get(2)?,
-                    latest_version: row.get(3)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    license: row.get(3)?,
+                    latest_version: row.get(4)?,
+                    closure_size,
+                    platforms,
                 })
             })
             .collect()
@@ -3135,7 +3185,8 @@ impl Database {
 
         for (version_id, version, previous) in versions {
             let platform_rows = self.backend.query(
-                "SELECT platform, store_path, nar_hash, nar_size, closure_size, refs, images
+                "SELECT platform, store_path, nar_hash, nar_size, closure_size, refs, images,
+                        source_drv
                  FROM version_platforms WHERE version_id = ?1 ORDER BY platform",
                 &vals![version_id],
             )?;
@@ -3152,6 +3203,7 @@ impl Database {
                         nar_hash: row.get(2)?,
                         nar_size: row.get(3)?,
                         closure_size: row.get(4)?,
+                        source_drv: row.get(7)?,
                         refs: serde_json::from_str(&refs_json).unwrap_or_default(),
                         images: serde_json::from_str(&images_json).unwrap_or_default(),
                     })
@@ -3164,6 +3216,169 @@ impl Database {
             });
         }
         Ok(Some(detail))
+    }
+
+    /// Build the registry's store-hash → (package name, version) index.
+    ///
+    /// Loads every `version_platforms` row once and maps the store-path hash
+    /// prefix (the basename text before the first `-`) to the owning package's
+    /// name and version. When two artifacts share a hash prefix the first
+    /// `ORDER BY` winner is kept; the platform triple is dropped because a
+    /// dependency edge points at a store path, not a platform.
+    ///
+    /// This is the dialect-safe primitive the closure-browser reads:
+    /// [`resolve_reference_names`](Self::resolve_reference_names) and
+    /// [`reverse_dependencies`](Self::reverse_dependencies) both resolve in
+    /// Rust against this map rather than relying on backend JSON functions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    fn store_hash_index(
+        &self,
+        registry_id: i64,
+    ) -> Result<std::collections::HashMap<String, (String, String)>> {
+        let rows = self.backend.query(
+            "SELECT vp.store_path, p.name, pv.version
+             FROM version_platforms vp
+             JOIN package_versions pv ON pv.id = vp.version_id
+             JOIN packages p ON p.id = pv.package_id
+             WHERE p.registry_id = ?1
+             ORDER BY p.name, pv.id DESC",
+            &vals![registry_id],
+        )?;
+        let mut index = std::collections::HashMap::new();
+        for row in &rows {
+            let store_path: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let version: String = row.get(2)?;
+            let basename = store_path.rsplit('/').next().unwrap_or(&store_path);
+            if let Some((hash, _)) = basename.split_once('-') {
+                index.entry(hash.to_string()).or_insert((name, version));
+            }
+        }
+        Ok(index)
+    }
+
+    /// Resolve store-hash prefixes to the packages that publish them.
+    ///
+    /// For each hash in `hashes`, returns `(hash, name, version)` where `name`
+    /// and `version` are `Some` when some package in `registry_id` publishes an
+    /// artifact whose store-path hash prefix equals that hash, and `None` when
+    /// the hash belongs to a store path outside this registry's package set
+    /// (e.g. a stdenv closure dependency). Output order matches `hashes`.
+    ///
+    /// This turns the opaque `refs` closure-edge list on the package page into
+    /// a legible dependency list: resolvable hashes link to their package page,
+    /// unresolvable ones fall back to their narinfo permalink. Resolution runs
+    /// in Rust against [`store_hash_index`](Self::store_hash_index), so it is
+    /// independent of the backend's JSON-function dialect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn resolve_reference_names(
+        &self,
+        registry_id: i64,
+        hashes: &[String],
+    ) -> Result<Vec<ResolvedReference>> {
+        let index = self.store_hash_index(registry_id)?;
+        Ok(hashes
+            .iter()
+            .map(|hash| match index.get(hash) {
+                Some((name, version)) => (hash.clone(), Some(name.clone()), Some(version.clone())),
+                None => (hash.clone(), None, None),
+            })
+            .collect())
+    }
+
+    /// Find the packages whose runtime closure references `store_hash`.
+    ///
+    /// Returns `(name, version)` for every artifact in `registry_id` whose
+    /// `refs` JSON array contains `store_hash` — the reverse of the dependency
+    /// edge, i.e. "required by". Results are de-duplicated by package name
+    /// (keeping the newest version seen) and sorted by name, so a package that
+    /// depends on the target across several versions appears once.
+    ///
+    /// The `refs` column is index-written JSON; rows whose value does not parse
+    /// as a string array are skipped, matching how the rest of the index reads
+    /// tolerate malformed JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn reverse_dependencies(
+        &self,
+        registry_id: i64,
+        store_hash: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let rows = self.backend.query(
+            "SELECT p.name, pv.version, vp.refs
+             FROM version_platforms vp
+             JOIN package_versions pv ON pv.id = vp.version_id
+             JOIN packages p ON p.id = pv.package_id
+             WHERE p.registry_id = ?1
+             ORDER BY p.name, pv.id DESC",
+            &vals![registry_id],
+        )?;
+        // De-duplicate by name, keeping the first (newest, by the ORDER BY)
+        // version that references the target hash.
+        let mut seen = std::collections::BTreeMap::new();
+        for row in &rows {
+            let name: String = row.get(0)?;
+            let version: String = row.get(1)?;
+            let refs_json: String = row.get(2)?;
+            let refs: Vec<String> = serde_json::from_str(&refs_json).unwrap_or_default();
+            if refs.iter().any(|r| r == store_hash) {
+                seen.entry(name).or_insert(version);
+            }
+        }
+        Ok(seen.into_iter().collect())
+    }
+
+    /// The store-path hash of a package's latest version on a chosen platform.
+    ///
+    /// Returns the basename hash prefix (text before the first `-`) of the
+    /// newest version's artifact, preferring the given `platform` and otherwise
+    /// falling back to whichever platform sorts first. Returns `None` when the
+    /// package has no versions, no platform artifacts, or a store path with no
+    /// extractable hash. This is the key used to look up the package's
+    /// "required by" set via [`reverse_dependencies`](Self::reverse_dependencies).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn primary_store_hash(
+        &self,
+        registry_id: i64,
+        name: &str,
+        platform: &str,
+    ) -> Result<Option<String>> {
+        let rows = self.backend.query(
+            "SELECT vp.platform, vp.store_path
+             FROM version_platforms vp
+             JOIN package_versions pv ON pv.id = vp.version_id
+             JOIN packages p ON p.id = pv.package_id
+             WHERE p.registry_id = ?1 AND p.name = ?2
+               AND pv.id = (SELECT MAX(v.id) FROM package_versions v
+                            WHERE v.package_id = p.id)
+             ORDER BY vp.platform",
+            &vals![registry_id, name],
+        )?;
+        let mut fallback: Option<String> = None;
+        for row in &rows {
+            let row_platform: String = row.get(0)?;
+            let store_path: String = row.get(1)?;
+            let basename = store_path.rsplit('/').next().unwrap_or(&store_path);
+            let Some((hash, _)) = basename.split_once('-') else {
+                continue;
+            };
+            if row_platform == platform {
+                return Ok(Some(hash.to_string()));
+            }
+            fallback.get_or_insert_with(|| hash.to_string());
+        }
+        Ok(fallback)
     }
 
     /// List channels with their full partition maps.
@@ -7041,6 +7256,118 @@ mod tests {
             Some(&*"d".repeat(64))
         );
         assert_eq!(db.all_store_hashes(id).unwrap(), vec!["abc".to_string()]);
+    }
+
+    #[test]
+    fn closure_resolution_resolves_refs_and_reverse_deps() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db
+            .register_registry("demo", "/srv/demo", &[], false)
+            .unwrap();
+        // curl's closure references zlib (zzz) plus an out-of-registry hash
+        // (qqq, e.g. a stdenv path); source_drv is recorded per the v19 column.
+        let curl: aos_package::registry::parse::PackageToml = toml::from_str(
+            r#"
+            [package]
+            name = "curl"
+            description = "URL transfers"
+            license = "MIT"
+            maintainer = "aos"
+            [[versions]]
+            version = "8.5.0"
+            [versions.platforms.x86_64-linux]
+            store_path = "/var/lib/store/abc-curl-8.5.0"
+            nar_hash = "sha256:aa"
+            nar_size = 10
+            closure_size = 20
+            source_drv = "/var/lib/store/dabc-curl-8.5.0.drv"
+            source_nar_hash = "sha256:bb"
+            references = ["zzz", "qqq"]
+            "#,
+        )
+        .unwrap();
+        let zlib: aos_package::registry::parse::PackageToml = toml::from_str(
+            r#"
+            [package]
+            name = "zlib"
+            description = "compression"
+            license = "Zlib"
+            maintainer = "aos"
+            [[versions]]
+            version = "1.3.1"
+            [versions.platforms.x86_64-linux]
+            store_path = "/var/lib/store/zzz-zlib-1.3.1"
+            nar_hash = "sha256:cc"
+            nar_size = 5
+            closure_size = 8
+            source_drv = "/var/lib/store/dzzz-zlib-1.3.1.drv"
+            source_nar_hash = "sha256:dd"
+            references = []
+            "#,
+        )
+        .unwrap();
+        let snapshot = IndexSnapshot {
+            commit: "c".repeat(64),
+            name: "demo".into(),
+            packages: vec![curl, zlib],
+            ..Default::default()
+        };
+        db.apply_snapshot(id, &snapshot).unwrap();
+
+        // The v19 source_drv column round-trips into PlatformDetail.
+        let detail = db.package_detail(id, "curl").unwrap().unwrap();
+        assert_eq!(
+            detail.versions[0].platforms[0].source_drv,
+            "/var/lib/store/dabc-curl-8.5.0.drv"
+        );
+
+        // resolve_reference_names: zzz resolves to zlib, qqq stays unresolved.
+        let resolved = db
+            .resolve_reference_names(id, &["zzz".to_string(), "qqq".to_string()])
+            .unwrap();
+        assert_eq!(
+            resolved,
+            vec![
+                (
+                    "zzz".to_string(),
+                    Some("zlib".to_string()),
+                    Some("1.3.1".to_string())
+                ),
+                ("qqq".to_string(), None, None),
+            ]
+        );
+
+        // reverse_dependencies: curl requires zlib (zzz).
+        let reverse = db.reverse_dependencies(id, "zzz").unwrap();
+        assert_eq!(reverse, vec![("curl".to_string(), "8.5.0".to_string())]);
+        // qqq is referenced by curl too (a second closure edge).
+        assert_eq!(
+            db.reverse_dependencies(id, "qqq").unwrap(),
+            vec![("curl".to_string(), "8.5.0".to_string())]
+        );
+        // Nothing references a hash that appears in no closure.
+        assert!(db.reverse_dependencies(id, "nope").unwrap().is_empty());
+
+        // primary_store_hash prefers the named platform and falls back.
+        assert_eq!(
+            db.primary_store_hash(id, "zlib", "x86_64-linux").unwrap(),
+            Some("zzz".to_string())
+        );
+        assert_eq!(
+            db.primary_store_hash(id, "zlib", "aarch64-linux").unwrap(),
+            Some("zzz".to_string()),
+            "falls back to the first platform when the requested one is absent"
+        );
+        assert_eq!(
+            db.primary_store_hash(id, "absent", "x86_64-linux").unwrap(),
+            None
+        );
+
+        // list_packages carries the latest version's closure size + platforms.
+        let packages = db.list_packages(id).unwrap();
+        let curl_row = packages.iter().find(|p| p.name == "curl").unwrap();
+        assert_eq!(curl_row.closure_size, Some(20));
+        assert_eq!(curl_row.platforms, vec!["x86_64-linux".to_string()]);
     }
 
     #[test]
