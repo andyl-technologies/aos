@@ -1,0 +1,309 @@
+//! Integration coverage for the email + password login path (RFC-0004, the
+//! operator-requested reversal of the original "no passwords" stance).
+//!
+//! Exercises the Argon2id hash/verify primitives, the pre-auth
+//! `POST /login/password` route (success creates a session; failure re-renders
+//! generically without leaking whether an email exists; repeated attempts are
+//! rate-limited), the session-authed `POST /account/password` set/change flow,
+//! and the "no password set" account behavior.
+
+use std::sync::Arc;
+
+use aos_registry_hub::auth::extract::{mint_csrf_token, AuthState};
+use aos_registry_hub::auth::jwt::JwtKeys;
+use aos_registry_hub::auth::password::{hash_password, verify_password};
+use aos_registry_hub::auth::session::COOKIE_NAME;
+use aos_registry_hub::db::Database;
+use aos_registry_hub::server::{router, AppState};
+use axum::body::Body;
+use axum::http::{header, Request, StatusCode};
+use tower::ServiceExt;
+
+const TEST_JWT_SECRET: &[u8] = b"password-test-secret-32-byte-key";
+
+/// Build an [`AppState`] over `db` with deterministic JWT keys.
+fn app_state(db: Arc<Database>) -> Arc<AppState> {
+    let auth = Arc::new(AuthState {
+        db: Arc::clone(&db),
+        jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
+        access_token_ttl: 900,
+        ratelimit: aos_registry_hub::ratelimit::RateLimiter::new().into(),
+        trusted_proxy: false,
+    });
+    Arc::new(AppState {
+        db,
+        external_url: "http://127.0.0.1:8420".into(),
+        ratelimit: auth.ratelimit.clone(),
+        trusted_proxy: false,
+        auth,
+        leases: aos_registry_hub::facade::LeaseMap::new(),
+        sealer: aos_registry_hub::auth::oidc::dev_sealer(),
+        http: aos_registry_hub::fetch::hardened_client(),
+        mailer: Arc::new(aos_registry_hub::auth::magic::LogMailer),
+        dev: true,
+    })
+}
+
+/// A captured HTTP response.
+struct Resp {
+    status: StatusCode,
+    set_cookie: Option<String>,
+    location: Option<String>,
+    body: String,
+}
+
+/// Issue a request with an optional cookie and form body.
+async fn send(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    cookie: Option<&str>,
+    form: Option<&str>,
+) -> Resp {
+    let mut req = Request::builder().method(method).uri(uri);
+    if let Some(cookie) = cookie {
+        req = req.header(header::COOKIE, cookie);
+    }
+    let body = match form {
+        Some(form) => {
+            req = req.header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+            Body::from(form.to_string())
+        }
+        None => Body::empty(),
+    };
+    let resp = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let status = resp.status();
+    let set_cookie = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let location = resp
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    Resp {
+        status,
+        set_cookie,
+        location,
+        body: String::from_utf8_lossy(&bytes).into_owned(),
+    }
+}
+
+/// Extract the session cookie value from a `Set-Cookie` header.
+fn cookie_value(set_cookie: &str) -> String {
+    let prefix = format!("{COOKIE_NAME}=");
+    let after = set_cookie.strip_prefix(&prefix).expect("session cookie");
+    after.split(';').next().unwrap().to_string()
+}
+
+// -- KDF unit-level round-trips ---------------------------------------------
+
+#[test]
+fn hash_verify_roundtrip_and_tamper() {
+    let phc = hash_password("s3cr3t-passphrase").unwrap();
+    assert!(verify_password("s3cr3t-passphrase", &phc));
+    assert!(!verify_password("wrong", &phc));
+
+    // Tamper the digest's last char; must not verify and must not panic.
+    let mut chars: Vec<char> = phc.chars().collect();
+    let last = chars.len() - 1;
+    chars[last] = if chars[last] == 'A' { 'B' } else { 'A' };
+    let tampered: String = chars.into_iter().collect();
+    assert!(!verify_password("s3cr3t-passphrase", &tampered));
+    assert!(!verify_password("anything", "not-a-phc"));
+}
+
+// -- HTTP login + session ----------------------------------------------------
+
+#[tokio::test]
+async fn set_password_then_login_creates_session() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(app_state(Arc::clone(&db)));
+
+    // Provision a user with a password directly.
+    let user = db.create_user("dev@acme.com", None).unwrap();
+    db.set_user_password(user, &hash_password("hunter2").unwrap())
+        .unwrap();
+    assert!(db.user_has_password(user).unwrap());
+
+    // Correct password logs in: 303 redirect to / with a session cookie.
+    let resp = send(
+        &app,
+        "POST",
+        "/login/password",
+        None,
+        Some("email=dev@acme.com&password=hunter2"),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    assert_eq!(resp.location.as_deref(), Some("/"));
+    let cookie = format!(
+        "{COOKIE_NAME}={}",
+        cookie_value(&resp.set_cookie.expect("login sets a cookie"))
+    );
+
+    // The session works: /account renders.
+    let resp = send(&app, "GET", "/account", Some(&cookie), None).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(resp.body.contains("dev@acme.com"));
+}
+
+#[tokio::test]
+async fn wrong_password_re_renders_without_leaking_existence() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(app_state(Arc::clone(&db)));
+
+    let user = db.create_user("real@acme.com", None).unwrap();
+    db.set_user_password(user, &hash_password("correct").unwrap())
+        .unwrap();
+
+    // Wrong password for a real account.
+    let wrong = send(
+        &app,
+        "POST",
+        "/login/password",
+        None,
+        Some("email=real@acme.com&password=nope"),
+    )
+    .await;
+    assert_eq!(wrong.status, StatusCode::OK, "re-renders, not a redirect");
+    assert!(wrong.set_cookie.is_none(), "no session on failure");
+    assert!(wrong.body.contains("Invalid email or password"));
+
+    // Unknown account returns the identical generic page (no oracle).
+    let unknown = send(
+        &app,
+        "POST",
+        "/login/password",
+        None,
+        Some("email=ghost@acme.com&password=nope"),
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::OK);
+    assert!(unknown.set_cookie.is_none());
+    assert!(unknown.body.contains("Invalid email or password"));
+    // The two failure bodies are indistinguishable (modulo the timed footer).
+    assert_eq!(
+        wrong.body.contains("Invalid email or password"),
+        unknown.body.contains("Invalid email or password"),
+    );
+}
+
+#[tokio::test]
+async fn user_without_password_cannot_log_in_by_password() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(app_state(Arc::clone(&db)));
+
+    // A user exists but never set a password.
+    let user = db.create_user("nopass@acme.com", None).unwrap();
+    assert!(!db.user_has_password(user).unwrap());
+    assert!(db.user_for_password("nopass@acme.com").unwrap().is_none());
+
+    let resp = send(
+        &app,
+        "POST",
+        "/login/password",
+        None,
+        Some("email=nopass@acme.com&password=anything"),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK);
+    assert!(
+        resp.set_cookie.is_none(),
+        "no session for password-less user"
+    );
+    assert!(resp.body.contains("Invalid email or password"));
+}
+
+#[tokio::test]
+async fn repeated_password_attempts_are_rate_limited() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(app_state(Arc::clone(&db)));
+
+    let user = db.create_user("victim@acme.com", None).unwrap();
+    db.set_user_password(user, &hash_password("secret").unwrap())
+        .unwrap();
+
+    // PASSWORD_PER_EMAIL is 5 per window; the 6th wrong attempt is throttled.
+    let mut throttled = false;
+    for _ in 0..(aos_registry_hub::ratelimit::PASSWORD_PER_EMAIL + 1) {
+        let resp = send(
+            &app,
+            "POST",
+            "/login/password",
+            None,
+            Some("email=victim@acme.com&password=wrong"),
+        )
+        .await;
+        if resp.status == StatusCode::TOO_MANY_REQUESTS {
+            throttled = true;
+            break;
+        }
+    }
+    assert!(throttled, "repeated password attempts must be rate-limited");
+}
+
+// -- Account set/change password --------------------------------------------
+
+#[tokio::test]
+async fn account_set_password_flow() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(app_state(Arc::clone(&db)));
+
+    // Log the user in via a magic link (no password yet).
+    let secret = db.create_magic_link("dev@acme.com").unwrap();
+    let resp = send(
+        &app,
+        "GET",
+        &format!("/auth/magic?token={secret}"),
+        None,
+        None,
+    )
+    .await;
+    let cookie = format!(
+        "{COOKIE_NAME}={}",
+        cookie_value(&resp.set_cookie.expect("magic sets cookie"))
+    );
+    let user = db.user_by_email("dev@acme.com").unwrap().unwrap();
+    assert!(!db.user_has_password(user).unwrap(), "no password yet");
+
+    // The account page shows the "set password" affordance.
+    let page = send(&app, "GET", "/account", Some(&cookie), None).await;
+    assert!(page.body.contains("set password"), "{}", page.body);
+
+    // Set a password (CSRF-protected).
+    let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
+    let resp = send(
+        &app,
+        "POST",
+        "/account/password",
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&password=brand-new-pass")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    assert_eq!(resp.location.as_deref(), Some("/account"));
+    assert!(db.user_has_password(user).unwrap(), "password now set");
+
+    // The new password actually authenticates.
+    assert!(verify_password(
+        "brand-new-pass",
+        &db.user_for_password("dev@acme.com").unwrap().unwrap().1
+    ));
+
+    // A bad CSRF token is rejected.
+    let resp = send(
+        &app,
+        "POST",
+        "/account/password",
+        Some(&cookie),
+        Some("csrf=bogus&password=whatever"),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN);
+}

@@ -62,6 +62,12 @@
 //! ceremony state, the same shape as `oidc_flows`). Losing the credentials
 //! de-registers every passkey; the challenges are transient.
 //!
+//! The `users.password_hash` column (v18) is **system of record**: the
+//! Argon2id PHC string for accounts that have set an email + password login
+//! (`NULL` = no password set). Only the one-way hash is stored, never the
+//! plaintext, so a database leak yields no usable credential. See
+//! [`crate::auth::password`] for the KDF.
+//!
 //! Migrations are ordered SQL statements tracked in `schema_version`,
 //!  applied at open. The connection is wrapped in a `Mutex` following the
 //! pattern of `aos-server`'s token store; hub queries are short and
@@ -989,6 +995,16 @@ const MIGRATIONS: &[&str] = &[
         created_at  INTEGER NOT NULL,
         expires_at  INTEGER NOT NULL
     );
+    ",
+    // v18: email + password login (RFC-0004, operator-requested reversal of the
+    // original "no passwords" stance). One nullable column on `users` holds the
+    // Argon2id PHC string for accounts that have set a password; NULL means no
+    // password is set and the password login path fails generically for that
+    // user (the account still logs in via magic link / passkey / SSO). Only the
+    // one-way hash is ever stored — never the plaintext — so a database leak
+    // never yields a usable credential. See crate::auth::password for the KDF.
+    "
+    ALTER TABLE users ADD COLUMN password_hash TEXT;
     ",
 ];
 
@@ -3470,6 +3486,79 @@ impl Database {
             .query_opt("SELECT id FROM users WHERE email = ?1", &vals![email])?
             .context("resolving user id after insert")?
             .get(0)
+    }
+
+    // -- auth: passwords (migration v18) -------------------------------------
+
+    /// Set (or replace) a user's password hash.
+    ///
+    /// `password_hash` is an Argon2id PHC string from
+    /// [`crate::auth::password::hash_password`] — never a plaintext password.
+    /// Overwriting an existing hash is how a password change is recorded; a
+    /// later `NULL` (not exposed here) would clear it. Targets only a
+    /// non-deleted user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn set_user_password(&self, user_id: i64, password_hash: &str) -> Result<()> {
+        self.backend.execute(
+            "UPDATE users SET password_hash = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+            &vals![user_id, password_hash],
+        )?;
+        Ok(())
+    }
+
+    /// Look up a user's id and stored password hash by email, for login.
+    ///
+    /// Returns `Ok(Some((user_id, phc)))` only when a non-deleted user exists
+    /// for `email` **and** has a password set; returns `Ok(None)` when no such
+    /// user exists *or* the user has no password (`password_hash IS NULL`).
+    /// The caller verifies `phc` with
+    /// [`crate::auth::password::verify_password`] and must surface the same
+    /// generic "invalid email or password" outcome for both the `None` and the
+    /// wrong-password cases, so the password login path never reveals whether
+    /// an email is registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn user_for_password(&self, email: &str) -> Result<Option<(i64, String)>> {
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT id, password_hash FROM users
+                 WHERE email = ?1 AND deleted_at IS NULL AND password_hash IS NOT NULL",
+                &vals![email],
+            )
+            .context("loading user for password login")?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let user_id: i64 = row.get(0)?;
+        let hash: String = row.get(1)?;
+        Ok(Some((user_id, hash)))
+    }
+
+    /// Report whether a non-deleted user has a password set.
+    ///
+    /// Used by the account page to show whether a password is currently
+    /// configured. Returns `Ok(false)` for an unknown or soft-deleted user, or
+    /// a user whose `password_hash IS NULL`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn user_has_password(&self, user_id: i64) -> Result<bool> {
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM users
+                 WHERE id = ?1 AND deleted_at IS NULL AND password_hash IS NOT NULL",
+                &vals![user_id],
+            )
+            .context("checking whether user has a password")?;
+        Ok(row.is_some())
     }
 
     /// The requested scope and permissions of a live, unresolved device

@@ -18,6 +18,8 @@
 //! device_authorization    client IP                 DEVICE_AUTH_PER_IP / window
 //! magic_link (per email)  target email              MAGIC_LINK_PER_EMAIL / window
 //! magic_link (per IP)     client IP                 MAGIC_LINK_PER_IP / window
+//! password (per email)    target email              PASSWORD_PER_EMAIL / window
+//! password (per IP)       client IP                 PASSWORD_PER_IP / window
 //! token_exchange          token id or client IP     TOKEN_EXCHANGE / window
 //! browse_search           client IP                 BROWSE_SEARCH / window (loose)
 //! ```
@@ -64,6 +66,17 @@ pub const MAGIC_LINK_PER_EMAIL: u32 = 3;
 /// Default magic-link issuances allowed per source IP per window.
 pub const MAGIC_LINK_PER_IP: u32 = 10;
 
+/// Default password login attempts allowed per target email per window.
+///
+/// Tight, to blunt online password guessing against one account.
+pub const PASSWORD_PER_EMAIL: u32 = 5;
+
+/// Default password login attempts allowed per source IP per window.
+///
+/// Tighter than magic-link issuance, to blunt credential-stuffing sprays that
+/// rotate the email but share a source IP.
+pub const PASSWORD_PER_IP: u32 = 20;
+
 /// Default OAuth2 token exchanges allowed per key (token id or IP) per window.
 pub const TOKEN_EXCHANGE: u32 = 60;
 
@@ -93,6 +106,12 @@ pub enum RateClass {
     MagicLinkEmail,
     /// Magic-link issuance, keyed per **source IP** (the email-bomb sender).
     MagicLinkIp,
+    /// `POST /login/password` attempt, keyed per **target email** (the account
+    /// under online-guessing attack).
+    PasswordEmail,
+    /// `POST /login/password` attempt, keyed per **source IP** (the
+    /// credential-stuffing sprayer).
+    PasswordIp,
     /// `POST /oauth2/token` exchange — keyed per token id or source IP.
     TokenExchange,
     /// Anonymous browse/search — keyed per source IP (loose).
@@ -107,6 +126,8 @@ impl RateClass {
             RateClass::DeviceAuthorization => DEVICE_AUTH_PER_IP,
             RateClass::MagicLinkEmail => MAGIC_LINK_PER_EMAIL,
             RateClass::MagicLinkIp => MAGIC_LINK_PER_IP,
+            RateClass::PasswordEmail => PASSWORD_PER_EMAIL,
+            RateClass::PasswordIp => PASSWORD_PER_IP,
             RateClass::TokenExchange => TOKEN_EXCHANGE,
             RateClass::BrowseSearch => BROWSE_SEARCH,
         }

@@ -69,12 +69,14 @@ use crate::ui::console;
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/login", get(login_form).post(login_submit))
+        .route("/login/password", post(login_password))
         .route("/auth/magic", get(magic_consume))
         .route("/auth/sso", post(login_sso))
         .route("/auth/oidc/start", get(oidc_start))
         .route("/auth/oidc/callback", get(oidc_callback))
         .route("/logout", get(logout))
         .route("/account", get(account))
+        .route("/account/password", post(account_set_password))
         .route(
             "/account/sessions/revoke-all",
             post(account_revoke_all_sessions),
@@ -341,6 +343,83 @@ async fn magic_consume(
     ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
 }
 
+// -- password login ---------------------------------------------------------
+
+/// `POST /login/password` body: the email and password to authenticate.
+#[derive(serde::Deserialize)]
+struct PasswordLoginForm {
+    email: String,
+    password: String,
+}
+
+/// `POST /login/password` — authenticate an email + password, sign the user in.
+///
+/// This is a **pre-auth** endpoint (the caller has no session cookie yet), so
+/// it carries no CSRF token — there is no ambient credential to forge against.
+/// It *is* rate-limited on both the target email (online password guessing
+/// against one account) and the source IP (credential-stuffing sprays),
+/// reusing the [`RateClass::PasswordEmail`]/[`RateClass::PasswordIp`] classes.
+///
+/// On a correct password it creates a sudo-capable session (a fresh password
+/// sign-in is a re-authentication, `auth_level 1`), sets the `__Host-` cookie,
+/// and redirects to `/`. On *any* failure — unknown email, no password set, or
+/// a wrong password — it re-renders `/login` with one generic "invalid email
+/// or password" message, never revealing whether the email is registered.
+///
+/// [`RateClass::PasswordEmail`]: crate::ratelimit::RateClass::PasswordEmail
+/// [`RateClass::PasswordIp`]: crate::ratelimit::RateClass::PasswordIp
+async fn login_password(
+    State(state): State<Arc<AppState>>,
+    crate::server::PeerAddr(peer): crate::server::PeerAddr,
+    headers: HeaderMap,
+    Form(form): Form<PasswordLoginForm>,
+) -> Response {
+    let email = form.email.trim().to_lowercase();
+    // The single generic failure render, used for every rejection path so the
+    // endpoint is not an account-existence oracle.
+    let invalid = || {
+        Html(console::login_page(
+            Some("Invalid email or password."),
+            None,
+            Instant::now(),
+        ))
+        .into_response()
+    };
+    if email.is_empty() || !email.contains('@') || form.password.is_empty() {
+        return invalid();
+    }
+    // Rate-limit on both the target email and the source IP before doing the
+    // (deliberately expensive) Argon2 verify, so a spray cannot burn CPU.
+    let now = crate::server::now_secs();
+    let ip = crate::server::client_ip_for(&headers, peer, state.trusted_proxy);
+    use crate::ratelimit::RateClass;
+    for (class, key) in [
+        (RateClass::PasswordEmail, email.as_str()),
+        (RateClass::PasswordIp, ip.as_str()),
+    ] {
+        if let crate::ratelimit::RateDecision::Limited { retry_after } =
+            state.ratelimit.check(class, key, now)
+        {
+            return crate::server::too_many_requests(retry_after);
+        }
+    }
+    let (user_id, hash) = match state.db.user_for_password(&email) {
+        Ok(Some(found)) => found,
+        // No such user, or no password set: fail with the same generic message.
+        Ok(None) => return invalid(),
+        Err(err) => return internal(err),
+    };
+    if !crate::auth::password::verify_password(&form.password, &hash) {
+        return invalid();
+    }
+    // A correct password is a re-authentication: the session is sudo-capable.
+    let cookie = match state.db.create_session(user_id, IDLE_TIMEOUT_SECS, 1) {
+        Ok(secret) => set_cookie_header(&secret, IDLE_TIMEOUT_SECS),
+        Err(err) => return internal(err),
+    };
+    ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
+}
+
 // -- OIDC single sign-on ----------------------------------------------------
 
 /// `POST /auth/sso` body: the org to begin an SSO login against.
@@ -466,13 +545,77 @@ async fn account(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Resp
         Ok(tokens) => tokens,
         Err(err) => return internal(err),
     };
+    let password_set = match state.db.user_has_password(session.auth.user_id) {
+        Ok(set) => set,
+        Err(err) => return internal(err),
+    };
     Html(console::account_page(
         &session.email,
         &session.csrf(),
         &tokens,
+        password_set,
+        None,
         Instant::now(),
     ))
     .into_response()
+}
+
+/// `POST /account/password` body: the CSRF token and the new password.
+#[derive(serde::Deserialize)]
+struct SetPasswordForm {
+    #[serde(default)]
+    csrf: String,
+    password: String,
+}
+
+/// `POST /account/password` — set or change the logged-in user's password.
+///
+/// Session-authed and CSRF-protected (a cookie-authenticated mutation). Hashes
+/// the submitted password with Argon2id ([`crate::auth::password::hash_password`])
+/// and stores the PHC string for the session's user, then redirects back to
+/// `/account`. An empty password is rejected with the account page re-rendered;
+/// an over-long password is rejected to bound the hashing cost.
+async fn account_set_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<SetPasswordForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    // Bound the input: reject empties, and cap the length so a pathological
+    // input cannot drive the (memory-hard) hasher into a denial of service.
+    if form.password.is_empty() || form.password.len() > 1024 {
+        let tokens = state
+            .db
+            .list_tokens_for(session.principal())
+            .unwrap_or_default();
+        let password_set = state
+            .db
+            .user_has_password(session.auth.user_id)
+            .unwrap_or(false);
+        return Html(console::account_page(
+            &session.email,
+            &session.csrf(),
+            &tokens,
+            password_set,
+            Some("Enter a password between 1 and 1024 characters."),
+            Instant::now(),
+        ))
+        .into_response();
+    }
+    let hash = match crate::auth::password::hash_password(&form.password) {
+        Ok(hash) => hash,
+        Err(err) => return internal(err),
+    };
+    if let Err(err) = state.db.set_user_password(session.auth.user_id, &hash) {
+        return internal(err);
+    }
+    Redirect::to("/account").into_response()
 }
 
 /// `POST /account/sessions/revoke-all` — sign out of every browser.

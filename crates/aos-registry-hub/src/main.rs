@@ -48,6 +48,9 @@ enum Command {
         /// Zero-config development mode: defaults --root to ./.aos-hub.
         #[arg(long)]
         dev: bool,
+        /// Seed demo data on startup if the instance looks empty (dev).
+        #[arg(long)]
+        seed: bool,
         /// Externally reachable base URL for setup snippets.
         #[arg(long)]
         external_url: Option<String>,
@@ -68,6 +71,13 @@ enum Command {
         #[command(subcommand)]
         command: OrgCommand,
     },
+    /// Manage user accounts.
+    User {
+        #[command(subcommand)]
+        command: UserCommand,
+    },
+    /// Populate a fresh hub with demo data (dev convenience).
+    Seed,
     /// Manage projects within an org.
     Project {
         #[command(subcommand)]
@@ -412,6 +422,22 @@ enum TokenCommand {
 }
 
 #[derive(Subcommand)]
+enum UserCommand {
+    /// Set (or change) a user's login password.
+    ///
+    /// Reads the password from stdin by default (prompt-free; pipe it in), or
+    /// pass --password for non-interactive use. Creates the user if absent, as
+    /// an ops bootstrap convenience.
+    SetPassword {
+        /// User email address.
+        email: String,
+        /// Password to set; omit to read it from stdin instead.
+        #[arg(long)]
+        password: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum OrgCommand {
     /// Create an organization.
     Add {
@@ -553,12 +579,28 @@ async fn main() -> Result<()> {
         Command::Serve {
             listen,
             dev,
+            seed,
             external_url,
             brand,
             reindex_interval,
         } => {
             let root = resolve_root(cli.root, dev)?;
             let db = Arc::new(Database::open(&root.join("hub.db"))?);
+            // Optional one-shot demo seed: populate an empty instance so the
+            // server comes up with something to browse. seed_dev is idempotent
+            // (it no-ops when the demo org already exists), so leaving --seed on
+            // across restarts is safe.
+            if seed {
+                match aos_registry_hub::seed::seed_dev(&db, &root).await {
+                    Ok(aos_registry_hub::seed::SeedOutcome::Seeded(report)) => report.print(),
+                    Ok(aos_registry_hub::seed::SeedOutcome::AlreadySeeded) => {
+                        tracing::info!("seed skipped: demo data already present");
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %format!("{err:#}"), "dev seed failed");
+                    }
+                }
+            }
             index_all(&db).await;
 
             if reindex_interval > 0 {
@@ -819,6 +861,46 @@ async fn main() -> Result<()> {
                             println!("purged org '{slug}'");
                         }
                     }
+                }
+            }
+        }
+        Command::User { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            match command {
+                UserCommand::SetPassword { email, password } => {
+                    let email = email.trim().to_lowercase();
+                    // Read the password from stdin unless --password is given.
+                    // Trailing newline (the common `echo … |` case) is trimmed.
+                    let plaintext = match password {
+                        Some(p) => p,
+                        None => {
+                            use std::io::Read as _;
+                            let mut buf = String::new();
+                            std::io::stdin()
+                                .read_to_string(&mut buf)
+                                .context("reading password from stdin")?;
+                            buf.trim_end_matches(['\n', '\r']).to_string()
+                        }
+                    };
+                    if plaintext.is_empty() {
+                        anyhow::bail!("password must not be empty");
+                    }
+                    // Create the user if absent (ops bootstrap convenience).
+                    let user_id = db.find_or_create_user(&email)?;
+                    let hash = aos_registry_hub::auth::password::hash_password(&plaintext)?;
+                    db.set_user_password(user_id, &hash)?;
+                    println!("set password for '{email}' (user id {user_id})");
+                }
+            }
+        }
+        Command::Seed => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            match aos_registry_hub::seed::seed_dev(&db, &root).await? {
+                aos_registry_hub::seed::SeedOutcome::Seeded(report) => report.print(),
+                aos_registry_hub::seed::SeedOutcome::AlreadySeeded => {
+                    println!("already seeded: demo data is present; nothing to do");
                 }
             }
         }
