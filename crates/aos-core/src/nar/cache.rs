@@ -204,10 +204,15 @@ pub fn normalize_sha256_nix32(hash: &str) -> String {
 
 /// Decodes Nix's base32 variant (the inverse of [`encode_nix_base32`]).
 ///
-/// Returns `None` for characters outside the Nix alphabet or for an
+/// Returns `None` for characters outside the Nix alphabet, for an
 /// encoding whose spare high bits are non-zero (which no valid Nix
-/// encoder produces). The output length is `len * 5 / 8` bytes — pass a
-/// 52-char digest to get the 32 bytes of a SHA-256.
+/// encoder produces), or for a length that does not round-trip a whole
+/// number of bytes (e.g. lengths `1, 3, 6, …` where the top digit would
+/// have no byte to land in). The output length is `len * 5 / 8` bytes —
+/// pass a 52-char digest to get the 32 bytes of a SHA-256.
+///
+/// Never panics: every buffer index is bounds-checked rather than indexed
+/// directly, so a malformed or wrong-length input fails with `None`.
 pub fn decode_nix_base32(encoded: &str) -> Option<Vec<u8>> {
     let len = encoded.len() * 5 / 8;
     let mut out = vec![0u8; len];
@@ -217,12 +222,15 @@ pub fn decode_nix_base32(encoded: &str) -> Option<Vec<u8>> {
         let bit = n * 5;
         let i = bit / 8;
         let j = bit % 8;
-        out[i] |= (digit << j) as u8;
+        // The lowest 8-j bits land in byte i; the rest carry into i+1.
+        // A digit whose low bits have no byte (i >= len) is an invalid
+        // length, not a valid encoding.
+        *out.get_mut(i)? |= (digit << j) as u8;
         let carry = digit >> (8 - j);
-        if i + 1 < len {
-            out[i + 1] |= carry as u8;
-        } else if carry != 0 {
-            return None;
+        match out.get_mut(i + 1) {
+            Some(next) => *next |= carry as u8,
+            None if carry != 0 => return None,
+            None => {}
         }
     }
 
@@ -500,6 +508,32 @@ mod tests {
 
         // Invalid alphabet character ('e' is excluded).
         assert!(decode_nix_base32(&encoded.replace(|c: char| c.is_ascii_digit(), "e")).is_none());
+    }
+
+    #[test]
+    fn decode_nix_base32_roundtrips_all_byte_lengths() {
+        // Every whole-byte length must round-trip exactly.
+        for n in 0u8..=40 {
+            let bytes: Vec<u8> = (0..n).map(|b| b.wrapping_mul(7).wrapping_add(3)).collect();
+            let encoded = encode_nix_base32(&bytes);
+            assert_eq!(
+                decode_nix_base32(&encoded).as_deref(),
+                Some(bytes.as_slice()),
+                "round-trip failed at {n} bytes",
+            );
+        }
+    }
+
+    #[test]
+    fn decode_nix_base32_never_panics_on_any_length() {
+        // Lengths like 1, 3, 6, ... do not encode a whole number of bytes;
+        // decode must return None, never index out of bounds.
+        for len in 0..80 {
+            let input: String = std::iter::repeat('1').take(len).collect();
+            let _ = decode_nix_base32(&input); // must not panic
+        }
+        assert!(decode_nix_base32("1").is_none());
+        assert!(decode_nix_base32("111").is_none());
     }
 
     #[test]
