@@ -9,6 +9,19 @@
 //! enforcement on every `POST`, and the plain form/redirect flows that keep
 //! the console no-JS.
 //!
+//! # Channel rollout: prepared vs. hosted-key (phase 4a)
+//!
+//! The channel rollout console renders one of two modes depending on whether
+//! the registry has a bound hosted signing key. With **no hosted key**
+//! (BYO-key, the default), an advance records a *prepared operation* — a draft
+//! change-set — and echoes the `apr channel advance --from-hub` command the
+//! maintainer signs and pushes locally. With a **hosted key**, the advance
+//! form posts to [`channel_advance_direct`], which signs the partition tags
+//! with the hub-held key ([`crate::signing::advance_channel`]), writes them to
+//! the surface, re-indexes, and audits the advance. Hosted keys are enrolled
+//! and attached to registries from the org page at `/-/org/{org}/keys`
+//! ([`org_keys`]), gated to org admins.
+//!
 //! # CSRF
 //!
 //! Every mutating handler here is reached with an ambient session cookie, so
@@ -78,6 +91,11 @@ pub fn router() -> Router<Arc<AppState>> {
             "/{slug}/-/channels/{name}/console",
             get(channel_console).post(channel_advance),
         )
+        .route(
+            "/{slug}/-/channels/{name}/advance",
+            post(channel_advance_direct),
+        )
+        .route("/-/org/{org}/keys", get(org_keys).post(org_keys_action))
         .route("/{slug}/-/keys", get(keys))
         .route("/{slug}/-/keys/rotate", get(keys_rotate))
         .route("/{slug}/-/publishes", get(publishes))
@@ -808,10 +826,20 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
         "settings/tokens" => true,
         "settings/tokens/revoke" | "settings/tokens/rotate" => is_post,
         "keys" | "keys/rotate" | "publishes" => !is_post,
-        other => other
-            .strip_prefix("channels/")
-            .and_then(|rest| rest.strip_suffix("/console"))
-            .is_some_and(|name| !name.contains('/')),
+        other => {
+            if let Some(name) = other
+                .strip_prefix("channels/")
+                .and_then(|rest| rest.strip_suffix("/console"))
+            {
+                return !name.contains('/');
+            }
+            // The direct hosted-key advance is POST-only.
+            is_post
+                && other
+                    .strip_prefix("channels/")
+                    .and_then(|rest| rest.strip_suffix("/advance"))
+                    .is_some_and(|name| !name.contains('/'))
+        }
     }
 }
 
@@ -822,8 +850,9 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
 /// so a registry whose canonical path has slashes (`acme/infra/prod/cdn`)
 /// never matches them and lands in [`crate::server`]'s catch-all. This
 /// function recognizes the console `/-/` sub-paths there — `settings/tokens`
-/// (and `/revoke`, `/rotate`), `channels/{name}/console`, `keys`,
-/// `keys/rotate`, `publishes` — for both `GET` and `POST`, resolving the
+/// (and `/revoke`, `/rotate`), `channels/{name}/console`,
+/// `channels/{name}/advance` (the POST-only direct hosted-key advance),
+/// `keys`, `keys/rotate`, `publishes`— for both `GET` and `POST`, resolving the
 /// registry by longest-prefix over the path before the `/-/` marker.
 ///
 /// Returns `None` when the path is not a console page (so the caller falls
@@ -891,8 +920,27 @@ pub(crate) async fn dispatch_nested(
         ("keys", false) => keys_view(state, &session, &registry, headers),
         ("keys/rotate", false) => keys_rotate_view(state, &session, &registry, headers),
         ("publishes", false) => publishes_view(state, &session, &registry, headers),
+        (other, true) if other.ends_with("/advance") => {
+            // channels/{name}/advance (POST): the direct hosted-key advance.
+            // `is_console_path` already proved this matches.
+            let name = other
+                .strip_prefix("channels/")
+                .and_then(|rest| rest.strip_suffix("/advance"))
+                .filter(|name| !name.contains('/'))?
+                .to_string();
+            advance_direct_action(
+                state,
+                &session,
+                &registry,
+                &name,
+                field(&fields, "csrf"),
+                field(&fields, "release"),
+                fields.get("partitions").map(String::as_str),
+            )
+            .await
+        }
         (other, _) => {
-            // channels/{name}/console (GET renders the view, POST advances);
+            // channels/{name}/console (GET renders the view, POST prepares);
             // `is_console_path` already proved this matches.
             let name = other
                 .strip_prefix("channels/")
@@ -914,7 +962,7 @@ pub(crate) async fn dispatch_nested(
                 if let Err(deny) = authorize_registry_read(state, &registry, headers) {
                     return Some(*deny);
                 }
-                render_channel_console(state, &session, &registry, &name, None)
+                render_channel_console(state, &session, &registry, &name, None, None)
             }
         }
     };
@@ -1259,16 +1307,22 @@ async fn channel_console(
     if let Err(deny) = authorize_registry_read(&state, &registry, &headers) {
         return *deny;
     }
-    render_channel_console(&state, &session, &registry, &name, None)
+    render_channel_console(&state, &session, &registry, &name, None, None)
 }
 
-/// Render the channel console, optionally with a prepared-operation result.
+/// Render the channel console.
+///
+/// `prepared` carries a BYO-key prepared operation (`(change_id, command)`) to
+/// echo; `advanced` carries a hosted-key direct-advance success message. The
+/// page renders a real (hosted-key) advance form when the registry has a
+/// hosted key bound, and the prepared-operation form otherwise.
 fn render_channel_console(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
     name: &str,
     prepared: Option<(&str, &str)>,
+    advanced: Option<&str>,
 ) -> Response {
     let result = (|| {
         let status = state.db.index_status(registry.id)?;
@@ -1278,6 +1332,10 @@ fn render_channel_console(
         };
         let scope = Scope::parse(&registry.slug);
         let can_advance = session.allows(&state.db, Permission::ChannelAdvance, &scope);
+        let hosted_key = match registry.hosted_key_id {
+            Some(id) => state.db.hosted_key(id)?.map(|k| k.key_id),
+            None => None,
+        };
         Ok::<_, anyhow::Error>(Some(console::channel_console(
             &session.email,
             registry,
@@ -1285,7 +1343,9 @@ fn render_channel_console(
             &channel,
             &session.csrf(),
             can_advance,
+            hosted_key.as_deref(),
             prepared,
+            advanced,
             Instant::now(),
         )))
     })();
@@ -1389,7 +1449,301 @@ async fn channel_advance_action(
         registry,
         name,
         Some((change_id.as_str(), &command)),
+        None,
     )
+}
+
+/// `POST /{slug}/-/channels/{name}/advance` — directly advance a hosted-key
+/// channel.
+///
+/// Requires `ChannelAdvance` and a registry with a bound hosted key. The hub
+/// signs the partition tags with the hosted key and writes them to the
+/// surface, then re-indexes; the advance is audited. A registry without a
+/// hosted key falls through to the prepared-operation flow instead.
+async fn channel_advance_direct(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path((slug, name)): Path<(String, String)>,
+    Form(form): Form<AdvanceForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    advance_direct_action(
+        &state,
+        &session,
+        &registry,
+        &name,
+        &form.csrf,
+        &form.release,
+        form.partitions.as_deref(),
+    )
+    .await
+}
+
+/// The direct hosted-key advance action: CSRF + `ChannelAdvance` gate, then
+/// sign and apply the advance server-side (or fall back to a prepared
+/// operation when no hosted key is bound).
+async fn advance_direct_action(
+    state: &AppState,
+    session: &Session,
+    registry: &RegistryRecord,
+    name: &str,
+    csrf: &str,
+    release: &str,
+    partitions: Option<&str>,
+) -> Response {
+    if let Err(resp) = check_csrf(session, csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&registry.slug);
+    if !session.allows(&state.db, Permission::ChannelAdvance, &scope) {
+        return (StatusCode::FORBIDDEN, "channel.advance required").into_response();
+    }
+    // No hosted key bound: fall back to recording a prepared operation.
+    if registry.hosted_key_id.is_none() {
+        return channel_advance_action(state, session, registry, name, csrf, release, partitions)
+            .await;
+    }
+    let release = release.trim();
+    if release.is_empty() {
+        return (StatusCode::BAD_REQUEST, "release is required").into_response();
+    }
+    let count: usize = partitions
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(256usize)
+        .clamp(1, 256);
+    let when = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let result = crate::signing::advance_channel(
+        &state.db,
+        state.sealer.as_ref(),
+        registry,
+        name,
+        release,
+        count,
+        when,
+    )
+    .await;
+    match result {
+        Ok(outcome) => {
+            let message = format!(
+                "Advanced {} to {} · {} partition(s) moved · {}% rolled out",
+                outcome.channel, outcome.release, outcome.moved, outcome.rollout_percent,
+            );
+            render_channel_console(state, session, registry, name, None, Some(&message))
+        }
+        Err(err) => {
+            // A failed advance (e.g. unknown release, below floor) is a
+            // client/operator error, not an internal fault: surface the cause.
+            (StatusCode::BAD_REQUEST, format!("advance failed: {err:#}")).into_response()
+        }
+    }
+}
+
+// -- hosted signing keys ----------------------------------------------------
+
+/// `GET /-/org/{org}/keys` — the org hosted-key enrollment page.
+///
+/// Gated to org admins (`KeysManage` at the org scope). A member without it
+/// gets `403` (the org is known to them); a non-member gets `404`.
+async fn org_keys(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    render_org_keys(&state, &session, &org_slug, None)
+}
+
+/// Render the org hosted-keys page, optionally echoing a just-created key's
+/// public trusted-key line.
+fn render_org_keys(
+    state: &AppState,
+    session: &Session,
+    org_slug: &str,
+    created: Option<&str>,
+) -> Response {
+    let scope = Scope::parse(org_slug);
+    if !session.allows(&state.db, Permission::KeysManage, &scope) {
+        if session.allows(&state.db, Permission::Read, &scope) {
+            return (StatusCode::FORBIDDEN, "keys.manage required").into_response();
+        }
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let result = (|| {
+        let Some(org) = state.db.org_by_slug(org_slug)? else {
+            return Ok(None);
+        };
+        let keys = state.db.list_hosted_keys(org.id)?;
+        let registries: Vec<RegistryRecord> = state
+            .db
+            .list_registries()?
+            .into_iter()
+            .filter(|r| r.org_id == Some(org.id))
+            .collect();
+        Ok::<_, anyhow::Error>(Some(console::org_hosted_keys_page(
+            &session.email,
+            &org,
+            &session.csrf(),
+            &keys,
+            &registries,
+            created,
+            Instant::now(),
+        )))
+    })();
+    match result {
+        Ok(Some(html)) => Html(html).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /-/org/{org}/keys` form: enroll a key or attach one to a registry.
+#[derive(serde::Deserialize)]
+struct OrgKeysForm {
+    #[serde(default)]
+    csrf: String,
+    /// `create` (enroll a new key) or `attach` (bind one to a registry).
+    op: String,
+    /// For `create`: the operator-chosen key id.
+    #[serde(default)]
+    key_id: String,
+    /// For `attach`: the canonical registry slug to bind the key to.
+    #[serde(default)]
+    registry: String,
+    /// For `attach`: the hosted key's id, or empty to detach.
+    #[serde(default)]
+    hosted_key_id: String,
+}
+
+/// `POST /-/org/{org}/keys` — enroll or attach a hosted signing key.
+///
+/// Requires `KeysManage` at the org scope. `create` enrolls a fresh key
+/// (audited); `attach` binds a key to one of the org's registries (or detaches
+/// when the key id is empty). Both flows are CSRF-checked.
+async fn org_keys_action(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    Form(form): Form<OrgKeysForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if !session.allows(&state.db, Permission::KeysManage, &scope) {
+        if session.allows(&state.db, Permission::Read, &scope) {
+            return (StatusCode::FORBIDDEN, "keys.manage required").into_response();
+        }
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(org) = (match state.db.org_by_slug(&org_slug) {
+        Ok(org) => org,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    match form.op.as_str() {
+        "create" => {
+            let key_id = form.key_id.trim();
+            if key_id.is_empty() {
+                return (StatusCode::BAD_REQUEST, "key id is required").into_response();
+            }
+            let public = match state
+                .db
+                .create_hosted_key(state.sealer.as_ref(), org.id, key_id)
+            {
+                Ok(line) => line,
+                Err(err) => {
+                    return (StatusCode::BAD_REQUEST, format!("enroll failed: {err:#}"))
+                        .into_response()
+                }
+            };
+            if let Err(err) = state.db.record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "hosted_key.create",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(key_id),
+            ) {
+                return internal(err);
+            }
+            render_org_keys(&state, &session, &org_slug, Some(&public))
+        }
+        "attach" => {
+            let Some(registry) = (match state.db.registry_by_slug(form.registry.trim()) {
+                Ok(reg) => reg,
+                Err(err) => return internal(err),
+            }) else {
+                return (StatusCode::BAD_REQUEST, "no such registry").into_response();
+            };
+            if registry.org_id != Some(org.id) {
+                return (StatusCode::FORBIDDEN, "registry not in this org").into_response();
+            }
+            let hosted_key_id: Option<i64> = match form.hosted_key_id.trim() {
+                "" => None,
+                raw => match raw.parse() {
+                    Ok(id) => Some(id),
+                    Err(_) => {
+                        return (StatusCode::BAD_REQUEST, "bad hosted key id").into_response()
+                    }
+                },
+            };
+            // A non-empty key must exist and belong to this org.
+            if let Some(id) = hosted_key_id {
+                match state.db.hosted_key(id) {
+                    Ok(Some(k)) if k.org_id == org.id => {}
+                    Ok(_) => {
+                        return (StatusCode::BAD_REQUEST, "no such hosted key in this org")
+                            .into_response()
+                    }
+                    Err(err) => return internal(err),
+                }
+            }
+            if let Err(err) = state.db.set_registry_hosted_key(registry.id, hosted_key_id) {
+                return internal(err);
+            }
+            let detail = serde_json::json!({ "hosted_key_id": hosted_key_id }).to_string();
+            if let Err(err) = state.db.record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "hosted_key.attach",
+                &registry.slug,
+                None,
+                None,
+                None,
+                Some(&detail),
+            ) {
+                return internal(err);
+            }
+            render_org_keys(&state, &session, &org_slug, None)
+        }
+        _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
+    }
 }
 
 // -- keys -------------------------------------------------------------------

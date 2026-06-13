@@ -100,6 +100,55 @@ enum Command {
         #[command(subcommand)]
         command: DomainCommand,
     },
+    /// Manage hosted (hub-held) signing keys for an org.
+    HostedKey {
+        #[command(subcommand)]
+        command: HostedKeyCommand,
+    },
+    /// Operate on a registry's channels.
+    Channel {
+        #[command(subcommand)]
+        command: ChannelCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum HostedKeyCommand {
+    /// Enroll a fresh hosted signing key for an org (prints the public line).
+    Create {
+        /// Owning org slug.
+        org: String,
+        /// Operator-chosen key id, unique within the org.
+        key_id: String,
+    },
+    /// Attach a hosted key to a registry (the direct web-advance path).
+    Attach {
+        /// Canonical registry path or flat slug.
+        canonical: String,
+        /// Hosted key id within the registry's owning org.
+        key_id: String,
+    },
+    /// List an org's hosted signing keys.
+    List {
+        /// Owning org slug.
+        org: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ChannelCommand {
+    /// Advance a channel server-side using the registry's hosted key.
+    Advance {
+        /// Canonical registry path or flat slug.
+        canonical: String,
+        /// Channel name to advance.
+        channel: String,
+        /// Target release semver (must already be published).
+        semver: String,
+        /// Number of partitions to move (1–256).
+        #[arg(long, default_value_t = 256)]
+        count: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -569,6 +618,114 @@ async fn main() -> Result<()> {
             let root = resolve_root(cli.root, false)?;
             let db = Database::open(&root.join("hub.db"))?;
             run_domain_command(&db, command)?;
+        }
+        Command::HostedKey { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            run_hosted_key_command(&db, command)?;
+        }
+        Command::Channel { command } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            run_channel_command(&db, command).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Handle the `hosted-key create`/`attach`/`list` subcommands.
+///
+/// `create` enrolls a key and prints its public trusted-key line (the only
+/// time the public anchor is surfaced for copying); `attach` binds a key to a
+/// registry; `list` shows an org's keys. The seed is sealed with the
+/// placeholder sealer (matching the server's dev default).
+fn run_hosted_key_command(db: &Database, command: HostedKeyCommand) -> Result<()> {
+    use aos_registry_hub::auth::oidc;
+    match command {
+        HostedKeyCommand::Create { org, key_id } => {
+            let org_record = db
+                .org_by_slug(&org)?
+                .with_context(|| format!("no org '{org}'"))?;
+            let sealer = oidc::dev_sealer();
+            let public = db.create_hosted_key(sealer.as_ref(), org_record.id, &key_id)?;
+            println!("enrolled hosted key '{key_id}' in org '{org}'");
+            println!("pin this trusted-key line as a registry anchor:");
+            println!("{public}");
+        }
+        HostedKeyCommand::Attach { canonical, key_id } => {
+            let registry = db
+                .registry_by_slug(&canonical)?
+                .with_context(|| format!("no registry '{canonical}'"))?;
+            let org_id = registry
+                .org_id
+                .with_context(|| format!("registry '{canonical}' is not org-owned"))?;
+            let key = db
+                .hosted_key_by_name(org_id, &key_id)?
+                .with_context(|| format!("no hosted key '{key_id}' in the registry's org"))?;
+            db.set_registry_hosted_key(registry.id, Some(key.id))?;
+            println!(
+                "attached hosted key '{key_id}' to registry '{}'",
+                registry.slug
+            );
+        }
+        HostedKeyCommand::List { org } => {
+            let org_record = db
+                .org_by_slug(&org)?
+                .with_context(|| format!("no org '{org}'"))?;
+            for key in db.list_hosted_keys(org_record.id)? {
+                println!("{}\t{}", key.key_id, key.public_key);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Handle the `channel advance` subcommand: a direct, hub-signed advance.
+///
+/// This is the hosted-key path. It errors clearly when the registry has no
+/// hosted key, pointing at the prepared-operation/CLI flow instead.
+async fn run_channel_command(db: &Database, command: ChannelCommand) -> Result<()> {
+    use aos_registry_hub::auth::oidc;
+    match command {
+        ChannelCommand::Advance {
+            canonical,
+            channel,
+            semver,
+            count,
+        } => {
+            let registry = db
+                .registry_by_slug(&canonical)?
+                .with_context(|| format!("no registry '{canonical}'"))?;
+            if registry.hosted_key_id.is_none() {
+                anyhow::bail!(
+                    "registry '{canonical}' has no hosted signing key; prepare the advance for \
+                     client-side signing in the console (apr channel advance --from-hub), or \
+                     attach a hosted key with `hosted-key attach`"
+                );
+            }
+            let sealer = oidc::dev_sealer();
+            let when = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let outcome = aos_registry_hub::signing::advance_channel(
+                db,
+                sealer.as_ref(),
+                &registry,
+                &channel,
+                &semver,
+                count.clamp(1, 256),
+                when,
+            )
+            .await?;
+            println!(
+                "advanced '{}' to {} · {} partition(s) moved · {}% rolled out ({} of 256)",
+                outcome.channel,
+                outcome.release,
+                outcome.moved,
+                outcome.rollout_percent,
+                outcome.at_target,
+            );
         }
     }
     Ok(())

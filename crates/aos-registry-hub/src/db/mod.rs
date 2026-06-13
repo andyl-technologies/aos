@@ -21,7 +21,11 @@
 //!   the phase-3d per-org SSO tables `org_idp_configs`, `org_domains`, and
 //!   `oidc_flows` (each org's OIDC identity provider with its sealed client
 //!   secret, the DNS-TXT-captured domains that route email-first logins to
-//!   it, and the short-lived in-flight authorization-code requests):
+//!   it, and the short-lived in-flight authorization-code requests), and
+//!   the phase-4a `hosted_keys` table (an org's opt-in hub-held Ed25519
+//!   signing keys, each holding a sealed seed the hub unseals only to sign,
+//!   bound to a registry through the additive `registries.hosted_key_id`
+//!   column):
 //!   facts that exist nowhere on the surface (slug, source URL, trust
 //!   anchors, the anti-rollback floor each channel has reached, the
 //!   org → project → registry hierarchy and who may act on it, where each
@@ -200,6 +204,33 @@
 //! `allow_jit`). The OIDC flow itself — PKCE, the authorization URL, the token
 //! exchange, and JWKS-backed RS256 id_token verification — lives in
 //! [`crate::auth::oidc`]; this module only stores and lists the rows.
+//!
+//! # Hosted signing keys (v10)
+//!
+//! Phase 4a adds **hosted signing keys** (RFC-0004 "hosted keys"). Signing
+//! is client-side by default — the hub holds no private key and a web edit
+//! only ever records a *prepared* operation the maintainer signs locally.
+//! An org may instead *opt in* to a hub-held key so the hub can advance
+//! channels and re-sign tags directly from the web, every use audited.
+//!
+//! ```text
+//! hosted_keys   id 1  org_id 1  key_id "acme-release"
+//!               public_key "acme-release:Ed25519:AAAAC3Nz…"
+//!               secret_enc "<sealed 32-byte Ed25519 seed>"
+//!               created_at 1730000000
+//!
+//! registries (managed)  slug "acme/infra/prod/cdn"
+//!                       hosted_key_id = 1   -- NULL = BYO-key (the default)
+//! ```
+//!
+//! The seed is held **sealed** by a [`crate::auth::oidc::SecretSealer`] and
+//! unsealed only at the instant of a signature
+//! ([`Database::load_hosted_signing_key`]). The `public_key` is the
+//! registry trusted-key line operators pin as a trust anchor, so the hub's
+//! own signatures verify through the same indexer path
+//! ([`crate::surface::tag::verify_signed_tag`]) as any client's. The
+//! operations a hosted key unlocks live in [`crate::signing`]; this module
+//! only stores and lists the rows.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -586,6 +617,29 @@ const MIGRATIONS: &[&str] = &[
         expires_at     INTEGER NOT NULL
     );
     ",
+    // v10: hosted signing keys (RFC-0004 \"hosted keys\"). An org may enroll a
+    // hub-held Ed25519 signing key so the hub itself can advance channels and
+    // re-sign tags directly from the web — every use audited. The 32-byte
+    // Ed25519 *seed* is held sealed (secret_enc; see crate::auth::oidc::
+    // SecretSealer), never plaintext; public_key is the registry trusted-key
+    // line (name:Ed25519:<base64>) callers pin as a trust anchor.
+    //
+    // Hosted keys are strictly opt-in: a registry references one through the
+    // additive registries.hosted_key_id column. NULL (the default) keeps the
+    // BYO-key behavior — the channel console only ever prepares client-signed
+    // operations and the hub holds no key for that registry.
+    "
+    CREATE TABLE hosted_keys (
+        id          INTEGER PRIMARY KEY,
+        org_id      INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+        key_id      TEXT NOT NULL,
+        public_key  TEXT NOT NULL,                -- name:Ed25519:<base64> trusted-key line
+        secret_enc  TEXT NOT NULL,                -- sealed 32-byte Ed25519 seed; never plaintext
+        created_at  INTEGER NOT NULL,
+        UNIQUE (org_id, key_id)
+    );
+    ALTER TABLE registries ADD COLUMN hosted_key_id INTEGER;
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -619,6 +673,10 @@ pub struct RegistryRecord {
     pub storage_binding_id: Option<i64>,
     /// Sub-prefix under the binding root (`""` when unbound).
     pub prefix: String,
+    /// The hosted signing key this registry has enrolled, or `None` for a
+    /// BYO-key registry (the default — the channel console only prepares
+    /// client-signed operations).
+    pub hosted_key_id: Option<i64>,
 }
 
 /// A storage binding (system-of-record row): a named backend an org's
@@ -726,6 +784,29 @@ pub struct IdpConfigRecord {
     /// The role a JIT-provisioned user receives at the org scope when no
     /// group mapping applies.
     pub default_role: String,
+}
+
+/// A hosted (hub-held) Ed25519 signing key (system-of-record row).
+///
+/// Mirrors the `hosted_keys` row. The 32-byte Ed25519 *seed* is held
+/// **sealed** in [`HostedKeyRecord::secret_enc`]; unseal it to a usable
+/// signing key through [`Database::load_hosted_signing_key`] only at the
+/// instant of a signature, never store or log the plaintext seed.
+#[derive(Debug, Clone)]
+pub struct HostedKeyRecord {
+    /// Database id (the value [`RegistryRecord::hosted_key_id`] references).
+    pub id: i64,
+    /// Owning org id.
+    pub org_id: i64,
+    /// Operator-chosen key id, unique within the org.
+    pub key_id: String,
+    /// The public trusted-key line (`name:Ed25519:<base64>`) to pin as a
+    /// registry trust anchor.
+    pub public_key: String,
+    /// The sealed 32-byte Ed25519 seed; never the plaintext.
+    pub secret_enc: String,
+    /// Unix time the key was created.
+    pub created_at: i64,
 }
 
 /// A captured (DNS-TXT-verifiable) email domain bound to an org.
@@ -2519,6 +2600,154 @@ impl Database {
         Ok(Some(PathBuf::from(path)))
     }
 
+    // -- hosted signing keys (v10) ------------------------------------------
+
+    /// Enroll a fresh hosted signing key for an org; returns its public
+    /// trusted-key line.
+    ///
+    /// Generates a new Ed25519 keypair, seals its 32-byte seed with `sealer`,
+    /// and stores the row. Nothing but the *sealed* seed is persisted, and the
+    /// plaintext seed never leaves this call. The returned line
+    /// (`<key_id>:Ed25519:<base64>`) is what operators pin as a registry trust
+    /// anchor so the hub's signatures verify through the indexer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a key with `key_id` already exists in the org,
+    /// when sealing fails, or on database failure.
+    pub fn create_hosted_key(
+        &self,
+        sealer: &dyn crate::auth::oidc::SecretSealer,
+        org_id: i64,
+        key_id: &str,
+    ) -> Result<String> {
+        use rand::Rng as _;
+
+        let seed: [u8; 32] = rand::rng().random();
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let public_key =
+            crate::surface::sshsig::trusted_key_line(key_id, &signing_key.verifying_key());
+        // Seal the seed as a hex string so the placeholder XOR sealer (which
+        // operates on UTF-8 plaintext) round-trips it losslessly.
+        let secret_enc = sealer.seal(&hex::encode(seed))?;
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO hosted_keys (org_id, key_id, public_key, secret_enc, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![org_id, key_id, public_key, secret_enc, unix_now()],
+        )
+        .with_context(|| format!("enrolling hosted key '{key_id}' in org {org_id}"))?;
+        Ok(public_key)
+    }
+
+    /// Load one hosted-key row by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn hosted_key(&self, id: i64) -> Result<Option<HostedKeyRecord>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT id, org_id, key_id, public_key, secret_enc, created_at
+             FROM hosted_keys WHERE id = ?1",
+            [id],
+            row_to_hosted_key,
+        )
+        .optional()
+        .context("loading hosted key by id")
+    }
+
+    /// Look up a hosted key by its org and key id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn hosted_key_by_name(&self, org_id: i64, key_id: &str) -> Result<Option<HostedKeyRecord>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT id, org_id, key_id, public_key, secret_enc, created_at
+             FROM hosted_keys WHERE org_id = ?1 AND key_id = ?2",
+            params![org_id, key_id],
+            row_to_hosted_key,
+        )
+        .optional()
+        .context("loading hosted key by name")
+    }
+
+    /// List an org's hosted signing keys, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_hosted_keys(&self, org_id: i64) -> Result<Vec<HostedKeyRecord>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, org_id, key_id, public_key, secret_enc, created_at
+             FROM hosted_keys WHERE org_id = ?1 ORDER BY created_at, id",
+        )?;
+        let rows = stmt.query_map([org_id], row_to_hosted_key)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Unseal a hosted key into a usable Ed25519 signing key.
+    ///
+    /// Loads the row, unseals its seed through `sealer`, and reconstructs the
+    /// [`ed25519_dalek::SigningKey`]. Returns the key id, the signing key, and
+    /// the public trusted-key line (so callers can confirm the hub's own
+    /// public anchor in one read). The plaintext seed is materialized only on
+    /// the stack for the duration of the call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no hosted key has `id`, when the sealed seed
+    /// cannot be unsealed or is not a 32-byte hex string, or on database
+    /// failure.
+    pub fn load_hosted_signing_key(
+        &self,
+        sealer: &dyn crate::auth::oidc::SecretSealer,
+        id: i64,
+    ) -> Result<(String, ed25519_dalek::SigningKey, String)> {
+        let record = self
+            .hosted_key(id)?
+            .with_context(|| format!("no hosted key with id {id}"))?;
+        let seed_hex = sealer
+            .unseal(&record.secret_enc)
+            .with_context(|| format!("unsealing hosted key '{}'", record.key_id))?;
+        let seed_bytes = hex::decode(seed_hex.trim())
+            .with_context(|| format!("decoding hosted key '{}' seed", record.key_id))?;
+        let seed: [u8; 32] = seed_bytes.as_slice().try_into().map_err(|_| {
+            anyhow::anyhow!(
+                "hosted key '{}' seed must be 32 bytes, got {}",
+                record.key_id,
+                seed_bytes.len()
+            )
+        })?;
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        Ok((record.key_id, signing_key, record.public_key))
+    }
+
+    /// Bind (or unbind) a registry's hosted signing key.
+    ///
+    /// Setting `hosted_key_id` opts the registry into the direct (web-signed)
+    /// channel-advance and tag-resign path; `None` reverts it to BYO-key
+    /// (prepared-operation-only) behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn set_registry_hosted_key(
+        &self,
+        registry_id: i64,
+        hosted_key_id: Option<i64>,
+    ) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE registries SET hosted_key_id = ?2 WHERE id = ?1",
+            params![registry_id, hosted_key_id],
+        )?;
+        Ok(())
+    }
+
     /// Look up an organization by id.
     ///
     /// # Errors
@@ -3915,7 +4144,7 @@ fn parse_permission_names(json: &str) -> Vec<crate::domain::Permission> {
 /// The column list every `RegistryRecord` query selects, in the order
 /// [`row_to_registry`] reads.
 const REGISTRY_COLUMNS: &str = "id, slug, source_url, trust_keys, require_signatures, \
-     org_id, project_path, visibility, storage_binding_id, prefix";
+     org_id, project_path, visibility, storage_binding_id, prefix, hosted_key_id";
 
 fn row_to_registry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryRecord> {
     let trust_json: String = row.get(3)?;
@@ -3930,6 +4159,18 @@ fn row_to_registry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryRecord> 
         visibility: row.get(7)?,
         storage_binding_id: row.get(8)?,
         prefix: row.get(9)?,
+        hosted_key_id: row.get(10)?,
+    })
+}
+
+fn row_to_hosted_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<HostedKeyRecord> {
+    Ok(HostedKeyRecord {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        key_id: row.get(2)?,
+        public_key: row.get(3)?,
+        secret_enc: row.get(4)?,
+        created_at: row.get(5)?,
     })
 }
 
