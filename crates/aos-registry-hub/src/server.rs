@@ -200,6 +200,11 @@ impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
 struct SearchParams {
     q: Option<String>,
     page: Option<usize>,
+    /// Package-index sort order (`name`, `size`, `version`); unknown values
+    /// fall back to name order.
+    sort: Option<String>,
+    /// Package-index license facet (exact SPDX identifier match).
+    license: Option<String>,
 }
 
 /// Optional channel-calculator query parameter (`?bucket=`).
@@ -212,6 +217,14 @@ impl SearchParams {
     /// The trimmed, non-empty search query, if any.
     fn query(&self) -> Option<&str> {
         self.q.as_deref().map(str::trim).filter(|q| !q.is_empty())
+    }
+
+    /// The trimmed, non-empty license facet, if any.
+    fn license(&self) -> Option<&str> {
+        self.license
+            .as_deref()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
     }
 }
 
@@ -734,18 +747,40 @@ async fn package_index(
         let all = state.db.list_packages(registry.id)?;
         let total_all = all.len();
         let query = params.query();
-        let filtered: Vec<PackageRow> = match query {
-            Some(query) => {
-                let needle = query.to_lowercase();
-                all.into_iter()
-                    .filter(|p| {
-                        p.name.to_lowercase().contains(&needle)
-                            || p.description.to_lowercase().contains(&needle)
-                    })
-                    .collect()
-            }
-            None => all,
-        };
+        let license = params.license();
+        let sort = pages::PackageSort::parse(params.sort.as_deref());
+        // The `?q=` substring matches name, description, and license; the
+        // `?license=` facet is an exact (case-insensitive) license match.
+        let mut filtered: Vec<PackageRow> = all
+            .into_iter()
+            .filter(|p| match query {
+                None => true,
+                Some(query) => {
+                    let needle = query.to_lowercase();
+                    p.name.to_lowercase().contains(&needle)
+                        || p.description.to_lowercase().contains(&needle)
+                        || p.license.to_lowercase().contains(&needle)
+                }
+            })
+            .filter(|p| match license {
+                None => true,
+                Some(license) => p.license.eq_ignore_ascii_case(license),
+            })
+            .collect();
+        match sort {
+            pages::PackageSort::Name => {}
+            pages::PackageSort::Size => filtered.sort_by(|a, b| {
+                b.closure_size
+                    .unwrap_or(0)
+                    .cmp(&a.closure_size.unwrap_or(0))
+                    .then_with(|| a.name.cmp(&b.name))
+            }),
+            pages::PackageSort::Version => filtered.sort_by(|a, b| {
+                b.latest_version
+                    .cmp(&a.latest_version)
+                    .then_with(|| a.name.cmp(&b.name))
+            }),
+        }
         let total_matches = filtered.len();
         let page_number = params.page.unwrap_or(1).max(1);
         let start = (page_number - 1)
@@ -759,6 +794,8 @@ async fn package_index(
             status.as_ref(),
             &filtered[start..end],
             query,
+            sort,
+            license,
             page_number,
             total_matches,
             total_all,
@@ -780,14 +817,65 @@ async fn package_page(
         let Some(detail) = state.db.package_detail(registry.id, &name)? else {
             return Ok(None);
         };
+        let closure = resolve_package_closure(&state.db, registry.id, &name, &detail)?;
         Ok::<_, anyhow::Error>(Some(pages::package_page(
             &registry,
             status.as_ref(),
             &detail,
+            &closure,
+            &state.external_url,
             started,
         )))
     })();
     respond_page(result)
+}
+
+/// Display cap for the "required by" reverse-dependency list.
+const REVERSE_DEP_CAP: usize = 100;
+
+/// Resolve a package's forward and reverse closure for the detail page.
+///
+/// Forward dependencies come from the `refs` of the latest version's primary
+/// platform (the platform that sorts first), resolved to package names via
+/// [`Database::resolve_reference_names`]. Reverse dependencies come from
+/// [`Database::reverse_dependencies`] keyed on the package's primary store
+/// hash, capped to [`REVERSE_DEP_CAP`] entries for display while reporting the
+/// full count.
+///
+/// # Errors
+///
+/// Returns an error on database failure.
+fn resolve_package_closure(
+    db: &Database,
+    registry_id: i64,
+    name: &str,
+    detail: &crate::db::PackageDetail,
+) -> anyhow::Result<pages::PackageClosure> {
+    // Forward deps: the latest version's first platform is the primary one.
+    let primary = detail.versions.first().and_then(|v| v.platforms.first());
+    let mut closure = pages::PackageClosure::default();
+    if let Some(platform) = primary {
+        closure.platform = Some(platform.platform.clone());
+        let resolved = db.resolve_reference_names(registry_id, &platform.refs)?;
+        closure.dependencies = resolved
+            .into_iter()
+            .map(|(hash, name, version)| pages::ResolvedDependency {
+                hash,
+                name,
+                version,
+            })
+            .collect();
+    }
+
+    // Reverse deps: who references this package's primary store hash.
+    let platform = primary.map(|p| p.platform.as_str()).unwrap_or("");
+    if let Some(store_hash) = db.primary_store_hash(registry_id, name, platform)? {
+        let mut reverse = db.reverse_dependencies(registry_id, &store_hash)?;
+        closure.reverse_total = reverse.len();
+        reverse.truncate(REVERSE_DEP_CAP);
+        closure.reverse = reverse;
+    }
+    Ok(closure)
 }
 
 async fn channels_index(State(state): State<Arc<AppState>>, Path(slug): Path<String>) -> Response {
@@ -1325,16 +1413,28 @@ async fn render_page(
                     status.as_ref(),
                     &all,
                     None,
+                    pages::PackageSort::Name,
+                    None,
                     1,
                     total,
                     total,
                     started,
                 ))
             }
-            PageKind::Package(name) => state
-                .db
-                .package_detail(registry.id, name)?
-                .map(|detail| pages::package_page(registry, status.as_ref(), &detail, started)),
+            PageKind::Package(name) => match state.db.package_detail(registry.id, name)? {
+                Some(detail) => {
+                    let closure = resolve_package_closure(&state.db, registry.id, name, &detail)?;
+                    Some(pages::package_page(
+                        registry,
+                        status.as_ref(),
+                        &detail,
+                        &closure,
+                        &state.external_url,
+                        started,
+                    ))
+                }
+                None => None,
+            },
             PageKind::Channels => {
                 let channels = state.db.list_channels(registry.id)?;
                 Some(pages::channels_index(

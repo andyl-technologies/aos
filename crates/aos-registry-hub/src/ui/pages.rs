@@ -16,6 +16,8 @@ use crate::db::{
     CacheProbeRow, ChannelSummary, FrontendProbeRow, FrontendRecord, IndexStatus, PackageDetail,
     PackageRow, RegistryRecord, ReleaseRow, RepairJobRow, ValidationRunRow,
 };
+#[cfg(test)]
+use crate::db::{PlatformDetail, VersionDetail};
 use crate::stack::StackNode;
 use crate::ui::render::{ago, escape, human_size, key_fingerprint, page, table, StateLine};
 
@@ -407,18 +409,60 @@ pub fn registry_home(
     )
 }
 
-/// The package index page: one pre-filtered, pre-sliced page of rows.
+/// How the package index orders its rows.
 ///
-/// `rows` is the current page after the handler applies the `?q=` filter
-/// and `?page=` slice; `total_matches` and `total_all` carry the counts
-/// for the result line, and pagination links render only when the match
-/// set spans multiple pages.
+/// The order is chosen by the no-JS `?sort=` query parameter and round-trips
+/// through pagination links so paging never silently re-sorts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageSort {
+    /// By package name, ascending (the default).
+    Name,
+    /// By the latest version's closure size, largest first.
+    Size,
+    /// By latest version string, descending (lexical).
+    Version,
+}
+
+impl PackageSort {
+    /// Parse the `?sort=` value; unknown or absent values fall back to
+    /// [`PackageSort::Name`].
+    #[must_use]
+    pub fn parse(value: Option<&str>) -> Self {
+        match value {
+            Some("size") => Self::Size,
+            Some("version") => Self::Version,
+            _ => Self::Name,
+        }
+    }
+
+    /// The `?sort=` token for this order (empty for the default).
+    fn token(self) -> &'static str {
+        match self {
+            Self::Name => "",
+            Self::Size => "size",
+            Self::Version => "version",
+        }
+    }
+}
+
+/// The package index page: one pre-filtered, pre-sorted, pre-sliced page.
+///
+/// `rows` is the current page after the handler applies the `?q=`/`?license=`
+/// filters, the `?sort=` order, and the `?page=` slice; `total_matches` and
+/// `total_all` carry the counts for the result line. Each row shows the
+/// package name, latest version, license (a link that sets the `?license=`
+/// filter), the latest version's closure size, its platform list, and the
+/// description, so the index reads like a release-engineering inventory.
+/// The search box, the sort `<select>`, and the pagination links are plain
+/// GET controls that preserve `q`/`sort`/`license` across navigation.
 #[allow(clippy::too_many_arguments)]
 pub fn package_index(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     rows: &[PackageRow],
     query: Option<&str>,
+    sort: PackageSort,
+    license: Option<&str>,
     page_number: usize,
     total_matches: usize,
     total_all: usize,
@@ -428,6 +472,27 @@ pub fn package_index(
     let body_rows: Vec<Vec<String>> = rows
         .iter()
         .map(|p| {
+            let size = p
+                .closure_size
+                .map(human_size)
+                .unwrap_or_else(|| "—".to_string());
+            let platforms = if p.platforms.is_empty() {
+                "—".to_string()
+            } else {
+                escape(&p.platforms.join(", "))
+            };
+            // The license cell links to its own filter, so a click narrows the
+            // index to that license — a no-JS facet.
+            let license_cell = if p.license.is_empty() {
+                "—".to_string()
+            } else {
+                format!(
+                    "<a href=\"/{}/-/packages?license={}\">{}</a>",
+                    escape(slug),
+                    urlencode(&p.license),
+                    escape(&p.license),
+                )
+            };
             vec![
                 format!(
                     "<a href=\"/{}/-/packages/{}\">{}</a>",
@@ -436,45 +501,103 @@ pub fn package_index(
                     escape(&p.name),
                 ),
                 escape(p.latest_version.as_deref().unwrap_or("—")),
-                escape(&p.license),
+                license_cell,
+                size,
+                platforms,
                 escape(&p.description),
             ]
         })
         .collect();
 
     let mut body = format!("<h1>Packages ({total_all})</h1>\n");
-    let _ = writeln!(
+
+    // The search + sort form is one GET form: q, sort, and the active license
+    // facet all round-trip so a search keeps its facet and order.
+    body.push_str("<form method=\"get\" class=\"pkg-search\">");
+    let _ = write!(
         body,
-        "<form method=\"get\"><input name=\"q\" value=\"{}\" placeholder=\"search packages\"> \
-         <button>search</button></form>",
+        "<input name=\"q\" value=\"{}\" placeholder=\"search packages\"> ",
         escape(query.unwrap_or("")),
     );
-    if let Some(query) = query {
-        let _ = writeln!(
+    body.push_str("<label>sort <select name=\"sort\">");
+    for (variant, label) in [
+        (PackageSort::Name, "name"),
+        (PackageSort::Size, "closure size"),
+        (PackageSort::Version, "version"),
+    ] {
+        let selected = if variant == sort { " selected" } else { "" };
+        let _ = write!(
             body,
-            "<p class=\"dim\">{total_matches} of {total_all} packages match \"{}\"</p>",
-            escape(query),
+            "<option value=\"{}\"{selected}>{label}</option>",
+            variant.token(),
         );
     }
+    body.push_str("</select></label> ");
+    if let Some(license) = license {
+        let _ = write!(
+            body,
+            "<input type=\"hidden\" name=\"license\" value=\"{}\">",
+            escape(license),
+        );
+    }
+    body.push_str("<button>search</button></form>\n");
+
+    // The result line: a count, plus any active query/license facet.
+    if query.is_some() || license.is_some() {
+        let mut facets = Vec::new();
+        if let Some(query) = query {
+            facets.push(format!("matching \"{}\"", escape(query)));
+        }
+        if let Some(license) = license {
+            facets.push(format!("licensed {}", escape(license)));
+        }
+        let _ = writeln!(
+            body,
+            "<p class=\"dim\">{total_matches} of {total_all} packages {} \
+             · <a href=\"/{}/-/packages\">clear filters</a></p>",
+            facets.join(", "),
+            escape(slug),
+        );
+    } else {
+        let _ = writeln!(body, "<p class=\"dim\">{total_all} packages</p>");
+    }
+
     if body_rows.is_empty() {
         body.push_str("<p class=\"dim\">No packages.</p>\n");
     } else {
         body.push_str(&table(
-            &["name", "latest", "license", "description"],
+            &[
+                "name",
+                "latest",
+                "license",
+                "closure",
+                "platforms",
+                "description",
+            ],
             &body_rows,
         ));
     }
 
+    // Carry q/sort/license across pagination so paging never re-sorts or
+    // drops a facet.
+    let mut suffix = String::new();
+    if let Some(query) = query {
+        let _ = write!(suffix, "&q={}", urlencode(query));
+    }
+    if sort != PackageSort::Name {
+        let _ = write!(suffix, "&sort={}", sort.token());
+    }
+    if let Some(license) = license {
+        let _ = write!(suffix, "&license={}", urlencode(license));
+    }
+
     let pages = total_matches.div_ceil(PACKAGES_PER_PAGE).max(1);
     if pages > 1 {
-        let query_suffix = query
-            .map(|q| format!("&q={}", urlencode(q)))
-            .unwrap_or_default();
         body.push_str("<p class=\"pager\">");
         if page_number > 1 {
             let _ = write!(
                 body,
-                "<a href=\"/{}/-/packages?page={}{query_suffix}\">← prev</a> ",
+                "<a href=\"/{}/-/packages?page={}{suffix}\">← prev</a> ",
                 escape(slug),
                 page_number - 1,
             );
@@ -483,7 +606,7 @@ pub fn package_index(
         if page_number < pages {
             let _ = write!(
                 body,
-                " <a href=\"/{}/-/packages?page={}{query_suffix}\">next →</a>",
+                " <a href=\"/{}/-/packages?page={}{suffix}\">next →</a>",
                 escape(slug),
                 page_number + 1,
             );
@@ -499,24 +622,103 @@ pub fn package_index(
     )
 }
 
-/// One package's detail page.
+/// One resolved closure edge for the package detail page.
+///
+/// Maps a `refs` store-hash prefix to the registry package that publishes it,
+/// when resolvable. `name`/`version` are `None` for a hash that belongs to a
+/// store path outside this registry's package set (e.g. a stdenv closure
+/// dependency), which renders as a narinfo link rather than a package link.
+#[derive(Debug, Clone)]
+pub struct ResolvedDependency {
+    /// The referenced store-hash prefix.
+    pub hash: String,
+    /// The publishing package's name, when the hash resolves.
+    pub name: Option<String>,
+    /// The publishing package's version, when the hash resolves.
+    pub version: Option<String>,
+}
+
+/// The closure neighborhood of a package, resolved against the registry.
+///
+/// Bundles the forward dependencies of the latest version's primary platform
+/// (the `refs` edges, resolved to package names where possible) and the set of
+/// packages whose closures reference this one. Both are computed by the
+/// handler via [`crate::db::Database::resolve_reference_names`] and
+/// [`crate::db::Database::reverse_dependencies`] so the renderer stays a pure
+/// function of its inputs.
+#[derive(Debug, Clone, Default)]
+pub struct PackageClosure {
+    /// The platform the forward dependencies were resolved for.
+    pub platform: Option<String>,
+    /// Forward dependencies of the latest version's primary platform.
+    pub dependencies: Vec<ResolvedDependency>,
+    /// Packages that reference this one, as `(name, version)`, capped by the
+    /// handler. [`PackageClosure::reverse_total`] carries the uncapped count.
+    pub reverse: Vec<(String, String)>,
+    /// The total number of reverse dependents before the display cap.
+    pub reverse_total: usize,
+}
+
+/// One package's detail page — the data-rich closure browser.
+///
+/// Renders, in order: a header with name + latest version + the prominent
+/// description; "available platforms" chips; a metadata definition table
+/// (license, maintainer, homepage, platforms, sysroot, latest version,
+/// version count); an `apm` install snippet; the resolved dependency list
+/// (the `refs` closure edges of the latest version's primary platform, linked
+/// to their package pages where resolvable); the "required by" reverse-dep
+/// list; the per-version × platform artifact tables with narinfo + source
+/// derivation links; sysroot images; and a `<details>` raw-metadata dump.
+///
+/// `closure` carries the resolved forward and reverse dependencies the handler
+/// computed; `external_url` is the instance's externally reachable base URL,
+/// used to build the copy-pasteable install snippet.
 pub fn package_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     detail: &PackageDetail,
+    closure: &PackageClosure,
+    external_url: &str,
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = format!(
-        "<h1>{}</h1>\n<p>{}</p>\n",
-        escape(&detail.name),
-        escape(&detail.description)
-    );
 
-    let mut meta_rows = vec![
-        vec!["license".to_string(), escape(&detail.license)],
-        vec!["maintainer".to_string(), escape(&detail.maintainer)],
-    ];
+    // Header: name, latest version, then the description prominently.
+    let latest = detail.versions.first().map(|v| v.version.as_str());
+    let mut body = format!("<h1>{}", escape(&detail.name));
+    if let Some(latest) = latest {
+        let _ = write!(body, " <span class=\"dim\">{}</span>", escape(latest));
+    }
+    body.push_str("</h1>\n");
+    if !detail.description.is_empty() {
+        let _ = writeln!(
+            body,
+            "<p class=\"lede\">{}</p>",
+            escape(&detail.description)
+        );
+    }
+
+    // The union of every version's platforms, as chips near the top.
+    let mut all_platforms: Vec<&str> = detail
+        .versions
+        .iter()
+        .flat_map(|v| v.platforms.iter().map(|p| p.platform.as_str()))
+        .collect();
+    all_platforms.sort_unstable();
+    all_platforms.dedup();
+    if !all_platforms.is_empty() {
+        body.push_str("<p class=\"chips\">");
+        for platform in &all_platforms {
+            let _ = write!(body, "<span class=\"chip\">{}</span> ", escape(platform));
+        }
+        body.push_str("</p>\n");
+    }
+
+    // Metadata definition table.
+    let mut meta_rows = vec![vec!["license".to_string(), escape(&detail.license)]];
+    if !detail.maintainer.is_empty() {
+        meta_rows.push(vec!["maintainer".to_string(), escape(&detail.maintainer)]);
+    }
     if let Some(homepage) = &detail.homepage {
         // Only http(s) homepages become links; anything else (javascript:,
         // data:, …) renders as escaped text.
@@ -527,6 +729,19 @@ pub fn package_page(
         };
         meta_rows.push(vec!["homepage".to_string(), cell]);
     }
+    if !all_platforms.is_empty() {
+        meta_rows.push(vec![
+            "platforms".to_string(),
+            escape(&all_platforms.join(", ")),
+        ]);
+    }
+    if let Some(latest) = latest {
+        meta_rows.push(vec!["latest version".to_string(), escape(latest)]);
+    }
+    meta_rows.push(vec![
+        "versions".to_string(),
+        detail.versions.len().to_string(),
+    ]);
     if detail.sysroot {
         meta_rows.push(vec![
             "sysroot".to_string(),
@@ -535,9 +750,98 @@ pub fn package_page(
     }
     body.push_str(&table(&["field", "value"], &meta_rows));
 
+    // Install snippet: apm is the consumer CLI; the registry-add and
+    // substituter lines mirror the registry home setup, package-focused.
+    body.push_str("<h2>Install</h2>\n");
+    let url = external_url.trim_end_matches('/');
+    let mut snippet = format!(
+        "apr add {url}/ --name {slug}\napm install {name}",
+        name = detail.name
+    );
+    if !registry.trust_keys.is_empty() {
+        let _ = write!(
+            snippet,
+            "\n\n# or as a plain Nix substituter:\nsubstituters = {url}/\ntrusted-public-keys = {}",
+            registry.trust_keys.join(" "),
+        );
+    }
+    let _ = write!(
+        body,
+        "<p class=\"dim\">apm is the consumer CLI; add the registry, then install:</p>\n<pre>{}</pre>\n",
+        escape(&snippet),
+    );
+
+    // Dependencies: the closure edges of the latest primary platform, made
+    // legible — resolvable hashes link to their package page, the rest fall
+    // back to a narinfo permalink.
+    let _ = writeln!(
+        body,
+        "<h2>Dependencies ({})</h2>",
+        closure.dependencies.len(),
+    );
+    if closure.dependencies.is_empty() {
+        body.push_str("<p class=\"dim\">No runtime dependencies recorded.</p>\n");
+    } else {
+        if let Some(platform) = &closure.platform {
+            let _ = writeln!(
+                body,
+                "<p class=\"dim\">runtime closure of the latest version on {}:</p>",
+                escape(platform),
+            );
+        }
+        body.push_str("<ul class=\"deps\">\n");
+        for dep in &closure.dependencies {
+            match (&dep.name, &dep.version) {
+                (Some(name), version) => {
+                    let _ = write!(
+                        body,
+                        "<li><a href=\"/{}/-/packages/{}\">{}</a>",
+                        escape(slug),
+                        escape(name),
+                        escape(name),
+                    );
+                    if let Some(version) = version {
+                        let _ = write!(body, " <span class=\"dim\">{}</span>", escape(version));
+                    }
+                    body.push_str("</li>\n");
+                }
+                (None, _) => {
+                    let _ = writeln!(body, "<li>{}</li>", narinfo_link(slug, &dep.hash));
+                }
+            }
+        }
+        body.push_str("</ul>\n");
+    }
+
+    // Reverse dependencies: who requires this package.
+    let _ = writeln!(body, "<h2>Required by ({})</h2>", closure.reverse_total);
+    if closure.reverse.is_empty() {
+        body.push_str("<p class=\"dim\">No packages in this registry require it.</p>\n");
+    } else {
+        body.push_str("<ul class=\"deps\">\n");
+        for (name, version) in &closure.reverse {
+            let _ = writeln!(
+                body,
+                "<li><a href=\"/{}/-/packages/{}\">{}</a> <span class=\"dim\">{}</span></li>",
+                escape(slug),
+                escape(name),
+                escape(name),
+                escape(version),
+            );
+        }
+        body.push_str("</ul>\n");
+        if closure.reverse_total > closure.reverse.len() {
+            let _ = writeln!(
+                body,
+                "<p class=\"dim\">… and {} more</p>",
+                closure.reverse_total - closure.reverse.len(),
+            );
+        }
+    }
+
     body.push_str("<h2>Versions</h2>\n");
     for version in &detail.versions {
-        let _ = write!(body, "<h2>{}", escape(&version.version));
+        let _ = write!(body, "<h3>{}", escape(&version.version));
         if let Some(previous) = &version.previous {
             let _ = write!(
                 body,
@@ -545,14 +849,22 @@ pub fn package_page(
                 escape(previous)
             );
         }
-        body.push_str("</h2>\n");
+        body.push_str("</h3>\n");
         let rows: Vec<Vec<String>> = version
             .platforms
             .iter()
             .map(|p| {
-                let narinfo = match store_hash(&p.store_path) {
+                // The narinfo permalink is the canonical download entry point:
+                // the actual NAR URL lives inside the narinfo body and is not
+                // derivable from the store hash alone, so we link the narinfo.
+                let download = match store_hash(&p.store_path) {
                     Some(hash) => narinfo_link(slug, hash),
                     None => "—".to_string(),
+                };
+                let source = if p.source_drv.is_empty() {
+                    "—".to_string()
+                } else {
+                    format!("<code>{}</code>", escape(&p.source_drv))
                 };
                 vec![
                     escape(&p.platform),
@@ -560,7 +872,8 @@ pub fn package_page(
                     human_size(p.nar_size),
                     human_size(p.closure_size),
                     format!("<code>{}</code>", escape(&p.nar_hash)),
-                    narinfo,
+                    download,
+                    source,
                 ]
             })
             .collect();
@@ -571,7 +884,8 @@ pub fn package_page(
                 "nar",
                 "closure",
                 "nar hash",
-                "narinfo",
+                "download",
+                "source drv",
             ],
             &rows,
         ));
@@ -616,6 +930,39 @@ pub fn package_page(
             ));
         }
     }
+
+    // Raw metadata: a no-JS native disclosure showing the underlying index
+    // record, so the page never hides the data it renders.
+    body.push_str("<details class=\"raw-metadata\">\n<summary>Raw metadata</summary>\n<pre>");
+    let _ = writeln!(body, "name         {}", escape(&detail.name));
+    let _ = writeln!(body, "description  {}", escape(&detail.description));
+    let _ = writeln!(body, "license      {}", escape(&detail.license));
+    let _ = writeln!(body, "maintainer   {}", escape(&detail.maintainer));
+    if let Some(homepage) = &detail.homepage {
+        let _ = writeln!(body, "homepage     {}", escape(homepage));
+    }
+    let _ = writeln!(body, "sysroot      {}", detail.sysroot);
+    for version in &detail.versions {
+        let _ = writeln!(body, "\n[[versions]]");
+        let _ = writeln!(body, "version      {}", escape(&version.version));
+        if let Some(previous) = &version.previous {
+            let _ = writeln!(body, "previous     {}", escape(previous));
+        }
+        for p in &version.platforms {
+            let _ = writeln!(body, "  [{}]", escape(&p.platform));
+            let _ = writeln!(body, "  store_path    {}", escape(&p.store_path));
+            let _ = writeln!(body, "  nar_hash      {}", escape(&p.nar_hash));
+            let _ = writeln!(body, "  nar_size      {}", p.nar_size);
+            let _ = writeln!(body, "  closure_size  {}", p.closure_size);
+            if !p.source_drv.is_empty() {
+                let _ = writeln!(body, "  source_drv    {}", escape(&p.source_drv));
+            }
+            if !p.refs.is_empty() {
+                let _ = writeln!(body, "  references    {}", escape(&p.refs.join(" ")));
+            }
+        }
+    }
+    body.push_str("</pre>\n</details>\n");
 
     page(
         &detail.name,
@@ -1367,6 +1714,20 @@ mod tests {
         assert!(html.contains("/demo/-/health"));
     }
 
+    /// A platform artifact fixture with the given refs.
+    fn platform(name: &str, store_path: &str, refs: &[&str]) -> PlatformDetail {
+        PlatformDetail {
+            platform: name.into(),
+            store_path: store_path.into(),
+            nar_hash: "sha256:aa".into(),
+            nar_size: 1024,
+            closure_size: 4096,
+            source_drv: format!("/var/lib/store/{name}drv-x.drv"),
+            refs: refs.iter().map(|r| (*r).to_string()).collect(),
+            images: Vec::new(),
+        }
+    }
+
     #[test]
     fn package_homepage_requires_http_scheme() {
         let mut detail = PackageDetail {
@@ -1378,7 +1739,15 @@ mod tests {
             sysroot: false,
             versions: Vec::new(),
         };
-        let html = package_page(&registry(), None, &detail, Instant::now());
+        let closure = PackageClosure::default();
+        let html = package_page(
+            &registry(),
+            None,
+            &detail,
+            &closure,
+            "http://hub.example",
+            Instant::now(),
+        );
         assert!(
             !html.contains("href=\"javascript:"),
             "javascript: homepage must not become a link: {html}"
@@ -1386,8 +1755,110 @@ mod tests {
         assert!(html.contains("javascript:alert(1)"), "still shown as text");
 
         detail.homepage = Some("https://curl.se".into());
-        let html = package_page(&registry(), None, &detail, Instant::now());
+        let html = package_page(
+            &registry(),
+            None,
+            &detail,
+            &closure,
+            "http://hub.example",
+            Instant::now(),
+        );
         assert!(html.contains("<a href=\"https://curl.se\">"));
+    }
+
+    #[test]
+    fn package_page_is_data_rich() {
+        let detail = PackageDetail {
+            name: "curl".into(),
+            description: "URL transfers".into(),
+            homepage: Some("https://curl.se".into()),
+            license: "MIT".into(),
+            maintainer: "aos".into(),
+            sysroot: false,
+            versions: vec![VersionDetail {
+                version: "8.5.0".into(),
+                previous: None,
+                platforms: vec![platform(
+                    "x86_64-linux",
+                    "/var/lib/store/aaaa-curl-8.5.0",
+                    &["bbbb", "cccc"],
+                )],
+            }],
+        };
+        let closure = PackageClosure {
+            platform: Some("x86_64-linux".into()),
+            dependencies: vec![
+                ResolvedDependency {
+                    hash: "bbbb".into(),
+                    name: Some("zlib".into()),
+                    version: Some("1.3.1".into()),
+                },
+                ResolvedDependency {
+                    hash: "cccc".into(),
+                    name: None,
+                    version: None,
+                },
+            ],
+            reverse: vec![("git".into(), "2.43.0".into())],
+            reverse_total: 1,
+        };
+        let html = package_page(
+            &registry(),
+            None,
+            &detail,
+            &closure,
+            "http://hub.example",
+            Instant::now(),
+        );
+        // Header carries the latest version and a prominent description.
+        assert!(html.contains("<h1>curl <span class=\"dim\">8.5.0</span>"));
+        assert!(html.contains("class=\"lede\">URL transfers"));
+        // Platform chips near the top.
+        assert!(html.contains("class=\"chip\">x86_64-linux"));
+        // Install snippet: apm is the consumer CLI.
+        assert!(html.contains("apm install curl"));
+        assert!(html.contains("apr add http://hub.example/ --name demo"));
+        assert!(html.contains("trusted-public-keys = demo:Ed25519:AAAA"));
+        // A resolved dependency links to its package page; an unresolved one
+        // falls back to its narinfo permalink.
+        assert!(html.contains("Dependencies (2)"));
+        assert!(html.contains("<a href=\"/demo/-/packages/zlib\">zlib</a>"));
+        assert!(html.contains("href=\"/demo/cccc.narinfo\""));
+        // Reverse dependency.
+        assert!(html.contains("Required by (1)"));
+        assert!(html.contains("<a href=\"/demo/-/packages/git\">git</a>"));
+        // Download (narinfo) + source-drv columns in the artifact table.
+        assert!(html.contains("<th>download</th>"));
+        assert!(html.contains("<th>source drv</th>"));
+        assert!(html.contains("href=\"/demo/aaaa.narinfo\""));
+        // Raw-metadata disclosure block.
+        assert!(html.contains("<details class=\"raw-metadata\">"));
+        assert!(html.contains("<summary>Raw metadata</summary>"));
+    }
+
+    #[test]
+    fn package_page_escapes_html_in_name_and_description() {
+        let detail = PackageDetail {
+            name: "<script>x</script>".into(),
+            description: "<img src=x onerror=1>".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos".into(),
+            sysroot: false,
+            versions: Vec::new(),
+        };
+        let html = package_page(
+            &registry(),
+            None,
+            &detail,
+            &PackageClosure::default(),
+            "http://hub.example",
+            Instant::now(),
+        );
+        assert!(!html.contains("<script>x</script>"));
+        assert!(html.contains("&lt;script&gt;x&lt;/script&gt;"));
+        assert!(!html.contains("<img src=x onerror=1>"));
+        assert!(html.contains("&lt;img src=x onerror=1&gt;"));
     }
 
     #[test]
@@ -1461,7 +1932,9 @@ mod tests {
                 name: format!("pkg{i}"),
                 description: "desc".into(),
                 license: "MIT".into(),
-                latest_version: None,
+                latest_version: Some("1.0.0".into()),
+                closure_size: Some(2 * 1024 * 1024),
+                platforms: vec!["x86_64-linux".into()],
             })
             .collect();
         // 250 matches across 3 pages; this is page 2.
@@ -1470,19 +1943,60 @@ mod tests {
             None,
             &rows,
             Some("pkg"),
+            PackageSort::Size,
+            None,
             2,
             250,
             300,
             Instant::now(),
         );
-        assert!(html.contains("250 of 300 packages match"));
+        // The total count leads the page; the result line names the facet.
+        assert!(html.contains("<h1>Packages (300)</h1>"));
+        assert!(html.contains("250 of 300 packages matching \"pkg\""));
+        // Closure size + platform list per row.
+        assert!(html.contains("2.0 MiB"));
+        assert!(html.contains("x86_64-linux"));
+        // The sort control reflects the active order.
+        assert!(html.contains("<select name=\"sort\">"));
+        assert!(html.contains("<option value=\"size\" selected>"));
         assert!(html.contains("page 2 of 3"));
-        assert!(html.contains("?page=1&q=pkg"));
-        assert!(html.contains("?page=3&q=pkg"));
+        // Pagination preserves q + sort.
+        assert!(html.contains("?page=1&q=pkg&sort=size"));
+        assert!(html.contains("?page=3&q=pkg&sort=size"));
 
-        // A single page renders no pager.
-        let html = package_index(&registry(), None, &rows, None, 1, 3, 3, Instant::now());
+        // A single page in default order renders no pager and a clean count.
+        let html = package_index(
+            &registry(),
+            None,
+            &rows,
+            None,
+            PackageSort::Name,
+            None,
+            1,
+            3,
+            3,
+            Instant::now(),
+        );
         assert!(!html.contains("class=\"pager\""));
+        assert!(html.contains("<p class=\"dim\">3 packages</p>"));
+        // The license cell links to its own facet.
+        assert!(html.contains("?license=MIT"));
+
+        // The license facet is named in the result line and is clearable.
+        let html = package_index(
+            &registry(),
+            None,
+            &rows,
+            None,
+            PackageSort::Name,
+            Some("MIT"),
+            1,
+            3,
+            3,
+            Instant::now(),
+        );
+        assert!(html.contains("licensed MIT"));
+        assert!(html.contains("clear filters"));
     }
 
     #[test]

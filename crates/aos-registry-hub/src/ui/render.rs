@@ -146,7 +146,10 @@ tokio::task_local! {
 ///
 /// The session-resolving middleware wraps each request in this so [`page`]
 /// can read the identity via [`current_session_indicator`].
-pub async fn with_session_email<F: std::future::Future>(email: Option<String>, fut: F) -> F::Output {
+pub async fn with_session_email<F: std::future::Future>(
+    email: Option<String>,
+    fut: F,
+) -> F::Output {
     SESSION_EMAIL.scope(email, fut).await
 }
 

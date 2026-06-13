@@ -161,6 +161,41 @@ pre.partition-grid { line-height: 1.15; letter-spacing: 0.18em; }
 
 .rollout-bar { color: var(--ok); }
 
+/* Package browser: the prominent lede description, the platform chips, the
+ * dependency lists, and the raw-metadata disclosure — all monochrome-first,
+ * matching the release-engineering paper aesthetic. */
+p.lede {
+  font-size: 1.05rem;
+  margin: 0.4rem 0 0.8rem;
+}
+p.chips { margin: 0.2rem 0 0.8rem; }
+.chip {
+  display: inline-block;
+  border: 1px solid var(--rule);
+  padding: 0.05rem 0.45rem;
+  margin: 0 0.2rem 0.2rem 0;
+  font-size: 0.85rem;
+}
+ul.deps {
+  margin: 0.3rem 0 0.8rem;
+  padding-left: 1.2rem;
+  columns: 18rem;
+}
+ul.deps li { break-inside: avoid; }
+details.raw-metadata { margin-top: 1.5rem; }
+details.raw-metadata summary {
+  cursor: pointer;
+  color: var(--link);
+}
+form.pkg-search { margin-bottom: 0.6rem; }
+form.pkg-search select {
+  font: inherit;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+}
+
 /* Form controls — styled GLOBALLY so every button and input looks the
  * same on every page (search boxes, the bucket calculator, passkey
  * buttons, and the producer console alike), not just inside .console. */
