@@ -24,11 +24,38 @@
     allowStorageHardware = false;
   };
 
+  # Full-profile variant for install-from-image tests: accepts
+  # storage.disks / storage.filesystems (partitioning is the point of
+  # those tests). Everything else keeps the restrictive default —
+  # checks.ignition-format pins both behaviors.
+  ignitionFullFormat = lib.formats.ignition {
+    inherit lib pkgs;
+    allowStorageHardware = true;
+  };
+
+  # Validated Ignition config.json as a derivation, selectable profile.
+  # Used directly (fw_cfg delivery in fleet.nix image-boot machines)
+  # and by mkMetadataIso below (ISO delivery).
+  mkIgnitionConfig = {
+    name,
+    ignitionConfig,
+    allowStorageHardware ? false,
+  }: let
+    format =
+      if allowStorageHardware
+      then ignitionFullFormat
+      else ignitionTestFormat;
+  in
+    format.generate "config.json" ignitionConfig;
+
   mkMetadataIso = {
     name,
     ignitionConfig,
+    allowStorageHardware ? false,
   }: let
-    configDrv = ignitionTestFormat.generate "config.json" ignitionConfig;
+    configDrv = mkIgnitionConfig {
+      inherit name ignitionConfig allowStorageHardware;
+    };
   in
     pkgs.mkDerivation {
       pname = "vm-metadata-${name}";
@@ -64,5 +91,5 @@
       ];
     };
 in {
-  inherit mkMetadataIso;
+  inherit mkIgnitionConfig mkMetadataIso;
 }
