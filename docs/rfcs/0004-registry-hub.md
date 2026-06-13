@@ -1,11 +1,23 @@
 # RFC-0004: `aos-registry-hub` — a multi-tenant registry management WebUI
 
-- **Status:** Proposed — phase 1 implemented
-  (`crates/aos-registry-hub`: surface reader, fail-closed indexer with
-  anti-rollback floors, consistency validation at presence depth,
-  machine-path facade, no-JS browse UI, `aos.registry.v1` read path,
-  local-first `serve --dev`; plus the phase-major `apr` upload fix).
-  Phases 2–4 remain proposed.
+- **Status:** Implemented (phases 1–4) — `crates/aos-registry-hub`.
+  Phase 1: surface reader, fail-closed indexer (anti-rollback floors,
+  presence+integrity validation), machine-path facade, no-JS browse UI,
+  cache-freshness probes, `aos.registry.v1` read path, local-first
+  `serve --dev`. Phase 2: tenancy/IAM, tokens/JWT/device-flow/sessions/
+  magic-links, storage bindings + nested URLs + visibility, authenticated
+  upload facade. Phase 3: audit + SQL config change-sets, no-JS producer
+  console, cache stacks + `apm` miss-fallthrough, per-org OIDC SSO.
+  Phase 4: hosted signing keys + web channel advance (AES-256-GCM secret
+  sealer), webhooks + `/metrics`, AOS package + NixOS module, and
+  postgres + mysql `Database` backends behind a dialect trait (validated
+  against live servers). Plus the phase-major `apr` upload fix and
+  `apr web generate`. ~865 tests across the hub and `aos-package`.
+  Explicitly deferred to RFC-future (not in the shipped phases): the
+  Cloudflare Workers / D1 / R2 target and the Leptos-CSR WASM SPA web
+  surface (the no-JS static tier ships); passkeys/WebAuthn; mirroring
+  (full/derived/pull-through); validation deep depth and HTTP-cache
+  repair; git-backed change requests; quotas/backup/offboarding.
 - **Date:** 2026-06-12
 - **PR:** [#99](https://github.com/andyl-technologies/aos/pull/99)
 - **Audience:** anyone working on `crates/aos-package/` (the `apr`/`apm`
