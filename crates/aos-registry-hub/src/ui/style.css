@@ -79,9 +79,12 @@ header.masthead .brand {
 }
 header.masthead .crumbs { color: var(--dim); }
 header.masthead .crumbs a { color: var(--ink); }
-/* Push the session indicator to the far right; the flex gap keeps the
- * brand and crumbs spaced apart on the left. */
+/* Push the session indicator (which doubles as the primary nav when
+ * signed in) to the far right; the flex gap keeps the brand and crumbs
+ * spaced apart on the left. */
 header.masthead .session { color: var(--dim); margin-left: auto; }
+header.masthead .session a { color: var(--ink); }
+header.masthead .session .who { color: var(--dim); }
 
 h1, h2 {
   font-size: 1rem;

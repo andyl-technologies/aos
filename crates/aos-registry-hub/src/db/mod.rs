@@ -5121,6 +5121,29 @@ impl Database {
         Ok(Some(session))
     }
 
+    /// The signed-in user's email for a session secret, without bumping
+    /// `last_seen_at` (the masthead reads this on every page render).
+    ///
+    /// Returns `None` when the secret is unknown, the session is expired, or
+    /// the user was deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn session_email(&self, secret: &str) -> Result<Option<String>> {
+        let hash = crate::auth::token::sha256_hex(secret);
+        let now = unix_now();
+        self.backend
+            .query_opt(
+                "SELECT u.email FROM sessions s JOIN users u ON u.id = s.user_id
+                 WHERE s.id_hash = ?1 AND s.expires_at > ?2 AND u.deleted_at IS NULL",
+                &vals![hash, now],
+            )
+            .context("loading session email")?
+            .map(|row| row.get(0))
+            .transpose()
+    }
+
     /// Revoke a single session by its cookie secret.
     ///
     /// A no-op when the secret is unknown.

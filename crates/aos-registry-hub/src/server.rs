@@ -298,11 +298,30 @@ pub fn router(state: Arc<AppState>) -> Router {
         // over the registry catch-all by static-over-dynamic precedence.
         .merge(crate::console::router())
         .merge(oauth2)
+        // Resolve the request's session once and put the user's email in a
+        // task-local, so every page's masthead reflects the login + shows
+        // navigation without threading the identity through each handler.
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            resolve_session,
+        ))
         .with_state(state)
         // Panics become plain 500s instead of dropped connections; the
         // security-header layer wraps everything (including those 500s).
         .layer(CatchPanicLayer::new())
         .layer(axum::middleware::from_fn(security_headers))
+}
+
+/// Resolve the current session and run the request with the user's email in
+/// a task-local (read by the page renderer's masthead).
+async fn resolve_session(
+    State(state): State<Arc<AppState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let email = session_secret_from_cookies(request.headers())
+        .and_then(|secret| state.db.session_email(&secret).ok().flatten());
+    crate::ui::render::with_session_email(email, next.run(request)).await
 }
 
 /// Stamp the first-party security headers onto every response.
