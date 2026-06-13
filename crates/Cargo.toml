@@ -13,6 +13,7 @@ members = [
     "aos-registry-hub",
     "aos-registry-surface",
     "aos-registry-spa",
+    "aos-registry-worker",
     "aos-systemd",
 ]
 
