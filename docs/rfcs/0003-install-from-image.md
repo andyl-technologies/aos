@@ -5,7 +5,7 @@
   `apm update`/`install`/`upgrade --system` → reboot into the new
   generation) green in CI.
 - **Date:** 2026-06-12
-- **PR:** _(pending)_
+- **PR:** [#100](https://github.com/andyl-technologies/aos/pull/100)
 - **Audience:** anyone working on `pkgs/boot/`, `lib/testing/`,
   `modules/services/ignition.nix`, `tests/fleet/`, or the operator docs
   under `docs/boot/`.
