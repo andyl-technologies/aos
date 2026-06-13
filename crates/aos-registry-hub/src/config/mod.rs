@@ -713,6 +713,79 @@ pub fn change_membership(
     Ok(change_id)
 }
 
+/// Prepares a channel-advance as a draft change-set for client-side signing.
+///
+/// Channel advances are signed-tag operations, which a commit-style change
+/// request cannot carry (RFC-0004 "Configuration management"). For a BYO-key
+/// org the hub records the exact intent — channel, target release, partition
+/// count — as a **prepared operation**: a draft change-set with a single
+/// `channel_advance` revision whose `new_json` is the intent. The maintainer
+/// executes `apr channel advance --from-hub <change_id>` to fetch, verify,
+/// sign the partition tags locally, and push. The preparation is audited.
+///
+/// Returns the new [`ChangeId`]; the change-set stays in `draft` status (it
+/// is never applied server-side without a hosted key).
+///
+/// # Errors
+///
+/// Returns an error on database failure.
+pub fn prepare_channel_advance(
+    db: &Database,
+    actor: &Principal,
+    actor_label: &str,
+    registry_slug: &str,
+    channel: &str,
+    release: &str,
+    partitions: u16,
+) -> Result<ChangeId> {
+    let scope = Scope::parse(registry_slug);
+    let summary = format!("advance {channel} to {release} ({partitions} partitions)");
+    let change_id = open_draft(db, actor, actor_label, &scope, &summary)?;
+    let object_id = format!("{registry_slug}:{channel}");
+    let intent = serde_json::json!({
+        "registry": registry_slug,
+        "channel": channel,
+        "release": release,
+        "partitions": partitions,
+    });
+    stage(
+        db,
+        &change_id,
+        "channel_advance",
+        &object_id,
+        ConfigOp::Create,
+        None,
+        Some(intent),
+    )?;
+    // Audit the preparation directly: there is no live mutation to apply
+    // (signing is client-side), so this does not flow through `apply`.
+    let (kind, id) = principal_actor(actor);
+    db.record_audit(
+        kind,
+        id,
+        actor_label,
+        "channel.advance.prepared",
+        scope.as_str(),
+        Some(change_id.as_str()),
+        None,
+        None,
+        Some(&summary),
+    )?;
+    Ok(change_id)
+}
+
+/// The `apr channel advance --from-hub` command a prepared advance renders.
+///
+/// The maintainer runs it locally to fetch the recorded intent, verify it
+/// matches what was reviewed, sign the partition tags, and push.
+#[must_use]
+pub fn advance_command(registry_url: &str, change_id: &ChangeId) -> String {
+    format!(
+        "apr channel advance --registry {} --from-hub {change_id}",
+        registry_url.trim_end_matches('/'),
+    )
+}
+
 /// Resolves a registry record by id (slug + visibility), or an error when
 /// absent.
 fn registry_record(db: &Database, registry_id: i64) -> Result<crate::db::RegistryRecord> {

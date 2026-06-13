@@ -32,6 +32,9 @@
 //! - [`config`] — the SQL-backed configuration change-set engine: drafts,
 //!   semantic diffs, atomic apply, and snapshot-targeted forward revert
 //!   over the append-only audit/changeset/revision tables.
+//! - [`console`] — the authenticated producer console: session login, the
+//!   account profile, device approval, org/registry management pages, and
+//!   the CSRF-checked POST flows.
 //! - [`domain`] — tenancy/IAM domain model: orgs, projects, principals,
 //!   and the pure role/permission/scope authorization kernel.
 //! - [`auth`] — authentication: provisioning tokens, JWTs, human sessions,
@@ -49,6 +52,7 @@
 pub mod auth;
 pub mod compat;
 pub mod config;
+pub mod console;
 pub mod db;
 pub mod domain;
 pub mod facade;

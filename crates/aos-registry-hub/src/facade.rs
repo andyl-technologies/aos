@@ -407,7 +407,22 @@ async fn reindex(
     root: &std::path::Path,
 ) -> anyhow::Result<()> {
     let fetch = LocalFsFetch::new(root);
-    crate::indexer::index_and_record(&state.db, &fetch, registry).await?;
+    let outcome = crate::indexer::index_and_record(&state.db, &fetch, registry).await?;
+    // Record an `index` audit row so the publish-pipeline view (and the org
+    // audit feed) reflects the inline reindex a managed publish triggers. The
+    // actor is the hub itself (`system`); the resulting commit cross-
+    // references the cryptographic history.
+    state.db.record_audit(
+        "system",
+        None,
+        "system",
+        "index",
+        &registry.slug,
+        None,
+        Some(&outcome.commit),
+        None,
+        None,
+    )?;
     Ok(())
 }
 

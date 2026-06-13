@@ -630,6 +630,77 @@ pub fn package_page(
     )
 }
 
+/// Assign a grid glyph index to each release a channel targets,
+/// frontier-first, so the newest release is always glyph `0` (`■`).
+fn release_glyphs(channel: &ChannelSummary) -> (Vec<String>, BTreeMap<String, usize>) {
+    let mut release_order: Vec<String> = Vec::new();
+    if let Some(frontier) = &channel.frontier {
+        release_order.push(frontier.clone());
+    }
+    for release in channel.partitions.iter().flatten() {
+        if !release_order.contains(release) {
+            release_order.push(release.clone());
+        }
+    }
+    let class_for: BTreeMap<String, usize> = release_order
+        .iter()
+        .enumerate()
+        .map(|(i, release)| (release.clone(), i.min(GRID_GLYPHS.len() - 1)))
+        .collect();
+    (release_order, class_for)
+}
+
+/// Render the 16×16 partition grid as a `<pre>` block plus its legend table.
+///
+/// Shared by the consumer [`channel_page`] and the producer channel rollout
+/// console ([`crate::ui::console::channel_console`]) so both show the
+/// identical glyph + color grid — RFC-0004's "ASCII diagrams are content".
+#[must_use]
+pub fn channel_grid_pre(channel: &ChannelSummary) -> String {
+    let (release_order, class_for) = release_glyphs(channel);
+    let mut grid = String::new();
+    for row in 0..16 {
+        for col in 0..16 {
+            let bucket = row * 16 + col;
+            let cell = match channel.partitions[bucket].as_deref() {
+                Some(release) => {
+                    let i = class_for
+                        .get(release)
+                        .copied()
+                        .unwrap_or(GRID_GLYPHS.len() - 1);
+                    format!("<span class=\"r{i}\">{}</span>", GRID_GLYPHS[i])
+                }
+                None => "<span class=\"dim\">·</span>".to_string(),
+            };
+            grid.push_str(&cell);
+        }
+        grid.push('\n');
+    }
+    let mut out = format!("<pre class=\"partition-grid\">{grid}</pre>\n");
+    let legend_rows: Vec<Vec<String>> = release_order
+        .iter()
+        .map(|release| {
+            let count = channel
+                .partitions
+                .iter()
+                .flatten()
+                .filter(|r| *r == release)
+                .count();
+            let i = class_for
+                .get(release)
+                .copied()
+                .unwrap_or(GRID_GLYPHS.len() - 1);
+            vec![
+                format!("<span class=\"r{i}\">{}</span>", GRID_GLYPHS[i]),
+                escape(release),
+                format!("{count} partitions ({}%)", count * 100 / 256),
+            ]
+        })
+        .collect();
+    out.push_str(&table(&["glyph", "release", "coverage"], &legend_rows));
+    out
+}
+
 /// The channel page with the 16×16 partition grid, the anti-rollback
 /// floor, and the no-JS `?bucket=` calculator.
 pub fn channel_page(

@@ -55,14 +55,27 @@ pub struct AppState {
     /// Per-registry publish leases held by the upload facade
     /// ([`crate::facade`]); process-local for phase 1/2.
     pub leases: crate::facade::LeaseMap,
+    /// The mailer that delivers magic-link login emails.
+    ///
+    /// Defaults to [`crate::auth::magic::LogMailer`] (logs the link rather
+    /// than sending it) for dev and tests.
+    pub mailer: Arc<dyn crate::auth::magic::Mailer>,
+    /// Dev mode: when set, the "check your email" page also shows the magic
+    /// link inline (since [`LogMailer`] does not send mail). Off in
+    /// production.
+    ///
+    /// [`LogMailer`]: crate::auth::magic::LogMailer
+    pub dev: bool,
 }
 
 impl AppState {
-    /// Builds an [`AppState`] with ephemeral JWT keys.
+    /// Builds an [`AppState`] with ephemeral JWT keys and a [`LogMailer`].
     ///
     /// Convenience for dev mode and tests; production may construct the
     /// struct directly to supply stable keys (so minted access tokens
-    /// survive a restart).
+    /// survive a restart) and a real mailer.
+    ///
+    /// [`LogMailer`]: crate::auth::magic::LogMailer
     #[must_use]
     pub fn new(db: Arc<Database>, external_url: String) -> AppState {
         let auth = Arc::new(AuthState::new(Arc::clone(&db), ACCESS_TOKEN_TTL_SECS));
@@ -71,6 +84,8 @@ impl AppState {
             external_url,
             auth,
             leases: crate::facade::LeaseMap::new(),
+            mailer: Arc::new(crate::auth::magic::LogMailer),
+            dev: false,
         }
     }
 }
@@ -147,6 +162,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/{slug}/{*path}",
             get(machine_path)
+                .post(post_machine_path)
                 .put(put_machine_path)
                 .head(head_machine_path),
         );
@@ -161,6 +177,11 @@ pub fn router(state: Arc<AppState>) -> Router {
     // (slugs with slashes) accept the upload facade's PUT/HEAD too.
     router = router.fallback(nested_catch_all);
     router
+        // The producer console: session login, account, device approval, org
+        // dashboards, and per-registry management. Its static prefixes
+        // (/login, /account, /activate, /-/org…, /{slug}/-/settings…) win
+        // over the registry catch-all by static-over-dynamic precedence.
+        .merge(crate::console::router())
         .merge(oauth2)
         .with_state(state)
         // Panics become plain 500s instead of dropped connections; the
@@ -188,12 +209,12 @@ async fn security_headers(
 }
 
 /// Map an internal error into a 500 with a terse body.
-fn internal(err: anyhow::Error) -> Response {
+pub(crate) fn internal(err: anyhow::Error) -> Response {
     tracing::error!(error = %format!("{err:#}"), "request failed");
     (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
 }
 
-fn load_registry(
+pub(crate) fn load_registry(
     state: &AppState,
     slug: &str,
 ) -> Result<Option<(RegistryRecord, Option<IndexStatus>)>, anyhow::Error> {
@@ -518,9 +539,47 @@ async fn machine_path(
             }
             serve_registry_machine_path(&state, &registry, &path).await
         }
-        // Not a flat registry: resolve as a nested canonical path.
-        Ok(None) => resolve_nested(&state, &uri, &headers, Instant::now()).await,
+        // Not a flat registry: a nested-canonical registry's console `/-/`
+        // page (its flat console routes capture only a single-segment slug),
+        // else a nested machine/browse path.
+        Ok(None) => {
+            if let Some(response) = crate::console::dispatch_nested(
+                &state,
+                &axum::http::Method::GET,
+                &uri,
+                &headers,
+                axum::body::Bytes::new(),
+            )
+            .await
+            {
+                return response;
+            }
+            resolve_nested(&state, &uri, &headers, Instant::now()).await
+        }
         Err(err) => internal(err),
+    }
+}
+
+/// The `POST /{slug}/{*path}` route: a producer-console mutation on a
+/// nested-canonical registry (`/-/settings/tokens`, `/-/channels/{name}/
+/// console`, …).
+///
+/// A flat single-segment slug's console POSTs are served by the explicit
+/// console routes; a nested registry's slug spans `/`, so its POSTs land
+/// here and are dispatched to [`crate::console::dispatch_nested`]. Anything
+/// that is not a recognized console path is a `404`.
+async fn post_machine_path(
+    State(state): State<Arc<AppState>>,
+    Path((_slug, _path)): Path<(String, String)>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    match crate::console::dispatch_nested(&state, &axum::http::Method::POST, &uri, &headers, body)
+        .await
+    {
+        Some(response) => response,
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -651,10 +710,20 @@ async fn nested_catch_all(
 ) -> Response {
     // The fallback receives every method; route the upload facade's
     // PUT/HEAD to a nested registry's surface, and everything else to the
-    // read resolver.
+    // read resolver — but first give the producer console a chance to claim
+    // a nested-canonical `/-/` console path (its flat routes only capture a
+    // single-segment slug, so nested registries land here).
     match method {
         axum::http::Method::PUT | axum::http::Method::HEAD => {
             resolve_nested_write(&state, &method, &uri, &headers, body).await
+        }
+        axum::http::Method::GET | axum::http::Method::POST => {
+            if let Some(response) =
+                crate::console::dispatch_nested(&state, &method, &uri, &headers, body).await
+            {
+                return response;
+            }
+            resolve_nested(&state, &uri, &headers, Instant::now()).await
         }
         _ => resolve_nested(&state, &uri, &headers, Instant::now()).await,
     }
@@ -766,7 +835,7 @@ fn parse_page(rest: &str) -> Option<PageKind> {
 /// `acme/infra/prod/cdn` with tail `objects/ab`; an exact match yields an
 /// empty tail (the registry home). Matching is on `/` boundaries, so
 /// `acme/infra/prod/cdn-staging` never resolves to `acme/infra/prod/cdn`.
-fn resolve_by_prefix(
+pub(crate) fn resolve_by_prefix(
     state: &AppState,
     path: &str,
 ) -> Result<Option<(RegistryRecord, String)>, anyhow::Error> {
@@ -923,7 +992,7 @@ fn render_home(
 /// Returns the denial [`Response`] (a 404) in the `Err` arm when the read is
 /// not authorized; `Ok(())` means the caller may proceed. The denial is
 /// boxed to keep the common `Ok` path small.
-fn authorize_registry_read(
+pub(crate) fn authorize_registry_read(
     state: &AppState,
     registry: &RegistryRecord,
     headers: &HeaderMap,
@@ -997,7 +1066,7 @@ fn bearer_allows_read(state: &AppState, headers: &HeaderMap, scope: &Scope) -> b
 }
 
 /// Extract the `__Host-aos_session` cookie value from a request's headers.
-fn session_secret_from_cookies(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn session_secret_from_cookies(headers: &HeaderMap) -> Option<String> {
     let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
     let prefix = format!("{}=", crate::auth::session::COOKIE_NAME);
     cookies

@@ -240,7 +240,11 @@ async fn main() -> Result<()> {
             }
 
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen}"));
-            let state = Arc::new(AppState::new(db, external_url));
+            let mut app_state = AppState::new(db, external_url);
+            // In dev mode the "check your email" page shows the magic link
+            // inline (the default LogMailer logs rather than sends).
+            app_state.dev = dev;
+            let state = Arc::new(app_state);
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await
                 .with_context(|| format!("binding {listen}"))?;
