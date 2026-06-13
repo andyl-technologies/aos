@@ -23,6 +23,6 @@ topic files.
 | [0002](0002-package-integration/README.md) | 2026-06-08 | Package integration model (`expose` manifests, per-unit sandboxing, preset enablement) | Proposed (14/19 decisions resolved; gated on the Decision 17 spike) |
 | [0003](0003-install-from-image.md) | 2026-06-12 | Installation from image — UEFI + Ignition first boot, CI-enforced | Proposed |
 | [0004](0004-registry-hub.md) | 2026-06-12 | `aos-registry-hub` — a multi-tenant registry management WebUI | Proposed |
-| [0005](0005-ca-trust-map.md) | 2026-06-12 | The `ca/` trust map — content-addressed closure validation | Proposed |
+| [0005](0005-ca-trust-map.md) | 2026-06-12 | The `store/` realisation graph — content-addressed closure validation | Proposed |
 
 Numbering is chronological by the date the design entered the tree.

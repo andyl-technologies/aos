@@ -1,4 +1,4 @@
-# RFC-0005: The `ca/` trust map — content-addressed closure validation
+# RFC-0005: The `store/` realisation graph — content-addressed closure validation
 
 - **Status:** Proposed (implementation in the same PR)
 - **Date:** 2026-06-12
@@ -13,9 +13,8 @@ A registry's trust root is the signed git tag: tag → commit → tree
 authenticates every committed file transitively
 (`docs/registry/signing-and-trust.md`). The tree names store paths by
 their **input-addressed (IA) hashes** — the 32-char nixbase32 store-path
-hashes that appear in `packages/<x>/<name>.toml` (`store_path`,
-`references`) and as every node of the `closures/<hash>` adjacency
-lists (`docs/registry/repo-layout.md` §4–§5).
+hashes in `packages/<x>/<name>.toml` (`store_path`, `references`) and in
+the per-root `closures/<hash>` adjacency lists.
 
 An IA hash is a promise about *how a path was built*, not *what bits it
 contains*. The hash is fixed before the build runs, so two different
@@ -23,11 +22,8 @@ NARs — one honest, one tampered with after signing — can both legally
 claim the same IA store path. The signature therefore roots the **shape**
 of the dependency graph but not its **content**:
 
-- The package root is covered: its TOML carries `nar_hash` (uncompressed
-  NAR SHA-256) and `download_hash` (compressed artifact SHA-256), both
-  inside the signed tree, and `apm` verifies them
-  (`crates/aos-package/src/verify.rs`, used from `upgrade.rs` and
-  `download.rs`).
+- The package root is covered: its TOML carries `nar_hash`, inside the
+  signed tree, and `apm` verifies it.
 - Every **non-root closure member** is not. The installer plans the
   closure from `closures/<root>`, then learns each member's NAR hash
   from a **cache-served narinfo** (`fetch_narinfos`,
@@ -43,277 +39,332 @@ The graph edges break exactly at the IA boundary: the signed tree says
 
 ## Design
 
-Add a committed **trust map** from IA store-path hashes to one or more
-**blessed content addresses**, stored in a new top-level `ca/`
-directory of the registry tree. Because the map is in the tree, it is
+Replace the registry's two parallel per-path indexes — `closures/`
+(dependency **shape**) and the originally-proposed `ca/` (content
+**addresses**) — with a single committed **realisation graph** under
+`store/`. One file per IA store path records, for every blessed build of
+that path: its exact NAR bytes, its content address (the CA realisation),
+and its dependency edges. Because the graph is in the signed tree, it is
 signed-by-extension like everything else; because every closure member
-has an entry, validating a closure becomes a pure membership check
+has a record, validating a closure becomes a pure membership check
 against signed data, and the cache is demoted to an untrusted byte
 transport — which is what it should have been all along.
 
-This is the same shape as the Nix CA-derivations *realisation* concept
-(the experimental trust map from a derivation output to a
-content-addressed path, signed by a builder). The registry plays the
-role of the realisation publisher, and the git signature plays the role
-of the realisation signature.
+The node is a **realisation**, exactly as in Nix's CA-derivations work: a
+realisation maps a build to its content-addressed output and pins which
+realisation of each dependency it composed against (Nix's
+`dependentRealisations`). That pin **is** a dependency edge — so the
+realisation graph *is* the closure graph, with content addresses on the
+nodes and CA pins on the edges. There is no second structure to keep in
+sync. The git signature plays the role of the realisation signature.
 
-### 2.1 Layout — fixed 1024-bucket files
+The same graph serves both store models from one registry:
+
+- an **input-addressed** consumer reads each node's `nar:` bytes, walks
+  the IA edges, and ignores content addresses (today's behaviour);
+- a **content-addressed** consumer picks one blessed realisation of the
+  root and follows its pinned edges, materialising the corresponding CA
+  closure.
+
+### 2.1 Layout
 
 ```
 <repo root>/
-├── registry.toml
+├── registry.toml                 ← [registry] + content_addressed = true|false
 ├── keys.toml
-├── packages/<x>/<name>.toml
-├── closures/<hash>
-└── ca/
-    ├── 0a            ← all entries whose IA hash starts with "0a"
-    ├── 0b
-    └── ...            (up to 32 × 32 = 1024 bucket files)
+├── packages/<x>/<name>.toml      ← package metadata (no nar_hash / references)
+└── store/
+    ├── r4/r4q1m2kp8v3x           ← one file per IA store path,
+    ├── h7/h7j3k8l2m9n4             sharded git-style by the first two
+    └── ...                         nixbase32 chars of the IA hash
 ```
 
-Buckets are named by the **first two nixbase32 characters** of the IA
-store-path hash. Properties:
+One file per input-addressed store path, named by the IA hash, sharded
+into `store/<first-2-of-ia>/<ia-hash>` (the same 2/30 split git uses for
+loose objects). Properties:
 
-- **No migration, ever.** Nixbase32 store hashes are uniform over the
-  alphabet, so buckets stay balanced: at 10k mapped paths a bucket
-  averages ~10 lines; at 100k, ~100 lines (≈7 KB); at 1M, ~1000 lines
-  (≈70 KB). One scheme spans today's bootstrap-chain registry and a
-  nixpkgs-scale one.
-- **Cheap lookup.** Validating a closure of N members reads at most
-  min(N, 1024) bucket files, and the client knows which ones directly
-  from the hashes in the closure file.
-- **Cheap publish.** A publish only appends lines for paths not already
-  mapped. After the registry warms up, most of a new package's closure
-  already has entries, so a publish touches a handful of buckets.
+- **No migration, ever, and no buckets to merge.** Each path is its own
+  file; a publish or a re-bless touches exactly the files it changes, so
+  concurrent publishes never conflict and lookup is a direct
+  filename-from-hash open. The 2-char shard keeps a nixpkgs-scale
+  registry from putting 100k entries in one directory.
+- **Dedup preserved.** A path that many closures share (glibc) is **one**
+  file, referenced by edges — not re-inlined per closure. The shape graph
+  and the content addresses live together without duplicating either.
 
-Buckets are created on demand; an absent bucket file means "no entries
-in this bucket".
+An absent `store/<prefix>/<ia>` file means "this path is not published
+here"; an absent `store/` directory entirely means "this registry
+predates the realisation graph" (legacy; see §2.8).
 
-### 2.2 File format — sorted adjacency lines
+### 2.2 File format
 
-Each bucket file is UTF-8, LF-terminated lines, **sorted by IA hash**,
-one line per mapped store path:
-
-```
-<ia-hash> <entry> [<entry> ...]
-```
-
-- `<ia-hash>` — the 32-char nixbase32 store-path hash, the same key
-  used for `closures/` filenames and `references` values.
-- `<entry>` — a type-tagged content address. Multiple entries mean
-  multiple **blessed** realisations of the same IA path (non-reproducible
-  rebuilds, independent builders). Order is not significant; writers
-  keep entries sorted for stable diffs.
-
-Lines starting with `#` and blank lines are ignored (same lexical rules
-as `closures/` files, `ClosureMeta::parse`).
-
-Entry types, dispatched on the first `:`-separated segment:
+Each file is UTF-8 text: a sequence of **realisation records**, one per
+blessed build. A record is a header line followed by its dependency-edge
+lines:
 
 ```
-nar:sha256:<52-char-nixbase32>:<nar-size-bytes>
-ca:fixed:r:sha256:<52-char-nixbase32>            (reserved, see §2.3)
+ca:sha256:<ca-hash> nar:sha256:<nar-hash>:<size>
+  ia:sha256:<dep-ia>/ca:sha256:<dep-ca>
+  ia:sha256:<dep-ia>/ca:sha256:<dep-ca>
+ca:sha256:<ca-hash2> nar:sha256:<nar-hash2>:<size2>
+  ia:sha256:<dep-ia>/ca:sha256:<dep-ca>
 ```
 
-Unknown entry types are skipped by consumers (forward compatibility),
-but a line whose entries are *all* unknown types fails validation for
-that path — silently treating "nothing I can check" as "checked" would
-defeat the map.
-
-Example bucket `ca/r4`:
+A path served only from input-addressed stores carries no content
+address: the header is just the NAR, and the edges are bare IA hashes:
 
 ```
-r4q1m2kp8v3x nar:sha256:1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy:1048576
-r4z9w2n3p7c5 nar:sha256:0c7n5whyvfyqap5jr6xj21mimi80wabqy9v5cxpfwpji2j91kjcx:393216 nar:sha256:1d9p7xjzxhzscr7l18zl4qpkpk02ydhs01w7czrhyrlk4lb3mlgz:393218
+nar:sha256:<nar-hash>:<size>
+  ia:sha256:<dep-ia>
+  ia:sha256:<dep-ia>
 ```
 
-(The second line shows a path blessed twice — two builders produced
-byte-different but both-accepted outputs.)
+Grammar and lexical rules:
 
-Sorted lines keep git diffs minimal (a blessing is a one-line or
-one-token change) and make concurrent-publish merge conflicts within a
-bucket trivially resolvable.
+- A line whose first token is `ca:` or `nar:` **starts a new
+  realisation**; a line whose first token is `ia:` is a **dependency
+  edge of the current realisation**. The token prefix disambiguates, so
+  indentation is conventional (readability), not significant — tabs or
+  spaces both work.
+- Blank and whitespace-only lines and trailing whitespace are ignored;
+  `#` begins a comment to end of line.
+- A header is `[ca:sha256:<ca>] nar:sha256:<h>:<size>` — the `ca:` token
+  present in content-addressed mode, absent in IA-only mode.
+- An edge is `ia:sha256:<dep-ia>[/ca:sha256:<dep-ca>]` — the `/ca:` pin
+  present only when the dependency has more than one blessed realisation
+  (otherwise the consumer resolves it to the dependency's sole `ca:`).
+- All hashes are nixbase32 SHA-256 (`sha256:` form); the IA hash of the
+  path itself is the filename, not repeated in the body.
 
-`.gitattributes` deliberately does **not** get a `ca/** -diff` entry
-(unlike `closures/**`). Blessing changes are the registry's
-highest-value security-review surface: adding or removing a blessed
-hash must show up as a readable one-line diff in `git log -p` and in PR
-review.
+Records and edges are written in a stable sorted order so a re-bless or
+revocation is a readable diff. `.gitattributes` deliberately gets **no**
+`store/** -diff` entry: a change to what bytes the registry vouches for
+is its highest-value security-review surface and must show up as a
+readable diff in `git log -p` and in PR review.
 
-### 2.3 Which content-address function?
+### 2.3 Cardinalities — IA → 0..N NARs, 0..M realisations
 
-There are two candidate functions, and they compose differently. The
-map's value format is type-tagged precisely so we can ship the simple
-one now without foreclosing the other.
+A single IA path maps to:
 
-**`nar:` — plain NAR hash of the path as built (this RFC ships this).**
-IA paths embed their own store path in self-references, and that name
-is fixed before the build, so the literal NAR bytes are already a
-complete, deterministic content address of an IA path. It is also
-exactly what a client can verify with zero extra machinery: hash the
-NAR it was going to download anyway, compare. No rewriting, no
-cross-path coupling — each path's check is independent, so multiple
-blessed entries for a dependency never affect the parent's check.
+- **0..N blessed NARs** (`nar:` headers). One when the build is
+  byte-reproducible; more than one when it is not — each independent
+  build is a separately blessed byte-set. (At least one once published.)
+- **0..M content-addressed realisations** (`ca:` headers). **Zero** for a
+  pure-IA registry or a path not yet CA-blessed; one when reproducible;
+  more than one otherwise.
 
-**`ca:` — the experimental Nix CA-store form (reserved).** What
-`nix store make-content-addressed` computes: NAR hash *modulo
-self-references*, with dependency references rewritten to their CA
-paths. This is the interop format for the Nix content-addressed store
-proposal, but it has a composition subtlety: a parent's CA hash is a
-function of *which* CA realisation of each dependency it was rewritten
-against. The moment one IA hash carries two blessed entries, the
-parent's CA hash is only meaningful relative to a specific dependency
-assignment — Nix models this with `dependentRealisations` pinning. A
-future RFC that activates `ca:` entries must either carry that pinning
-in the entry format or require unique blessing within any closure being
-validated. Nothing in this RFC's layout changes when that happens; it
-is purely additive entries.
+Because a CA hash is computed *from* the content **plus the
+dependencies' CA hashes**, non-determinism does not produce a lone
+alternate hash — it produces a whole alternate **subtree**: a divergence
+at any node propagates upward to every transitive parent that
+incorporates it. So *N* blessed builds of a root are *N* consistent CA
+assignments over the closure DAG. The realisation-node model encodes this
+without blowup, because dedup is per *realisation* `(IA, CA)`, not per IA:
+two assignments share every sub-path they agree on and only allocate new
+nodes along the divergent spine.
 
-The security goal — exact bits rooted at the tag signature — is fully
-achieved by `nar:` entries alone.
+Worked example — `app → {libfoo, libbar}`, `libfoo → zlib`,
+`libbar → zlib`, with `libfoo` non-reproducible (realisations `f1`, `f2`)
+and everything else reproducible:
 
-### 2.4 Validation flow (`apm`)
+```
+store/z1/z1ib5s6y7w8i        (zlib, reproducible leaf)
+  ca:sha256:<z1> nar:sha256:<…>:65536
 
-For every closure install/upgrade, after the registry sync has verified
-the tag/commit chain:
+store/b4/b4r1q2w3e4r5        (libbar, reproducible)
+  ca:sha256:<b1> nar:sha256:<…>:98304
+    ia:sha256:z1ib5s6y7w8i/ca:sha256:<z1>
 
-1. Resolve the root and plan the closure from `closures/<root>` as
-   today.
-2. For each member (root included), load its blessed entry set from
-   `ca/<prefix>`. **A member with no entry fails the whole closure** —
-   the map is total over published closures, and a gap means the
-   registry is malformed or downgrade-stripped.
-3. Download the compressed NAR from any `[[caches]]` mirror.
-   Decompress with a hard output cap of the largest blessed
-   `nar-size` for that path (this bounds zstd-bomb exposure while
-   decompressing not-yet-verified input).
-4. SHA-256 the uncompressed NAR stream; accept iff
-   `nar:sha256:<hash>:<size>` is in the blessed set. Reject the whole
-   closure on any miss.
+store/f0/f00a3k8m1n5p        (libfoo, NON-reproducible — two realisations)
+  ca:sha256:<f1> nar:sha256:<…>:131072
+    ia:sha256:z1ib5s6y7w8i/ca:sha256:<z1>
+  ca:sha256:<f2> nar:sha256:<…>:131008
+    ia:sha256:z1ib5s6y7w8i/ca:sha256:<z1>
 
-Cache-served narinfos are demoted to **advisory**: still used for the
-NAR URL, compression kind, and download planning, never as a trust
-source. The narinfo `NarHash` may be cross-checked early to fail fast,
-but disagreement with `ca/` always resolves in favor of `ca/`.
+store/ap/ap0k7m9n2p4q        (app — forks on which libfoo it used)
+  ca:sha256:<a1> nar:sha256:<…>:204800
+    ia:sha256:f00a3k8m1n5p/ca:sha256:<f1>
+    ia:sha256:b4r1q2w3e4r5/ca:sha256:<b1>
+  ca:sha256:<a2> nar:sha256:<…>:204864
+    ia:sha256:f00a3k8m1n5p/ca:sha256:<f2>
+    ia:sha256:b4r1q2w3e4r5/ca:sha256:<b1>
+```
 
-Validation is per-member-independent under `nar:` entries, so download
-parallelism is unchanged.
+Two trees (`a1`-rooted, `a2`-rooted) share the single `zlib` and `libbar`
+nodes and fork only at `libfoo` and above. The pin on each `app` edge is
+what makes "which `libfoo`?" unambiguous; `libbar`'s edge needs no pin
+because `libbar` has one realisation.
+
+### 2.4 Content addresses — the `ca:` form
+
+A `ca:` hash is what `nix store make-content-addressed` computes: the NAR
+hash *modulo self-references*, with each dependency reference rewritten to
+that dependency's CA store path. Because the rewrite consumes the
+dependencies' CA paths, the parent's CA hash is well-defined only relative
+to a specific dependency assignment — which is exactly what the edge pins
+record. Composition is therefore **structural**: a realisation plus its
+pinned edges name a unique, internally-consistent CA tree, and the
+ambiguity Nix solves with `dependentRealisations` is solved here by the
+graph edges themselves.
+
+The producer computes these by delegating to Nix
+(`nix store make-content-addressed --json` over the closure root, one
+invocation resolving a consistent assignment for the whole closure) — no
+reimplementation of Nix's CA path formula to keep byte-exact. See §2.5.
+
+The security goal — exact bits rooted at the tag signature — is achieved
+by the `nar:` headers alone; `ca:` adds content-addressed-store interop on
+top, and a consumer never has to trust the cache in either mode because a
+node's CA is a pure function of its (signed) bytes and its dependencies'
+(signed) CA hashes.
 
 ### 2.5 Publish flow (`apr`)
 
-`apr publish` already walks the closure to write `closures/<root>`
-(`write_closure_files`, `crates/aos-package/src/registry_ops.rs`). It
-gains one step in the same walk: for every member, compute the NAR
-SHA-256 and size from the local store (the publisher has the bytes —
-it is about to upload them), and upsert
-`nar:sha256:<hash>:<size>` into `ca/<prefix>`:
+`apr publish` introspects the closure once (replacing the old separate
+`closures/` walk): for every member it records the NAR SHA-256 and size
+from the local store, and — when the registry is `content_addressed`
+(default, §2.7) — the member's CA hash and pinned edges from a single
+`nix store make-content-addressed --json` pass. It writes/updates each
+member's `store/<prefix>/<ia>` file:
 
-- New path → insert a sorted line.
-- Existing path, same entry → no-op.
-- Existing path, **different** entry → refuse by default with a clear
-  diagnostic; `--bless` appends the new entry alongside the old. An
-  unexpected hash mismatch during publish is exactly the signal this
-  design exists to catch, so it must never be silently merged.
+- New path → write the record.
+- Existing path, identical realisation → no-op.
+- Existing path, **different** content for an existing realisation key →
+  refuse by default with a clear diagnostic; `--bless` adds the new
+  realisation alongside the old. An unexpected mismatch at publish time is
+  exactly the signal this design exists to catch, so it is never merged
+  silently.
 
-A separate `apr ca` subcommand owns explicit map maintenance:
+`apr store` owns explicit graph maintenance:
 
-- `apr ca bless <store-path>` — add an entry computed from local bytes
-  (the multi-builder reproduction workflow).
-- `apr ca revoke <ia-hash> <entry>` — remove a blessed entry.
-- `apr ca verify [--root <hash>]` — recheck local/cached NARs against
-  the map.
+- `apr store bless <store-path> [--recursive]` — add a realisation
+  computed from local bytes (the multi-builder reproduction workflow).
+- `apr store revoke <ia-hash> [--realisation <ca>]` — remove a blessed
+  realisation (or the whole record).
+- `apr store verify [--deep]` — check graph health and closure coverage;
+  `--deep` recomputes local NAR hashes and requires blessed matches.
+- `apr store backfill [--bless]` — record every published closure from the
+  local store in one pass, so an existing registry becomes fully mapped in
+  one signed commit.
 
-### 2.6 Trust semantics
+### 2.6 Validation flow (`apm`)
 
-The map is **append-mostly; removal is revocation.** Adding an entry
-means another builder reproduced (or legitimately diverged on) the
-path. Removing one means "we no longer trust these bits" and gets the
-same ceremony as a `keys.toml` retirement: a signed commit with a
-reviewable one-token diff, named in the commit message. Consumers treat
-a revoked entry like any unknown hash — the bytes simply stop
-validating on the next sync.
+After the registry sync has verified the tag/commit chain, the consumer
+resolves the root and walks the realisation graph. The store mode
+(auto-detected from the local Nix store, overridable per registry)
+selects the projection:
 
-Anti-rollback for the map itself comes for free from the existing
-signed-fast-forward / version-floor machinery
-(`docs/registry/signing-and-trust.md`): an attacker cannot serve an
-older tree that still blesses revoked bits without also rolling back
-the tag, which continuity enforcement rejects.
+**Input-addressed mode** (default today):
 
-### 2.7 Package TOML changes — `nar_hash` and friends
+1. Plan the closure by walking `store/` IA edges from the root.
+2. For every member from a registry that publishes a `store/` graph, the
+   member's record must exist and carry a `nar:` header — checked over the
+   **whole closure** before download, including members already in the
+   local store, so a stripped or partial graph fails loudly rather than
+   slipping through on an upgrade.
+3. Download each compressed NAR from any `[[caches]]` mirror; decompress
+   with a hard output cap of the largest blessed `size` for that path
+   (bounds zstd-bomb exposure on not-yet-verified input).
+4. SHA-256 the uncompressed NAR; accept iff it matches one of the
+   member's blessed `nar:` headers. Reject the whole closure on any miss.
 
-With `ca/` total over the closure, the per-platform package TOML sheds
-the fields whose job it was doing partially:
+**Content-addressed mode:**
+
+1. Require the root IA to have ≥1 realisation (else not CA-installable —
+   fall back to IA or fail).
+2. Pick one root realisation; follow its pinned edges to select exactly
+   one internally-consistent tree (shared reproducible nodes are reached
+   by multiple parents but resolve to one realisation each).
+3. Verify each node's `nar:` bytes as above, then that rewriting its
+   references to the pinned dependency CA paths reproduces the node's
+   blessed `ca:`.
+
+Cache-served narinfos are **advisory** in both modes: used for the NAR
+URL, compression kind, and download planning, never as a trust source. A
+registry that publishes no `store/` graph falls back, with a warning, to
+verifying downloaded members against the cache-served narinfo `NarHash` —
+the same unauthenticated check apm applied before this RFC. Enforcement is
+**per source registry**: a path is judged against the graph of the
+registry that resolved it, never a cross-registry union, so a legacy
+registry in the same transaction cannot disable enforcement for a mapped
+one.
+
+### 2.7 `content_addressed` config
+
+`registry.toml` gains `[registry] content_addressed` (default **true**):
+
+- **true** — `apr publish`/`backfill` fill `ca:` headers and pinned edges
+  for every member; `apr store verify` requires CA coverage; the registry
+  serves both store models.
+- **false** — the producer writes IA-only records (`nar:` headers, bare
+  edges); the graph is the closure-plus-bytes with no content addresses, a
+  pure input-addressed registry. `apr publish --no-ca` forces IA-only for
+  a single publish regardless of the registry default.
+
+One file format covers both; the difference is only whether the `ca:`
+column is filled.
+
+### 2.8 Package TOML changes and migration
+
+With the realisation graph total over the closure, the per-platform
+package TOML sheds the fields the graph now owns:
 
 | Field | Disposition |
 |---|---|
-| `nar_hash` | **Removed.** Redundant with the root's `ca/` entry, and worse: single-valued (cannot express multiple blessed rebuilds) and a second signed source that can disagree with the first. One authority. |
-| `nar_size` | **Removed.** Sizes pair 1:1 with blessed hashes (different bits → different size), so they live inside each `nar:` entry. |
-| `download_hash`, `download_size` | **Removed from the documented schema.** (Implementation note: these appeared in `repo-layout.md`'s TARGET example but were never read or written by the code — the removal is doc-only.) They describe one particular compressed artifact, which is cache-/compression-specific. Post-download verification against the blessed NAR hash subsumes them; the decompression cap (§2.4) covers the unverified-input window they would pre-check. They remain available, unauthenticated, in narinfos for planning and early-fail. |
-| `store_path`, `references`, `closure_size`, `source_drv`, `source_nar_hash` | **Unchanged.** (`references` overlaps with the `closures/` root line and could fold away later, but that is graph shape, not content trust — out of scope here.) |
-
-The narinfo emitter (`docs/registry/nix-cache-compatibility.md` §6)
-reads `NarHash`/`NarSize` from `ca/` instead of the TOML; where a path
-has multiple blessed entries, the emitter publishes the one matching
-the artifact the cache actually stores.
-
-### 2.8 Migration
+| `nar_hash`, `nar_size` | **Removed.** The graph is the single authority for blessed bytes — multi-realisation capable, and no second signed source that can disagree. |
+| `references` | **Removed.** It is the root node's edge set; the graph holds the dependency shape. |
+| `store_path`, `closure_size`, `source_drv`, `source_nar_hash`, sysroot `images` | **Unchanged.** `store_path` still anchors the package to its IA hash (and thus its `store/` record); sources and images sit outside the runtime closure the graph covers and keep their own hashes. |
 
 The registry is pre-1.0 and self-hosted, so the cutover is short, but
 parsers must not hard-break on published trees:
 
-1. **Parse-tolerant first.** Consumer-side TOML parsing treats the
-   removed fields as optional and ignores them when present
-   (`registry/parse.rs`). Already-published registries keep working.
-2. **Producer cutover.** `apr publish` writes `ca/` entries and stops
-   emitting the removed TOML fields. `apr ca backfill` walks all
-   published closures and generates entries from the origin's NARs, so
-   an existing registry becomes fully mapped in one signed commit.
-3. **Consumer enforcement.** Enforcement is **per source registry**: a
-   path is judged against the `ca/` map of the registry that resolved it,
-   never a cross-registry union. When that registry publishes a map, a
-   missing blessed entry for any closure member is a hard failure — checked
-   over the *whole* closure (including members already in the local store),
-   so a *partial* map is rejected even on an upgrade where the gap falls on
-   an already-present path (a partial map is indistinguishable from a
-   stripping attack). A registry with no `ca/` directory at all falls back,
-   with a warning, to verifying every downloaded member against the
-   cache-served narinfo `NarHash` — the same unauthenticated check apm
-   applied before this RFC. A mixed transaction (one mapped registry, one
-   legacy) enforces the mapped registry's paths regardless of the legacy
-   one.
+1. **Parse-tolerant first.** Consumer-side parsing treats `nar_hash`,
+   `nar_size`, and `references` as optional and backfills the in-memory
+   metadata from `store/` when absent. Already-published registries keep
+   working.
+2. **Producer cutover.** `apr publish` writes `store/` records and stops
+   emitting the removed TOML fields. `apr store backfill` maps an existing
+   registry in one signed commit.
+3. **Consumer enforcement.** Per §2.6: when a path's source registry
+   publishes a `store/` graph, missing records/`nar:` headers are a hard
+   failure over the whole closure; a registry with no `store/` directory
+   falls back to the unauthenticated narinfo `NarHash` with a warning.
 
 ## What this does NOT do
 
-- It does not switch AOS to the Nix CA store. Store paths, the cache
-  layout, and `closures/` are untouched; `ca/` is a parallel index.
+- It does not *require* AOS to run a Nix CA store. The graph carries CA
+  addresses so a CA-store consumer *can* use them, but the default install
+  path remains input-addressed; `content_addressed = false` drops the CA
+  column entirely.
 - It does not authenticate narinfos. They become advisory; the signed
-  map makes their integrity irrelevant.
-- It does not bind IA hashes to *derivations* (no `drv → output`
-  edge). The key is the store-path hash because that is what the tree
-  already speaks. If true CA-derivation interop lands later, the
-  `source_drv` field already in the TOML provides the join point.
+  graph makes their integrity irrelevant.
+- It does not bind IA hashes to *derivations* (no `drv → output` edge).
+  The node key is the store-path hash because that is what the tree
+  already speaks. The `source_drv` TOML field remains the join point if
+  true CA-derivation interop lands later.
 
 ## Open questions
 
-1. **`ca:` entry activation.** Dependent-realisation pinning vs.
-   unique-blessing-per-closure, deferred to the RFC that needs it
-   (§2.3).
-2. **Bucket-internal compression of repeated prefixes** (e.g. elide
-   the `nar:sha256:` tag when it's the only type in use) — rejected
-   for now; explicitness wins at these file sizes.
-3. **Folding `references` out of the package TOML** in favor of the
-   closure root line (§2.7) — separate cleanup, separate PR.
+1. **CA-store consumer materialisation.** The producer fills CA addresses
+   and the consumer validates them; actually realising a CA store path on
+   install (vs. importing the IA path) depends on a CA-enabled local Nix
+   and is the remaining consumer increment.
+2. **Realisation selection policy** when a root has multiple CA
+   realisations — deterministic tiebreak vs. operator preference.
 
 ## Implementation plan (this PR)
 
-1. `ca/` read model in `crates/aos-package/src/registry/` (bucket
-   loading, line parsing, entry types) + types in `types.rs`.
-2. Publish-side writing in `registry_ops.rs` (closure walk upsert,
-   refuse-on-mismatch, `--bless`), `apr ca` subcommand
-   (`bless`/`revoke`/`verify`/`backfill`).
-3. Verify-side enforcement in `download.rs`/`upgrade.rs` (blessed-set
-   membership, decompression cap, narinfo demotion).
-4. TOML field removal per §2.7–§2.8 (tolerant parse, emit stop,
-   narinfo emitter reads `ca/`).
-5. Docs: update `docs/registry/repo-layout.md` (new §, tree diagram),
-   `signing-and-trust.md`, `nix-cache-compatibility.md`.
+1. `registry/store.rs`: the realisation-graph model, text parser/writer,
+   sharded path layout, `StoreMap` loader, producer upsert/remove
+   (replaces `registry/ca.rs` and `registry/closures.rs`).
+2. Rewire `registry/mod.rs`, `resolve.rs` (walk `store/` edges; drop the
+   `references` BFS and per-root closure files), and `verify.rs` (blessed
+   verification + per-registry `TrustContext` + whole-closure totality)
+   onto the graph.
+3. Producer: `write_store_files` (NAR + optional CA), `apr store`
+   subcommand, `content_addressed` config, drop `references`/`nar_hash`
+   emission, narinfo emitter + `apr cache`/`validate` read the graph.
+4. Sync: `extract_store` (presence-preserving, sharded), drop
+   `closures/`/`ca/` extraction.
+5. Docs: `repo-layout.md`, `signing-and-trust.md`,
+   `nix-cache-compatibility.md`, `publishing.md`.
