@@ -29,6 +29,8 @@
 //!   filesystem (`file://`) and HTTP(S) implementations.
 //! - [`db`] — sqlite-backed storage: the `registries` system-of-record
 //!   table and the rebuildable index tables.
+//! - [`domain`] — tenancy/IAM domain model: orgs, projects, principals,
+//!   and the pure role/permission/scope authorization kernel.
 //! - [`indexer`] — fetch → verify → load → index orchestration.
 //! - [`validation`] — presence-depth cache consistency validation.
 //! - [`compat`] — the machine-path facade.
@@ -38,6 +40,7 @@
 
 pub mod compat;
 pub mod db;
+pub mod domain;
 pub mod fetch;
 pub mod indexer;
 pub mod rpc;
