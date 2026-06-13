@@ -1732,10 +1732,18 @@ pub fn config_edit_page(
     }
 
     if can_edit {
+        // The label is its own block above the editor (an inline label next
+        // to a tall textarea baseline-aligns to the bottom and reads as a
+        // stray word). The `.code-editor` wrapper is the no-JS textarea plus
+        // an empty highlight overlay that `app.js` activates if it loads.
         let _ = write!(
             body,
             "<form class=\"console\" method=\"post\" action=\"/{}/-/settings/config\">\n{}\
-             <label>registry.toml\n<textarea name=\"contents\" rows=\"18\" cols=\"80\" required>{}</textarea></label>\n\
+             <span class=\"field-label\">registry.toml</span>\n\
+             <div class=\"code-editor\" data-lang=\"toml\">\
+             <pre class=\"code-highlight\" aria-hidden=\"true\"><code></code></pre>\
+             <textarea name=\"contents\" rows=\"18\" spellcheck=\"false\" required>{}</textarea>\
+             </div>\n\
              <button>submit change request</button>\n</form>\n",
             escape(slug),
             csrf_field(csrf),
@@ -1841,7 +1849,8 @@ pub struct ChangeRequestView {
 /// current page is appended by the caller's title.
 fn registry_crumbs(slug: &str) -> Vec<(String, String)> {
     vec![
-        (String::new(), "registries".to_string()),
+        // Link "registries" to the instance home, matching the browse pages.
+        ("/".to_string(), "registries".to_string()),
         (format!("/{slug}/"), slug.to_string()),
     ]
 }

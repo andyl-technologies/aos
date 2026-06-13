@@ -62,6 +62,9 @@ body {
   margin: 0 auto;
   padding: 2.25rem 1.5rem 5rem;
   max-width: 74rem;
+  /* Tint every UA-accented control (focus rings, checkboxes, and the
+   * search field's clear "x") with our clay primary instead of UA blue. */
+  accent-color: var(--accent);
 }
 
 p { margin: 0.7rem 0; }
@@ -113,6 +116,10 @@ th, td {
   padding: 0.45rem 1.1rem 0.45rem 0;
   border-bottom: 1px solid var(--rule);
   vertical-align: top;
+  /* Long unbreakable strings (trust keys, store paths, NAR hashes) must
+   * wrap inside the cell rather than widen the table past the page. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 th {
   color: var(--dim);
@@ -246,6 +253,31 @@ select {
   color: var(--ink);
 }
 
+/* Focus: the clay accent, never the UA blue. A matching border plus a thin
+ * accent outline reads as "active" without shifting layout. */
+input:focus,
+textarea:focus,
+select:focus,
+button:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+/* The search field's clear control: WebKit/Blink draw a fixed gray-blue "x"
+ * that ignores `accent-color`. Replace it with an accent-tinted X via a mask
+ * so it tracks the theme (Firefox already honors `accent-color` above). */
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 0.8em;
+  width: 0.8em;
+  cursor: pointer;
+  background-color: var(--accent);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 3l10 10M13 3L3 13' stroke='%23000' stroke-width='2'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 3l10 10M13 3L3 13' stroke='%23000' stroke-width='2'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
 /* Producer console: the no-JS tier is the floor, so every mutation is a
  * plain form + redirect. Layout only — the control styling is global. */
 form.console { margin: 0.9rem 0 1.8rem; }
@@ -254,6 +286,86 @@ form.console input[type="text"],
 form.console input[type="email"],
 form.console input[type="password"],
 form.console select { min-width: 18rem; }
+
+/* A standalone field caption (used where a tall control would baseline-align
+ * an inline <label> to its bottom edge). Matches the table-header treatment. */
+.field-label {
+  display: block;
+  margin: 0.9rem 0 0.3rem;
+  color: var(--dim);
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+}
+
+/* The TOML config editor: a plain <textarea> (the no-JS floor) plus a
+ * highlight overlay that app.js fills in and reveals by adding `.enhanced`.
+ * Until then the textarea is a normal, full-width, resizable control. */
+.code-editor textarea {
+  display: block;
+  width: 100%;
+  font: inherit;
+  line-height: 1.5;
+  tab-size: 2;
+  padding: 0.9rem 1.1rem;
+  border: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--ink) 6%, var(--paper));
+  color: var(--ink);
+  resize: vertical;
+}
+.code-editor .code-highlight { display: none; }
+
+/* Enhanced mode: the highlight <pre> sits in flow and sizes the box; the
+ * textarea is layered on top with transparent text and a visible caret, so
+ * what you type lines up exactly over the colored tokens beneath it. */
+.code-editor.enhanced { position: relative; }
+.code-editor.enhanced .code-highlight,
+.code-editor.enhanced textarea {
+  margin: 0;
+  border: 1px solid var(--rule);
+  padding: 0.9rem 1.1rem;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  box-sizing: border-box;
+}
+.code-editor.enhanced .code-highlight {
+  display: block;
+  min-height: 18rem;
+  background: color-mix(in srgb, var(--ink) 6%, var(--paper));
+  color: var(--ink);
+  pointer-events: none;
+}
+.code-editor.enhanced .code-highlight code {
+  font: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+}
+.code-editor.enhanced textarea {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--ink);
+}
+
+/* TOML token palette — drawn entirely from the theme variables so the editor
+ * tracks light/dark and never introduces an off-scheme color. */
+.code-highlight .t-c { color: var(--dim); font-style: italic; } /* comment */
+.code-highlight .t-h { color: var(--accent); font-weight: 700; } /* [table] */
+.code-highlight .t-k { color: var(--ink); }                      /* key */
+.code-highlight .t-s { color: var(--ok); }                       /* string */
+.code-highlight .t-n { color: var(--warn); }                     /* number */
+.code-highlight .t-b { color: var(--link); }                     /* boolean */
+.code-highlight .t-a { color: var(--ink); }                      /* array/inline table */
 
 p.notice {
   border-left: 3px solid var(--ok);

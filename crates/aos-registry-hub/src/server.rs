@@ -39,7 +39,7 @@ use crate::auth::extract::AuthState;
 use crate::compat;
 use crate::db::{Database, IndexStatus, PackageRow, RegistryRecord};
 use crate::domain::{Permission, Principal, Scope};
-use crate::ui::{pages, STYLESHEET};
+use crate::ui::{pages, APP_JS, STYLESHEET};
 
 /// Lifetime, in seconds, of a hub access token minted at `/oauth2/token`.
 const ACCESS_TOKEN_TTL_SECS: i64 = 900;
@@ -276,6 +276,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::post(device_authorization),
         )
         .route("/_assets/style.css", get(stylesheet))
+        .route("/_assets/app.js", get(app_js))
         .route("/_assets/jetbrains-mono-regular.woff2", get(font_regular))
         .route("/_assets/jetbrains-mono-bold.woff2", get(font_bold))
         .route("/_assets/OFL.txt", get(font_license))
@@ -604,6 +605,17 @@ async fn stylesheet() -> Response {
             (header::CACHE_CONTROL, "public, max-age=3600"),
         ],
         STYLESHEET,
+    )
+        .into_response()
+}
+
+async fn app_js() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        APP_JS,
     )
         .into_response()
 }

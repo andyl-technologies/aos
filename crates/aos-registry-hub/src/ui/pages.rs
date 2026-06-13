@@ -19,7 +19,9 @@ use crate::db::{
 #[cfg(test)]
 use crate::db::{PlatformDetail, VersionDetail};
 use crate::stack::StackNode;
-use crate::ui::render::{ago, escape, human_size, key_fingerprint, page, table, StateLine};
+use crate::ui::render::{
+    ago, escape, human_size, key_fingerprint, live_table, page, table, StateLine,
+};
 
 /// Glyph palette for the partition grid: one glyph per release, assigned
 /// in frontier-first order, so the encoding survives without color.
@@ -178,19 +180,22 @@ pub fn instance_home(
     let mut body = String::from("<h1>Registries</h1>\n");
     let _ = writeln!(
         body,
-        "<form method=\"get\"><input name=\"q\" value=\"{}\" placeholder=\"search registries\"> \
-         <button>search</button></form>",
+        "<form method=\"get\" data-live><input type=\"search\" name=\"q\" value=\"{}\" \
+         placeholder=\"search registries\"> <button>search</button></form>",
         escape(query.unwrap_or("")),
     );
-    if let Some(query) = query {
-        let _ = writeln!(
-            body,
-            "<p class=\"dim\">{} of {} registries match \"{}\"</p>",
+    // The count is always rendered (JS updates it live as you type); with JS
+    // off it reflects the server-side `?q=` filter for the current request.
+    let count = match query {
+        Some(q) => format!(
+            "{} of {} registries matching \"{}\"",
             matches.len(),
             rows.len(),
-            escape(query),
-        );
-    }
+            escape(q),
+        ),
+        None => format!("{} registries", rows.len()),
+    };
+    let _ = writeln!(body, "<p class=\"dim\" data-live-count>{count}</p>");
     if rows.is_empty() {
         body.push_str(
             "<p class=\"dim\">No registries registered. Add one with \
@@ -199,7 +204,11 @@ pub fn instance_home(
     } else if body_rows.is_empty() {
         body.push_str("<p class=\"dim\">No registries match.</p>");
     } else {
-        body.push_str(&table(&["slug", "name", "source", "index"], &body_rows));
+        body.push_str(&live_table(
+            &["slug", "name", "source", "index"],
+            &body_rows,
+            "registries",
+        ));
     }
     page(
         "registries",
@@ -527,7 +536,7 @@ pub fn package_index(
     body.push_str("<form method=\"get\" class=\"pkg-search\">");
     let _ = write!(
         body,
-        "<input name=\"q\" value=\"{}\" placeholder=\"search packages\"> ",
+        "<input type=\"search\" name=\"q\" value=\"{}\" placeholder=\"search packages\"> ",
         escape(query.unwrap_or("")),
     );
     body.push_str("<label>sort <select name=\"sort\">");
