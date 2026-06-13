@@ -2841,7 +2841,10 @@ struct CacheValidationEntry {
     platform: String,
     store_path: String,
     store_hash: String,
-    nar_hash: String,
+    /// Acceptable NAR hashes for this path. A legacy TOML entry has one;
+    /// a `ca/` trust-map entry may have several blessed realisations, any
+    /// of which a cache may legitimately serve (RFC-0005 §2.2).
+    nar_hashes: Vec<String>,
 }
 
 /// Outcome of probing the caches for one entry; `details` collects the
@@ -2891,7 +2894,7 @@ fn cache_validation_result_json(result: &CacheValidationResult) -> serde_json::V
         "platform": &result.entry.platform,
         "store_path": &result.entry.store_path,
         "store_hash": &result.entry.store_hash,
-        "nar_hash": &result.entry.nar_hash,
+        "nar_hashes": &result.entry.nar_hashes,
         "details": &result.details,
     })
 }
@@ -2940,8 +2943,10 @@ fn collect_cache_validation_entries(
     }
 
     // Newer registries record output NAR hashes in the ca/ trust map
-    // rather than the package TOML; load it once for the fallback.
-    let ca_map = CaMap::load(dir).unwrap_or_default();
+    // rather than the package TOML; load it once for the fallback. A
+    // malformed map is a hard error (matching Registry::load) — silently
+    // treating it as absent would validate nothing on a post-RFC registry.
+    let ca_map = CaMap::load(dir).context("loading ca/ trust map for cache validation")?;
 
     for letter_entry in std::fs::read_dir(&packages_dir)
         .with_context(|| format!("reading {}", packages_dir.display()))?
@@ -3011,26 +3016,29 @@ fn collect_cache_validation_entries_from_package(
             let Some(store_path) = entry.get("store_path").and_then(|v| v.as_str()) else {
                 continue;
             };
-            // Legacy TOML nar_hash, or the ca/ trust map for newer
-            // registries (first usable blessed entry).
-            let nar_hash = entry
+            // Acceptable hashes: the legacy TOML nar_hash, or ALL blessed
+            // realisations from the ca/ trust map (a cache may legitimately
+            // serve any of them — RFC-0005 §2.2).
+            let mut nar_hashes: Vec<String> = entry
                 .get("nar_hash")
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
-                .or_else(|| {
-                    ca_map
-                        .get(extract_hash(store_path))
-                        .and_then(|blessed| blessed.iter().find_map(CaEntry::nar_hash))
-                });
-            let Some(nar_hash) = nar_hash else {
+                .into_iter()
+                .collect();
+            if nar_hashes.is_empty() {
+                if let Some(blessed) = ca_map.get(extract_hash(store_path)) {
+                    nar_hashes.extend(blessed.iter().filter_map(CaEntry::nar_hash));
+                }
+            }
+            if nar_hashes.is_empty() {
                 continue;
-            };
+            }
             entries.push(CacheValidationEntry {
                 name: name.to_string(),
                 platform: platform.to_string(),
                 store_path: store_path.to_string(),
                 store_hash: extract_hash(store_path).to_string(),
-                nar_hash,
+                nar_hashes,
             });
             if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
                 for image in images {
@@ -3047,7 +3055,7 @@ fn collect_cache_validation_entries_from_package(
                         platform: platform.to_string(),
                         store_path: image_store_path.to_string(),
                         store_hash: extract_hash(image_store_path).to_string(),
-                        nar_hash: image_nar_hash.to_string(),
+                        nar_hashes: vec![image_nar_hash.to_string()],
                     });
                 }
             }
@@ -3238,13 +3246,18 @@ async fn validate_cache_entry(
             continue;
         }
         // Registry hashes may be SRI (legacy TOML) or nixbase32 (ca/ trust
-        // map); narinfo hashes vary by emitter. Compare normalized.
-        if aos_core::nar::cache::normalize_sha256_nix32(&narinfo.nar_hash)
-            != aos_core::nar::cache::normalize_sha256_nix32(&entry.nar_hash)
+        // map); narinfo hashes vary by emitter. Compare normalized, and
+        // accept the cache if it serves ANY blessed realisation.
+        let narinfo_norm = aos_core::nar::cache::normalize_sha256_nix32(&narinfo.nar_hash);
+        if !entry
+            .nar_hashes
+            .iter()
+            .any(|expected| aos_core::nar::cache::normalize_sha256_nix32(expected) == narinfo_norm)
         {
             details.push(format!(
-                "{narinfo_url}: narinfo NarHash {} did not match registry NarHash {}",
-                narinfo.nar_hash, entry.nar_hash
+                "{narinfo_url}: narinfo NarHash {} matched none of the registry NarHash(es) [{}]",
+                narinfo.nar_hash,
+                entry.nar_hashes.join(", ")
             ));
             continue;
         }
@@ -8425,14 +8438,14 @@ nar_size = 1
                     platform: "aarch64-linux".into(),
                     store_path: "/nix/store/bbb222-tool-1.0.0".into(),
                     store_hash: "bbb222".into(),
-                    nar_hash: "sha256:arm".into(),
+                    nar_hashes: vec!["sha256:arm".into()],
                 },
                 CacheValidationEntry {
                     name: "tool".into(),
                     platform: "aarch64-linux".into(),
                     store_path: "/nix/store/ccc333-tool-image-1.0.0".into(),
                     store_hash: "ccc333".into(),
-                    nar_hash: "sha256:image".into(),
+                    nar_hashes: vec!["sha256:image".into()],
                 },
             ]
         );
@@ -8573,7 +8586,7 @@ nar_size = 1
                 platform: "x86_64-linux".into(),
                 store_path: "/nix/store/abc123-tool-1.0.0".into(),
                 store_hash: "abc123".into(),
-                nar_hash: "sha256:test".into(),
+                nar_hashes: vec!["sha256:test".into()],
             },
         )
         .await;

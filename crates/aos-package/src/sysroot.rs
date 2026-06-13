@@ -182,6 +182,20 @@ pub async fn install_system(
         }
     }
 
+    // Trust-map totality (RFC-0005 §2.4/§2.8) over the whole closure.
+    let trust_members: Vec<(&str, &str)> = closures
+        .iter()
+        .flat_map(|closure| {
+            let registry = closure.registry_name.as_str();
+            closure
+                .closure
+                .iter()
+                .map(move |meta| (registry, store_path_hash(&meta.store_path)))
+        })
+        .collect();
+    let trust_ctx = registries.trust_context(&trust_members);
+    trust_ctx.enforce_totality()?;
+
     // Step 2: Determine missing store paths.
     printer.step(2, 8, "Checking store...");
     let all_metas = collect_unique_metas(&closures);
@@ -247,14 +261,10 @@ pub async fn install_system(
         )
         .await?;
 
-        // Step 6: Verify (against the registries' ca/ trust maps, RFC-0005)
-        // and import.
+        // Step 6: Verify (against each path's source-registry ca/ trust
+        // map, RFC-0005; totality enforced above) and import.
         printer.step(5, 8, "Verifying...");
-        let registry_names: Vec<&str> = closures
-            .iter()
-            .map(|closure| closure.registry_name.as_str())
-            .collect();
-        verify_downloads(&results, &registries.ca_policy(&registry_names), printer)?;
+        verify_downloads(&results, &trust_ctx, printer)?;
 
         printer.step(6, 8, "Importing...");
         for result in &results {

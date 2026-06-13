@@ -202,6 +202,33 @@ pub fn normalize_sha256_nix32(hash: &str) -> String {
     hash.to_string()
 }
 
+/// Decodes Nix's base32 variant (the inverse of [`encode_nix_base32`]).
+///
+/// Returns `None` for characters outside the Nix alphabet or for an
+/// encoding whose spare high bits are non-zero (which no valid Nix
+/// encoder produces). The output length is `len * 5 / 8` bytes — pass a
+/// 52-char digest to get the 32 bytes of a SHA-256.
+pub fn decode_nix_base32(encoded: &str) -> Option<Vec<u8>> {
+    let len = encoded.len() * 5 / 8;
+    let mut out = vec![0u8; len];
+
+    for (n, ch) in encoded.chars().rev().enumerate() {
+        let digit = NIX_BASE32.iter().position(|&b| b as char == ch)? as u16;
+        let bit = n * 5;
+        let i = bit / 8;
+        let j = bit % 8;
+        out[i] |= (digit << j) as u8;
+        let carry = digit >> (8 - j);
+        if i + 1 < len {
+            out[i + 1] |= carry as u8;
+        } else if carry != 0 {
+            return None;
+        }
+    }
+
+    Some(out)
+}
+
 /// Encodes bytes in Nix's base32 variant: little-endian bit order,
 /// most-significant digit first, using the [`NIX_BASE32`] alphabet.
 /// Matches `nix hash convert --to nix32`.
@@ -462,6 +489,17 @@ mod tests {
             encode_nix_base32(&bytes),
             "vw46m23bizj4n8afrc0fj19wrp7mj3c0"
         );
+    }
+
+    #[test]
+    fn decode_nix_base32_roundtrips_sha256_digests() {
+        let bytes: Vec<u8> = (0u8..32).collect();
+        let encoded = encode_nix_base32(&bytes);
+        assert_eq!(encoded.len(), 52);
+        assert_eq!(decode_nix_base32(&encoded).unwrap(), bytes);
+
+        // Invalid alphabet character ('e' is excluded).
+        assert!(decode_nix_base32(&encoded.replace(|c: char| c.is_ascii_digit(), "e")).is_none());
     }
 
     #[test]

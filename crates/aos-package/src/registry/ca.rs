@@ -321,6 +321,23 @@ impl CaMap {
             let bucket = parse_bucket(&content)
                 .with_context(|| format!("parsing ca bucket {}", path.display()))?;
             for (ia_hash, list) in bucket {
+                // A line must live in the bucket its hash maps to; a misfiled
+                // line (e.g. from a botched merge of concurrent publishes)
+                // would be trusted by consumers but invisible to `apr ca
+                // revoke` and publish conflict detection, which only ever
+                // touch the computed bucket. Reject it loudly.
+                match bucket_name(&ia_hash) {
+                    Ok(expected) if expected == name => {}
+                    Ok(expected) => bail!(
+                        "ca bucket {} contains entry for {ia_hash}, which belongs in bucket '{expected}'",
+                        path.display(),
+                    ),
+                    Err(err) => {
+                        return Err(err).with_context(|| {
+                            format!("invalid hash key in ca bucket {}", path.display())
+                        });
+                    }
+                }
                 let slot: &mut Vec<CaEntry> = entries.entry(ia_hash).or_default();
                 for item in list {
                     if !slot.contains(&item) {
@@ -368,55 +385,87 @@ impl CaMap {
 // Transaction-level enforcement policy
 // ---------------------------------------------------------------------------
 
-/// The blessed-content lookup for one install/upgrade transaction.
+/// Per-path blessed-content lookup for one install/upgrade transaction.
 ///
-/// Borrows the loaded trust maps of every registry involved in the
-/// transaction (see [`RegistrySet::ca_policy`]). Enforcement is
-/// all-or-nothing per transaction: when every involved registry publishes
-/// a `ca/` map, a path without a blessed entry is a hard failure (a
-/// partial map is indistinguishable from a stripping attack); when any
-/// involved registry predates the trust map, missing entries fall back to
-/// the legacy narinfo hash with a warning.
+/// Each closure member is attributed to the **single registry that
+/// resolved it** (closures resolve within one registry), and trust
+/// decisions are made per path against *that* registry's map — never a
+/// cross-registry union. Enforcement is therefore per-source-registry:
 ///
-/// [`RegistrySet::ca_policy`]: crate::registry::RegistrySet::ca_policy
+/// - The path's registry publishes a map → the path is **enforced**. A
+///   missing blessed entry is a hard failure (a gap in a published map is
+///   indistinguishable from a stripping attack, RFC §2.8), independent of
+///   what any *other* involved registry does.
+/// - The path's registry publishes no map (legacy) → the path falls back
+///   to the unauthenticated narinfo hash with a warning.
+///
+/// Built via [`RegistrySet::trust_context`].
+///
+/// [`RegistrySet::trust_context`]: crate::registry::RegistrySet::trust_context
 #[derive(Debug, Default)]
-pub struct CaPolicy<'a> {
-    maps: Vec<&'a CaMap>,
-    enforcing: bool,
+pub struct TrustContext<'a> {
+    /// Member store-path hash → its source registry's loaded map.
+    by_hash: BTreeMap<String, &'a CaMap>,
 }
 
-impl<'a> CaPolicy<'a> {
-    /// Build a policy from the involved registries' loaded maps.
-    pub fn from_maps(maps: Vec<&'a CaMap>) -> Self {
-        let enforcing = !maps.is_empty() && maps.iter().all(|map| map.is_present());
-        Self { maps, enforcing }
+impl<'a> TrustContext<'a> {
+    /// Create an empty context.
+    pub fn new() -> Self {
+        Self {
+            by_hash: BTreeMap::new(),
+        }
     }
 
-    /// Whether missing blessed entries are hard failures for this
-    /// transaction.
-    pub fn enforcing(&self) -> bool {
-        self.enforcing
+    /// Attribute a closure-member store-path hash to its source registry's
+    /// trust map. Later inserts for the same hash win (a path resolved from
+    /// a higher-priority registry shadows a lower one, matching resolution).
+    pub fn insert(&mut self, store_path_hash: String, map: &'a CaMap) {
+        self.by_hash.insert(store_path_hash, map);
     }
 
-    /// Whether any involved registry publishes a trust map.
+    /// Whether this path's source registry publishes a trust map, so a
+    /// missing blessed entry is a hard failure.
+    pub fn enforced(&self, store_path_hash: &str) -> bool {
+        self.by_hash
+            .get(store_path_hash)
+            .map(|map| map.is_present())
+            .unwrap_or(false)
+    }
+
+    /// Whether any attributed registry publishes a trust map.
     pub fn any_present(&self) -> bool {
-        self.maps.iter().any(|map| map.is_present())
+        self.by_hash.values().any(|map| map.is_present())
     }
 
-    /// The union of blessed entries for an IA hash across the involved
-    /// registries. Returns an empty vec when no registry maps it.
-    pub fn blessed(&self, ia_hash: &str) -> Vec<CaEntry> {
-        let mut out: Vec<CaEntry> = Vec::new();
-        for map in &self.maps {
-            if let Some(list) = map.get(ia_hash) {
-                for entry in list {
-                    if !out.contains(entry) {
-                        out.push(entry.clone());
-                    }
-                }
+    /// The blessed entries for a path from *its* source registry's map.
+    /// Empty when the registry has no entry (or no map).
+    pub fn blessed(&self, store_path_hash: &str) -> Vec<CaEntry> {
+        self.by_hash
+            .get(store_path_hash)
+            .and_then(|map| map.get(store_path_hash))
+            .map(<[CaEntry]>::to_vec)
+            .unwrap_or_default()
+    }
+
+    /// Enforce closure totality (RFC §2.4 step 2, §2.8): every attributed
+    /// member whose source registry publishes a map must carry a blessed
+    /// entry. This runs over the **whole closure**, not just downloaded
+    /// members, so a stripped or partial map fails loudly even when the gap
+    /// falls on a path already present in the local store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first member with no blessed entry.
+    pub fn enforce_totality(&self) -> Result<()> {
+        for (hash, map) in &self.by_hash {
+            if map.is_present() && map.get(hash).is_none() {
+                bail!(
+                    "no ca/ trust-map entry for closure member {hash}; refusing to proceed \
+                     (the registry may be malformed or its trust map stripped)"
+                );
             }
         }
-        out
+        Ok(())
     }
 }
 
@@ -700,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_enforces_only_when_all_present() {
+    fn trust_context_enforces_per_source_registry() {
         let with_map = TempDir::new().unwrap();
         upsert_entry(
             with_map.path(),
@@ -715,17 +764,31 @@ mod tests {
         let present = CaMap::load(with_map.path()).unwrap();
         let absent = CaMap::load(without_map.path()).unwrap();
 
-        let enforcing = CaPolicy::from_maps(vec![&present]);
-        assert!(enforcing.enforcing());
-        assert_eq!(enforcing.blessed("r4q1m2kp8v3x").len(), 1);
-        assert!(enforcing.blessed("missing000000").is_empty());
+        // A path from the mapped registry is enforced and blessed; a path
+        // from the legacy registry is not enforced — independently, even in
+        // the same transaction (the per-registry fix).
+        let mut ctx = TrustContext::new();
+        ctx.insert("r4q1m2kp8v3x".to_string(), &present);
+        ctx.insert("legacypath0000".to_string(), &absent);
 
-        let mixed = CaPolicy::from_maps(vec![&present, &absent]);
-        assert!(!mixed.enforcing());
-        assert!(mixed.any_present());
+        assert!(ctx.enforced("r4q1m2kp8v3x"));
+        assert_eq!(ctx.blessed("r4q1m2kp8v3x").len(), 1);
+        assert!(!ctx.enforced("legacypath0000"));
+        assert!(ctx.blessed("legacypath0000").is_empty());
+        assert!(ctx.any_present());
+        // Totality passes: every mapped member is covered.
+        ctx.enforce_totality().unwrap();
 
-        let empty = CaPolicy::from_maps(Vec::new());
-        assert!(!empty.enforcing());
+        // A mapped registry missing an entry for one of its own members is a
+        // stripping signature — totality fails regardless of the legacy one.
+        let mut stripped = TrustContext::new();
+        stripped.insert("r4q1m2kp8v3x".to_string(), &present);
+        stripped.insert("unmapped000000".to_string(), &present);
+        assert!(stripped.enforced("unmapped000000"));
+        assert!(stripped.enforce_totality().is_err());
+
+        let empty = TrustContext::new();
         assert!(!empty.any_present());
+        empty.enforce_totality().unwrap();
     }
 }

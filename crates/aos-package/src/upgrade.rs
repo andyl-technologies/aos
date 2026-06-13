@@ -182,6 +182,20 @@ pub async fn run(
         }
     }
 
+    // Trust-map totality (RFC-0005 §2.4/§2.8): over the whole closure, not
+    // just the missing subset, so a stripped/partial map fails even when the
+    // gap is on an already-local member (the common case on upgrades).
+    let trust_members: Vec<(&str, &str)> = upgrade_closures
+        .iter()
+        .flat_map(|(registry, metas)| {
+            metas
+                .iter()
+                .map(move |meta| (registry.as_str(), store_path_hash(&meta.store_path)))
+        })
+        .collect();
+    let trust_ctx = registries.trust_context(&trust_members);
+    trust_ctx.enforce_totality()?;
+
     // Filter to only missing store paths.
     let store_paths: Vec<String> = all_new_metas.iter().map(|m| m.store_path.clone()).collect();
     let missing = filter_missing(&store_paths).await?;
@@ -245,14 +259,10 @@ pub async fn run(
         .await?;
         downloaded_count = results.len();
 
-        // Verify downloads against the involved registries' ca/ trust maps
-        // (RFC-0005), falling back to narinfo hashes for legacy registries.
+        // Verify downloads against each path's source-registry ca/ trust map
+        // (RFC-0005); totality was already enforced above.
         printer.step(5, 7, "Verifying downloads...");
-        let registry_names: Vec<&str> = upgrade_closures
-            .iter()
-            .map(|(registry_name, _)| registry_name.as_str())
-            .collect();
-        verify_downloads(&results, &registries.ca_policy(&registry_names), printer)?;
+        verify_downloads(&results, &trust_ctx, printer)?;
 
         // Import NARs into the store.
         printer.step(5, 7, "Importing packages...");

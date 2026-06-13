@@ -95,13 +95,39 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
     let pkg_meta = resolve_installed_package_meta(&reg_set, package, installed)?;
 
-    let expected_hash = &pkg_meta.nar_hash;
+    // Prefer the signed ca/ trust map: a path may have multiple blessed
+    // realisations, and an honest install matching any of them is intact.
+    // Fall back to the (legacy or enriched) single TOML nar_hash only when
+    // the registry publishes no entry for this path.
+    let installed_hash = store_path_hash(&pkg_meta.store_path);
+    let blessed = reg_set
+        .get_registry(&installed_apm.registry)
+        .and_then(|reg| reg.ca_map().get(installed_hash))
+        .map(<[_]>::to_vec)
+        .unwrap_or_default();
 
     printer.kv("Store path", store_path);
-    printer.kv("Expected NAR hash", expected_hash);
+    let expected_hash = pkg_meta.nar_hash.clone();
+    if blessed.is_empty() {
+        printer.kv("Expected NAR hash", &expected_hash);
+    } else {
+        printer.kv(
+            "Expected NAR hash",
+            &blessed
+                .iter()
+                .filter_map(crate::registry::ca::CaEntry::nar_hash)
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
 
     // 3-4. Run nix-store --dump and hash the output.
-    match hash_verify::verify_installed(store_path, expected_hash).await {
+    let verify_result = if blessed.is_empty() {
+        hash_verify::verify_installed(store_path, &expected_hash).await
+    } else {
+        hash_verify::verify_installed_blessed(store_path, &blessed).await
+    };
+    match verify_result {
         Ok(actual_hash) => {
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({

@@ -323,6 +323,7 @@ pub async fn sync_git(
     let old_packages = count_toml_files(&packages_dir).await;
     extract_packages(&repo_dir, &new_commit, &packages_dir).await?;
     extract_closures(&repo_dir, &new_commit, &registry_cache_dir.join("closures")).await?;
+    extract_ca(&repo_dir, &new_commit, &registry_cache_dir.join("ca")).await?;
     let new_packages = count_toml_files(&packages_dir).await;
 
     // Step 7b: Materialise root registry files so resolve_mirror and trust
@@ -1202,36 +1203,56 @@ async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &st
 /// Uses `git archive` to export the `packages/` directory from the commit
 /// and extract it into the output directory.
 async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
-    extract_tree_dir(repo_dir, commit, "packages", output_dir).await
+    extract_tree_dir(repo_dir, commit, "packages", output_dir, true).await
 }
 
 /// Extract precomputed closure adjacency files from a git tree.
 async fn extract_closures(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
-    extract_tree_dir(repo_dir, commit, "closures", output_dir).await
+    extract_tree_dir(repo_dir, commit, "closures", output_dir, true).await
+}
+
+/// Extract the `ca/` trust map from a git tree (RFC-0005).
+///
+/// Presence semantics matter here: a registry without a committed `ca/`
+/// tree must yield NO local `ca/` directory — an empty directory would
+/// read as a present-but-empty (i.e. malformed/stripped) trust map and
+/// flip consumer enforcement on against a legacy registry.
+async fn extract_ca(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
+    extract_tree_dir(repo_dir, commit, "ca", output_dir, false).await
 }
 
 /// Replace `output_dir` with the contents of `commit:tree_path/`.
 ///
 /// The existing directory is removed first so deletions in the registry
-/// propagate; a tree path absent from the commit leaves an empty directory.
+/// propagate. When the tree path is absent from the commit,
+/// `create_empty_when_absent` selects between leaving an empty directory
+/// (the historical behavior for `packages/`/`closures/`) and leaving no
+/// directory at all (required for `ca/`, where presence is meaningful).
 async fn extract_tree_dir(
     repo_dir: &Path,
     commit: &str,
     tree_path: &str,
     output_dir: &Path,
+    create_empty_when_absent: bool,
 ) -> Result<()> {
     if output_dir.exists() {
         tokio::fs::remove_dir_all(output_dir)
             .await
             .with_context(|| format!("cleaning {}", output_dir.display()))?;
     }
+
+    if !tree_path_exists(repo_dir, commit, tree_path).await? {
+        if create_empty_when_absent {
+            tokio::fs::create_dir_all(output_dir)
+                .await
+                .with_context(|| format!("creating {}", output_dir.display()))?;
+        }
+        return Ok(());
+    }
+
     tokio::fs::create_dir_all(output_dir)
         .await
         .with_context(|| format!("creating {}", output_dir.display()))?;
-
-    if !tree_path_exists(repo_dir, commit, tree_path).await? {
-        return Ok(());
-    }
 
     let tarball = tempfile::NamedTempFile::new().context("creating temporary git archive")?;
     let archive = gitcmd::hermetic_async()
