@@ -404,8 +404,14 @@ impl CaMap {
 /// [`RegistrySet::trust_context`]: crate::registry::RegistrySet::trust_context
 #[derive(Debug, Default)]
 pub struct TrustContext<'a> {
-    /// Member store-path hash → its source registry's loaded map.
-    by_hash: BTreeMap<String, &'a CaMap>,
+    /// Member store-path hash → every registry map that attributed it.
+    ///
+    /// A hash can be contributed by more than one registry (input-addressed
+    /// hashes are shared content). Tracking *all* of them — rather than a
+    /// single last-write-wins slot — keeps enforcement from being disabled
+    /// by a legacy (no-map) registry that happens to also carry a path a
+    /// mapped registry blesses: presence is sticky across attributions.
+    by_hash: BTreeMap<String, Vec<&'a CaMap>>,
 }
 
 impl<'a> TrustContext<'a> {
@@ -416,49 +422,59 @@ impl<'a> TrustContext<'a> {
         }
     }
 
-    /// Attribute a closure-member store-path hash to its source registry's
-    /// trust map. Later inserts for the same hash win (a path resolved from
-    /// a higher-priority registry shadows a lower one, matching resolution).
+    /// Attribute a closure-member store-path hash to a source registry's
+    /// trust map. Multiple registries may attribute the same hash.
     pub fn insert(&mut self, store_path_hash: String, map: &'a CaMap) {
-        self.by_hash.insert(store_path_hash, map);
+        self.by_hash.entry(store_path_hash).or_default().push(map);
     }
 
-    /// Whether this path's source registry publishes a trust map, so a
-    /// missing blessed entry is a hard failure.
+    /// Whether *any* registry that carries this path publishes a trust map,
+    /// so a missing blessed entry is a hard failure. Sticky: a legacy
+    /// registry attributing the same hash cannot turn this off.
     pub fn enforced(&self, store_path_hash: &str) -> bool {
         self.by_hash
             .get(store_path_hash)
-            .map(|map| map.is_present())
+            .map(|maps| maps.iter().any(|map| map.is_present()))
             .unwrap_or(false)
     }
 
     /// Whether any attributed registry publishes a trust map.
     pub fn any_present(&self) -> bool {
-        self.by_hash.values().any(|map| map.is_present())
-    }
-
-    /// The blessed entries for a path from *its* source registry's map.
-    /// Empty when the registry has no entry (or no map).
-    pub fn blessed(&self, store_path_hash: &str) -> Vec<CaEntry> {
         self.by_hash
-            .get(store_path_hash)
-            .and_then(|map| map.get(store_path_hash))
-            .map(<[CaEntry]>::to_vec)
-            .unwrap_or_default()
+            .values()
+            .any(|maps| maps.iter().any(|map| map.is_present()))
     }
 
-    /// Enforce closure totality (RFC §2.4 step 2, §2.8): every attributed
-    /// member whose source registry publishes a map must carry a blessed
-    /// entry. This runs over the **whole closure**, not just downloaded
-    /// members, so a stripped or partial map fails loudly even when the gap
-    /// falls on a path already present in the local store.
+    /// The blessed entries for a path, unioned across the attributing
+    /// registries that publish a map. Empty when none maps it.
+    pub fn blessed(&self, store_path_hash: &str) -> Vec<CaEntry> {
+        let mut out: Vec<CaEntry> = Vec::new();
+        if let Some(maps) = self.by_hash.get(store_path_hash) {
+            for map in maps {
+                if let Some(entries) = map.get(store_path_hash) {
+                    for entry in entries {
+                        if !out.contains(entry) {
+                            out.push(entry.clone());
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Enforce closure totality (RFC §2.4 step 2, §2.8): every member that
+    /// any mapped registry carries must have a blessed entry. This runs over
+    /// the **whole closure**, not just downloaded members, so a stripped or
+    /// partial map fails loudly even when the gap falls on a path already
+    /// present in the local store.
     ///
     /// # Errors
     ///
     /// Returns an error naming the first member with no blessed entry.
     pub fn enforce_totality(&self) -> Result<()> {
-        for (hash, map) in &self.by_hash {
-            if map.is_present() && map.get(hash).is_none() {
+        for hash in self.by_hash.keys() {
+            if self.enforced(hash) && self.blessed(hash).is_empty() {
                 bail!(
                     "no ca/ trust-map entry for closure member {hash}; refusing to proceed \
                      (the registry may be malformed or its trust map stripped)"
@@ -790,5 +806,40 @@ mod tests {
         let empty = TrustContext::new();
         assert!(!empty.any_present());
         empty.enforce_totality().unwrap();
+    }
+
+    #[test]
+    fn trust_context_legacy_cannot_shadow_a_mapped_registry() {
+        // A path blessed by a mapped registry stays enforced even when a
+        // legacy (no-map) registry also attributes the same hash — and
+        // regardless of attribution order (last-write-wins would break it).
+        let mapped = TempDir::new().unwrap();
+        upsert_entry(
+            mapped.path(),
+            "r4q1m2kp8v3x",
+            nar_entry(DIGEST_A, 10),
+            false,
+        )
+        .unwrap();
+        let legacy = TempDir::new().unwrap();
+        std::fs::create_dir_all(legacy.path()).unwrap();
+
+        let present = CaMap::load(mapped.path()).unwrap();
+        let absent = CaMap::load(legacy.path()).unwrap();
+
+        // Legacy attributes the shared hash LAST.
+        let mut ctx = TrustContext::new();
+        ctx.insert("r4q1m2kp8v3x".to_string(), &present);
+        ctx.insert("r4q1m2kp8v3x".to_string(), &absent);
+        assert!(ctx.enforced("r4q1m2kp8v3x"));
+        assert_eq!(ctx.blessed("r4q1m2kp8v3x"), vec![nar_entry(DIGEST_A, 10)]);
+        ctx.enforce_totality().unwrap();
+
+        // Legacy attributes FIRST — same outcome.
+        let mut ctx = TrustContext::new();
+        ctx.insert("r4q1m2kp8v3x".to_string(), &absent);
+        ctx.insert("r4q1m2kp8v3x".to_string(), &present);
+        assert!(ctx.enforced("r4q1m2kp8v3x"));
+        ctx.enforce_totality().unwrap();
     }
 }
