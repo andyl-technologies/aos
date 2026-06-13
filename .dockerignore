@@ -1,0 +1,14 @@
+# Keep the aos-bench build context to the nix source tree only.
+# Without this, `COPY . /opt/aos` streams the whole repo (49 GB —
+# dominated by a 45 GB .claude agent-worktree dir + .git), which makes
+# the build take 20+ min on macOS Docker and bloats the image.
+# Anchored (leading /) so the prune is root-only and BuildKit doesn't
+# walk pruned subtrees (the documented unanchored-negation cost).
+/.claude
+/.git
+/.direnv
+/.idea
+/output
+/result
+result-*
+/.jj
