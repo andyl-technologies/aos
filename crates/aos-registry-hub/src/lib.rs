@@ -31,6 +31,9 @@
 //!   table and the rebuildable index tables.
 //! - [`domain`] — tenancy/IAM domain model: orgs, projects, principals,
 //!   and the pure role/permission/scope authorization kernel.
+//! - [`auth`] — authentication: provisioning tokens, JWTs, human sessions,
+//!   device-code and magic-link flows, and the axum extractors that gate
+//!   requests.
 //! - [`indexer`] — fetch → verify → load → index orchestration.
 //! - [`validation`] — presence-depth cache consistency validation.
 //! - [`compat`] — the machine-path facade.
@@ -38,6 +41,7 @@
 //! - [`ui`] — server-rendered HTML pages.
 //! - [`server`] — axum router assembly tying the above together.
 
+pub mod auth;
 pub mod compat;
 pub mod db;
 pub mod domain;

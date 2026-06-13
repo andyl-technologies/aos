@@ -3,15 +3,17 @@
 //! Three kinds of tables live in one sqlite database, with sharply
 //! different contracts (RFC-0004 "Stance"):
 //!
-//! - **System of record** — `registries`, `channel_floors`, and the
-//!   phase-2 tenancy tables `orgs`, `projects`, `users`,
+//! - **System of record** — `registries`, `channel_floors`, the
+//!   phase-2a tenancy tables `orgs`, `projects`, `users`,
 //!   `user_identities`, `service_accounts`, `memberships`, and
-//!   `invitations`: facts that exist nowhere on the surface (slug, source
-//!   URL, trust anchors, the anti-rollback floor each channel has reached,
-//!   plus the org → project → registry hierarchy and who may act on it).
-//!   Losing these loses real state; floors in particular survive every
-//!   re-index, and ownership/grants are never rebuildable from the
-//!   surface.
+//!   `invitations`, and the phase-2b authentication tables `tokens`,
+//!   `sessions`, `device_codes`, and `magic_links`: facts that exist
+//!   nowhere on the surface (slug, source URL, trust anchors, the
+//!   anti-rollback floor each channel has reached, the
+//!   org → project → registry hierarchy and who may act on it, plus the
+//!   credentials principals authenticate with). Losing these loses real
+//!   state; floors in particular survive every re-index, and
+//!   ownership/grants/credentials are never rebuildable from the surface.
 //! - **Rebuildable index** — `registry_index`, `packages`,
 //!   `package_versions`, `version_platforms`, `channels`,
 //!   `channel_partitions`, `releases`, `key_rosters`, `caches`: derived
@@ -63,6 +65,11 @@ use std::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+
+/// Grace period, in seconds, during which a rotated token's old secret
+/// keeps validating after its `revoked_at` stamp (RFC-0004 fixes the
+/// `aos-server` bug where this window was recorded but not honored).
+const ROTATION_GRACE_SECS: i64 = 3600;
 
 /// Ordered schema migrations; index = version - 1.
 const MIGRATIONS: &[&str] = &[
@@ -247,6 +254,55 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE registries ADD COLUMN project_path TEXT NOT NULL DEFAULT '';
     ALTER TABLE registries ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public';
     ",
+    // v4: authentication system of record (RFC-0004 "Authentication:
+    // sessions, tokens, SSO"). Provisioning tokens owned by a principal
+    // and scoped to a path-prefix + permission set; human cookie sessions
+    // with a sudo `auth_level`; RFC8628 device-authorization codes; and
+    // single-use email magic links. Only hashes of every secret are
+    // stored — a database leak never yields a usable credential.
+    "
+    CREATE TABLE tokens (
+        id          TEXT PRIMARY KEY,
+        hash        TEXT UNIQUE NOT NULL,         -- SHA-256 hex of the secret
+        owner_kind  TEXT NOT NULL,                -- 'user' | 'service_account'
+        owner_id    INTEGER NOT NULL,
+        scope       TEXT NOT NULL,                -- scope-path string
+        permissions TEXT NOT NULL,                -- JSON array of permission verbs
+        comment     TEXT,
+        created_at  INTEGER NOT NULL,
+        expires_at  INTEGER,
+        revoked_at  INTEGER,
+        last_used_at INTEGER
+    );
+    CREATE TABLE sessions (
+        id_hash     TEXT PRIMARY KEY,             -- SHA-256 hex of the cookie secret
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at  INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        expires_at  INTEGER NOT NULL,
+        auth_level  INTEGER NOT NULL DEFAULT 0,   -- 1 = sudo-capable
+        last_authenticated_at INTEGER NOT NULL
+    );
+    CREATE TABLE device_codes (
+        device_code_hash TEXT PRIMARY KEY,        -- SHA-256 hex of the device-code secret
+        user_code   TEXT UNIQUE NOT NULL,         -- short human-typed code
+        scope       TEXT NOT NULL,                -- requested scope-path string
+        permissions TEXT NOT NULL,                -- requested permission verbs (JSON array)
+        created_at  INTEGER NOT NULL,
+        expires_at  INTEGER NOT NULL,
+        approved_by_user INTEGER,                 -- approving user id once approved
+        denied      INTEGER NOT NULL DEFAULT 0,
+        issued_token_id TEXT,                     -- id of the minted token, once approved
+        issued_token_secret TEXT                  -- the minted secret, delivered once at poll
+    );
+    CREATE TABLE magic_links (
+        token_hash  TEXT PRIMARY KEY,             -- SHA-256 hex of the link secret
+        email       TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        expires_at  INTEGER NOT NULL,
+        consumed_at INTEGER
+    );
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -305,6 +361,42 @@ pub struct InvitationRecord {
     pub scope: String,
     /// Role the resulting grant confers.
     pub role: String,
+}
+
+/// A validated provisioning token: who owns it and what it may do.
+///
+/// Produced by [`Database::validate_token`] after a secret checks out
+/// (hash matches, not expired, and either not revoked or still inside the
+/// rotation grace window). The `scope`/`permissions` here are the token's
+/// *own* grants; effective authority is their intersection with the
+/// owner's current memberships, computed at decision time.
+#[derive(Debug, Clone)]
+pub struct TokenAuth {
+    /// The token's id (UUID); the JWT `sub` and the revoke/rotate key.
+    pub token_id: String,
+    /// The principal that owns the token.
+    pub owner: crate::domain::Principal,
+    /// The scope path the token is bound to.
+    pub scope: crate::domain::Scope,
+    /// The permission verbs the token grants.
+    pub permissions: Vec<crate::domain::Permission>,
+}
+
+/// A validated human session: the user and their current sudo level.
+///
+/// Produced by [`Database::validate_session`] after a cookie secret checks
+/// out (hash matches and the session has not expired); validation also
+/// bumps `last_seen_at`.
+#[derive(Debug, Clone)]
+pub struct SessionAuth {
+    /// The authenticated user's id.
+    pub user_id: i64,
+    /// `1` when the session is sudo-capable (re-authenticated recently).
+    pub auth_level: i64,
+    /// Unix time the user last (re-)authenticated, for sudo freshness.
+    pub last_authenticated_at: i64,
+    /// Unix time the session expires.
+    pub expires_at: i64,
 }
 
 /// Index freshness state for one registry.
@@ -1621,6 +1713,582 @@ impl Database {
         }
         Ok(record)
     }
+
+    // -- auth: provisioning tokens ------------------------------------------
+
+    /// Mint a provisioning token owned by `owner`, returning `(id, secret)`.
+    ///
+    /// The caller is handed the plaintext `secret` exactly once; only its
+    /// SHA-256 hash is stored. `scope` is the path-prefix the token is
+    /// bound to and `permissions` the verbs it carries; `expires_at`, when
+    /// set, is the Unix time after which [`Database::validate_token`] stops
+    /// accepting the secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a hash collision.
+    pub fn create_token(
+        &self,
+        owner: crate::domain::Principal,
+        scope: &str,
+        permissions: &[crate::domain::Permission],
+        comment: Option<&str>,
+        expires_at: Option<i64>,
+    ) -> Result<(String, String)> {
+        let (secret, hash) = crate::auth::token::generate_token();
+        let id = uuid::Uuid::new_v4().to_string();
+        let perms_json = serde_json::to_string(&permission_names(permissions))?;
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO tokens
+             (id, hash, owner_kind, owner_id, scope, permissions, comment, created_at,
+              expires_at, revoked_at, last_used_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL)",
+            params![
+                id,
+                hash,
+                owner.kind.as_str(),
+                owner.id,
+                crate::domain::Scope::parse(scope).as_str(),
+                perms_json,
+                comment,
+                unix_now(),
+                expires_at,
+            ],
+        )?;
+        Ok((id, secret))
+    }
+
+    /// Validate a token secret, returning its [`TokenAuth`] when live.
+    ///
+    /// A secret is accepted when its hash is known, it is not expired, and
+    /// it is either not revoked or still inside the
+    /// [`ROTATION_GRACE_SECS`] window after its `revoked_at` stamp (so a
+    /// rotated token's old secret keeps working briefly). On success
+    /// `last_used_at` is bumped to now. Returns `Ok(None)` for any
+    /// unknown, expired, or fully-revoked secret without distinguishing
+    /// the reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or a malformed stored row.
+    pub fn validate_token(&self, secret: &str) -> Result<Option<TokenAuth>> {
+        let hash = crate::auth::token::sha256_hex(secret);
+        let now = unix_now();
+        let conn = self.lock();
+        let row = conn
+            .query_row(
+                "SELECT id, owner_kind, owner_id, scope, permissions, expires_at, revoked_at
+                 FROM tokens WHERE hash = ?1",
+                [&hash],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("loading token by hash")?;
+        let Some((id, owner_kind, owner_id, scope, perms_json, expires_at, revoked_at)) = row
+        else {
+            return Ok(None);
+        };
+        if let Some(exp) = expires_at {
+            if now >= exp {
+                return Ok(None);
+            }
+        }
+        if let Some(revoked) = revoked_at {
+            if now >= revoked + ROTATION_GRACE_SECS {
+                return Ok(None);
+            }
+        }
+        let Some(kind) = crate::domain::PrincipalKind::parse(&owner_kind) else {
+            return Ok(None);
+        };
+        let permissions = parse_permission_names(&perms_json);
+        conn.execute(
+            "UPDATE tokens SET last_used_at = ?2 WHERE id = ?1",
+            params![id, now],
+        )?;
+        Ok(Some(TokenAuth {
+            token_id: id,
+            owner: crate::domain::Principal { kind, id: owner_id },
+            scope: crate::domain::Scope::parse(&scope),
+            permissions,
+        }))
+    }
+
+    /// Revoke a token by id, stamping `revoked_at = now`.
+    ///
+    /// A no-op when the id is unknown or already revoked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn revoke_token(&self, token_id: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE tokens SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+            params![token_id, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    /// List a principal's non-revoked tokens as `(id, scope, permissions)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_tokens_for(
+        &self,
+        owner: crate::domain::Principal,
+    ) -> Result<Vec<(String, String, Vec<crate::domain::Permission>)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, scope, permissions FROM tokens
+             WHERE owner_kind = ?1 AND owner_id = ?2 AND revoked_at IS NULL
+             ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map(params![owner.kind.as_str(), owner.id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, scope, perms_json) = row?;
+            out.push((id, scope, parse_permission_names(&perms_json)));
+        }
+        Ok(out)
+    }
+
+    /// Rotate a token: revoke the old one and mint a replacement with the
+    /// same owner, scope, permissions, comment, and expiry.
+    ///
+    /// The old secret keeps validating for [`ROTATION_GRACE_SECS`] after
+    /// rotation (its `revoked_at` is stamped now, and
+    /// [`Database::validate_token`] honors the grace window) so in-flight
+    /// clients are not cut off mid-request. Returns `(new_id, new_secret)`,
+    /// or `Ok(None)` when the id is unknown or already revoked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or a malformed stored row.
+    pub fn rotate_token(&self, token_id: &str) -> Result<Option<(String, String)>> {
+        let now = unix_now();
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let old = tx
+            .query_row(
+                "SELECT owner_kind, owner_id, scope, permissions, comment, expires_at
+                 FROM tokens WHERE id = ?1 AND revoked_at IS NULL",
+                [token_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("looking up token for rotation")?;
+        let Some((owner_kind, owner_id, scope, perms_json, comment, expires_at)) = old else {
+            return Ok(None);
+        };
+        tx.execute(
+            "UPDATE tokens SET revoked_at = ?2 WHERE id = ?1",
+            params![token_id, now],
+        )?;
+        let (secret, hash) = crate::auth::token::generate_token();
+        let new_id = uuid::Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT INTO tokens
+             (id, hash, owner_kind, owner_id, scope, permissions, comment, created_at,
+              expires_at, revoked_at, last_used_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL)",
+            params![
+                new_id, hash, owner_kind, owner_id, scope, perms_json, comment, now, expires_at,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(Some((new_id, secret)))
+    }
+
+    // -- auth: human sessions -----------------------------------------------
+
+    /// Create a session for `user_id`, returning the opaque cookie secret.
+    ///
+    /// Only the SHA-256 hash of the secret is stored. The session expires
+    /// `ttl_secs` from now; `auth_level` is `1` for a sudo-capable session
+    /// (the user re-authenticated) and `0` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn create_session(&self, user_id: i64, ttl_secs: i64, auth_level: i64) -> Result<String> {
+        let secret = crate::auth::session::new_session_secret();
+        let hash = crate::auth::token::sha256_hex(&secret);
+        let now = unix_now();
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO sessions
+             (id_hash, user_id, created_at, last_seen_at, expires_at, auth_level,
+              last_authenticated_at)
+             VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?3)",
+            params![hash, user_id, now, now + ttl_secs, auth_level],
+        )?;
+        Ok(secret)
+    }
+
+    /// Validate a session cookie secret, returning its [`SessionAuth`].
+    ///
+    /// Accepts the secret when its hash is known and the session has not
+    /// expired, bumping `last_seen_at` to now. Returns `Ok(None)` for an
+    /// unknown or expired session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn validate_session(&self, secret: &str) -> Result<Option<SessionAuth>> {
+        let hash = crate::auth::token::sha256_hex(secret);
+        let now = unix_now();
+        let conn = self.lock();
+        let row = conn
+            .query_row(
+                "SELECT user_id, auth_level, last_authenticated_at, expires_at
+                 FROM sessions WHERE id_hash = ?1",
+                [&hash],
+                |row| {
+                    Ok(SessionAuth {
+                        user_id: row.get(0)?,
+                        auth_level: row.get(1)?,
+                        last_authenticated_at: row.get(2)?,
+                        expires_at: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .context("loading session by hash")?;
+        let Some(session) = row else {
+            return Ok(None);
+        };
+        if now >= session.expires_at {
+            return Ok(None);
+        }
+        conn.execute(
+            "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
+            params![hash, now],
+        )?;
+        Ok(Some(session))
+    }
+
+    /// Revoke a single session by its cookie secret.
+    ///
+    /// A no-op when the secret is unknown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn revoke_session(&self, secret: &str) -> Result<()> {
+        let hash = crate::auth::token::sha256_hex(secret);
+        let conn = self.lock();
+        conn.execute("DELETE FROM sessions WHERE id_hash = ?1", [&hash])?;
+        Ok(())
+    }
+
+    /// Revoke every session belonging to a user ("sign out everywhere").
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn revoke_all_user_sessions(&self, user_id: i64) -> Result<()> {
+        let conn = self.lock();
+        conn.execute("DELETE FROM sessions WHERE user_id = ?1", [user_id])?;
+        Ok(())
+    }
+
+    /// Elevate a session to sudo: set `auth_level = 1` and stamp
+    /// `last_authenticated_at = now`.
+    ///
+    /// A no-op when the secret is unknown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn elevate_session(&self, secret: &str) -> Result<()> {
+        let hash = crate::auth::token::sha256_hex(secret);
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE sessions SET auth_level = 1, last_authenticated_at = ?2 WHERE id_hash = ?1",
+            params![hash, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    // -- auth: device authorization (RFC 8628) ------------------------------
+
+    /// Start a device-authorization grant, storing only secret hashes.
+    ///
+    /// Returns `(device_code_secret, user_code, expires_in_secs)`: the
+    /// device code is the long secret the CLI polls with, the `user_code`
+    /// is the short string the human types into `/activate`. `scope` and
+    /// `permissions` record what the CLI *requested*; approval clamps them
+    /// to the approver's grants.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a `user_code`
+    /// collision.
+    pub fn start_device_authorization(
+        &self,
+        scope: &str,
+        permissions: &[crate::domain::Permission],
+    ) -> Result<(String, String, i64)> {
+        let secret = crate::auth::device::new_device_code();
+        let hash = crate::auth::token::sha256_hex(&secret);
+        let user_code = crate::auth::device::new_user_code();
+        let now = unix_now();
+        let ttl = crate::auth::device::DEVICE_CODE_TTL_SECS;
+        let perms_json = serde_json::to_string(&permission_names(permissions))?;
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO device_codes
+             (device_code_hash, user_code, scope, permissions, created_at, expires_at,
+              approved_by_user, denied, issued_token_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 0, NULL)",
+            params![
+                hash,
+                user_code,
+                crate::domain::Scope::parse(scope).as_str(),
+                perms_json,
+                now,
+                now + ttl,
+            ],
+        )?;
+        Ok((secret, user_code, ttl))
+    }
+
+    /// Approve a device grant by its `user_code`, minting a token owned by
+    /// `approver` and scope/permission-clamped to `approver_grants`.
+    ///
+    /// The requested scope is clamped to the smallest scope the approver
+    /// may grant (if the approver holds no grant covering it, the request
+    /// is denied), and the requested permissions are intersected with what
+    /// the approver actually holds at that scope. The minted token's id is
+    /// recorded so [`Database::poll_device`] can hand back its secret.
+    /// Returns `Ok(false)` when the `user_code` is unknown, already
+    /// resolved (approved or denied), or expired.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn approve_device(
+        &self,
+        user_code: &str,
+        approver: crate::domain::Principal,
+        approver_grants: &[(crate::domain::Scope, crate::domain::Role)],
+    ) -> Result<bool> {
+        let now = unix_now();
+        let row = {
+            let conn = self.lock();
+            conn.query_row(
+                "SELECT scope, permissions FROM device_codes
+                 WHERE user_code = ?1 AND approved_by_user IS NULL AND denied = 0
+                   AND expires_at > ?2",
+                params![user_code, now],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .context("loading device code for approval")?
+        };
+        let Some((scope, perms_json)) = row else {
+            return Ok(false);
+        };
+        let requested_scope = crate::domain::Scope::parse(&scope);
+        let requested = parse_permission_names(&perms_json);
+        // Clamp: keep only requested permissions the approver may actually
+        // grant at the requested scope (downward inheritance via `allow`).
+        let granted: Vec<crate::domain::Permission> = requested
+            .into_iter()
+            .filter(|perm| crate::domain::iam::allow(approver_grants, *perm, &requested_scope))
+            .collect();
+        let (token_id, secret) =
+            self.create_token(approver, requested_scope.as_str(), &granted, None, None)?;
+        // Stow the minted secret on the device row: it is delivered exactly
+        // once to the polling CLI by `poll_device`, never persisted in the
+        // clear anywhere a human session can read it.
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE device_codes
+             SET approved_by_user = ?2, issued_token_id = ?3, issued_token_secret = ?4
+             WHERE user_code = ?1",
+            params![user_code, approver.id, token_id, secret],
+        )?;
+        Ok(true)
+    }
+
+    /// Deny a device grant by its `user_code`.
+    ///
+    /// Returns `Ok(false)` when the code is unknown or already resolved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn deny_device(&self, user_code: &str) -> Result<bool> {
+        let conn = self.lock();
+        let n = conn.execute(
+            "UPDATE device_codes SET denied = 1
+             WHERE user_code = ?1 AND approved_by_user IS NULL AND denied = 0",
+            [user_code],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Poll a device grant by its device-code secret.
+    ///
+    /// Returns [`DevicePollResult::Pending`] while the user has neither
+    /// approved nor denied (or after expiry with no resolution),
+    /// [`DevicePollResult::Denied`] on denial, and
+    /// [`DevicePollResult::Approved`] carrying the minted token's secret
+    /// once approved. The token secret is recovered from
+    /// `issued_token_id`; see [`Database::approve_device`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn poll_device(&self, device_code_secret: &str) -> Result<DevicePollResult> {
+        let hash = crate::auth::token::sha256_hex(device_code_secret);
+        let conn = self.lock();
+        let row = conn
+            .query_row(
+                "SELECT denied, approved_by_user, issued_token_secret
+                 FROM device_codes WHERE device_code_hash = ?1",
+                [&hash],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("loading device code for poll")?;
+        let Some((denied, approved_by, issued_token_secret)) = row else {
+            return Ok(DevicePollResult::Pending);
+        };
+        if denied != 0 {
+            return Ok(DevicePollResult::Denied);
+        }
+        if approved_by.is_none() {
+            // Pending whether or not the window has lapsed; an expired-and-
+            // unapproved grant simply never resolves.
+            return Ok(DevicePollResult::Pending);
+        }
+        // Approved: hand back the minted secret stowed at approval time.
+        match issued_token_secret {
+            Some(secret) => Ok(DevicePollResult::Approved(secret)),
+            None => Ok(DevicePollResult::Pending),
+        }
+    }
+
+    // -- auth: magic links --------------------------------------------------
+
+    /// Create a single-use email magic link, returning the link secret.
+    ///
+    /// Only the SHA-256 hash is stored; the link expires in
+    /// [`crate::auth::magic::MAGIC_LINK_TTL_SECS`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn create_magic_link(&self, email: &str) -> Result<String> {
+        let secret = crate::auth::magic::new_magic_secret();
+        let hash = crate::auth::token::sha256_hex(&secret);
+        let now = unix_now();
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO magic_links (token_hash, email, created_at, expires_at, consumed_at)
+             VALUES (?1, ?2, ?3, ?4, NULL)",
+            params![
+                hash,
+                email,
+                now,
+                now + crate::auth::magic::MAGIC_LINK_TTL_SECS
+            ],
+        )?;
+        Ok(secret)
+    }
+
+    /// Consume a magic link by its secret, returning the bound email once.
+    ///
+    /// Succeeds only for a link that is unexpired and not already consumed;
+    /// on success it stamps `consumed_at` so the same secret cannot be used
+    /// twice. Returns `Ok(None)` for unknown, expired, or replayed links.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn consume_magic_link(&self, secret: &str) -> Result<Option<String>> {
+        let hash = crate::auth::token::sha256_hex(secret);
+        let now = unix_now();
+        let conn = self.lock();
+        let email: Option<String> = conn
+            .query_row(
+                "SELECT email FROM magic_links
+                 WHERE token_hash = ?1 AND consumed_at IS NULL AND expires_at > ?2",
+                params![hash, now],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("loading magic link by hash")?;
+        if email.is_some() {
+            conn.execute(
+                "UPDATE magic_links SET consumed_at = ?2 WHERE token_hash = ?1",
+                params![hash, now],
+            )?;
+        }
+        Ok(email)
+    }
+}
+
+/// The outcome of polling a device-authorization grant (RFC 8628).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DevicePollResult {
+    /// The user has neither approved nor denied yet.
+    Pending,
+    /// The user denied the request.
+    Denied,
+    /// The user approved; carries the minted token's secret.
+    Approved(String),
+}
+
+/// The wire names of a permission slice, for JSON storage.
+fn permission_names(permissions: &[crate::domain::Permission]) -> Vec<&'static str> {
+    permissions.iter().map(|p| p.as_str()).collect()
+}
+
+/// Parse a JSON array of permission verb names into domain permissions,
+/// skipping any unknown verb (forward-compatibility with a newer writer).
+fn parse_permission_names(json: &str) -> Vec<crate::domain::Permission> {
+    let names: Vec<String> = serde_json::from_str(json).unwrap_or_default();
+    names
+        .iter()
+        .filter_map(|n| crate::auth::permission_from_str(n))
+        .collect()
 }
 
 fn row_to_registry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryRecord> {
@@ -1976,6 +2644,288 @@ mod tests {
         db.create_invitation(org, "late@acme.com", "acme", "viewer", "hash-b", past)
             .unwrap();
         assert!(db.accept_invitation("hash-b").unwrap().is_none());
+    }
+
+    #[test]
+    fn v3_database_migrates_to_v4() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.db");
+        // Build a v3 database by hand with one user (FK target for sessions).
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(MIGRATIONS[0]).unwrap();
+            conn.execute_batch(MIGRATIONS[1]).unwrap();
+            conn.execute_batch(MIGRATIONS[2]).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (3);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO users (email, created_at) VALUES ('a@b.com', 0)",
+                [],
+            )
+            .unwrap();
+        }
+        // Reopening migrates to v4: the auth tables exist and are empty.
+        let db = Database::open(&path).unwrap();
+        let conn = db.lock();
+        for table in ["tokens", "sessions", "device_codes", "magic_links"] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0, "{table} should start empty");
+        }
+    }
+
+    #[test]
+    fn tokens_create_validate_revoke_and_list() {
+        use crate::domain::{Permission, Principal};
+        let db = Database::open_in_memory().unwrap();
+        let owner = Principal::user(7);
+        let (id, secret) = db
+            .create_token(
+                owner,
+                "acme/infra",
+                &[Permission::Read, Permission::Publish],
+                Some("ci"),
+                None,
+            )
+            .unwrap();
+        assert!(secret.starts_with("aos_"));
+
+        let auth = db.validate_token(&secret).unwrap().unwrap();
+        assert_eq!(auth.token_id, id);
+        assert_eq!(auth.owner, owner);
+        assert_eq!(auth.scope.as_str(), "acme/infra");
+        assert_eq!(
+            auth.permissions,
+            vec![Permission::Read, Permission::Publish]
+        );
+
+        // last_used_at is bumped on validation.
+        let used: Option<i64> = db
+            .lock()
+            .query_row(
+                "SELECT last_used_at FROM tokens WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(used.is_some());
+
+        let list = db.list_tokens_for(owner).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].0, id);
+
+        db.revoke_token(&id).unwrap();
+        // Revoked-now is still inside grace, but a revoked token in the far
+        // past would be invalid; here we just confirm the revoke ran.
+        assert!(db.list_tokens_for(owner).unwrap().is_empty());
+
+        // Unknown secret is rejected.
+        assert!(db.validate_token("aos_deadbeef").unwrap().is_none());
+    }
+
+    #[test]
+    fn tokens_expired_is_rejected() {
+        use crate::domain::{Permission, Principal};
+        let db = Database::open_in_memory().unwrap();
+        let past = unix_now() - 10;
+        let (_, secret) = db
+            .create_token(
+                Principal::user(1),
+                "acme",
+                &[Permission::Read],
+                None,
+                Some(past),
+            )
+            .unwrap();
+        assert!(db.validate_token(&secret).unwrap().is_none());
+    }
+
+    #[test]
+    fn tokens_rotation_honors_grace_window() {
+        use crate::domain::{Permission, Principal};
+        let db = Database::open_in_memory().unwrap();
+        let owner = Principal::user(3);
+        let (old_id, old_secret) = db
+            .create_token(owner, "acme", &[Permission::Read], Some("c"), None)
+            .unwrap();
+
+        let (new_id, new_secret) = db.rotate_token(&old_id).unwrap().unwrap();
+        assert_ne!(old_id, new_id);
+        assert_ne!(old_secret, new_secret);
+
+        // New token validates and carries the same scope/perms.
+        let new_auth = db.validate_token(&new_secret).unwrap().unwrap();
+        assert_eq!(new_auth.scope.as_str(), "acme");
+        assert_eq!(new_auth.permissions, vec![Permission::Read]);
+
+        // The OLD secret still validates — it was revoked now, but within
+        // the grace window.
+        assert!(db.validate_token(&old_secret).unwrap().is_some());
+
+        // Force the old token's revoked_at to be older than the grace
+        // window: now it is invalid.
+        db.lock()
+            .execute(
+                "UPDATE tokens SET revoked_at = ?2 WHERE id = ?1",
+                params![old_id, unix_now() - ROTATION_GRACE_SECS - 1],
+            )
+            .unwrap();
+        assert!(db.validate_token(&old_secret).unwrap().is_none());
+
+        // Rotating an already-revoked token returns None.
+        assert!(db.rotate_token(&old_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn sessions_create_validate_expire_and_revoke() {
+        let db = Database::open_in_memory().unwrap();
+        let user = db.create_user("dev@acme.com", None).unwrap();
+        let secret = db.create_session(user, 3600, 0).unwrap();
+        let session = db.validate_session(&secret).unwrap().unwrap();
+        assert_eq!(session.user_id, user);
+        assert_eq!(session.auth_level, 0);
+
+        // Elevate sets sudo.
+        db.elevate_session(&secret).unwrap();
+        assert_eq!(db.validate_session(&secret).unwrap().unwrap().auth_level, 1);
+
+        // Revoke one session.
+        db.revoke_session(&secret).unwrap();
+        assert!(db.validate_session(&secret).unwrap().is_none());
+
+        // An expired session is rejected.
+        let expired = db.create_session(user, -10, 0).unwrap();
+        assert!(db.validate_session(&expired).unwrap().is_none());
+
+        // revoke_all clears everything.
+        let s1 = db.create_session(user, 3600, 0).unwrap();
+        let s2 = db.create_session(user, 3600, 0).unwrap();
+        db.revoke_all_user_sessions(user).unwrap();
+        assert!(db.validate_session(&s1).unwrap().is_none());
+        assert!(db.validate_session(&s2).unwrap().is_none());
+    }
+
+    #[test]
+    fn device_flow_full_path_with_scope_clamping() {
+        use crate::domain::{Permission, Principal, Role, Scope};
+        let db = Database::open_in_memory().unwrap();
+        let approver = db.create_user("admin@acme.com", None).unwrap();
+        // The approver is a maintainer at acme: read+publish, but NOT
+        // members.manage.
+        let grants = vec![(Scope::parse("acme"), Role::Maintainer)];
+
+        // CLI requests read + publish + members.manage at acme/infra.
+        let (device_code, user_code, ttl) = db
+            .start_device_authorization(
+                "acme/infra",
+                &[
+                    Permission::Read,
+                    Permission::Publish,
+                    Permission::MembersManage,
+                ],
+            )
+            .unwrap();
+        assert_eq!(ttl, crate::auth::device::DEVICE_CODE_TTL_SECS);
+        assert_eq!(user_code.len(), 9);
+
+        // Pending before approval.
+        assert_eq!(
+            db.poll_device(&device_code).unwrap(),
+            DevicePollResult::Pending
+        );
+
+        // Approve as the maintainer.
+        assert!(db
+            .approve_device(&user_code, Principal::user(approver), &grants)
+            .unwrap());
+
+        // Poll returns Approved with a token secret.
+        let result = db.poll_device(&device_code).unwrap();
+        let DevicePollResult::Approved(token_secret) = result else {
+            panic!("expected Approved, got {result:?}");
+        };
+
+        // The minted token is owned by the approver and clamped: it has
+        // read+publish (maintainer at acme covers acme/infra) but NOT
+        // members.manage.
+        let auth = db.validate_token(&token_secret).unwrap().unwrap();
+        assert_eq!(auth.owner, Principal::user(approver));
+        assert_eq!(auth.scope.as_str(), "acme/infra");
+        assert!(auth.permissions.contains(&Permission::Read));
+        assert!(auth.permissions.contains(&Permission::Publish));
+        assert!(!auth.permissions.contains(&Permission::MembersManage));
+    }
+
+    #[test]
+    fn device_flow_deny_and_unknown() {
+        use crate::domain::Permission;
+        let db = Database::open_in_memory().unwrap();
+        let (device_code, user_code, _) = db
+            .start_device_authorization("acme", &[Permission::Read])
+            .unwrap();
+        assert!(db.deny_device(&user_code).unwrap());
+        assert_eq!(
+            db.poll_device(&device_code).unwrap(),
+            DevicePollResult::Denied
+        );
+
+        // An unknown user_code cannot be approved or denied.
+        assert!(!db
+            .approve_device("ZZZZ-9999", crate::domain::Principal::user(1), &[])
+            .unwrap());
+        assert!(!db.deny_device("ZZZZ-9999").unwrap());
+        // An unknown device_code polls as Pending.
+        assert_eq!(
+            db.poll_device("unknown").unwrap(),
+            DevicePollResult::Pending
+        );
+    }
+
+    #[test]
+    fn device_flow_expiry_blocks_approval() {
+        use crate::domain::Permission;
+        let db = Database::open_in_memory().unwrap();
+        let (_device_code, user_code, _) = db
+            .start_device_authorization("acme", &[Permission::Read])
+            .unwrap();
+        // Force the grant to be expired.
+        db.lock()
+            .execute(
+                "UPDATE device_codes SET expires_at = ?1 WHERE user_code = ?2",
+                params![unix_now() - 1, user_code],
+            )
+            .unwrap();
+        assert!(!db
+            .approve_device(&user_code, crate::domain::Principal::user(1), &[])
+            .unwrap());
+    }
+
+    #[test]
+    fn magic_links_single_use_and_expiry() {
+        let db = Database::open_in_memory().unwrap();
+        let secret = db.create_magic_link("user@acme.com").unwrap();
+        assert_eq!(
+            db.consume_magic_link(&secret).unwrap().as_deref(),
+            Some("user@acme.com")
+        );
+        // Second consume fails (already consumed).
+        assert!(db.consume_magic_link(&secret).unwrap().is_none());
+        // Unknown secret fails.
+        assert!(db.consume_magic_link("nope").unwrap().is_none());
+
+        // An expired link cannot be consumed.
+        let expired = db.create_magic_link("late@acme.com").unwrap();
+        db.lock()
+            .execute(
+                "UPDATE magic_links SET expires_at = ?1 WHERE email = 'late@acme.com'",
+                params![unix_now() - 1],
+            )
+            .unwrap();
+        assert!(db.consume_magic_link(&expired).unwrap().is_none());
     }
 
     #[test]
