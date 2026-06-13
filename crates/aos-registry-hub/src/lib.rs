@@ -64,6 +64,8 @@
 //!   `refs/hub/changes/<change_id>` for a maintainer to review and promote.
 //! - [`rpc`] — the `aos.registry.v1` ConnectRPC read-path services plus the
 //!   tenancy and webhook write-path services.
+//! - [`seed`] — dev seed: populates a fresh hub with a browsable, signed demo
+//!   registry, a demo org/user/password, and a sample publish token.
 //! - [`webhook`] — outbound webhooks: the [`webhook::WebhookEvent`] taxonomy,
 //!   HMAC-signed delivery, and the background delivery worker.
 //! - [`ui`] — server-rendered HTML pages.
@@ -85,6 +87,7 @@ pub mod mirror;
 pub mod probe;
 pub mod ratelimit;
 pub mod rpc;
+pub mod seed;
 pub mod server;
 pub mod signing;
 pub mod stack;

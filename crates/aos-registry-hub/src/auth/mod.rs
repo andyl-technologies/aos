@@ -15,10 +15,11 @@
 //! - **Humans** carry opaque [cookie sessions](session)
 //!   (`__Host-aos_session`) with a sudo `auth_level`, obtained through the
 //!   [device-authorization flow](device) (RFC 8628) for the CLI, [email magic
-//!   links](magic) for the browser, [passkeys / WebAuthn](webauthn) (an
-//!   in-house relying-party verifier, `attestation: none` only), or — per org —
-//!   [OIDC single sign-on](oidc) (authorization-code + PKCE, domain-captured
-//!   email-first routing).
+//!   links](magic) for the browser, [email + password](password) (Argon2id,
+//!   an operator-requested reversal of the original "no passwords" stance),
+//!   [passkeys / WebAuthn](webauthn) (an in-house relying-party verifier,
+//!   `attestation: none` only), or — per org — [OIDC single sign-on](oidc)
+//!   (authorization-code + PKCE, domain-captured email-first routing).
 //!
 //! # Module map
 //!
@@ -28,6 +29,8 @@
 //! - [`device`] — RFC 8628 device-code and user-code minting.
 //! - [`magic`] — single-use email magic-link secrets and the [`magic::Mailer`]
 //!   delivery trait.
+//! - [`password`] — Argon2id password hashing and constant-time verification
+//!   for the email + password login path.
 //! - [`webauthn`] — the in-house WebAuthn relying-party verifier
 //!   (`attestation: none` only): `clientDataJSON`/`authenticatorData` checks,
 //!   COSE key decode, ES256/Ed25519/RS256 signature verification, and the
@@ -48,6 +51,7 @@ pub mod extract;
 pub mod jwt;
 pub mod magic;
 pub mod oidc;
+pub mod password;
 pub mod seal;
 pub mod session;
 pub mod token;

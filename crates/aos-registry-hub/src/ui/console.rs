@@ -54,30 +54,47 @@ fn indicator(email: &str) -> SessionIndicator {
     SessionIndicator::signed_in(email)
 }
 
-/// The login page: a single email field that issues a magic link, plus an
-/// optional "Sign in with a passkey" button.
+/// The login page: an email + password form, a one-time email-link form, and
+/// an optional "Sign in with a passkey" button.
 ///
-/// `error` renders an inline error (e.g. a malformed address). The email form
-/// `POST`s to `/login`; there is no CSRF token because the caller is anonymous
-/// (no ambient cookie to forge against).
+/// `error` renders an inline error (e.g. a malformed address or a failed
+/// password attempt). The forms `POST` anonymously — `/login/password` for the
+/// password sign-in, `/login` for the magic link — and carry no CSRF token
+/// because the caller is anonymous (no ambient cookie to forge against).
+///
+/// Three no-JS sign-in routes are offered side by side so the page is clear:
+///
+/// - **password** — email + password fields posting to `/login/password`.
+///   When a user has no password set the attempt fails generically, never
+///   revealing whether the email exists.
+/// - **email link** — the email-only magic-link form posting to `/login`.
+/// - **passkey** — only when `passkey_nonce` is `Some` (see below).
 ///
 /// `passkey_nonce` is `Some(nonce)` on the canonical `GET /login` render, where
 /// the handler also sets a `script-src 'nonce-…'` CSP: it adds a passkey button
 /// and the first-party inline script that drives `navigator.credentials.get`.
-/// It is `None` on no-JS error re-renders, which still show the email form (a
-/// plain reload restores the passkey button).
+/// It is `None` on no-JS error re-renders, which still show the password and
+/// email forms (a plain reload restores the passkey button).
 #[must_use]
 pub fn login_page(error: Option<&str>, passkey_nonce: Option<&str>, started: Instant) -> String {
     let mut body = String::from("<h1>Log in</h1>\n");
-    body.push_str(
-        "<p class=\"dim\">Enter your email; we send a one-time sign-in link. \
-         There are no passwords.</p>\n",
-    );
     if let Some(error) = error {
         let _ = writeln!(body, "<p class=\"bad\">{}</p>", escape(error));
     }
+    // Email + password sign-in.
     body.push_str(
-        "<form class=\"console\" method=\"post\" action=\"/login\">\n\
+        "<p class=\"dim\">Sign in with your email and password.</p>\n\
+         <form class=\"console\" method=\"post\" action=\"/login/password\">\n\
+         <label>email <input type=\"email\" name=\"email\" required \
+         placeholder=\"you@example.com\"></label>\n\
+         <label>password <input type=\"password\" name=\"password\" required \
+         autocomplete=\"current-password\"></label>\n\
+         <button>sign in with password</button>\n</form>\n",
+    );
+    // One-time email-link sign-in (no password required).
+    body.push_str(
+        "<p class=\"dim\">Or have us email you a one-time sign-in link instead.</p>\n\
+         <form class=\"console\" method=\"post\" action=\"/login\">\n\
          <label>email <input type=\"email\" name=\"email\" required \
          placeholder=\"you@example.com\"></label>\n\
          <button>send sign-in link</button>\n</form>\n",
@@ -307,22 +324,58 @@ pub fn passkeys_page(
     )
 }
 
-/// The account profile page: email, active sessions, tokens, passkeys.
+/// The account profile page: email, password, sessions, tokens, passkeys.
 ///
 /// `tokens` are `(id, scope, permissions)` tuples across every scope the
-/// user owns. The sessions section offers a "sign out everywhere" button; the
-/// passkeys section links to the dedicated management page
-/// ([`passkeys_page`]).
+/// user owns. `password_set` reflects whether the account currently has a
+/// password configured (it controls the heading and copy of the
+/// set/change-password form). `error` renders an inline error banner above
+/// the password form (e.g. a rejected set-password attempt). The sessions
+/// section offers a "sign out everywhere" button; the passkeys section links
+/// to the dedicated management page ([`passkeys_page`]).
 #[must_use]
 pub fn account_page(
     email: &str,
     csrf: &str,
     tokens: &[(String, String, Vec<Permission>)],
+    password_set: bool,
+    error: Option<&str>,
     started: Instant,
 ) -> String {
     let mut body = format!(
         "<h1>Account</h1>\n<p>signed in as <code>{}</code></p>\n",
         escape(email)
+    );
+
+    if let Some(error) = error {
+        let _ = writeln!(body, "<p class=\"bad\">{}</p>", escape(error));
+    }
+
+    // Password: set one, or change an existing one. The CSRF-protected form
+    // posts the new password to /account/password for the logged-in user.
+    body.push_str("<h2>Password</h2>\n");
+    if password_set {
+        body.push_str(
+            "<p class=\"dim\">A password is set for this account. \
+             Enter a new one to change it.</p>\n",
+        );
+    } else {
+        body.push_str(
+            "<p class=\"dim\">No password is set. Set one to sign in with \
+             your email and password.</p>\n",
+        );
+    }
+    body.push_str("<form class=\"console\" method=\"post\" action=\"/account/password\">\n");
+    body.push_str(&csrf_field(csrf));
+    let _ = write!(
+        body,
+        "<label>new password <input type=\"password\" name=\"password\" required \
+         autocomplete=\"new-password\"></label>\n<button>{}</button>\n</form>\n",
+        if password_set {
+            "change password"
+        } else {
+            "set password"
+        },
     );
 
     body.push_str("<h2>Sessions</h2>\n");

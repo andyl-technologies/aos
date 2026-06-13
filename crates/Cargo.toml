@@ -62,6 +62,10 @@ jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.9"
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
+# Pure-Rust Argon2id password hashing for the registry-hub PASSWORD auth path
+# (RFC-0004; the operator-requested reversal of the original "no passwords"
+# stance). PHC-string output, constant-time verify.
+argon2 = "0.5"
 # In-house WebAuthn RP verifier (RFC-0004 passkeys, attestation: none). These
 # round out the COSE signature algorithms beyond Ed25519 (already present):
 # p256 for ES256 ECDSA, rsa for RS256 PKCS#1v1.5, and ciborium as the CBOR
