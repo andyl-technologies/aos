@@ -14,10 +14,19 @@
 //!   (slug, source URL, trust anchors, the anti-rollback floor each
 //!   channel has reached, the org → project → registry hierarchy and who
 //!   may act on it, where each managed registry's bytes live, plus the
-//!   credentials principals authenticate with). Losing these loses real
-//!   state; floors in particular survive every re-index, and
-//!   ownership/grants/storage/credentials are never rebuildable from the
-//!   surface.
+//!   credentials principals authenticate with), and the phase-3a
+//!   configuration-history tables `audit_log`, `config_changesets`, and
+//!   `config_revisions` (the append-only record of every SQL-backed
+//!   mutation, who performed it, and the before/after object snapshots):
+//!   facts that exist nowhere on the surface (slug, source URL, trust
+//!   anchors, the anti-rollback floor each channel has reached, the
+//!   org → project → registry hierarchy and who may act on it, where each
+//!   managed registry's bytes live, the credentials principals authenticate
+//!   with, and the audit trail of how the configuration reached its current
+//!   state). Losing these loses real state; floors in particular survive
+//!   every re-index, and
+//!   ownership/grants/storage/credentials/history are never rebuildable
+//!   from the surface.
 //! - **Rebuildable index** — `registry_index`, `packages`,
 //!   `package_versions`, `version_platforms`, `channels`,
 //!   `channel_partitions`, `releases`, `key_rosters`, `caches`: derived
@@ -104,6 +113,57 @@
 //! one router shape ([`Database::registry_by_slug`]) resolves both flat
 //! and nested registries, and [`Database::registry_by_scope`] simply
 //! builds the canonical string and delegates to it.
+//!
+//! # Configuration history (v7)
+//!
+//! Phase 3a adds the SQL system-of-record's configuration history
+//! (RFC-0004 "Configuration management" and "Tenancy and IAM"). Three
+//! append-only tables — never `UPDATE`d row-by-row except for the
+//! changeset lifecycle stamps — record every mutation of the SQL-backed
+//! config (visibility, memberships, tokens metadata, storage bindings,
+//! registry config) and who performed it.
+//!
+//! A **changeset** is a unit of review: an actor opens a draft, stages one
+//! or more **revisions** (full before/after JSON snapshots of each touched
+//! object), and applies it atomically. Each apply writes exactly one
+//! **audit-log** row carrying the changeset's `change_id`, so the audit
+//! feed and the revision log share one join key. A **revert** is a
+//! snapshot-targeted *forward* changeset (never a literal restore): it
+//! drafts new revisions targeting each original revision's `old_json`,
+//! flags conflicts where the live object has since diverged, and stamps the
+//! original's `reverted_by_change_id`.
+//!
+//! ```text
+//! audit_log         id  change_id  actor_kind  actor_label       action
+//!                   1   c1a2…      user        alice@acme.com    registry.visibility
+//!                       scope "acme/infra/prod/cdn"  result_commit ""  result_tag ""
+//!                       detail '{"old":"public","new":"private"}'  created_at 1730000000
+//!
+//! config_changesets change_id c1a2…  actor_label alice@acme.com
+//!                   scope "acme/infra/prod/cdn"  status applied
+//!                   summary "set cdn visibility to private"
+//!                   created_at 1730000000  applied_at 1730000000
+//!                   reverted_by_change_id NULL
+//!
+//! config_revisions  id 1  change_id c1a2…  object_type registry
+//!                   object_id "acme/infra/prod/cdn"  op update  seq 0
+//!                   old_json '{"visibility":"public"}'
+//!                   new_json '{"visibility":"private"}'
+//! ```
+//!
+//! `change_id` is a UUID v4 (the crate's existing `uuid` dependency); rows
+//! order by `created_at` rather than by a sortable id, so no new dependency
+//! (a ULID generator) is taken on. The engine that drives these tables —
+//! drafting, staging, semantic-diffing, applying, and reverting — lives in
+//! [`crate::config`]; this module only stores and lists the rows.
+//!
+//! ## Security-object revert exemptions
+//!
+//! Reverting a security-sensitive object never resurrects a live
+//! credential or grant (RFC-0004): a `token` revert renders as an
+//! "issue replacement" note (a no-op create), and a `membership` delete
+//! reverts to an *invitation* rather than a silent re-admit. These are
+//! encoded as operation/notes by [`crate::config::revert`].
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -377,6 +437,54 @@ const MIGRATIONS: &[&str] = &[
     // minting JWTs for an hour.
     "
     ALTER TABLE tokens ADD COLUMN rotated_at INTEGER;
+    ",
+    // v7: configuration history (RFC-0004 \"Configuration management\").
+    // The append-only audit log plus the SQL-backed change-set/revision
+    // log over the SQL system of record (visibility, memberships, tokens
+    // metadata, storage bindings, registry config). Rows are appended,
+    // never rewritten in place (except the changeset lifecycle stamps:
+    // status, applied_at, reverted_by_change_id). change_id is a UUID v4;
+    // ordering is by created_at, taking on no new sortable-id dependency.
+    "
+    CREATE TABLE audit_log (
+        id           INTEGER PRIMARY KEY,
+        change_id    TEXT,                       -- ties to a changeset (nullable)
+        actor_kind   TEXT NOT NULL,              -- user|service_account|key|system
+        actor_id     INTEGER,                    -- principal row id, when applicable
+        actor_label  TEXT NOT NULL,              -- human string (email, sa:org/name, fpr, system)
+        action       TEXT NOT NULL,              -- the mutating verb
+        scope        TEXT NOT NULL,              -- scope-path string
+        result_commit TEXT,                      -- resulting git commit hash (surface ops)
+        result_tag   TEXT,                       -- resulting git tag hash (surface ops)
+        detail       TEXT,                       -- free-form (often compact JSON)
+        created_at   INTEGER NOT NULL
+    );
+    CREATE INDEX audit_log_scope_idx ON audit_log (scope, id);
+    CREATE INDEX audit_log_change_idx ON audit_log (change_id);
+    CREATE TABLE config_changesets (
+        change_id    TEXT PRIMARY KEY,           -- UUID v4
+        actor_kind   TEXT NOT NULL,
+        actor_id     INTEGER,
+        actor_label  TEXT NOT NULL,
+        scope        TEXT NOT NULL,
+        status       TEXT NOT NULL,              -- draft|applied|reverted
+        summary      TEXT,
+        created_at   INTEGER NOT NULL,
+        applied_at   INTEGER,
+        reverted_by_change_id TEXT
+    );
+    CREATE INDEX config_changesets_scope_idx ON config_changesets (scope, created_at);
+    CREATE TABLE config_revisions (
+        id           INTEGER PRIMARY KEY,
+        change_id    TEXT NOT NULL REFERENCES config_changesets(change_id) ON DELETE CASCADE,
+        object_type  TEXT NOT NULL,
+        object_id    TEXT NOT NULL,
+        op           TEXT NOT NULL,              -- create|update|delete
+        old_json     TEXT,                       -- full object snapshot before
+        new_json     TEXT,                       -- full object snapshot after
+        seq          INTEGER NOT NULL
+    );
+    CREATE INDEX config_revisions_change_idx ON config_revisions (change_id, seq);
     ",
 ];
 
@@ -679,6 +787,87 @@ pub struct IndexSnapshot {
     /// SHA-256 hex digest of the raw `info/refs` bytes the snapshot was
     /// built from; powers the incremental channel-refresh fast path.
     pub refs_digest: Option<String>,
+}
+
+/// One append-only audit-log row (system-of-record).
+///
+/// Records a single mutating action: the actor, the action verb, the
+/// targeted scope, the optional change-set join key, and the optional
+/// cryptographic-history cross-references for surface-touching operations.
+#[derive(Debug, Clone)]
+pub struct AuditRow {
+    /// Row id (monotonic; orders entries within a scope).
+    pub id: i64,
+    /// The change-set this entry ties to, or `None` when not change-set
+    /// driven.
+    pub change_id: Option<String>,
+    /// Actor kind: `user`, `service_account`, `key`, or `system`.
+    pub actor_kind: String,
+    /// Human label of the actor (email, `sa:org/name`, key fingerprint, or
+    /// `system`).
+    pub actor_label: String,
+    /// The action verb (e.g. `registry.visibility`, `membership.grant`).
+    pub action: String,
+    /// Scope path the action targeted.
+    pub scope: String,
+    /// Resulting git commit hash for surface-touching ops, when applicable.
+    pub result_commit: Option<String>,
+    /// Resulting git tag hash for surface-touching ops, when applicable.
+    pub result_tag: Option<String>,
+    /// Free-form detail (often a compact JSON object).
+    pub detail: Option<String>,
+    /// Unix time the entry was recorded.
+    pub created_at: i64,
+}
+
+/// One configuration change-set summary row (system-of-record).
+#[derive(Debug, Clone)]
+pub struct ChangesetRow {
+    /// Stable change-set id (UUID v4); the audit/revision join key.
+    pub change_id: String,
+    /// Actor kind: `user`, `service_account`, `key`, or `system`.
+    pub actor_kind: String,
+    /// Owning principal's row id, when applicable.
+    pub actor_id: Option<i64>,
+    /// Human label of the actor that opened the change-set.
+    pub actor_label: String,
+    /// Scope path the change-set targets.
+    pub scope: String,
+    /// Lifecycle status: `draft`, `applied`, or `reverted`.
+    pub status: String,
+    /// One-line human summary.
+    pub summary: Option<String>,
+    /// Unix time the change-set was created.
+    pub created_at: i64,
+    /// Unix time the change-set was applied, or `None` when never applied.
+    pub applied_at: Option<i64>,
+    /// The change-set that reverted this one, or `None`.
+    pub reverted_by_change_id: Option<String>,
+}
+
+/// One revision row within a change-set (system-of-record).
+///
+/// A revision is a staged operation on one object, carrying the full
+/// before/after JSON snapshots that diffs and reverts are computed from.
+/// Rows are never updated once written.
+#[derive(Debug, Clone)]
+pub struct RevisionRow {
+    /// Row id.
+    pub id: i64,
+    /// The change-set this revision belongs to.
+    pub change_id: String,
+    /// The object's type (e.g. `registry`, `membership`, `token`).
+    pub object_type: String,
+    /// The object's stable id within its type.
+    pub object_id: String,
+    /// The operation: `create`, `update`, or `delete`.
+    pub op: String,
+    /// Full object snapshot before the change (`None` for a create).
+    pub old_json: Option<String>,
+    /// Full object snapshot after the change (`None` for a delete).
+    pub new_json: Option<String>,
+    /// Ordinal of this revision within its change-set, from `0`.
+    pub seq: i64,
 }
 
 /// The hub database handle.
@@ -2691,6 +2880,338 @@ impl Database {
             .context("consuming magic link by hash")?;
         Ok(email)
     }
+
+    // -- registry config setters --------------------------------------------
+
+    /// Set a registry's visibility (`public`, `internal`, or `private`).
+    ///
+    /// The simple live-object mutation the change-set engine's apply step
+    /// invokes for a registry-visibility change (see
+    /// [`crate::config::change_registry_visibility`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn set_registry_visibility(&self, registry_id: i64, visibility: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE registries SET visibility = ?2 WHERE id = ?1",
+            params![registry_id, visibility],
+        )?;
+        Ok(())
+    }
+
+    // -- audit log ----------------------------------------------------------
+
+    /// Append one audit-log row; returns its new id.
+    ///
+    /// Append-only: every mutating action that goes through the hub's
+    /// SQL-backed write paths records exactly one row here. `change_id`
+    /// ties the row to a configuration change-set when applicable;
+    /// `result_commit`/`result_tag` cross-reference the cryptographic
+    /// history for surface-touching operations (RFC-0004 "Tenancy and IAM").
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_audit(
+        &self,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        action: &str,
+        scope: &str,
+        change_id: Option<&str>,
+        result_commit: Option<&str>,
+        result_tag: Option<&str>,
+        detail: Option<&str>,
+    ) -> Result<i64> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO audit_log
+             (change_id, actor_kind, actor_id, actor_label, action, scope,
+              result_commit, result_tag, detail, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                change_id,
+                actor_kind,
+                actor_id,
+                actor_label,
+                action,
+                scope,
+                result_commit,
+                result_tag,
+                detail,
+                unix_now(),
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// List audit entries at or below `scope`, newest first.
+    ///
+    /// Returns entries whose recorded `scope` is `scope` or any descendant
+    /// of it (so an org-scoped query surfaces actions on its registries),
+    /// using the same segment-boundary containment as
+    /// [`crate::domain::Scope::contains`]. The root scope (`""`) lists every
+    /// entry instance-wide.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_audit(&self, scope: &str) -> Result<Vec<AuditRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, change_id, actor_kind, actor_label, action, scope,
+                    result_commit, result_tag, detail, created_at
+             FROM audit_log ORDER BY id DESC",
+        )?;
+        let target = crate::domain::Scope::parse(scope);
+        let rows = stmt.query_map([], |row| {
+            Ok(AuditRow {
+                id: row.get(0)?,
+                change_id: row.get(1)?,
+                actor_kind: row.get(2)?,
+                actor_label: row.get(3)?,
+                action: row.get(4)?,
+                scope: row.get(5)?,
+                result_commit: row.get(6)?,
+                result_tag: row.get(7)?,
+                detail: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let row = row?;
+            if target.contains(&crate::domain::Scope::parse(&row.scope)) {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
+    // -- configuration change-sets ------------------------------------------
+
+    /// Create a change-set in `draft` status; returns nothing (the caller
+    /// supplies the `change_id`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a primary-key
+    /// collision on `change_id`.
+    pub fn create_changeset(
+        &self,
+        change_id: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        scope: &str,
+        summary: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO config_changesets
+             (change_id, actor_kind, actor_id, actor_label, scope, status,
+              summary, created_at, applied_at, reverted_by_change_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'draft', ?6, ?7, NULL, NULL)",
+            params![
+                change_id,
+                actor_kind,
+                actor_id,
+                actor_label,
+                scope,
+                summary,
+                unix_now(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Append a revision to a change-set; returns the assigned `seq`.
+    ///
+    /// The `seq` is the next ordinal for the change-set (its current
+    /// revision count), so revisions apply in insertion order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including a foreign-key
+    /// violation when `change_id` is unknown.
+    pub fn add_revision(
+        &self,
+        change_id: &str,
+        object_type: &str,
+        object_id: &str,
+        op: &str,
+        old_json: Option<&str>,
+        new_json: Option<&str>,
+    ) -> Result<i64> {
+        let conn = self.lock();
+        let seq: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM config_revisions WHERE change_id = ?1",
+            [change_id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO config_revisions
+             (change_id, object_type, object_id, op, old_json, new_json, seq)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                change_id,
+                object_type,
+                object_id,
+                op,
+                old_json,
+                new_json,
+                seq
+            ],
+        )?;
+        Ok(seq)
+    }
+
+    /// Load one change-set summary by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn changeset(&self, change_id: &str) -> Result<Option<ChangesetRow>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT change_id, actor_kind, actor_id, actor_label, scope, status,
+                    summary, created_at, applied_at, reverted_by_change_id
+             FROM config_changesets WHERE change_id = ?1",
+            [change_id],
+            row_to_changeset,
+        )
+        .optional()
+        .context("loading changeset by id")
+    }
+
+    /// List a change-set's revisions in `seq` order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_revisions(&self, change_id: &str) -> Result<Vec<RevisionRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, change_id, object_type, object_id, op, old_json, new_json, seq
+             FROM config_revisions WHERE change_id = ?1 ORDER BY seq",
+        )?;
+        let rows = stmt.query_map([change_id], |row| {
+            Ok(RevisionRow {
+                id: row.get(0)?,
+                change_id: row.get(1)?,
+                object_type: row.get(2)?,
+                object_id: row.get(3)?,
+                op: row.get(4)?,
+                old_json: row.get(5)?,
+                new_json: row.get(6)?,
+                seq: row.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Set a change-set's lifecycle status, optionally stamping
+    /// `applied_at` and/or `reverted_by_change_id`.
+    ///
+    /// Pass `applied_at = Some(t)` when transitioning to `applied`, and
+    /// `reverted_by = Some(id)` when marking a change-set reverted by
+    /// another. `None` arguments leave the corresponding columns untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn set_changeset_status(
+        &self,
+        change_id: &str,
+        status: &str,
+        applied_at: Option<i64>,
+        reverted_by: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE config_changesets
+             SET status = ?2,
+                 applied_at = COALESCE(?3, applied_at),
+                 reverted_by_change_id = COALESCE(?4, reverted_by_change_id)
+             WHERE change_id = ?1",
+            params![change_id, status, applied_at, reverted_by],
+        )?;
+        Ok(())
+    }
+
+    /// Apply a change-set atomically: run `apply_fn` for each revision in
+    /// `seq` order inside one transaction, then stamp `status = 'applied'`
+    /// and `applied_at = now`.
+    ///
+    /// The caller supplies `apply_fn`, the live-object mutation for one
+    /// revision (e.g. setting a registry's visibility). If any invocation
+    /// fails the whole transaction rolls back and neither the live objects
+    /// nor the changeset status change. The closure is `FnMut` so callers
+    /// may thread mutable state through it.
+    ///
+    /// Note that `apply_fn` mutates live objects through a *separate*
+    /// connection (it receives only the [`RevisionRow`], not the
+    /// transaction), so its writes are not rolled back by a later revision's
+    /// failure; the engine stages revisions only for changes whose live
+    /// writes are individually idempotent and re-appliable (visibility,
+    /// membership grants/revokes), so a partial apply is recoverable by
+    /// re-applying.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if loading the revisions fails, if any `apply_fn`
+    /// call returns an error, or on database failure committing the
+    /// transaction.
+    pub fn apply_changeset<F>(&self, change_id: &str, mut apply_fn: F) -> Result<()>
+    where
+        F: FnMut(&RevisionRow) -> Result<()>,
+    {
+        let revisions = self.list_revisions(change_id)?;
+        for revision in &revisions {
+            apply_fn(revision)?;
+        }
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE config_changesets SET status = 'applied', applied_at = ?2
+             WHERE change_id = ?1",
+            params![change_id, unix_now()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// List change-sets at or below `scope`, newest first.
+    ///
+    /// Uses the same segment-boundary containment as [`Database::list_audit`]:
+    /// a query at an org scope surfaces change-sets targeting its registries.
+    /// The root scope (`""`) lists every change-set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_changesets(&self, scope: &str) -> Result<Vec<ChangesetRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT change_id, actor_kind, actor_id, actor_label, scope, status,
+                    summary, created_at, applied_at, reverted_by_change_id
+             FROM config_changesets ORDER BY created_at DESC, change_id DESC",
+        )?;
+        let target = crate::domain::Scope::parse(scope);
+        let rows = stmt.query_map([], row_to_changeset)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let row = row?;
+            if target.contains(&crate::domain::Scope::parse(&row.scope)) {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// The outcome of polling a device-authorization grant (RFC 8628).
@@ -2737,6 +3258,21 @@ fn row_to_registry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryRecord> 
         visibility: row.get(7)?,
         storage_binding_id: row.get(8)?,
         prefix: row.get(9)?,
+    })
+}
+
+fn row_to_changeset(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChangesetRow> {
+    Ok(ChangesetRow {
+        change_id: row.get(0)?,
+        actor_kind: row.get(1)?,
+        actor_id: row.get(2)?,
+        actor_label: row.get(3)?,
+        scope: row.get(4)?,
+        status: row.get(5)?,
+        summary: row.get(6)?,
+        created_at: row.get(7)?,
+        applied_at: row.get(8)?,
+        reverted_by_change_id: row.get(9)?,
     })
 }
 
@@ -2986,6 +3522,96 @@ mod tests {
         assert_eq!(org_id, None);
         assert_eq!(project_path, "");
         assert_eq!(visibility, "public");
+    }
+
+    #[test]
+    fn v6_database_migrates_to_v7() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.db");
+        // Build a v6 database by hand (apply migrations v1..=v6).
+        {
+            let conn = Connection::open(&path).unwrap();
+            for m in &MIGRATIONS[..6] {
+                conn.execute_batch(m).unwrap();
+            }
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (6);",
+            )
+            .unwrap();
+        }
+
+        // Reopening migrates to v7; the configuration-history tables exist
+        // and start empty.
+        let db = Database::open(&path).unwrap();
+        {
+            let conn = db.lock();
+            for table in ["audit_log", "config_changesets", "config_revisions"] {
+                let count: i64 = conn
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(count, 0, "{table} should start empty");
+            }
+        }
+        // The new surface works end to end through the public methods.
+        db.create_changeset("cs1", "system", None, "system", "acme", Some("test"))
+            .unwrap();
+        db.add_revision(
+            "cs1",
+            "registry",
+            "acme/cdn",
+            "update",
+            Some(r#"{"visibility":"public"}"#),
+            Some(r#"{"visibility":"private"}"#),
+        )
+        .unwrap();
+        assert_eq!(db.list_revisions("cs1").unwrap().len(), 1);
+        let id = db
+            .record_audit(
+                "system",
+                None,
+                "system",
+                "test.action",
+                "acme",
+                Some("cs1"),
+                None,
+                None,
+                Some("d"),
+            )
+            .unwrap();
+        assert!(id > 0);
+        assert_eq!(db.list_audit("acme").unwrap().len(), 1);
+        assert_eq!(db.list_changesets("acme").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn audit_and_changeset_scope_containment() {
+        let db = Database::open_in_memory().unwrap();
+        db.record_audit(
+            "system",
+            None,
+            "system",
+            "a",
+            "acme/infra/prod/cdn",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        db.record_audit(
+            "system", None, "system", "b", "globex", None, None, None, None,
+        )
+        .unwrap();
+        // An org-scoped query surfaces the registry-scoped row but not the
+        // sibling org's.
+        let rows = db.list_audit("acme").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].action, "a");
+        // The root scope lists everything, newest first.
+        let all = db.list_audit("").unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].action, "b", "newest first");
     }
 
     #[test]
@@ -3615,19 +4241,9 @@ mod tests {
         let org = db.create_org("acme", "Acme").unwrap();
 
         // A traversal-bearing prefix is rejected (defense in depth).
-        assert!(
-            db.create_managed_registry(
-                org,
-                "infra",
-                "evil",
-                "public",
-                None,
-                "../../etc",
-                &[],
-                true
-            )
-            .is_err()
-        );
+        assert!(db
+            .create_managed_registry(org, "infra", "evil", "public", None, "../../etc", &[], true)
+            .is_err());
 
         // With a project path.
         let cdn = db

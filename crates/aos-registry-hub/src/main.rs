@@ -85,6 +85,11 @@ enum Command {
         #[command(subcommand)]
         command: TokenCommand,
     },
+    /// Print recent audit entries at (or below) a scope.
+    Audit {
+        /// Scope path to filter on (use "" for instance-wide).
+        scope: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -194,6 +199,13 @@ enum RegistryCommand {
         #[arg(long = "trust-key")]
         trust_keys: Vec<String>,
     },
+    /// Change a registry's visibility through an audited change-set.
+    SetVisibility {
+        /// Canonical registry path or flat slug.
+        canonical: String,
+        /// New visibility: public, internal, or private.
+        visibility: String,
+    },
     /// List registered registries.
     List,
 }
@@ -301,6 +313,32 @@ async fn main() -> Result<()> {
                     println!(
                         "created managed registry '{}' (id {id}, {visibility})",
                         registry.slug
+                    );
+                }
+                RegistryCommand::SetVisibility {
+                    canonical,
+                    visibility,
+                } => {
+                    if !matches!(visibility.as_str(), "public" | "internal" | "private") {
+                        anyhow::bail!(
+                            "invalid visibility '{visibility}': public, internal, or private"
+                        );
+                    }
+                    let registry = db
+                        .registry_by_slug(&canonical)?
+                        .with_context(|| format!("no registry '{canonical}'"))?;
+                    // The CLI actor is the local operator: an out-of-band
+                    // `system` principal (no IAM check on the local path).
+                    let actor = aos_registry_hub::domain::Principal::user(0);
+                    let change_id = aos_registry_hub::config::change_registry_visibility(
+                        &db,
+                        &actor,
+                        "system",
+                        registry.id,
+                        &visibility,
+                    )?;
+                    println!(
+                        "set '{canonical}' visibility to {visibility} (change-set {change_id})"
                     );
                 }
                 RegistryCommand::List => {
@@ -413,6 +451,20 @@ async fn main() -> Result<()> {
                     expires_days,
                     owner,
                 } => mint_token(&db, &path, &permissions, expires_days, &owner)?,
+            }
+        }
+        Command::Audit { scope } => {
+            let root = resolve_root(cli.root, false)?;
+            let db = Database::open(&root.join("hub.db"))?;
+            for entry in db.list_audit(&scope)? {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    entry.created_at,
+                    entry.actor_label,
+                    entry.action,
+                    entry.scope,
+                    entry.change_id.as_deref().unwrap_or("-"),
+                );
             }
         }
     }

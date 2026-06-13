@@ -43,6 +43,29 @@ service StorageService {
   rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse);
 }
 
+// Append-only audit log queries (RFC-0004 "Tenancy and IAM" / "Access
+// matrix"). Reads require audit.read (admin+) on the queried scope.
+service AuditService {
+  // List recent audit entries at a scope, newest first. Requires a bearer
+  // JWT with audit.read on the scope.
+  rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
+}
+
+// SQL-backed configuration change-sets (RFC-0004 "Configuration
+// management"): the append-only revision log over orgs, projects, members,
+// roles, tokens, visibility, and bindings. Reads require audit.read on the
+// scope; RevertChangeset requires registry.configure on the scope.
+service ConfigService {
+  // List change-sets at a scope, newest first. Requires audit.read.
+  rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse);
+  // Load one change-set's revisions and their semantic field diffs (the
+  // terraform-plan review view). Requires audit.read.
+  rpc GetChangeset(GetChangesetRequest) returns (GetChangesetResponse);
+  // Draft and apply a snapshot-targeted forward revert of a change-set,
+  // returning the new revert change-set. Requires registry.configure.
+  rpc RevertChangeset(RevertChangesetRequest) returns (RevertChangesetResponse);
+}
+
 service PackageService {
   rpc ListPackages(ListPackagesRequest) returns (ListPackagesResponse);
   rpc GetPackage(GetPackageRequest) returns (GetPackageResponse);
@@ -333,4 +356,113 @@ message CreateRegistryRequest {
 
 message CreateRegistryResponse {
   Registry registry = 1;
+}
+
+// -- Audit log (phase 3a) --------------------------------------------------
+
+// One append-only audit-log entry: who did what, where, and the change-set
+// and cryptographic-history cross-references.
+message AuditEntry {
+  // The change-set this entry ties to ("" when not change-set driven).
+  string change_id = 1;
+  // Human label of the actor ("alice@acme.com", "sa:acme/ci", a key
+  // fingerprint, or "system").
+  string actor_label = 2;
+  // The action verb (e.g. "registry.visibility", "membership.grant").
+  string action = 3;
+  // Scope path the action targeted.
+  string scope = 4;
+  // Resulting git commit hash for surface-touching ops ("" otherwise).
+  string result_commit = 5;
+  // Resulting git tag hash for surface-touching ops ("" otherwise).
+  string result_tag = 6;
+  // Free-form detail (often a compact JSON object).
+  string detail = 7;
+  // Unix seconds the entry was recorded.
+  int64 created_at = 8;
+}
+
+message ListAuditRequest {
+  // Scope path to filter on; the root scope ("") lists instance-wide.
+  string scope = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListAuditResponse {
+  repeated AuditEntry entries = 1;
+  string next_page_token = 2;
+}
+
+// -- Configuration change-sets (phase 3a) ----------------------------------
+
+// One configuration change-set summary.
+message Changeset {
+  string change_id = 1;
+  // Human label of the actor that opened the change-set.
+  string actor_label = 2;
+  // Scope path the change-set targets.
+  string scope = 3;
+  // Lifecycle status: draft | applied | reverted.
+  string status = 4;
+  // One-line human summary.
+  string summary = 5;
+  // Unix seconds the change-set was created.
+  int64 created_at = 6;
+  // Unix seconds the change-set was applied (0 when never applied).
+  int64 applied_at = 7;
+  // The change-set that reverted this one ("" when not reverted).
+  string reverted_by_change_id = 8;
+}
+
+// One revision within a change-set: a staged operation on one object.
+message Revision {
+  // The object's type (e.g. "registry", "membership", "token").
+  string object_type = 1;
+  // The object's stable id within its type.
+  string object_id = 2;
+  // The operation: create | update | delete.
+  string op = 3;
+  // Semantic field-level diffs of this revision.
+  repeated FieldDiff diffs = 4;
+}
+
+// One field-level diff between a revision's old and new object snapshots.
+message FieldDiff {
+  // The field name (a JSON object key).
+  string field = 1;
+  // The old scalar value ("" when the field was added).
+  string old = 2;
+  // The new scalar value ("" when the field was removed).
+  string new = 3;
+}
+
+message ListChangesetsRequest {
+  // Scope path to filter on; the root scope ("") lists instance-wide.
+  string scope = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListChangesetsResponse {
+  repeated Changeset changesets = 1;
+  string next_page_token = 2;
+}
+
+message GetChangesetRequest {
+  string change_id = 1;
+}
+
+message GetChangesetResponse {
+  Changeset changeset = 1;
+  repeated Revision revisions = 2;
+}
+
+message RevertChangesetRequest {
+  string change_id = 1;
+}
+
+message RevertChangesetResponse {
+  // The newly drafted-and-applied revert change-set.
+  Changeset changeset = 1;
 }
