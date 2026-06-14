@@ -322,6 +322,19 @@ pub fn urlencode(text: &str) -> String {
     url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
 }
 
+/// Render a solid horizontal progress meter filled to `percent` (0–100).
+///
+/// A bordered track with a fill element whose width is a `pct-N` class (CSS,
+/// in 5% steps) rather than an inline `style="width:…"` — the strict
+/// `default-src 'self'` CSP forbids inline styles. Drawing the bar as a styled
+/// box rather than repeated block glyphs avoids the hairline gaps that
+/// `█`-tiling leaves between cells.
+#[must_use]
+pub fn meter(percent: usize) -> String {
+    let pct = (percent.min(100) + 2) / 5 * 5; // nearest 5%
+    format!("<span class=\"meter\"><span class=\"meter-fill pct-{pct}\"></span></span>")
+}
+
 /// Render a `<datalist id="…">` of `<option>`s for native input autocomplete.
 ///
 /// An `<input list="id">` bound to this list gets browser-native suggestions

@@ -149,6 +149,7 @@ impl RegistryRpc {
             last_indexed_commit: None,
             name: None,
             description: None,
+            readme: None,
             indexed_at: None,
         });
         Ok(Registry {

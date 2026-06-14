@@ -309,6 +309,7 @@ pub async fn index_registry(
         commit: commit_oid.to_hex(),
         name: tree.root.registry.name.clone(),
         description: tree.root.registry.description.clone(),
+        readme: tree.root.registry.readme.clone(),
         caches,
         cache_stack,
         roster: roster_rows,

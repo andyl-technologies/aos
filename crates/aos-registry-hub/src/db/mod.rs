@@ -1014,6 +1014,12 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE version_platforms ADD COLUMN source_drv TEXT NOT NULL DEFAULT '';
     ",
+    // v20: a longer README-style preamble for a registry, committed in
+    // `registry.toml` as `[registry] readme`, shown above the registry home.
+    // Nullable; re-indexing backfills it from the surface.
+    "
+    ALTER TABLE registry_index ADD COLUMN readme TEXT;
+    ",
 ];
 
 /// A registered registry (system-of-record row).
@@ -1417,6 +1423,8 @@ pub struct IndexStatus {
     pub name: Option<String>,
     /// Committed registry description.
     pub description: Option<String>,
+    /// Committed registry readme (longer preamble), shown on the home page.
+    pub readme: Option<String>,
     /// Unix time of the last successful index.
     pub indexed_at: Option<i64>,
 }
@@ -1727,6 +1735,8 @@ pub struct IndexSnapshot {
     pub name: String,
     /// Committed registry description.
     pub description: Option<String>,
+    /// Committed registry readme (longer preamble).
+    pub readme: Option<String>,
     /// Committed `[[caches]]` entries as `(url, priority)`.
     ///
     /// When the snapshot carries a [`Self::cache_stack`], the stack's
@@ -2289,13 +2299,14 @@ impl Database {
 
             tx.execute(
                 "INSERT INTO registry_index
-                 (registry_id, state, error, last_indexed_commit, name, description,
+                 (registry_id, state, error, last_indexed_commit, name, description, readme,
                   indexed_at, refs_digest, cache_stack)
-                 VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7)
+                 VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT(registry_id) DO UPDATE SET
                      state = 'fresh', error = NULL,
                      last_indexed_commit = excluded.last_indexed_commit,
                      name = excluded.name, description = excluded.description,
+                     readme = excluded.readme,
                      indexed_at = excluded.indexed_at,
                      refs_digest = excluded.refs_digest,
                      cache_stack = excluded.cache_stack",
@@ -2304,6 +2315,7 @@ impl Database {
                     snapshot.commit,
                     snapshot.name,
                     snapshot.description,
+                    snapshot.readme,
                     unix_now(),
                     snapshot.refs_digest,
                     snapshot.cache_stack,
@@ -3076,7 +3088,7 @@ impl Database {
     pub fn index_status(&self, registry_id: i64) -> Result<Option<IndexStatus>> {
         self.backend
             .query_opt(
-                "SELECT state, error, last_indexed_commit, name, description, indexed_at
+                "SELECT state, error, last_indexed_commit, name, description, readme, indexed_at
                  FROM registry_index WHERE registry_id = ?1",
                 &vals![registry_id],
             )
@@ -3088,7 +3100,8 @@ impl Database {
                     last_indexed_commit: row.get(2)?,
                     name: row.get(3)?,
                     description: row.get(4)?,
-                    indexed_at: row.get(5)?,
+                    readme: row.get(5)?,
+                    indexed_at: row.get(6)?,
                 })
             })
             .transpose()
@@ -7243,6 +7256,7 @@ mod tests {
             commit: "c".repeat(64),
             name: "demo".into(),
             description: None,
+            readme: None,
             caches: vec![("https://cache.example".into(), 40)],
             roster: vec![("alice".into(), "demo:Ed25519:AA".into(), "active".into())],
             packages: vec![package],
