@@ -315,6 +315,16 @@ fn tokenize(input: &str) -> Result<Vec<Token>, FilterError> {
                 i += 1; // closing quote
                 tokens.push(Token::Word(value));
             }
+            // A lone `&`, `|`, or `=` is a boundary character that begins no
+            // complete operator (`&&`, `||`, `==`); it would otherwise scan an
+            // empty word and never advance `i`, hanging the tokenizer. Reject
+            // it as a parse error instead (an infinite loop here would pin a
+            // worker thread). `&=`, `<=`, etc. are handled by the arms above.
+            '&' | '|' | '=' => {
+                return Err(FilterError::new(format!(
+                    "unexpected `{ch}` (did you mean `{ch}{ch}`?)"
+                )));
+            }
             _ => {
                 let start = i;
                 while i < chars.len() && !is_word_boundary(chars[i]) {
@@ -639,5 +649,21 @@ mod tests {
         assert!(Filter::parse("(license == MIT").is_err()); // unbalanced
         assert!(Filter::parse("license == MIT)").is_err()); // trailing
         assert!(Filter::parse("\"unterminated").is_err());
+    }
+
+    #[test]
+    fn lone_operator_chars_error_rather_than_hang() {
+        // Regression: a lone `&`/`|`/`=` once scanned an empty word and never
+        // advanced, spinning the tokenizer (and pinning a worker thread). They
+        // must now parse to an error. `name = curl` (single `=`) is the easy
+        // mistake to make.
+        assert!(Filter::parse("name = curl").is_err());
+        assert!(Filter::parse("a & b").is_err());
+        assert!(Filter::parse("a | b").is_err());
+        assert!(Filter::parse("=").is_err());
+        // The complete two-character operators still tokenize fine.
+        assert!(Filter::parse("name == curl").is_ok());
+        assert!(Filter::parse("a && b").is_ok());
+        assert!(Filter::parse("a || b").is_ok());
     }
 }
