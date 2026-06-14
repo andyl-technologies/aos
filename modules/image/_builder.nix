@@ -60,6 +60,11 @@
     headroomMiB = 64;
   };
 
+  # Secure Boot signing (RFC-0006). When enabled, the UKI and sd-boot
+  # are Authenticode-signed with the deployment db key; otherwise the
+  # image is the byte-reproducible unsigned artifact.
+  sb = system.config.aos.boot.secureBoot;
+
   uki = pkgs.aos-uki {
     inherit name version;
     kernel = system.config.system.build.kernel;
@@ -69,6 +74,14 @@
     # output layout from spec v12 §1); the previous `etc/os-release`
     # path is gone along with the rest of `${toplevel}/etc/`.
     osRelease = "${system.config.system.build.toplevel}/os-release";
+    secureBootKey =
+      if sb.enable
+      then sb.dbKey
+      else null;
+    secureBootCert =
+      if sb.enable
+      then sb.dbCert
+      else null;
   };
 
   ukiFilename = "aos-${name}-${version}.efi";
@@ -77,18 +90,35 @@ in
     name = "aos-image-${name}";
     src = null;
 
-    buildDeps = [
-      pkgs.util-linux # sfdisk
-      pkgs.e2fsprogs
-      pkgs.dosfstools # mkfs.vfat
-      pkgs.mtools # mcopy
-      pkgs.coreutils
-    ];
+    buildDeps =
+      [
+        pkgs.util-linux # sfdisk
+        pkgs.e2fsprogs
+        pkgs.dosfstools # mkfs.vfat
+        pkgs.mtools # mcopy
+        pkgs.coreutils
+      ]
+      ++ lib.optional sb.enable pkgs.sbsigntools; # sbsign for sd-boot
 
     ROOT_IMG = "${rootfs}/root.img";
     ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
     UKI_PATH = "${uki}/${ukiFilename}";
     SDBOOT_DIR = "${pkgs.systemd}/lib/systemd/boot/efi";
+
+    # Secure Boot signing inputs (empty unless enabled). The UKI is
+    # already signed by aos-uki; sd-boot is signed here, in place.
+    SB_ENABLE =
+      if sb.enable
+      then "1"
+      else "";
+    SB_KEY =
+      if sb.enable
+      then sb.dbKey
+      else "";
+    SB_CERT =
+      if sb.enable
+      then sb.dbCert
+      else "";
 
     phases = [
       {
@@ -113,9 +143,18 @@ in
           # sd-boot at both canonical and UEFI fallback paths. Firmware
           # that isn't told about a specific EFI application falls back
           # to /EFI/BOOT/BOOTX64.EFI (removable-media convention); the
-          # canonical path is /EFI/systemd/systemd-bootx64.efi.
-          cp "$SDBOOT_DIR/systemd-bootx64.efi" esp/EFI/BOOT/BOOTX64.EFI
-          cp "$SDBOOT_DIR/systemd-bootx64.efi" esp/EFI/systemd/systemd-bootx64.efi
+          # canonical path is /EFI/systemd/systemd-bootx64.efi. Under
+          # Secure Boot both copies are db-signed (RFC-0006); the UKI is
+          # already signed by aos-uki.
+          if [ -n "$SB_ENABLE" ]; then
+            echo "==> Signing sd-boot for Secure Boot"
+            sbsign --key "$SB_KEY" --cert "$SB_CERT" \
+              --output esp/EFI/BOOT/BOOTX64.EFI "$SDBOOT_DIR/systemd-bootx64.efi"
+            cp esp/EFI/BOOT/BOOTX64.EFI esp/EFI/systemd/systemd-bootx64.efi
+          else
+            cp "$SDBOOT_DIR/systemd-bootx64.efi" esp/EFI/BOOT/BOOTX64.EFI
+            cp "$SDBOOT_DIR/systemd-bootx64.efi" esp/EFI/systemd/systemd-bootx64.efi
+          fi
 
           # UKI auto-discovered by sd-boot from /EFI/Linux/.
           cp "$UKI_PATH" esp/EFI/Linux/${ukiFilename}

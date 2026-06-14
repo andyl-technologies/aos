@@ -1,6 +1,6 @@
 # RFC-0006: Full Secure Boot integration — sign, measure, attest
 
-- **Status:** Proposed
+- **Status:** Phases 1–2 implemented (PR [#102](https://github.com/andyl-technologies/aos/pull/102)); phases 3–4 proposed
 - **Date:** 2026-06-13
 - **PR:** [#102](https://github.com/andyl-technologies/aos/pull/102)
 - **Audience:** anyone working on `pkgs/boot/`, `pkgs/system/systemd.nix`,
@@ -153,12 +153,12 @@ signing.
 Each phase is independently shippable and CI-gated; later phases assume the
 earlier ones.
 
-- **Phase 1 — Sign & enforce (firmware root).** SB-enable OVMF (+SMM), build
-  the enrollment tool, generate CI keys, sign the UKI and sd-boot, enroll
-  PK/KEK/db, CI positive+negative SB tests. ([`boot-chain.md`](boot-chain.md))
-- **Phase 2 — Lockdown overlay.** Kernel lockdown LSM + module signing as a
-  *deployment overlay* (never the base), cmdline `lockdown=`, signed extra
-  modules. ([`boot-chain.md`](boot-chain.md) §lockdown)
+- **Phase 1 — Sign & enforce (firmware root). ✅ Implemented.** SB-enable OVMF
+  (+SMM), build the enrollment tool, generate CI keys, sign the UKI and sd-boot,
+  enroll PK/KEK/db, CI positive+negative SB tests. ([`boot-chain.md`](boot-chain.md))
+- **Phase 2 — Lockdown overlay. ✅ Implemented.** Kernel lockdown LSM + module
+  signing as a *deployment overlay* (never the base), cmdline `lockdown=`, signed
+  extra modules. ([`boot-chain.md`](boot-chain.md) §lockdown)
 - **Phase 3 — Measure & seal (TPM).** TPM packaging + kernel drivers +
   systemd `-Dtpm2`, signed PCR policy in the UKI, TPM-sealed LUKS for `/var`,
   vTPM in CI. ([`measured-boot.md`](measured-boot.md))
@@ -169,17 +169,62 @@ earlier ones.
 Phases 1–3 are deployment/build concerns; phase 4 is the fleet concern that
 ties an over-the-wire upgrade to the boot trust chain.
 
+## Implementation notes (phases 1–2)
+
+What the implementation surfaced that the design didn't predict — recorded so
+the next implementer doesn't relearn it:
+
+- **SMM is mandatory, not the optional follow-up the open question floated.**
+  OVMF only exposes a real authenticated-variable store (so `bootctl` reports
+  SB state and enrollment sticks) when built with **both**
+  `-D SECURE_BOOT_ENABLE=TRUE` **and** `-D SMM_REQUIRE=TRUE`
+  (`pkgs/boot/edk2.nix`). QEMU must match: `-machine q35,smm=on`,
+  `-global driver=cfi.pflash01,property=secure,value=on`,
+  `-global ICH9-LPC.disable_s3=1`, with `OVMF_CODE` as read-only pflash unit 0
+  and `OVMF_VARS` as unit 1 (`aos_test_driver/qemu.py`). Without SMM the SB
+  variables silently don't exist and `bootctl` reports "unsupported".
+- **`CONFIG_EFIVAR_FS` must be `=y`, not `=m`.** As a module it is never
+  auto-mounted early enough, so `/sys/firmware/efi/efivars` is empty, systemd
+  reports SB unsupported, and enrollment has nowhere to write. Built-in fixes
+  it (`pkgs/kernel/config/base.config`).
+- **Enrollment needs `util-linux` on PATH.** `efitools`' `efi-updatevar` shells
+  out to `mount -l` to locate efivarfs; the fleet test agent's PATH lacks it,
+  so the enroll script and the test prepend `${pkgs.util-linux}/bin`. Order is
+  load-bearing: db → KEK → PK, because writing PK is what exits Setup Mode into
+  enforcing User Mode (`modules/base/secure-boot.nix`).
+- **`systemd-boot-random-seed.service` breaks on the read-only ESP** once
+  efivarfs is present (it tries to write the seed back). Masked via the base
+  `systemd.mask=systemd-boot-random-seed.service` kernel param
+  (`modules/base/boot.nix`). This surfaced as an install-from-image regression
+  the moment efivarfs went built-in.
+- **The lockdown kernel needs `pkgs.linuxWith`, not `pkgs.linux.override`.**
+  `extraConfig` is a `linux.nix` *function argument* consumed before
+  `mkDerivation`, so `.override` is a silent no-op for it — the overlay kernel
+  built identically to the base and `lockdown=` was rejected as an unknown
+  cmdline param. `pkgs.linuxWith = extraConfig: callPackage …` (`pkgs/default.nix`)
+  threads it correctly. The fragment is merged via a heredoc, not
+  `builtins.toFile`, because `CONFIG_MODULE_SIG_KEY` references a store path and
+  `toFile` rejects derivation references.
+- **`olddefconfig` silently drops options whose deps are unmet.**
+  `CONFIG_KEXEC_SIG`/`KEXEC_BZIMAGE_VERIFY_SIG` depend on `CONFIG_KEXEC_FILE`,
+  which the base config doesn't set; the overlay must request `KEXEC_FILE=y`
+  explicitly or signed-kexec quietly vanishes from the built `.config`. Always
+  verify the installed `config-*` rather than trusting the fragment.
+- **`pkgs/tools/fakeroot.nix`** was repointed to a content-addressed
+  `snapshot.debian.org` URL after the Debian pool dropped the original tarball
+  (unrelated to SB, but blocked the image build).
+
 ## Open questions
 
 - **Key custody mechanism for production** — HSM vs offline host vs cloud KMS;
   out of scope to *implement*, but the signing interface
   (`ukify --signtool`/`--secureboot-private-key`, `sbsign`) must not assume a
   key file on disk. See [`key-custody.md`](key-custody.md).
-- **Enrollment tooling** — package `virt-firmware` (`virt-fw-vars`, pure
-  Python, injects keys into `OVMF_VARS.fd` offline) vs `efitools`
-  (`cert-to-efi-sig-list`/`sign-efi-sig-list`) + OVMF's `EnrollDefaultKeys.efi`.
-  Lean: `virt-firmware` for CI (no boot needed), efitools-style `.auth` for
-  hardware first-boot enrollment. See [`boot-chain.md`](boot-chain.md).
+- ~~**Enrollment tooling**~~ — *resolved in phase 1:* `efitools` packaged
+  (`pkgs/boot/efitools.nix`); keys/`.auth` blobs generated by
+  `pkgs/boot/secure-boot-test-keys.nix`; the guest enrolls db→KEK→PK through
+  efivarfs at first boot (`aos-sb-enroll`, `modules/base/secure-boot.nix`) — the
+  same path hardware uses, so no offline `virt-firmware` injection was needed.
 - **Setup Mode vs pre-enrolled on hardware** — ship in Setup Mode and enroll
   PK on first boot (via an ignition-ordered oneshot), or pre-enroll at image
   build. Tradeoff in [`key-custody.md`](key-custody.md).
@@ -187,9 +232,10 @@ ties an over-the-wire upgrade to the boot trust chain.
   first-boot provisioning order (ignition disks → LUKS format → enroll); needs
   a recovery path (recovery passphrase escrow) for TPM/PCR mismatch. See
   [`measured-boot.md`](measured-boot.md).
-- **SMM in OVMF** — `-D SMM_REQUIRE=TRUE` is needed for a tamper-resistant
-  variable store but adds build complexity and CI boot cost; ship SB without
-  it first, add in a follow-up?
+- ~~**SMM in OVMF**~~ — *resolved in phase 1:* SMM is **mandatory**, not
+  optional. OVMF exposes no working authenticated-variable store without
+  `-D SMM_REQUIRE=TRUE` (plus the matching QEMU `smm=on` globals), so SB cannot
+  ship without it. See implementation notes above.
 - **dbx/SBAT *apply* path** — phase 4 distributes a revocation floor and
   catches revoked components at download time, but applying an actual
   KEK-signed `dbx`/SBAT update to firmware variables on a running fleet
