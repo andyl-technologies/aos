@@ -920,3 +920,146 @@ async fn instance_admin_verifies_a_captured_domain() {
         .iter()
         .any(|a| a.action == "domain.verify"));
 }
+
+#[tokio::test]
+async fn project_and_binding_delete_with_in_use_guard() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").unwrap();
+    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let cookie = login(&app, &db, "owner@acme.com").await;
+    let csrf = csrf_for(&cookie);
+    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+
+    // An unused project deletes cleanly.
+    db.create_project(org_id, "infra/prod", "Prod").unwrap();
+    let pid = db
+        .list_projects(org_id)
+        .unwrap()
+        .into_iter()
+        .find(|p| p.path == "infra/prod")
+        .unwrap()
+        .id;
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/projects/delete",
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&id={pid}")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    assert!(db
+        .list_projects(org_id)
+        .unwrap()
+        .iter()
+        .all(|p| p.id != pid));
+
+    // A binding still referenced by a registry is guarded from deletion.
+    db.create_storage_binding(org_id, "primary", "local_fs", "/srv/acme")
+        .unwrap();
+    let bid = db
+        .storage_binding_by_name(org_id, "primary")
+        .unwrap()
+        .unwrap()
+        .id;
+    db.create_managed_registry(org_id, "", "cdn", "public", Some(bid), "cdn", &[], false)
+        .unwrap();
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/bindings/delete",
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&id={bid}")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
+    assert!(db
+        .storage_binding_by_name(org_id, "primary")
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn member_role_change_and_last_owner_guard() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").unwrap();
+    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let dev = db.find_or_create_user("dev@acme.com").unwrap();
+    db.grant_membership("user", dev, "acme", "developer")
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let cookie = login(&app, &db, "owner@acme.com").await;
+    let csrf = csrf_for(&cookie);
+
+    // Promote the developer to admin.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/members/role",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&principal_kind=user&principal_id={dev}&role=admin"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    let members = db.list_members_of_scope("acme").unwrap();
+    assert!(members
+        .iter()
+        .any(|(k, id, r)| k == "user" && *id == dev && r == "admin"));
+
+    // Demoting the sole owner is blocked.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/members/role",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&principal_kind=user&principal_id={owner}&role=viewer"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
+    assert!(db
+        .list_members_of_scope("acme")
+        .unwrap()
+        .iter()
+        .any(|(k, id, r)| k == "user" && *id == owner && r == "owner"));
+}
+
+#[tokio::test]
+async fn instance_settings_signup_policy_admin_only() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    let member = db.find_or_create_user("member@acme.com").unwrap();
+    db.grant_membership("user", member, "acme", "owner")
+        .unwrap();
+    let admin = db.find_or_create_user("root@hub").unwrap();
+    db.grant_membership("user", admin, "", "owner").unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+
+    // An org owner who is not an instance admin is forbidden.
+    let member_cookie = login(&app, &db, "member@acme.com").await;
+    let resp = send(&app, "GET", "/-/instance", Some(&member_cookie), None).await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+
+    // The instance admin can flip the signup policy.
+    let admin_cookie = login(&app, &db, "root@hub").await;
+    let csrf = csrf_for(&admin_cookie);
+    let resp = send(
+        &app,
+        "POST",
+        "/-/instance",
+        Some(&admin_cookie),
+        Some(&format!("csrf={csrf}&signup_policy=open")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(matches!(
+        db.signup_policy().unwrap(),
+        aos_registry_hub::db::SignupPolicy::Open
+    ));
+}
