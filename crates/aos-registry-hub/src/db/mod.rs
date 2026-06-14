@@ -6876,9 +6876,16 @@ impl Database {
     /// it is stored as plaintext because the subscriber needs the same secret
     /// to verify deliveries.
     ///
+    /// `url` is validated against the SSRF guard
+    /// ([`crate::fetch::is_safe_remote_url`]) — the delivery worker `POST`s to
+    /// it from inside the hub network, so a loopback/link-local/private or
+    /// non-`http(s)` target is rejected here, just as mirror upstreams and
+    /// frontend domains are.
+    ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error when `url` fails the SSRF guard, or on database
+    /// failure.
     pub fn create_webhook(
         &self,
         org_id: i64,
@@ -6886,6 +6893,8 @@ impl Database {
         secret: &str,
         events: &[String],
     ) -> Result<i64> {
+        crate::fetch::is_safe_remote_url(url)
+            .with_context(|| format!("rejecting webhook url '{url}'"))?;
         self.backend.execute_insert(
             "INSERT INTO webhooks (org_id, url, secret, events, active, created_at)
              VALUES (?1, ?2, ?3, ?4, 1, ?5)",

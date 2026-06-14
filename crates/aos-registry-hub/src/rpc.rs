@@ -1265,8 +1265,10 @@ impl WebhookService for RegistryRpc {
     ///
     /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
     /// `PermissionDenied` when the caller lacks `members.manage` on the org,
-    /// `NotFound` for an unknown org, `InvalidArgument` for an empty URL, and
-    /// `Internal` on database failure.
+    /// `NotFound` for an unknown org, `InvalidArgument` for an empty URL or a
+    /// URL that fails the SSRF guard
+    /// ([`crate::fetch::is_safe_remote_url`] — loopback/link-local/private/
+    /// non-`http(s)` targets), and `Internal` on database failure.
     async fn create_webhook(
         &self,
         ctx: Context,
@@ -1277,6 +1279,12 @@ impl WebhookService for RegistryRpc {
         self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))?;
         if req.url.is_empty() {
             return Err(invalid("webhook url is required"));
+        }
+        // The delivery worker POSTs to this URL from inside the hub network, so
+        // reject loopback/link-local/private/non-http(s) targets (create_webhook
+        // re-checks; this surfaces a clear invalid-argument error).
+        if let Err(err) = crate::fetch::is_safe_remote_url(req.url) {
+            return Err(invalid(format!("rejecting webhook url: {err:#}")));
         }
         let secret = if req.secret.is_empty() {
             crate::auth::token::generate_token().0

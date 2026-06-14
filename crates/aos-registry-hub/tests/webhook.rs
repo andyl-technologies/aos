@@ -26,6 +26,45 @@ use tower::ServiceExt;
 /// Deterministic HS256 key so tests can mint matching JWTs.
 const TEST_JWT_SECRET: &[u8] = b"webhook-test-secret-32byte-key!!";
 
+/// Serializes tests that read or mutate `AOS_HUB_ALLOW_LOCAL_REMOTES`.
+///
+/// `create_webhook` and `deliver_one` now run the SSRF guard
+/// ([`aos_registry_hub::fetch::is_safe_remote_url`]), which consults this
+/// process-global env var. A test needing loopback *allowed* and one needing it
+/// *rejected* must not interleave, so each takes [`remote_guard`] for its body.
+static REMOTE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A held [`REMOTE_ENV_LOCK`] restoring the prior env value on drop.
+struct RemoteGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    prior: Option<std::ffi::OsString>,
+}
+
+impl Drop for RemoteGuard {
+    fn drop(&mut self) {
+        match self.prior.take() {
+            Some(value) => std::env::set_var("AOS_HUB_ALLOW_LOCAL_REMOTES", value),
+            None => std::env::remove_var("AOS_HUB_ALLOW_LOCAL_REMOTES"),
+        }
+    }
+}
+
+/// Take the env lock and set `AOS_HUB_ALLOW_LOCAL_REMOTES` to `allow`; the prior
+/// value is restored on drop. `allow = true` lets a test use loopback receivers
+/// and single-label hosts; `allow = false` enforces the SSRF guard.
+fn remote_guard(allow: bool) -> RemoteGuard {
+    let _lock = REMOTE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let prior = std::env::var_os("AOS_HUB_ALLOW_LOCAL_REMOTES");
+    if allow {
+        std::env::set_var("AOS_HUB_ALLOW_LOCAL_REMOTES", "1");
+    } else {
+        std::env::remove_var("AOS_HUB_ALLOW_LOCAL_REMOTES");
+    }
+    RemoteGuard { _lock, prior }
+}
+
 /// A request captured by the in-test webhook receiver.
 #[derive(Clone)]
 struct Captured {
@@ -149,6 +188,7 @@ async fn rpc(
 
 #[test]
 fn dispatch_enqueues_only_for_subscribed_active_hooks() {
+    let _remotes = remote_guard(true);
     let db = Database::open_in_memory().unwrap();
     let org = db.create_org("acme", "Acme").unwrap();
 
@@ -191,6 +231,7 @@ fn dispatch_enqueues_only_for_subscribed_active_hooks() {
 
 #[tokio::test]
 async fn deliver_one_marks_delivered_and_signs_body_on_2xx() {
+    let _remotes = remote_guard(true);
     let (url, rx) = spawn_receiver(200).await;
     let db = Database::open_in_memory().unwrap();
     let org = db.create_org("acme", "Acme").unwrap();
@@ -227,6 +268,7 @@ async fn deliver_one_marks_delivered_and_signs_body_on_2xx() {
 
 #[tokio::test]
 async fn deliver_one_schedules_retry_with_incremented_attempts_on_500() {
+    let _remotes = remote_guard(true);
     let (url, rx) = spawn_receiver(500).await;
     let db = Database::open_in_memory().unwrap();
     let org = db.create_org("acme", "Acme").unwrap();
@@ -255,6 +297,7 @@ async fn deliver_one_schedules_retry_with_incremented_attempts_on_500() {
 
 #[tokio::test]
 async fn deliveries_fail_after_the_attempt_cap() {
+    let _remotes = remote_guard(true);
     let (url, _rx) = spawn_receiver(500).await;
     let db = Database::open_in_memory().unwrap();
     let org = db.create_org("acme", "Acme").unwrap();
@@ -276,10 +319,54 @@ async fn deliveries_fail_after_the_attempt_cap() {
     assert_eq!(failed, 1, "marked failed after the attempt cap");
 }
 
+#[tokio::test]
+async fn deliver_one_rejects_ssrf_url_without_posting() {
+    // Defense in depth: a delivery whose URL fails the SSRF guard (e.g. a row
+    // written before the guard existed, or a host that now resolves internally)
+    // must be marked failed and never POSTed (finding H4).
+    //
+    // Stand up a real receiver and enqueue a real delivery row under the local
+    // hatch, then construct a DueDelivery pointing at the cloud-metadata address
+    // with the guard enforced and confirm deliver_one refuses to POST.
+    let (url, rx) = spawn_receiver(200).await;
+    let (delivery, db) = {
+        let _remotes = remote_guard(true);
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        let hook = db.create_webhook(org, &url, "s", &[]).unwrap();
+        db.enqueue_delivery(hook, "index.completed", "{}").unwrap();
+        let mut due = db.due_deliveries(i64::MAX).unwrap();
+        assert_eq!(due.len(), 1);
+        // Repoint the queued row at an internal address, as a stale/poisoned row
+        // would be; the row id stays valid so mark_delivery can update it.
+        let mut delivery = due.remove(0);
+        delivery.url = "http://169.254.169.254/latest/meta-data/".to_string();
+        (delivery, db)
+    };
+
+    let _remotes = remote_guard(false);
+    let http = aos_registry_hub::fetch::hardened_client();
+    let ok = webhook::deliver_one(&http, &db, &delivery).await.unwrap();
+    assert!(
+        !ok,
+        "an SSRF-guarded delivery must not be reported delivered"
+    );
+    // No POST reached the receiver.
+    assert!(
+        rx.captured.lock().unwrap().is_empty(),
+        "deliver_one must not POST to a guard-rejected URL"
+    );
+    // It is marked failed (not retried): the rejection is structural, so retries
+    // would never pass the guard.
+    let (pending, delivered, failed) = db.delivery_status_counts().unwrap();
+    assert_eq!((pending, delivered, failed), (0, 0, 1));
+}
+
 // -- RPC create/list/delete authz -------------------------------------------
 
 #[tokio::test]
 async fn webhook_rpc_create_list_delete_with_authz() {
+    let _remotes = remote_guard(true);
     let db = Arc::new(Database::open_in_memory().unwrap());
     db.create_org("acme", "Acme").unwrap();
     let app = router(app_state(Arc::clone(&db)));
@@ -353,6 +440,7 @@ async fn webhook_rpc_create_list_delete_with_authz() {
 
 #[tokio::test]
 async fn metrics_renders_counters() {
+    let _remotes = remote_guard(true);
     let db = Arc::new(Database::open_in_memory().unwrap());
     let org = db.create_org("acme", "Acme").unwrap();
     // A queued (pending) delivery so the gauge is non-zero.

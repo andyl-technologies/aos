@@ -129,6 +129,49 @@ fn csrf_for(cookie: &str) -> String {
     mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap())
 }
 
+/// Serializes every test that reads or mutates the process-global
+/// `AOS_HUB_ALLOW_LOCAL_REMOTES` env var (the SSRF guard's test/dev hatch).
+///
+/// The SSRF guard ([`aos_registry_hub::fetch::is_safe_remote_url`]) consults
+/// this variable, so a test that needs loopback *allowed* and one that needs it
+/// *rejected* must not run concurrently. Each such test takes [`remote_guard`]
+/// for its whole body, holding the lock across `.await` (sound on the
+/// current-thread `#[tokio::test]` runtime, which never migrates the future).
+static REMOTE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A held [`REMOTE_ENV_LOCK`] that restores `AOS_HUB_ALLOW_LOCAL_REMOTES` to its
+/// prior value on drop, so env-sensitive tests do not leak state to each other.
+struct RemoteGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    prior: Option<std::ffi::OsString>,
+}
+
+impl Drop for RemoteGuard {
+    fn drop(&mut self) {
+        match self.prior.take() {
+            Some(value) => std::env::set_var("AOS_HUB_ALLOW_LOCAL_REMOTES", value),
+            None => std::env::remove_var("AOS_HUB_ALLOW_LOCAL_REMOTES"),
+        }
+    }
+}
+
+/// Take the env lock and set `AOS_HUB_ALLOW_LOCAL_REMOTES` to `allow`.
+///
+/// `allow = true` relaxes the SSRF guard so a test may use `127.0.0.1`/unresolvable
+/// `.test` hosts; `allow = false` enforces it. The prior value is restored on drop.
+fn remote_guard(allow: bool) -> RemoteGuard {
+    let _lock = REMOTE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let prior = std::env::var_os("AOS_HUB_ALLOW_LOCAL_REMOTES");
+    if allow {
+        std::env::set_var("AOS_HUB_ALLOW_LOCAL_REMOTES", "1");
+    } else {
+        std::env::remove_var("AOS_HUB_ALLOW_LOCAL_REMOTES");
+    }
+    RemoteGuard { _lock, prior }
+}
+
 #[tokio::test]
 async fn create_org_open_signup_auto_owners_the_creator() {
     let db = Arc::new(Database::open_in_memory().unwrap());
@@ -692,6 +735,9 @@ async fn org_delete_requires_typed_confirmation_and_owner() {
 
 #[tokio::test]
 async fn admin_creates_and_deletes_a_webhook() {
+    // create_webhook runs the SSRF guard on the URL; the `.test` hosts below do
+    // not resolve, so allow local/unresolvable remotes for this happy path.
+    let _remotes = remote_guard(true);
     let db = Arc::new(Database::open_in_memory().unwrap());
     db.create_org("acme", "Acme").unwrap();
     let owner = db.find_or_create_user("owner@acme.com").unwrap();
@@ -768,6 +814,51 @@ async fn admin_creates_and_deletes_a_webhook() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn webhook_create_rejects_ssrf_url() {
+    // The SSRF guard must reject a webhook pointed at the cloud-metadata
+    // (link-local) address even for an org owner: the delivery worker would POST
+    // to it from inside the hub network (finding H4). Deny local remotes so the
+    // guard is enforced regardless of any parallel test's env state.
+    let _remotes = remote_guard(false);
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").unwrap();
+    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let cookie = login(&app, &db, "owner@acme.com").await;
+    let csrf = csrf_for(&cookie);
+    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+
+    // The cloud-metadata link-local address is rejected without any DNS.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/webhooks",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&op=create&url=http%3A%2F%2F169.254.169.254%2F&events=release.published"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::BAD_REQUEST, "{}", resp.body);
+    assert!(resp.body.contains("rejecting webhook url"), "{}", resp.body);
+
+    // A loopback target is likewise rejected, and nothing is stored.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/webhooks",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&op=create&url=http%3A%2F%2F127.0.0.1%3A8500%2Fv1%2F&events=release.published"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::BAD_REQUEST, "{}", resp.body);
+    assert!(db.list_webhooks(org_id).unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1068,7 +1159,7 @@ async fn instance_settings_signup_policy_admin_only() {
 async fn admin_manages_frontends_and_mirror() {
     // The SSRF guard resolves the frontend/mirror host; opt into loopback so
     // the test can use 127.0.0.1 without real DNS.
-    std::env::set_var("AOS_HUB_ALLOW_LOCAL_REMOTES", "1");
+    let _remotes = remote_guard(true);
     let db = Arc::new(Database::open_in_memory().unwrap());
     db.create_org("acme", "Acme").unwrap();
     let owner = db.find_or_create_user("owner@acme.com").unwrap();
