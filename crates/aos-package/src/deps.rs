@@ -95,7 +95,9 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
 
     let registry_name = reg.config.name.clone();
     let hash = store_path_hash(&meta.store_path);
-    let closure_meta = registries.get_closure_in(&registry_name, hash);
+    let store_graph = registries
+        .store_map_in(&registry_name)
+        .filter(|m| m.is_present());
 
     let mut visited = HashSet::new();
     let mut ancestors = HashSet::new();
@@ -103,7 +105,7 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
         meta,
         &registry_name,
         &registries,
-        closure_meta,
+        store_graph,
         &mut visited,
         &mut ancestors,
     );
@@ -183,9 +185,25 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
 
         let inst_hash = store_path_hash(&inst.store_path);
 
-        // Try closure file first for O(1) membership check.
-        if let Some(closure) = registries.get_closure_in(&apm.registry, inst_hash) {
-            if target_hashes.iter().any(|hash| closure.contains(hash)) {
+        // Walk the store/ graph edges when present (O(closure) membership).
+        if let Some(graph) = registries
+            .store_map_in(&apm.registry)
+            .filter(|m| m.is_present())
+        {
+            let mut seen = HashSet::new();
+            let mut stack = vec![inst_hash.to_string()];
+            let mut found = false;
+            while let Some(h) = stack.pop() {
+                if !seen.insert(h.clone()) {
+                    continue;
+                }
+                if target_hashes.contains(&h) {
+                    found = true;
+                    break;
+                }
+                stack.extend(graph.direct_deps(&h));
+            }
+            if found {
                 dependents.push((apm.name.clone(), apm.version.clone()));
             }
             continue;
@@ -721,8 +739,8 @@ fn policy_unavailable_installed(
 
 /// Build a dependency tree recursively.
 ///
-/// When `closure_meta` is provided, uses its adjacency list for direct deps.
-/// Otherwise falls back to `meta.references`.
+/// When a `store/` graph is provided, uses its dependency edges for direct
+/// deps. Otherwise falls back to `meta.references` (legacy registries).
 ///
 /// `visited` tracks all unique store path hashes seen (for counting).
 /// `ancestors` tracks the current recursion path (for cycle detection).
@@ -730,7 +748,7 @@ fn build_dep_tree(
     meta: &PackageMeta,
     registry_name: &str,
     registries: &RegistrySet,
-    closure_meta: Option<&super::types::ClosureMeta>,
+    store_graph: Option<&crate::registry::store::StoreMap>,
     visited: &mut HashSet<String>,
     ancestors: &mut HashSet<String>,
 ) -> DepNode {
@@ -738,11 +756,10 @@ fn build_dep_tree(
     visited.insert(hash.clone());
     ancestors.insert(hash.clone());
 
-    // Get direct deps from closure file if available, otherwise from references.
-    let direct_deps: Vec<String> = if let Some(cm) = closure_meta {
-        cm.direct_deps(&hash).to_vec()
-    } else {
-        meta.references.clone()
+    // Get direct deps from the store/ graph if available, else from references.
+    let direct_deps: Vec<String> = match store_graph {
+        Some(graph) => graph.direct_deps(&hash),
+        None => meta.references.clone(),
     };
 
     let mut children = Vec::new();
@@ -763,7 +780,7 @@ fn build_dep_tree(
                     ref_meta,
                     registry_name,
                     registries,
-                    closure_meta,
+                    store_graph,
                     visited,
                     ancestors,
                 ));

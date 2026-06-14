@@ -66,7 +66,7 @@ use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::{filter_missing, import_nar};
 use crate::types::{PackageMeta, ProfileScope, SystemGeneration, SystemGenerationState};
 use crate::unit_diff::{self, UnitDiff};
-use crate::verify::{verify_download_hash, verify_nar_hash};
+use crate::verify::{verify_download_hash, verify_downloads, verify_nar_hash};
 
 // ---------------------------------------------------------------------------
 // Kernel upgrade mode
@@ -182,6 +182,20 @@ pub async fn install_system(
         }
     }
 
+    // Trust-graph totality (RFC-0005 §2.6): seed from the WHOLE graph closure
+    // of each root (every reachable member, including anonymous paths).
+    let trust_roots: Vec<(&str, &str)> = closures
+        .iter()
+        .map(|closure| {
+            (
+                closure.registry_name.as_str(),
+                store_path_hash(&closure.root.store_path),
+            )
+        })
+        .collect();
+    let trust_ctx = registries.trust_context_for_roots(&trust_roots);
+    trust_ctx.enforce_totality()?;
+
     // Step 2: Determine missing store paths.
     printer.step(2, 8, "Checking store...");
     let all_metas = collect_unique_metas(&closures);
@@ -247,14 +261,10 @@ pub async fn install_system(
         )
         .await?;
 
-        // Step 6: Verify and import.
+        // Step 6: Verify (against each path's source-registry store/ graph
+        // map, RFC-0005; totality enforced above) and import.
         printer.step(5, 8, "Verifying...");
-        for result in &results {
-            verify_download_hash(&result.local_path, &result.download_hash)
-                .with_context(|| format!("verifying download for {}", result.store_path))?;
-            verify_nar_hash(&result.local_path, &result.nar_hash)
-                .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
-        }
+        verify_downloads(&results, &trust_ctx, printer)?;
 
         printer.step(6, 8, "Importing...");
         for result in &results {
@@ -815,10 +825,14 @@ async fn download_image(
         bail!("image download failed");
     }
 
-    // Import NAR to get the store path, then copy image file out.
+    // Import NAR to get the store path, then copy image file out. The
+    // expected NAR hash is the image entry from the signed package TOML -
+    // not the cache-served narinfo - so the bytes are rooted at the
+    // registry signature (images sit outside the store/ graph).
     let result = &results[0];
     verify_download_hash(&result.local_path, &result.download_hash)?;
-    verify_nar_hash(&result.local_path, &result.nar_hash)?;
+    verify_nar_hash(&result.local_path, &img.nar_hash)
+        .with_context(|| format!("verifying image NAR for {}", img.store_path))?;
     import_nar(
         &result.local_path,
         &result.store_path,
@@ -1936,7 +1950,9 @@ mod tests {
         // not its target. Canonicalizing must yield the target so it
         // compares equal to what resolve_kernel_path stores.
         let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("01234567890123456789012345678901-linux-6.12.1");
+        let target = dir
+            .path()
+            .join("01234567890123456789012345678901-linux-6.12.1");
         std::fs::create_dir(&target).unwrap();
         let link = dir.path().join("kernel");
         std::os::unix::fs::symlink(&target, &link).unwrap();
@@ -1962,10 +1978,7 @@ mod tests {
         );
 
         let gone = "/nix/store/gcd-toplevel/kernel".to_string();
-        assert_eq!(
-            canonicalize_kernel_path(&Some(gone.clone())),
-            Some(gone)
-        );
+        assert_eq!(canonicalize_kernel_path(&Some(gone.clone())), Some(gone));
         assert_eq!(canonicalize_kernel_path(&None), None);
     }
 

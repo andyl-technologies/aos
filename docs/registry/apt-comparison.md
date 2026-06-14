@@ -407,7 +407,7 @@ git-native registry path:
 
 - A registry is a git repo of nested package TOMLs (`PackageToml`,
   `crates/aos-package/src/registry/parse.rs:15`; written by `build_package_toml`,
-  `crates/aos-package/src/registry_ops.rs:595`) plus `closures/<hash>` adjacency
+  `crates/aos-package/src/registry_ops.rs:595`) plus the `store/` realisation graph
   files; `PackageMeta` (`crates/aos-package/src/types.rs:44`) is the flattened
   in-memory projection.
 - HTTP and native git origins are synchronized by `registry::git::sync_git`;

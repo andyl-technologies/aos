@@ -9,10 +9,10 @@
 //!
 //! Two closure strategies are used:
 //!
-//! 1. **Precomputed closure files**: registries ship a per-root closure
-//!    member list; resolution is then a flat hash-to-meta lookup.
-//! 2. **BFS fallback**: when no closure file exists, the `references` field
-//!    of each [`PackageMeta`] is walked depth-first.
+//! 1. **`store/` realisation graph**: registries ship a per-path dependency
+//!    record; resolution walks those edges from the root (RFC-0005).
+//! 2. **BFS fallback**: a legacy registry with no `store/` graph is walked
+//!    over the `references` field of each [`PackageMeta`] instead.
 //!
 //! In both cases, member hashes not present in the registry (e.g. system
 //! libraries assumed installed) are silently skipped rather than treated as
@@ -50,9 +50,9 @@ pub struct ResolvedClosure {
 
 /// Resolve a single package and its full closure from a registry.
 ///
-/// If the registry has a precomputed closure file for the package, uses it
-/// directly (O(n) lookups, no graph traversal).  Otherwise falls back to
-/// BFS over the `references` field of each `PackageMeta`.
+/// If the registry publishes a `store/` realisation graph, resolution walks
+/// its dependency edges from the root. A legacy registry with no graph falls
+/// back to BFS over the `references` field of each `PackageMeta`.
 ///
 /// With `registry_filter`, only that registry is searched; otherwise the
 /// highest-priority registry providing `name` wins.
@@ -85,45 +85,48 @@ pub fn resolve_closure(
         (reg.config.name.clone(), meta.clone())
     };
 
-    let root_hash = store_path_hash(&root.store_path).to_string();
-
-    // Step 2: Try precomputed closure file first.
-    if let Some(closure_meta) = registries.get_closure_in(&registry_name, &root_hash) {
-        return resolve_from_closure_file(registries, &registry_name, root, closure_meta);
+    // Step 2: walk the store/ graph when the registry publishes one;
+    // otherwise fall back to references BFS for legacy registries.
+    let has_graph = registries
+        .store_map_in(&registry_name)
+        .map(|m| m.is_present())
+        .unwrap_or(false);
+    if has_graph {
+        resolve_via_store(registries, &registry_name, root)
+    } else {
+        resolve_via_bfs(registries, &registry_name, root)
     }
-
-    // Step 3: Fall back to BFS over references.
-    resolve_via_bfs(registries, &registry_name, root)
 }
 
-/// Build a `ResolvedClosure` from a precomputed closure file.
-///
-/// Looks up each member hash in the registry to get its `PackageMeta`.
-/// Members that can't be resolved (e.g. system libraries) are skipped.
-fn resolve_from_closure_file(
+/// Build a `ResolvedClosure` by walking the `store/` graph's dependency edges
+/// depth-first (post-order), resolving each member hash to its `PackageMeta`.
+/// Members not published as packages (anonymous store paths, system libs) are
+/// skipped - their bytes are still fetched via the narinfo closure at download
+/// time and verified against the graph.
+fn resolve_via_store(
     registries: &RegistrySet,
     registry_name: &str,
     root: PackageMeta,
-    closure_meta: &super::types::ClosureMeta,
 ) -> Result<ResolvedClosure> {
-    let root_hash = store_path_hash(&root.store_path).to_string();
-    let mut closure: Vec<PackageMeta> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
+    let mut closure: Vec<PackageMeta> = Vec::new();
+    let root_hash = store_path_hash(&root.store_path).to_string();
 
-    // Registry closure files are stored root-first for validation readability,
-    // but imports must process dependencies before dependents.
-    for member_hash in &closure_meta.members {
-        if *member_hash == root_hash || !seen.insert(member_hash.clone()) {
-            continue;
-        }
+    visit_store_first(
+        registries,
+        registry_name,
+        &root_hash,
+        &mut seen,
+        &mut closure,
+    );
 
-        if let Some(dep) = registries.resolve_hash_in(registry_name, member_hash) {
-            closure.push(dep.clone());
-        }
-        // Skip unresolvable hashes (system libraries, etc.)
+    // Ensure the root is last even if it had no graph record.
+    if !closure
+        .iter()
+        .any(|m| store_path_hash(&m.store_path) == root_hash)
+    {
+        closure.push(root.clone());
     }
-
-    closure.push(root.clone());
 
     let total_nar_size: u64 = closure.iter().map(|m| m.nar_size).sum();
 
@@ -133,6 +136,31 @@ fn resolve_from_closure_file(
         closure,
         total_nar_size,
     })
+}
+
+/// Depth-first post-order walk of the `store/` graph: append a member only
+/// after its resolvable dependencies, so the result is dependency-ordered.
+fn visit_store_first(
+    registries: &RegistrySet,
+    registry_name: &str,
+    hash: &str,
+    seen: &mut HashSet<String>,
+    closure: &mut Vec<PackageMeta>,
+) {
+    if !seen.insert(hash.to_string()) {
+        return;
+    }
+    let deps = registries
+        .store_map_in(registry_name)
+        .map(|m| m.direct_deps(hash))
+        .unwrap_or_default();
+    for dep in &deps {
+        visit_store_first(registries, registry_name, dep, seen, closure);
+    }
+    if let Some(meta) = registries.resolve_hash_in(registry_name, hash) {
+        closure.push(meta.clone());
+    }
+    // Unresolvable members (not published as packages) are skipped.
 }
 
 /// BFS fallback: walk `references` fields to build the closure.
@@ -250,9 +278,10 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::registry::RegistrySet;
-    use crate::registry::closures::{CURL_CLOSURE, ZLIB_CLOSURE};
     use crate::registry::parse::{CURL_TOML, ZLIB_TOML};
-    use crate::registry::tests::{make_registry, make_registry_with_closures};
+    use crate::registry::tests::{
+        curl_store_record, make_registry, make_registry_with_store, zlib_store_record,
+    };
 
     // 1. Resolving a single package with deps produces a closure containing
     //    both the root and its resolvable dependency.
@@ -427,22 +456,19 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Closure-file-based resolution
+    // store/-graph-based resolution
     // -----------------------------------------------------------------------
 
-    // 11. When closure files are present, resolution uses them instead of BFS.
+    // 11. When a store/ graph is present, resolution walks its edges.
     #[test]
-    fn resolve_uses_closure_file() {
+    fn resolve_uses_store_graph() {
         let tmp = TempDir::new().unwrap();
-        let core = make_registry_with_closures(
+        let core = make_registry_with_store(
             &tmp,
             "aos-core",
             500,
             &[("curl", CURL_TOML), ("zlib", ZLIB_TOML)],
-            &[
-                ("h7j3k8l2m9n4", CURL_CLOSURE),
-                ("r4q1m2kp8v3x", ZLIB_CLOSURE),
-            ],
+            &[curl_store_record(), zlib_store_record()],
         );
         let set = RegistrySet::new(vec![core]);
 
@@ -450,8 +476,8 @@ mod tests {
         assert_eq!(resolved.registry_name, "aos-core");
         assert_eq!(resolved.root.name, "curl");
 
-        // Closure file has 5 members, but only curl and zlib are in the
-        // registry — the other 3 hashes are unresolvable and skipped.
+        // curl's record names 4 deps, but only zlib is published as a
+        // package - the other 3 are unresolvable and skipped.
         let names: Vec<&str> = resolved.closure.iter().map(|m| m.name.as_str()).collect();
         assert!(names.contains(&"curl"));
         assert!(names.contains(&"zlib"));
@@ -462,16 +488,16 @@ mod tests {
         assert!(resolved.total_nar_size > 0);
     }
 
-    // 12. Leaf package with closure file resolves to just itself.
+    // 12. Leaf package with a store/ record resolves to just itself.
     #[test]
-    fn resolve_leaf_with_closure_file() {
+    fn resolve_leaf_with_store_graph() {
         let tmp = TempDir::new().unwrap();
-        let core = make_registry_with_closures(
+        let core = make_registry_with_store(
             &tmp,
             "aos-core",
             500,
             &[("zlib", ZLIB_TOML)],
-            &[("r4q1m2kp8v3x", ZLIB_CLOSURE)],
+            &[zlib_store_record()],
         );
         let set = RegistrySet::new(vec![core]);
 
@@ -480,21 +506,19 @@ mod tests {
         assert_eq!(resolved.closure[0].name, "zlib");
     }
 
-    // 13. Falls back to BFS when no closure file exists.
+    // 13. A registry with no store/ graph falls back to references BFS.
     #[test]
-    fn resolve_falls_back_to_bfs() {
+    fn resolve_falls_back_to_bfs_for_legacy_registry() {
         let tmp = TempDir::new().unwrap();
-        // Create registry with closure file only for zlib, not curl.
-        let core = make_registry_with_closures(
+        // No store/ records at all → legacy BFS over TOML references.
+        let core = make_registry(
             &tmp,
             "aos-core",
             500,
             &[("curl", CURL_TOML), ("zlib", ZLIB_TOML)],
-            &[("r4q1m2kp8v3x", ZLIB_CLOSURE)],
         );
         let set = RegistrySet::new(vec![core]);
 
-        // curl has no closure file — should fall back to BFS.
         let resolved = resolve_closure(&set, "curl", None).unwrap();
         let names: Vec<&str> = resolved.closure.iter().map(|m| m.name.as_str()).collect();
         assert!(names.contains(&"curl"));

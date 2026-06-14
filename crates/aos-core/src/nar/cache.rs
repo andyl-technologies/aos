@@ -155,12 +155,12 @@ impl NarInfoSigner {
     /// `1;<store_path>;<nar_hash>;<nar_size>;<refs,comma,separated>`.
     ///
     /// `refs` must be full store paths. The NAR hash is normalised to
-    /// Nix's base32 `sha256:` form (see `nar_hash_for_fingerprint`) so
+    /// Nix's base32 `sha256:` form (see `normalize_sha256_nix32`) so
     /// the signature verifies against stock Nix regardless of whether
     /// the caller holds an SRI, hex, or base32 hash.
     pub fn fingerprint(store_path: &str, nar_hash: &str, nar_size: i64, refs: &[String]) -> String {
         let refs_str = refs.join(",");
-        let nar_hash = nar_hash_for_fingerprint(nar_hash);
+        let nar_hash = normalize_sha256_nix32(nar_hash);
         format!("1;{store_path};{nar_hash};{nar_size};{refs_str}")
     }
 }
@@ -168,14 +168,13 @@ impl NarInfoSigner {
 /// Nix's custom base32 alphabet (omits `e`, `o`, `t`, `u`).
 const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
-/// Normalises a SHA-256 NAR hash to Nix's base32 `sha256:` form for use
-/// in a signing fingerprint.
+/// Normalises a SHA-256 NAR hash to Nix's base32 `sha256:` form.
 ///
 /// Accepts SRI (`sha256-<base64>`), hex (`sha256:<64 hex digits>`), or
 /// already-base32 (`sha256:<base32>`) input; anything unrecognised is
-/// returned unchanged so signing degrades gracefully rather than
-/// failing.
-fn nar_hash_for_fingerprint(hash: &str) -> String {
+/// returned unchanged so callers (signing fingerprints, `store/` graph
+/// comparisons) degrade gracefully rather than failing.
+pub fn normalize_sha256_nix32(hash: &str) -> String {
     if let Some(encoded) = hash.strip_prefix("sha256-") {
         if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) {
             if bytes.len() == 32 {
@@ -201,6 +200,41 @@ fn nar_hash_for_fingerprint(hash: &str) -> String {
         }
     }
     hash.to_string()
+}
+
+/// Decodes Nix's base32 variant (the inverse of [`encode_nix_base32`]).
+///
+/// Returns `None` for characters outside the Nix alphabet, for an
+/// encoding whose spare high bits are non-zero (which no valid Nix
+/// encoder produces), or for a length that does not round-trip a whole
+/// number of bytes (e.g. lengths `1, 3, 6, …` where the top digit would
+/// have no byte to land in). The output length is `len * 5 / 8` bytes -
+/// pass a 52-char digest to get the 32 bytes of a SHA-256.
+///
+/// Never panics: every buffer index is bounds-checked rather than indexed
+/// directly, so a malformed or wrong-length input fails with `None`.
+pub fn decode_nix_base32(encoded: &str) -> Option<Vec<u8>> {
+    let len = encoded.len() * 5 / 8;
+    let mut out = vec![0u8; len];
+
+    for (n, ch) in encoded.chars().rev().enumerate() {
+        let digit = NIX_BASE32.iter().position(|&b| b as char == ch)? as u16;
+        let bit = n * 5;
+        let i = bit / 8;
+        let j = bit % 8;
+        // The lowest 8-j bits land in byte i; the rest carry into i+1.
+        // A digit whose low bits have no byte (i >= len) is an invalid
+        // length, not a valid encoding.
+        *out.get_mut(i)? |= (digit << j) as u8;
+        let carry = digit >> (8 - j);
+        match out.get_mut(i + 1) {
+            Some(next) => *next |= carry as u8,
+            None if carry != 0 => return None,
+            None => {}
+        }
+    }
+
+    Some(out)
 }
 
 /// Encodes bytes in Nix's base32 variant: little-endian bit order,
@@ -466,14 +500,51 @@ mod tests {
     }
 
     #[test]
-    fn nar_hash_for_fingerprint_normalizes_sha256_hash_formats() {
+    fn decode_nix_base32_roundtrips_sha256_digests() {
+        let bytes: Vec<u8> = (0u8..32).collect();
+        let encoded = encode_nix_base32(&bytes);
+        assert_eq!(encoded.len(), 52);
+        assert_eq!(decode_nix_base32(&encoded).unwrap(), bytes);
+
+        // Invalid alphabet character ('e' is excluded).
+        assert!(decode_nix_base32(&encoded.replace(|c: char| c.is_ascii_digit(), "e")).is_none());
+    }
+
+    #[test]
+    fn decode_nix_base32_roundtrips_all_byte_lengths() {
+        // Every whole-byte length must round-trip exactly.
+        for n in 0u8..=40 {
+            let bytes: Vec<u8> = (0..n).map(|b| b.wrapping_mul(7).wrapping_add(3)).collect();
+            let encoded = encode_nix_base32(&bytes);
+            assert_eq!(
+                decode_nix_base32(&encoded).as_deref(),
+                Some(bytes.as_slice()),
+                "round-trip failed at {n} bytes",
+            );
+        }
+    }
+
+    #[test]
+    fn decode_nix_base32_never_panics_on_any_length() {
+        // Lengths like 1, 3, 6, ... do not encode a whole number of bytes;
+        // decode must return None, never index out of bounds.
+        for len in 0..80 {
+            let input: String = std::iter::repeat('1').take(len).collect();
+            let _ = decode_nix_base32(&input); // must not panic
+        }
+        assert!(decode_nix_base32("1").is_none());
+        assert!(decode_nix_base32("111").is_none());
+    }
+
+    #[test]
+    fn normalize_sha256_nix32_normalizes_sha256_hash_formats() {
         let sri = "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=";
         let hex = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
         let nix32 = "sha256:1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s";
 
-        assert_eq!(nar_hash_for_fingerprint(sri), nix32);
-        assert_eq!(nar_hash_for_fingerprint(hex), nix32);
-        assert_eq!(nar_hash_for_fingerprint(nix32), nix32);
+        assert_eq!(normalize_sha256_nix32(sri), nix32);
+        assert_eq!(normalize_sha256_nix32(hex), nix32);
+        assert_eq!(normalize_sha256_nix32(nix32), nix32);
     }
 
     #[test]
