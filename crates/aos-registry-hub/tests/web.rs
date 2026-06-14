@@ -214,15 +214,27 @@ async fn package_search_filters_by_substring() {
     let fixture = common::standard_registry(&surface);
     let (app, _db) = serve_fixture(&surface, &fixture).await;
 
-    let (status, _, body) = get(&app, "/demo/-/packages?q=curl").await;
+    // A bare term in the filter expression matches any field (substring).
+    let (status, _, body) = get(&app, "/demo/-/packages?filter=curl").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("1 of 1 packages match"), "{body}");
+    assert!(body.contains("1 of 1 packages matching"), "{body}");
     assert!(body.contains("/demo/-/packages/curl"), "{body}");
 
-    let (status, _, body) = get(&app, "/demo/-/packages?q=zzz").await;
+    let (status, _, body) = get(&app, "/demo/-/packages?filter=zzz").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("0 of 1 packages match"), "{body}");
+    assert!(body.contains("0 of 1 packages matching"), "{body}");
     assert!(!body.contains("/demo/-/packages/curl"), "{body}");
+
+    // A field comparison filters by that attribute; an invalid expression is
+    // surfaced as an error rather than applied.
+    let (_, _, body) = get(&app, "/demo/-/packages?filter=license+%3D%3D+zzz").await;
+    assert!(body.contains("0 of 1 packages matching"), "{body}");
+    let (_, _, body) = get(&app, "/demo/-/packages?filter=license+%3D%3D").await;
+    assert!(body.contains("filter error:"), "{body}");
+
+    // Column sort: the descending closure header links to the ascending state.
+    let (_, _, body) = get(&app, "/demo/-/packages?sort=closure&dir=desc").await;
+    assert!(body.contains("sort=closure&amp;dir=asc"), "{body}");
 
     // The instance home searches registries the same way.
     let (_, _, body) = get(&app, "/?q=fixture").await;
