@@ -280,6 +280,28 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     out
 }
 
+/// Render a table whose header cells are pre-rendered HTML.
+///
+/// Identical to [`table`] but each header is inserted into its `<th>` as-is
+/// (not escaped), so callers can embed sort links or other markup; body cells
+/// follow the same as-is contract as [`table`].
+pub fn table_raw_headers(headers: &[String], rows: &[Vec<String>]) -> String {
+    let mut out = String::from("<table>\n<thead><tr>");
+    for header in headers {
+        let _ = write!(out, "<th>{header}</th>");
+    }
+    out.push_str("</tr></thead>\n<tbody>\n");
+    for row in rows {
+        out.push_str("<tr>");
+        for cell in row {
+            let _ = write!(out, "<td>{cell}</td>");
+        }
+        out.push_str("</tr>\n");
+    }
+    out.push_str("</tbody>\n</table>\n");
+    out
+}
+
 /// Render a table tagged for the live-search enhancement (`search.js`).
 ///
 /// Identical to [`table`] but adds `data-live-list` and a `data-live-noun`

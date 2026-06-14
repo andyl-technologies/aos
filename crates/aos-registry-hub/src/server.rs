@@ -195,19 +195,22 @@ impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
     }
 }
 
-/// Optional search/pagination query parameters (`?q=`, `?page=`).
+/// Optional search/filter/sort/pagination query parameters.
+///
+/// `q` is the registries-home substring search; the package index uses
+/// `filter` (a [`crate::filter`] expression) with `sort`/`dir` column ordering.
+/// `page` paginates every paginated list.
 #[derive(Debug, Default, serde::Deserialize)]
 struct SearchParams {
     q: Option<String>,
     page: Option<usize>,
-    /// Package-index sort order (`name`, `size`, `version`); unknown values
-    /// fall back to name order.
+    /// Package-index filter expression (Wireshark-style display filter).
+    filter: Option<String>,
+    /// Package-index sort column (`name`/`version`/`license`/`closure`/
+    /// `platforms`); an unknown or absent value leaves the default order.
     sort: Option<String>,
-    /// Package-index license facet (exact SPDX identifier match).
-    license: Option<String>,
-    /// Package-index platform facet (exact platform tuple, e.g.
-    /// `x86_64-linux`).
-    platform: Option<String>,
+    /// Package-index sort direction (`asc`/`desc`); defaults to descending.
+    dir: Option<String>,
 }
 
 /// Optional channel-calculator query parameter (`?bucket=`).
@@ -222,20 +225,12 @@ impl SearchParams {
         self.q.as_deref().map(str::trim).filter(|q| !q.is_empty())
     }
 
-    /// The trimmed, non-empty license facet, if any.
-    fn license(&self) -> Option<&str> {
-        self.license
+    /// The trimmed, non-empty filter expression, if any.
+    fn filter(&self) -> Option<&str> {
+        self.filter
             .as_deref()
             .map(str::trim)
-            .filter(|l| !l.is_empty())
-    }
-
-    /// The trimmed, non-empty platform facet, if any.
-    fn platform(&self) -> Option<&str> {
-        self.platform
-            .as_deref()
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
+            .filter(|f| !f.is_empty())
     }
 
     /// Parse the recognized keys from a raw URL query string.
@@ -251,9 +246,9 @@ impl SearchParams {
         for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
             match key.as_ref() {
                 "q" => params.q = Some(value.into_owned()),
+                "filter" => params.filter = Some(value.into_owned()),
                 "sort" => params.sort = Some(value.into_owned()),
-                "license" => params.license = Some(value.into_owned()),
-                "platform" => params.platform = Some(value.into_owned()),
+                "dir" => params.dir = Some(value.into_owned()),
                 "page" => params.page = value.parse().ok(),
                 _ => {}
             }
@@ -788,47 +783,9 @@ async fn registry_home(
     respond_page(result)
 }
 
-/// A comparable sort key for a version string, for semver-ish ordering.
-///
-/// The key is `(release numbers, release-rank, original string)`:
-///
-/// - **release numbers** are the unsigned integer runs of the part before any
-///   `-` pre-release suffix, so `"1.10.0"` yields `[1, 10, 0]` and sorts above
-///   `"1.9.0"`'s `[1, 9, 0]` (a lexical compare would invert this).
-/// - **release-rank** is `1` for a plain release and `0` for a pre-release (a
-///   non-empty `-` suffix), so `1.0.0` sorts above `1.0.0-rc1` per semver.
-/// - the **original string** is a stable final tiebreaker.
-///
-/// A missing or number-free version yields an empty number list, which sorts
-/// lowest.
-fn version_key(version: Option<&str>) -> (Vec<u64>, u8, String) {
-    let raw = version.unwrap_or("");
-    let (core, has_pre) = match raw.split_once('-') {
-        Some((core, pre)) => (core, !pre.is_empty()),
-        None => (raw, false),
-    };
-    let mut numbers = Vec::new();
-    let mut current = String::new();
-    for ch in core.chars() {
-        if ch.is_ascii_digit() {
-            current.push(ch);
-        } else if !current.is_empty() {
-            if let Ok(n) = current.parse::<u64>() {
-                numbers.push(n);
-            }
-            current.clear();
-        }
-    }
-    if let Ok(n) = current.parse::<u64>() {
-        numbers.push(n);
-    }
-    let release_rank = u8::from(!has_pre);
-    (numbers, release_rank, raw.to_string())
-}
-
-/// Render the package index for one registry: apply the `?q=`/`?license=`/
-/// `?platform=` filters, the `?sort=` order, and the `?page=` slice, then
-/// build the page.
+/// Render the package index for one registry: apply the `?filter=` expression,
+/// the `?sort=`/`?dir=` column order, and the `?page=` slice, then build the
+/// page.
 ///
 /// Shared by the flat [`package_index`] route and the nested-canonical
 /// [`render_page`] path so both honor the query string identically — the
@@ -836,7 +793,9 @@ fn version_key(version: Option<&str>) -> (Vec<u64>, u8, String) {
 ///
 /// # Errors
 ///
-/// Returns an error if loading the registry's package list fails.
+/// Returns an error if loading the registry's package list fails. A malformed
+/// filter expression is *not* an error: the page renders the unfiltered list
+/// with the parse error surfaced inline.
 fn package_index_html(
     state: &AppState,
     registry: &RegistryRecord,
@@ -844,71 +803,54 @@ fn package_index_html(
     params: &SearchParams,
     started: Instant,
 ) -> Result<String, anyhow::Error> {
+    use crate::filter::{version_key, Filter};
+
     let all = state.db.list_packages(registry.id)?;
     let total_all = all.len();
-    let query = params.query();
-    let license = params.license();
-    let platform = params.platform();
-    let sort = pages::PackageSort::parse(params.sort.as_deref());
+    let filter_text = params.filter();
 
-    // The distinct license and platform values across the whole registry back
-    // the filter inputs' native autocomplete, so they are computed before
-    // filtering (the suggestion set should not shrink as you type).
-    let mut licenses: Vec<String> = all
-        .iter()
-        .map(|p| p.license.clone())
-        .filter(|l| !l.is_empty())
-        .collect();
-    licenses.sort_unstable();
-    licenses.dedup();
-    let mut platforms: Vec<String> = all
-        .iter()
-        .flat_map(|p| p.platforms.iter().cloned())
-        .collect();
-    platforms.sort_unstable();
-    platforms.dedup();
+    // Parse the filter expression. A parse error keeps the list unfiltered and
+    // is surfaced in the page so the user can correct it.
+    let (filter, filter_error) = match Filter::parse(filter_text.unwrap_or("")) {
+        Ok(filter) => (filter, None),
+        Err(err) => (None, Some(err.to_string())),
+    };
 
-    // The `?q=` substring matches name, description, and license; the
-    // `?license=` and `?platform=` facets are exact (case-insensitive) matches.
     let mut filtered: Vec<PackageRow> = all
         .into_iter()
-        .filter(|p| match query {
-            None => true,
-            Some(query) => {
-                let needle = query.to_lowercase();
-                p.name.to_lowercase().contains(&needle)
-                    || p.description.to_lowercase().contains(&needle)
-                    || p.license.to_lowercase().contains(&needle)
-            }
-        })
-        .filter(|p| match license {
-            None => true,
-            Some(license) => p.license.eq_ignore_ascii_case(license),
-        })
-        .filter(|p| match platform {
-            None => true,
-            Some(platform) => p
-                .platforms
-                .iter()
-                .any(|pl| pl.eq_ignore_ascii_case(platform)),
-        })
+        .filter(|p| filter.as_ref().is_none_or(|f| f.matches(p)))
         .collect();
-    match sort {
-        pages::PackageSort::Name => {}
-        pages::PackageSort::Size => filtered.sort_by(|a, b| {
-            b.closure_size
-                .unwrap_or(0)
-                .cmp(&a.closure_size.unwrap_or(0))
-                .then_with(|| a.name.cmp(&b.name))
-        }),
-        // Version order is semver-aware (descending), so "1.10.0" sorts above
-        // "1.9.0" rather than below it as a lexical compare would.
-        pages::PackageSort::Version => filtered.sort_by(|a, b| {
-            version_key(b.latest_version.as_deref())
-                .cmp(&version_key(a.latest_version.as_deref()))
-                .then_with(|| a.name.cmp(&b.name))
-        }),
+
+    // Column sort: only when `?sort=` names a known column. The default order
+    // (none) is the DB's name-ascending order.
+    let sort = params
+        .sort
+        .as_deref()
+        .and_then(pages::SortColumn::parse)
+        .map(|col| (col, pages::SortDir::parse(params.dir.as_deref())));
+    if let Some((col, dir)) = sort {
+        filtered.sort_by(|a, b| {
+            let ordering = match col {
+                pages::SortColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                pages::SortColumn::Version => version_key(a.latest_version.as_deref())
+                    .cmp(&version_key(b.latest_version.as_deref())),
+                pages::SortColumn::License => {
+                    a.license.to_lowercase().cmp(&b.license.to_lowercase())
+                }
+                pages::SortColumn::Closure => a
+                    .closure_size
+                    .unwrap_or(0)
+                    .cmp(&b.closure_size.unwrap_or(0)),
+                pages::SortColumn::Platforms => a.platforms.join(",").cmp(&b.platforms.join(",")),
+            }
+            .then_with(|| a.name.cmp(&b.name));
+            match dir {
+                pages::SortDir::Asc => ordering,
+                pages::SortDir::Desc => ordering.reverse(),
+            }
+        });
     }
+
     let total_matches = filtered.len();
     let page_number = params.page.unwrap_or(1).max(1);
     let start = (page_number - 1)
@@ -918,15 +860,12 @@ fn package_index_html(
         .saturating_add(pages::PACKAGES_PER_PAGE)
         .min(total_matches);
     let browse = pages::PackageBrowse {
-        query,
+        filter: filter_text,
+        filter_error: filter_error.as_deref(),
         sort,
-        license,
-        platform,
         page_number,
         total_matches,
         total_all,
-        licenses: &licenses,
-        platforms: &platforms,
     };
     Ok(pages::package_index(
         registry,
@@ -1895,23 +1834,5 @@ fn respond_page(result: Result<Option<String>, anyhow::Error>) -> Response {
         Ok(Some(html)) => Html(html).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => internal(err),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::version_key;
-
-    #[test]
-    fn version_key_orders_numerically_not_lexically() {
-        // The lexical trap: "1.9.0" > "1.10.0" as strings, but 1.10 is newer.
-        assert!(version_key(Some("1.10.0")) > version_key(Some("1.9.0")));
-        assert!(version_key(Some("2.0.0")) > version_key(Some("1.99.99")));
-        // A missing version sorts below any real one.
-        assert!(version_key(Some("0.0.1")) > version_key(None));
-        // A shared numeric prefix falls back to the original string.
-        assert!(version_key(Some("1.0.0")) > version_key(Some("1.0.0-rc1")));
-        // Leading non-digits (a "v" prefix) are tolerated.
-        assert_eq!(version_key(Some("v1.2.3")).0, vec![1, 2, 3]);
     }
 }

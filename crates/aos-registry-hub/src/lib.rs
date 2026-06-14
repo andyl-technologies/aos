@@ -81,6 +81,7 @@ pub mod domain;
 pub mod export;
 pub mod facade;
 pub mod fetch;
+pub mod filter;
 pub mod gitwrite;
 pub mod indexer;
 pub mod mirror;

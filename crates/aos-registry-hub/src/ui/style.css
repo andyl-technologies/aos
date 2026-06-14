@@ -221,7 +221,7 @@ details.raw-metadata summary {
   cursor: pointer;
   color: var(--link);
 }
-form.pkg-search { margin-bottom: 0.6rem; }
+form.pkg-search { margin-bottom: 0.4rem; }
 form.pkg-search select {
   font: inherit;
   padding: 0.2rem 0.4rem;
@@ -229,6 +229,24 @@ form.pkg-search select {
   background: var(--paper);
   color: var(--ink);
 }
+/* The Wireshark-style filter box: a wide expression input. */
+input.filter-box {
+  width: 100%;
+  max-width: 48rem;
+  margin-bottom: 0.4rem;
+}
+/* The field/operator legend under the filter box. */
+p.filter-help { font-size: 0.8rem; margin: 0.2rem 0 0.8rem; }
+p.filter-help code { font-size: 0.8rem; padding: 0 0.25rem; }
+
+/* Click-to-sort column headers. Each sortable <th> holds a link that cycles
+ * unsorted → descending → ascending; the glyph shows the current state and is
+ * dim until the column is the active sort key. */
+th a { color: var(--dim); }
+th a:hover { color: var(--ink); }
+th a.sorted { color: var(--ink); }
+.sort-glyph { font-size: 0.85em; }
+th a:not(.sorted) .sort-glyph { opacity: 0.4; }
 
 /* Form controls — styled GLOBALLY so every button and input looks the
  * same on every page (search boxes, the bucket calculator, passkey
