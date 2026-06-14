@@ -29,8 +29,9 @@ use std::fmt::Write as _;
 use std::time::Instant;
 
 use crate::db::{
-    AuditRow, ChangesetRow, ChannelSummary, HostedKeyRecord, IndexStatus, OrgRecord, ProjectRecord,
-    RegistryRecord, ReleaseRow, StorageBindingRecord, WebauthnCredentialRecord, WebhookRecord,
+    AuditRow, ChangesetRow, ChannelSummary, HostedKeyRecord, IdpConfigRecord, IndexStatus,
+    OrgDomainRecord, OrgRecord, ProjectRecord, RegistryRecord, ReleaseRow, StorageBindingRecord,
+    WebauthnCredentialRecord, WebhookRecord,
 };
 use crate::domain::{iam, Permission, Role, Scope};
 use crate::ui::pages::LIST_PER_PAGE;
@@ -647,7 +648,8 @@ pub fn org_dashboard(
         body,
         "<p class=\"dim\"><code>{}</code> · <a href=\"/-/org/{}/audit\">{}</a> · \
          <a href=\"/-/org/{}/keys\">hosted keys →</a> · \
-         <a href=\"/-/org/{}/webhooks\">webhooks →</a></p>",
+         <a href=\"/-/org/{}/webhooks\">webhooks →</a> · \
+         <a href=\"/-/org/{}/sso\">SSO →</a></p>",
         escape(slug),
         escape(slug),
         if can_read_audit {
@@ -655,6 +657,7 @@ pub fn org_dashboard(
         } else {
             "audit (admin only)"
         },
+        escape(slug),
         escape(slug),
         escape(slug),
     );
@@ -1722,6 +1725,189 @@ pub fn org_webhooks_page(
             ("/-/orgs".into(), "orgs".into()),
             (format!("/-/org/{org_slug}"), org_slug.clone()),
             (String::new(), "webhooks".into()),
+        ],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// The org single-sign-on page: the OIDC IdP configuration and the captured
+/// email domains that route logins to it.
+///
+/// The client secret is **write-only** — the sealed value is never rendered;
+/// the form shows whether one is set and lets an admin replace it. `notice`
+/// echoes the result of the last action (e.g. a domain's DNS-TXT challenge).
+#[must_use]
+pub fn org_sso_page(
+    email: &str,
+    org: &OrgRecord,
+    csrf: &str,
+    idp: Option<&IdpConfigRecord>,
+    domains: &[OrgDomainRecord],
+    can_verify_domains: bool,
+    notice: Option<&str>,
+    started: Instant,
+) -> String {
+    let org_slug = &org.slug;
+    let mut body = format!("<h1>Single sign-on · {}</h1>\n", escape(&org.name));
+    body.push_str(
+        "<p class=\"dim\">Configure an OIDC identity provider and capture the email domains \
+         whose users sign in through it. The client secret is sealed at rest and never shown \
+         again. Only <strong>verified</strong> domains route logins.</p>\n",
+    );
+
+    if let Some(notice) = notice {
+        let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
+    }
+
+    // --- IdP configuration ---
+    body.push_str("<h2>Identity provider</h2>\n");
+    let val = |s: &str| escape(s);
+    let secret_hint = match idp {
+        Some(c) if c.client_secret_enc.is_some() => {
+            "a secret is set — leave blank to keep it, or enter a new one to replace"
+        }
+        _ => "leave blank for a public client",
+    };
+    let cur = |get: &dyn Fn(&IdpConfigRecord) -> String| idp.map(get).unwrap_or_default();
+    let _ = write!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/sso\">\n{csrf}\
+         <input type=\"hidden\" name=\"op\" value=\"set-idp\">\n\
+         <label>issuer <input type=\"text\" name=\"issuer\" required value=\"{issuer}\" \
+         placeholder=\"https://idp.example.com\"></label>\n\
+         <label>authorization endpoint <input type=\"url\" name=\"auth_url\" required value=\"{auth}\"></label>\n\
+         <label>token endpoint <input type=\"url\" name=\"token_url\" required value=\"{token}\"></label>\n\
+         <label>JWKS URI <input type=\"url\" name=\"jwks_uri\" required value=\"{jwks}\"></label>\n\
+         <label>client id <input type=\"text\" name=\"client_id\" required value=\"{client}\"></label>\n\
+         <label>client secret <input type=\"password\" name=\"client_secret\" \
+         autocomplete=\"new-password\" placeholder=\"{secret_hint}\"></label>\n\
+         <label>scopes <input type=\"text\" name=\"scopes\" value=\"{scopes}\"></label>\n\
+         <label>groups claim <input type=\"text\" name=\"groups_claim\" value=\"{groups}\" \
+         placeholder=\"groups\"></label>\n\
+         <label>group → role map (JSON) <input type=\"text\" name=\"role_map\" value=\"{rolemap}\" \
+         placeholder=\"{{&quot;admins&quot;:&quot;admin&quot;}}\"></label>\n",
+        org = escape(org_slug),
+        csrf = csrf_field(csrf),
+        issuer = val(&cur(&|c| c.issuer.clone())),
+        auth = val(&cur(&|c| c.authorization_endpoint.clone())),
+        token = val(&cur(&|c| c.token_endpoint.clone())),
+        jwks = val(&cur(&|c| c.jwks_uri.clone())),
+        client = val(&cur(&|c| c.client_id.clone())),
+        scopes = val(&idp.map_or("openid email profile".to_string(), |c| c.scopes.clone())),
+        groups = val(&cur(&|c| c.groups_claim.clone().unwrap_or_default())),
+        rolemap = val(&idp.map_or("{}".to_string(), |c| c.role_map_json.clone())),
+    );
+    // default-role select
+    let default_role = idp.map_or("viewer".to_string(), |c| c.default_role.clone());
+    body.push_str("<label>default role for JIT users <select name=\"default_role\">");
+    for role in ["owner", "admin", "maintainer", "developer", "viewer"] {
+        let sel = if role == default_role {
+            " selected"
+        } else {
+            ""
+        };
+        let _ = write!(body, "<option value=\"{role}\"{sel}>{role}</option>");
+    }
+    body.push_str("</select></label>\n");
+    let jit = idp.map_or(true, |c| c.allow_jit);
+    let enforce = idp.is_some_and(|c| c.enforce_sso);
+    let _ = write!(
+        body,
+        "<label><input type=\"checkbox\" name=\"allow_jit\" value=\"1\"{jit}> \
+         just-in-time provision unknown users</label>\n\
+         <label><input type=\"checkbox\" name=\"enforce_sso\" value=\"1\"{enforce}> \
+         force org members through SSO</label>\n\
+         <button>save identity provider</button>\n</form>\n",
+        jit = if jit { " checked" } else { "" },
+        enforce = if enforce { " checked" } else { "" },
+    );
+    if idp.is_some() {
+        let _ = write!(
+            body,
+            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/sso\">{csrf}\
+             <input type=\"hidden\" name=\"op\" value=\"remove-idp\">\
+             <button class=\"danger\">remove identity provider</button></form>\n",
+            org = escape(org_slug),
+            csrf = csrf_field(csrf),
+        );
+    }
+
+    // --- Domains ---
+    body.push_str("<h2>Email domains</h2>\n");
+    if domains.is_empty() {
+        body.push_str("<p class=\"dim\">No domains captured.</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = domains
+            .iter()
+            .map(|d| {
+                let status = if d.verified_at.is_some() {
+                    "<span class=\"ok\">verified</span>".to_string()
+                } else {
+                    format!(
+                        "<span class=\"warn\">pending</span> · publish TXT \
+                         <code>{}</code>",
+                        escape(&d.txt_challenge)
+                    )
+                };
+                let mut actions = String::new();
+                // Verifying a domain routes other people's logins, so it is an
+                // instance-operator action (a trusted DNS check), never org
+                // self-service. Org admins capture; an operator verifies.
+                if d.verified_at.is_none() && can_verify_domains {
+                    let _ = write!(
+                        actions,
+                        "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/sso\" \
+                         style=\"display:inline\">{csrf}\
+                         <input type=\"hidden\" name=\"op\" value=\"verify-domain\">\
+                         <input type=\"hidden\" name=\"domain\" value=\"{dom}\">\
+                         <button>verify (operator)</button></form> ",
+                        org = escape(org_slug),
+                        csrf = csrf_field(csrf),
+                        dom = escape(&d.domain),
+                    );
+                }
+                let _ = write!(
+                    actions,
+                    "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/sso\" \
+                     style=\"display:inline\">{csrf}\
+                     <input type=\"hidden\" name=\"op\" value=\"remove-domain\">\
+                     <input type=\"hidden\" name=\"domain\" value=\"{dom}\">\
+                     <button class=\"danger\">remove</button></form>",
+                    org = escape(org_slug),
+                    csrf = csrf_field(csrf),
+                    dom = escape(&d.domain),
+                );
+                vec![escape(&d.domain), status, actions]
+            })
+            .collect();
+        body.push_str(&table(&["domain", "status", ""], &rows));
+    }
+    if !can_verify_domains {
+        body.push_str(
+            "<p class=\"dim\">Publish the TXT challenge above, then an instance operator \
+             verifies the domain (a trusted DNS check) — verification is not org self-service \
+             because a verified domain routes its users' logins.</p>\n",
+        );
+    }
+    let _ = write!(
+        body,
+        "<h3>Capture a domain</h3>\n\
+         <form class=\"console\" method=\"post\" action=\"/-/org/{org}/sso\">{csrf}\
+         <input type=\"hidden\" name=\"op\" value=\"add-domain\">\n\
+         <label>domain <input type=\"text\" name=\"domain\" required placeholder=\"acme.com\"></label>\n\
+         <button>capture</button>\n</form>\n",
+        org = escape(org_slug),
+        csrf = csrf_field(csrf),
+    );
+
+    page_with_session(
+        &format!("{org_slug} single sign-on"),
+        &[
+            ("/-/orgs".into(), "orgs".into()),
+            (format!("/-/org/{org_slug}"), org_slug.clone()),
+            (String::new(), "single sign-on".into()),
         ],
         &body,
         &StateLine::timed(started),

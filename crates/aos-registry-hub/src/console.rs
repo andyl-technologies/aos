@@ -125,6 +125,7 @@ pub fn router() -> Router<Arc<AppState>> {
             "/-/org/{org}/webhooks",
             get(org_webhooks).post(org_webhooks_action),
         )
+        .route("/-/org/{org}/sso", get(org_sso).post(org_sso_action))
         .route("/{slug}/-/keys", get(keys))
         .route("/{slug}/-/keys/rotate", get(keys_rotate))
         .route("/{slug}/-/publishes", get(publishes))
@@ -3257,6 +3258,309 @@ async fn org_webhooks_action(
                 return internal(err);
             }
             render_org_webhooks(&state, &session, &org_slug, None)
+        }
+        _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
+    }
+}
+
+// -- single sign-on (OIDC IdP + email domains) ------------------------------
+
+/// `GET /-/org/{org}/sso` — the org SSO (OIDC IdP + domains) page.
+async fn org_sso(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    render_org_sso(&state, &session, &org_slug, None)
+}
+
+/// Whether `session` may verify captured domains: an *instance* admin only
+/// (`iam.admin` at the root scope). Verifying a domain routes other users'
+/// logins, so it is a trusted-operator action, never org self-service.
+fn can_verify_domains(state: &AppState, session: &Session) -> bool {
+    session.allows(&state.db, Permission::IamAdmin, &Scope::parse(""))
+}
+
+/// Render the org SSO page, optionally with a one-line notice (e.g. a domain's
+/// freshly minted DNS-TXT challenge).
+fn render_org_sso(
+    state: &AppState,
+    session: &Session,
+    org_slug: &str,
+    notice: Option<&str>,
+) -> Response {
+    let scope = Scope::parse(org_slug);
+    // SSO config is org-owner-level (it shapes how the org authenticates).
+    if !session.allows(&state.db, Permission::IamAdmin, &scope) {
+        if session.allows(&state.db, Permission::Read, &scope) {
+            return (StatusCode::FORBIDDEN, "iam.admin required").into_response();
+        }
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let result = (|| {
+        let Some(org) = state.db.org_by_slug(org_slug)? else {
+            return Ok(None);
+        };
+        let idp = state.db.idp_config(org.id)?;
+        let domains = state.db.list_org_domains(org.id)?;
+        Ok::<_, anyhow::Error>(Some(console::org_sso_page(
+            &session.email,
+            &org,
+            &session.csrf(),
+            idp.as_ref(),
+            &domains,
+            can_verify_domains(state, session),
+            notice,
+            Instant::now(),
+        )))
+    })();
+    match result {
+        Ok(Some(html)) => Html(html).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /-/org/{org}/sso` — configure the IdP or manage captured domains.
+///
+/// Requires `IamAdmin` at the org scope for every op except `verify-domain`,
+/// which additionally requires *instance* `IamAdmin` (the trusted DNS check).
+/// All ops are CSRF-checked and audited.
+async fn org_sso_action(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    body: axum::body::Bytes,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let fields = parse_form(&String::from_utf8_lossy(&body));
+    let field = |k: &str| fields.get(k).map(String::as_str).unwrap_or("");
+
+    if let Err(resp) = check_csrf(&session, field("csrf")) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if !session.allows(&state.db, Permission::IamAdmin, &scope) {
+        if session.allows(&state.db, Permission::Read, &scope) {
+            return (StatusCode::FORBIDDEN, "iam.admin required").into_response();
+        }
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(org) = (match state.db.org_by_slug(&org_slug) {
+        Ok(org) => org,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    match field("op") {
+        "set-idp" => {
+            let role_map = field("role_map").trim();
+            let role_map = if role_map.is_empty() { "{}" } else { role_map };
+            if serde_json::from_str::<serde_json::Value>(role_map).is_err() {
+                return (StatusCode::BAD_REQUEST, "role map must be JSON").into_response();
+            }
+            let default_role = field("default_role").trim();
+            if crate::domain::Role::parse(default_role).is_none() {
+                return (StatusCode::BAD_REQUEST, "invalid default role").into_response();
+            }
+            // The client secret is write-only: a new value is sealed; a blank
+            // one keeps any existing sealed secret (so editing other fields
+            // does not wipe it).
+            let existing = match state.db.idp_config(org.id) {
+                Ok(cfg) => cfg,
+                Err(err) => return internal(err),
+            };
+            let client_secret_enc = {
+                let provided = field("client_secret");
+                if provided.is_empty() {
+                    existing.and_then(|c| c.client_secret_enc)
+                } else {
+                    match state.sealer.seal(provided) {
+                        Ok(sealed) => Some(sealed),
+                        Err(err) => return internal(err),
+                    }
+                }
+            };
+            let groups_claim = match field("groups_claim").trim() {
+                "" => None,
+                g => Some(g.to_string()),
+            };
+            let config = crate::db::IdpConfigRecord {
+                org_id: org.id,
+                issuer: field("issuer").trim().to_string(),
+                authorization_endpoint: field("auth_url").trim().to_string(),
+                token_endpoint: field("token_url").trim().to_string(),
+                jwks_uri: field("jwks_uri").trim().to_string(),
+                client_id: field("client_id").trim().to_string(),
+                client_secret_enc,
+                scopes: match field("scopes").trim() {
+                    "" => "openid email profile".to_string(),
+                    s => s.to_string(),
+                },
+                groups_claim,
+                role_map_json: role_map.to_string(),
+                allow_jit: field("allow_jit") == "1",
+                enforce_sso: field("enforce_sso") == "1",
+                default_role: default_role.to_string(),
+            };
+            if config.issuer.is_empty() || config.client_id.is_empty() {
+                return (StatusCode::BAD_REQUEST, "issuer and client id are required")
+                    .into_response();
+            }
+            if let Err(err) = state.db.upsert_idp_config(&config) {
+                return internal(err);
+            }
+            if let Err(err) = state.db.record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "idp.set",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(&config.issuer),
+            ) {
+                return internal(err);
+            }
+            render_org_sso(
+                &state,
+                &session,
+                &org_slug,
+                Some("Identity provider saved."),
+            )
+        }
+        "remove-idp" => {
+            if let Err(err) = state.db.delete_idp_config(org.id) {
+                return internal(err);
+            }
+            if let Err(err) = state.db.record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "idp.remove",
+                &org_slug,
+                None,
+                None,
+                None,
+                None,
+            ) {
+                return internal(err);
+            }
+            render_org_sso(
+                &state,
+                &session,
+                &org_slug,
+                Some("Identity provider removed."),
+            )
+        }
+        "add-domain" => {
+            let domain = field("domain").trim().to_lowercase();
+            if domain.is_empty() || !domain.contains('.') {
+                return (StatusCode::BAD_REQUEST, "a valid domain is required").into_response();
+            }
+            let challenge = match state.db.add_org_domain(org.id, &domain) {
+                Ok(c) => c,
+                Err(err) => return internal(err),
+            };
+            if let Err(err) = state.db.record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "domain.capture",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(&domain),
+            ) {
+                return internal(err);
+            }
+            render_org_sso(
+                &state,
+                &session,
+                &org_slug,
+                Some(&format!(
+                    "Captured {domain} (unverified). Publish this TXT record: {challenge}"
+                )),
+            )
+        }
+        "verify-domain" => {
+            // The trust boundary: only an instance operator verifies (it routes
+            // other people's logins). The challenge is published in DNS; the
+            // operator is trusted to have confirmed it.
+            if !can_verify_domains(&state, &session) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    "domain verification is an instance-operator action",
+                )
+                    .into_response();
+            }
+            let domain = field("domain").trim().to_lowercase();
+            // The domain must be claimed by *this* org before verification.
+            match state.db.org_domain(&domain) {
+                Ok(Some(d)) if d.org_id == org.id => {}
+                Ok(_) => {
+                    return (StatusCode::NOT_FOUND, "domain not claimed by this org")
+                        .into_response()
+                }
+                Err(err) => return internal(err),
+            }
+            if let Err(err) = state.db.verify_org_domain(&domain) {
+                return internal(err);
+            }
+            if let Err(err) = state.db.record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "domain.verify",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(&domain),
+            ) {
+                return internal(err);
+            }
+            render_org_sso(
+                &state,
+                &session,
+                &org_slug,
+                Some(&format!("Verified {domain}.")),
+            )
+        }
+        "remove-domain" => {
+            let domain = field("domain").trim().to_lowercase();
+            if let Err(err) = state.db.delete_org_domain(org.id, &domain) {
+                return internal(err);
+            }
+            if let Err(err) = state.db.record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "domain.remove",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(&domain),
+            ) {
+                return internal(err);
+            }
+            render_org_sso(
+                &state,
+                &session,
+                &org_slug,
+                Some(&format!("Removed {domain}.")),
+            )
         }
         _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
     }
