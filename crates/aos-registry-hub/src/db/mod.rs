@@ -3641,6 +3641,21 @@ impl Database {
             .collect()
     }
 
+    /// Delete a project by id, scoped to its org; returns whether a row was
+    /// removed. The caller must ensure no registry still references the
+    /// project path (see [`RegistryRecord::project_path`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn delete_project(&self, org_id: i64, project_id: i64) -> Result<bool> {
+        let n = self.backend.execute(
+            "DELETE FROM projects WHERE id = ?1 AND org_id = ?2",
+            &vals![project_id, org_id],
+        )?;
+        Ok(n > 0)
+    }
+
     // -- tenancy: principals -------------------------------------------------
 
     /// Create a user; returns the new user id.
@@ -4203,6 +4218,21 @@ impl Database {
             &vals![org_id],
         )?;
         rows.iter().map(row_to_storage_binding).collect()
+    }
+
+    /// Delete a storage binding by id, scoped to its org; returns whether a row
+    /// was removed. The caller must ensure no registry still references it
+    /// (see [`RegistryRecord::storage_binding_id`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn delete_storage_binding(&self, org_id: i64, binding_id: i64) -> Result<bool> {
+        let n = self.backend.execute(
+            "DELETE FROM storage_bindings WHERE id = ?1 AND org_id = ?2",
+            &vals![binding_id, org_id],
+        )?;
+        Ok(n > 0)
     }
 
     /// Bind a registry to a storage binding and sub-prefix.

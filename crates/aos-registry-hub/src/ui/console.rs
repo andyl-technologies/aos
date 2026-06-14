@@ -30,8 +30,8 @@ use std::time::Instant;
 
 use crate::db::{
     AuditRow, ChangesetRow, ChannelSummary, HostedKeyRecord, IdpConfigRecord, IndexStatus,
-    OrgDomainRecord, OrgRecord, ProjectRecord, RegistryRecord, ReleaseRow, StorageBindingRecord,
-    WebauthnCredentialRecord, WebhookRecord,
+    OrgDomainRecord, OrgRecord, ProjectRecord, RegistryRecord, ReleaseRow, SignupPolicy,
+    StorageBindingRecord, WebauthnCredentialRecord, WebhookRecord,
 };
 use crate::domain::{iam, Permission, Role, Scope};
 use crate::ui::pages::LIST_PER_PAGE;
@@ -512,12 +512,16 @@ pub fn orgs_page(
     email: &str,
     orgs: &[OrgRecord],
     can_create: bool,
+    is_instance_admin: bool,
     page_number: usize,
     started: Instant,
 ) -> String {
     let mut body = String::from("<h1>Organizations</h1>\n");
     if can_create {
         body.push_str("<p><a href=\"/new\">+ create an organization</a></p>\n");
+    }
+    if is_instance_admin {
+        body.push_str("<p><a href=\"/-/instance\">instance settings →</a></p>\n");
     }
     if orgs.is_empty() {
         body.push_str("<p class=\"dim\">You are not a member of any organization.</p>\n");
@@ -700,13 +704,27 @@ pub fn org_dashboard(
         let rows: Vec<Vec<String>> = projects
             .iter()
             .map(|p| {
+                let action = if can_configure {
+                    format!(
+                        "<form class=\"console\" method=\"post\" \
+                         action=\"/-/org/{org}/projects/delete\" style=\"display:inline\">{csrf}\
+                         <input type=\"hidden\" name=\"id\" value=\"{id}\">\
+                         <button class=\"danger\">delete</button></form>",
+                        org = escape(slug),
+                        csrf = csrf_field(csrf),
+                        id = p.id,
+                    )
+                } else {
+                    String::new()
+                };
                 vec![
                     escape(if p.path.is_empty() { "(root)" } else { &p.path }),
                     escape(&p.name),
+                    action,
                 ]
             })
             .collect();
-        body.push_str(&table(&["path", "name"], &rows));
+        body.push_str(&table(&["path", "name", ""], &rows));
     }
     if can_configure {
         body.push_str("<h3>Create a project</h3>\n");
@@ -732,14 +750,28 @@ pub fn org_dashboard(
         let rows: Vec<Vec<String>> = bindings
             .iter()
             .map(|b| {
+                let action = if can_configure {
+                    format!(
+                        "<form class=\"console\" method=\"post\" \
+                         action=\"/-/org/{org}/bindings/delete\" style=\"display:inline\">{csrf}\
+                         <input type=\"hidden\" name=\"id\" value=\"{id}\">\
+                         <button class=\"danger\">delete</button></form>",
+                        org = escape(slug),
+                        csrf = csrf_field(csrf),
+                        id = b.id,
+                    )
+                } else {
+                    String::new()
+                };
                 vec![
                     escape(&b.name),
                     escape(&b.kind),
                     format!("<code>{}</code>", escape(&b.root)),
+                    action,
                 ]
             })
             .collect();
-        body.push_str(&table(&["name", "kind", "root"], &rows));
+        body.push_str(&table(&["name", "kind", "root", ""], &rows));
     }
     if can_configure {
         body.push_str("<h3>Create a storage binding</h3>\n");
@@ -767,17 +799,37 @@ pub fn org_dashboard(
         .map(|m| {
             let mut action = String::new();
             if can_manage_members {
-                // Hard-block removing the final owner: render no remove form.
+                // A role-change form: a select of the five roles (current one
+                // pre-selected). Demoting the last owner is blocked server-side.
+                let mut options = String::new();
+                for role in ["owner", "admin", "maintainer", "developer", "viewer"] {
+                    let sel = if role == m.role { " selected" } else { "" };
+                    let _ = write!(options, "<option value=\"{role}\"{sel}>{role}</option>");
+                }
+                let _ = write!(
+                    action,
+                    "<form class=\"console\" method=\"post\" \
+                     action=\"/-/org/{org}/members/role\" style=\"display:inline\">{csrf}\
+                     <input type=\"hidden\" name=\"principal_kind\" value=\"{kind}\">\
+                     <input type=\"hidden\" name=\"principal_id\" value=\"{id}\">\
+                     <select name=\"role\">{options}</select> <button>set role</button></form> ",
+                    org = escape(&org.slug),
+                    csrf = csrf_field(csrf),
+                    kind = escape(&m.kind),
+                    id = m.id,
+                );
+                // The remove form, unless this is the final owner.
                 let is_last_owner = m.role == "owner" && owner_count <= 1;
                 if is_last_owner {
-                    action = "<span class=\"dim\">last owner</span>".to_string();
+                    action.push_str("<span class=\"dim\">last owner</span>");
                 } else {
-                    action = format!(
+                    let _ = write!(
+                        action,
                         "<form class=\"console\" method=\"post\" \
                          action=\"/-/org/{}/members/remove\" style=\"display:inline\">{}\
                          <input type=\"hidden\" name=\"principal_kind\" value=\"{}\">\
                          <input type=\"hidden\" name=\"principal_id\" value=\"{}\">\
-                         <button>remove</button></form>",
+                         <button class=\"danger\">remove</button></form>",
                         escape(&org.slug),
                         csrf_field(csrf),
                         escape(&m.kind),
@@ -1909,6 +1961,58 @@ pub fn org_sso_page(
             (format!("/-/org/{org_slug}"), org_slug.clone()),
             (String::new(), "single sign-on".into()),
         ],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// The instance-settings page (instance admins only): the signup policy.
+///
+/// The masthead brand is intentionally not editable here — it is fixed at
+/// server start (a process-wide value), so it stays a `--brand`/CLI setting.
+#[must_use]
+pub fn instance_settings_page(
+    email: &str,
+    csrf: &str,
+    policy: SignupPolicy,
+    notice: Option<&str>,
+    started: Instant,
+) -> String {
+    let mut body = String::from("<h1>Instance settings</h1>\n");
+    if let Some(notice) = notice {
+        let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
+    }
+    body.push_str("<h2>Signup policy</h2>\n");
+    body.push_str(
+        "<p class=\"dim\">Who may create a new organization. <code>invite_only</code> requires \
+         an existing membership, an invitation, or an instance admin; <code>open</code> lets any \
+         signed-in user create one.</p>\n",
+    );
+    let open_sel = if matches!(policy, SignupPolicy::Open) {
+        " checked"
+    } else {
+        ""
+    };
+    let invite_sel = if matches!(policy, SignupPolicy::InviteOnly) {
+        " checked"
+    } else {
+        ""
+    };
+    let _ = write!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"/-/instance\">{csrf}\
+         <label><input type=\"radio\" name=\"signup_policy\" value=\"invite_only\"{invite_sel}> \
+         invite only</label>\n\
+         <label><input type=\"radio\" name=\"signup_policy\" value=\"open\"{open_sel}> \
+         open</label>\n\
+         <button>save</button>\n</form>\n",
+        csrf = csrf_field(csrf),
+    );
+
+    page_with_session(
+        "instance settings",
+        &[(String::new(), "instance settings".into())],
         &body,
         &StateLine::timed(started),
         &indicator(email),

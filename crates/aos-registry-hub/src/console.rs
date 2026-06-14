@@ -126,6 +126,13 @@ pub fn router() -> Router<Arc<AppState>> {
             get(org_webhooks).post(org_webhooks_action),
         )
         .route("/-/org/{org}/sso", get(org_sso).post(org_sso_action))
+        .route("/-/org/{org}/projects/delete", post(org_delete_project))
+        .route("/-/org/{org}/bindings/delete", post(org_delete_binding))
+        .route("/-/org/{org}/members/role", post(org_member_role))
+        .route(
+            "/-/instance",
+            get(instance_settings).post(instance_settings_action),
+        )
         .route("/{slug}/-/keys", get(keys))
         .route("/{slug}/-/keys/rotate", get(keys_rotate))
         .route("/{slug}/-/publishes", get(publishes))
@@ -1047,13 +1054,17 @@ async fn orgs(
             }
         }
         let can_create = may_create_org(&state.db, &session)?;
-        Ok::<_, anyhow::Error>((orgs, can_create))
+        // An instance admin (iam.admin at the root scope) sees the
+        // instance-settings link.
+        let is_instance_admin = iam::allow(&grants, Permission::IamAdmin, &Scope::parse(""));
+        Ok::<_, anyhow::Error>((orgs, can_create, is_instance_admin))
     })();
     match result {
-        Ok((orgs, can_create)) => Html(console::orgs_page(
+        Ok((orgs, can_create, is_instance_admin)) => Html(console::orgs_page(
             &session.email,
             &orgs,
             can_create,
+            is_instance_admin,
             params.page(),
             Instant::now(),
         ))
@@ -1525,6 +1536,290 @@ async fn org_create_project(
         // A duplicate (org, path) is an operator error, not a fault.
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
     }
+}
+
+/// `POST /-/org/{org}/projects/delete` / `bindings/delete` form: a row id.
+#[derive(serde::Deserialize)]
+struct DeleteByIdForm {
+    #[serde(default)]
+    csrf: String,
+    id: i64,
+}
+
+/// `POST /-/org/{org}/projects/delete` — delete an empty project.
+///
+/// `RegistryConfigure`-gated and CSRF-checked. Refuses to delete a project that
+/// still has registries nested under its path (an in-use guard), so removal
+/// never orphans a registry.
+async fn org_delete_project(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    Form(form): Form<DeleteByIdForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::RegistryConfigure) {
+        return *deny;
+    }
+    let result = (|| {
+        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+            return Ok(None);
+        };
+        let Some(project) = state
+            .db
+            .list_projects(org.id)?
+            .into_iter()
+            .find(|p| p.id == form.id)
+        else {
+            return Ok(Some(Err("no such project")));
+        };
+        // In-use guard: a registry nested under this project blocks removal.
+        let in_use = state
+            .db
+            .list_registries()?
+            .into_iter()
+            .any(|r| r.org_id == Some(org.id) && r.project_path == project.path);
+        if in_use {
+            return Ok(Some(Err("project still has registries")));
+        }
+        state.db.delete_project(org.id, project.id)?;
+        state.db.record_audit(
+            "user",
+            Some(session.auth.user_id),
+            &session.email,
+            "project.delete",
+            &org_slug,
+            None,
+            None,
+            None,
+            Some(&project.path),
+        )?;
+        Ok::<_, anyhow::Error>(Some(Ok(())))
+    })();
+    match result {
+        Ok(Some(Ok(()))) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(Some(Err(msg))) => (StatusCode::CONFLICT, msg).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /-/org/{org}/bindings/delete` — delete an unused storage binding.
+///
+/// `StorageManage`-gated and CSRF-checked. Refuses to delete a binding any
+/// registry still uses (an in-use guard).
+async fn org_delete_binding(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    Form(form): Form<DeleteByIdForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::StorageManage) {
+        return *deny;
+    }
+    let result = (|| {
+        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+            return Ok(None);
+        };
+        let Some(binding) = state
+            .db
+            .list_storage_bindings(org.id)?
+            .into_iter()
+            .find(|b| b.id == form.id)
+        else {
+            return Ok(Some(Err("no such binding")));
+        };
+        let in_use = state
+            .db
+            .list_registries()?
+            .into_iter()
+            .any(|r| r.storage_binding_id == Some(binding.id));
+        if in_use {
+            return Ok(Some(Err("binding still in use by a registry")));
+        }
+        state.db.delete_storage_binding(org.id, binding.id)?;
+        state.db.record_audit(
+            "user",
+            Some(session.auth.user_id),
+            &session.email,
+            "binding.delete",
+            &org_slug,
+            None,
+            None,
+            None,
+            Some(&binding.name),
+        )?;
+        Ok::<_, anyhow::Error>(Some(Ok(())))
+    })();
+    match result {
+        Ok(Some(Ok(()))) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(Some(Err(msg))) => (StatusCode::CONFLICT, msg).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /-/org/{org}/members/role` form: a principal and its new role.
+#[derive(serde::Deserialize)]
+struct RoleForm {
+    #[serde(default)]
+    csrf: String,
+    principal_kind: String,
+    principal_id: i64,
+    role: String,
+}
+
+/// `POST /-/org/{org}/members/role` — change a member's role.
+///
+/// `MembersManage`-gated and CSRF-checked. Re-grants the membership at the new
+/// role (an audited change-set). Demoting the last owner is blocked so an org
+/// can never be left ownerless.
+async fn org_member_role(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    Form(form): Form<RoleForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if !session.allows(&state.db, Permission::MembersManage, &scope) {
+        return (StatusCode::FORBIDDEN, "members.manage required").into_response();
+    }
+    let Some(kind) = crate::domain::PrincipalKind::parse(&form.principal_kind) else {
+        return (StatusCode::BAD_REQUEST, "unknown principal kind").into_response();
+    };
+    let Some(role) = Role::parse(&form.role) else {
+        return (StatusCode::BAD_REQUEST, "unknown role").into_response();
+    };
+    let result = (|| {
+        // Block demoting the last owner away from `owner`.
+        let members = state.db.list_members_of_scope(&org_slug)?;
+        let owners = members.iter().filter(|(_, _, r)| r == "owner").count();
+        let target_is_last_owner = role != Role::Owner
+            && owners <= 1
+            && members.iter().any(|(k, id, r)| {
+                k == &form.principal_kind && *id == form.principal_id && r == "owner"
+            });
+        if target_is_last_owner {
+            return Ok(Err(()));
+        }
+        config::change_membership(
+            &state.db,
+            &session.principal(),
+            &session.email,
+            MembershipChange::Grant,
+            &Principal {
+                kind,
+                id: form.principal_id,
+            },
+            &scope,
+            role,
+        )?;
+        Ok::<Result<(), ()>, anyhow::Error>(Ok(()))
+    })();
+    match result {
+        Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(Err(())) => (
+            StatusCode::CONFLICT,
+            "cannot demote the last owner of an organization",
+        )
+            .into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `GET /-/instance` — the instance-settings page (instance admins only).
+async fn instance_settings(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    render_instance_settings(&state, &session, None)
+}
+
+/// Render the instance-settings page; instance-admin (`iam.admin` at the root
+/// scope) only.
+fn render_instance_settings(state: &AppState, session: &Session, notice: Option<&str>) -> Response {
+    if !session.allows(&state.db, Permission::IamAdmin, &Scope::parse("")) {
+        return (StatusCode::FORBIDDEN, "instance admin required").into_response();
+    }
+    let policy = match state.db.signup_policy() {
+        Ok(p) => p,
+        Err(err) => return internal(err),
+    };
+    Html(console::instance_settings_page(
+        &session.email,
+        &session.csrf(),
+        policy,
+        notice,
+        Instant::now(),
+    ))
+    .into_response()
+}
+
+/// `POST /-/instance` form: the instance signup policy.
+#[derive(serde::Deserialize)]
+struct InstanceSettingsForm {
+    #[serde(default)]
+    csrf: String,
+    signup_policy: String,
+}
+
+/// `POST /-/instance` — update the instance signup policy (instance admins).
+async fn instance_settings_action(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<InstanceSettingsForm>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    if !session.allows(&state.db, Permission::IamAdmin, &Scope::parse("")) {
+        return (StatusCode::FORBIDDEN, "instance admin required").into_response();
+    }
+    let policy = crate::db::SignupPolicy::parse(&form.signup_policy);
+    if let Err(err) = state.db.set_signup_policy(policy) {
+        return internal(err);
+    }
+    if let Err(err) = state.db.record_audit(
+        "user",
+        Some(session.auth.user_id),
+        &session.email,
+        "instance.signup_policy",
+        "",
+        None,
+        None,
+        None,
+        Some(policy.as_str()),
+    ) {
+        return internal(err);
+    }
+    render_instance_settings(&state, &session, Some("Signup policy saved."))
 }
 
 /// `POST /-/org/{org}/bindings` form: a name and an absolute root path.
