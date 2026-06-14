@@ -7,6 +7,12 @@
 //!   `.nar.zst` as downloaded — catches corrupted or tampered transfers.
 //! - **Layer 4b** ([`verify_nar_hash`]): SHA-256 of the *decompressed* NAR
 //!   stream — catches a valid-zstd-but-wrong-content substitution.
+//! - **Layer 4c** ([`verify_nar_blessed`]): the decompressed NAR's SHA-256
+//!   and size must match a *blessed* NAR in the signed `store/` realisation
+//!   graph (RFC-0005) - unlike 4a/4b, whose expected values come from the
+//!   unauthenticated narinfo, this roots the bytes at the registry
+//!   signature. Decompression is capped at the largest blessed size so
+//!   untrusted compressed input cannot expand unboundedly.
 //! - **Layer 5** ([`verify_store_path`]): the path reported by
 //!   `nix-store --import` must equal the path the registry promised.
 //! - **Post-install** ([`verify_installed`]): re-dump an installed store
@@ -28,6 +34,11 @@ use sha2::{Digest, Sha256};
 
 use aos_core::error::AosError;
 use aos_core::nix::aos_nix_env;
+use aos_core::output::Printer;
+
+use crate::download::DownloadResult;
+use crate::registry::store::{NarBytes, TrustContext};
+use crate::registry::store_path_hash;
 
 // ---------------------------------------------------------------------------
 // SHA-256 computation
@@ -76,20 +87,27 @@ pub fn sha256_stream(mut reader: impl Read) -> Result<String> {
 
 /// Convert a SHA-256 hash into a lowercase hex digest.
 ///
-/// Accepts the AOS internal `sha256:<hex>` form and the Nix SRI
-/// `sha256-<base64>` form emitted by `nix path-info --json`. A bare value
-/// with neither prefix is assumed to already be hex and is lowercased
-/// unchecked.
+/// Accepts the AOS internal `sha256:<hex>` form, Nix's base32
+/// `sha256:<52-char-nix32>` form (used by the `store/` graph and Nix
+/// signing fingerprints), and the Nix SRI `sha256-<base64>` form emitted
+/// by `nix path-info --json`. A bare value with neither prefix is assumed
+/// to already be hex and is lowercased unchecked.
 ///
 /// # Errors
 ///
 /// Returns an error if an SRI hash's base64 payload does not decode or does
-/// not decode to exactly 32 bytes.
+/// not decode to exactly 32 bytes, or a 52-char `sha256:` payload is not
+/// valid nixbase32.
 pub fn sha256_digest_hex(hash: &str) -> Result<String> {
     let hash = hash.trim();
 
-    if let Some(hex) = hash.strip_prefix("sha256:") {
-        return Ok(hex.to_ascii_lowercase());
+    if let Some(payload) = hash.strip_prefix("sha256:") {
+        if payload.len() == 52 {
+            let digest = aos_core::nar::cache::decode_nix_base32(payload)
+                .ok_or_else(|| anyhow::anyhow!("invalid nixbase32 SHA-256 hash '{hash}'"))?;
+            return Ok(hex::encode(digest));
+        }
+        return Ok(payload.to_ascii_lowercase());
     }
 
     if let Some(b64) = hash.strip_prefix("sha256-") {
@@ -182,6 +200,142 @@ pub fn verify_nar_hash(path: &Path, expected: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Layer 4c: blessed-content verification against the store/ graph
+// ---------------------------------------------------------------------------
+
+/// Format a blessed NAR set for diagnostics.
+fn describe_blessed(blessed: &[NarBytes]) -> String {
+    blessed
+        .iter()
+        .map(|n| format!("{}:{}", n.nar_hash(), n.size))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Verify a downloaded `.nar.zst` against a path's blessed NAR set (Layer 4c).
+///
+/// Streams zstd decompression of the file at `path`, counting bytes and
+/// computing SHA-256, and accepts iff some blessed NAR in `blessed` matches
+/// both the digest and the exact size. Decompression aborts as soon as the
+/// stream exceeds the largest blessed size, bounding the output produced from
+/// not-yet-verified input.
+///
+/// On success, returns the verified NAR hash as `"sha256:<hex>"`.
+///
+/// # Errors
+///
+/// Returns an error when `blessed` is empty, when the file cannot be opened
+/// or is not valid zstd, when the decompressed stream exceeds every blessed
+/// size, or - as [`AosError::HashMismatch`] - when the digest/size pair
+/// matches no blessed NAR.
+pub fn verify_nar_blessed(path: &Path, blessed: &[NarBytes]) -> Result<String> {
+    let cap =
+        blessed.iter().map(|n| n.size).max().ok_or_else(|| {
+            anyhow::anyhow!("no blessed NAR to verify {} against", path.display())
+        })?;
+
+    let file = File::open(path)
+        .with_context(|| format!("opening {} for blessed NAR verification", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut decoder = zstd::stream::read::Decoder::new(reader)
+        .with_context(|| format!("creating zstd decoder for {}", path.display()))?;
+
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; HASH_BUF_SIZE];
+    let mut total: u64 = 0;
+    loop {
+        let n = decoder
+            .read(&mut buf)
+            .with_context(|| format!("decompressing {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > cap {
+            bail!(
+                "decompressed NAR from {} exceeds the largest blessed size ({cap} bytes); \
+                 refusing to continue decompressing untrusted input",
+                path.display(),
+            );
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    let actual = format!("sha256:{}", hex::encode(hasher.finalize()));
+    if blessed.iter().any(|nar| nar.matches(&actual, total)) {
+        return Ok(actual);
+    }
+
+    Err(AosError::HashMismatch {
+        expected: describe_blessed(blessed),
+        actual: format!("{actual} ({total} bytes)"),
+    }
+    .into())
+}
+
+/// Verify a batch of downloaded NARs before import (Layers 4a + 4c/4b).
+///
+/// Every result gets the compressed-file check (Layer 4a) against the
+/// narinfo `FileHash` it was downloaded under - an integrity precheck, not
+/// a trust decision. The trust decision is per path, judged against the
+/// path's *own* source registry via `ctx`:
+///
+/// - The path's registry publishes a `store/` graph → Layer 4c, the signed
+///   graph is authoritative ([`verify_nar_blessed`]). A missing record is a
+///   hard failure (also caught up front by [`TrustContext::enforce_totality`]).
+/// - The path's registry has no graph (legacy) → Layer 4b against the
+///   unauthenticated narinfo `NarHash`, with a one-time warning.
+///
+/// Callers should run [`TrustContext::enforce_totality`] over the full
+/// closure *before* this, so a stripped graph fails even for members already
+/// present locally (which never reach this download-only path).
+///
+/// # Errors
+///
+/// Returns an error on the first result that fails its applicable checks.
+pub fn verify_downloads(
+    results: &[DownloadResult],
+    ctx: &TrustContext<'_>,
+    printer: &Printer,
+) -> Result<()> {
+    let mut warned_legacy = false;
+    for result in results {
+        verify_download_hash(&result.local_path, &result.download_hash)
+            .with_context(|| format!("verifying download for {}", result.store_path))?;
+
+        let ia_hash = store_path_hash(&result.store_path);
+        if ctx.enforced(ia_hash) {
+            let blessed = ctx.blessed_nars(ia_hash);
+            if blessed.is_empty() {
+                bail!(
+                    "no store/ record for {} in its source registry; refusing to \
+                     install content the registry signature does not vouch for \
+                     (the registry may be malformed or its realisation graph stripped)",
+                    result.store_path,
+                );
+            }
+            verify_nar_blessed(&result.local_path, &blessed).with_context(|| {
+                format!(
+                    "verifying {} against the registry store/ graph",
+                    result.store_path
+                )
+            })?;
+        } else {
+            if !warned_legacy {
+                printer.warning(
+                    "registry publishes no store/ realisation graph; verifying NARs \
+                     against unauthenticated cache narinfo hashes",
+                );
+                warned_legacy = true;
+            }
+            verify_nar_hash(&result.local_path, &result.nar_hash)
+                .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Layer 5: store path verification
 // ---------------------------------------------------------------------------
 
@@ -219,6 +373,11 @@ pub fn verify_store_path(actual: &str, expected: &str) -> Result<()> {
 /// Returns an error if `nix-store` cannot be spawned or exits with a
 /// non-zero status (e.g. the store path does not exist).
 pub async fn store_path_nar_hash(store_path: &str) -> Result<String> {
+    Ok(dump_store_path(store_path).await?.0)
+}
+
+/// Dump a store path as a NAR and return its SHA-256 hash and size.
+async fn dump_store_path(store_path: &str) -> Result<(String, u64)> {
     let output = tokio::process::Command::new("nix-store")
         .envs(aos_nix_env())
         .args(["--dump", store_path])
@@ -236,7 +395,8 @@ pub async fn store_path_nar_hash(store_path: &str) -> Result<String> {
         .into());
     }
 
-    sha256_stream(output.stdout.as_slice())
+    let hash = sha256_stream(output.stdout.as_slice())?;
+    Ok((hash, output.stdout.len() as u64))
 }
 
 /// Verify an installed package against registry metadata.
@@ -263,6 +423,35 @@ pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Resu
         .into());
     }
     Ok(actual)
+}
+
+/// Verify an installed store path against a path's blessed NAR set.
+///
+/// The multi-realisation analogue of [`verify_installed`]: re-dumps the
+/// path and accepts iff *some* blessed NAR matches the freshly computed
+/// digest and exact size - a path matching any blessed realisation is
+/// intact, even when it is not the realisation a single-valued display
+/// hash would name.
+///
+/// On success, returns the computed `sha256:<hex>` hash.
+///
+/// # Errors
+///
+/// Returns an error when `blessed` is empty, when `nix-store --dump` fails,
+/// or - as [`AosError::HashMismatch`] - when no blessed NAR matches.
+pub async fn verify_installed_blessed(store_path: &str, blessed: &[NarBytes]) -> Result<String> {
+    if blessed.is_empty() {
+        bail!("no blessed NAR to verify {store_path} against");
+    }
+    let (actual, size) = dump_store_path(store_path).await?;
+    if blessed.iter().any(|nar| nar.matches(&actual, size)) {
+        return Ok(actual);
+    }
+    Err(AosError::HashMismatch {
+        expected: describe_blessed(blessed),
+        actual: format!("{actual} ({size} bytes)"),
+    }
+    .into())
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +680,195 @@ mod tests {
         let stream_hash = sha256_stream(content.as_slice()).unwrap();
         let file_hash = sha256_file(tmp.path()).unwrap();
         assert_eq!(stream_hash, file_hash);
+    }
+
+    /// Write zstd-compressed content to a temp file and return the file
+    /// plus the content's `sha256:<hex>` hash.
+    fn zstd_fixture(content: &[u8]) -> (tempfile::NamedTempFile, String) {
+        let hash = sha256_stream(content).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        {
+            let file = File::create(tmp.path()).unwrap();
+            let mut encoder = zstd::stream::write::Encoder::new(file, 3).unwrap();
+            encoder.write_all(content).unwrap();
+            encoder.finish().unwrap();
+        }
+        (tmp, hash)
+    }
+
+    use crate::registry::store::{self, NarBytes, Realisation};
+
+    fn blessed_nar(hash: &str, size: u64) -> NarBytes {
+        NarBytes::from_hash(hash, size).unwrap()
+    }
+
+    #[test]
+    fn verify_nar_blessed_accepts_matching_entry() {
+        let content = b"blessed NAR content";
+        let (tmp, hash) = zstd_fixture(content);
+        let blessed = vec![blessed_nar(&hash, content.len() as u64)];
+
+        let verified = verify_nar_blessed(tmp.path(), &blessed).unwrap();
+        assert_eq!(verified, hash);
+    }
+
+    #[test]
+    fn verify_nar_blessed_accepts_any_of_multiple_entries() {
+        let content = b"second blessed realisation";
+        let (tmp, hash) = zstd_fixture(content);
+        let other = sha256_stream(b"first realisation".as_slice()).unwrap();
+        let blessed = vec![
+            blessed_nar(&other, 17),
+            blessed_nar(&hash, content.len() as u64),
+        ];
+
+        assert!(verify_nar_blessed(tmp.path(), &blessed).is_ok());
+    }
+
+    #[test]
+    fn verify_nar_blessed_rejects_wrong_content() {
+        let content = b"tampered NAR content";
+        let (tmp, _) = zstd_fixture(content);
+        let other = sha256_stream(b"the blessed bytes".as_slice()).unwrap();
+        let blessed = vec![blessed_nar(&other, content.len() as u64)];
+
+        let err = verify_nar_blessed(tmp.path(), &blessed).unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<AosError>(),
+            Some(AosError::HashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_nar_blessed_rejects_size_mismatch_with_right_hash() {
+        // Same digest but a wrong blessed size must not verify.
+        let content = b"size matters";
+        let (tmp, hash) = zstd_fixture(content);
+        let blessed = vec![blessed_nar(&hash, content.len() as u64 + 1)];
+
+        // The stream (12 bytes) stays under the cap (13) but the exact-size
+        // match fails.
+        let err = verify_nar_blessed(tmp.path(), &blessed).unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<AosError>(),
+            Some(AosError::HashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_nar_blessed_aborts_past_size_cap() {
+        // A stream larger than every blessed size aborts decompression.
+        let content = vec![0x5au8; 4096];
+        let (tmp, _) = zstd_fixture(&content);
+        let other = sha256_stream(b"small".as_slice()).unwrap();
+        let blessed = vec![blessed_nar(&other, 5)];
+
+        let err = verify_nar_blessed(tmp.path(), &blessed).unwrap_err();
+        assert!(format!("{err:#}").contains("largest blessed size"));
+    }
+
+    #[test]
+    fn verify_nar_blessed_requires_a_blessed_nar() {
+        let (tmp, _) = zstd_fixture(b"anything");
+        let err = verify_nar_blessed(tmp.path(), &[]).unwrap_err();
+        assert!(format!("{err:#}").contains("no blessed NAR"));
+    }
+
+    /// Build a `DownloadResult` whose local file holds zstd-compressed
+    /// `content`, with narinfo-style hashes filled in.
+    fn download_result_fixture(
+        store_path: &str,
+        content: &[u8],
+        narinfo_nar_hash: &str,
+    ) -> (tempfile::NamedTempFile, DownloadResult) {
+        let (tmp, _) = zstd_fixture(content);
+        let download_hash = sha256_file(tmp.path()).unwrap();
+        let result = DownloadResult {
+            store_path: store_path.to_string(),
+            local_path: tmp.path().to_path_buf(),
+            download_hash,
+            nar_hash: narinfo_nar_hash.to_string(),
+            references: Vec::new(),
+            deriver: None,
+        };
+        (tmp, result)
+    }
+
+    /// Bless `ia` with one IA-only realisation of `nar_hash`/`size` in a
+    /// fresh registry dir, returning its loaded `StoreMap`.
+    fn store_with(ia: &str, nar_hash: &str, size: u64) -> (tempfile::TempDir, store::StoreMap) {
+        let reg = tempfile::TempDir::new().unwrap();
+        store::upsert_realisation(
+            reg.path(),
+            ia,
+            Realisation {
+                nar: NarBytes::from_hash(nar_hash, size).unwrap(),
+                ca: None,
+                deps: vec![],
+            },
+            false,
+        )
+        .unwrap();
+        let map = store::StoreMap::load(reg.path()).unwrap();
+        (reg, map)
+    }
+
+    #[test]
+    fn verify_downloads_uses_blessed_bytes_over_narinfo() {
+        let content = b"trusted bytes";
+        let ia = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let store_path = format!("/nix/store/{ia}-pkg-1.0");
+        let nar_hash = sha256_stream(content.as_slice()).unwrap();
+        // The narinfo lies; only the graph is right.
+        let (_tmp, result) = download_result_fixture(&store_path, content, "sha256:bogus");
+
+        let (_reg, map) = store_with(ia, &nar_hash, content.len() as u64);
+        let mut ctx = TrustContext::new();
+        ctx.insert(ia.to_string(), &map);
+        let printer = Printer::new(0, true, false);
+
+        verify_downloads(std::slice::from_ref(&result), &ctx, &printer).unwrap();
+    }
+
+    #[test]
+    fn verify_downloads_enforcing_rejects_unmapped_path() {
+        let content = b"unmapped bytes";
+        let ia = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let store_path = format!("/nix/store/{ia}-pkg-1.0");
+        let nar_hash = sha256_stream(content.as_slice()).unwrap();
+        let (_tmp, result) = download_result_fixture(&store_path, content, &nar_hash);
+
+        // The source registry publishes a graph but has no record for this
+        // path: enforced, blessed-empty → hard fail.
+        let (_reg, map) = store_with("cccccccccccccccccccccccccccccccc", &nar_hash, 9);
+        let mut ctx = TrustContext::new();
+        ctx.insert(ia.to_string(), &map);
+        let printer = Printer::new(0, true, false);
+
+        let err = verify_downloads(std::slice::from_ref(&result), &ctx, &printer).unwrap_err();
+        assert!(format!("{err:#}").contains("no store/ record"));
+    }
+
+    #[test]
+    fn verify_downloads_legacy_falls_back_to_narinfo_hash() {
+        let content = b"legacy registry bytes";
+        let ia = "dddddddddddddddddddddddddddddddd";
+        let store_path = format!("/nix/store/{ia}-pkg-1.0");
+        let nar_hash = sha256_stream(content.as_slice()).unwrap();
+        let (_tmp, result) = download_result_fixture(&store_path, content, &nar_hash);
+
+        // No store/ directory at all: legacy registry, narinfo hash decides.
+        let reg = tempfile::TempDir::new().unwrap();
+        let map = store::StoreMap::load(reg.path()).unwrap();
+        let mut ctx = TrustContext::new();
+        ctx.insert(ia.to_string(), &map);
+        let printer = Printer::new(0, true, false);
+
+        verify_downloads(std::slice::from_ref(&result), &ctx, &printer).unwrap();
+
+        // And a lying narinfo still fails in legacy mode.
+        let (_tmp2, bad) = download_result_fixture(&store_path, content, "sha256:bogus");
+        assert!(verify_downloads(std::slice::from_ref(&bad), &ctx, &printer).is_err());
     }
 
     #[test]

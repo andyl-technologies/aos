@@ -361,10 +361,10 @@ fn apm_profile_lifecycle_cli_full_upgrades_and_executes_new_generation() -> Resu
 
 #[cfg(unix)]
 #[test]
-fn apm_registry_dependency_cli_uses_precomputed_closures() -> Result<()> {
+fn apm_registry_dependency_cli_uses_store_graph() -> Result<()> {
     let fixture = LifecycleFixture::new()?;
     fixture.write_registry_cache()?;
-    fixture.write_dependency_closures()?;
+    fixture.write_dependency_store_records()?;
 
     let depends = fixture.run_json(&["--json", "depends", "beta"], "depends beta")?;
     assert_eq!(depends["package"], "beta");
@@ -487,22 +487,23 @@ impl LifecycleFixture {
         Ok(())
     }
 
-    fn write_dependency_closures(&self) -> Result<()> {
-        let closures_dir = self.xdg_data.join("apm/remote/lifecycle/closures");
-        fs::create_dir_all(&closures_dir)?;
-        fs::write(
-            closures_dir.join(self.packages.beta.hash),
-            format!(
-                "{} {}\n{}\n",
-                self.packages.beta.hash,
-                self.packages.beta_helper.hash,
-                self.packages.beta_helper.hash
-            ),
+    fn write_dependency_store_records(&self) -> Result<()> {
+        // The `store/` realisation graph (RFC-0005): one sharded file per IA
+        // store path, recording its blessed NAR and dependency edges. beta
+        // depends on beta-helper; beta-helper is a leaf.
+        const NAR: &str = "nar:sha256:1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy:1";
+        let store_dir = self.xdg_data.join("apm/remote/lifecycle/store");
+        let write_record = |hash: &str, body: String| -> Result<()> {
+            let dir = store_dir.join(&hash[..2]);
+            fs::create_dir_all(&dir)?;
+            fs::write(dir.join(hash), body)?;
+            Ok(())
+        };
+        write_record(
+            self.packages.beta.hash,
+            format!("{NAR}\n\tia:sha256:{}\n", self.packages.beta_helper.hash),
         )?;
-        fs::write(
-            closures_dir.join(self.packages.beta_helper.hash),
-            format!("{}\n", self.packages.beta_helper.hash),
-        )?;
+        write_record(self.packages.beta_helper.hash, format!("{NAR}\n"))?;
         Ok(())
     }
 
