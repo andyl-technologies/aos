@@ -5852,6 +5852,20 @@ impl Database {
         Ok(())
     }
 
+    /// Remove an org's OIDC identity-provider configuration; returns whether a
+    /// row was deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn delete_idp_config(&self, org_id: i64) -> Result<bool> {
+        let n = self.backend.execute(
+            "DELETE FROM org_idp_configs WHERE org_id = ?1",
+            &vals![org_id],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Load an org's OIDC identity-provider configuration, if configured.
     ///
     /// # Errors
@@ -5900,6 +5914,29 @@ impl Database {
         Ok(challenge)
     }
 
+    /// List an org's claimed email domains (verified and pending), by domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_org_domains(&self, org_id: i64) -> Result<Vec<OrgDomainRecord>> {
+        let rows = self.backend.query(
+            "SELECT domain, org_id, txt_challenge, verified_at
+             FROM org_domains WHERE org_id = ?1 ORDER BY domain",
+            &vals![org_id],
+        )?;
+        rows.iter()
+            .map(|row| -> Result<OrgDomainRecord> {
+                Ok(OrgDomainRecord {
+                    domain: row.get(0)?,
+                    org_id: row.get(1)?,
+                    txt_challenge: row.get(2)?,
+                    verified_at: row.get(3)?,
+                })
+            })
+            .collect()
+    }
+
     /// Look up a claimed domain (verified or not).
     ///
     /// # Errors
@@ -5941,6 +5978,21 @@ impl Database {
         let n = self.backend.execute(
             "UPDATE org_domains SET verified_at = ?2 WHERE domain = ?1",
             &vals![domain, unix_now()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Release a claimed domain (verified or not); returns whether a row was
+    /// removed. Scoped by `org_id` so one org cannot drop another's claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn delete_org_domain(&self, org_id: i64, domain: &str) -> Result<bool> {
+        let domain = domain.trim().to_lowercase();
+        let n = self.backend.execute(
+            "DELETE FROM org_domains WHERE domain = ?1 AND org_id = ?2",
+            &vals![domain, org_id],
         )?;
         Ok(n > 0)
     }

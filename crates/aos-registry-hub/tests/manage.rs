@@ -794,3 +794,129 @@ async fn non_admin_member_cannot_manage_webhooks() {
     .await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
 }
+
+#[tokio::test]
+async fn owner_configures_sso_and_captures_domain() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").unwrap();
+    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let cookie = login(&app, &db, "owner@acme.com").await;
+    let csrf = csrf_for(&cookie);
+    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+
+    // Configure the IdP with a client secret.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/sso",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&op=set-idp&issuer=https%3A%2F%2Fidp.test&\
+             auth_url=https%3A%2F%2Fidp.test%2Fa&token_url=https%3A%2F%2Fidp.test%2Ft&\
+             jwks_uri=https%3A%2F%2Fidp.test%2Fj&client_id=cid&client_secret=topsecret&\
+             scopes=openid+email&role_map=%7B%7D&default_role=viewer&allow_jit=1"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let cfg = db.idp_config(org_id).unwrap().expect("idp configured");
+    assert_eq!(cfg.issuer, "https://idp.test");
+    assert_eq!(cfg.client_id, "cid");
+    let sealed = cfg.client_secret_enc.clone().expect("secret sealed");
+    assert_ne!(sealed, "topsecret", "secret is sealed, not plaintext");
+
+    // Editing other fields with a blank secret keeps the sealed secret.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/sso",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&op=set-idp&issuer=https%3A%2F%2Fidp.test&\
+             auth_url=https%3A%2F%2Fidp.test%2Fa&token_url=https%3A%2F%2Fidp.test%2Ft&\
+             jwks_uri=https%3A%2F%2Fidp.test%2Fj&client_id=cid2&client_secret=&\
+             role_map=%7B%7D&default_role=viewer"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let cfg = db.idp_config(org_id).unwrap().unwrap();
+    assert_eq!(cfg.client_id, "cid2");
+    assert_eq!(
+        cfg.client_secret_enc.as_deref(),
+        Some(sealed.as_str()),
+        "kept"
+    );
+
+    // Capture a domain; it lands unverified.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/sso",
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&op=add-domain&domain=acme.com")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(db
+        .org_domain("acme.com")
+        .unwrap()
+        .unwrap()
+        .verified_at
+        .is_none());
+
+    // An org owner (not an instance admin) cannot verify — it routes logins.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/sso",
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&op=verify-domain&domain=acme.com")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    assert!(db
+        .org_domain("acme.com")
+        .unwrap()
+        .unwrap()
+        .verified_at
+        .is_none());
+}
+
+#[tokio::test]
+async fn instance_admin_verifies_a_captured_domain() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    let admin = db.find_or_create_user("root@hub").unwrap();
+    db.grant_membership("user", admin, "acme", "owner").unwrap();
+    // Instance admin: owner at the root scope "".
+    db.grant_membership("user", admin, "", "owner").unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let cookie = login(&app, &db, "root@hub").await;
+    let csrf = csrf_for(&cookie);
+    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    db.add_org_domain(org_id, "acme.com").unwrap();
+
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/sso",
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&op=verify-domain&domain=acme.com")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(db
+        .org_domain("acme.com")
+        .unwrap()
+        .unwrap()
+        .verified_at
+        .is_some());
+    assert!(db
+        .list_audit("acme")
+        .unwrap()
+        .iter()
+        .any(|a| a.action == "domain.verify"));
+}
