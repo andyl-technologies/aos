@@ -121,6 +121,10 @@ pub fn router() -> Router<Arc<AppState>> {
             post(channel_advance_direct),
         )
         .route("/-/org/{org}/keys", get(org_keys).post(org_keys_action))
+        .route(
+            "/-/org/{org}/webhooks",
+            get(org_webhooks).post(org_webhooks_action),
+        )
         .route("/{slug}/-/keys", get(keys))
         .route("/{slug}/-/keys/rotate", get(keys_rotate))
         .route("/{slug}/-/publishes", get(publishes))
@@ -3073,6 +3077,186 @@ async fn org_keys_action(
                 return internal(err);
             }
             render_org_keys(&state, &session, &org_slug, None)
+        }
+        _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
+    }
+}
+
+// -- webhooks ---------------------------------------------------------------
+
+/// `GET /-/org/{org}/webhooks` — the org webhook management page.
+async fn org_webhooks(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    render_org_webhooks(&state, &session, &org_slug, None)
+}
+
+/// Render the org webhooks page, optionally echoing a just-created secret once.
+fn render_org_webhooks(
+    state: &AppState,
+    session: &Session,
+    org_slug: &str,
+    created_secret: Option<&str>,
+) -> Response {
+    let scope = Scope::parse(org_slug);
+    if !session.allows(&state.db, Permission::MembersManage, &scope) {
+        if session.allows(&state.db, Permission::Read, &scope) {
+            return (StatusCode::FORBIDDEN, "members.manage required").into_response();
+        }
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let result = (|| {
+        let Some(org) = state.db.org_by_slug(org_slug)? else {
+            return Ok(None);
+        };
+        let webhooks = state.db.list_webhooks(org.id)?;
+        Ok::<_, anyhow::Error>(Some(console::org_webhooks_page(
+            &session.email,
+            &org,
+            &session.csrf(),
+            &webhooks,
+            created_secret,
+            Instant::now(),
+        )))
+    })();
+    match result {
+        Ok(Some(html)) => Html(html).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /-/org/{org}/webhooks` — create or delete a webhook subscription.
+///
+/// Requires `MembersManage` at the org scope (matching the RPC). The `events`
+/// field repeats (one per checked box), so the body is parsed by hand rather
+/// than via a serde `Form`. Both operations are CSRF-checked and audited.
+async fn org_webhooks_action(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    body: axum::body::Bytes,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+
+    // Parse the form by hand: `events` repeats, which a serde `Form` cannot
+    // collect into a `Vec`.
+    let mut single: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut events: Vec<String> = Vec::new();
+    for (key, value) in url::form_urlencoded::parse(&body) {
+        if key == "events" {
+            let value = value.trim().to_string();
+            if !value.is_empty() {
+                events.push(value);
+            }
+        } else {
+            single.insert(key.into_owned(), value.into_owned());
+        }
+    }
+    let field = |k: &str| single.get(k).map(String::as_str).unwrap_or("");
+
+    if let Err(resp) = check_csrf(&session, field("csrf")) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if !session.allows(&state.db, Permission::MembersManage, &scope) {
+        if session.allows(&state.db, Permission::Read, &scope) {
+            return (StatusCode::FORBIDDEN, "members.manage required").into_response();
+        }
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(org) = (match state.db.org_by_slug(&org_slug) {
+        Ok(org) => org,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    match field("op") {
+        "create" => {
+            let url = field("url").trim();
+            if url.is_empty() {
+                return (StatusCode::BAD_REQUEST, "url is required").into_response();
+            }
+            // Only the registry's own event vocabulary is accepted.
+            let known: Vec<&str> = console::WEBHOOK_EVENT_TYPES
+                .iter()
+                .map(|(e, _)| *e)
+                .collect();
+            if let Some(bad) = events.iter().find(|e| !known.contains(&e.as_str())) {
+                return (StatusCode::BAD_REQUEST, format!("unknown event: {bad}")).into_response();
+            }
+            // Generate a secret when the operator left it blank; echo it once.
+            let provided = field("secret").trim().to_string();
+            let generated = provided.is_empty();
+            let secret = if generated {
+                crate::auth::token::generate_token().0
+            } else {
+                provided
+            };
+            let id = match state.db.create_webhook(org.id, url, &secret, &events) {
+                Ok(id) => id,
+                Err(err) => return internal(err),
+            };
+            let detail = serde_json::json!({ "id": id, "url": url, "events": events }).to_string();
+            if let Err(err) = state.db.record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "webhook.create",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(&detail),
+            ) {
+                return internal(err);
+            }
+            // Only reveal a secret the hub generated; a provided one is known.
+            render_org_webhooks(
+                &state,
+                &session,
+                &org_slug,
+                generated.then_some(secret.as_str()),
+            )
+        }
+        "delete" => {
+            let Ok(webhook_id) = field("webhook_id").parse::<i64>() else {
+                return (StatusCode::BAD_REQUEST, "bad webhook id").into_response();
+            };
+            // The webhook must belong to this org (no cross-org deletion).
+            match state.db.webhook(webhook_id) {
+                Ok(Some(w)) if w.org_id == org.id => {}
+                Ok(_) => return (StatusCode::NOT_FOUND, "no such webhook").into_response(),
+                Err(err) => return internal(err),
+            }
+            if let Err(err) = state.db.delete_webhook(webhook_id) {
+                return internal(err);
+            }
+            let detail = serde_json::json!({ "id": webhook_id }).to_string();
+            if let Err(err) = state.db.record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "webhook.delete",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(&detail),
+            ) {
+                return internal(err);
+            }
+            render_org_webhooks(&state, &session, &org_slug, None)
         }
         _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
     }
