@@ -1063,3 +1063,103 @@ async fn instance_settings_signup_policy_admin_only() {
         aos_registry_hub::db::SignupPolicy::Open
     ));
 }
+
+#[tokio::test]
+async fn admin_manages_frontends_and_mirror() {
+    // The SSRF guard resolves the frontend/mirror host; opt into loopback so
+    // the test can use 127.0.0.1 without real DNS.
+    std::env::set_var("AOS_HUB_ALLOW_LOCAL_REMOTES", "1");
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").unwrap();
+    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    db.create_storage_binding(org_id, "primary", "local_fs", "/srv/acme")
+        .unwrap();
+    let bid = db
+        .storage_binding_by_name(org_id, "primary")
+        .unwrap()
+        .unwrap()
+        .id;
+    let reg_id = db
+        .create_managed_registry(org_id, "", "cdn", "public", Some(bid), "cdn", &[], false)
+        .unwrap();
+    let slug = db
+        .list_registries()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == reg_id)
+        .unwrap()
+        .slug;
+
+    let app = router(app_state(Arc::clone(&db)));
+    let cookie = login(&app, &db, "owner@acme.com").await;
+    let csrf = csrf_for(&cookie);
+    let path = format!("/{slug}/-/settings/serving");
+
+    // The page renders for a configurer.
+    let resp = send(&app, "GET", &path, Some(&cookie), None).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+
+    // Add a frontend (loopback host).
+    let resp = send(
+        &app,
+        "POST",
+        &path,
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&op=add-frontend&domain=127.0.0.1&mode=direct&serves_web=1&consumer_priority=100"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let frontends = db.list_frontends(reg_id).unwrap();
+    assert_eq!(frontends.len(), 1);
+    assert_eq!(frontends[0].domain, "127.0.0.1");
+
+    // Configure a mirror, then stop mirroring.
+    let resp = send(
+        &app,
+        "POST",
+        &path,
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&op=set-mirror&upstream_url=http%3A%2F%2F127.0.0.1%2Fup&mode=pullthrough&verify=1&schedule_secs=900"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(db.is_mirror(reg_id).unwrap());
+
+    let resp = send(
+        &app,
+        "POST",
+        &path,
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&op=remove-mirror")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(!db.is_mirror(reg_id).unwrap());
+
+    // Delete the frontend.
+    let fid = db.list_frontends(reg_id).unwrap()[0].id;
+    let resp = send(
+        &app,
+        "POST",
+        &path,
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&op=delete-frontend&id={fid}")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(db.list_frontends(reg_id).unwrap().is_empty());
+
+    // A non-configurer member is forbidden.
+    let viewer = db.find_or_create_user("v@acme.com").unwrap();
+    db.grant_membership("user", viewer, "acme", "viewer")
+        .unwrap();
+    let v_cookie = login(&app, &db, "v@acme.com").await;
+    let resp = send(&app, "GET", &path, Some(&v_cookie), None).await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+}

@@ -2863,6 +2863,20 @@ impl Database {
             .is_some())
     }
 
+    /// Stop mirroring: remove a registry's mirror source. Returns whether a row
+    /// was removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn delete_mirror_source(&self, registry_id: i64) -> Result<bool> {
+        let n = self.backend.execute(
+            "DELETE FROM mirror_sources WHERE registry_id = ?1",
+            &vals![registry_id],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Record the outcome of a mirror sync attempt.
     ///
     /// `status` is `ok` or `failed`; on success `error` is `None` and

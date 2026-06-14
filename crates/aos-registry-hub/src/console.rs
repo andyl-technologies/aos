@@ -104,6 +104,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{slug}/-/settings", get(registry_settings))
         .route("/{slug}/-/settings/visibility", post(registry_visibility))
         .route("/{slug}/-/settings/delete", post(registry_delete))
+        .route(
+            "/{slug}/-/settings/serving",
+            get(serving).post(serving_post),
+        )
         .route("/{slug}/-/settings/tokens", get(tokens).post(tokens_create))
         .route("/{slug}/-/settings/tokens/revoke", post(tokens_revoke))
         .route("/{slug}/-/settings/tokens/rotate", post(tokens_rotate))
@@ -2405,6 +2409,8 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
         // POST-only mutations.
         "settings" => !is_post,
         "settings/visibility" | "settings/delete" => is_post,
+        // The serving & mirror page is GET (view) + POST (mutate).
+        "settings/serving" => true,
         "changes" => !is_post,
         "keys" | "keys/rotate" | "publishes" => !is_post,
         other => {
@@ -2524,6 +2530,8 @@ pub(crate) async fn dispatch_nested(
             )
             .await
         }
+        ("settings/serving", false) => serving_view(state, &session, &registry, None),
+        ("settings/serving", true) => serving_action(state, &session, &registry, &fields),
         ("settings", false) => registry_settings_view(state, &session, &registry, None),
         ("settings/visibility", true) => registry_visibility_action(
             state,
@@ -3856,6 +3864,208 @@ async fn org_sso_action(
                 &org_slug,
                 Some(&format!("Removed {domain}.")),
             )
+        }
+        _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
+    }
+}
+
+// -- serving frontends + mirror ---------------------------------------------
+
+/// `GET /{slug}/-/settings/serving` — the serving & mirror management page.
+async fn serving(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    serving_view(&state, &session, &registry, None)
+}
+
+/// Render the serving & mirror page; `RegistryConfigure`-gated at the registry
+/// scope (a reader without it gets 403, a non-member 404 via visibility).
+fn serving_view(
+    state: &AppState,
+    session: &Session,
+    registry: &RegistryRecord,
+    notice: Option<&str>,
+) -> Response {
+    let scope = Scope::parse(&registry.slug);
+    if !session.allows(&state.db, Permission::RegistryConfigure, &scope) {
+        if let Err(deny) = authorize_registry_read(state, registry, &HeaderMap::new()) {
+            return *deny;
+        }
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let result = (|| {
+        let frontends = state.db.list_frontends(registry.id)?;
+        let mirror = state.db.mirror_source(registry.id)?;
+        Ok::<_, anyhow::Error>(console::serving_page(
+            &session.email,
+            registry,
+            &session.csrf(),
+            &frontends,
+            mirror.as_ref(),
+            notice,
+            Instant::now(),
+        ))
+    })();
+    match result {
+        Ok(html) => Html(html).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /{slug}/-/settings/serving` — add/delete a frontend or set/clear the
+/// mirror config.
+async fn serving_post(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    body: axum::body::Bytes,
+) -> Response {
+    let session = match require_session(&state, &headers) {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let fields = parse_form(&String::from_utf8_lossy(&body));
+    serving_action(&state, &session, &registry, &fields)
+}
+
+/// Apply a serving/mirror mutation. Shared by the flat route and the
+/// nested-canonical [`dispatch_nested`] path; `RegistryConfigure`-gated and
+/// CSRF-checked; every op is audited.
+fn serving_action(
+    state: &AppState,
+    session: &Session,
+    registry: &RegistryRecord,
+    fields: &std::collections::HashMap<String, String>,
+) -> Response {
+    let field = |k: &str| fields.get(k).map(String::as_str).unwrap_or("");
+    if let Err(resp) = check_csrf(session, field("csrf")) {
+        return *resp;
+    }
+    let scope = Scope::parse(&registry.slug);
+    if !session.allows(&state.db, Permission::RegistryConfigure, &scope) {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let audit = |action: &str, detail: &str| {
+        state.db.record_audit(
+            "user",
+            Some(session.auth.user_id),
+            &session.email,
+            action,
+            &registry.slug,
+            None,
+            None,
+            None,
+            Some(detail),
+        )
+    };
+
+    match field("op") {
+        "add-frontend" => {
+            let domain = field("domain").trim();
+            if domain.is_empty() {
+                return (StatusCode::BAD_REQUEST, "domain is required").into_response();
+            }
+            let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
+            // create_frontend validates the mode and rejects unsafe domains.
+            let created = state.db.create_frontend(
+                registry.id,
+                domain,
+                field("base_path").trim(),
+                match field("mode") {
+                    "proxied" => "proxied",
+                    _ => "direct",
+                },
+                field("serves_git") == "1",
+                field("serves_cache") == "1",
+                field("serves_web") == "1",
+                priority,
+                field("advertised") == "1",
+            );
+            match created {
+                Ok(_) => {}
+                Err(err) => return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
+            }
+            if let Err(err) = audit("frontend.add", domain) {
+                return internal(err);
+            }
+            serving_view(state, session, registry, Some("Frontend added."))
+        }
+        "delete-frontend" => {
+            let Ok(id) = field("id").parse::<i64>() else {
+                return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
+            };
+            // The frontend must belong to this registry.
+            match state.db.list_frontends(registry.id) {
+                Ok(list) if list.iter().any(|f| f.id == id) => {}
+                Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
+                Err(err) => return internal(err),
+            }
+            if let Err(err) = state.db.delete_frontend(id) {
+                return internal(err);
+            }
+            if let Err(err) = audit("frontend.delete", &id.to_string()) {
+                return internal(err);
+            }
+            serving_view(state, session, registry, Some("Frontend deleted."))
+        }
+        "set-mirror" => {
+            let upstream = field("upstream_url").trim();
+            if upstream.is_empty() {
+                return (StatusCode::BAD_REQUEST, "upstream URL is required").into_response();
+            }
+            let secs: i64 = field("schedule_secs").trim().parse().unwrap_or(3600);
+            // create_mirror_source validates the mode and rejects SSRF targets.
+            let r = state.db.create_mirror_source(
+                registry.id,
+                upstream,
+                match field("mode") {
+                    "pullthrough" => "pullthrough",
+                    _ => "full",
+                },
+                field("verify") == "1",
+                secs,
+            );
+            if let Err(err) = r {
+                return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response();
+            }
+            if let Err(err) = audit("mirror.set", upstream) {
+                return internal(err);
+            }
+            serving_view(
+                state,
+                session,
+                registry,
+                Some("Mirror configuration saved."),
+            )
+        }
+        "remove-mirror" => {
+            if let Err(err) = state.db.delete_mirror_source(registry.id) {
+                return internal(err);
+            }
+            if let Err(err) = audit("mirror.remove", &registry.slug) {
+                return internal(err);
+            }
+            serving_view(state, session, registry, Some("Stopped mirroring."))
         }
         _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
     }
