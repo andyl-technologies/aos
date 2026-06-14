@@ -267,9 +267,14 @@ class QemuMachine(Machine):
         Split out of start() so reboot() can relaunch against the same
         disk/NVRAM state without re-running the prep (copy/grow/sgdisk).
         """
+        # Image boot uses the SB+SMM OVMF, which requires the q35 SMM
+        # machine. Kernel boot keeps the plain machine.
+        machine = (
+            "q35,smm=on,accel=kvm" if self.boot == "image" else "q35,accel=kvm"
+        )
         argv: list[str] = [
             "qemu-system-x86_64",
-            "-machine", "q35,accel=kvm",
+            "-machine", machine,
             "-cpu", "host",
             "-m", str(self.memory_mib),
             "-smp", str(self.vcpu_count),
@@ -283,10 +288,20 @@ class QemuMachine(Machine):
             # QEMU DMI (no metadata ISO attached) and classifies
             # PLATFORM_ID=qemu, which is exactly the platform whose
             # fetch stage reads opt/com.coreos/config.
+            #
+            # Secure Boot needs SMM: OVMF's authenticated variable store
+            # lives in SMM, and the firmware flash is marked secure so
+            # only SMM code can write it (cfi.pflash01 secure=on). The
+            # OVMF_CODE pflash is unit 0 (the secured one), VARS unit 1.
+            # disable_s3 avoids an S3-resume path OVMF+SMM doesn't support
+            # here. Without these the SecureBoot/SetupMode variables never
+            # appear and SB reports "unsupported".
             argv += [
+                "-global", "driver=cfi.pflash01,property=secure,value=on",
+                "-global", "ICH9-LPC.disable_s3=1",
                 "-drive",
-                f"if=pflash,format=raw,readonly=on,file={self.firmware_code}",
-                "-drive", f"if=pflash,format=raw,file={self.vars_copy}",
+                f"if=pflash,unit=0,format=raw,readonly=on,file={self.firmware_code}",
+                "-drive", f"if=pflash,unit=1,format=raw,file={self.vars_copy}",
                 "-drive", f"file={self.disk_copy},format=raw,if=virtio",
             ]
             if self.fw_cfg_path is not None:
@@ -329,6 +344,7 @@ class QemuMachine(Machine):
             "-no-reboot",
         ]
 
+        log.info("[%s] qemu argv: %s", self.name, " ".join(argv))
         self._qemu_log_fd = open(self.qemu_log, "ab")
         self.qemu_proc = subprocess.Popen(
             argv,
@@ -385,6 +401,78 @@ class QemuMachine(Machine):
             self.qemu_proc.pid if self.qemu_proc else "?",
         )
         self.agent.wait_ready(deadline)
+
+    # ------------------------------------------------------------------
+    def reboot_expect_rejected(
+        self, settle: float = 90.0, markers: list[str] | None = None
+    ) -> str:
+        """Reboot and assert the firmware REFUSES to boot the image.
+
+        For the Secure Boot negative test: after the on-disk UKI has been
+        tampered (or is unsigned) under an enforcing firmware, a reboot
+        must NOT come back. Triggers the reboot, relaunches QEMU, then
+        waits ``settle`` seconds and asserts the guest agent never answers
+        — and (best-effort) that the serial log shows a firmware
+        rejection. Returns the tail of the serial log for the caller to
+        assert on. Raises if the agent DOES come up (image booted —
+        enforcement failed).
+
+        ``markers`` defaults to the OVMF/UEFI access-denied signatures.
+        """
+        if markers is None:
+            markers = [
+                "Security Violation",
+                "Access Denied",
+                "failed to load",
+                "verification failed",
+            ]
+        self.execute("(sleep 1; reboot -f) >/dev/null 2>&1 &", timeout=30)
+        self.agent.close()
+
+        if self.qemu_proc is None:
+            raise RuntimeError(f"[{self.name}] reboot before start()")
+        try:
+            self.qemu_proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"[{self.name}] guest did not exit QEMU within 60s of reboot"
+            ) from None
+        if self._qemu_log_fd is not None:
+            self._qemu_log_fd.close()
+            self._qemu_log_fd = None
+
+        log.info("==> Rebooting %s, expecting firmware rejection", self.name)
+        self._launch()
+
+        # Give the firmware time to reject and the (doomed) boot to NOT
+        # produce an agent. wait_ready with a short deadline: if it
+        # returns, the image booted — that's a test failure.
+        deadline = time.monotonic() + settle
+        try:
+            self.agent.wait_ready(deadline)
+        except RuntimeError:
+            # Expected: no agent — the firmware rejected the image.
+            tail = ""
+            try:
+                with open(self.serial_log_path, "r", errors="replace") as f:
+                    tail = f.read()[-8000:]
+            except OSError:
+                pass
+            hit = next((m for m in markers if m in tail), None)
+            if hit:
+                log.info("[%s] firmware rejection confirmed (%r)", self.name, hit)
+            else:
+                log.warning(
+                    "[%s] agent never came up (good) but no rejection marker "
+                    "found in serial; markers=%r",
+                    self.name,
+                    markers,
+                )
+            return tail
+        raise RuntimeError(
+            f"[{self.name}] image BOOTED after tampering — Secure Boot did not"
+            " enforce (agent came up)"
+        )
 
     # ------------------------------------------------------------------
     @override

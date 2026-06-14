@@ -126,6 +126,13 @@
       # image builder writes via sfdisk (name="root-a").
       "root=/dev/disk/by-partlabel/root-a"
       "ro"
+      # Mask systemd-boot-random-seed.service: with efivarfs now built-in
+      # (CONFIG_EFIVAR_FS=y, base.config) its ConditionPathExists is met,
+      # so it activates and then fails trying to write /loader/random-seed
+      # to the read-only ESP. AOS images are immutable and don't maintain
+      # an sd-boot random seed, so mask it rather than leave a failed unit
+      # on every UEFI boot (RFC-0006).
+      "systemd.mask=systemd-boot-random-seed.service"
     ];
 
     # systemd-initrd kernel modules configuration.

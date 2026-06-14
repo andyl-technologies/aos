@@ -138,11 +138,23 @@ in
           # freestanding firmware build must not inherit them.
           unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
 
+          # SECURE_BOOT_ENABLE compiles in the authenticated-variable +
+          # Secure Boot drivers (SecureBootConfigDxe, AuthVariableLib).
+          # SMM_REQUIRE is NOT optional for working SB: OVMF's
+          # authenticated variable store lives in SMM, and without it the
+          # SecureBoot/SetupMode variables are never exposed and bootctl
+          # reports "unsupported". An SMM build REQUIRES QEMU to run with
+          # `-machine q35,smm=on` + a secure pflash (see the driver). A
+          # SB+SMM OVMF still boots anything while in Setup Mode (no PK
+          # enrolled), so the non-SB image tests are unaffected;
+          # enforcement begins only once PK/KEK/db are enrolled.
           $PYTHON_COMMAND BaseTools/Source/Python/build/build.py \
             -a X64 \
             -t GCC \
             -b RELEASE \
             -p OvmfPkg/OvmfPkgX64.dsc \
+            -D SECURE_BOOT_ENABLE=TRUE \
+            -D SMM_REQUIRE=TRUE \
             -n $NIX_BUILD_CORES
         '';
       }

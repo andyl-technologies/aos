@@ -163,7 +163,8 @@
                   if config.bootMode == "image"
                   then ignitionFullFormat
                   else ignitionFormat
-                ).type;
+                )
+                .type;
               default = {};
             };
           };
