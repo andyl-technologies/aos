@@ -3491,6 +3491,16 @@ async fn org_webhooks_action(
             if url.is_empty() {
                 return (StatusCode::BAD_REQUEST, "url is required").into_response();
             }
+            // The delivery worker POSTs to this URL from inside the hub
+            // network, so reject loopback/link-local/private/non-http(s)
+            // targets up front for a friendly error (create_webhook re-checks).
+            if let Err(err) = crate::fetch::is_safe_remote_url(url) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("rejecting webhook url: {err:#}"),
+                )
+                    .into_response();
+            }
             // Only the registry's own event vocabulary is accepted.
             let known: Vec<&str> = console::WEBHOOK_EVENT_TYPES
                 .iter()

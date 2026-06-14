@@ -301,17 +301,37 @@ pub fn backoff_secs(attempts: i64) -> i64 {
 ///   schedules the next retry (`pending`, `next_attempt_at = now +
 ///   backoff_secs`) or, once [`MAX_ATTEMPTS`] is reached, marks it `failed`.
 ///
+/// Before the `POST`, the delivery URL is re-validated against the SSRF guard
+/// ([`crate::fetch::is_safe_remote_url`]) as defense in depth: a row written
+/// before this guard existed, or one whose host now resolves internally, is
+/// marked `failed` immediately (not retried — the target is structurally
+/// rejected, so retries would never succeed) and never `POST`ed.
+///
 /// Returns `true` when the delivery succeeded.
 ///
 /// # Errors
 ///
 /// Returns an error only when recording the outcome to the database fails; a
-/// failed `POST` is a normal (recorded) outcome, not an error.
+/// failed `POST` or an SSRF-guard rejection is a normal (recorded) outcome, not
+/// an error.
 pub async fn deliver_one(
     http: &reqwest::Client,
     db: &Database,
     delivery: &DueDelivery,
 ) -> anyhow::Result<bool> {
+    // Defense in depth against TOCTOU / pre-guard rows: never POST to a target
+    // the SSRF guard rejects. Mark it failed rather than retried — the rejection
+    // is structural, so no future attempt would pass.
+    if let Err(err) = crate::fetch::is_safe_remote_url(&delivery.url) {
+        tracing::warn!(
+            webhook_id = delivery.webhook_id,
+            url = %delivery.url,
+            error = %format!("{err:#}"),
+            "rejecting webhook delivery: url fails SSRF guard"
+        );
+        db.mark_delivery(delivery.id, "failed", None, delivery.attempts + 1, None)?;
+        return Ok(false);
+    }
     let signature = sign_body(&delivery.secret, delivery.payload.as_bytes());
     let response = http
         .post(&delivery.url)
