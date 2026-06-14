@@ -29,9 +29,9 @@ use std::fmt::Write as _;
 use std::time::Instant;
 
 use crate::db::{
-    AuditRow, ChangesetRow, ChannelSummary, HostedKeyRecord, IdpConfigRecord, IndexStatus,
-    OrgDomainRecord, OrgRecord, ProjectRecord, RegistryRecord, ReleaseRow, SignupPolicy,
-    StorageBindingRecord, WebauthnCredentialRecord, WebhookRecord,
+    AuditRow, ChangesetRow, ChannelSummary, FrontendRecord, HostedKeyRecord, IdpConfigRecord,
+    IndexStatus, MirrorSource, OrgDomainRecord, OrgRecord, ProjectRecord, RegistryRecord,
+    ReleaseRow, SignupPolicy, StorageBindingRecord, WebauthnCredentialRecord, WebhookRecord,
 };
 use crate::domain::{iam, Permission, Role, Scope};
 use crate::ui::pages::LIST_PER_PAGE;
@@ -1160,6 +1160,7 @@ pub fn registry_settings_page(
          <li><a href=\"/{slug}/-/keys\">keys</a></li>\n\
          <li><a href=\"/{slug}/-/changes\">change requests</a></li>\n\
          <li><a href=\"/{slug}/-/settings/config\">config</a></li>\n\
+         <li><a href=\"/{slug}/-/settings/serving\">serving &amp; mirror</a></li>\n\
          <li><a href=\"/{slug}/-/publishes\">publishes</a></li>\n\
          <li><a href=\"/{slug}/-/health\">health</a></li>\n\
          <li><a href=\"/{slug}/-/packages\">packages</a></li>\n\
@@ -2013,6 +2014,179 @@ pub fn instance_settings_page(
     page_with_session(
         "instance settings",
         &[(String::new(), "instance settings".into())],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// The registry "serving & mirror" page: the serving frontends (domains) and
+/// the optional upstream mirror configuration.
+///
+/// Frontends and mirror config are registry metadata, not signed surface
+/// content, so they are direct mutations. (Triggering a mirror *sync* is a
+/// scheduled background job / a CLI action, not a web button.)
+#[must_use]
+pub fn serving_page(
+    email: &str,
+    registry: &RegistryRecord,
+    csrf: &str,
+    frontends: &[FrontendRecord],
+    mirror: Option<&MirrorSource>,
+    notice: Option<&str>,
+    started: Instant,
+) -> String {
+    let slug = &registry.slug;
+    let mut body = format!("<h1>Serving &amp; mirror · {}</h1>\n", escape(slug));
+    if let Some(notice) = notice {
+        let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
+    }
+
+    // --- Frontends ---
+    body.push_str("<h2>Serving frontends</h2>\n");
+    body.push_str(
+        "<p class=\"dim\">A frontend is a domain that serves this registry's surfaces. \
+         <code>direct</code> means the hub is not in the path (probe-only); <code>proxied</code> \
+         means the hub's facade serves it.</p>\n",
+    );
+    if frontends.is_empty() {
+        body.push_str("<p class=\"dim\">No frontends configured.</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = frontends
+            .iter()
+            .map(|f| {
+                let mut serves = Vec::new();
+                if f.serves_git {
+                    serves.push("git");
+                }
+                if f.serves_cache {
+                    serves.push("cache");
+                }
+                if f.serves_web {
+                    serves.push("web");
+                }
+                let delete = format!(
+                    "<form class=\"console\" method=\"post\" \
+                     action=\"/{slug}/-/settings/serving\" style=\"display:inline\">{csrf}\
+                     <input type=\"hidden\" name=\"op\" value=\"delete-frontend\">\
+                     <input type=\"hidden\" name=\"id\" value=\"{id}\">\
+                     <button class=\"danger\">delete</button></form>",
+                    slug = escape(slug),
+                    csrf = csrf_field(csrf),
+                    id = f.id,
+                );
+                vec![
+                    format!("<code>{}{}</code>", escape(&f.domain), escape(&f.base_path)),
+                    escape(&f.mode),
+                    escape(&serves.join(", ")),
+                    if f.advertised {
+                        "<span class=\"ok\">advertised</span>".to_string()
+                    } else {
+                        "<span class=\"dim\">no</span>".to_string()
+                    },
+                    delete,
+                ]
+            })
+            .collect();
+        body.push_str(&table(
+            &["domain", "mode", "serves", "advertised", ""],
+            &rows,
+        ));
+    }
+    let _ = write!(
+        body,
+        "<h3>Add a frontend</h3>\n\
+         <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/serving\">{csrf}\
+         <input type=\"hidden\" name=\"op\" value=\"add-frontend\">\n\
+         <label>domain <input type=\"text\" name=\"domain\" required placeholder=\"cdn.acme.com\"></label>\n\
+         <label>base path <input type=\"text\" name=\"base_path\" placeholder=\"(domain root)\"></label>\n\
+         <label>mode <select name=\"mode\"><option value=\"direct\">direct</option>\
+         <option value=\"proxied\">proxied</option></select></label>\n\
+         <label><input type=\"checkbox\" name=\"serves_git\" value=\"1\" checked> serves git</label>\n\
+         <label><input type=\"checkbox\" name=\"serves_cache\" value=\"1\" checked> serves cache</label>\n\
+         <label><input type=\"checkbox\" name=\"serves_web\" value=\"1\" checked> serves web</label>\n\
+         <label><input type=\"checkbox\" name=\"advertised\" value=\"1\"> advertise to consumers</label>\n\
+         <label>consumer priority <input type=\"text\" name=\"consumer_priority\" value=\"100\"></label>\n\
+         <button>add frontend</button>\n</form>\n",
+        slug = escape(slug),
+        csrf = csrf_field(csrf),
+    );
+
+    // --- Mirror ---
+    body.push_str("<h2>Upstream mirror</h2>\n");
+    if let Some(m) = mirror {
+        let status = match m.last_sync_status.as_deref() {
+            Some("ok") => "<span class=\"ok\">ok</span>".to_string(),
+            Some("failed") => format!(
+                "<span class=\"bad\">failed</span> {}",
+                escape(m.last_sync_error.as_deref().unwrap_or(""))
+            ),
+            _ => "<span class=\"dim\">never synced</span>".to_string(),
+        };
+        let _ = write!(
+            body,
+            "<p class=\"dim\">Mirroring <code>{}</code> in <strong>{}</strong> mode \
+             (verify {}, every {}s). Last sync: {}{}.</p>\n",
+            escape(&m.upstream_url),
+            escape(&m.mode),
+            if m.verify { "on" } else { "off" },
+            m.schedule_secs,
+            status,
+            m.last_sync_at
+                .map(|t| format!(" · {}", ago(t)))
+                .unwrap_or_default(),
+        );
+        body.push_str(
+            "<p class=\"dim\">Syncs run on the schedule above (or via \
+             <code>aos mirror sync</code>); there is no web trigger.</p>\n",
+        );
+    } else {
+        body.push_str(
+            "<p class=\"dim\">This registry is not a mirror. Marking it one makes the hub \
+             replicate an upstream surface here.</p>\n",
+        );
+    }
+    let cur_url = mirror.map(|m| m.upstream_url.clone()).unwrap_or_default();
+    let cur_secs = mirror.map_or(3600, |m| m.schedule_secs);
+    let full_sel = mirror.is_none_or(|m| m.mode == "full");
+    let verify_on = mirror.is_none_or(|m| m.verify);
+    let _ = write!(
+        body,
+        "<h3>{}</h3>\n\
+         <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/serving\">{csrf}\
+         <input type=\"hidden\" name=\"op\" value=\"set-mirror\">\n\
+         <label>upstream URL <input type=\"text\" name=\"upstream_url\" required value=\"{url}\" \
+         placeholder=\"https://upstream.example/registry\"></label>\n\
+         <label>mode <select name=\"mode\"><option value=\"full\"{full}>full (scheduled copy)</option>\
+         <option value=\"pullthrough\"{pull}>pullthrough (fetch-on-miss)</option></select></label>\n\
+         <label><input type=\"checkbox\" name=\"verify\" value=\"1\"{verify}> verify upstream signatures</label>\n\
+         <label>schedule (seconds) <input type=\"text\" name=\"schedule_secs\" value=\"{secs}\"></label>\n\
+         <button>save mirror</button>\n</form>\n",
+        if mirror.is_some() { "Update mirror" } else { "Mark as mirror" },
+        slug = escape(slug),
+        csrf = csrf_field(csrf),
+        url = escape(&cur_url),
+        full = if full_sel { " selected" } else { "" },
+        pull = if !full_sel { " selected" } else { "" },
+        verify = if verify_on { " checked" } else { "" },
+        secs = cur_secs,
+    );
+    if mirror.is_some() {
+        let _ = write!(
+            body,
+            "<form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/serving\">{csrf}\
+             <input type=\"hidden\" name=\"op\" value=\"remove-mirror\">\
+             <button class=\"danger\">stop mirroring</button></form>\n",
+            slug = escape(slug),
+            csrf = csrf_field(csrf),
+        );
+    }
+
+    let mut crumbs = registry_crumbs(slug);
+    crumbs.push((String::new(), "serving".into()));
+    page_with_session(
+        &format!("{slug} serving"),
+        &crumbs,
         &body,
         &StateLine::timed(started),
         &indicator(email),
