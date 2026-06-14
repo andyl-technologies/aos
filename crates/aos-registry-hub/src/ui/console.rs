@@ -613,6 +613,7 @@ pub struct MemberRow {
 /// number of org owners, used to hard-block removing the last one.
 #[allow(clippy::too_many_arguments)]
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn org_dashboard(
     email: &str,
     org: &OrgRecord,
@@ -626,8 +627,20 @@ pub fn org_dashboard(
     can_configure: bool,
     can_delete: bool,
     owner_count: usize,
+    registries_page: usize,
+    members_page: usize,
     started: Instant,
 ) -> String {
+    // The registries and members lists each paginate independently; each
+    // pager preserves the other list's page so navigating one keeps the other.
+    let reg_pager = Pager::new(registries_page, LIST_PER_PAGE, registries.len());
+    let mem_pager = Pager::new(members_page, LIST_PER_PAGE, members.len());
+    let reg_keep = (mem_pager.page() > 1)
+        .then(|| format!("members_page={}", mem_pager.page()))
+        .unwrap_or_default();
+    let mem_keep = (reg_pager.page() > 1)
+        .then(|| format!("registries_page={}", reg_pager.page()))
+        .unwrap_or_default();
     let slug = &org.slug;
     let mut body = format!("<h1>{}</h1>\n", escape(&org.name));
     let _ = writeln!(
@@ -648,7 +661,8 @@ pub fn org_dashboard(
     if registries.is_empty() {
         body.push_str("<p class=\"dim\">No registries.</p>\n");
     } else {
-        let rows: Vec<Vec<String>> = registries
+        let rows: Vec<Vec<String>> = reg_pager
+            .slice(registries)
             .iter()
             .map(|reg| {
                 let manage = if can_configure {
@@ -664,6 +678,7 @@ pub fn org_dashboard(
             })
             .collect();
         body.push_str(&table(&["registry", "visibility", ""], &rows));
+        body.push_str(&reg_pager.nav_with(&format!("/-/org/{slug}"), &reg_keep, "registries_page"));
     }
     if can_configure {
         let _ = writeln!(
@@ -741,7 +756,8 @@ pub fn org_dashboard(
     }
 
     body.push_str("<h2>Members</h2>\n");
-    let rows: Vec<Vec<String>> = members
+    let rows: Vec<Vec<String>> = mem_pager
+        .slice(members)
         .iter()
         .map(|m| {
             let mut action = String::new();
@@ -768,6 +784,7 @@ pub fn org_dashboard(
         })
         .collect();
     body.push_str(&table(&["member", "role", ""], &rows));
+    body.push_str(&mem_pager.nav_with(&format!("/-/org/{slug}"), &mem_keep, "members_page"));
 
     if can_manage_members {
         body.push_str("<h3>Invite a member</h3>\n");
@@ -1134,6 +1151,7 @@ pub fn tokens_page(
     tokens: &[(String, String, Vec<Permission>)],
     can_create: bool,
     result: Option<(&str, &str)>,
+    page_number: usize,
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
@@ -1149,10 +1167,12 @@ pub fn tokens_page(
         );
     }
 
+    let pager = Pager::new(page_number, LIST_PER_PAGE, tokens.len());
     if tokens.is_empty() {
         body.push_str("<p class=\"dim\">You hold no tokens at this registry.</p>\n");
     } else {
-        let rows: Vec<Vec<String>> = tokens
+        let rows: Vec<Vec<String>> = pager
+            .slice(tokens)
             .iter()
             .map(|(id, _scope, perms)| {
                 let perm_label = perms
@@ -1186,6 +1206,7 @@ pub fn tokens_page(
             })
             .collect();
         body.push_str(&table(&["id", "permissions", ""], &rows));
+        body.push_str(&pager.nav(&format!("/{slug}/-/settings/tokens"), ""));
     }
 
     if can_create {
@@ -1360,6 +1381,7 @@ pub fn keys_page(
     registry: &RegistryRecord,
     roster: &[(String, String, String)],
     can_manage: bool,
+    page_number: usize,
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
@@ -1369,10 +1391,12 @@ pub fn keys_page(
          client-side signing, never by a raw web mutation.</p>\n",
     );
 
+    let pager = Pager::new(page_number, LIST_PER_PAGE, roster.len());
     if roster.is_empty() {
         body.push_str("<p class=\"dim\">No roster keys indexed.</p>\n");
     } else {
-        let rows: Vec<Vec<String>> = roster
+        let rows: Vec<Vec<String>> = pager
+            .slice(roster)
             .iter()
             .map(|(id, key, status)| {
                 let fingerprint = if key.is_empty() {
@@ -1389,6 +1413,7 @@ pub fn keys_page(
             })
             .collect();
         body.push_str(&table(&["key id", "fingerprint", "status"], &rows));
+        body.push_str(&pager.nav(&format!("/{slug}/-/keys"), ""));
     }
 
     if can_manage {

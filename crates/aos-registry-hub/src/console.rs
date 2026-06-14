@@ -331,6 +331,26 @@ impl PageQuery {
     }
 }
 
+/// The two independent page parameters of the org dashboard (its registries
+/// and members lists paginate separately).
+#[derive(serde::Deserialize, Default)]
+struct DashboardPages {
+    registries_page: Option<usize>,
+    members_page: Option<usize>,
+}
+
+impl DashboardPages {
+    /// The registries list's 1-based page, clamped to at least 1.
+    fn registries(&self) -> usize {
+        self.registries_page.unwrap_or(1).max(1)
+    }
+
+    /// The members list's 1-based page, clamped to at least 1.
+    fn members(&self) -> usize {
+        self.members_page.unwrap_or(1).max(1)
+    }
+}
+
 /// `GET /auth/magic?token=<secret>` — consume the link, sign the user in.
 ///
 /// Finds or creates the user by the link's bound email, creates a session,
@@ -1071,6 +1091,7 @@ async fn org_dashboard(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(org_slug): Path<String>,
+    Query(pages): Query<DashboardPages>,
 ) -> Response {
     let session = match require_session(&state, &headers) {
         Ok(s) => s,
@@ -1116,6 +1137,8 @@ async fn org_dashboard(
             can_configure,
             can_delete,
             owner_count,
+            pages.registries(),
+            pages.members(),
             Instant::now(),
         )))
     })();
@@ -2151,9 +2174,21 @@ pub(crate) async fn dispatch_nested(
     };
     let form_str = String::from_utf8_lossy(&body);
 
+    // The `?page=` of a paginated console read (tokens, keys); the nested path
+    // has no axum `Query` extractor, so parse it by hand.
+    let page_number = uri
+        .query()
+        .and_then(|q| {
+            url::form_urlencoded::parse(q.as_bytes())
+                .find(|(k, _)| k == "page")
+                .and_then(|(_, v)| v.parse::<usize>().ok())
+        })
+        .unwrap_or(1)
+        .max(1);
+
     let fields = parse_form(&form_str);
     let response = match (right, is_post) {
-        ("settings/tokens", false) => tokens_view(state, &session, &registry, headers),
+        ("settings/tokens", false) => tokens_view(state, &session, &registry, headers, page_number),
         ("settings/tokens", true) => tokens_create_action(
             state,
             &session,
@@ -2205,7 +2240,7 @@ pub(crate) async fn dispatch_nested(
             field(&fields, "confirm"),
         ),
         ("changes", false) => changes_view(state, &session, &registry),
-        ("keys", false) => keys_view(state, &session, &registry, headers),
+        ("keys", false) => keys_view(state, &session, &registry, headers, page_number),
         ("keys/rotate", false) => keys_rotate_view(state, &session, &registry, headers),
         ("publishes", false) => publishes_view(state, &session, &registry, headers),
         (other, true) if other.ends_with("/advance") => {
@@ -2302,6 +2337,7 @@ async fn tokens(
     headers: HeaderMap,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
+    Query(page): Query<PageQuery>,
 ) -> Response {
     let session = match require_session(&state, &headers) {
         Ok(s) => s,
@@ -2313,7 +2349,7 @@ async fn tokens(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    tokens_view(&state, &session, &registry, &headers)
+    tokens_view(&state, &session, &registry, &headers, page.page())
 }
 
 /// Render the tokens page (read path): visibility-gated, no result banner.
@@ -2322,12 +2358,13 @@ fn tokens_view(
     session: &Session,
     registry: &RegistryRecord,
     headers: &HeaderMap,
+    page_number: usize,
 ) -> Response {
     // Reads follow registry visibility (404 a hidden registry).
     if let Err(deny) = authorize_registry_read(state, registry, headers) {
         return *deny;
     }
-    render_tokens(state, session, registry, None)
+    render_tokens(state, session, registry, None, page_number)
 }
 
 /// The token-create action: CSRF + TokensSelf gate, mint, show secret once.
@@ -2375,6 +2412,7 @@ fn tokens_create_action(
         session,
         registry,
         Some(("New token created", &secret)),
+        1,
     )
 }
 
@@ -2397,9 +2435,13 @@ fn tokens_modify_action(
     }
     if rotate {
         match state.db.rotate_token(token_id) {
-            Ok(Some((_, secret))) => {
-                render_tokens(state, session, registry, Some(("Token rotated", &secret)))
-            }
+            Ok(Some((_, secret))) => render_tokens(
+                state,
+                session,
+                registry,
+                Some(("Token rotated", &secret)),
+                1,
+            ),
             Ok(None) => {
                 Redirect::to(&format!("/{}/-/settings/tokens", registry.slug)).into_response()
             }
@@ -2421,6 +2463,7 @@ fn render_tokens(
     session: &Session,
     registry: &RegistryRecord,
     result: Option<(&str, &str)>,
+    page_number: usize,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
     let can_create = session.allows(&state.db, Permission::TokensSelf, &scope);
@@ -2440,6 +2483,7 @@ fn render_tokens(
         &mine,
         can_create,
         result,
+        page_number,
         Instant::now(),
     ))
     .into_response()
@@ -3042,6 +3086,7 @@ async fn keys(
     headers: HeaderMap,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
+    Query(page): Query<PageQuery>,
 ) -> Response {
     let session = match require_session(&state, &headers) {
         Ok(s) => s,
@@ -3053,7 +3098,7 @@ async fn keys(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    keys_view(&state, &session, &registry, &headers)
+    keys_view(&state, &session, &registry, &headers, page.page())
 }
 
 /// Render the key roster page: visibility-gated, KeysManage reveals the
@@ -3063,6 +3108,7 @@ fn keys_view(
     session: &Session,
     registry: &RegistryRecord,
     headers: &HeaderMap,
+    page_number: usize,
 ) -> Response {
     if let Err(deny) = authorize_registry_read(state, registry, headers) {
         return *deny;
@@ -3081,6 +3127,7 @@ fn keys_view(
         registry,
         &roster,
         can_manage,
+        page_number,
         Instant::now(),
     ))
     .into_response()

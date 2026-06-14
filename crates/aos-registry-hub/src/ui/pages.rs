@@ -1369,10 +1369,13 @@ pub fn channels_index(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     channels: &[ChannelSummary],
+    page_number: usize,
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    let rows: Vec<Vec<String>> = channels
+    let pager = Pager::new(page_number, LIST_PER_PAGE, channels.len());
+    let rows: Vec<Vec<String>> = pager
+        .slice(channels)
         .iter()
         .map(|channel| {
             vec![
@@ -1389,6 +1392,7 @@ pub fn channels_index(
         .collect();
     let mut body = String::from("<h1>Channels</h1>\n");
     body.push_str(&table(&["channel", "frontier", "assigned"], &rows));
+    body.push_str(&pager.nav(&format!("/{slug}/-/channels"), ""));
     page(
         &format!("{slug} channels"),
         &registry_crumbs(slug, &[(String::new(), "channels".into())]),
@@ -1402,6 +1406,7 @@ pub fn releases_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     releases: &[ReleaseRow],
+    page_number: usize,
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
@@ -1421,7 +1426,9 @@ pub fn releases_page(
         }
     });
 
-    let rows: Vec<Vec<String>> = sorted
+    let pager = Pager::new(page_number, LIST_PER_PAGE, sorted.len());
+    let rows: Vec<Vec<String>> = pager
+        .slice(&sorted)
         .iter()
         .map(|release| {
             vec![
@@ -1454,6 +1461,7 @@ pub fn releases_page(
         &["release", "commit", "signature", "pack", "tagged"],
         &rows,
     ));
+    body.push_str(&pager.nav(&format!("/{slug}/-/releases"), ""));
     page(
         &format!("{slug} releases"),
         &registry_crumbs(slug, &[(String::new(), "releases".into())]),
@@ -2058,7 +2066,7 @@ mod tests {
             release("1.10.0", 100, true),
             release("0.9.0", 200, false),
         ];
-        let html = releases_page(&registry(), None, &releases, Instant::now());
+        let html = releases_page(&registry(), None, &releases, 1, Instant::now());
         let first = html.find("1.10.0").unwrap();
         let second = html.find("1.9.0").unwrap();
         let third = html.find("0.9.0").unwrap();
@@ -2078,7 +2086,7 @@ mod tests {
             tagged_at: None,
             pack_present: false,
         }];
-        let html = releases_page(&registry(), None, &releases, Instant::now());
+        let html = releases_page(&registry(), None, &releases, 1, Instant::now());
         assert!(html.contains("<code>abc</code>"));
     }
 

@@ -233,6 +233,11 @@ impl SearchParams {
             .filter(|f| !f.is_empty())
     }
 
+    /// The requested 1-based page, clamped to at least 1.
+    fn page_number(&self) -> usize {
+        self.page.unwrap_or(1).max(1)
+    }
+
     /// Parse the recognized keys from a raw URL query string.
     ///
     /// Used on the nested-canonical (`org/registry`) path, where the index is
@@ -995,7 +1000,11 @@ fn resolve_package_closure(
     Ok(closure)
 }
 
-async fn channels_index(State(state): State<Arc<AppState>>, Path(slug): Path<String>) -> Response {
+async fn channels_index(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+    Query(params): Query<SearchParams>,
+) -> Response {
     let started = Instant::now();
     let result = (|| {
         let Some((registry, status)) = load_registry(&state, &slug)? else {
@@ -1006,6 +1015,7 @@ async fn channels_index(State(state): State<Arc<AppState>>, Path(slug): Path<Str
             &registry,
             status.as_ref(),
             &channels,
+            params.page_number(),
             started,
         )))
     })();
@@ -1039,7 +1049,11 @@ async fn channel_page(
     respond_page(result)
 }
 
-async fn releases_page(State(state): State<Arc<AppState>>, Path(slug): Path<String>) -> Response {
+async fn releases_page(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+    Query(params): Query<SearchParams>,
+) -> Response {
     let started = Instant::now();
     let result = (|| {
         let Some((registry, status)) = load_registry(&state, &slug)? else {
@@ -1050,6 +1064,7 @@ async fn releases_page(State(state): State<Arc<AppState>>, Path(slug): Path<Stri
             &registry,
             status.as_ref(),
             &releases,
+            params.page_number(),
             started,
         )))
     })();
@@ -1565,6 +1580,7 @@ async fn render_page(
                     registry,
                     status.as_ref(),
                     &channels,
+                    params.page_number(),
                     started,
                 ))
             }
@@ -1591,6 +1607,7 @@ async fn render_page(
                     registry,
                     status.as_ref(),
                     &releases,
+                    params.page_number(),
                     started,
                 ))
             }

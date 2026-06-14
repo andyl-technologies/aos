@@ -429,15 +429,23 @@ impl Pager {
     /// there is nothing to preserve. Each link appends `page=N`.
     #[must_use]
     pub fn nav(self, path: &str, query: &str) -> String {
+        self.nav_with(path, query, "page")
+    }
+
+    /// Like [`Pager::nav`] but with a custom page-parameter name, so several
+    /// independent paginators can coexist on one page (e.g. a dashboard's
+    /// `members_page` and `registries_page`).
+    #[must_use]
+    pub fn nav_with(self, path: &str, query: &str, page_param: &str) -> String {
         let pages = self.pages();
         if pages <= 1 {
             return String::new();
         }
         let href = |n: usize| -> String {
             let raw = if query.is_empty() {
-                format!("{path}?page={n}")
+                format!("{path}?{page_param}={n}")
             } else {
-                format!("{path}?{query}&page={n}")
+                format!("{path}?{query}&{page_param}={n}")
             };
             escape(&raw)
         };
