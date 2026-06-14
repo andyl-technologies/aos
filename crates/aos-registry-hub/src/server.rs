@@ -809,6 +809,14 @@ fn package_index_html(
     let total_all = all.len();
     let filter_text = params.filter();
 
+    // The distinct per-field values that drive the filter box's autocomplete,
+    // computed from the whole registry (the suggestion set should not shrink as
+    // the filter narrows the list) and capped so the data island stays light.
+    let names = distinct_capped(all.iter().map(|p| p.name.clone()));
+    let versions = distinct_capped(all.iter().filter_map(|p| p.latest_version.clone()));
+    let licenses = distinct_capped(all.iter().map(|p| p.license.clone()));
+    let platforms = distinct_capped(all.iter().flat_map(|p| p.platforms.iter().cloned()));
+
     // Parse the filter expression. A parse error keeps the list unfiltered and
     // is surfaced in the page so the user can correct it.
     let (filter, filter_error) = match Filter::parse(filter_text.unwrap_or("")) {
@@ -866,6 +874,10 @@ fn package_index_html(
         page_number,
         total_matches,
         total_all,
+        names: &names,
+        versions: &versions,
+        licenses: &licenses,
+        platforms: &platforms,
     };
     Ok(pages::package_index(
         registry,
@@ -874,6 +886,19 @@ fn package_index_html(
         &browse,
         started,
     ))
+}
+
+/// Collect an iterator of strings into a sorted, de-duplicated, length-capped
+/// vector, dropping empties — the shape every filter-autocomplete value list
+/// takes. The cap keeps the embedded data island small for huge registries.
+fn distinct_capped(values: impl Iterator<Item = String>) -> Vec<String> {
+    /// Maximum distinct values embedded per field for autocomplete.
+    const VALUE_CAP: usize = 500;
+    let mut out: Vec<String> = values.filter(|v| !v.is_empty()).collect();
+    out.sort_unstable();
+    out.dedup();
+    out.truncate(VALUE_CAP);
+    out
 }
 
 async fn package_index(
