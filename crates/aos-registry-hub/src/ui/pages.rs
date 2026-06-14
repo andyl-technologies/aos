@@ -20,7 +20,7 @@ use crate::db::{
 use crate::db::{PlatformDetail, VersionDetail};
 use crate::stack::StackNode;
 use crate::ui::render::{
-    ago, datalist, escape, human_size, key_fingerprint, live_table, page, table, table_raw_headers,
+    ago, escape, human_size, key_fingerprint, live_table, page, table, table_raw_headers,
     urlencode, Pager, StateLine,
 };
 
@@ -538,6 +538,14 @@ pub struct PackageBrowse<'a> {
     pub total_matches: usize,
     /// Count of packages in the registry, before filtering.
     pub total_all: usize,
+    /// Distinct package names, for the filter autocomplete (capped, sorted).
+    pub names: &'a [String],
+    /// Distinct latest versions, for the filter autocomplete.
+    pub versions: &'a [String],
+    /// Distinct licenses, for the filter autocomplete.
+    pub licenses: &'a [String],
+    /// Distinct platforms, for the filter autocomplete.
+    pub platforms: &'a [String],
 }
 
 /// Render a sortable column header as a tri-state sort link.
@@ -584,6 +592,34 @@ fn sort_header(
     )
 }
 
+/// Render the `#filter-meta` JSON data island that drives the filter box's
+/// autocomplete: the field names, the operators, and the registry's distinct
+/// values per value-suggestable field.
+///
+/// Emitted as a non-executable `<script type="application/json">` block (inert
+/// data, so it loads under the strict `default-src 'self'` CSP). `<` is escaped
+/// to `<` so a value can never close the script element early.
+fn filter_meta_json(
+    names: &[String],
+    versions: &[String],
+    licenses: &[String],
+    platforms: &[String],
+) -> String {
+    let meta = serde_json::json!({
+        "fields": crate::filter::FIELD_NAMES,
+        "operators": ["==", "!=", "~", ">", "<", ">=", "<="],
+        "connectives": ["and", "or", "not"],
+        "values": {
+            "name": names,
+            "version": versions,
+            "license": licenses,
+            "platform": platforms,
+        },
+    });
+    let json = meta.to_string().replace('<', "\\u003c");
+    format!("<script type=\"application/json\" id=\"filter-meta\">{json}</script>\n")
+}
+
 /// The package index page: one pre-filtered, pre-sorted, pre-sliced page.
 ///
 /// `rows` is the current page after the handler applies the filter expression
@@ -607,6 +643,10 @@ pub fn package_index(
         page_number,
         total_matches,
         total_all,
+        names,
+        versions,
+        licenses,
+        platforms,
     } = *browse;
     let slug = &registry.slug;
 
@@ -659,21 +699,27 @@ pub fn package_index(
 
     // The filter box is a Wireshark-style display-filter expression: every
     // attribute is queryable with operators and boolean connectives. A bare
-    // word still matches any field, so simple searches keep working. The
-    // <datalist> offers the field names to start a clause (native, no JS).
+    // word still matches any field, so simple searches keep working.
+    //
+    // The plain `<input>` is the no-JS floor (a server `?filter=` submit). When
+    // app.js loads it wraps the input in `.filter-field` with a syntax-
+    // highlight overlay and a custom autocomplete dropdown driven by the
+    // `#filter-meta` JSON below — the field names, operators, and the
+    // registry's distinct values per field. (No native `<datalist>`: its popup
+    // can't be themed.)
     body.push_str("<form method=\"get\" class=\"pkg-search\">");
     let _ = write!(
         body,
-        "<input type=\"search\" name=\"filter\" list=\"filter-fields\" value=\"{}\" \
-         class=\"filter-box\" placeholder=\"filter e.g. license == MIT and platform ~ linux\"> ",
+        "<span class=\"filter-field\" data-filter-widget>\
+         <pre class=\"filter-highlight\" aria-hidden=\"true\"><code></code></pre>\
+         <input type=\"text\" name=\"filter\" value=\"{}\" class=\"filter-box\" \
+         autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\" \
+         placeholder=\"filter e.g. license == MIT and platform ~ linux\">\
+         <div class=\"filter-suggest\" hidden></div></span> ",
         escape(filter.unwrap_or("")),
     );
     body.push_str("<button>apply</button></form>\n");
-    let field_starters: Vec<String> = crate::filter::FIELD_NAMES
-        .iter()
-        .map(|f| format!("{f} "))
-        .collect();
-    body.push_str(&datalist("filter-fields", &field_starters));
+    body.push_str(&filter_meta_json(names, versions, licenses, platforms));
     body.push_str(
         "<p class=\"dim filter-help\">Fields: <code>name</code> <code>version</code> \
          <code>license</code> <code>platform</code> <code>size</code> \
@@ -2064,6 +2110,10 @@ mod tests {
                 platforms: vec!["x86_64-linux".into()],
             })
             .collect();
+        let names = vec!["curl".to_string()];
+        let versions = vec!["1.0.0".to_string()];
+        let licenses = vec!["MIT".to_string()];
+        let platforms = vec!["x86_64-linux".to_string()];
         // 250 matches across 3 pages; this is page 2, sorted by closure desc.
         let html = package_index(
             &registry(),
@@ -2076,6 +2126,10 @@ mod tests {
                 page_number: 2,
                 total_matches: 250,
                 total_all: 300,
+                names: &names,
+                versions: &versions,
+                licenses: &licenses,
+                platforms: &platforms,
             },
             Instant::now(),
         );
@@ -2085,9 +2139,10 @@ mod tests {
         // Closure size + platform list per row.
         assert!(html.contains("2.0 MiB"));
         assert!(html.contains("x86_64-linux"));
-        // The filter box and field-name autocomplete are present.
-        assert!(html.contains("name=\"filter\" list=\"filter-fields\""));
-        assert!(html.contains("<datalist id=\"filter-fields\">"));
+        // The filter widget and its autocomplete data island are present.
+        assert!(html.contains("class=\"filter-box\""));
+        assert!(html.contains("data-filter-widget"));
+        assert!(html.contains("id=\"filter-meta\""));
         // The sorted column header is marked and shows the descending glyph;
         // clicking it advances to ascending.
         assert!(html.contains("class=\"sorted\""));
@@ -2111,6 +2166,10 @@ mod tests {
                 page_number: 1,
                 total_matches: 3,
                 total_all: 3,
+                names: &names,
+                versions: &versions,
+                licenses: &licenses,
+                platforms: &platforms,
             },
             Instant::now(),
         );
@@ -2132,6 +2191,10 @@ mod tests {
                 page_number: 1,
                 total_matches: 3,
                 total_all: 3,
+                names: &names,
+                versions: &versions,
+                licenses: &licenses,
+                platforms: &platforms,
             },
             Instant::now(),
         );
@@ -2149,6 +2212,10 @@ mod tests {
                 page_number: 1,
                 total_matches: 3,
                 total_all: 3,
+                names: &names,
+                versions: &versions,
+                licenses: &licenses,
+                platforms: &platforms,
             },
             Instant::now(),
         );

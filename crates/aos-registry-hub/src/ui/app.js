@@ -167,6 +167,243 @@
     render();
   }
 
+  // --- Package filter box (Wireshark-style) ------------------------------
+  // Enhances a `[data-filter-widget]` filter input with grey-shade syntax
+  // highlighting and a custom, theme-styled autocomplete dropdown (field
+  // names, operators, connectives, and the registry's distinct per-field
+  // values from the `#filter-meta` JSON island). The plain <input> remains a
+  // working server `?filter=` submit when this does not run.
+  var FILTER_OPS_2 = ["&&", "||", "==", "!=", ">=", "<="];
+  var FILTER_BOUNDARY = /[\s()"'&|!=<>~]/;
+
+  function initFilterBox(widget) {
+    var input = widget.querySelector("input.filter-box");
+    var codeEl = widget.querySelector("pre.filter-highlight code");
+    var suggest = widget.querySelector(".filter-suggest");
+    if (!input || !codeEl || !suggest) return;
+
+    var meta = { fields: [], operators: [], connectives: [], values: {} };
+    var metaEl = document.getElementById("filter-meta");
+    if (metaEl) {
+      try {
+        meta = JSON.parse(metaEl.textContent);
+      } catch (e) {
+        /* leave defaults */
+      }
+    }
+
+    // Tokenize, mirroring the server grammar, for both highlighting and
+    // autocomplete context. Each token carries its type and source span.
+    function tokenize(text) {
+      var tokens = [];
+      var i = 0;
+      while (i < text.length) {
+        var ch = text.charAt(i);
+        if (/\s/.test(ch)) {
+          var ws = i;
+          while (i < text.length && /\s/.test(text.charAt(i))) i += 1;
+          tokens.push({ t: "ws", v: text.slice(ws, i), s: ws, e: i });
+          continue;
+        }
+        if (ch === "(" || ch === ")") {
+          tokens.push({ t: "paren", v: ch, s: i, e: i + 1 });
+          i += 1;
+          continue;
+        }
+        var two = text.substr(i, 2);
+        if (FILTER_OPS_2.indexOf(two) !== -1) {
+          tokens.push({ t: two === "&&" || two === "||" ? "bool" : "op", v: two, s: i, e: i + 2 });
+          i += 2;
+          continue;
+        }
+        if (ch === ">" || ch === "<" || ch === "~") {
+          tokens.push({ t: "op", v: ch, s: i, e: i + 1 });
+          i += 1;
+          continue;
+        }
+        if (ch === "!") {
+          tokens.push({ t: "bool", v: ch, s: i, e: i + 1 });
+          i += 1;
+          continue;
+        }
+        if (ch === '"' || ch === "'") {
+          var q = ch;
+          var sq = i;
+          i += 1;
+          while (i < text.length && text.charAt(i) !== q) i += 1;
+          if (i < text.length) i += 1;
+          tokens.push({ t: "string", v: text.slice(sq, i), s: sq, e: i });
+          continue;
+        }
+        var sw = i;
+        while (i < text.length && !FILTER_BOUNDARY.test(text.charAt(i))) i += 1;
+        if (i === sw) {
+          i += 1; // stray boundary char (e.g. a lone `=`); skip
+          continue;
+        }
+        var word = text.slice(sw, i);
+        var lower = word.toLowerCase();
+        var type = "value";
+        if (meta.fields.indexOf(lower) !== -1) type = "field";
+        else if (meta.connectives.indexOf(lower) !== -1) type = "bool";
+        else if (lower === "contains") type = "op";
+        tokens.push({ t: type, v: word, s: sw, e: i });
+      }
+      return tokens;
+    }
+
+    function renderHighlight() {
+      var toks = tokenize(input.value);
+      var html = "";
+      toks.forEach(function (tk) {
+        if (tk.t === "ws") {
+          html += escapeHtml(tk.v);
+        } else {
+          html += '<span class="ftok-' + tk.t + '">' + escapeHtml(tk.v) + "</span>";
+        }
+      });
+      codeEl.innerHTML = html;
+      codeEl.parentNode.scrollLeft = input.scrollLeft;
+    }
+
+    // Decide what to suggest given the caret: a field at the start of a clause,
+    // an operator after a field, a value after an operator, or a connective
+    // after a completed comparison.
+    function contextAt(caret) {
+      var left = input.value.slice(0, caret);
+      var toks = tokenize(left).filter(function (t) {
+        return t.t !== "ws";
+      });
+      var partial = "";
+      var partialStart = caret;
+      var endsOpen = left === "" || FILTER_BOUNDARY.test(left.charAt(left.length - 1));
+      var prevIdx = toks.length - 1;
+      if (!endsOpen && toks.length) {
+        var last = toks[toks.length - 1];
+        partial = last.v;
+        partialStart = last.s;
+        prevIdx = toks.length - 2;
+      }
+      var prev = prevIdx >= 0 ? toks[prevIdx] : null;
+
+      var category;
+      var field = null;
+      if (!prev || prev.t === "bool" || prev.v === "(") category = "field";
+      else if (prev.t === "field") category = "op";
+      else if (prev.t === "op") {
+        category = "value";
+        field = prevIdx > 0 ? toks[prevIdx - 1].v.toLowerCase() : null;
+      } else category = "conn";
+
+      var pool;
+      if (category === "field") pool = meta.fields.concat(["not", "("]);
+      else if (category === "op") pool = meta.operators;
+      else if (category === "value") pool = (field && meta.values[field]) || [];
+      else pool = meta.connectives.filter(function (c) { return c !== "not"; });
+
+      var p = partial.toLowerCase();
+      var items = pool.filter(function (x) {
+        return x.toLowerCase().indexOf(p) === 0 && x.toLowerCase() !== p;
+      });
+      return { items: items.slice(0, 12), start: partialStart, end: caret, category: category };
+    }
+
+    var current = null;
+    var activeIndex = -1;
+
+    function showSuggest() {
+      current = contextAt(input.selectionStart);
+      if (!current.items.length) {
+        hideSuggest();
+        return;
+      }
+      suggest.innerHTML = "";
+      current.items.forEach(function (item, idx) {
+        var el = document.createElement("div");
+        el.className = "fs-item";
+        el.textContent = item;
+        el.addEventListener("mousedown", function (e) {
+          e.preventDefault();
+          accept(idx);
+        });
+        suggest.appendChild(el);
+      });
+      activeIndex = -1;
+      suggest.hidden = false;
+    }
+
+    function hideSuggest() {
+      suggest.hidden = true;
+      activeIndex = -1;
+    }
+
+    function setActive(idx) {
+      var items = suggest.children;
+      for (var i = 0; i < items.length; i += 1) {
+        items[i].classList.toggle("active", i === idx);
+      }
+      activeIndex = idx;
+      if (items[idx] && items[idx].scrollIntoView) {
+        items[idx].scrollIntoView({ block: "nearest" });
+      }
+    }
+
+    function accept(idx) {
+      if (!current || !current.items[idx]) return;
+      var val = current.items[idx];
+      if (current.category === "value" && /\s/.test(val)) val = '"' + val + '"';
+      var before = input.value.slice(0, current.start);
+      var after = input.value.slice(current.end);
+      var insert = val === "(" ? val : val + " ";
+      input.value = before + insert + after;
+      var pos = (before + insert).length;
+      input.setSelectionRange(pos, pos);
+      renderHighlight();
+      showSuggest();
+    }
+
+    input.addEventListener("keydown", function (e) {
+      if (suggest.hidden) return;
+      var n = suggest.children.length;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActive((activeIndex + 1) % n);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActive((activeIndex - 1 + n) % n);
+      } else if (e.key === "Enter") {
+        // Accept the highlighted suggestion; otherwise let the form submit.
+        if (activeIndex >= 0) {
+          e.preventDefault();
+          accept(activeIndex);
+        }
+      } else if (e.key === "Tab") {
+        if (n > 0) {
+          e.preventDefault();
+          accept(activeIndex >= 0 ? activeIndex : 0);
+        }
+      } else if (e.key === "Escape") {
+        hideSuggest();
+      }
+    });
+    input.addEventListener("input", function () {
+      renderHighlight();
+      showSuggest();
+    });
+    input.addEventListener("scroll", function () {
+      codeEl.parentNode.scrollLeft = input.scrollLeft;
+    });
+    input.addEventListener("focus", showSuggest);
+    input.addEventListener("blur", function () {
+      // Delay so a mousedown on an item is handled before the box hides.
+      setTimeout(hideSuggest, 120);
+    });
+
+    widget.classList.add("enhanced");
+    renderHighlight();
+  }
+
   document.querySelectorAll("form[data-live]").forEach(initLiveSearch);
   document.querySelectorAll(".code-editor").forEach(initCodeEditor);
+  document.querySelectorAll("[data-filter-widget]").forEach(initFilterBox);
 })();
