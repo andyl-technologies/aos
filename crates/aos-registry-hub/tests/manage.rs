@@ -689,3 +689,108 @@ async fn org_delete_requires_typed_confirmation_and_owner() {
         .iter()
         .any(|a| a.action == "org.delete"));
 }
+
+#[tokio::test]
+async fn admin_creates_and_deletes_a_webhook() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").unwrap();
+    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let cookie = login(&app, &db, "owner@acme.com").await;
+    let csrf = csrf_for(&cookie);
+    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+
+    // Create with two events; the hub-generated secret is shown once.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/webhooks",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&op=create&url=https%3A%2F%2Fci.test%2Fhook\
+             &events=channel.advanced&events=release.published&secret="
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(resp.body.contains("Webhook created"), "{}", resp.body);
+    let hooks = db.list_webhooks(org_id).unwrap();
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0].url, "https://ci.test/hook");
+    assert_eq!(
+        hooks[0].events,
+        vec![
+            "channel.advanced".to_string(),
+            "release.published".to_string()
+        ]
+    );
+    assert!(!hooks[0].secret.is_empty(), "a secret was generated");
+
+    // An unknown event type is rejected.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/webhooks",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&op=create&url=https%3A%2F%2Fx.test&events=bogus.event"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::BAD_REQUEST, "{}", resp.body);
+
+    // Delete it; the list empties and the action is audited.
+    let id = hooks[0].id;
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/webhooks",
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&op=delete&webhook_id={id}")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(db.list_webhooks(org_id).unwrap().is_empty());
+    assert!(db
+        .list_audit("acme")
+        .unwrap()
+        .iter()
+        .any(|a| a.action == "webhook.delete"));
+
+    // CSRF is required.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/webhooks",
+        Some(&cookie),
+        Some("csrf=bad&op=create&url=https%3A%2F%2Fx.test"),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn non_admin_member_cannot_manage_webhooks() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    let member = db.find_or_create_user("viewer@acme.com").unwrap();
+    db.grant_membership("user", member, "acme", "viewer")
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let cookie = login(&app, &db, "viewer@acme.com").await;
+    let csrf = csrf_for(&cookie);
+
+    // A reader is a member (so the org is not hidden) but lacks members.manage.
+    let resp = send(&app, "GET", "/-/org/acme/webhooks", Some(&cookie), None).await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/webhooks",
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&op=create&url=https%3A%2F%2Fx.test")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+}

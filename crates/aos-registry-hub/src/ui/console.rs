@@ -30,7 +30,7 @@ use std::time::Instant;
 
 use crate::db::{
     AuditRow, ChangesetRow, ChannelSummary, HostedKeyRecord, IndexStatus, OrgRecord, ProjectRecord,
-    RegistryRecord, ReleaseRow, StorageBindingRecord, WebauthnCredentialRecord,
+    RegistryRecord, ReleaseRow, StorageBindingRecord, WebauthnCredentialRecord, WebhookRecord,
 };
 use crate::domain::{iam, Permission, Role, Scope};
 use crate::ui::pages::LIST_PER_PAGE;
@@ -646,7 +646,8 @@ pub fn org_dashboard(
     let _ = writeln!(
         body,
         "<p class=\"dim\"><code>{}</code> · <a href=\"/-/org/{}/audit\">{}</a> · \
-         <a href=\"/-/org/{}/keys\">hosted keys →</a></p>",
+         <a href=\"/-/org/{}/keys\">hosted keys →</a> · \
+         <a href=\"/-/org/{}/webhooks\">webhooks →</a></p>",
         escape(slug),
         escape(slug),
         if can_read_audit {
@@ -654,6 +655,7 @@ pub fn org_dashboard(
         } else {
             "audit (admin only)"
         },
+        escape(slug),
         escape(slug),
     );
 
@@ -1595,6 +1597,131 @@ pub fn org_hosted_keys_page(
             ("/-/orgs".into(), "orgs".into()),
             (format!("/-/org/{org_slug}"), org_slug.clone()),
             (String::new(), "hosted keys".into()),
+        ],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// The subscribable webhook event types, with a short human label each.
+///
+/// The empty subscription means *all* events (see [`WebhookRecord::events`]);
+/// these are the boxes the create form offers to narrow it.
+pub const WEBHOOK_EVENT_TYPES: &[(&str, &str)] = &[
+    ("index.completed", "an index run finished"),
+    ("channel.advanced", "a channel rolled forward"),
+    (
+        "registry.visibility_changed",
+        "a registry's visibility changed",
+    ),
+    ("release.published", "a release was published"),
+];
+
+/// The org webhooks management page: list, create, and delete subscriptions.
+///
+/// A webhook `POST`s a signed JSON body to its URL for each subscribed event.
+/// `created_secret` echoes a just-generated signing secret once (it is stored
+/// but never shown again). Deletion and creation are CSRF-checked `POST`s.
+#[must_use]
+pub fn org_webhooks_page(
+    email: &str,
+    org: &OrgRecord,
+    csrf: &str,
+    webhooks: &[WebhookRecord],
+    created_secret: Option<&str>,
+    started: Instant,
+) -> String {
+    let org_slug = &org.slug;
+    let mut body = format!("<h1>Webhooks · {}</h1>\n", escape(&org.name));
+    body.push_str(
+        "<p class=\"dim\">Each subscription receives an HMAC-SHA256-signed JSON \
+         <code>POST</code> for the events you select (none selected means every event). \
+         The signature uses the per-hook secret in the <code>X-AOS-Signature</code> header.</p>\n",
+    );
+
+    if let Some(secret) = created_secret {
+        let _ = write!(
+            body,
+            "<p class=\"notice\">Webhook created. Copy its signing secret now — it is shown \
+             only once:</p>\n<code class=\"secret\">{}</code>\n",
+            escape(secret),
+        );
+    }
+
+    if webhooks.is_empty() {
+        body.push_str("<p class=\"dim\">No webhooks configured.</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = webhooks
+            .iter()
+            .map(|w| {
+                let events = if w.events.is_empty() {
+                    "<span class=\"dim\">all events</span>".to_string()
+                } else {
+                    w.events
+                        .iter()
+                        .map(|e| format!("<code>{}</code>", escape(e)))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
+                let status = if w.active {
+                    "<span class=\"ok\">active</span>".to_string()
+                } else {
+                    "<span class=\"dim\">disabled</span>".to_string()
+                };
+                let delete = format!(
+                    "<form class=\"console\" method=\"post\" \
+                     action=\"/-/org/{org}/webhooks\" style=\"display:inline\">{csrf}\
+                     <input type=\"hidden\" name=\"op\" value=\"delete\">\
+                     <input type=\"hidden\" name=\"webhook_id\" value=\"{id}\">\
+                     <button class=\"danger\">delete</button></form>",
+                    org = escape(org_slug),
+                    csrf = csrf_field(csrf),
+                    id = w.id,
+                );
+                vec![
+                    format!("<code>{}</code>", escape(&w.url)),
+                    events,
+                    status,
+                    ago(w.created_at),
+                    delete,
+                ]
+            })
+            .collect();
+        body.push_str(&table(&["url", "events", "status", "created", ""], &rows));
+    }
+
+    body.push_str("<h2>Add a webhook</h2>\n");
+    let _ = write!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/webhooks\">\n{csrf}\
+         <input type=\"hidden\" name=\"op\" value=\"create\">\n\
+         <label>url <input type=\"url\" name=\"url\" required \
+         placeholder=\"https://ci.example.com/hooks/aos\"></label>\n",
+        org = escape(org_slug),
+        csrf = csrf_field(csrf),
+    );
+    body.push_str("<fieldset><legend>events (none = all)</legend>\n");
+    for (event, label) in WEBHOOK_EVENT_TYPES {
+        let _ = write!(
+            body,
+            "<label><input type=\"checkbox\" name=\"events\" value=\"{event}\"> \
+             <code>{event}</code> — {label}</label>\n",
+        );
+    }
+    body.push_str("</fieldset>\n");
+    body.push_str(
+        "<label>secret <input type=\"text\" name=\"secret\" \
+         placeholder=\"leave blank to generate\"></label>\n\
+         <button>add webhook</button>\n</form>\n",
+    );
+
+    page_with_session(
+        &format!("{org_slug} webhooks"),
+        &[
+            ("/-/orgs".into(), "orgs".into()),
+            (format!("/-/org/{org_slug}"), org_slug.clone()),
+            (String::new(), "webhooks".into()),
         ],
         &body,
         &StateLine::timed(started),
