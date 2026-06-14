@@ -125,6 +125,24 @@ pub const FIELD_NAMES: &[&str] = &[
     "description",
 ];
 
+/// Maximum accepted length, in bytes, of a raw filter expression.
+///
+/// The `?filter=` query parameter is reachable by unauthenticated visitors, so
+/// the input is rejected before tokenizing if it exceeds this bound. 4 KiB is
+/// far more than any genuine filter needs, while keeping a hostile input from
+/// producing a token stream large enough to drive the recursive parser into a
+/// stack overflow.
+const MAX_FILTER_LEN: usize = 4096;
+
+/// Maximum nesting depth of the recursive-descent parser.
+///
+/// Each parenthesised group and each unary `!`/`not` descends one level; the
+/// parser bails out with a [`FilterError`] once it would exceed this depth.
+/// This bounds the height of the parsed [`Expr`] tree, which in turn bounds the
+/// recursion of [`eval`], so neither parsing nor evaluating a hostile input can
+/// overflow the worker thread's stack.
+const MAX_FILTER_DEPTH: usize = 64;
+
 impl Filter {
     /// Parse a filter expression.
     ///
@@ -134,15 +152,26 @@ impl Filter {
     ///
     /// # Errors
     ///
-    /// Returns [`FilterError`] when the expression has a syntax error — an
-    /// unknown operator, a missing value, an unbalanced parenthesis, or
-    /// trailing tokens that do not form part of the expression.
+    /// Returns [`FilterError`] when the expression is longer than
+    /// [`MAX_FILTER_LEN`], is nested deeper than [`MAX_FILTER_DEPTH`], or has a
+    /// syntax error — an unknown operator, a missing value, an unbalanced
+    /// parenthesis, or trailing tokens that do not form part of the expression.
     pub fn parse(input: &str) -> Result<Option<Self>, FilterError> {
+        // Reject an over-long expression before tokenizing. This path is
+        // unauthenticated, and a very long run of `(` would otherwise drive the
+        // recursive-descent parser deep enough to overflow the worker stack.
+        if input.len() > MAX_FILTER_LEN {
+            return Err(FilterError::new("filter expression too long"));
+        }
         let tokens = tokenize(input)?;
         if tokens.is_empty() {
             return Ok(None);
         }
-        let mut parser = Parser { tokens, pos: 0 };
+        let mut parser = Parser {
+            tokens,
+            pos: 0,
+            depth: 0,
+        };
         let root = parser.parse_or()?;
         if parser.pos != parser.tokens.len() {
             return Err(FilterError::new(format!(
@@ -349,6 +378,11 @@ fn tokenize(input: &str) -> Result<Vec<Token>, FilterError> {
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Current recursion depth of the descent. Each recursive production
+    /// increments this on entry (via [`Parser::enter`]) and bails out with a
+    /// [`FilterError`] once it exceeds [`MAX_FILTER_DEPTH`], so a hostile,
+    /// deeply-nested input cannot overflow the worker thread's stack.
+    depth: usize,
 }
 
 impl Parser {
@@ -356,37 +390,60 @@ impl Parser {
         self.tokens.get(self.pos)
     }
 
+    /// Account for entering one more level of recursion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError`] once the nesting depth would exceed
+    /// [`MAX_FILTER_DEPTH`].
+    fn enter(&mut self) -> Result<(), FilterError> {
+        self.depth += 1;
+        if self.depth > MAX_FILTER_DEPTH {
+            return Err(FilterError::new("filter expression too deeply nested"));
+        }
+        Ok(())
+    }
+
     fn parse_or(&mut self) -> Result<Expr, FilterError> {
+        self.enter()?;
         let mut left = self.parse_and()?;
         while matches!(self.peek(), Some(Token::Or)) {
             self.pos += 1;
             let right = self.parse_and()?;
             left = Expr::Or(Box::new(left), Box::new(right));
         }
+        self.depth -= 1;
         Ok(left)
     }
 
     fn parse_and(&mut self) -> Result<Expr, FilterError> {
+        self.enter()?;
         let mut left = self.parse_unary()?;
         while matches!(self.peek(), Some(Token::And)) {
             self.pos += 1;
             let right = self.parse_unary()?;
             left = Expr::And(Box::new(left), Box::new(right));
         }
+        self.depth -= 1;
         Ok(left)
     }
 
     fn parse_unary(&mut self) -> Result<Expr, FilterError> {
+        self.enter()?;
         if matches!(self.peek(), Some(Token::Not)) {
             self.pos += 1;
             let inner = self.parse_unary()?;
+            self.depth -= 1;
             return Ok(Expr::Not(Box::new(inner)));
         }
-        self.parse_primary()
+        let primary = self.parse_primary()?;
+        self.depth -= 1;
+        Ok(primary)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, FilterError> {
-        match self.peek() {
+        self.enter()?;
+        let expr = match self.peek() {
             Some(Token::LParen) => {
                 self.pos += 1;
                 let inner = self.parse_or()?;
@@ -402,9 +459,15 @@ impl Parser {
                 let word = word.clone();
                 // A `field op value` comparison if this word names a field and
                 // an operator follows; otherwise a free-text term.
-                if let Some(field) = Field::parse(&word) {
+                let comparison = Field::parse(&word).and_then(|field| {
                     if let Some(Token::Op(op)) = self.tokens.get(self.pos + 1) {
-                        let op = *op;
+                        Some((field, *op))
+                    } else {
+                        None
+                    }
+                });
+                match comparison {
+                    Some((field, op)) => {
                         self.pos += 2;
                         let value = match self.peek() {
                             Some(Token::Word(v)) => v.clone(),
@@ -417,20 +480,29 @@ impl Parser {
                             }
                         };
                         self.pos += 1;
-                        return Ok(Expr::Compare(field, op, value));
+                        Ok(Expr::Compare(field, op, value))
+                    }
+                    None => {
+                        self.pos += 1;
+                        Ok(Expr::Term(word))
                     }
                 }
-                self.pos += 1;
-                Ok(Expr::Term(word))
             }
             Some(other) => Err(FilterError::new(format!("unexpected `{}`", other.lexeme()))),
             None => Err(FilterError::new("unexpected end of filter")),
-        }
+        }?;
+        self.depth -= 1;
+        Ok(expr)
     }
 }
 
 // --- Evaluator ---------------------------------------------------------------
 
+/// Evaluate a parsed filter expression against a package.
+///
+/// This recurses over the [`Expr`] tree, but the tree's height is bounded by
+/// the parser's [`MAX_FILTER_DEPTH`] cap (the parser refuses to build anything
+/// deeper), so this recursion cannot overflow the worker thread's stack.
 fn eval(expr: &Expr, pkg: &PackageRow) -> bool {
     match expr {
         Expr::Or(a, b) => eval(a, pkg) || eval(b, pkg),
@@ -665,5 +737,34 @@ mod tests {
         assert!(Filter::parse("name == curl").is_ok());
         assert!(Filter::parse("a && b").is_ok());
         assert!(Filter::parse("a || b").is_ok());
+    }
+
+    #[test]
+    fn over_long_filter_is_rejected() {
+        // An unauthenticated visitor could otherwise post a huge filter; reject
+        // it on length before tokenizing.
+        let too_long = "a".repeat(MAX_FILTER_LEN + 1);
+        assert!(Filter::parse(&too_long).is_err());
+        // A filter right at the cap is still accepted.
+        let at_cap = "a".repeat(MAX_FILTER_LEN);
+        assert!(Filter::parse(&at_cap).is_ok());
+    }
+
+    #[test]
+    fn deeply_nested_filter_errors_rather_than_overflowing() {
+        // Regression for the unauthenticated stack-overflow DoS (sec H6): a long
+        // run of `(` once drove the recursive-descent parser past the worker
+        // thread's stack. With the depth cap it must return a parse error rather
+        // than panicking or overflowing — this test completing at all proves no
+        // stack overflow occurred. 5000 is well past MAX_FILTER_DEPTH yet within
+        // MAX_FILTER_LEN, so the depth cap (not the length cap) is exercised.
+        let nested = "(".repeat(5000);
+        assert!(Filter::parse(&nested).is_err());
+    }
+
+    #[test]
+    fn normal_nested_filter_still_parses() {
+        // A realistic nested expression stays well under the depth cap.
+        assert!(Filter::parse("name ~ a and (license == MIT or platform ~ linux)").is_ok());
     }
 }
