@@ -182,7 +182,41 @@ pre.partition-grid { line-height: 1.15; letter-spacing: 0.18em; }
   font-size: 0.8rem;
 }
 
-.rollout-bar { color: var(--ok); }
+/* Rollout / progress meter: a bordered track with a solid fill, drawn as a
+ * styled box (not tiled block glyphs, which leave hairline gaps). The fill
+ * width is a discrete `pct-N` class because the strict CSP forbids the inline
+ * `style="width:…"` a continuous value would need. */
+.meter {
+  display: inline-block;
+  width: 9rem;
+  height: 0.7rem;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  vertical-align: middle;
+  overflow: hidden;
+}
+.meter-fill { display: block; height: 100%; background: var(--ok); }
+.pct-0 { width: 0; }
+.pct-5 { width: 5%; }
+.pct-10 { width: 10%; }
+.pct-15 { width: 15%; }
+.pct-20 { width: 20%; }
+.pct-25 { width: 25%; }
+.pct-30 { width: 30%; }
+.pct-35 { width: 35%; }
+.pct-40 { width: 40%; }
+.pct-45 { width: 45%; }
+.pct-50 { width: 50%; }
+.pct-55 { width: 55%; }
+.pct-60 { width: 60%; }
+.pct-65 { width: 65%; }
+.pct-70 { width: 70%; }
+.pct-75 { width: 75%; }
+.pct-80 { width: 80%; }
+.pct-85 { width: 85%; }
+.pct-90 { width: 90%; }
+.pct-95 { width: 95%; }
+.pct-100 { width: 100%; }
 
 /* Pagination nav (shared by every paginated list). The page-of-page label is
  * dimmed so the prev/next/first/last links read as the actionable elements. */
@@ -202,6 +236,16 @@ p.lede {
   font-size: 1.05rem;
   margin: 0.4rem 0 0.8rem;
 }
+
+/* The registry README preamble: a readable multi-paragraph block above the
+ * registry home, set off from the surrounding terminal-style metadata. */
+.readme {
+  max-width: 60rem;
+  margin: 1rem 0 1.8rem;
+  padding-left: 1rem;
+  border-left: 2px solid var(--rule);
+}
+.readme p { margin: 0.55rem 0; }
 p.chips { margin: 0.2rem 0 0.8rem; }
 .chip {
   display: inline-block;

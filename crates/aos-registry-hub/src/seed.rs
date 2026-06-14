@@ -273,7 +273,15 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
 
     // Committed config blobs.
     let registry_toml = put_blob(
-        "[registry]\nname = \"demo\"\ndescription = \"Demo registry (aos-registry-hub seed)\"\n\n\
+        "[registry]\nname = \"demo\"\ndescription = \"Demo registry (aos-registry-hub seed)\"\n\
+         readme = \"\"\"\n\
+         The demo registry is a small, signed example surface seeded by \
+         aos-registry-hub for local development. It carries a handful of \
+         packages (curl, jq, openssl) on a single stable channel.\n\n\
+         Use it to explore the browse UI, the package filter, and the producer \
+         console without standing up a real registry. Everything here is \
+         regenerated on each seed, so feel free to publish, roll out, and \
+         delete at will.\n\"\"\"\n\n\
          [[caches]]\nurl = \"https://cache.example.com/\"\npriority = 40\n",
     )?;
     let keys_toml = put_blob(&format!(

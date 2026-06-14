@@ -20,7 +20,7 @@ use crate::db::{
 use crate::db::{PlatformDetail, VersionDetail};
 use crate::stack::StackNode;
 use crate::ui::render::{
-    ago, escape, human_size, key_fingerprint, live_table, page, table, table_raw_headers,
+    ago, escape, human_size, key_fingerprint, live_table, meter, page, table, table_raw_headers,
     urlencode, Pager, StateLine,
 };
 
@@ -267,6 +267,18 @@ pub fn registry_home(
     if let Some(desc) = status.and_then(|s| s.description.as_deref()) {
         let _ = write!(body, "<p>{}</p>", escape(desc));
     }
+    // The longer README-style preamble (committed `[registry] readme`): blank
+    // lines separate paragraphs, each rendered as its own escaped <p>.
+    if let Some(readme) = status.and_then(|s| s.readme.as_deref()) {
+        body.push_str("<div class=\"readme\">");
+        for para in readme.split("\n\n") {
+            let para = para.trim();
+            if !para.is_empty() {
+                let _ = write!(body, "<p>{}</p>", escape(para));
+            }
+        }
+        body.push_str("</div>\n");
+    }
     if let Some(status) = status {
         if status.state == "failed" {
             let _ = write!(
@@ -343,11 +355,7 @@ pub fn registry_home(
                         escape(&channel.name),
                     ),
                     escape(channel.frontier.as_deref().unwrap_or("—")),
-                    format!(
-                        "<span class=\"rollout-bar\">{}</span><span class=\"dim\">{}</span> {percent}%",
-                        "█".repeat(percent / 8),
-                        "░".repeat(12usize.saturating_sub(percent / 8)),
-                    ),
+                    format!("{} {percent}%", meter(percent)),
                     format!("{assigned}/256 assigned"),
                 ]
             })
@@ -2084,6 +2092,7 @@ mod tests {
                 last_indexed_commit: None,
                 name: Some("Demo".into()),
                 description: Some("Fixture registry".into()),
+                readme: None,
                 indexed_at: None,
             }),
         )];

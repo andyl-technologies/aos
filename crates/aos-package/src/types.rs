@@ -1247,9 +1247,13 @@ pub struct RegistryRootConfig {
 pub struct RegistryRootMeta {
     /// Canonical registry name.
     pub name: String,
-    /// Optional human-readable description.
+    /// Optional one-line human-readable description.
     #[serde(default)]
     pub description: Option<String>,
+    /// Optional longer README-style preamble (a paragraph or three), shown
+    /// above the registry home. Blank lines separate paragraphs.
+    #[serde(default)]
+    pub readme: Option<String>,
 }
 
 /// A binary cache entry in `registry.toml`.
