@@ -1067,6 +1067,45 @@ async fn add_domain_rejects_cross_org_claim_theft() {
     assert_eq!(reclaimed.txt_challenge, challenge);
 }
 
+/// M-4: the transactional `add_org_domain` enforces the cross-tenant invariant
+/// at the db layer — a domain owned by org A can never have its `org_id`
+/// re-pointed to org B (the check + upsert share one transaction), while org A
+/// can always re-claim its own domain.
+#[tokio::test]
+async fn add_org_domain_is_atomically_cross_org_safe() {
+    let db = Database::open_in_memory().unwrap();
+    let acme = db.create_org("acme", "Acme").unwrap();
+    let globex = db.create_org("globex", "Globex").unwrap();
+
+    // Acme claims and verifies the domain.
+    db.add_org_domain(acme, "acme.com").unwrap();
+    db.verify_org_domain("acme.com").unwrap();
+    let before = db.org_domain("acme.com").unwrap().unwrap();
+    assert!(before.verified_at.is_some());
+
+    // Globex cannot re-point it: the call errors and the row is untouched.
+    let err = db.add_org_domain(globex, "acme.com").unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("already claimed by another organization"),
+        "got: {err:#}"
+    );
+    let after = db.org_domain("acme.com").unwrap().unwrap();
+    assert_eq!(after.org_id, acme, "org_id unchanged");
+    assert_eq!(
+        after.verified_at, before.verified_at,
+        "verification unwiped"
+    );
+
+    // The owning org can re-claim, rotating the challenge and resetting to
+    // unverified.
+    let challenge = db.add_org_domain(acme, "acme.com").unwrap();
+    let reclaimed = db.org_domain("acme.com").unwrap().unwrap();
+    assert_eq!(reclaimed.org_id, acme);
+    assert!(reclaimed.verified_at.is_none());
+    assert_eq!(reclaimed.txt_challenge, challenge);
+}
+
 #[tokio::test]
 async fn project_and_binding_delete_with_in_use_guard() {
     let db = Arc::new(Database::open_in_memory().unwrap());
@@ -1381,4 +1420,188 @@ async fn admin_manages_frontends_and_mirror() {
     let v_cookie = login(&app, &db, "v@acme.com").await;
     let resp = send(&app, "GET", &path, Some(&v_cookie), None).await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+}
+
+/// Build a **non-sudo** session cookie for `user` (auth_level 0), standing in
+/// for a stale, long-lived session that fell out of the sudo window.
+fn stale_cookie(db: &Database, user: i64) -> String {
+    format!(
+        "{COOKIE_NAME}={}",
+        db.create_session(user, 30 * 24 * 60 * 60, 0).unwrap()
+    )
+}
+
+/// M-1: the credential-minting and trust-changing org ops refuse a stale
+/// (non-sudo) session with a `403`, while a fresh magic-link login (sudo)
+/// performs them. Covers invite, role-change, remove-member, set-idp, and
+/// hosted-key enroll.
+#[tokio::test]
+async fn trust_ops_require_sudo() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").unwrap();
+    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    // A second owner exists so role/remove ops are not blocked by the
+    // last-owner guard (we are testing the sudo gate, not that guard).
+    let co = db.find_or_create_user("co@acme.com").unwrap();
+    db.grant_membership("user", co, "acme", "owner").unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+
+    // A stale (non-sudo) session for the owner.
+    let stale = stale_cookie(&db, owner);
+    let s_csrf = csrf_for(&stale);
+
+    // invite-member: 403 stale.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/members",
+        Some(&stale),
+        Some(&format!("csrf={s_csrf}&email=new@acme.com&role=viewer")),
+    )
+    .await;
+    assert_eq!(
+        resp.status,
+        StatusCode::FORBIDDEN,
+        "invite stale: {}",
+        resp.body
+    );
+
+    // role-change: 403 stale.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/members/role",
+        Some(&stale),
+        Some(&format!(
+            "csrf={s_csrf}&principal_kind=user&principal_id={co}&role=admin"
+        )),
+    )
+    .await;
+    assert_eq!(
+        resp.status,
+        StatusCode::FORBIDDEN,
+        "role stale: {}",
+        resp.body
+    );
+
+    // remove-member: 403 stale.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/members/remove",
+        Some(&stale),
+        Some(&format!(
+            "csrf={s_csrf}&principal_kind=user&principal_id={co}"
+        )),
+    )
+    .await;
+    assert_eq!(
+        resp.status,
+        StatusCode::FORBIDDEN,
+        "remove stale: {}",
+        resp.body
+    );
+
+    // set-idp: 403 stale.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/sso",
+        Some(&stale),
+        Some(&format!(
+            "csrf={s_csrf}&op=set-idp&issuer=https%3A%2F%2Fidp.test&\
+             auth_url=https%3A%2F%2Fidp.test%2Fa&token_url=https%3A%2F%2Fidp.test%2Ft&\
+             jwks_uri=https%3A%2F%2Fidp.test%2Fj&client_id=cid&client_secret=x&\
+             role_map=%7B%7D&default_role=viewer"
+        )),
+    )
+    .await;
+    assert_eq!(
+        resp.status,
+        StatusCode::FORBIDDEN,
+        "set-idp stale: {}",
+        resp.body
+    );
+
+    // hosted-key enroll: 403 stale.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/keys",
+        Some(&stale),
+        Some(&format!("csrf={s_csrf}&op=create&key_id=k1")),
+    )
+    .await;
+    assert_eq!(
+        resp.status,
+        StatusCode::FORBIDDEN,
+        "keys stale: {}",
+        resp.body
+    );
+
+    // Nothing was mutated by any refused request.
+    assert!(db.user_by_email("new@acme.com").unwrap().is_none());
+    assert_eq!(
+        db.list_members_of_scope("acme")
+            .unwrap()
+            .iter()
+            .filter(|(k, _, r)| k == "user" && r == "owner")
+            .count(),
+        2,
+        "both owners intact"
+    );
+    assert!(db
+        .idp_config(db.org_by_slug("acme").unwrap().unwrap().id)
+        .unwrap()
+        .is_none());
+
+    // A FRESH magic-link login (sudo) performs the same ops.
+    let fresh = login(&app, &db, "owner@acme.com").await;
+    let f_csrf = csrf_for(&fresh);
+
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/members",
+        Some(&fresh),
+        Some(&format!("csrf={f_csrf}&email=new@acme.com&role=viewer")),
+    )
+    .await;
+    assert_eq!(
+        resp.status,
+        StatusCode::SEE_OTHER,
+        "invite fresh: {}",
+        resp.body
+    );
+    assert!(db.user_by_email("new@acme.com").unwrap().is_some());
+
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/sso",
+        Some(&fresh),
+        Some(&format!(
+            "csrf={f_csrf}&op=set-idp&issuer=https%3A%2F%2Fidp.test&\
+             auth_url=https%3A%2F%2Fidp.test%2Fa&token_url=https%3A%2F%2Fidp.test%2Ft&\
+             jwks_uri=https%3A%2F%2Fidp.test%2Fj&client_id=cid&client_secret=x&\
+             role_map=%7B%7D&default_role=viewer"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "set-idp fresh: {}", resp.body);
+    assert!(db
+        .idp_config(db.org_by_slug("acme").unwrap().unwrap().id)
+        .unwrap()
+        .is_some());
+
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/keys",
+        Some(&fresh),
+        Some(&format!("csrf={f_csrf}&op=create&key_id=k1")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "keys fresh: {}", resp.body);
 }

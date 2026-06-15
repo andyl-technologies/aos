@@ -1030,6 +1030,28 @@ const MIGRATIONS: &[&str] = &[
     ",
 ];
 
+/// Marker error: a membership mutation was refused because it would leave an
+/// org with zero owners.
+///
+/// Raised inside the transaction of [`Database::revoke_membership_owner_safe`]
+/// and [`Database::set_membership_role_owner_safe`] (rolling the write back)
+/// so a caller can classify the failure through `anyhow` context chains via
+/// [`is_last_owner_error`] and surface it as a `409 Conflict` rather than a
+/// generic `500`.
+#[derive(Debug, thiserror::Error)]
+#[error("refusing to leave org scope '{0}' without an owner")]
+pub struct LastOwnerError(pub String);
+
+/// Whether any error in `err`'s chain is a [`LastOwnerError`].
+///
+/// Walks the full `anyhow` context chain, so classification survives any
+/// number of `.context(…)` layers added by callers.
+#[must_use]
+pub fn is_last_owner_error(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.downcast_ref::<LastOwnerError>().is_some())
+}
+
 /// A registered registry (system-of-record row).
 #[derive(Debug, Clone)]
 pub struct RegistryRecord {
@@ -4074,6 +4096,127 @@ impl Database {
         Ok(())
     }
 
+    /// Revoke a principal's grant at a scope, refusing to orphan the org.
+    ///
+    /// Performs the read of the surviving owner count **and** the revoke
+    /// inside one transaction, so a naive check-then-act race (two concurrent
+    /// "remove owner A" / "remove owner B" both snapshotting two owners and
+    /// both applying) can no longer leave the scope with zero owners. After
+    /// the delete, the owners remaining at `scope` are re-counted *inside the
+    /// same transaction*: when the revoked principal had held `owner` and the
+    /// delete would drop the owner count to zero, the transaction is rolled
+    /// back with a [`LastOwnerError`] and no change is made.
+    ///
+    /// The guard fires only when at least one owner existed before the write
+    /// (a scope that legitimately has no owners — e.g. a non-org scope — is
+    /// never forced to acquire one). Otherwise this behaves like
+    /// [`Database::revoke_membership`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`LastOwnerError`] (classifiable via
+    /// [`is_last_owner_error`]) when the revoke would leave the scope without
+    /// an owner, or an error on database failure.
+    pub fn revoke_membership_owner_safe(
+        &self,
+        principal_kind: &str,
+        principal_id: i64,
+        scope: &str,
+    ) -> Result<()> {
+        let scope_owned = scope.to_string();
+        self.backend.with_tx(&mut |tx| {
+            let owners_before: i64 = tx
+                .query_opt(
+                    "SELECT COUNT(*) FROM memberships
+                     WHERE scope = ?1 AND principal_kind = 'user' AND role = 'owner'",
+                    &vals![scope_owned],
+                )?
+                .context("owner count query returned no row")?
+                .get(0)?;
+            tx.execute(
+                "DELETE FROM memberships
+                 WHERE principal_kind = ?1 AND principal_id = ?2 AND scope = ?3",
+                &vals![principal_kind, principal_id, scope_owned],
+            )?;
+            let owners_after: i64 = tx
+                .query_opt(
+                    "SELECT COUNT(*) FROM memberships
+                     WHERE scope = ?1 AND principal_kind = 'user' AND role = 'owner'",
+                    &vals![scope_owned],
+                )?
+                .context("owner count query returned no row")?
+                .get(0)?;
+            if owners_before > 0 && owners_after == 0 {
+                // Roll back: refuse to orphan the org of its last owner.
+                return Err(anyhow::Error::new(LastOwnerError(scope_owned.clone())));
+            }
+            Ok(())
+        })
+    }
+
+    /// Set a principal's role at a scope, refusing to orphan the org.
+    ///
+    /// The owner-safe counterpart of [`Database::grant_membership`] for
+    /// **role changes**: it upserts the role and then re-counts the owners
+    /// surviving at `scope` *inside the same transaction*. When the change
+    /// demotes the sole remaining owner — dropping the owner count to zero
+    /// where it had been positive — the transaction is rolled back with a
+    /// [`LastOwnerError`] and no change is made, closing the check-then-act
+    /// race that two concurrent demotes would otherwise win.
+    ///
+    /// The scope must be canonical (same precondition as
+    /// [`Database::grant_membership`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`LastOwnerError`] (classifiable via
+    /// [`is_last_owner_error`]) when the change would leave the scope without
+    /// an owner, or an error on database failure or a non-canonical scope.
+    pub fn set_membership_role_owner_safe(
+        &self,
+        principal_kind: &str,
+        principal_id: i64,
+        scope: &str,
+        role: &str,
+    ) -> Result<()> {
+        if !crate::domain::Scope::is_canonical(scope) {
+            bail!("refusing to grant membership at non-canonical scope '{scope}'");
+        }
+        let scope_owned = scope.to_string();
+        let now = unix_now();
+        self.backend.with_tx(&mut |tx| {
+            let owners_before: i64 = tx
+                .query_opt(
+                    "SELECT COUNT(*) FROM memberships
+                     WHERE scope = ?1 AND principal_kind = 'user' AND role = 'owner'",
+                    &vals![scope_owned],
+                )?
+                .context("owner count query returned no row")?
+                .get(0)?;
+            tx.execute(
+                "INSERT INTO memberships
+                 (principal_kind, principal_id, scope, role, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(principal_kind, principal_id, scope)
+                 DO UPDATE SET role = excluded.role",
+                &vals![principal_kind, principal_id, scope_owned, role, now],
+            )?;
+            let owners_after: i64 = tx
+                .query_opt(
+                    "SELECT COUNT(*) FROM memberships
+                     WHERE scope = ?1 AND principal_kind = 'user' AND role = 'owner'",
+                    &vals![scope_owned],
+                )?
+                .context("owner count query returned no row")?
+                .get(0)?;
+            if owners_before > 0 && owners_after == 0 {
+                // Roll back: refuse to demote the org's last owner.
+                return Err(anyhow::Error::new(LastOwnerError(scope_owned.clone())));
+            }
+            Ok(())
+        })
+    }
+
     /// List a principal's grants as `(scope, role)` strings, ordered by
     /// scope.
     ///
@@ -5732,16 +5875,48 @@ impl Database {
     /// Returns an error (listing the orgs) when the user is the sole owner of
     /// any org, or on database failure.
     pub fn delete_user(&self, user_id: i64) -> Result<bool> {
-        let blocking = self.sole_owned_orgs(user_id)?;
-        if !blocking.is_empty() {
-            bail!(
-                "user {user_id} is the sole owner of: {} — transfer ownership before deleting",
-                blocking.join(", ")
-            );
-        }
         let now = unix_now();
         let mut deleted = false;
+        // The sole-owner check and the soft-delete must share a transaction:
+        // a check-then-act split lets a concurrent demote/transfer drop an
+        // org's *other* owner between the standalone `sole_owned_orgs` read
+        // and the delete, slipping a user through who was, by commit time, the
+        // org's last owner. Re-derive the sole-owned orgs *inside* the tx (the
+        // user's still-live owner grants whose scope has no other owner) and
+        // roll back with the same blocking error when any remain.
         self.backend.with_tx(&mut |tx| {
+            let owner_scopes = tx.query(
+                "SELECT o.slug FROM orgs o
+                 JOIN memberships m
+                   ON m.scope = o.slug
+                  AND m.principal_kind = 'user'
+                  AND m.principal_id = ?1
+                  AND m.role = 'owner'
+                 WHERE o.deleted_at IS NULL",
+                &vals![user_id],
+            )?;
+            let mut blocking = Vec::new();
+            for row in &owner_scopes {
+                let slug: String = row.get(0)?;
+                let other_owners: i64 = tx
+                    .query_opt(
+                        "SELECT COUNT(*) FROM memberships
+                         WHERE scope = ?1 AND principal_kind = 'user' AND role = 'owner'
+                           AND principal_id <> ?2",
+                        &vals![slug, user_id],
+                    )?
+                    .context("owner count query returned no row")?
+                    .get(0)?;
+                if other_owners == 0 {
+                    blocking.push(slug);
+                }
+            }
+            if !blocking.is_empty() {
+                bail!(
+                    "user {user_id} is the sole owner of: {} — transfer ownership before deleting",
+                    blocking.join(", ")
+                );
+            }
             let n = tx.execute(
                 "UPDATE users SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
                 &vals![user_id, now],
@@ -5831,6 +6006,20 @@ impl Database {
     /// Returns `Ok(false)` when the `user_code` is unknown, already
     /// resolved (approved or denied), or expired.
     ///
+    /// # Atomicity
+    ///
+    /// The claim, the token mint, and the write of the minted secret happen
+    /// inside one transaction. The grant is claimed by a conditional
+    /// `UPDATE … WHERE approved_by_user IS NULL AND denied = 0 AND
+    /// expires_at > ?` stamping `approved_by_user`; the mint proceeds only
+    /// when that update touches exactly one row. Two concurrent approvals of
+    /// the same `user_code` therefore cannot both mint — the loser's
+    /// conditional claim stamps zero rows and it returns `Ok(false)` without
+    /// minting, so no orphaned-but-live provisioning token is ever issued
+    /// (the failure mode this method was hardened against). This mirrors the
+    /// claim-then-act idiom of [`Database::consume_magic_link`] and
+    /// [`Database::deny_device`].
+    ///
     /// # Errors
     ///
     /// Returns an error on database failure.
@@ -5841,40 +6030,70 @@ impl Database {
         approver_grants: &[(crate::domain::Scope, crate::domain::Role)],
     ) -> Result<bool> {
         let now = unix_now();
-        let row = self
-            .backend
-            .query_opt(
-                "SELECT scope, permissions FROM device_codes
+        let mut approved = false;
+        self.backend.with_tx(&mut |tx| {
+            // Atomically CLAIM the grant: the conditional update is the
+            // single-approval gate. A second concurrent approval finds the
+            // row already stamped and matches zero rows.
+            let claimed = tx.execute(
+                "UPDATE device_codes SET approved_by_user = ?2
                  WHERE user_code = ?1 AND approved_by_user IS NULL AND denied = 0
-                   AND expires_at > ?2",
-                &vals![user_code, now],
-            )
-            .context("loading device code for approval")?;
-        let Some(row) = row else {
-            return Ok(false);
-        };
-        let scope: String = row.get(0)?;
-        let perms_json: String = row.get(1)?;
-        let requested_scope = crate::domain::Scope::parse(&scope);
-        let requested = parse_permission_names(&perms_json);
-        // Clamp: keep only requested permissions the approver may actually
-        // grant at the requested scope (downward inheritance via `allow`).
-        let granted: Vec<crate::domain::Permission> = requested
-            .into_iter()
-            .filter(|perm| crate::domain::iam::allow(approver_grants, *perm, &requested_scope))
-            .collect();
-        let (token_id, secret) =
-            self.create_token(approver, requested_scope.as_str(), &granted, None, None)?;
-        // Stow the minted secret on the device row: it is delivered exactly
-        // once to the polling CLI by `poll_device`, never persisted in the
-        // clear anywhere a human session can read it.
-        self.backend.execute(
-            "UPDATE device_codes
-             SET approved_by_user = ?2, issued_token_id = ?3, issued_token_secret = ?4
-             WHERE user_code = ?1",
-            &vals![user_code, approver.id, token_id, secret],
-        )?;
-        Ok(true)
+                   AND expires_at > ?3",
+                &vals![user_code, approver.id, now],
+            )?;
+            if claimed == 0 {
+                // Unknown, already approved/denied, or expired: do NOT mint.
+                return Ok(());
+            }
+            let row = tx
+                .query_opt(
+                    "SELECT scope, permissions FROM device_codes WHERE user_code = ?1",
+                    &vals![user_code],
+                )?
+                .context("device code vanished after claim")?;
+            let scope: String = row.get(0)?;
+            let perms_json: String = row.get(1)?;
+            let requested_scope = crate::domain::Scope::parse(&scope);
+            let requested = parse_permission_names(&perms_json);
+            // Clamp: keep only requested permissions the approver may actually
+            // grant at the requested scope (downward inheritance via `allow`).
+            let granted: Vec<crate::domain::Permission> = requested
+                .into_iter()
+                .filter(|perm| crate::domain::iam::allow(approver_grants, *perm, &requested_scope))
+                .collect();
+            // Mint the token inside the same transaction so claim + mint + the
+            // write of the minted secret are all-or-nothing.
+            let (secret, hash) = crate::auth::token::generate_token();
+            let token_id = uuid::Uuid::new_v4().to_string();
+            let perms_out = serde_json::to_string(&permission_names(&granted))?;
+            tx.execute(
+                "INSERT INTO tokens
+                 (id, hash, owner_kind, owner_id, scope, permissions, comment, created_at,
+                  expires_at, revoked_at, last_used_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL, NULL, NULL)",
+                &vals![
+                    token_id,
+                    hash,
+                    approver.kind.as_str(),
+                    approver.id,
+                    requested_scope.as_str(),
+                    perms_out,
+                    now,
+                ],
+            )?;
+            // Stow the minted secret on the device row: it is delivered exactly
+            // once to the polling CLI by `poll_device`, never persisted in the
+            // clear anywhere a human session can read it.
+            tx.execute(
+                "UPDATE device_codes
+                 SET issued_token_id = ?2, issued_token_secret = ?3
+                 WHERE user_code = ?1",
+                &vals![user_code, token_id, secret],
+            )?;
+            approved = true;
+            Ok(())
+        })?;
+        Ok(approved)
     }
 
     /// Deny a device grant by its `user_code`.
@@ -6123,26 +6342,39 @@ impl Database {
     /// claimed by a different organization.
     pub fn add_org_domain(&self, org_id: i64, domain: &str) -> Result<String> {
         let domain = domain.trim().to_lowercase();
-        // Refuse to overwrite a claim held by another org; re-claiming one's
-        // own domain (same org_id) still rotates the challenge below.
-        if let Some(existing) = self.org_domain(&domain)? {
-            if existing.org_id != org_id {
-                anyhow::bail!("domain '{domain}' is already claimed by another organization");
-            }
-        }
         let challenge = format!(
             "aos-domain-verify={}",
             crate::auth::session::new_session_secret()
         );
-        self.backend.execute(
-            "INSERT INTO org_domains (domain, org_id, txt_challenge, verified_at)
-             VALUES (?1, ?2, ?3, NULL)
-             ON CONFLICT(domain) DO UPDATE SET
-                 org_id = excluded.org_id,
-                 txt_challenge = excluded.txt_challenge,
-                 verified_at = NULL",
-            &vals![domain, org_id, challenge],
-        )?;
+        // The ownership check and the upsert must be atomic: a check-then-act
+        // split lets two org admins racing the same domain both read "no
+        // conflict" and both upsert, the last writer re-pointing `org_id` and
+        // wiping the victim's `verified_at` (a cross-tenant domain login-DoS).
+        // Inside one transaction, re-read ownership and refuse to overwrite a
+        // claim held by a *different* org; re-claiming one's own domain (same
+        // org_id) still rotates the challenge and resets to unverified.
+        self.backend.with_tx(&mut |tx| {
+            let existing = tx.query_opt(
+                "SELECT org_id FROM org_domains WHERE domain = ?1",
+                &vals![domain],
+            )?;
+            if let Some(row) = existing {
+                let owner_org: i64 = row.get(0)?;
+                if owner_org != org_id {
+                    anyhow::bail!("domain '{domain}' is already claimed by another organization");
+                }
+            }
+            tx.execute(
+                "INSERT INTO org_domains (domain, org_id, txt_challenge, verified_at)
+                 VALUES (?1, ?2, ?3, NULL)
+                 ON CONFLICT(domain) DO UPDATE SET
+                     org_id = excluded.org_id,
+                     txt_challenge = excluded.txt_challenge,
+                     verified_at = NULL",
+                &vals![domain, org_id, challenge],
+            )?;
+            Ok(())
+        })?;
         Ok(challenge)
     }
 
@@ -8655,6 +8887,154 @@ mod tests {
         assert!(!db
             .approve_device(&user_code, crate::domain::Principal::user(1), &[])
             .unwrap());
+    }
+
+    /// M-3: a second approval of an already-approved `user_code` is a no-op —
+    /// it returns `Ok(false)` and mints no second token. The atomic claim
+    /// (`UPDATE … WHERE approved_by_user IS NULL`) stamps zero rows on the
+    /// re-approval, so exactly one token exists per approval and no orphaned,
+    /// un-pollable token is ever issued.
+    #[test]
+    fn approve_device_is_idempotent_one_token_per_approval() {
+        use crate::domain::{Permission, Principal, Role, Scope};
+        let db = Database::open_in_memory().unwrap();
+        let approver = db.create_user("admin@acme.com", None).unwrap();
+        let principal = Principal::user(approver);
+        let grants = vec![(Scope::parse("acme"), Role::Owner)];
+        let (device_code, user_code, _) = db
+            .start_device_authorization("acme", &[Permission::Read])
+            .unwrap();
+
+        // First approval mints exactly one token.
+        assert!(db.approve_device(&user_code, principal, &grants).unwrap());
+        assert_eq!(db.list_tokens_for(principal).unwrap().len(), 1);
+        let DevicePollResult::Approved(first_secret) = db.poll_device(&device_code).unwrap() else {
+            panic!("expected Approved after first approval");
+        };
+
+        // A second approval of the same user_code is refused and mints nothing.
+        assert!(!db.approve_device(&user_code, principal, &grants).unwrap());
+        assert_eq!(
+            db.list_tokens_for(principal).unwrap().len(),
+            1,
+            "no second token minted on re-approval"
+        );
+        // The pollable secret is unchanged: still the single first token.
+        let DevicePollResult::Approved(secret_again) = db.poll_device(&device_code).unwrap() else {
+            panic!("expected Approved on re-poll");
+        };
+        assert_eq!(
+            secret_again, first_secret,
+            "the one token's secret is stable"
+        );
+    }
+
+    /// M-3: a denied grant cannot subsequently be approved (the claim's
+    /// `denied = 0` predicate matches zero rows), so no token is minted.
+    #[test]
+    fn approve_device_after_deny_mints_nothing() {
+        use crate::domain::{Permission, Principal, Role, Scope};
+        let db = Database::open_in_memory().unwrap();
+        let approver = db.create_user("admin@acme.com", None).unwrap();
+        let principal = Principal::user(approver);
+        let grants = vec![(Scope::parse("acme"), Role::Owner)];
+        let (_device_code, user_code, _) = db
+            .start_device_authorization("acme", &[Permission::Read])
+            .unwrap();
+        assert!(db.deny_device(&user_code).unwrap());
+        assert!(!db.approve_device(&user_code, principal, &grants).unwrap());
+        assert!(
+            db.list_tokens_for(principal).unwrap().is_empty(),
+            "a denied grant mints no token"
+        );
+    }
+
+    /// M-2: the transactional owner-safe revoke refuses to remove an org's last
+    /// owner and rolls the delete back, but happily removes one of several
+    /// owners.
+    #[test]
+    fn revoke_membership_owner_safe_keeps_one_owner() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_org("acme", "Acme").unwrap();
+        let alice = db.create_user("alice@acme.com", None).unwrap();
+        let bob = db.create_user("bob@acme.com", None).unwrap();
+        db.grant_membership("user", alice, "acme", "owner").unwrap();
+        db.grant_membership("user", bob, "acme", "owner").unwrap();
+
+        // Removing one of two owners succeeds.
+        db.revoke_membership_owner_safe("user", bob, "acme")
+            .unwrap();
+        assert_eq!(owner_count(&db, "acme"), 1);
+
+        // Removing the now-sole owner is refused with a LastOwnerError and the
+        // grant survives.
+        let err = db
+            .revoke_membership_owner_safe("user", alice, "acme")
+            .unwrap_err();
+        assert!(is_last_owner_error(&err), "got: {err:#}");
+        assert_eq!(owner_count(&db, "acme"), 1, "the last owner is preserved");
+    }
+
+    /// M-2: the transactional owner-safe role change refuses to demote an org's
+    /// last owner; demoting one of several owners is fine. Two sequential
+    /// demotes still leave at least one owner (the second is rejected).
+    #[test]
+    fn set_membership_role_owner_safe_blocks_last_owner_demotion() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_org("acme", "Acme").unwrap();
+        let alice = db.create_user("alice@acme.com", None).unwrap();
+        let bob = db.create_user("bob@acme.com", None).unwrap();
+        db.grant_membership("user", alice, "acme", "owner").unwrap();
+        db.grant_membership("user", bob, "acme", "owner").unwrap();
+
+        // Demoting one of two owners to admin succeeds.
+        db.set_membership_role_owner_safe("user", bob, "acme", "admin")
+            .unwrap();
+        assert_eq!(owner_count(&db, "acme"), 1);
+
+        // Demoting the last owner is rejected; the org keeps an owner.
+        let err = db
+            .set_membership_role_owner_safe("user", alice, "acme", "admin")
+            .unwrap_err();
+        assert!(is_last_owner_error(&err), "got: {err:#}");
+        assert_eq!(owner_count(&db, "acme"), 1, "the last owner is preserved");
+    }
+
+    /// M-2: `delete_user` re-checks sole ownership inside its transaction, so a
+    /// user who is the only owner of an org cannot be deleted; once another
+    /// owner exists, the delete succeeds.
+    #[test]
+    fn delete_user_re_checks_sole_ownership_in_tx() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_org("acme", "Acme").unwrap();
+        let alice = db.create_user("alice@acme.com", None).unwrap();
+        db.grant_membership("user", alice, "acme", "owner").unwrap();
+
+        // Sole owner: deletion is blocked.
+        assert!(db.delete_user(alice).is_err());
+        assert!(db.user_by_email("alice@acme.com").unwrap().is_some());
+
+        // With a co-owner, deletion proceeds (the soft-delete leaves the
+        // membership rows; what matters is that bob is still a live owner).
+        let bob = db.create_user("bob@acme.com", None).unwrap();
+        db.grant_membership("user", bob, "acme", "owner").unwrap();
+        assert!(db.delete_user(alice).unwrap());
+        assert!(
+            db.list_members_of_scope("acme")
+                .unwrap()
+                .iter()
+                .any(|(k, id, r)| k == "user" && *id == bob && r == "owner"),
+            "bob remains the org owner"
+        );
+    }
+
+    /// Count the `owner`-role user grants at `scope`.
+    fn owner_count(db: &Database, scope: &str) -> usize {
+        db.list_members_of_scope(scope)
+            .unwrap()
+            .iter()
+            .filter(|(k, _, r)| k == "user" && r == "owner")
+            .count()
     }
 
     #[test]

@@ -1542,6 +1542,11 @@ async fn org_invite_member(
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
+    // Inviting a member changes who is trusted in the org, so it gates on
+    // sudo (M-1).
+    if let Err(resp) = require_sudo(&session) {
+        return *resp;
+    }
     let scope = Scope::parse(&org_slug);
     if !session.allows(&state.db, Permission::MembersManage, &scope) {
         return (StatusCode::FORBIDDEN, "members.manage required").into_response();
@@ -1616,6 +1621,11 @@ async fn org_remove_member(
     if !session.allows(&state.db, Permission::MembersManage, &scope) {
         return (StatusCode::FORBIDDEN, "members.manage required").into_response();
     }
+    // Revoking a membership changes who is trusted in the org, so it gates on
+    // sudo (M-1).
+    if let Err(resp) = require_sudo(&session) {
+        return *resp;
+    }
     let Some(kind) = crate::domain::PrincipalKind::parse(&form.principal_kind) else {
         return (StatusCode::BAD_REQUEST, "unknown principal kind").into_response();
     };
@@ -1646,6 +1656,14 @@ async fn org_remove_member(
     match result {
         Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
         Ok(Err(())) => (
+            StatusCode::CONFLICT,
+            "cannot remove the last owner of an organization",
+        )
+            .into_response(),
+        // The transactional owner-guard in the write path is the real defense
+        // against the concurrent-demote race; surface its rollback as the same
+        // 409 the pre-check renders, never a generic 500.
+        Err(err) if crate::db::is_last_owner_error(&err) => (
             StatusCode::CONFLICT,
             "cannot remove the last owner of an organization",
         )
@@ -2007,6 +2025,11 @@ async fn org_member_role(
     if !session.allows(&state.db, Permission::MembersManage, &scope) {
         return (StatusCode::FORBIDDEN, "members.manage required").into_response();
     }
+    // Changing a member's role changes who/what is trusted in the org, so it
+    // gates on sudo (M-1).
+    if let Err(resp) = require_sudo(&session) {
+        return *resp;
+    }
     let Some(kind) = crate::domain::PrincipalKind::parse(&form.principal_kind) else {
         return (StatusCode::BAD_REQUEST, "unknown principal kind").into_response();
     };
@@ -2049,6 +2072,12 @@ async fn org_member_role(
     match result {
         Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
         Ok(Err(reject)) => reject.into_response(),
+        // The transactional owner-guard in the write path is the real defense
+        // against the concurrent-demote race; surface its rollback as the same
+        // 409 the `MembershipReject::LastOwner` pre-check renders.
+        Err(err) if crate::db::is_last_owner_error(&err) => {
+            MembershipReject::LastOwner.into_response()
+        }
         Err(err) => internal(err),
     }
 }
@@ -2996,6 +3025,11 @@ fn tokens_create_action(
     if let Err(resp) = check_csrf(session, csrf) {
         return *resp;
     }
+    // Minting a publish-scoped API token outlives the session, so it is a
+    // credential-minting operation and gates on sudo (M-1).
+    if let Err(resp) = require_sudo(session) {
+        return *resp;
+    }
     let scope = Scope::parse(&registry.slug);
     if !session.allows(&state.db, Permission::TokensSelf, &scope) {
         return (StatusCode::FORBIDDEN, "tokens.self required").into_response();
@@ -3050,7 +3084,12 @@ fn tokens_modify_action(
     if let Err(resp) = ensure_owns_token(state, session, token_id) {
         return *resp;
     }
+    // Rotation mints a fresh secret (a new credential), so it gates on sudo;
+    // revocation only deadens a credential and does not (M-1).
     if rotate {
+        if let Err(resp) = require_sudo(session) {
+            return *resp;
+        }
         match state.db.rotate_token(token_id) {
             Ok(Some((_, secret))) => render_tokens(
                 state,
@@ -3597,6 +3636,11 @@ async fn org_keys_action(
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
+    // Enrolling or attaching a hosted signing key changes what the org trusts
+    // to sign, so both ops gate on sudo (M-1).
+    if let Err(resp) = require_sudo(&session) {
+        return *resp;
+    }
     let scope = Scope::parse(&org_slug);
     if !session.allows(&state.db, Permission::KeysManage, &scope) {
         if session.allows(&state.db, Permission::Read, &scope) {
@@ -3966,6 +4010,12 @@ async fn org_sso_action(
     let field = |k: &str| fields.get(k).map(String::as_str).unwrap_or("");
 
     if let Err(resp) = check_csrf(&session, field("csrf")) {
+        return *resp;
+    }
+    // Pointing or removing the org's IdP (and the domain claims that route
+    // logins to it) changes who is trusted to authenticate as the org, so
+    // every op here gates on sudo (M-1).
+    if let Err(resp) = require_sudo(&session) {
         return *resp;
     }
     let scope = Scope::parse(&org_slug);

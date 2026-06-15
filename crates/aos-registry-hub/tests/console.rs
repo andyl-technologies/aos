@@ -350,6 +350,83 @@ async fn token_management_create_list_revoke_rotate() {
         .all(|(id, _, _)| id != &new_id));
 }
 
+/// M-1: minting a token and rotating a token both require a **sudo** session.
+/// A stale (auth_level 0) session is refused with a `403`; a fresh magic-link
+/// login (sudo) succeeds. Revocation is *not* gated (it deadens a credential
+/// rather than minting one).
+#[tokio::test]
+async fn token_mint_and_rotate_require_sudo() {
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("surface");
+    std::fs::create_dir_all(&surface).unwrap();
+    let fixture = common::standard_registry(&surface);
+    let db = serve_managed(&surface, &fixture, "public").await;
+
+    let user = db.find_or_create_user("dev@acme.com").unwrap();
+    db.grant_membership("user", user, "acme/infra/prod/cdn", "developer")
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let base = "/acme/infra/prod/cdn/-/settings/tokens";
+
+    // A stale (non-sudo, auth_level 0) session for the user.
+    let stale_secret = db.create_session(user, 30 * 24 * 60 * 60, 0).unwrap();
+    let stale = format!("{COOKIE_NAME}={stale_secret}");
+    let s_csrf = mint_csrf_token(&stale_secret);
+
+    // Mint refused for the stale session; no token is created.
+    let resp = send(
+        &app,
+        "POST",
+        base,
+        Some(&stale),
+        Some(&format!("csrf={s_csrf}&perm_read=1")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    assert!(db
+        .list_tokens_for(Principal::user(user))
+        .unwrap()
+        .is_empty());
+
+    // A fresh magic-link login (sudo) mints the token.
+    let fresh = login(&app, &db, "dev@acme.com").await;
+    let f_csrf = mint_csrf_token(fresh.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
+    let resp = send(
+        &app,
+        "POST",
+        base,
+        Some(&fresh),
+        Some(&format!("csrf={f_csrf}&perm_read=1")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let tokens = db.list_tokens_for(Principal::user(user)).unwrap();
+    assert_eq!(tokens.len(), 1);
+    let token_id = tokens[0].0.clone();
+
+    // Rotate is refused for the stale session...
+    let resp = send(
+        &app,
+        "POST",
+        &format!("{base}/rotate"),
+        Some(&stale),
+        Some(&format!("csrf={s_csrf}&token_id={token_id}")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+
+    // ...but revoke is NOT gated (it only deadens a credential).
+    let resp = send(
+        &app,
+        "POST",
+        &format!("{base}/revoke"),
+        Some(&stale),
+        Some(&format!("csrf={s_csrf}&token_id={token_id}")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+}
+
 #[tokio::test]
 async fn channel_console_prepares_advance_and_viewer_sees_no_form() {
     let dir = tempfile::tempdir().unwrap();

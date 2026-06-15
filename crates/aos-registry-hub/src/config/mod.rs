@@ -779,12 +779,21 @@ pub fn change_membership(
     let principal = *principal;
     let scope_str = scope.as_str().to_string();
     let role_str = role.as_str().to_string();
+    // Route the live write through the owner-safe variants so the surviving
+    // owner count is read and re-checked *inside the write's transaction*: a
+    // grant/revoke that would leave the scope ownerless is rolled back with a
+    // `LastOwnerError`, closing the check-then-act race the handler's
+    // pre-check alone cannot (the pre-check still runs to render a friendly
+    // 409 on the common, uncontended path).
     apply(db, &change_id, action, move |_rev| match change {
-        MembershipChange::Grant => {
-            db.grant_membership(principal.kind.as_str(), principal.id, &scope_str, &role_str)
-        }
+        MembershipChange::Grant => db.set_membership_role_owner_safe(
+            principal.kind.as_str(),
+            principal.id,
+            &scope_str,
+            &role_str,
+        ),
         MembershipChange::Revoke => {
-            db.revoke_membership(principal.kind.as_str(), principal.id, &scope_str)
+            db.revoke_membership_owner_safe(principal.kind.as_str(), principal.id, &scope_str)
         }
     })?;
     Ok(change_id)
