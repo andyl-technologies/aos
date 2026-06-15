@@ -137,24 +137,79 @@ impl Fixture {
 
     /// Write the static nix-cache surface (`nix-cache-info`, one narinfo,
     /// one NAR file).
+    ///
+    /// The narinfo is **correctly Ed25519-signed** by the fixture's key under
+    /// the registry name `demo` (the same key the roster pins), and the NAR is
+    /// an uncompressed payload whose `FileHash`/`NarHash` match its bytes — so
+    /// the mirror's mandatory narinfo-signature + NAR-hash verification accepts
+    /// it. The `Sig:` is over the Nix narinfo fingerprint, matching
+    /// `aos_core`'s narinfo signer.
     pub fn put_nix_cache(&self) {
         fs::write(
             self.root.join("nix-cache-info"),
             "StoreDir: /var/lib/store\nPriority: 40\n",
         )
         .unwrap();
-        fs::write(
-            self.root.join("h7j3k8l2m9n4.narinfo"),
-            "StorePath: /var/lib/store/h7j3k8l2m9n4-curl-8.5.0\nURL: nar/h7j3k8l2m9n4.nar.zst\n\
-             Compression: zstd\nNarHash: sha256:aa\nNarSize: 10\nReferences: \n",
-        )
-        .unwrap();
+
+        // A real (tiny) uncompressed NAR payload; FileHash == NarHash over
+        // these exact bytes, so the hash check passes.
+        use sha2::Digest as _;
+        let nar_bytes = b"fixture-nar-bytes-for-curl-8.5.0";
+        let digest = sha2::Sha256::digest(nar_bytes);
+        let hash = format!("sha256:{}", hex::encode(digest));
+        let store_path = "/var/lib/store/h7j3k8l2m9n4-curl-8.5.0";
+        // The conventional `nar/<store-hash>-<nar-hash>.<ext>` layout, so the
+        // pull-through can derive the narinfo path from the NAR path.
+        let nar_url = "nar/h7j3k8l2m9n4-fixturehash.nar";
+
+        let body = self.signed_narinfo(store_path, nar_url, &hash, nar_bytes.len() as u64, &[]);
+        fs::write(self.root.join("h7j3k8l2m9n4.narinfo"), body).unwrap();
+
         fs::create_dir_all(self.root.join("nar")).unwrap();
-        fs::write(
-            self.root.join("nar/h7j3k8l2m9n4.nar.zst"),
-            b"not-a-real-nar",
+        fs::write(self.root.join(nar_url), nar_bytes).unwrap();
+    }
+
+    /// Render a narinfo for an *uncompressed* NAR and sign it with the
+    /// fixture's key under the registry name (so its `Sig:` verifies against
+    /// the roster).
+    ///
+    /// `hash` is the `sha256:<hex>` digest of the NAR bytes, used for both
+    /// `NarHash` and `FileHash` (uncompressed, so they coincide). `refs` are
+    /// full store paths referenced by this path.
+    pub fn signed_narinfo(
+        &self,
+        store_path: &str,
+        nar_url: &str,
+        hash: &str,
+        size: u64,
+        refs: &[String],
+    ) -> String {
+        use base64::Engine as _;
+
+        // The Nix narinfo signing key is name:base64(seed||pubkey); the signer
+        // uses the first 32 bytes (the seed) to reproduce the Ed25519 key.
+        let mut secret = Vec::with_capacity(64);
+        secret.extend_from_slice(&self.key.to_bytes());
+        secret.extend_from_slice(self.key.verifying_key().as_bytes());
+        let secret_b64 = base64::engine::general_purpose::STANDARD.encode(&secret);
+        let signer =
+            aos_core::nar::cache::NarInfoSigner::from_key_content(&format!("demo:{secret_b64}"))
+                .unwrap();
+
+        let fingerprint =
+            aos_core::nar::cache::NarInfoSigner::fingerprint(store_path, hash, size as i64, refs);
+        let sig = signer.sign(&fingerprint).unwrap();
+
+        let refs_basenames: Vec<&str> = refs
+            .iter()
+            .map(|r| r.rsplit('/').next().unwrap_or(r))
+            .collect();
+        format!(
+            "StorePath: {store_path}\nURL: {nar_url}\nCompression: none\n\
+             FileHash: {hash}\nFileSize: {size}\nNarHash: {hash}\nNarSize: {size}\n\
+             References: {}\nSig: {sig}\n",
+            refs_basenames.join(" "),
         )
-        .unwrap();
     }
 }
 

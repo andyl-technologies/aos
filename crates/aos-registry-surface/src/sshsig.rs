@@ -227,6 +227,33 @@ fn trusted_key_base64(trusted: &str) -> &str {
     trusted.rsplit(':').next().unwrap_or(trusted)
 }
 
+/// Decode a `name:Ed25519:<base64>` trusted key into its name and raw
+/// 32-byte Ed25519 public key.
+///
+/// The base64 blob is the full SSH wire public-key blob (`string
+/// "ssh-ed25519" + string key(32)`), so this unwraps it to the bare key
+/// bytes a [`VerifyingKey`] is built from. The name is everything before the
+/// first `:`; a bare base64 blob (no `name:Ed25519:` prefix) yields an empty
+/// name. This is the raw key narinfo `Sig:` signatures verify against — see
+/// `aos-core`'s narinfo signing, which signs with the same Ed25519 key the
+/// registry roster pins.
+///
+/// # Errors
+///
+/// Returns an error when the base64 cannot be decoded or does not unwrap to
+/// a 32-byte `ssh-ed25519` key blob.
+pub fn trusted_key_ed25519(trusted: &str) -> Result<(String, [u8; 32])> {
+    let name = match trusted.split_once(':') {
+        Some((name, _)) => name.to_string(),
+        None => String::new(),
+    };
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(trusted_key_base64(trusted))
+        .context("decoding trusted key base64")?;
+    let key = parse_ed25519_key_blob(&blob)?;
+    Ok((name, key))
+}
+
 fn parse_ed25519_key_blob(blob: &[u8]) -> Result<[u8; 32]> {
     let mut cursor = blob;
     let key_type = read_string(&mut cursor).context("public key type")?;
@@ -298,6 +325,17 @@ mod tests {
         let matched =
             verify_armored(&armored, b"payload bytes", std::slice::from_ref(&trusted)).unwrap();
         assert_eq!(matched, trusted.rsplit(':').next().unwrap());
+    }
+
+    #[test]
+    fn trusted_key_ed25519_unwraps_name_and_raw_key() {
+        let key = test_key();
+        let trusted = trusted_key_line("demo", &key.verifying_key());
+        let (name, raw) = trusted_key_ed25519(&trusted).unwrap();
+        assert_eq!(name, "demo");
+        assert_eq!(&raw, key.verifying_key().as_bytes());
+        // A non-key string is rejected rather than yielding a bogus key.
+        assert!(trusted_key_ed25519("not:a:realkey").is_err());
     }
 
     #[test]

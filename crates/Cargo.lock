@@ -344,6 +344,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "aos-cache",
+ "aos-core",
  "aos-package",
  "aos-proto",
  "aos-registry-surface",

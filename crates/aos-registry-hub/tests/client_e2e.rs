@@ -303,8 +303,13 @@ async fn real_backend_publishes_and_reads_back() {
     );
 
     // The NAR round-trips byte-for-byte via the URL the narinfo records.
-    let got_nar = backend.get_nar("nar/h7j3k8l2m9n4.nar.zst").await.unwrap();
-    let want_nar = std::fs::read(surface.join("nar/h7j3k8l2m9n4.nar.zst")).unwrap();
+    let nar_rel = want_narinfo
+        .lines()
+        .find_map(|l| l.strip_prefix("URL:"))
+        .map(str::trim)
+        .expect("narinfo has a URL field");
+    let got_nar = backend.get_nar(nar_rel).await.unwrap();
+    let want_nar = std::fs::read(surface.join(nar_rel)).unwrap();
     assert_eq!(
         got_nar, want_nar,
         "NAR round-trips through the real backend"
