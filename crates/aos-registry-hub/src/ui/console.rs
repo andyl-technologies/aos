@@ -231,7 +231,10 @@ document.getElementById('passkey-login').addEventListener('click', async functio
     var cred=await navigator.credentials.get({publicKey:{challenge:b64uToBuf(opts.challenge),rpId:opts.rp_id,userVerification:'preferred',timeout:60000}});
     var body={credential_id:bufToB64u(cred.rawId),client_data_json:bufToB64u(cred.response.clientDataJSON),authenticator_data:bufToB64u(cred.response.authenticatorData),signature:bufToB64u(cred.response.signature)};
     var r=await fetch('/auth/passkey/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(r.ok){window.location='/';}else{err.textContent='Passkey sign-in failed.';}
+    if(r.ok){window.location='/';return;}
+    var j=null;try{j=await r.json();}catch(e){}
+    if(j&&j.redirect){window.location=j.redirect;return;}
+    err.textContent='Passkey sign-in failed.';
   }catch(e){err.textContent='Passkey sign-in was cancelled or failed.';}
 });
 "#;

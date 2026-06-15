@@ -19,7 +19,7 @@ use aos_registry_hub::auth::session::COOKIE_NAME;
 use aos_registry_hub::auth::webauthn::{
     self, AssertionResponse, RegistrationResponse, KIND_ASSERTION, TYPE_CREATE, TYPE_GET,
 };
-use aos_registry_hub::db::Database;
+use aos_registry_hub::db::{Database, IdpConfigRecord};
 use aos_registry_hub::server::{router, AppState};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -393,6 +393,76 @@ async fn http_register_then_login(auth: SoftAuthenticator) {
         .unwrap();
     let resolved = db.validate_session(value).unwrap().unwrap();
     assert_eq!(resolved.user_id, user);
+}
+
+/// A passkey is a local credential, so it must not bypass `enforce_sso` (H-4).
+/// When the asserting user belongs to an SSO-enforced org, the HTTP login finish
+/// refuses to mint a session: it answers `403` with a `{ "redirect": … }` body
+/// steering the script to the org's IdP, and sets no cookie — even though the
+/// assertion itself is cryptographically valid.
+#[tokio::test]
+async fn enforced_user_passkey_login_refused_to_sso() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let user = db.create_user("dev@acme.com", None).unwrap();
+    let auth = SoftAuthenticator::ed25519(b"enforced");
+    register_direct(&db, user, &auth).unwrap();
+
+    // Turn on SSO enforcement for the user's verified email domain.
+    let org_id = db.create_org("acme", "Acme").unwrap();
+    db.upsert_idp_config(&IdpConfigRecord {
+        org_id,
+        issuer: "https://idp.example".into(),
+        authorization_endpoint: "https://idp.example/authorize".into(),
+        token_endpoint: "https://idp.example/token".into(),
+        jwks_uri: "https://idp.example/jwks".into(),
+        client_id: "hub-client".into(),
+        client_secret_enc: None,
+        scopes: "openid email profile".into(),
+        groups_claim: None,
+        role_map_json: "{}".into(),
+        allow_jit: false,
+        enforce_sso: true,
+        default_role: "viewer".into(),
+    })
+    .unwrap();
+    db.add_org_domain(org_id, "acme.com").unwrap();
+    db.verify_org_domain("acme.com").unwrap();
+
+    let app = router(app_state(Arc::clone(&db)));
+
+    // A genuine, valid assertion still gets refused.
+    let lbegin = send_json(&app, "POST", "/auth/passkey/begin", None, None, None).await;
+    let lopts: serde_json::Value = serde_json::from_str(&lbegin.body).unwrap();
+    let lchallenge = lopts["challenge"].as_str().unwrap();
+    let lad = auth.authenticator_data(1, false);
+    let lcdj = client_data_json(TYPE_GET, lchallenge, ORIGIN);
+    let signature = auth.sign(&webauthn::signed_message(&lad, &lcdj));
+    let login_body = serde_json::json!({
+        "credential_id": B64URL.encode(auth.cred_id()),
+        "client_data_json": B64URL.encode(&lcdj),
+        "authenticator_data": B64URL.encode(&lad),
+        "signature": B64URL.encode(&signature),
+    });
+    let lfinish = send_json(
+        &app,
+        "POST",
+        "/auth/passkey/finish",
+        None,
+        Some(login_body.to_string()),
+        None,
+    )
+    .await;
+    assert_eq!(lfinish.status, StatusCode::FORBIDDEN, "{}", lfinish.body);
+    assert!(
+        lfinish.set_cookie.is_none(),
+        "no local session for an SSO-enforced user"
+    );
+    let body: serde_json::Value = serde_json::from_str(&lfinish.body).unwrap();
+    assert_eq!(
+        body["redirect"].as_str(),
+        Some("/auth/oidc/start?org=acme"),
+        "the script is steered to the org's IdP"
+    );
 }
 
 // -- negative cases ---------------------------------------------------------
