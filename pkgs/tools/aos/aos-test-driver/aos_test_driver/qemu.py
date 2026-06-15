@@ -92,8 +92,13 @@ class QemuMachine(Machine):
     disk_copy: str
     metadata_copy: str
     vars_copy: str
+    tpm: bool
+    swtpm_bin: str | None
+    tpm_socket: str | None
+    tpm_state_dir: str | None
     qemu_proc: subprocess.Popen[bytes] | None
     drain_proc: subprocess.Popen[bytes] | None
+    swtpm_proc: subprocess.Popen[bytes] | None
 
     def __init__(
         self,
@@ -113,6 +118,8 @@ class QemuMachine(Machine):
         firmware_vars: str | None = None,
         fw_cfg: str | None = None,
         disk_size_mib: int | None = None,
+        tpm: bool = False,
+        swtpm_bin: str | None = None,
     ) -> None:
         self.boot = boot
         self.kernel_pkg = kernel
@@ -138,9 +145,14 @@ class QemuMachine(Machine):
         self.disk_copy = str(self.tmpdir / f"{name}-disk.img")
         self.metadata_copy = str(self.tmpdir / f"{name}-metadata.iso")
         self.vars_copy = str(self.tmpdir / f"{name}-OVMF_VARS.fd")
+        self.tpm = tpm
+        self.swtpm_bin = swtpm_bin
+        self.tpm_socket = str(self.tmpdir / f"{name}-tpm.sock") if tpm else None
+        self.tpm_state_dir = str(self.tmpdir / f"{name}-tpm-state") if tpm else None
 
         self.qemu_proc = None
         self.drain_proc = None
+        self.swtpm_proc = None
         self._qemu_log_fd: IO[bytes] | None = None
 
     # ------------------------------------------------------------------
@@ -261,12 +273,71 @@ class QemuMachine(Machine):
         self._launch()
 
     # ------------------------------------------------------------------
+    def _ensure_swtpm(self) -> None:
+        """Ensure the per-machine swtpm is running before QEMU (re)launch.
+
+        Idempotent: reuses a live swtpm (preserving its in-memory TPM), and
+        otherwise (re)launches it against the persistent ``--tpmstate`` dir.
+        QEMU tears its control connection down on the reboot leg and swtpm
+        exits with it, so this is called from every ``_launch()`` — the
+        relaunch reloads the persisted NV state and enrolled keys while PCRs
+        reset at power-on, exactly matching real-hardware reboot semantics.
+
+        # Raises
+
+        ``RuntimeError`` if no ``swtpm_bin`` was supplied, or swtpm exits
+        immediately / its control socket never appears.
+        """
+        if not self.tpm:
+            return
+        if self.swtpm_proc is not None and self.swtpm_proc.poll() is None:
+            return  # still alive — reuse it
+        if self.swtpm_bin is None:
+            raise RuntimeError(
+                f"[{self.name}] tpm requested but no swtpm_bin in manifest"
+            )
+        assert self.tpm_state_dir is not None and self.tpm_socket is not None
+        os.makedirs(self.tpm_state_dir, exist_ok=True)
+        # A stale socket file from a dead swtpm would block bind.
+        if os.path.exists(self.tpm_socket):
+            os.unlink(self.tpm_socket)
+        log.info("  vTPM:     swtpm @ %s", self.tpm_socket)
+        self.swtpm_proc = subprocess.Popen(
+            [
+                self.swtpm_bin,
+                "socket",
+                "--tpm2",
+                f"--tpmstate=dir={self.tpm_state_dir}",
+                f"--ctrl=type=unixio,path={self.tpm_socket}",
+                "--flags=startup-clear",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.monotonic() + 5.0
+        while not os.path.exists(self.tpm_socket):
+            if self.swtpm_proc.poll() is not None:
+                raise RuntimeError(
+                    f"[{self.name}] swtpm exited immediately"
+                    f" (code {self.swtpm_proc.returncode})"
+                )
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"[{self.name}] swtpm control socket did not appear within 5s"
+                )
+            time.sleep(0.05)
+
+    # ------------------------------------------------------------------
     def _launch(self) -> None:
         """Start the QEMU process against the prepared per-run artifacts.
 
         Split out of start() so reboot() can relaunch against the same
         disk/NVRAM state without re-running the prep (copy/grow/sgdisk).
         """
+        # vTPM must be up before QEMU connects to its socket — on the reboot
+        # leg swtpm died with the previous QEMU, so (re)launch it here.
+        self._ensure_swtpm()
+
         # Image boot uses the SB+SMM OVMF, which requires the q35 SMM
         # machine. Kernel boot keeps the plain machine.
         machine = (
@@ -328,6 +399,16 @@ class QemuMachine(Machine):
                 f"id=metadata,file={self.metadata_copy},if=none,format=raw,readonly=on",
                 "-device", "virtio-scsi-pci,id=scsi0",
                 "-device", "scsi-cd,drive=metadata,bus=scsi0.0",
+            ]
+
+        # vTPM device — connects QEMU's emulated tpm-tis to the swtpm
+        # control socket launched in start(). Present on every (re)launch
+        # so the guest keeps its TPM across the reboot leg.
+        if self.tpm:
+            argv += [
+                "-chardev", f"socket,id=chrtpm,path={self.tpm_socket}",
+                "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
+                "-device", "tpm-tis,tpmdev=tpm0",
             ]
 
         argv += [
@@ -494,6 +575,13 @@ class QemuMachine(Machine):
             except subprocess.TimeoutExpired:
                 self.drain_proc.kill()
                 self.drain_proc.wait()
+        if self.swtpm_proc is not None and self.swtpm_proc.poll() is None:
+            self.swtpm_proc.terminate()
+            try:
+                self.swtpm_proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.swtpm_proc.kill()
+                self.swtpm_proc.wait()
         if self._qemu_log_fd is not None:
             self._qemu_log_fd.close()
             self._qemu_log_fd = None

@@ -82,6 +82,16 @@
       if sb.enable
       then sb.dbCert
       else null;
+    # PCR-policy signing (RFC-0006 phase 3): when measured boot is on, the
+    # UKI carries a signed PCR policy so TPM-sealed /var unseals across OTA.
+    pcrPrivateKey =
+      if sb.measuredBoot.enable
+      then sb.measuredBoot.pcrPrivateKey
+      else null;
+    pcrPublicKey =
+      if sb.measuredBoot.enable
+      then sb.measuredBoot.pcrPublicKey
+      else null;
   };
 
   ukiFilename = "aos-${name}-${version}.efi";

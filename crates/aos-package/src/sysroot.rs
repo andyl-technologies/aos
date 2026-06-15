@@ -61,6 +61,7 @@ use crate::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     fetch_narinfos, resolve_mirror,
 };
+use crate::registry::sb_certs::{self, SbCertsToml};
 use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::{filter_missing, import_nar};
@@ -270,6 +271,14 @@ pub async fn install_system(
     } else {
         printer.info("All paths already in store.");
     }
+
+    // Secure Boot validation (RFC-0006 phase 4): the closure is now
+    // downloaded, NAR/hash-verified, and imported. Before we create a new
+    // generation or touch the boot path, validate the image's recorded
+    // Secure Boot facts against the registry's signed catalog so an upgrade
+    // the firmware would reject is refused *here* — a clean, recoverable
+    // download-time refusal rather than a boot-time brick.
+    validate_sysroot_secure_boot(config, toplevel_meta, &closure.registry_name, printer)?;
 
     // Step 7: Create new system generation.
     printer.step(7, 8, "Creating system generation...");
@@ -1668,6 +1677,243 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
 }
 
+/// Validate a downloaded sysroot's Secure Boot facts against the registry's
+/// signed catalog before activation (RFC-0006 phase 4).
+///
+/// For every image the sysroot ships that records Secure Boot facts, this
+/// enforces, against the registry's committed `sb-certs.toml`:
+///
+/// 1. the image's `sb_signer_cert_sha256` is in the **active** db-cert set
+///    (and not revoked),
+/// 2. every SBAT component's generation is **at or above** the revocation
+///    floor,
+/// 3. (defense in depth) the downloaded UKI's embedded Authenticode
+///    signature re-verifies against the catalog's db cert, when a db cert
+///    PEM is provisioned locally (`trusted-sb-certs.d/<registry>.pem`).
+///
+/// On any mismatch it returns an error *before* a new generation is created
+/// or the boot path is touched, turning a boot-time Secure Boot rejection
+/// into a recoverable download-time refusal.
+///
+/// # Policy for unsigned images
+///
+/// Images that record **no** Secure Boot facts (legacy/unsigned/dev builds:
+/// `sb_signer_cert_sha256 == None` and an empty `sbat`) are skipped so the
+/// existing unsigned development path keeps working. Likewise, if the
+/// registry ships no `sb-certs.toml`, there is nothing to validate against
+/// and the step is a no-op. Validation engages only when *both* the image
+/// carries facts *and* the registry publishes a catalog.
+///
+/// # Errors
+///
+/// Returns an error when the registry catalog cannot be loaded or parsed,
+/// when an image's signer cert is not in the active db-cert set, when an
+/// SBAT generation is below the floor, or when the re-verification of a
+/// downloaded UKI against the db cert fails.
+fn validate_sysroot_secure_boot(
+    config: &ApmConfig,
+    toplevel_meta: &PackageMeta,
+    registry_name: &str,
+    printer: &Printer,
+) -> Result<()> {
+    // The signed `sb-certs.toml` is materialized by `extract_registry_root`
+    // (registry/git.rs) into the registries-storage directory alongside
+    // `registry.toml` / `keys.toml` — NOT the metadata cache that holds
+    // `packages/` and `closures/`. Read it from the same directory the
+    // extractor writes to, or the catalog is silently invisible.
+    let registry_tree = config.scope.registries_path().join(registry_name);
+    let db_cert = sb_db_cert_pem(config, registry_name);
+    validate_sysroot_secure_boot_in(
+        &toplevel_meta.images,
+        registry_name,
+        &registry_tree,
+        db_cert.as_deref(),
+        printer,
+    )
+}
+
+/// Catalog-directory-explicit core of [`validate_sysroot_secure_boot`].
+///
+/// Loads `sb-certs.toml` from `catalog_dir` (the exact directory
+/// `extract_registry_root` writes the registry's root files to) and runs the
+/// per-image gate. Keeping the directory and db-cert path as parameters lets
+/// tests point the validator at a temp tree without relying on the cached
+/// scope path resolution.
+///
+/// # Errors
+///
+/// Returns an error when the catalog fails to load/parse or any image fails
+/// [`validate_image_secure_boot`].
+fn validate_sysroot_secure_boot_in(
+    images: &[crate::types::SysrootImageEntry],
+    registry_name: &str,
+    catalog_dir: &Path,
+    db_cert: Option<&Path>,
+    printer: &Printer,
+) -> Result<()> {
+    let signed_images: Vec<&crate::types::SysrootImageEntry> = images
+        .iter()
+        .filter(|img| img.sb_signer_cert_sha256.is_some() || !img.sbat.is_empty())
+        .collect();
+    if signed_images.is_empty() {
+        // Unsigned/legacy sysroot: nothing to validate (dev path).
+        return Ok(());
+    }
+
+    let Some(catalog) = sb_certs::load_sb_certs_toml(catalog_dir).with_context(|| {
+        format!(
+            "loading Secure Boot catalog for registry '{registry_name}' from {}",
+            catalog_dir.display()
+        )
+    })?
+    else {
+        // The registry publishes no Secure Boot catalog; there is no
+        // signed floor or active set to enforce against.
+        printer.info(
+            "Registry publishes no Secure Boot catalog (sb-certs.toml); \
+             skipping download-time SB validation.",
+        );
+        return Ok(());
+    };
+
+    for img in signed_images {
+        validate_image_secure_boot(img, &catalog, db_cert)?;
+    }
+
+    printer.success("Secure Boot catalog validation passed.");
+    Ok(())
+}
+
+/// Validate one image entry against the registry catalog.
+///
+/// # Errors
+///
+/// Returns an error for an unknown/revoked signer cert, a below-floor SBAT
+/// generation, or a failed UKI re-verification.
+fn validate_image_secure_boot(
+    img: &crate::types::SysrootImageEntry,
+    catalog: &SbCertsToml,
+    db_cert: Option<&Path>,
+) -> Result<()> {
+    // 1. Signer cert must be active and not revoked.
+    match &img.sb_signer_cert_sha256 {
+        Some(cert) if catalog.accepts_signer(cert) => {}
+        Some(cert) => bail!(
+            "Secure Boot validation failed for image '{}': its signer cert \
+             {cert} is not in the registry's active db-cert set (it was \
+             retired or never trusted). Refusing the upgrade before reboot.",
+            img.format,
+        ),
+        None => bail!(
+            "Secure Boot validation failed for image '{}': it records SBAT \
+             facts but no signer cert; the registry cannot vouch for it. \
+             Refusing the upgrade before reboot.",
+            img.format,
+        ),
+    }
+
+    // 2. Every SBAT component must meet the revocation floor.
+    if let Some((component, found, floor)) = catalog.first_below_floor(&img.sbat) {
+        bail!(
+            "Secure Boot validation failed for image '{}': SBAT component \
+             '{component}' generation {found} is below the registry \
+             revocation floor {floor}. This component was revoked fleet-wide; \
+             refusing the upgrade before reboot.",
+            img.format,
+        );
+    }
+
+    // 3. Defense in depth: re-verify the downloaded UKI against the db cert.
+    if let Some(db_cert) = db_cert {
+        if let Some(uki) = find_uki_in_image(&img.store_path) {
+            reverify_uki(&uki, db_cert).with_context(|| {
+                format!(
+                    "re-verifying downloaded UKI for image '{}' against the \
+                     catalog db cert",
+                    img.format
+                )
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Locate a provisioned db certificate PEM for `registry`, if present.
+///
+/// Mirrors the registry trust-anchor delivery: searches the scope's
+/// `trusted-sb-certs.d` directories for `<registry>.pem`, returning the
+/// first match or `None` when no db cert was baked/provisioned (in which
+/// case the re-verification step is skipped).
+fn sb_db_cert_pem(config: &ApmConfig, registry: &str) -> Option<PathBuf> {
+    config
+        .scope
+        .trusted_sb_certs_dirs()
+        .into_iter()
+        .map(|dir| dir.join(format!("{registry}.pem")))
+        .find(|path| path.exists())
+}
+
+/// Find a UKI (`.efi` PE file) inside an imported image store path.
+fn find_uki_in_image(store_path: &str) -> Option<PathBuf> {
+    fn walk(dir: &Path) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = walk(&path) {
+                    return Some(found);
+                }
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+    let root = Path::new(store_path);
+    if root.is_file() {
+        return root
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
+            .then(|| root.to_path_buf());
+    }
+    walk(root)
+}
+
+/// Re-verify a downloaded UKI's Authenticode signature against a db cert.
+///
+/// # Errors
+///
+/// Returns an error when `sbverify` cannot be spawned or reports the
+/// signature does not verify against `db_cert`.
+fn reverify_uki(uki: &Path, db_cert: &Path) -> Result<()> {
+    let output = std::process::Command::new("sbverify")
+        .arg("--cert")
+        .arg(db_cert)
+        .arg(uki)
+        .output()
+        .with_context(|| format!("running sbverify --cert on {}", uki.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        bail!(
+            "downloaded UKI {} failed Secure Boot re-verification against \
+             db cert {}: {}",
+            uki.display(),
+            db_cert.display(),
+            if stderr.trim().is_empty() {
+                stdout.trim()
+            } else {
+                stderr.trim()
+            }
+        );
+    }
+    Ok(())
+}
+
 /// Pick the mirror URL used for image downloads: the first configured
 /// registry's mirror, falling back to the default public cache.
 fn resolve_image_mirror(config: &ApmConfig, _meta: &PackageMeta) -> String {
@@ -1828,6 +2074,173 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::sb_certs::{RevokedSbCert, SbCert, write_sb_certs_toml};
+    use crate::types::{SbatEntry, SysrootImageEntry};
+    use tempfile::TempDir;
+
+    const SIGNER_ACTIVE: &str =
+        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    const SIGNER_RETIRED: &str =
+        "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752";
+
+    fn sb_sbat(pairs: &[(&str, u32)]) -> Vec<SbatEntry> {
+        pairs
+            .iter()
+            .map(|(c, g)| SbatEntry {
+                component: (*c).into(),
+                generation: *g,
+            })
+            .collect()
+    }
+
+    fn signed_image(signer: &str, sbat: &[(&str, u32)]) -> SysrootImageEntry {
+        SysrootImageEntry {
+            format: "raw".into(),
+            store_path: "/nix/store/deadbeef-aos-image".into(),
+            nar_hash: "sha256:abc".into(),
+            nar_size: 4096,
+            sb_signer_cert_sha256: Some(signer.into()),
+            sbat: sb_sbat(sbat),
+            expected_pcr11: None,
+        }
+    }
+
+    fn active_catalog() -> SbCertsToml {
+        SbCertsToml {
+            active: vec![SbCert {
+                id: "db-2026".into(),
+                cert_sha256: SIGNER_ACTIVE.into(),
+            }],
+            sbat_floor: sb_sbat(&[("aos", 1)]),
+            ..SbCertsToml::default()
+        }
+    }
+
+    // --- Real-validator coverage (RFC-0006 phase 4 download-time gate) ---
+
+    #[test]
+    fn validate_image_accepts_active_signer_above_floor() {
+        let img = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
+        assert!(validate_image_secure_boot(&img, &active_catalog(), None).is_ok());
+    }
+
+    #[test]
+    fn validate_image_refuses_below_floor() {
+        let img = signed_image(SIGNER_ACTIVE, &[("aos", 1)]);
+        let raised = SbCertsToml {
+            sbat_floor: sb_sbat(&[("aos", 2)]),
+            ..active_catalog()
+        };
+        let err = validate_image_secure_boot(&img, &raised, None).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("below the registry"), "{msg}");
+    }
+
+    #[test]
+    fn validate_image_refuses_retired_cert() {
+        let catalog = SbCertsToml {
+            active: vec![
+                SbCert {
+                    id: "db-2026".into(),
+                    cert_sha256: SIGNER_ACTIVE.into(),
+                },
+                SbCert {
+                    id: "db-2024".into(),
+                    cert_sha256: SIGNER_RETIRED.into(),
+                },
+            ],
+            revoked: vec![RevokedSbCert {
+                id: "db-2024".into(),
+                reason: Some("compromised".into()),
+            }],
+            sbat_floor: sb_sbat(&[("aos", 1)]),
+            ..SbCertsToml::default()
+        };
+        let retired = signed_image(SIGNER_RETIRED, &[("aos", 5)]);
+        assert!(validate_image_secure_boot(&retired, &catalog, None).is_err());
+        let active = signed_image(SIGNER_ACTIVE, &[("aos", 5)]);
+        assert!(validate_image_secure_boot(&active, &catalog, None).is_ok());
+    }
+
+    #[test]
+    fn validate_image_refuses_unknown_signer() {
+        let img = signed_image(SIGNER_RETIRED, &[("aos", 9)]);
+        assert!(validate_image_secure_boot(&img, &active_catalog(), None).is_err());
+    }
+
+    /// Regression guard for C1: the validator must read `sb-certs.toml` from
+    /// the exact directory `extract_registry_root` writes registry root files
+    /// to. This writes the catalog there and confirms the *real* gate
+    /// (`validate_sysroot_secure_boot_in`) picks it up and enforces it. With
+    /// the original cache-vs-registries path mismatch this test fails because
+    /// the catalog is invisible and a below-floor image is wrongly accepted.
+    #[test]
+    fn validate_sysroot_reads_catalog_from_extract_dir() {
+        let tmp = TempDir::new().unwrap();
+        let catalog_dir = tmp.path();
+        // This is the directory layout extract_registry_root produces:
+        // <registries-storage>/<name>/sb-certs.toml at the tree root.
+        write_sb_certs_toml(
+            catalog_dir,
+            &SbCertsToml {
+                active: vec![SbCert {
+                    id: "db".into(),
+                    cert_sha256: SIGNER_ACTIVE.into(),
+                }],
+                sbat_floor: sb_sbat(&[("aos", 5)]),
+                ..SbCertsToml::default()
+            },
+        )
+        .unwrap();
+        let printer = Printer::new(0, true, false);
+
+        // Below the floor (gen 1 < floor 5): must be refused now that the
+        // catalog is actually read from this directory.
+        let below = vec![signed_image(SIGNER_ACTIVE, &[("aos", 1)])];
+        assert!(
+            validate_sysroot_secure_boot_in(&below, "aos", catalog_dir, None, &printer).is_err(),
+            "catalog at the extract dir must be enforced"
+        );
+
+        // At/above the floor: accepted.
+        let ok = vec![signed_image(SIGNER_ACTIVE, &[("aos", 5)])];
+        assert!(
+            validate_sysroot_secure_boot_in(&ok, "aos", catalog_dir, None, &printer).is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_sysroot_skips_unsigned_images() {
+        let tmp = TempDir::new().unwrap();
+        let printer = Printer::new(0, true, false);
+        let unsigned = vec![SysrootImageEntry {
+            format: "raw".into(),
+            store_path: "/nix/store/x".into(),
+            nar_hash: "sha256:y".into(),
+            nar_size: 1,
+            sb_signer_cert_sha256: None,
+            sbat: vec![],
+            expected_pcr11: None,
+        }];
+        // No catalog written, no facts on the image: no-op success.
+        assert!(
+            validate_sysroot_secure_boot_in(&unsigned, "aos", tmp.path(), None, &printer).is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_sysroot_refuses_signed_image_with_no_catalog_floor_satisfied_but_signer_absent() {
+        // A signed image plus an empty catalog (no active certs) must refuse:
+        // an empty active set vouches for nobody. The catalog file is present
+        // but empty so load returns Some(default).
+        let tmp = TempDir::new().unwrap();
+        write_sb_certs_toml(tmp.path(), &SbCertsToml::default()).unwrap();
+        let printer = Printer::new(0, true, false);
+        let img = vec![signed_image(SIGNER_ACTIVE, &[("aos", 1)])];
+        assert!(
+            validate_sysroot_secure_boot_in(&img, "aos", tmp.path(), None, &printer).is_err()
+        );
+    }
 
     #[test]
     fn generation_state_round_trip() {

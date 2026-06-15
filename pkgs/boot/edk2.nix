@@ -148,6 +148,13 @@ in
           # SB+SMM OVMF still boots anything while in Setup Mode (no PK
           # enrolled), so the non-SB image tests are unaffected;
           # enforcement begins only once PK/KEK/db are enrolled.
+          # TPM2_ENABLE compiles in the TCG2 measured-boot stack so OVMF
+          # measures the boot (incl. PCR 7 = Secure Boot state) into an
+          # attached vTPM, and exposes the EFI TCG2 protocol that sd-stub
+          # uses to extend the UKI sections into PCR 11. Without it the
+          # firmware does no measurement and TPM-sealed /var (RFC-0006
+          # phase 3) cannot bind to PCR 7/11. Harmless when no TPM is
+          # attached (the measurement calls just no-op).
           $PYTHON_COMMAND BaseTools/Source/Python/build/build.py \
             -a X64 \
             -t GCC \
@@ -155,6 +162,8 @@ in
             -p OvmfPkg/OvmfPkgX64.dsc \
             -D SECURE_BOOT_ENABLE=TRUE \
             -D SMM_REQUIRE=TRUE \
+            -D TPM2_ENABLE=TRUE \
+            -D TPM2_CONFIG_ENABLE=TRUE \
             -n $NIX_BUILD_CORES
         '';
       }

@@ -61,6 +61,7 @@ use crate::gitcmd;
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::nixcache;
+use crate::registry::sb_certs::{self, RevokedSbCert, SbCert, SbCertsToml};
 use crate::registry::objectstore;
 use crate::registry::pack;
 use crate::registry::state;
@@ -72,13 +73,13 @@ use crate::security::{
 use crate::sshkey;
 use crate::types::{
     CacheEntry, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
-    SigningKeySource, SigningKeySpec, package_name_bucket, validate_branch_name,
+    SbatEntry, SigningKeySource, SigningKeySpec, package_name_bucket, validate_branch_name,
     validate_channel_name, validate_git_ref_name, validate_package_name, validate_platform_name,
     validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
-    TrustCommand, UploadConfigField,
+    SbCertsCommand, TrustCommand, UploadConfigField,
 };
 
 // ---------------------------------------------------------------------------
@@ -1172,11 +1173,18 @@ pub async fn publish(
         introspect_deriver(&info.path)?
     };
 
-    // Introspect image store paths if provided.
-    let mut image_infos: Vec<(String, StorePathInfo)> = Vec::new();
+    // Introspect image store paths if provided, deriving Secure Boot facts
+    // from each signed UKI so the catalog mirrors what was actually signed
+    // (RFC-0006 phase 4). The publish-time db-cert verification is enforced
+    // only when a db cert is supplied; absent one, facts are recorded but
+    // not cross-checked here (the closure signature still covers them).
+    let sb_db_cert = sb_db_cert_path(config, &name);
+    let mut image_infos: Vec<(String, StorePathInfo, SbFacts)> = Vec::new();
     for (img_path, img_fmt) in image_paths.iter().zip(image_formats.iter()) {
         let img_info = introspect_store_path(img_path)?;
-        image_infos.push((img_fmt.clone(), img_info));
+        let sb = derive_sb_facts(&img_info.path, sb_db_cert.as_deref())
+            .with_context(|| format!("deriving Secure Boot facts for {}", img_info.path))?;
+        image_infos.push((img_fmt.clone(), img_info, sb));
     }
 
     let (parsed_name, parsed_version) = parse_store_path(&info.path);
@@ -1243,8 +1251,11 @@ pub async fn publish(
     if let Some(prev) = previous {
         printer.kv("Previous", prev);
     }
-    for (fmt, img_info) in &image_infos {
+    for (fmt, img_info, sb) in &image_infos {
         printer.kv(&format!("Image ({fmt})"), &img_info.path);
+        if let Some(cert) = &sb.signer_cert_sha256 {
+            printer.kv(&format!("  SB signer cert ({fmt})"), cert);
+        }
     }
 
     let mut committed = false;
@@ -1282,12 +1293,18 @@ pub async fn publish(
         });
         let images = image_infos
             .iter()
-            .map(|(format, image)| {
+            .map(|(format, image, sb)| {
                 serde_json::json!({
                     "format": format.as_str(),
                     "store_path": image.path.as_str(),
                     "nar_hash": image.nar_hash.as_str(),
                     "nar_size": image.nar_size,
+                    "sb_signer_cert_sha256": sb.signer_cert_sha256,
+                    "sbat": sb.sbat.iter().map(|item| serde_json::json!({
+                        "component": item.component,
+                        "generation": item.generation,
+                    })).collect::<Vec<_>>(),
+                    "expected_pcr11": sb.expected_pcr11,
                 })
             })
             .collect::<Vec<_>>();
@@ -1366,7 +1383,7 @@ fn build_package_toml(
     maintainer: Option<&str>,
     sysroot: bool,
     previous: Option<&str>,
-    image_infos: &[(String, StorePathInfo)],
+    image_infos: &[(String, StorePathInfo, SbFacts)],
     source_info: Option<&StorePathInfo>,
 ) -> Result<String> {
     let desc = description.unwrap_or("No description");
@@ -1484,9 +1501,629 @@ fn build_package_toml(
     }
 }
 
+/// Secure Boot facts extracted from a signed UKI at publish time.
+///
+/// Every field is derived from the real binary so the registry catalog
+/// cannot disagree with what was actually signed (RFC-0006 phase 4,
+/// `registry-catalog.md`). A field is `None`/empty when the corresponding
+/// fact could not be derived (e.g. `systemd-measure` unavailable).
+#[derive(Debug, Default, Clone)]
+struct SbFacts {
+    /// Lowercase hex SHA-256 of the signer leaf cert in the PE cert table.
+    signer_cert_sha256: Option<String>,
+    /// SBAT component/generation pairs from the PE `.sbat` section.
+    sbat: Vec<SbatEntry>,
+    /// `systemd-measure`-predicted PCR-11 for this UKI (the UKI's own
+    /// contribution only; see [`extract_expected_pcr11`]).
+    expected_pcr11: Option<String>,
+}
+
+/// Locate the UKI (`.efi` PE/COFF executable) inside an image store path.
+///
+/// Sysroot images attach a single UKI per format under their store path.
+/// Returns the path to the first regular `.efi` file found (recursively),
+/// or `None` when the image carries no UKI (an unsigned/legacy image, for
+/// which no Secure Boot facts are recorded).
+fn find_uki_in_store_path(store_path: &str) -> Option<PathBuf> {
+    fn walk(dir: &Path) -> Option<PathBuf> {
+        let entries = fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = walk(&path) {
+                    return Some(found);
+                }
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+    let root = Path::new(store_path);
+    if root.is_file() {
+        return root
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
+            .then(|| root.to_path_buf());
+    }
+    walk(root)
+}
+
+/// Hash the signer leaf certificate of a UKI's Authenticode signature.
+///
+/// Confirms the binary is signed with `sbverify --list <uki>`, then reads
+/// the PE security directory directly to recover the Authenticode PKCS#7
+/// blob and returns the lowercase hex SHA-256 of its first (leaf)
+/// certificate. Returns `Ok(None)` when the binary carries no Authenticode
+/// signature (an unsigned image), so unsigned dev builds do not break
+/// publishing.
+///
+/// # Errors
+///
+/// Returns an error if `sbverify` cannot be spawned, exits with a failure
+/// other than "no signature", or the PE/PKCS#7 structure cannot be parsed
+/// into a leaf certificate.
+fn extract_sb_signer_cert_sha256(uki: &Path) -> Result<Option<String>> {
+    let output = Command::new("sbverify")
+        .arg("--list")
+        .arg(uki)
+        .output()
+        .with_context(|| format!("running sbverify --list {}", uki.display()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        // sbverify reports an unsigned binary; treat that as "no facts"
+        // rather than a publish failure.
+        if stderr.contains("No signature")
+            || stdout.contains("No signature")
+            || stderr.contains("no signature")
+        {
+            return Ok(None);
+        }
+        bail!(
+            "sbverify --list {} failed: {}",
+            uki.display(),
+            combine_output(&stdout, &stderr)
+        );
+    }
+
+    let bytes = fs::read(uki).with_context(|| format!("reading {}", uki.display()))?;
+    let leaf = leaf_cert_from_pe(&bytes)
+        .with_context(|| format!("extracting signer cert from {}", uki.display()))?;
+    Ok(Some(sha256_hex(leaf)))
+}
+
+/// Return the first (leaf) X.509 certificate DER bytes from a signed PE's
+/// Authenticode certificate table.
+///
+/// Locates the PE security directory (the `WIN_CERTIFICATE` blob holding a
+/// PKCS#7 `SignedData`), then walks the DER structure to the embedded
+/// certificate set and returns the first certificate's complete DER
+/// encoding.
+///
+/// # Errors
+///
+/// Returns an error when the PE headers, the security directory, or the
+/// PKCS#7 certificate set cannot be parsed.
+fn leaf_cert_from_pe(pe: &[u8]) -> Result<&[u8]> {
+    let (cert_off, cert_len) = pe_security_dir(pe)?;
+    let cert_table = pe
+        .get(cert_off..cert_off + cert_len)
+        .ok_or_else(|| anyhow::anyhow!("security directory extends past end of file"))?;
+    // WIN_CERTIFICATE header: dwLength(4) + wRevision(2) + wCertificateType(2).
+    let pkcs7 = cert_table
+        .get(8..)
+        .ok_or_else(|| anyhow::anyhow!("WIN_CERTIFICATE blob too short"))?;
+    first_certificate_der(pkcs7)
+}
+
+/// Parse the PE optional-header data directory entry for the
+/// `IMAGE_DIRECTORY_ENTRY_SECURITY` (index 4) certificate table, returning
+/// its `(file_offset, size)`.
+///
+/// # Errors
+///
+/// Returns an error when the DOS/PE signatures, the optional-header magic,
+/// or the data directory cannot be read, or when no security directory is
+/// present.
+fn pe_security_dir(pe: &[u8]) -> Result<(usize, usize)> {
+    let read_u16 = |off: usize| -> Option<u16> {
+        pe.get(off..off + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    };
+    let read_u32 = |off: usize| -> Option<u32> {
+        pe.get(off..off + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+
+    if read_u16(0) != Some(0x5a4d) {
+        bail!("not a PE image (missing MZ signature)");
+    }
+    let pe_off = read_u32(0x3c).context("reading e_lfanew")? as usize;
+    if read_u32(pe_off) != Some(0x0000_4550) {
+        bail!("missing PE signature");
+    }
+    // COFF header is 20 bytes; the optional header magic follows.
+    let opt_off = pe_off + 24;
+    let magic = read_u16(opt_off).context("reading optional-header magic")?;
+    // The data directory array starts after the windows-specific fields:
+    // 96 bytes for PE32 (0x10b), 112 bytes for PE32+ (0x20b).
+    let dir_off = match magic {
+        0x10b => opt_off + 96,
+        0x20b => opt_off + 112,
+        other => bail!("unexpected optional-header magic {other:#x}"),
+    };
+    // Security directory is entry index 4 (8 bytes each: RVA/offset + size).
+    let entry = dir_off + 4 * 8;
+    let offset = read_u32(entry).context("reading security dir offset")? as usize;
+    let size = read_u32(entry + 4).context("reading security dir size")? as usize;
+    if offset == 0 || size == 0 {
+        bail!("PE has no Authenticode certificate table");
+    }
+    Ok((offset, size))
+}
+
+/// Walk a PKCS#7 `SignedData` DER blob and return the *signer* certificate's
+/// complete DER encoding from the `[0] IMPLICIT certificates` field.
+///
+/// The signer is identified by matching the first `SignerInfo`'s
+/// `issuerAndSerialNumber` against each embedded certificate's issuer name
+/// and serial number. This correctly picks the leaf even when the embedded
+/// cert set is unordered or carries intermediate CA certs.
+///
+/// # Fallback caveat
+///
+/// If the `SignerInfo` cannot be located (for example a CMS variant that
+/// uses `subjectKeyIdentifier` instead of `issuerAndSerialNumber`, which
+/// Authenticode does not use in practice), this falls back to the first
+/// certificate in the set. Authenticode signers produced by `sbsign`/`ukify`
+/// embed a single end-entity certificate identified by issuer+serial, so the
+/// matched path is the one exercised in production; the fallback exists only
+/// so an unusual blob degrades to the previous behavior rather than failing.
+///
+/// # Errors
+///
+/// Returns an error when the DER structure does not match the expected
+/// PKCS#7 `ContentInfo` → `SignedData` → certificates layout, or the
+/// certificates field is absent.
+fn first_certificate_der(pkcs7: &[u8]) -> Result<&[u8]> {
+    // ContentInfo ::= SEQUENCE { contentType OID, content [0] EXPLICIT ANY }
+    let content_info = der_expect_seq(pkcs7).context("PKCS#7 ContentInfo")?;
+    let (_oid, rest) = der_take(content_info).context("ContentInfo.contentType")?;
+    // content [0] EXPLICIT
+    let (tag, explicit, _) = der_tlv(rest).context("ContentInfo.content")?;
+    if tag != 0xA0 {
+        bail!("PKCS#7 content is not context-tag [0]");
+    }
+    // SignedData ::= SEQUENCE { version, digestAlgorithms, contentInfo,
+    //   certificates [0] IMPLICIT, ..., signerInfos SET }
+    let signed_data = der_expect_seq(explicit).context("SignedData")?;
+
+    let mut certificates: Option<&[u8]> = None;
+    let mut signer_infos: Option<&[u8]> = None;
+    let mut cursor = signed_data;
+    while !cursor.is_empty() {
+        let (tag, value, after) = der_tlv(cursor).context("scanning SignedData fields")?;
+        match tag {
+            // certificates [0] IMPLICIT SET OF Certificate.
+            0xA0 => certificates = Some(value),
+            // signerInfos SET OF SignerInfo (the final SET in SignedData).
+            0x31 => signer_infos = Some(value),
+            _ => {}
+        }
+        cursor = after;
+    }
+
+    let certificates = certificates
+        .ok_or_else(|| anyhow::anyhow!("PKCS#7 SignedData has no certificates field"))?;
+
+    // Try to pick the cert whose issuer+serial matches the first SignerInfo.
+    if let Some(signer_infos) = signer_infos
+        && let Some((issuer, serial)) = signer_issuer_and_serial(signer_infos)
+        && let Some(cert) = certificate_matching(certificates, issuer, serial)?
+    {
+        return Ok(cert);
+    }
+
+    // Fallback: the first certificate in the set (see caveat).
+    der_full_tlv(certificates).context("leaf certificate TLV")
+}
+
+/// Extract `(issuerName, serialNumber)` DER slices from the first
+/// `SignerInfo`'s `issuerAndSerialNumber`, or `None` if not in that form.
+///
+/// `SignerInfo ::= SEQUENCE { version, sid IssuerAndSerialNumber, ... }` and
+/// `IssuerAndSerialNumber ::= SEQUENCE { issuer Name, serialNumber INTEGER }`.
+fn signer_issuer_and_serial(signer_infos_set: &[u8]) -> Option<(&[u8], &[u8])> {
+    // First SignerInfo in the SET.
+    let (_tag, signer_info, _) = der_tlv(signer_infos_set).ok()?;
+    if _tag != 0x30 {
+        return None;
+    }
+    // version INTEGER, then sid IssuerAndSerialNumber SEQUENCE.
+    let (vtag, _version, rest) = der_tlv(signer_info).ok()?;
+    if vtag != 0x02 {
+        return None;
+    }
+    let (stag, ias, _) = der_tlv(rest).ok()?;
+    if stag != 0x30 {
+        return None;
+    }
+    // issuer Name (full TLV), serialNumber INTEGER (full TLV).
+    let issuer = der_full_tlv(ias).ok()?;
+    let (_itag, _ivalue, after_issuer) = der_tlv(ias).ok()?;
+    let serial = der_full_tlv(after_issuer).ok()?;
+    Some((issuer, serial))
+}
+
+/// Find the certificate in `certificates_set` whose issuer Name and serial
+/// number equal `issuer`/`serial`, returning its complete DER TLV.
+///
+/// `Certificate ::= SEQUENCE { tbsCertificate SEQUENCE { ... }, ... }` and
+/// `TBSCertificate ::= SEQUENCE { [0] version?, serialNumber INTEGER,
+/// signature, issuer Name, ... }`.
+///
+/// # Errors
+///
+/// Returns an error if a certificate element is malformed DER.
+fn certificate_matching<'a>(
+    certificates_set: &'a [u8],
+    issuer: &[u8],
+    serial: &[u8],
+) -> Result<Option<&'a [u8]>> {
+    let mut cursor = certificates_set;
+    while !cursor.is_empty() {
+        let cert = der_full_tlv(cursor).context("certificate TLV")?;
+        if cert_issuer_and_serial(cert).is_some_and(|(ci, cs)| ci == issuer && cs == serial) {
+            return Ok(Some(cert));
+        }
+        let consumed = cert.len();
+        cursor = &cursor[consumed..];
+    }
+    Ok(None)
+}
+
+/// Extract `(issuerName, serialNumber)` DER slices from a `Certificate`.
+fn cert_issuer_and_serial(cert: &[u8]) -> Option<(&[u8], &[u8])> {
+    let tbs_outer = der_expect_seq(cert).ok()?; // Certificate value
+    let tbs = der_expect_seq(tbs_outer).ok()?; // TBSCertificate value
+    // Optional [0] EXPLICIT version, then serialNumber INTEGER.
+    let (tag, _v, rest) = der_tlv(tbs).ok()?;
+    let (serial, after_serial) = if tag == 0xA0 {
+        let (stag, _sv, after) = der_tlv(rest).ok()?;
+        if stag != 0x02 {
+            return None;
+        }
+        (der_full_tlv(rest).ok()?, after)
+    } else if tag == 0x02 {
+        (der_full_tlv(tbs).ok()?, rest)
+    } else {
+        return None;
+    };
+    // signature AlgorithmIdentifier SEQUENCE, then issuer Name SEQUENCE.
+    let (_sigtag, _sig, after_sig) = der_tlv(after_serial).ok()?;
+    let issuer = der_full_tlv(after_sig).ok()?;
+    Some((issuer, serial))
+}
+
+/// Split a DER TLV at `data`, returning `(tag, value, remaining)`.
+fn der_tlv(data: &[u8]) -> Result<(u8, &[u8], &[u8])> {
+    if data.len() < 2 {
+        bail!("truncated DER element");
+    }
+    let tag = data[0];
+    let (len, header_len) = der_len(&data[1..])?;
+    let start = 1 + header_len;
+    let end = start
+        .checked_add(len)
+        .filter(|&e| e <= data.len())
+        .ok_or_else(|| anyhow::anyhow!("DER length {len} exceeds buffer"))?;
+    Ok((tag, &data[start..end], &data[end..]))
+}
+
+/// Like [`der_tlv`] but returns the *complete* leading TLV (tag + length +
+/// value) of the first element in `data`.
+fn der_full_tlv(data: &[u8]) -> Result<&[u8]> {
+    let total = der_element_len(data)?;
+    Ok(&data[..total])
+}
+
+/// Return the total byte length of the leading DER element in `data`.
+fn der_element_len(data: &[u8]) -> Result<usize> {
+    if data.len() < 2 {
+        bail!("truncated DER element");
+    }
+    let (len, header_len) = der_len(&data[1..])?;
+    Ok(1 + header_len + len)
+}
+
+/// Expect a DER SEQUENCE (`0x30`) at `data` and return its value bytes.
+fn der_expect_seq(data: &[u8]) -> Result<&[u8]> {
+    let (tag, value, _) = der_tlv(data)?;
+    if tag != 0x30 {
+        bail!("expected DER SEQUENCE, found tag {tag:#x}");
+    }
+    Ok(value)
+}
+
+/// Take the first DER element from `data`, returning `(element, remaining)`.
+fn der_take(data: &[u8]) -> Result<(&[u8], &[u8])> {
+    let total = der_element_len(data)?;
+    Ok((&data[..total], &data[total..]))
+}
+
+/// Decode a DER length field, returning `(length, header_byte_count)`.
+fn der_len(data: &[u8]) -> Result<(usize, usize)> {
+    let first = *data.first().ok_or_else(|| anyhow::anyhow!("missing DER length"))?;
+    if first < 0x80 {
+        return Ok((first as usize, 1));
+    }
+    let n = (first & 0x7f) as usize;
+    if n == 0 || n > 4 || data.len() < 1 + n {
+        bail!("unsupported DER length encoding");
+    }
+    let mut len = 0usize;
+    for &byte in &data[1..1 + n] {
+        len = (len << 8) | byte as usize;
+    }
+    Ok((len, 1 + n))
+}
+
+/// Return the lowercase hex SHA-256 of `bytes`.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+/// Read the SBAT component/generation table from a UKI's `.sbat` PE section.
+///
+/// Dumps the section with `objcopy -O binary --only-section=.sbat` and
+/// parses the CSV: each non-empty, non-comment line is `component,generation`
+/// (extra columns describing the upstream are ignored). Returns an empty
+/// vector when the binary carries no `.sbat` section.
+///
+/// # Errors
+///
+/// Returns an error if `objcopy` cannot be spawned or fails for a reason
+/// other than the section being absent, the dumped section is not valid
+/// UTF-8, or a generation field is not a non-negative integer.
+fn extract_sbat_entries(uki: &Path) -> Result<Vec<SbatEntry>> {
+    let tmp = tempfile::Builder::new()
+        .prefix("aos-sbat-")
+        .tempfile()
+        .context("creating temp file for .sbat dump")?;
+    let output = Command::new("objcopy")
+        .arg("-O")
+        .arg("binary")
+        .arg("--only-section=.sbat")
+        .arg(uki)
+        .arg(tmp.path())
+        .output()
+        .with_context(|| format!("running objcopy on {}", uki.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // A missing section is not an error for our purposes.
+        if stderr.contains("can't dump section")
+            || stderr.contains("section '.sbat'")
+            || stderr.contains("no symbols")
+        {
+            return Ok(Vec::new());
+        }
+        bail!("objcopy on {} failed: {}", uki.display(), stderr.trim());
+    }
+    let raw = fs::read(tmp.path()).context("reading dumped .sbat section")?;
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let text = String::from_utf8(raw).context("decoding .sbat section as UTF-8")?;
+    parse_sbat_csv(&text)
+}
+
+/// Parse the CSV body of a `.sbat` section into [`SbatEntry`] records.
+///
+/// # Errors
+///
+/// Returns an error if a data line's generation column is not a
+/// non-negative integer.
+fn parse_sbat_csv(text: &str) -> Result<Vec<SbatEntry>> {
+    let mut entries = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_end_matches('\0').trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut fields = line.split(',');
+        let Some(component) = fields.next() else {
+            continue;
+        };
+        let component = component.trim();
+        // The first CSV row is the SBAT format header (`sbat,1,SBAT...`);
+        // it is itself a versioned component and is recorded like any other.
+        let Some(generation) = fields.next() else {
+            continue;
+        };
+        let generation: u32 = generation.trim().parse().with_context(|| {
+            format!("parsing SBAT generation for component '{component}' from '{line}'")
+        })?;
+        entries.push(SbatEntry {
+            component: component.to_string(),
+            generation,
+        });
+    }
+    Ok(entries)
+}
+
+/// Predict the TPM PCR-11 contribution of a UKI via `systemd-measure`.
+///
+/// Runs `systemd-measure calculate` over the assembled UKI and returns the
+/// predicted PCR-11 value as lowercase hex. Returns `Ok(None)` when
+/// `systemd-measure` is not available, so a publish never fails merely
+/// because the measurement tool is missing.
+///
+/// # Scope caveat
+///
+/// PCR 11 on a running machine is the cumulative extension of the
+/// sd-boot/stub *boot-phase* measurements (`systemd-pcrextend`), not the
+/// UKI alone. `systemd-measure calculate` over a UKI therefore records the
+/// **UKI's own contribution**, which will not equal a machine's measured
+/// PCR 11 unless the verifier replays the remaining phase events. This
+/// value is recorded and labelled as such; downstream attestation must
+/// reconstruct the full phase sequence before asserting equality (see
+/// RFC-0006 `registry-catalog.md` and `test-plan.md` phase 3/4).
+///
+/// # Errors
+///
+/// Returns an error if `systemd-measure` is found but exits non-zero, or
+/// its output cannot be parsed into a PCR-11 digest.
+fn extract_expected_pcr11(uki: &Path) -> Result<Option<String>> {
+    let output = match Command::new("systemd-measure")
+        .arg("calculate")
+        .arg(format!("--linux={}", uki.display()))
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| format!("running systemd-measure on {}", uki.display()));
+        }
+    };
+    if !output.status.success() {
+        bail!(
+            "systemd-measure on {} failed: {}",
+            uki.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_pcr11(&stdout))
+}
+
+/// Extract the PCR-11 digest from `systemd-measure calculate` output.
+///
+/// The tool prints lines such as `11:sha256=<hex>`; this returns the hex of
+/// the first PCR-11/sha256 line, or `None` when none is present.
+fn parse_pcr11(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        // Accept `11:sha256=<hex>` and `11:<hex>` shapes.
+        let Some(rest) = line.strip_prefix("11:") else {
+            continue;
+        };
+        let value = rest.rsplit('=').next().unwrap_or(rest).trim();
+        if !value.is_empty() && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Some(value.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+/// Verify a UKI's embedded Authenticode signature against a db certificate.
+///
+/// Runs `sbverify --cert <db_cert_pem> <uki>`; the registry refuses to
+/// catalog a component it cannot itself verify is signed by the declared
+/// db cert (RFC-0006 phase 4).
+///
+/// # Errors
+///
+/// Returns an error if `sbverify` cannot be spawned or reports the
+/// signature does not verify against `db_cert_pem`.
+fn verify_uki_against_db_cert(uki: &Path, db_cert_pem: &Path) -> Result<()> {
+    let output = Command::new("sbverify")
+        .arg("--cert")
+        .arg(db_cert_pem)
+        .arg(uki)
+        .output()
+        .with_context(|| format!("running sbverify --cert on {}", uki.display()))?;
+    if !output.status.success() {
+        bail!(
+            "UKI {} does not verify against db cert {}: {}",
+            uki.display(),
+            db_cert_pem.display(),
+            combine_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr)
+            )
+        );
+    }
+    Ok(())
+}
+
+/// Join non-empty stdout/stderr fragments into one diagnostic string.
+fn combine_output(stdout: &str, stderr: &str) -> String {
+    match (stdout.trim().is_empty(), stderr.trim().is_empty()) {
+        (true, true) => "(no output)".to_string(),
+        (false, true) => stdout.trim().to_string(),
+        (true, false) => stderr.trim().to_string(),
+        (false, false) => format!("{}\n{}", stdout.trim(), stderr.trim()),
+    }
+}
+
+/// Locate a db certificate PEM to verify published UKIs against, if one is
+/// provisioned for `registry`.
+///
+/// Looks for `<registries-storage>/<registry>/sb-certs/db.pem` in the
+/// authoring clone. Returns `None` when no db cert is provisioned, in which
+/// case `apr publish` records SB facts without the publish-time signature
+/// cross-check (the closure signature still covers the recorded facts).
+fn sb_db_cert_path(config: &ApmConfig, registry: &str) -> Option<PathBuf> {
+    let path = config
+        .scope
+        .registries_path()
+        .join(registry)
+        .join("sb-certs")
+        .join("db.pem");
+    path.exists().then_some(path)
+}
+
+/// Derive Secure Boot facts from an image store path, if it holds a UKI.
+///
+/// Locates the UKI within the image, then extracts the signer cert digest,
+/// SBAT table, and predicted PCR-11. Optionally enforces the publish-time
+/// rule that an image's embedded signature must verify against `db_cert`
+/// before it can be cataloged.
+///
+/// Returns an empty [`SbFacts`] (recording nothing) when the image holds no
+/// UKI, preserving the unsigned/dev publish path.
+///
+/// # Errors
+///
+/// Returns an error when a UKI is present but a Secure Boot fact cannot be
+/// derived, or when `db_cert` is given and the signature does not verify
+/// against it.
+fn derive_sb_facts(image_store_path: &str, db_cert: Option<&Path>) -> Result<SbFacts> {
+    let Some(uki) = find_uki_in_store_path(image_store_path) else {
+        return Ok(SbFacts::default());
+    };
+
+    let signer = extract_sb_signer_cert_sha256(&uki)?;
+    // An image with no embedded signature carries no SB facts to catalog.
+    if signer.is_none() {
+        return Ok(SbFacts::default());
+    }
+
+    if let Some(db_cert) = db_cert {
+        verify_uki_against_db_cert(&uki, db_cert).with_context(|| {
+            "refusing to catalog a component whose signature does not verify \
+             against the declared db cert"
+                .to_string()
+        })?;
+    }
+
+    Ok(SbFacts {
+        signer_cert_sha256: signer,
+        sbat: extract_sbat_entries(&uki)?,
+        expected_pcr11: extract_expected_pcr11(&uki)?,
+    })
+}
+
 fn package_platform_table(
     info: &StorePathInfo,
-    image_infos: &[(String, StorePathInfo)],
+    image_infos: &[(String, StorePathInfo, SbFacts)],
     source_drv: &str,
     source_nar_hash: &str,
 ) -> toml::Value {
@@ -1522,7 +2159,7 @@ fn package_platform_table(
     if !image_infos.is_empty() {
         let images = image_infos
             .iter()
-            .map(|(format, image)| {
+            .map(|(format, image, sb)| {
                 let mut entry = toml::map::Map::new();
                 entry.insert("format".into(), toml::Value::String(format.clone()));
                 entry.insert("store_path".into(), toml::Value::String(image.path.clone()));
@@ -1534,6 +2171,34 @@ fn package_platform_table(
                     "nar_size".into(),
                     toml::Value::Integer(image.nar_size as i64),
                 );
+                if let Some(cert) = &sb.signer_cert_sha256 {
+                    entry.insert(
+                        "sb_signer_cert_sha256".into(),
+                        toml::Value::String(cert.clone()),
+                    );
+                }
+                if !sb.sbat.is_empty() {
+                    let sbat = sb
+                        .sbat
+                        .iter()
+                        .map(|item| {
+                            let mut row = toml::map::Map::new();
+                            row.insert(
+                                "component".into(),
+                                toml::Value::String(item.component.clone()),
+                            );
+                            row.insert(
+                                "generation".into(),
+                                toml::Value::Integer(i64::from(item.generation)),
+                            );
+                            toml::Value::Table(row)
+                        })
+                        .collect::<Vec<_>>();
+                    entry.insert("sbat".into(), toml::Value::Array(sbat));
+                }
+                if let Some(pcr11) = &sb.expected_pcr11 {
+                    entry.insert("expected_pcr11".into(), toml::Value::String(pcr11.clone()));
+                }
                 toml::Value::Table(entry)
             })
             .collect::<Vec<_>>();
@@ -4198,6 +4863,396 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
     }
 }
 
+/// `apr sb-certs ...` — manage the committed Secure Boot validation catalog.
+///
+/// Mutates the `sb-certs.toml` roster in an authoring clone (RFC-0006 phase
+/// 4): the active db-cert set, its revocations, and the per-component SBAT
+/// revocation floor. Each mutation loads-or-creates the catalog, applies the
+/// change, and writes it back via
+/// [`crate::registry::sb_certs::write_sb_certs_toml`]. Unless `--no-commit`
+/// is given the change is committed (optionally signed by an active
+/// `keys.toml` maintainer key) the same way `keys.toml` changes are, so the
+/// catalog stays covered by the registry's release signature and reaches
+/// consumers on their next `apm update`.
+///
+/// # Errors
+///
+/// Returns an error when the registry name cannot be resolved, the clone is
+/// not writable, the catalog fails validation, the commit-signing key cannot
+/// be resolved, or the write/commit fails.
+pub fn run_sb_certs(
+    config: &ApmConfig,
+    command: &SbCertsCommand,
+    printer: &Printer,
+) -> Result<()> {
+    match command {
+        SbCertsCommand::List { registry } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            let catalog = load_committed_sb_certs(&dir)?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "registry": registry_name,
+                    "active": catalog.active.iter().map(|c| serde_json::json!({
+                        "id": c.id,
+                        "cert_sha256": c.cert_sha256,
+                    })).collect::<Vec<_>>(),
+                    "revoked": catalog.revoked.iter().map(|r| serde_json::json!({
+                        "id": r.id,
+                        "reason": r.reason,
+                    })).collect::<Vec<_>>(),
+                    "sbat_floor": catalog.sbat_floor.iter().map(|f| serde_json::json!({
+                        "component": f.component,
+                        "generation": f.generation,
+                    })).collect::<Vec<_>>(),
+                }));
+                return Ok(());
+            }
+            if catalog.active.is_empty()
+                && catalog.revoked.is_empty()
+                && catalog.sbat_floor.is_empty()
+            {
+                printer.info(&format!(
+                    "Registry '{registry_name}' has no Secure Boot catalog (sb-certs.toml)."
+                ));
+                return Ok(());
+            }
+            printer.header(&format!("sb-certs.toml for registry '{registry_name}'"));
+            if catalog.active.is_empty() {
+                printer.plain("active: none");
+            } else {
+                printer.plain("active:");
+                for cert in &catalog.active {
+                    printer.plain(&format!("  {}: {}", cert.id, cert.cert_sha256));
+                }
+            }
+            if catalog.revoked.is_empty() {
+                printer.plain("revoked: none");
+            } else {
+                printer.plain("revoked:");
+                for rev in &catalog.revoked {
+                    match &rev.reason {
+                        Some(reason) => printer.plain(&format!("  {}: {}", rev.id, reason)),
+                        None => printer.plain(&format!("  {}", rev.id)),
+                    }
+                }
+            }
+            if catalog.sbat_floor.is_empty() {
+                printer.plain("sbat_floor: none");
+            } else {
+                printer.plain("sbat_floor:");
+                for entry in &catalog.sbat_floor {
+                    printer.plain(&format!("  {}: {}", entry.component, entry.generation));
+                }
+            }
+            Ok(())
+        }
+        SbCertsCommand::Add {
+            id,
+            cert_sha256,
+            no_commit,
+            signing_key,
+            signing_key_id,
+            registry,
+        } => {
+            let (registry_name, dir) = resolve_sb_certs_target(config, registry.as_deref())?;
+            let mut catalog = load_committed_sb_certs(&dir)?;
+            let commit_key = sb_certs_commit_key(
+                config,
+                &dir,
+                &registry_name,
+                *no_commit,
+                signing_key.as_deref(),
+                signing_key_id.as_deref(),
+            )?;
+            add_sb_cert(&mut catalog, id, cert_sha256)?;
+            persist_committed_sb_certs(
+                &dir,
+                &catalog,
+                *no_commit,
+                &format!("registry: add Secure Boot db cert {id}"),
+                commit_key.as_ref().map(|k| k.path()),
+            )?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "sb_certs_add",
+                    "status": "added",
+                    "registry": registry_name,
+                    "id": id,
+                    "cert_sha256": cert_sha256,
+                    "committed": !*no_commit,
+                }));
+                return Ok(());
+            }
+            printer.success(&format!(
+                "Added active Secure Boot db cert '{id}' to registry '{registry_name}'."
+            ));
+            Ok(())
+        }
+        SbCertsCommand::Retire {
+            id,
+            reason,
+            no_commit,
+            signing_key,
+            signing_key_id,
+            registry,
+        } => {
+            let (registry_name, dir) = resolve_sb_certs_target(config, registry.as_deref())?;
+            let mut catalog = load_committed_sb_certs(&dir)?;
+            let commit_key = sb_certs_commit_key(
+                config,
+                &dir,
+                &registry_name,
+                *no_commit,
+                signing_key.as_deref(),
+                signing_key_id.as_deref(),
+            )?;
+            retire_sb_cert(&mut catalog, id, reason.as_deref())?;
+            persist_committed_sb_certs(
+                &dir,
+                &catalog,
+                *no_commit,
+                &format!("registry: retire Secure Boot db cert {id}"),
+                commit_key.as_ref().map(|k| k.path()),
+            )?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "sb_certs_retire",
+                    "status": "retired",
+                    "registry": registry_name,
+                    "id": id,
+                    "reason": reason.as_deref(),
+                    "committed": !*no_commit,
+                }));
+                return Ok(());
+            }
+            printer.success(&format!(
+                "Retired Secure Boot db cert '{id}' from registry '{registry_name}'."
+            ));
+            Ok(())
+        }
+        SbCertsCommand::SetFloor {
+            component,
+            generation,
+            no_commit,
+            signing_key,
+            signing_key_id,
+            registry,
+        } => {
+            let (registry_name, dir) = resolve_sb_certs_target(config, registry.as_deref())?;
+            let mut catalog = load_committed_sb_certs(&dir)?;
+            let commit_key = sb_certs_commit_key(
+                config,
+                &dir,
+                &registry_name,
+                *no_commit,
+                signing_key.as_deref(),
+                signing_key_id.as_deref(),
+            )?;
+            set_sbat_floor(&mut catalog, component, *generation)?;
+            persist_committed_sb_certs(
+                &dir,
+                &catalog,
+                *no_commit,
+                &format!("registry: set SBAT floor {component}={generation}"),
+                commit_key.as_ref().map(|k| k.path()),
+            )?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "sb_certs_set_floor",
+                    "status": "set",
+                    "registry": registry_name,
+                    "component": component,
+                    "generation": generation,
+                    "committed": !*no_commit,
+                }));
+                return Ok(());
+            }
+            printer.success(&format!(
+                "Set SBAT revocation floor '{component}' = {generation} for registry '{registry_name}'."
+            ));
+            Ok(())
+        }
+    }
+}
+
+/// Resolve the registry name and require a writable authoring clone for an
+/// `apr sb-certs` mutation.
+fn resolve_sb_certs_target(
+    config: &ApmConfig,
+    registry: Option<&str>,
+) -> Result<(String, PathBuf)> {
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
+    ensure_writable_registry_clone(&registry_name, &dir)?;
+    Ok((registry_name, dir))
+}
+
+/// Load the committed `sb-certs.toml` catalog, defaulting to an empty
+/// catalog when the file does not exist yet.
+///
+/// # Errors
+///
+/// Returns an error when the registry directory is missing or the catalog
+/// fails to load/validate.
+fn load_committed_sb_certs(dir: &Path) -> Result<SbCertsToml> {
+    if !dir.exists() {
+        bail!("registry directory does not exist: {}", dir.display());
+    }
+    Ok(sb_certs::load_sb_certs_toml(dir)?.unwrap_or_default())
+}
+
+/// Write `sb-certs.toml` and, unless `no_commit`, commit and refresh the
+/// dumb-HTTP object store — the same persistence path `keys.toml` uses.
+///
+/// # Errors
+///
+/// Returns an error when the catalog fails validation, the write fails, or
+/// the commit/object-store refresh fails.
+fn persist_committed_sb_certs(
+    dir: &Path,
+    catalog: &SbCertsToml,
+    no_commit: bool,
+    message: &str,
+    signing_key: Option<&str>,
+) -> Result<()> {
+    sb_certs::write_sb_certs_toml(dir, catalog)?;
+    if !no_commit {
+        commit_registry(dir, message, signing_key)?;
+        refresh_registry_object_store(dir)
+            .context("refreshing dumb-HTTP object store after sb-certs.toml update")?;
+    }
+    Ok(())
+}
+
+/// Resolve the maintainer key that signs an `sb-certs.toml` commit.
+///
+/// The catalog is part of the signed tree, so its commits must be signed by
+/// an active `keys.toml` maintainer key exactly like a roster change. This
+/// reuses [`resolve_roster_commit_key`] against the committed `keys.toml`:
+/// the only unsigned case is a registry whose key roster is still empty
+/// (bootstrap). Returns `None` when `no_commit` is set.
+///
+/// # Errors
+///
+/// Returns an error when the key roster is non-empty but no signing key was
+/// provided, or the requested key cannot be resolved.
+fn sb_certs_commit_key(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    no_commit: bool,
+    signing_key: Option<&str>,
+    signing_key_id: Option<&str>,
+) -> Result<Option<ResolvedSigningKey>> {
+    if no_commit {
+        return Ok(None);
+    }
+    let roster = load_committed_roster(dir)?;
+    resolve_roster_commit_key(
+        config,
+        dir,
+        registry_name,
+        &roster,
+        signing_key,
+        signing_key_id,
+    )
+}
+
+/// Append an active db cert after validating the id is non-empty and unused
+/// and the digest is a 64-char lowercase hex SHA-256.
+///
+/// # Errors
+///
+/// Returns an error when the id is empty or already present, the digest is
+/// malformed, or the same digest is already enrolled under another id.
+fn add_sb_cert(catalog: &mut SbCertsToml, id: &str, cert_sha256: &str) -> Result<()> {
+    if id.is_empty() {
+        bail!("Secure Boot db cert id is empty");
+    }
+    let digest = cert_sha256.to_ascii_lowercase();
+    if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("--cert-sha256 must be a 64-character hex SHA-256 digest, got '{cert_sha256}'");
+    }
+    if catalog.active.iter().any(|c| c.id == id) {
+        bail!("active db cert id '{id}' already exists in sb-certs.toml");
+    }
+    if catalog
+        .active
+        .iter()
+        .any(|c| c.cert_sha256.eq_ignore_ascii_case(&digest))
+    {
+        bail!("db cert digest already enrolled in sb-certs.toml under another id");
+    }
+    catalog.active.push(SbCert {
+        id: id.to_string(),
+        cert_sha256: digest,
+    });
+    Ok(())
+}
+
+/// Move db cert `id` into the revoked set.
+///
+/// The id must name an active db cert; an already-revoked id is rejected.
+/// The cert stays under `[[active]]` (as `validate_catalog` requires every
+/// revocation to reference an active entry) and gains a `[[revoked]]` row.
+///
+/// # Errors
+///
+/// Returns an error when `id` is empty, is not active, or is already
+/// revoked.
+fn retire_sb_cert(catalog: &mut SbCertsToml, id: &str, reason: Option<&str>) -> Result<()> {
+    if id.is_empty() {
+        bail!("Secure Boot db cert id is empty");
+    }
+    if !catalog.active.iter().any(|c| c.id == id) {
+        bail!("db cert id '{id}' is not active in sb-certs.toml");
+    }
+    if catalog.revoked.iter().any(|r| r.id == id) {
+        bail!("db cert id '{id}' is already revoked in sb-certs.toml");
+    }
+    catalog.revoked.push(RevokedSbCert {
+        id: id.to_string(),
+        reason: reason.map(str::to_string),
+    });
+    Ok(())
+}
+
+/// Set or raise the SBAT revocation floor for `component`.
+///
+/// A floor may only be raised, never lowered: lowering would re-admit a
+/// component the fleet already revoked. An absent component is inserted.
+///
+/// # Errors
+///
+/// Returns an error when `component` is empty or the requested generation is
+/// below the existing floor.
+fn set_sbat_floor(catalog: &mut SbCertsToml, component: &str, generation: u32) -> Result<()> {
+    if component.is_empty() {
+        bail!("SBAT floor component is empty");
+    }
+    if let Some(entry) = catalog
+        .sbat_floor
+        .iter_mut()
+        .find(|entry| entry.component == component)
+    {
+        if generation < entry.generation {
+            bail!(
+                "refusing to lower the SBAT floor for '{component}' from {} to {generation}: \
+                 a floor may only be raised",
+                entry.generation,
+            );
+        }
+        entry.generation = generation;
+    } else {
+        catalog.sbat_floor.push(SbatEntry {
+            component: component.to_string(),
+            generation,
+        });
+    }
+    Ok(())
+}
+
 /// Tags whose signatures must be refreshed after a key retirement.
 ///
 /// `affected_partitions` carries the release each partition payload must
@@ -6673,6 +7728,228 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    #[test]
+    fn parse_sbat_csv_reads_component_generations() {
+        let csv = "sbat,1,SBAT Version,sbat,1,https://x\naos,2,AOS,aos,2,https://aos\n# comment\n\nsystemd,1,systemd,systemd,1,https://systemd\n";
+        let entries = parse_sbat_csv(csv).unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                SbatEntry { component: "sbat".into(), generation: 1 },
+                SbatEntry { component: "aos".into(), generation: 2 },
+                SbatEntry { component: "systemd".into(), generation: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_sbat_csv_rejects_non_numeric_generation() {
+        assert!(parse_sbat_csv("aos,notanumber,AOS\n").is_err());
+    }
+
+    #[test]
+    fn parse_pcr11_extracts_sha256_digest() {
+        let out = "11:sha256=abcdef0123\n12:sha256=ffff\n";
+        assert_eq!(parse_pcr11(out).as_deref(), Some("abcdef0123"));
+        assert_eq!(parse_pcr11("no pcr lines here"), None);
+    }
+
+    #[test]
+    fn der_len_handles_short_and_long_forms() {
+        assert_eq!(der_len(&[0x05]).unwrap(), (5, 1));
+        // 0x82 => two length octets follow: 0x01 0x00 = 256.
+        assert_eq!(der_len(&[0x82, 0x01, 0x00]).unwrap(), (256, 3));
+    }
+
+    #[test]
+    fn leaf_cert_from_pe_extracts_first_certificate() {
+        // Build a tiny synthetic PE32+ with a security directory whose
+        // WIN_CERTIFICATE blob holds a PKCS#7 ContentInfo wrapping a
+        // SignedData with two certificates; assert we return the first.
+        let leaf: &[u8] = &[0x30, 0x03, 0x01, 0x02, 0x03]; // SEQUENCE len 3
+        let second: &[u8] = &[0x30, 0x02, 0x09, 0x08]; // SEQUENCE len 2
+        let mut certs_value = Vec::new();
+        certs_value.extend_from_slice(leaf);
+        certs_value.extend_from_slice(second);
+        // certificates [0] IMPLICIT (tag 0xA0).
+        let mut certs_field = vec![0xA0, certs_value.len() as u8];
+        certs_field.extend_from_slice(&certs_value);
+        // SignedData SEQUENCE wrapping the certificates field.
+        let mut signed_data = vec![0x30, certs_field.len() as u8];
+        signed_data.extend_from_slice(&certs_field);
+        // content [0] EXPLICIT wrapping SignedData.
+        let mut content = vec![0xA0, signed_data.len() as u8];
+        content.extend_from_slice(&signed_data);
+        // ContentInfo SEQUENCE { OID, content [0] }.
+        let oid: &[u8] = &[0x06, 0x01, 0x2A]; // OBJECT IDENTIFIER len 1
+        let mut ci_value = Vec::new();
+        ci_value.extend_from_slice(oid);
+        ci_value.extend_from_slice(&content);
+        let mut pkcs7 = vec![0x30, ci_value.len() as u8];
+        pkcs7.extend_from_slice(&ci_value);
+
+        let extracted = first_certificate_der(&pkcs7).unwrap();
+        assert_eq!(extracted, leaf);
+
+        // Wrap the PKCS#7 in a WIN_CERTIFICATE blob and a minimal PE32+ so
+        // leaf_cert_from_pe finds it via the security directory.
+        let mut win_cert = vec![0u8; 8]; // dwLength/wRevision/wCertificateType
+        win_cert.extend_from_slice(&pkcs7);
+
+        // Assemble: DOS header (e_lfanew at 0x3c), PE sig, COFF, optional
+        // header (PE32+ magic), data directories with security entry.
+        let mut pe = vec![0u8; 0x40];
+        pe[0] = b'M';
+        pe[1] = b'Z';
+        let pe_off: u32 = 0x40;
+        pe[0x3c..0x40].copy_from_slice(&pe_off.to_le_bytes());
+        // PE signature + COFF header (20 bytes) + optional header.
+        let mut tail = Vec::new();
+        tail.extend_from_slice(&0x0000_4550u32.to_le_bytes()); // "PE\0\0"
+        tail.extend_from_slice(&[0u8; 20]); // COFF header
+        let opt_start = pe.len() + tail.len();
+        tail.extend_from_slice(&0x020bu16.to_le_bytes()); // PE32+ magic
+        // Pad optional header up to the data directory (112 bytes from magic).
+        tail.resize(tail.len() + (112 - 2), 0);
+        let dir_start = opt_start + 112;
+        // Security dir is entry index 4 (each entry 8 bytes).
+        let cert_off = dir_start + 16 * 8; // place blob after all 16 entries
+        tail.resize(tail.len() + 16 * 8, 0);
+        // Write security entry (index 4): offset + size.
+        let entry_in_tail = (dir_start - pe.len()) + 4 * 8;
+        tail[entry_in_tail..entry_in_tail + 4]
+            .copy_from_slice(&(cert_off as u32).to_le_bytes());
+        tail[entry_in_tail + 4..entry_in_tail + 8]
+            .copy_from_slice(&(win_cert.len() as u32).to_le_bytes());
+        pe.extend_from_slice(&tail);
+        assert_eq!(pe.len(), cert_off);
+        pe.extend_from_slice(&win_cert);
+
+        let from_pe = leaf_cert_from_pe(&pe).unwrap();
+        assert_eq!(from_pe, leaf);
+    }
+
+    /// Wrap a DER value in a SEQUENCE/SET/context tag with a short length.
+    fn der_wrap(tag: u8, value: &[u8]) -> Vec<u8> {
+        assert!(value.len() < 0x80, "test helper only handles short form");
+        let mut out = vec![tag, value.len() as u8];
+        out.extend_from_slice(value);
+        out
+    }
+
+    /// M3: with a real SignerInfo present, the signer cert is selected by
+    /// issuer+serial even when it is NOT first in the certificate SET. A
+    /// naive "take element [0]" would return the intermediate and fail.
+    #[test]
+    fn first_certificate_der_selects_signer_by_issuer_and_serial() {
+        // Build a minimal Certificate: SEQUENCE { TBSCertificate SEQUENCE {
+        //   serialNumber INTEGER, signature SEQUENCE{}, issuer Name SEQUENCE
+        // } }. We omit signatureAlgorithm/signatureValue siblings — only the
+        // TBS prefix is parsed by cert_issuer_and_serial.
+        fn make_cert(serial: u8, issuer_byte: u8) -> Vec<u8> {
+            let serial_int = vec![0x02, 0x01, serial]; // INTEGER serial
+            let sig_alg = der_wrap(0x30, &[]); // empty AlgorithmIdentifier
+            let issuer = der_wrap(0x30, &[0x05, 0x01, issuer_byte]); // Name
+            let mut tbs_value = Vec::new();
+            tbs_value.extend_from_slice(&serial_int);
+            tbs_value.extend_from_slice(&sig_alg);
+            tbs_value.extend_from_slice(&issuer);
+            let tbs = der_wrap(0x30, &tbs_value);
+            der_wrap(0x30, &tbs) // Certificate wraps the TBS
+        }
+
+        // Intermediate (serial 1, issuer 0xAA) and signer (serial 9, issuer
+        // 0xBB). Place the signer second.
+        let intermediate = make_cert(1, 0xAA);
+        let signer = make_cert(9, 0xBB);
+        let mut certs_value = Vec::new();
+        certs_value.extend_from_slice(&intermediate);
+        certs_value.extend_from_slice(&signer);
+        let certs_field = der_wrap(0xA0, &certs_value);
+
+        // SignerInfo SEQUENCE { version INTEGER 1, IssuerAndSerialNumber
+        //   SEQUENCE { issuer Name(0xBB), serialNumber INTEGER 9 } }.
+        let issuer_bb = der_wrap(0x30, &[0x05, 0x01, 0xBB]);
+        let serial_9 = vec![0x02, 0x01, 0x09];
+        let mut ias_value = Vec::new();
+        ias_value.extend_from_slice(&issuer_bb);
+        ias_value.extend_from_slice(&serial_9);
+        let ias = der_wrap(0x30, &ias_value);
+        let mut signer_info_value = vec![0x02, 0x01, 0x01]; // version 1
+        signer_info_value.extend_from_slice(&ias);
+        let signer_info = der_wrap(0x30, &signer_info_value);
+        let signer_infos = der_wrap(0x31, &signer_info); // SET OF SignerInfo
+
+        // SignedData SEQUENCE { certificates [0], signerInfos SET }.
+        let mut signed_data_value = Vec::new();
+        signed_data_value.extend_from_slice(&certs_field);
+        signed_data_value.extend_from_slice(&signer_infos);
+        let signed_data = der_wrap(0x30, &signed_data_value);
+        let content = der_wrap(0xA0, &signed_data); // content [0] EXPLICIT
+        let mut ci_value = vec![0x06, 0x01, 0x2A]; // contentType OID
+        ci_value.extend_from_slice(&content);
+        let pkcs7 = der_wrap(0x30, &ci_value);
+
+        let extracted = first_certificate_der(&pkcs7).unwrap();
+        assert_eq!(
+            extracted, signer.as_slice(),
+            "signer cert (issuer 0xBB / serial 9) must be selected, not the first cert"
+        );
+
+        // Sanity: the SHA-256 of the selected cert is the signer's digest.
+        assert_eq!(sha256_hex(extracted), sha256_hex(&signer));
+    }
+
+    const SBCERT_A: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    const SBCERT_B: &str = "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752";
+
+    #[test]
+    fn add_sb_cert_enrolls_and_rejects_dupes() {
+        let mut catalog = SbCertsToml::default();
+        add_sb_cert(&mut catalog, "db-2026", SBCERT_A).unwrap();
+        assert_eq!(catalog.active.len(), 1);
+        assert_eq!(catalog.active[0].cert_sha256, SBCERT_A);
+        // Uppercase digest is normalized to lowercase.
+        let mut c2 = SbCertsToml::default();
+        add_sb_cert(&mut c2, "db", &SBCERT_A.to_ascii_uppercase()).unwrap();
+        assert_eq!(c2.active[0].cert_sha256, SBCERT_A);
+        // Duplicate id and duplicate digest both rejected.
+        assert!(add_sb_cert(&mut catalog, "db-2026", SBCERT_B).is_err());
+        assert!(add_sb_cert(&mut catalog, "other", SBCERT_A).is_err());
+        // Bad digest rejected.
+        assert!(add_sb_cert(&mut catalog, "bad", "nothex").is_err());
+    }
+
+    #[test]
+    fn retire_sb_cert_moves_active_to_revoked() {
+        let mut catalog = SbCertsToml::default();
+        add_sb_cert(&mut catalog, "db", SBCERT_A).unwrap();
+        retire_sb_cert(&mut catalog, "db", Some("compromised")).unwrap();
+        assert_eq!(catalog.revoked.len(), 1);
+        // Still active-listed (validate_catalog requires it) but revoked.
+        assert!(catalog.active.iter().any(|c| c.id == "db"));
+        assert!(!catalog.accepts_signer(SBCERT_A));
+        // Already revoked / unknown id rejected.
+        assert!(retire_sb_cert(&mut catalog, "db", None).is_err());
+        assert!(retire_sb_cert(&mut catalog, "ghost", None).is_err());
+    }
+
+    #[test]
+    fn set_sbat_floor_raises_only() {
+        let mut catalog = SbCertsToml::default();
+        set_sbat_floor(&mut catalog, "aos", 1).unwrap();
+        set_sbat_floor(&mut catalog, "aos", 3).unwrap();
+        assert_eq!(catalog.sbat_floor[0].generation, 3);
+        // Lowering is refused.
+        assert!(set_sbat_floor(&mut catalog, "aos", 2).is_err());
+        // Equal is allowed (idempotent re-set).
+        set_sbat_floor(&mut catalog, "aos", 3).unwrap();
+        // New component inserted.
+        set_sbat_floor(&mut catalog, "systemd", 1).unwrap();
+        assert_eq!(catalog.sbat_floor.len(), 2);
+        assert!(set_sbat_floor(&mut catalog, "", 1).is_err());
+    }
+
     struct TestSigningFixture {
         trusted_key: String,
         private_key: PathBuf,
@@ -7564,7 +8841,7 @@ references = []
             Some("aos-team"),
             true,
             Some("2026.03"),
-            &[("raw".to_string(), img_info)],
+            &[("raw".to_string(), img_info, SbFacts::default())],
             None,
         )
         .unwrap();
@@ -7603,7 +8880,7 @@ references = []
             Some("AOS Team <aos@example.invalid>"),
             false,
             Some("0.9.0+build\"meta"),
-            &[("raw\"image".to_string(), img_info)],
+            &[("raw\"image".to_string(), img_info, SbFacts::default())],
             None,
         )
         .unwrap();

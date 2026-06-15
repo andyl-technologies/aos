@@ -242,6 +242,7 @@ in {
       kernel = config.system.build.kernel;
       kernelModules = config.aos.boot.initrd.modules;
       initrdUnits = config.system.build.systemdInitrdUnits;
+      initrdExtraPackages = config.aos.boot.initrd.extraPackages;
       inherit initrdNetworkDir;
       maskedUnits = cfg.maskedUnits;
       ignitionRoles = config.system.build.ignitionRolesBundle;

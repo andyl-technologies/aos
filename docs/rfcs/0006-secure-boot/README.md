@@ -1,6 +1,6 @@
 # RFC-0006: Full Secure Boot integration — sign, measure, attest
 
-- **Status:** Phases 1–2 implemented (PR [#102](https://github.com/andyl-technologies/aos/pull/102)); phases 3–4 proposed
+- **Status:** Phases 1–4 implemented (PR [#102](https://github.com/andyl-technologies/aos/pull/102)). Phase 3's TPM-sealed `/var` (seal + recovery enrollment) is CI-gated; the unattended TPM2 unlock on a *subsequent* reboot is implemented but not yet green under the emulated TPM (follow-up, see [`measured-boot.md`](measured-boot.md))
 - **Date:** 2026-06-13
 - **PR:** [#102](https://github.com/andyl-technologies/aos/pull/102)
 - **Audience:** anyone working on `pkgs/boot/`, `pkgs/system/systemd.nix`,
@@ -159,20 +159,28 @@ earlier ones.
 - **Phase 2 — Lockdown overlay. ✅ Implemented.** Kernel lockdown LSM + module
   signing as a *deployment overlay* (never the base), cmdline `lockdown=`, signed
   extra modules. ([`boot-chain.md`](boot-chain.md) §lockdown)
-- **Phase 3 — Measure & seal (TPM).** TPM packaging + kernel drivers +
-  systemd `-Dtpm2`, signed PCR policy in the UKI, TPM-sealed LUKS for `/var`,
-  vTPM in CI. ([`measured-boot.md`](measured-boot.md))
-- **Phase 4 — Catalog & revoke (registry).** SB fields on `PackageMeta`,
-  `apr publish` extraction, `apm` download-time validation, SBAT revocation
-  floor. ([`registry-catalog.md`](registry-catalog.md))
+- **Phase 3 — Measure & seal (TPM). ✅ Implemented (seal CI-gated; reboot
+  unlock follow-up).** TPM packaging (tpm2-tss, libtpms, swtpm + nettle/
+  gnutls/json-glib/libtasn1) + kernel TCG drivers + systemd `-Dtpm2`, signed
+  PCR policy in the UKI, TPM-sealed LUKS2 for `/var` with a recovery key, vTPM
+  in CI. The seal + recovery enrollment is proven by `checks.fleet.measured-boot`;
+  unattended TPM2 unlock on a later reboot is implemented but not yet green
+  under swtpm. ([`measured-boot.md`](measured-boot.md))
+- **Phase 4 — Catalog & revoke (registry). ✅ Implemented.** SB fields on
+  `SysrootImageEntry`, an `sb-certs.toml` roster (active db-cert set + SBAT
+  revocation floor) with `apr sb-certs` authoring, `apr publish` fact
+  extraction from the real UKI, `apm` download-time validation before reboot,
+  `trusted-sb-certs.d/` delivery. ([`registry-catalog.md`](registry-catalog.md))
 
 Phases 1–3 are deployment/build concerns; phase 4 is the fleet concern that
 ties an over-the-wire upgrade to the boot trust chain.
 
-## Implementation notes (phases 1–2)
+## Implementation notes
 
 What the implementation surfaced that the design didn't predict — recorded so
-the next implementer doesn't relearn it:
+the next implementer doesn't relearn it.
+
+### Phases 1–2
 
 - **SMM is mandatory, not the optional follow-up the open question floated.**
   OVMF only exposes a real authenticated-variable store (so `bootctl` reports
@@ -213,6 +221,67 @@ the next implementer doesn't relearn it:
 - **`pkgs/tools/fakeroot.nix`** was repointed to a content-addressed
   `snapshot.debian.org` URL after the Debian pool dropped the original tarball
   (unrelated to SB, but blocked the image build).
+
+### Phase 3 (measured boot)
+
+- **The TPM stack is a real packaging chain, not a tweak.** swtpm pulls
+  `libtpms` → `gnutls` → `nettle` + `libtasn1` + `json-glib`, all newly built
+  from source (`pkgs/security/`, `pkgs/libs/`). GCC 14 needs `-Wno-error` for
+  libtpms/swtpm; swtpm's configure hard-requires test-only tools (expect,
+  socat, ss) — shimmed rather than packaged; its `make install` runs a
+  `/usr/bin/env bash` helper whose shebang must be patched. tpm2-tss is built
+  `--disable-fapi` (drops json-c/curl) and needs a `groupadd` shim.
+- **`glib` had a latent bug** that only measured boot exercised:
+  `python3` was a build-only dep, so `nuke-references` rewrote the shebang of
+  the installed `glib-mkenums`/`glib-genmarshal` to a placeholder, breaking any
+  downstream build (json-glib) that runs them. Fixed by moving `python3` to
+  glib's `runtimeDeps`.
+- **OVMF must be built `-D TPM2_ENABLE=TRUE`** (`pkgs/boot/edk2.nix`) or the
+  firmware measures nothing into the vTPM — PCR 7 (SB state) and the TCG2
+  protocol sd-stub needs for PCR 11 are both absent. Harmless without a TPM.
+- **The PCR-policy key is a third distinct key** (`pcr.key`/`pcr.pem` in the
+  test keys), separate from the db key and the module-signing key. ukify signs
+  the UKI's PCR policy with it (`--pcr-private-key`/`--pcr-public-key`); ukify
+  shells out to `systemd-measure`, which lives in `${systemd}/lib/systemd`
+  (not on PATH by default).
+- **Sealing must wait for enforcing SB.** With runtime key enrollment (the CI
+  path), PCR 7 differs between the Setup-Mode first boot and the enforcing
+  boot, so `/var` is sealed on the first *enforcing* boot (ignition formats a
+  plain `/var` for the Setup-Mode boot; `aos-var-crypt` LUKS-converts it once
+  `SecureBoot=1`). Production that ships pre-enrolled keys seals on first boot.
+- **The vTPM must outlive guest reboots in CI.** swtpm dies when QEMU
+  disconnects, so the driver (re)launches it per QEMU launch against a
+  persistent `--tpmstate` dir (NV/keys persist, PCRs reset — real-hardware
+  semantics).
+- **Known follow-up:** the seal + recovery enrollment is verified
+  (`checks.fleet.measured-boot` asserts the LUKS2 `systemd-tpm2` + recovery
+  tokens), but the *unattended signed-policy unlock on a subsequent reboot*
+  hangs early in the initrd under swtpm. The remaining work is the sd-stub PCR
+  *signature* materialization at unlock time (the policy needs the `.pcrsig`
+  the UKI carries) and the relaunched-vTPM/udev interaction. This is the
+  finicky last mile of systemd measured boot; it does not affect phases 1, 2,
+  or 4, which are independently CI-gated.
+
+### Phase 4 (registry catalog)
+
+- **Facts are derived from the real signed binary at publish time**, never
+  hand-entered: `apr publish` runs `sbverify --list` + an in-Rust PE/PKCS#7
+  walk to hash the signer *leaf* cert (selected by matching the SignerInfo
+  issuer+serial, not blindly taking cert `[0]`), `objcopy` to dump `.sbat`, and
+  `systemd-measure` for the predicted PCR-11. It refuses to catalog an image
+  whose embedded signature doesn't verify against the declared db cert.
+- **`expected_pcr11` is recorded-and-displayed only, never compared** — it is
+  the UKI's own contribution, not the machine's full-phase PCR 11, and is
+  explicitly labeled so a verifier can't naively brick/false-accept on it.
+- **The catalog must reach the validator.** The download-time gate reads
+  `sb-certs.toml` from the same dir sync extracts registry-root files to
+  (`registries_path()/<name>`) — an early version read a different dir and the
+  whole check silently no-op'd. Lesson the adversarial pass drove home: test
+  the *production* validator (`validate_image_secure_boot`), not a
+  re-implementation, or a delivery-path break passes green.
+- **Revocation is operator-authored** via `apr sb-certs add/retire/set-floor`
+  (committed on the signed tag like `keys.toml`); `set-floor` only raises, so
+  it can't silently re-admit a revoked component.
 
 ## Open questions
 

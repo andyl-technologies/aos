@@ -407,7 +407,15 @@ in {
           set -euo pipefail
           if ! mountpoint -q /sysroot/var; then
             mkdir -p /sysroot/var
-            mount -o nosuid,nodev /dev/disk/by-partlabel/var /sysroot/var
+            # When measured boot seals /var (RFC-0006 phase 3), the
+            # aos-var-crypt service runs first and exposes the unlocked
+            # LUKS volume as /dev/mapper/var; mount that. Otherwise the
+            # raw partition is mounted directly (unchanged behaviour).
+            if [ -e /dev/mapper/var ]; then
+              mount -o nosuid,nodev /dev/mapper/var /sysroot/var
+            else
+              mount -o nosuid,nodev /dev/disk/by-partlabel/var /sysroot/var
+            fi
           fi
           # Standard /var subdirectories expected by systemd and daemons.
           mkdir -p /sysroot/var/{log,lib,tmp}
