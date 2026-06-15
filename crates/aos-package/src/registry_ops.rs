@@ -3967,18 +3967,26 @@ pub async fn run_cache(
             priority,
             no_commit,
             registry,
+            jobs,
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
             let upload_urls = resolve_upload_urls(config, &registry_name, upload_urls);
-            let report =
-                nixcache::generate_static_cache(&dir, output, key.as_deref(), *priority, printer)
-                    .await?;
+            let report = nixcache::generate_static_cache(
+                &dir,
+                output,
+                key.as_deref(),
+                *priority,
+                *jobs,
+                printer,
+            )
+            .await?;
 
             printer.success(&format!(
-                "Generated static cache: {} narinfos, {} NARs in {}",
+                "Generated static cache: {} narinfos, {} NARs ({} reused) in {}",
                 report.narinfos,
                 report.nars,
+                report.nars_skipped,
                 report.output_dir.display(),
             ));
 
@@ -4011,6 +4019,7 @@ pub async fn run_cache(
                     "paths": report.paths,
                     "narinfos": report.narinfos,
                     "nars": report.nars,
+                    "nars_skipped": report.nars_skipped,
                     "cache_url": cache_url.as_deref(),
                     "priority": priority,
                     "upload_urls": upload_urls,
@@ -6093,6 +6102,8 @@ pub struct ReleaseTreeOptions {
     pub dry_run: bool,
     /// Reuse an existing tag and pack artifacts at HEAD instead of failing.
     pub resume: bool,
+    /// Parallel compression jobs for the static cache (default: CPU count).
+    pub jobs: Option<usize>,
 }
 
 /// Summary of the artifacts produced by [`release_registry_tree`].
@@ -6196,6 +6207,7 @@ pub async fn release(
     dry_run: bool,
     resume: bool,
     registry: Option<&str>,
+    jobs: Option<usize>,
     printer: &Printer,
 ) -> Result<()> {
     let version = semver::Version::parse(semver)
@@ -6260,6 +6272,7 @@ pub async fn release(
         upload_auth,
         dry_run,
         resume,
+        jobs,
     };
 
     release_registry_tree(&dir, &registry_name, &options, printer).await?;
@@ -6348,13 +6361,15 @@ pub async fn release_registry_tree(
             output,
             options.cache_key.as_deref(),
             options.cache_priority,
+            options.jobs,
             printer,
         )
         .await?;
         printer.success(&format!(
-            "Generated static cache: {} narinfos, {} NARs in {}",
+            "Generated static cache: {} narinfos, {} NARs ({} reused) in {}",
             generated.narinfos,
             generated.nars,
+            generated.nars_skipped,
             generated.output_dir.display(),
         ));
         cache_report = Some(generated);
@@ -6498,6 +6513,7 @@ fn static_cache_report_json(report: &nixcache::StaticCacheReport) -> serde_json:
         "paths": report.paths,
         "narinfos": report.narinfos,
         "nars": report.nars,
+        "nars_skipped": report.nars_skipped,
         "output_dir": report.output_dir.to_string_lossy().to_string(),
     })
 }

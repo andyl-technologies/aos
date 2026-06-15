@@ -481,6 +481,7 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
         upload_auth: AuthOptions::default(),
         dry_run: false,
         resume: false,
+        jobs: None,
     };
 
     let report = release_registry_tree(
