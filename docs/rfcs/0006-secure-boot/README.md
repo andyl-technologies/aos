@@ -255,12 +255,14 @@ the next implementer doesn't relearn it.
   semantics).
 - **Known follow-up:** the seal + recovery enrollment is verified
   (`checks.fleet.measured-boot` asserts the LUKS2 `systemd-tpm2` + recovery
-  tokens), but the *unattended signed-policy unlock on a subsequent reboot*
-  hangs early in the initrd under swtpm. The remaining work is the sd-stub PCR
-  *signature* materialization at unlock time (the policy needs the `.pcrsig`
-  the UKI carries) and the relaunched-vTPM/udev interaction. This is the
-  finicky last mile of systemd measured boot; it does not affect phases 1, 2,
-  or 4, which are independently CI-gated.
+  tokens after the first enforcing boot, which crosses a reboot). The
+  *unattended unlock on a further reboot* (booting with `/var` already sealed)
+  is not yet green under swtpm: `aos-var-crypt`/`mount-var` are condition-
+  skipped because `/dev/disk/by-partlabel/var` isn't ready when they evaluate
+  (udev still processing the LUKS2 partition), so `/var` isn't unlocked and the
+  boot fails at `switch_root`. Fix is an explicit var `.device`-unit ordering
+  dependency (the vTPM-continuity and reboot-detection harness needed for this
+  — in-VM reset + `wait_down` — already landed). Does not affect phases 1/2/4.
 
 ### Phase 4 (registry catalog)
 

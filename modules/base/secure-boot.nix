@@ -339,9 +339,12 @@ in {
           cs=${pkgs.cryptsetup}/sbin/cryptsetup
           mkfs=${pkgs.e2fsprogs}/sbin/mkfs.ext4
           sbvar=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+          # Log to /dev/kmsg — the console (ttyS0) is contended by the
+          # initrd debug shell whose escape sequences corrupt the serial.
+          klog() { echo "aos-var-crypt: $*" > /dev/kmsg 2>/dev/null || echo "aos-var-crypt: $*" >&2; }
 
           if [ ! -e "$dev" ]; then
-            echo "aos-var-crypt: $dev absent; skipping" >&2
+            klog "$dev absent; skipping"
             exit 0
           fi
 
@@ -351,10 +354,17 @@ in {
             # sd-stub exposes the UKI's .pcrsig in the synthetic initrd
             # under /.extra/ and systemd also materializes it at
             # /run/systemd/. Pass it explicitly so the policy can be
-            # satisfied (auto-discovery is not reliable from a hand-rolled
-            # systemd-cryptsetup call). If the unseal fails (SB-state change
-            # → PCR 7 mismatch, or an unsigned UKI), /var stays locked and
-            # recovery is required — the intended security property.
+            # satisfied. If the unseal fails (SB-state change → PCR 7
+            # mismatch, or an unsigned UKI), /var stays locked and recovery
+            # is required — the intended security property. `timeout` keeps
+            # a stuck unlock (e.g. an interactive passphrase fallback) from
+            # wedging the boot forever.
+            #
+            # NOTE (RFC-0006 follow-up): the unattended unlock on a reboot
+            # with /var already sealed is not yet green in CI under swtpm —
+            # the LUKS2 var device is not ready when this unit evaluates, so
+            # it gets condition-skipped before reaching this branch. See
+            # measured-boot.md.
             if [ ! -e /dev/mapper/var ]; then
               sig=""
               for p in /run/systemd/tpm2-pcr-signature.json \
@@ -362,11 +372,13 @@ in {
                        /run/credentials/@system/tpm2-pcr-signature.json; do
                 if [ -r "$p" ]; then sig="$p"; break; fi
               done
-              echo "aos-var-crypt: unlocking /var via TPM2 (signature=''${sig:-<none found>})" >&2
+              klog "unlocking /var via TPM2 (signature=''${sig:-<none>})"
               if [ -n "$sig" ]; then
-                "$csetup" attach var "$dev" - "tpm2-device=auto,tpm2-signature=$sig"
+                timeout 60 "$csetup" attach var "$dev" - "tpm2-device=auto,tpm2-signature=$sig" \
+                  || klog "TPM2 unlock failed (rc=$?)"
               else
-                "$csetup" attach var "$dev" - tpm2-device=auto
+                timeout 60 "$csetup" attach var "$dev" - tpm2-device=auto \
+                  || klog "TPM2 unlock failed (rc=$?)"
               fi
             fi
             exit 0
