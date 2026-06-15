@@ -344,7 +344,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
-use self::backend::{Backend, SqliteBackend};
+use self::backend::{Backend, SqliteBackend, Statement};
 use self::dialect::Dialect;
 use self::value::{Row, ToValue};
 
@@ -5651,42 +5651,43 @@ impl Database {
     /// Returns an error on database failure or a malformed stored row.
     pub fn rotate_token(&self, token_id: &str) -> Result<Option<(String, String)>> {
         let now = unix_now();
-        let mut result: Option<(String, String)> = None;
-        self.backend.with_tx(&mut |tx| {
-            let old = tx.query_opt(
-                "SELECT owner_kind, owner_id, scope, permissions, comment, expires_at
-                 FROM tokens WHERE id = ?1 AND revoked_at IS NULL",
-                &vals![token_id],
-            )?;
-            let Some(old) = old else {
-                return Ok(());
-            };
-            let owner_kind: String = old.get(0)?;
-            let owner_id: i64 = old.get(1)?;
-            let scope: String = old.get(2)?;
-            let perms_json: String = old.get(3)?;
-            let comment: Option<String> = old.get(4)?;
-            let expires_at: Option<i64> = old.get(5)?;
-            tx.execute(
+        // Read the live token first (outside the write batch); the revoke +
+        // re-mint below is then a self-contained, D1-batchable unit. The id is
+        // assigned client-side, so no `last_insert_rowid` round-trip is needed.
+        let Some(old) = self.backend.query_opt(
+            "SELECT owner_kind, owner_id, scope, permissions, comment, expires_at
+             FROM tokens WHERE id = ?1 AND revoked_at IS NULL",
+            &vals![token_id],
+        )?
+        else {
+            return Ok(None);
+        };
+        let owner_kind: String = old.get(0)?;
+        let owner_id: i64 = old.get(1)?;
+        let scope: String = old.get(2)?;
+        let perms_json: String = old.get(3)?;
+        let comment: Option<String> = old.get(4)?;
+        let expires_at: Option<i64> = old.get(5)?;
+        let (secret, hash) = crate::auth::token::generate_token();
+        let new_id = uuid::Uuid::new_v4().to_string();
+        self.backend.batch(&[
+            Statement::new(
                 "UPDATE tokens SET rotated_at = ?2 WHERE id = ?1",
-                &vals![token_id, now],
-            )?;
-            let (secret, hash) = crate::auth::token::generate_token();
-            let new_id = uuid::Uuid::new_v4().to_string();
-            tx.execute(
+                vals![token_id, now].to_vec(),
+            ),
+            Statement::new(
                 "INSERT INTO tokens
                  (id, hash, owner_kind, owner_id, scope, permissions, comment, created_at,
                   expires_at, revoked_at, last_used_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL)",
-                &vals![
+                vals![
                     new_id, hash, owner_kind, owner_id, scope, perms_json, comment, now,
                     expires_at,
-                ],
-            )?;
-            result = Some((new_id, secret));
-            Ok(())
-        })?;
-        Ok(result)
+                ]
+                .to_vec(),
+            ),
+        ])?;
+        Ok(Some((new_id, secret)))
     }
 
     // -- auth: human sessions -----------------------------------------------
@@ -5891,22 +5892,23 @@ impl Database {
             .org_by_id(org_id)?
             .with_context(|| format!("no org with id {org_id}"))?;
         let now = unix_now();
-        self.backend.with_tx(&mut |tx| {
-            tx.execute(
+        // Two self-contained writes with all values known up front: a batch,
+        // so this commits atomically on both native SQL and Cloudflare D1.
+        self.backend.batch(&[
+            Statement::new(
                 "INSERT INTO memberships
                  (principal_kind, principal_id, scope, role, created_at)
                  VALUES ('user', ?1, ?2, 'owner', ?3)
                  ON CONFLICT(principal_kind, principal_id, scope)
                  DO UPDATE SET role = excluded.role",
-                &vals![to_user, org.slug, now],
-            )?;
-            tx.execute(
+                vals![to_user, org.slug, now].to_vec(),
+            ),
+            Statement::new(
                 "DELETE FROM memberships
                  WHERE principal_kind = 'user' AND principal_id = ?1 AND scope = ?2",
-                &vals![from_user, org.slug],
-            )?;
-            Ok(())
-        })?;
+                vals![from_user, org.slug].to_vec(),
+            ),
+        ])?;
         Ok(())
     }
 
@@ -7335,14 +7337,14 @@ impl Database {
         for revision in &revisions {
             apply_fn(revision)?;
         }
-        self.backend.with_tx(&mut |tx| {
-            tx.execute(
-                "UPDATE config_changesets SET status = 'applied', applied_at = ?2
-                 WHERE change_id = ?1",
-                &vals![change_id, unix_now()],
-            )?;
-            Ok(())
-        })
+        // The per-revision apply_fn writes ran above; only this single status
+        // stamp remains, which is atomic on its own — no transaction needed.
+        self.backend.execute(
+            "UPDATE config_changesets SET status = 'applied', applied_at = ?2
+             WHERE change_id = ?1",
+            &vals![change_id, unix_now()],
+        )?;
+        Ok(())
     }
 
     /// List change-sets at or below `scope`, newest first.
