@@ -1,0 +1,468 @@
+# RFC-0007 - Glossary
+
+This document defines the terms used across the RFC-0007 set on `aos-nix`, the
+Rust Nix evaluator for ANDYL OS. Each entry gives a precise definition *in the
+context of aos-nix* and, where a term is treated in depth elsewhere, a pointer to
+the owning document.
+
+Five invariants recur throughout and frame nearly every definition below:
+
+1. **Eval, not build.** aos-nix replaces only the path from `.nix` source to a
+   `.drv` derivation graph; real Nix still *builds* the resulting `.drv`. See
+   [motivation and goals](01-motivation-and-goals.md).
+2. **Byte-identical to C++ Nix.** The output is a bug-for-bug contract: identical
+   `.drv` files and store paths, SHA-256 derivation hashing, exact string
+   contexts. See [compatibility constraints](02-compatibility-constraints.md).
+3. **Differential-harness-gated.** aos-nix is default-OFF until the `.drv`-diff
+   harness is byte-green on the full AOS closure; `NixCli` is a permanent
+   fallback. See [differential testing and benchmarking](15-differential-testing-and-benchmarking.md).
+4. **Cranelift backend.** All compiled tiers use Cranelift, not LLVM/WASM. See
+   [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
+5. **Split hashing.** xxh3 in-process, blake3 durable/shared, SHA-256 *only* for
+   Nix-observed `.drv`/store hashes — no internal hash ever leaks into a
+   Nix-observed hash. See [incremental evaluation cache](12-incremental-evaluation-cache.md).
+
+A standing theme — the *synthesis thesis* of [architecture overview](03-architecture-overview.md)
+— is that Nix's **purity and value immutability** convert techniques that are
+*partial or unsound* in their source runtimes (GHC, HotSpot, V8, Salsa) into ones
+that are *total and sound* here.
+
+---
+
+## A
+
+**Adapton** — A research framework for *demand-driven* incremental computation
+(Hammer et al., PLDI 2014) built around a *demanded computation graph (DCG)* with
+a separation between inner computations and outer observers. One of the named
+sources for aos-nix's incremental cache; change propagation runs only for results
+an observer actually demands. See [incremental evaluation cache](12-incremental-evaluation-cache.md).
+
+**AOS_NIX_NATIVE** — The environment-variable gate that selects the native
+`aos-nix` evaluator (`NixNative`) over the subprocess `NixCli` fallback. It stays
+**unset (off) by default** until the differential `.drv`-diff harness is
+byte-green on the full AOS package set. See [architecture overview](03-architecture-overview.md)
+and [integration with AOS](14-integration-with-aos.md).
+
+**ATerm** — The textual serialization format Nix uses on disk for `.drv` files.
+aos-nix produces ATerm via the `nix-compat` crate, byte-identically to C++ Nix;
+its serialization, attr ordering, and string-context encoding are a compatibility
+firewall, not an optimization target. See [derivation and store compatibility](11-derivation-and-store-compatibility.md).
+
+---
+
+## B
+
+**Baseline JIT (tier 1)** — The Cranelift compilation tier that removes
+interpreter-dispatch overhead with *fast compile and no speculation*: every value
+access, `select`, arithmetic op, and `force` is fully general and calls a runtime
+symbol. The analogue of HotSpot's C1. See [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
+
+**Blackholing / blackhole** — The middle thunk state (`Suspended → Blackhole →
+Forced`). A thunk is marked `Blackhole` while it is being forced *on the current
+stack*; re-entering a blackholed thunk is Nix's infinite-recursion detection
+(`error: infinite recursion encountered`). The state word is a tagged atomic so a
+parallel thread can distinguish "blackholed by me" from "blackholed by another
+thread." See [value representation](05-value-representation.md) and [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md).
+
+**blake3** — The cryptographic, SIMD/tree hash used for *durable, content-addressed*
+eval-cache keys and value-hashes shared across CI machines. Chosen over SHA-256
+for speed and over xxh3 for collision-resistance: a collision in a *shared* cache
+could corrupt results, so the cross-machine layer must be cryptographic. Never
+appears in `.drv` output. See [incremental evaluation cache](12-incremental-evaluation-cache.md).
+
+**Bump arena** — The Tier A allocator for one-shot CLI eval: a bump-pointer heap
+that is **never freed** until process exit. It is the fastest possible allocator
+and correct for a batch job that drops its whole heap at exit; it also lets
+compiled code hold raw interior pointers freely (no collector to invalidate
+them). See [memory management and GC](06-memory-management-and-gc.md).
+
+**Bytecode VM vs. tree-walking** — Two interpreter strategies. A *tree-walking*
+interpreter (aos-nix tier 0, and C++ Nix) walks the AST/IR directly; a *bytecode
+VM* (Snix/Tvix's `snix-eval`) compiles to a bytecode that a dispatch loop
+executes. aos-nix uses a tree-walk oracle at tier 0 and Cranelift-compiled native
+code above it, rather than a bytecode VM. See [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
+
+---
+
+## C
+
+**Call-by-need / lazy evaluation** — The evaluation strategy of Nix (and GHC):
+every binding, list element, and attribute value is a suspended computation
+evaluated *at most once* and *only when demanded*. "Call-by-need" adds memoization
+(sharing) to "call-by-name"; cardinality analysis can downgrade a provably
+used-once binding from call-by-need to call-by-name because re-evaluation is free
+in a pure language. See [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md).
+
+**Cardinality analysis** — The whole-program *usage* analysis (the "at most once?"
+/ "not at all?" half of GHC's demand analyser) that classifies each binding as
+**0 (absent)**, **1 (used-once)**, or **many**. Absent bindings are dead-code
+eliminated; used-once thunks drop their blackhole/update machinery (single-entry
+thunk or call-by-name downgrade); many-use thunks keep the full memoizing update
+thunk. See [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md).
+
+**Content-addressed (CA)** — Of a derivation or a cache entry: named by a hash of
+its *content* rather than its inputs. CA derivations enable build-layer early
+cutoff (a rebuild whose output content is unchanged stops propagating). The eval
+cache's persistent stores (`values/`, `files/`) are content-addressed by blake3.
+Contrast *input-addressed*. See [derivation and store compatibility](11-derivation-and-store-compatibility.md)
+and [incremental evaluation cache](12-incremental-evaluation-cache.md).
+
+**Copy-and-patch** — An ultra-low-warmup compilation technique that stitches
+pre-compiled machine-code "stencils," patching in constants and addresses, for
+microsecond compile times (CPython 3.13's JIT, OOPSLA 2021). Noted as a *deferred,
+measurement-gated* alternative to the Cranelift baseline for tier 1 if tier-1
+compile time (not code quality) proves a bottleneck. See [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
+
+**Cranelift** — The pure-Rust code generator (born in Wasmtime; also
+`rustc_codegen_cranelift`) chosen as the JIT backend for tiers 1 and 2. Picked for
+~10x-faster compilation than LLVM (warmup-friendly), hermetic pure-Rust builds,
+`JITBuilder::symbol` host-symbol resolution matching the runtime ABI, and user
+stack maps for a precise external GC. See [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
+
+**CLIF** — Cranelift IR, the SSA intermediate representation each IR node lowers
+to. Its block parameters serve as *join points* for scalar-replaced values.
+Worked lowering sketches in [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
+
+---
+
+## D
+
+**de Bruijn index** — A static slot index assigned to each variable reference by
+the scope-resolution pass, replacing named-variable lookup with a flat indexed
+environment (a vector of value pointers, not a chain of named maps). This makes
+environment access constant-time and environment hashing cheap. See [frontend, parser and IR](04-frontend-parser-and-ir.md)
+and [architecture overview](03-architecture-overview.md).
+
+**Demand / strictness analysis** — See *Strictness / demand analysis*.
+
+**Demand-driven / incremental computation** — The model in which evaluation is the
+incremental maintenance of a *dependency graph of cached computations*: a node is
+created only when forced, and change propagates only along edges an observer
+demands. Nodes are keyed on `H(expression ⊕ environment)` and carry a value-hash
+that drives early cutoff. See [incremental evaluation cache](12-incremental-evaluation-cache.md).
+
+**Deoptimization / uncommon trap** — HotSpot's mechanism (and term) for abandoning
+a speculative tier-2 native frame when a guard fails, *reconstructing* the abstract
+evaluation state from deopt metadata, and resuming in the tier-0 oracle.
+Deoptimization keeps speculation correct without being sound-by-proof; in aos-nix
+it is dramatically simpler than in HotSpot because Nix is effect-free — there are
+no partially-performed side effects to roll back. See [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
+
+**Derivation / `.drv`** — The unit of build description Nix emits: a node in the
+build graph specifying a builder, arguments, environment, inputs, and outputs,
+serialized as an ATerm `.drv` file with SHA-256-hashed output paths. Producing
+`.drv` files byte-identical to C++ Nix is aos-nix's entire output contract. See
+[derivation and store compatibility](11-derivation-and-store-compatibility.md).
+
+**derivationStrict** — The builtin (`builtins.derivationStrict`) that
+*forces every attribute* of a derivation argument in deterministic attr order,
+builds a `nix-compat` `Derivation`, serializes ATerm, and hashes output paths with
+SHA-256. The name is not a coincidence: it is the dominant strict context, so
+nearly every binding flowing into a derivation is provably strict. The
+compatibility firewall (L1) of the stack. See [derivation and store compatibility](11-derivation-and-store-compatibility.md).
+
+---
+
+## E
+
+**Early cutoff** — The single feature that makes incremental evaluation
+*systemic*: when a reconsidered node recomputes to a value-hash *equal* to its
+previous one, change propagation **stops** — consumers are not dirtied. Editing a
+comment in a widely-imported file recomputes almost nothing. This is Salsa's
+red-green algorithm and *Build Systems à la Carte*'s verifying-trace cutoff; it is
+the biggest systemic lever in the whole RFC. See [incremental evaluation cache](12-incremental-evaluation-cache.md).
+
+**Escape analysis** — The whole-program analysis that proves an aggregate (attrset,
+list, thunk) never outlives the frame that built it, licensing *scalar
+replacement*. Borrowed from HotSpot's C2, but *more* effective in Nix because
+immutability removes the aliasing/identity/virtual-dispatch hazards that make it
+fragile in Java, reducing it to near-syntactic reachability. An aggregate that
+flows into a to-be-interned result counts as escaping. See [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md).
+
+---
+
+## F
+
+**Force / forcing** — The operation that drives a value to weak head normal form,
+evaluating its thunk if necessary. The runtime heartbeat: check state; if `Forced`
+return the cached slot (a single tag test on the hot path), if `Blackhole` raise
+infinite recursion, if `Suspended` transition through `Blackhole`, run the body,
+cache, and mark `Forced`. Exposed to compiled code as the `aos_force` runtime
+symbol — the hottest call. See [value representation](05-value-representation.md)
+and [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md).
+
+**Full-laziness / let-floating** — The GHC transform (Peyton Jones, Partain &
+Santos, ICFP '96) that *floats* a let-binding outward, out of an enclosing lambda
+it does not depend on, so a loop-invariant subexpression (e.g. a store-path
+interpolation inside a `map`) is computed **once** rather than per call. The
+complementary *float-inward* sinks a binding toward its uses. The GHC residency
+caveat (hoisting can leak space) largely vanishes in aos-nix's never-free CLI
+arena. See [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md).
+
+---
+
+## G
+
+**Generational GC** — A precise generational *copying* collector for long-lived
+daemon mode (Tier B), exploiting the extreme form the generational hypothesis
+takes here (intermediate thunks die almost immediately). It moves objects, so JIT
+code must cooperate via read/write barriers and precise stack maps. Contrast the
+Tier A bump arena. See [memory management and GC](06-memory-management-and-gc.md).
+
+---
+
+## H
+
+**HAMT** — Hash array mapped trie, the fallback representation for large or
+override-heavy attribute sets (small/stable attrsets use a flat shape-indexed array
+instead). See [value representation](05-value-representation.md) and [attribute sets, hidden classes and inline caches](09-attribute-sets-hidden-classes-and-inline-caches.md).
+
+**Hash-consing / maximal sharing** — Interning immutable values so structurally
+equal values collapse to a *single* allocation, consulting a global cons-table
+(keyed by xxh3, with structural equality as tiebreak) at construction time. It buys
+heap deduplication (store-path strings, `meta`/`stdenv` recur constantly), O(1)
+structural equality via pointer equality, and a precomputed value-hash stored in
+the object header that powers the incremental cache's early cutoff. **Total in
+Nix** because values never mutate — niche elsewhere, global here. See [value representation](05-value-representation.md).
+
+**Hidden class / shape / map** — The V8-derived structure (a.k.a. *shape* or *map*)
+that an attribute set's header references: the sorted/insertion-ordered key set
+shared by all attrsets with the same keys in the same order, so `attrs.field`
+becomes a shape-check plus a constant-offset load. aos-nix's shape carries a
+*deterministic ordering invariant* V8 does not need, because attr iteration order
+is observable and feeds `derivationStrict`. See [attribute sets, hidden classes and inline caches](09-attribute-sets-hidden-classes-and-inline-caches.md).
+
+---
+
+## I
+
+**Inline cache (IC)** — A per-access-site cache mapping observed *shape → field
+offset*, walking the states **uninitialized → monomorphic → polymorphic →
+megamorphic** as it sees shapes. *Monomorphic* (one shape) is the fast case tier 2
+specializes into a guarded constant-offset load; *polymorphic* caches a small fixed
+set; *megamorphic* falls back to a generic lookup. Exposed as `aos_select_ic`.
+Borrowed from V8/HotSpot; sound here because immutable values never change shape.
+See [attribute sets, hidden classes and inline caches](09-attribute-sets-hidden-classes-and-inline-caches.md).
+
+**Input-addressed (IA)** — Of a derivation: its output store path is computed from
+a hash of its *inputs* (the ATerm of the derivation), the default Nix scheme.
+Contrast *content-addressed (CA)*. aos-nix must reproduce IA output-path hashing
+(SHA-256) byte-identically. See [derivation and store compatibility](11-derivation-and-store-compatibility.md).
+
+---
+
+## J
+
+**JIT tier / baseline / optimizing** — The compiled execution tiers above the
+tier-0 oracle: tier 1 is the Cranelift **baseline** (fast compile, no speculation,
+removes interpreter overhead) and tier 2 is the Cranelift **optimizing** tier
+(profile-guided shape/type speculation, strictness baking, scalar replacement,
+inlining, guarded by deopt and OSR). Promotion is profile/counter-driven, HotSpot
+style. See [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
+
+---
+
+## L
+
+**Lazy / call-by-need evaluation** — See *Call-by-need / lazy evaluation*.
+
+---
+
+## M
+
+**Maximal sharing** — See *Hash-consing / maximal sharing*.
+
+**Megamorphic** — See *Inline cache*.
+
+**Memoization** — Caching a computation's result keyed on its inputs so a repeat is
+a lookup, not a recompute. The incremental cache memoizes thunk and derivation
+results keyed on `H(expression ⊕ environment)`; hash-consing memoizes value
+construction. Sound across runs in Nix because evaluation is *referentially
+transparent* (a pure function of source plus captured environment). See [incremental evaluation cache](12-incremental-evaluation-cache.md).
+
+**Monomorphic / polymorphic** — See *Inline cache*.
+
+---
+
+## N
+
+**NaN-boxing** — The 8-byte value-encoding optimization that hides a 3-bit tag plus
+a ~48-bit payload inside the unused bit patterns of a quiet IEEE-754 NaN, storing
+real doubles verbatim. The *measured optimization*, not the baseline: a NaN-box
+payload cannot hold a full `i64` (LuaJIT's 52-bit cautionary tale), and Nix `int`
+*is* a first-class 64-bit integer, so large ints must be boxed. Favored only inside
+homogeneous nursery containers, gated on a measured win. See [value representation](05-value-representation.md).
+
+**NixEval trait** — The Rust trait abstracting the evaluator behind the `aos` CLI:
+`instantiate(file, attr) -> DrvPath`, `eval_expr`, etc. Two implementors:
+`NixCli` (subprocess `nix-instantiate`, the **permanent** fallback) and
+`NixNative` (aos-nix, gated by `AOS_NIX_NATIVE`). See [architecture overview](03-architecture-overview.md)
+and [integration with AOS](14-integration-with-aos.md).
+
+**nix-compat** — The crate (from the Snix project, pinned to a git rev) that
+provides faithful, already-tested implementations of Nix's on-disk formats —
+`Derivation`, ATerm serialization, output-path hashing, store-path parsing.
+aos-nix depends on it precisely to inherit `.drv`/store-path parity rather than
+re-deriving these formats. Its API is unstable; expect to carry local patches and
+upstream fixes. See [derivation and store compatibility](11-derivation-and-store-compatibility.md).
+
+---
+
+## O
+
+**On-stack replacement (OSR)** — HotSpot's technique for *entering* compiled code
+in the middle of a long-running activation that began in a lower tier, rather than
+waiting for the next call — the dual of deoptimization. In Nix it targets the
+dynamic equivalents of hot loops (a deep `foldl'`, a long `genList`, a recursive
+`fix`). A measured follow-up, not a phase-1 requirement. See [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
+
+**Oracle (tier-0 tree-walk)** — The simplest faithful interpreter of Nix semantics,
+written in *safe* Rust, walking the arena IR directly. It is the permanent
+**correctness reference** (the differential tie-breaker), runs cold/run-once code,
+is debuggable, and is the `miri`/sanitizer-checked safe island. Tiers 1/2 must
+agree with it bit-for-bit; deopt targets it. See [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
+
+---
+
+## P
+
+**Pointer tagging** — Encoding small state in the spare low bits of an 8-byte-aligned
+heap pointer (alignment ≥ 8 leaves the low 3 bits free). aos-nix's chief use is the
+thunk **FORCED** bit (bit 0): a re-force of an already-forced thunk becomes a tag
+test on a register, skipping the state load and indirect call — GHC's dynamic
+pointer tagging. Optionally encodes small-list/small-attrs constructor info.
+Sounder than in GHC because a forced Nix value never reverts. See [value representation](05-value-representation.md).
+
+**Precise vs. conservative GC** — A *precise* collector knows the exact type of
+every root and heap field (from the value tag), so it can move objects and never
+falsely retains garbage; a *conservative* collector (Boehm, used by C++ Nix) treats
+any pointer-like stack word as a root, causing false retention and dominating C++
+Nix's cost. Replacing Boehm with a precise collector is a named win of the project.
+See [memory management and GC](06-memory-management-and-gc.md).
+
+**Primop / builtin** — A Nix `builtins.*` function (~120 total) implemented as a
+Rust function and registered as a Cranelift runtime symbol (`aos_prim_<name>`).
+Primops are indistinguishable from lambdas to user code, carry escape signatures
+for the analysis, and some (arithmetic, comparison, `derivationStrict`) are
+provably strict demand sources. See [primops and runtime ABI](10-primops-and-runtime-abi.md).
+
+---
+
+## R
+
+**Region inference** — A static analysis (a measured follow-up) that assigns
+allocations to lexical *regions* freed wholesale when the region exits, reducing
+GC pressure for daemon mode by bounding object lifetimes statically. See [memory management and GC](06-memory-management-and-gc.md).
+
+---
+
+## S
+
+**Salsa** — The Rust incremental-computation framework (the engine behind
+rust-analyzer's durable incrementality) whose *red-green* algorithm and query graph
+aos-nix's incremental cache adopts: backward invalidation floods until it reaches a
+query whose result is unchanged. One of the named P0 sources. See [incremental evaluation cache](12-incremental-evaluation-cache.md).
+
+**Scalar replacement** — The HotSpot C2 transform (Scalar Replacement of Aggregates)
+that *decomposes* a non-escaping aggregate into individual SSA values, so the object
+never exists as a coherent structure on heap or stack — its field accesses become
+reads of CLIF SSA values. Licensed by escape analysis; far more applicable in Nix
+than Java because immutable values rarely escape. See [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md).
+
+**Shape** — See *Hidden class / shape / map*.
+
+**SHA-256** — The hash Nix's on-disk format mandates for `.drv` and store-path
+hashing. In aos-nix it is used **only** at the `derivationStrict` boundary,
+computed from the ATerm serialization of *values* — never for internal sharing or
+caching, and no internal (xxh3/blake3) hash may ever leak into it. Non-negotiable
+for compatibility. See [derivation and store compatibility](11-derivation-and-store-compatibility.md).
+
+**Snix / Tvix** — The peer Rust Nix evaluator project (Snix is the 2025 fork/rename
+of Tvix). `snix-eval` is a bytecode-VM evaluator that defers optimization until
+nixpkgs-correct; it has no hash-consing, no strictness analysis, and no
+`.drv`-parity guarantee. aos-nix reuses its `nix-compat` crate and its conformance
+test approach while differing in execution model. See [prior art and references](16-prior-art-and-references.md).
+
+**String context** — The set of store-path dependencies a Nix string carries.
+Interpolating a derivation into a string records the dependency; when
+`derivationStrict` reads the string, the context becomes an input edge. String
+operations union contexts; `unsafeDiscardStringContext`/`getContext`/
+`addDrvOutputDependencies` manipulate them. **Must match C++ Nix exactly** or the
+derivation gets different inputs and a different store path. Represented as an
+interned COW bitset of store-path ids, included in the string's cons key. See [value representation](05-value-representation.md).
+
+**Store path** — A `/nix/store/<hash>-<name>` path naming a derivation or its
+output, with the hash computed (SHA-256) input- or content-addressed. Producing
+store paths byte-identical to C++ Nix is half the output contract; any divergence
+is a total cache miss. See [derivation and store compatibility](11-derivation-and-store-compatibility.md).
+
+**Strictness / demand analysis** — The GHC-derived whole-program analysis that proves
+a binding is *always* evaluated when its context is ("evaluated at least once"),
+licensing **eager** lowering with zero thunk allocation. Computed as a backward
+demand fixpoint from strict primops and `derivationStrict`. *Exact* in aos-nix (not
+a conservative approximation) because the whole program is a closed batch. Eager
+lowering is licensed only by positive proof, never heuristic, so it can never force
+a should-be-lazy `throw`. See [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md).
+
+**Symbol interning** — Mapping each attribute name (and store-path id) to a small
+`u32` so attr keys, shapes, and string contexts compare and hash as integers rather
+than strings. A prerequisite for cheap hidden classes and context bitsets. See [value representation](05-value-representation.md)
+and [attribute sets, hidden classes and inline caches](09-attribute-sets-hidden-classes-and-inline-caches.md).
+
+---
+
+## T
+
+**Tagged value** — The first-cut (and tree-walk-oracle) value encoding: a 16-byte
+tagged union of an 8-byte tag/discriminant word and an 8-byte payload, with every
+`i64`, `f64`, and pointer inline. Chosen over an 8-byte NaN-box as the baseline
+because Nix's first-class `i64` cannot fit a NaN-box payload. The tag travels *with*
+the value in a register pair, so compiled code learns a value's type without a heap
+load. See [value representation](05-value-representation.md).
+
+**Thunk** — The runtime embodiment of laziness: a heap object `(code_ptr,
+captured_env, state)` representing a suspended computation that, when forced,
+produces a WHNF value. **Not** a user-visible Nix type (`typeOf` never returns
+`"thunk"`). The state machine is `Suspended → Blackhole → Forced`, monotonic and
+idempotent. Strictness/cardinality analysis can shrink or *delete* the thunk
+entirely (eager lowering, single-entry, dead-code elimination). See [value representation](05-value-representation.md)
+and [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md).
+
+**Tree-walking** — See *Bytecode VM vs. tree-walking* and *Oracle*.
+
+---
+
+## U
+
+**Uncommon trap** — See *Deoptimization / uncommon trap*.
+
+**Usage analysis** — See *Cardinality analysis*.
+
+---
+
+## W
+
+**WHNF (weak head normal form)** — The form a value reaches when its *outermost*
+constructor is known — an int is an int, a list is a list even if its elements are
+still thunks. Forcing drives a value to WHNF and no further (Nix is *weak head*
+lazy, like GHC). The hot path of any lazy evaluator is re-forcing an already-WHNF
+value; making "is this WHNF?" a single register tag test (tagged value) or pointer
+bit test (FORCED tag) is the core of cheap laziness. See [value representation](05-value-representation.md).
+
+**Worker-wrapper** — GHC's transform that exploits strictness/absence information by
+splitting a function into a **worker** (`$wf`, taking strict arguments already
+evaluated/unboxed, with absent arguments dropped) and a thin always-inlined
+**wrapper** (the original lazy convention, forcing the strict args and tail-calling
+the worker). For a derivation core this yields zero thunks and straight-line code.
+See [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md).
+
+---
+
+## X
+
+**xxh3 / xxHash** — The fastest non-cryptographic hash (multi-GB/s), used for
+*in-process* cons-table keys and hot value/cache-key probes. Non-cryptographic is
+fine here because collisions are caught by the table's structural-equality fallback
+(a collision risks only a recompute, never a wrong answer). Never durable, never
+shared across machines (that is blake3's job), never in `.drv` output. See [value representation](05-value-representation.md)
+and [incremental evaluation cache](12-incremental-evaluation-cache.md).

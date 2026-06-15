@@ -1,0 +1,729 @@
+# RFC-0007 - Attribute Sets: Hidden Classes, Inline Caches, HAMT Overlays, and Iteration-Order Compatibility
+
+> Part of the RFC-0007 aos-nix documentation set. This document specializes
+> the value model of [value representation](05-value-representation.md) and the
+> codegen of [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md)
+> to the single hottest data structure in the Nix language: the attribute set.
+> It depends on the symbol interning and memory model introduced in
+> [memory management and GC](06-memory-management-and-gc.md), feeds the
+> derivation path in [derivation and store compatibility](11-derivation-and-store-compatibility.md),
+> and its content-addressed hashing feeds [incremental evaluation cache](12-incremental-evaluation-cache.md).
+
+## 1. Why attribute sets deserve their own document
+
+Nix is, structurally, a language of attribute sets. The package set is one
+gigantic recursive attribute set; every derivation is an attribute set; every
+module-system fixpoint is an attribute set of attribute sets; `stdenv`,
+`lib`, `pkgs`, and the `mkDerivation` argument convention all manifest as
+attribute-set construction, attribute selection, and the update operator `//`.
+A profile of any real Nix evaluation over nixpkgs or the AOS package set shows
+the same three operations dominating the dynamic instruction count:
+
+| Operation                  | Nix surface syntax        | Hot because                                              |
+|----------------------------|---------------------------|---------------------------------------------------------|
+| Attribute selection        | `a.b.c`, `a.b or d`       | Every `pkgs.foo`, every `stdenv.mkDerivation`, every `lib.x` |
+| Attribute-set construction | `{ a = ...; b = ...; }`   | Every derivation argument, every module result          |
+| Update / merge             | `a // b`                  | Every override, every `mkDerivation` arg-default merge, every module overlay |
+
+These operations are executed billions of times across a full nixpkgs/AOS
+evaluation, against attribute sets whose *shapes* (key sets and key orders) are
+overwhelmingly repetitive: every `mkDerivation` call site produces argument
+sets drawn from the same small vocabulary of keys (`pname`, `version`, `src`,
+`buildInputs`, `nativeBuildInputs`, `phases`, ...), and every derivation
+`outputs` attrset is one of a handful of shapes. This is *exactly* the
+statistical regime that the object-oriented VM literature was built to exploit,
+and the central thesis of this document is that Nix is a far better target for
+those techniques than the languages they were invented for, because Nix
+attribute sets are **immutable**.
+
+In V8, a hidden class can be invalidated when a property is added, deleted, or
+its type changes; the machinery exists in large part to *detect and recover
+from* mutation. In Nix there is no mutation. An attribute set, once
+constructed, is frozen forever. A shape, once assigned, is correct forever.
+Inline caches never need an invalidation protocol against writes, only against
+the legitimately different shapes that flow to a polymorphic site. The same
+purity that makes the incremental cache of
+[incremental evaluation cache](12-incremental-evaluation-cache.md) sound makes
+hidden classes and inline caches *more* effective here than in the JavaScript
+engines that originated them.
+
+This document specifies four interlocking mechanisms:
+
+1. **Symbol interning** — attribute names become `u32` symbols (§3).
+2. **Hidden classes / shapes** — the identity, key set, and layout of an
+   attribute set are factored out of the instance into a shared, interned
+   descriptor reached through a transition tree (§4).
+3. **Inline caches** — per-select-site cache cells that memoize a
+   `shape -> offset` resolution and erase the dictionary lookup on the hot path
+   (§5).
+4. **Representation of `//`** — shape-transition + flat copy for small sets, a
+   HAMT (hash array mapped trie) persistent map for large/override-heavy sets,
+   chosen by a measured policy (§6).
+
+Throughout, **deterministic, C++-Nix-identical iteration order** is a hard
+correctness constraint (§7), not an optimization knob, because it is observable
+through `builtins.attrNames`, `builtins.attrValues`, `builtins.mapAttrs`,
+`derivationStrict`'s env construction, and therefore the bytes of the produced
+`.drv`. Getting the layout fast but the order wrong produces a different store
+path, a total cache miss, and a from-source toolchain rebuild — the
+catastrophic outcome the entire RFC is organized to prevent
+(see [compatibility constraints](02-compatibility-constraints.md)).
+
+## 2. Baseline: how C++ Nix represents attribute sets, and what it costs
+
+C++ Nix represents an attribute set (`Bindings`) as a flat, contiguous array of
+`Attr { Symbol name; Value* value; PosIdx pos; }`, kept **sorted by symbol id**,
+constructed via a `BindingsBuilder` that allocates the array at known size and
+then sorts. Attribute names are interned to `Symbol` (a small integer) in a
+global `SymbolTable`. Selection (`a.b`) is a binary search over the sorted
+array by symbol id. The update operator `a // b` allocates a fresh array sized
+`|a| + |b|` and merges.
+
+This is already a good design — it is why C++ Nix is the fast baseline we must
+*beat*, not the slow one we condescend to (cf. hnix, the Haskell evaluator,
+which is notoriously slow and is a cautionary data point, not a target). But it
+leaves three classes of value on the table:
+
+1. **The key array is paid per instance.** Ten thousand `mkDerivation`
+   argument sets with the same keys store ten thousand copies of the
+   `[pname, version, src, ...]` symbol vector interleaved with their values.
+   The keys are pure redundancy: they are determined by the construction site,
+   not the instance.
+2. **Selection is `O(log n)` *every time*, with no site-level memoization.**
+   `pkgs.hello` re-runs the binary search on every evaluation of that
+   expression. The search result — "in a set of this shape, `hello` lives at
+   offset *k*" — is stable across all sets of that shape but is recomputed from
+   scratch.
+3. **`//` is always a full flat copy.** For module-system overlays and
+   `overrideAttrs` chains, where a tiny override is applied to a large set, the
+   `O(|a| + |b|)` copy dominates, and the large base set is copied wholesale on
+   every overlay layer.
+
+Hidden classes attack (1) and (2); the HAMT representation attacks (3). Neither
+is novel; both are table stakes in the JS-engine world. The contribution of
+this RFC is the observation that Nix immutability + whole-program batch
+evaluation makes them *unconditionally* sound and lets us drop the invalidation
+machinery the originals carry.
+
+## 3. Symbol interning: attribute names are `u32`
+
+Before any shape machinery, attribute names must be interned. This is table
+stakes shared with C++ Nix.
+
+A global, append-only `SymbolTable` maps each distinct attribute-name string to
+a dense `u32` `Symbol`. Interning happens once, at parse time, in the frontend
+(see [frontend, parser, and IR](04-frontend-parser-and-ir.md)); the parsed-IR
+cache stores symbols, so a file parsed once never re-interns its keys. After
+interning:
+
+- Attribute-name equality is `u32` equality, not string comparison.
+- A shape's key set is a vector of `Symbol`, cheaply hashable and comparable.
+- The original spelling is recoverable for diagnostics and, critically, for
+  the lexicographic ordering that compatibility requires (§7) — the table
+  retains the string, and we precompute each symbol's **sort rank** so that
+  ordering by spelling reduces to an integer compare on a cached rank (§7.3).
+
+```rust
+/// An interned attribute name. Dense, process-global, assigned at parse time.
+///
+/// Equality and hashing are integer operations. The original UTF-8 spelling
+/// and a precomputed lexicographic sort rank are recoverable through the
+/// [`SymbolTable`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Symbol(u32);
+
+/// Interns attribute-name strings to dense [`Symbol`] ids.
+///
+/// Append-only and never freed during a process lifetime: in the one-shot
+/// CLI tier the table dies with the arena at exit; in the daemon tier it is a
+/// permanent, shared, read-mostly structure (see
+/// [memory management and GC](06-memory-management-and-gc.md)).
+pub struct SymbolTable { /* string interner + sort-rank index */ }
+```
+
+The interner is one of the immutable tables shared *unsynchronized* across
+parallel evaluation workers (see [parallel evaluation](13-parallel-evaluation.md)):
+because it is append-only and a symbol's meaning never changes once assigned,
+readers need no lock, and the rare append path uses a short critical section or
+a lock-free append structure.
+
+## 4. Hidden classes (shapes) and the transition tree
+
+### 4.1 The factoring
+
+A hidden class — called a *map* in the original Self work (Chambers, Ungar &
+Lee, 1989), a *shape* or *structure* in V8, and a *hidden class* in the common
+vocabulary — is the descriptor that an attribute set's instance points to
+instead of carrying its own keys. We use **shape** as the primary term.
+
+```text
+  Without shapes (C++ Nix Bindings):          With shapes (aos-nix):
+
+  AttrSet instance                            AttrSet instance
+  ┌───────────────────────────┐               ┌─────────────┐
+  │ [ (sym pname, v0)         │               │ shape ──────┼──► Shape (shared)
+  │   (sym src,   v1)         │               │ values: [   │    ┌──────────────────┐
+  │   (sym version, v2) ] ... │               │   v0,       │    │ keys: [pname,    │
+  └───────────────────────────┘               │   v1,       │    │        src,      │
+   keys stored per instance                    │   v2 ]      │    │        version]  │
+                                               └─────────────┘    │ offset map:      │
+                                                values only;      │  pname->0        │
+                                                keys shared       │  src->1          │
+                                                                  │  version->2      │
+                                                                  └──────────────────┘
+```
+
+A `Shape` owns:
+
+- the **ordered key vector** (`Vec<Symbol>`) in *insertion order* — the order
+  in which the construction site introduced the bindings; this is the storage
+  order of the parallel `values` array;
+- a **symbol → slot-offset map** for selection;
+- a precomputed **iteration order** (the lexicographic permutation of the
+  slots, §7) so that `attrNames`/`attrValues`/`derivationStrict` are a cached
+  table walk, not a per-call sort;
+- a content **fingerprint** (xxh3 of the key vector) used to deduplicate shapes
+  and to hash values for the incremental cache.
+
+An instance is then just `{ shape: &Shape, values: [Value; n] }` — a pointer
+plus a flat value array. The keys, the offset map, and the iteration order are
+all amortized across every set that shares the shape. For the AOS package set,
+where thousands of derivation argument sets share the same handful of shapes,
+this is a large constant-factor reduction in allocation volume and a
+prerequisite for the inline caches of §5.
+
+### 4.2 The transition tree
+
+Shapes are produced not ad hoc but by walking a **transition tree** rooted at
+the empty shape, exactly as V8 builds hidden classes by recording, for each
+shape, the transition "add key *k*" → resulting shape. Two attribute sets
+constructed by adding the same keys in the same order arrive at the *same*
+`Shape` object, so shape identity is pointer identity, and `shape_a == shape_b`
+is one pointer compare.
+
+```text
+                      ┌─────────────┐
+                      │  empty {}   │
+                      └──────┬──────┘
+                 +pname      │            +x
+            ┌────────────────┴───────────────┐
+            ▼                                 ▼
+      ┌───────────┐                     ┌───────────┐
+      │ {pname}   │                     │ {x}       │
+      └─────┬─────┘                     └─────┬─────┘
+       +version                          +y   │
+            ▼                                  ▼
+      ┌──────────────┐                  ┌───────────┐
+      │ {pname,      │  +src            │ {x,y}     │
+      │  version}    ├────────┐         └───────────┘
+      └──────────────┘        ▼
+                        ┌──────────────────┐
+                        │ {pname,version,  │
+                        │  src}            │  ◄── the dominant mkDerivation shape
+                        └──────────────────┘
+```
+
+Transition edges are cached on the parent shape in a small map
+`Symbol -> &Shape`. The first construction of a given key sequence pays to
+create the shapes; every subsequent construction with the same key sequence
+walks existing edges and allocates only the value array. For a Nix
+construction site — a *static* `{ ... }` literal in the AST — the key sequence
+is fixed at compile time, so the entire shape is resolved **once per site, at
+compile time**, and the runtime path for that site is "allocate a values array
+of known size, fill it, attach the precomputed shape pointer." There is no
+per-instance shape lookup at all for static attrsets; the transition tree is
+exercised at runtime only by dynamic construction (`builtins.listToAttrs`,
+computed keys `${e}`, and `//` results — §6).
+
+### 4.3 Interaction with hash-consing
+
+[Value representation](05-value-representation.md) specifies hash-consing
+(maximal sharing) of immutable values. Shapes compose with it on two levels.
+First, shapes themselves are interned by fingerprint: structurally identical
+key vectors yield one `Shape`. Second, two *instances* that share a shape and
+whose value arrays are pointerwise equal (after their elements are
+hash-consed) are themselves candidates for hash-consing into a single
+attribute-set value — which is common, because identical derivation argument
+sets recur constantly across the package set. Shape identity reduces the
+instance-equality check that hash-consing needs to "same shape pointer, then
+elementwise pointer compare of the value array," which is cheap. This is the
+mechanism by which "the identical `stdenv` flowing into thousands of
+derivations is one heap object" is realized.
+
+### 4.4 Why static typing is unnecessary and immutability is decisive
+
+V8 must contend with property addition, deletion, and `[[Prototype]]` changes,
+each of which mutates or invalidates a hidden class and forces deopt of code
+specialized to it; "monomorphic" call sites silently degrade to
+"megamorphic" when real-world objects drift. The entire literature on
+*profile-guided offline optimization of hidden-class graphs* exists to fight
+this drift. None of it applies to Nix. A Nix attribute set is constructed once
+and never gains, loses, or retypes a binding. The shape assigned at
+construction is the shape forever. The only source of polymorphism at a select
+site is genuine: different *sets* of different *shapes* flowing to the same
+`a.b` expression (e.g. a `lib` function selecting `.name` from heterogeneous
+arguments). That polymorphism is bounded and handled by the inline-cache states
+of §5 — but it is never spurious, and there is no write barrier and no shape
+invalidation protocol. This is the concrete payoff of the synthesis thesis: a
+technique that is partial and defensive in its birthplace becomes total and
+offensive in Nix.
+
+## 5. Inline caches on selection sites
+
+### 5.1 The mechanism
+
+An attribute selection `a.b` compiles, at every tier above the tree-walk
+oracle, to a site that carries an **inline cache (IC)**: a small mutable cache
+cell, embedded at (or beside) the call site, that memoizes the last
+shape→offset resolution. The classic state machine (Hölzle, Chambers & Ungar,
+1991, "Optimizing Dynamically-Typed Object-Oriented Languages with Polymorphic
+Inline Caches", introduced for Self; adopted by HotSpot and V8) is:
+
+```text
+  Uninitialized ──first hit──► Monomorphic ──new shape──► Polymorphic ──overflow──► Megamorphic
+        │                          │  (cache 1 shape)        │  (cache ≤N shapes)       │
+        │                          │                         │                          │
+   slow path:                 fast path:                fast path:                 slow path:
+   resolve, fill cache        guard==shape?              linear guard chain         general lookup
+                              load values[offset]        over N shapes              (binary search /
+                                                                                     HAMT get)
+```
+
+- **Uninitialized**: first execution resolves `b` in `a`'s shape via the
+  general path, then rewrites the cache cell to Monomorphic with that
+  `(shape, offset)`.
+- **Monomorphic**: the hot case. Guard: is `a.shape` the cached shape? If yes,
+  load `a.values[offset]` — a guard compare plus a constant-offset load, no
+  search. This is the entire point.
+- **Polymorphic**: a second distinct shape arrives; the cache holds a small
+  linear list of `(shape, offset)` pairs (V8 caps the polymorphic chain at 4
+  before going megamorphic; we make the cap a tunable `N`, default 4). The
+  guard chain is a short, branch-predictor-friendly sequence of compares.
+- **Megamorphic**: more than `N` shapes; the site abandons specialization and
+  calls the general resolver (`select_slow`), which does a binary search over
+  the sorted key view (or a HAMT `get` for HAMT-backed sets, §6).
+
+The IC is read and written by compiled Cranelift code through the uniform
+runtime ABI: a `select_ic` runtime symbol (and an inlined fast-path guard
+emitted directly by the baseline/optimized tiers) — see
+[primops and runtime ABI](10-primops-and-runtime-abi.md) for the symbol table
+and [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md) for
+how guards and deopt edges are emitted.
+
+```rust
+/// A polymorphic inline cache attached to one attribute-selection site.
+///
+/// Memoizes `shape -> slot offset` resolutions. States progress monotonically
+/// `Uninitialized -> Monomorphic -> Polymorphic -> Megamorphic`; because Nix
+/// attribute sets are immutable, an entry never needs invalidation, only
+/// extension when a genuinely new shape reaches the site.
+pub enum InlineCache {
+    Uninitialized,
+    /// One cached shape; the hot, branch-free-after-guard case.
+    Monomorphic { shape: ShapeId, offset: u32 },
+    /// Up to `N` cached shapes, checked by a short linear guard chain.
+    Polymorphic { entries: SmallVec<[(ShapeId, u32); 4]> },
+    /// Too many shapes seen; defer to the general resolver every time.
+    Megamorphic,
+}
+```
+
+### 5.2 What the baseline tier emits
+
+For a monomorphic site the optimized tier emits, in CLIF-level terms, roughly:
+
+```text
+  ;; a.b  with IC cached as (shape=S, offset=k)
+  v_shape   = load.i64 a+SHAPE_OFFSET          ; load instance shape ptr
+  v_guard   = icmp eq v_shape, S               ; guard against cached shape
+  brif      v_guard, fast, slow
+
+fast:
+  v_vals    = load.i64 a+VALUES_OFFSET
+  v_result  = load.i64 v_vals + k*8            ; constant-offset slot load
+  jump cont(v_result)
+
+slow:
+  v_result  = call select_ic(rt, a, sym_b, &ic_cell)  ; resolve + update IC, may transition state
+  jump cont(v_result)
+
+cont(v_phi):
+  ...
+```
+
+The `slow` block is also the **deoptimization / uncommon-trap** edge: if the
+optimized tier *speculated* monomorphism (because the site was monomorphic
+during profiling), the guard failure can trigger an uncommon trap back to a
+less-specialized tier rather than merely a slow-path call, per the HotSpot
+deopt model described in
+[execution tiers and Cranelift](08-execution-tiers-and-cranelift.md). The
+choice between "slow-path call that widens the IC" and "deopt" is a tier
+policy; the baseline tier always widens, the optimized tier may deopt when it
+has burned the monomorphic assumption into surrounding code.
+
+### 5.3 The tree-walk oracle still has ICs (optionally)
+
+The tier-0 tree-walking interpreter — the correctness oracle — can carry a
+*degenerate* IC on each AST select node (a single `Cell<Option<(ShapeId,
+u32)>>`), giving it the monomorphic fast path without any JIT. This is cheap,
+keeps the oracle from being pathologically slow on shape-stable code, and means
+the IC abstraction is exercised and tested on the safe, miri-clean tree (the
+unsafe JIT path reuses the same resolution logic). It is *optional* in the
+sense that the oracle remains correct with ICs disabled, which is the
+configuration used to cross-check IC behavior in differential testing
+(see [differential testing and benchmarking](15-differential-testing-and-benchmarking.md)).
+
+### 5.4 Why Nix sites are predominantly monomorphic
+
+Empirically (to be confirmed by the measure-first instrumentation of §8, not
+assumed), the dominant Nix select sites are monomorphic or low-polymorphic:
+
+- `pkgs.<name>` selects from one giant fixed-shape set (the package set
+  fixpoint) — monomorphic in the shape of `pkgs`.
+- `stdenv.mkDerivation` / `lib.<fn>` select from one fixed shape — monomorphic.
+- `drv.outputs`, `drv.drvPath`, `drv.outPath` select from the derivation shape —
+  monomorphic.
+- Generic library combinators (`x.name`, `x.value` in `mapAttrs'`/`listToAttrs`
+  helpers) are the polymorphic minority, and bounded.
+
+If §8 measurement contradicts this, the IC cap `N` and the megamorphic policy
+are the tuning surface, and the tree-walk oracle remains the fallback. The
+design does not *depend* on monomorphism for correctness — only for speed.
+
+## 6. The update operator `//`: shape-transition, flat copy, and HAMT
+
+`a // b` is right-biased set union: the result has all keys of `a` and `b`,
+with `b`'s values winning on collision. It is the heart of override-heavy Nix
+(module system, `overrideAttrs`, argument-default merging). Its cost profile is
+bimodal, and so is our representation, chosen by a measured policy rather than a
+single universal structure.
+
+### 6.1 Small / shape-stable case: transition + flat copy
+
+When both operands are small and the *result shape* is statically predictable
+(common for literal `a // { onekey = v; }` overlays), the result is a flat
+shaped instance:
+
+- Compute the result key set = `keys(a) ∪ keys(b)`, preserving **a's order for
+  shared keys and a-then-new-b order overall** to match C++ Nix iteration
+  semantics (§7). Resolve it through the transition tree to a `Shape` (cached
+  after first encounter, so repeated overlays of the same shapes are free shape
+  lookups).
+- Allocate one value array; fill from `a`, then overwrite/append from `b`.
+- Result is `O(|a| + |b|)` in time and space.
+
+This is exactly C++ Nix's strategy and is optimal when sets are small and
+copies are cheap. For the long tail of `mkDerivation`'s internal
+`{ ...defaults } // args` merges over modest sets, this is the right answer and
+we keep it.
+
+### 6.2 Large / override-heavy case: HAMT persistent map
+
+When `a` is large and `b` is small — the module-system overlay and
+`overrideAttrs`-chain regime, where a 200-key set receives a 2-key override,
+and then *another* 2-key override, and so on for many layers — the flat-copy
+strategy is quadratic in the number of layers: each layer copies the entire
+base. The functional-programming answer is a **persistent immutable map with
+structural sharing**: a **HAMT** (hash array mapped trie), invented by Phil
+Bagwell in 2001 ("Ideal Hash Trees", EPFL), and used as the backbone of
+Clojure's and Scala's persistent maps.
+
+A HAMT navigates by consuming the key's hash in chunks (classically 5 bits per
+level, giving 32-way branching, `O(log₃₂ n)` ≈ effectively `O(1)` for realistic
+sizes). The decisive property for `//` is **structural sharing**: producing
+`a // b` from a HAMT-backed `a` allocates only the trie nodes on the paths to
+`b`'s keys (and their parents), sharing every untouched subtree with `a`. An
+overlay of *k* keys over an *n*-key set costs `O(k · log₃₂ n)` time and space,
+not `O(n)`, and a chain of *m* such overlays costs `O(m · k · log₃₂ n)` rather
+than `O(m · n)`. The large base is never copied; it is pointed at.
+
+```text
+  a (HAMT, n keys)            a // {x=v2}  shares all of a except the path to x
+
+        root                          root'                root  (still live, immutable)
+       /  | \                        /  | \\               /  | \
+      A   B  C   ◄──── shared ────►  A   B  C'   …          A   B  C
+         /|\                                /|\
+        … x=v1 …                           … x=v2 …   (only this path is fresh)
+```
+
+Because Nix values are immutable, the persistent-map invariant (old versions
+remain valid and unchanged) is free — there are no defensive copies, no
+freezing, no copy-on-write bookkeeping beyond the trie's own node sharing. This
+is the same immutability dividend that recurs throughout RFC-0007.
+
+For modern engineering we follow the CHAMP refinements (Steindorfer & Vinju,
+"Optimizing Hash-Array Mapped Tries for Fast and Lean Immutable JVM
+Collections", OOPSLA 2015), which improve cache locality and memory footprint
+over the textbook HAMT by separating inline data from sub-node references and
+canonicalizing node layout — relevant because our hot loop is memory-bound and
+the GC of [memory management and GC](06-memory-management-and-gc.md) benefits
+from compact, pointer-dense nodes.
+
+### 6.3 The policy and the unified value view
+
+```rust
+/// Backing representation of an attribute set, selected by size and update
+/// history. Both variants present the same immutable, ordered, shaped view to
+/// the rest of the evaluator.
+pub enum AttrSetRepr {
+    /// Shape pointer + flat value array. Cache-friendly; ideal for small,
+    /// shape-stable sets and the dominant static-literal case.
+    Flat { shape: ShapeId, values: Box<[Value]> },
+    /// Persistent HAMT (CHAMP layout) for large / override-heavy sets;
+    /// `//` shares structure instead of copying the base.
+    Hamt { root: HamtRef, len: u32, /* order index, see §7 */ },
+}
+```
+
+The promotion policy (thresholds to be calibrated by §8 measurement, never
+guessed):
+
+1. Static literals and small `//` results below a size threshold → `Flat`.
+2. A set crossing a size threshold, or the result of `//` whose left operand is
+   already `Hamt`, or a set observed to be a base in a deepening override chain
+   → `Hamt`.
+3. `attrNames`/`attrValues`/`derivationStrict` consume either variant through
+   the same ordered-iteration interface (§7), so the representation choice is
+   *invisible to compatibility* — only performance, never the produced bytes,
+   depends on it.
+
+This invisibility is the load-bearing claim: **the choice between `Flat` and
+`Hamt` must never change a `.drv` byte.** It changes only allocation and copy
+cost. The differential harness validates this by exercising both
+representations against `nix-instantiate` (§8, and
+[differential testing and benchmarking](15-differential-testing-and-benchmarking.md)).
+
+### 6.4 Interaction with inline caches
+
+ICs cache `shape → offset`, which presupposes a `Flat` instance with a stable
+slot layout. A `Hamt` instance has no flat slot vector, so a select site that
+encounters a `Hamt` value treats it as a non-cacheable shape: the IC either
+records a distinguished "HAMT" entry whose fast path is a HAMT `get` keyed on
+the interned symbol, or — if HAMT values are rare at that site — counts toward
+the megamorphic threshold. Because the override-heavy sets that become HAMTs
+(module fixpoints) are selected from through a small number of stable site
+patterns, this is expected to be benign; §8 measures it. The general resolver
+`select_slow` dispatches on representation, so correctness never depends on the
+IC understanding HAMTs.
+
+## 7. Iteration order: the hard compatibility constraint
+
+### 7.1 Two distinct orders
+
+Nix attribute sets carry **two** distinct orders, and conflating them is a
+classic source of `.drv` divergence:
+
+1. **Insertion / storage order** — the order keys were written at the
+   construction site. This is *not* observable through the standard builtins
+   (all of which present name-sorted output), but it is the natural storage
+   order of a `Flat` instance and matters for internal consistency.
+2. **Lexicographic order by attribute-name spelling** — the order in which
+   `builtins.attrNames`, `builtins.attrValues`, `builtins.mapAttrs`, the `?`/
+   `//` semantics, and — decisively — `derivationStrict`'s environment
+   construction enumerate attributes. C++ Nix keeps `Bindings` *sorted by
+   symbol id*, but `attrNames` is documented and observed to return names
+   **alphabetically sorted by their string spelling** (e.g.
+   `builtins.attrNames { y = 1; x = "foo"; }` → `[ "x" "y" ]`). The values
+   returned by `attrValues` follow the same sorted-name order.
+
+The bytes of a `.drv` depend on the lexicographic order, because
+`derivationStrict` walks the derivation attribute set in name order to build
+the environment and the ATerm serialization
+(see [derivation and store compatibility](11-derivation-and-store-compatibility.md)).
+**Any deviation in this order changes the `.drv` bytes, the output hash, the
+store path, and triggers a full rebuild.** This is non-negotiable and is the
+single most important correctness property in this document.
+
+### 7.2 The subtlety: symbol-id order vs. spelling order
+
+C++ Nix sorts `Bindings` by `Symbol` id, and symbol ids are assigned in
+*interning order* (first-seen order), which is **not** lexicographic. So how is
+`attrNames` lexicographic? Because the operations that must present sorted
+output (`attrNames`, `attrValues`, the comparison and serialization paths) sort
+*by name spelling* at the point of observation, while the internal `Bindings`
+array is kept in symbol-id order for fast symbol-keyed lookup. aos-nix must
+reproduce the **observable** lexicographic ordering exactly, regardless of how
+it stores keys internally. We therefore decouple:
+
+- **Storage order**: whatever is fastest for the representation (insertion
+  order for `Flat`, hash order for `Hamt`). Internal only.
+- **Observable order**: lexicographic by attribute-name spelling, computed
+  identically to C++ Nix and cached on the `Shape`.
+
+The exact collation must match byte-for-byte. C++ Nix compares symbol *strings*
+with the equivalent of a C `std::string` / `strcmp` ordering over the raw bytes
+(a plain unsigned-byte lexicographic compare, not locale- or
+Unicode-collation-aware). aos-nix uses raw `&[u8]` ordering on the interned
+spelling. This must be validated against the conformance suite and the
+differential harness; locale-sensitive or codepoint-vs-byte differences are a
+known landmine and are called out as an explicit verification item, not assumed
+correct.
+
+> **Open question (O-1).** Whether *any* AOS or nixpkgs attribute name contains
+> multibyte UTF-8 such that byte-order and codepoint-order diverge, and whether
+> C++ Nix's comparator is byte-order in all relevant versions. The safe
+> implementation is raw-byte `Ord`; the harness must include adversarial
+> non-ASCII key cases to confirm parity. Until confirmed, this is research-grade
+> and gated behind the harness.
+
+### 7.3 Implementation: cached sort permutation on the shape
+
+Sorting attribute names on every `attrNames`/`derivationStrict` call would be
+`O(n log n)` per call, repeated billions of times. Instead, the **lexicographic
+permutation is computed once per shape and cached on it**:
+
+- At shape creation, compute `order: Vec<u32>` = the permutation of storage
+  slots that yields lexicographic name order. Since every `Flat` instance of a
+  shape shares the shape, every such instance gets sorted iteration via one
+  shared permutation table and zero per-instance work.
+- Additionally precompute, per interned `Symbol`, a **sort rank** in the
+  symbol table so that comparing two symbols by spelling is an integer compare
+  on cached ranks rather than a byte comparison — turning the shape's
+  permutation computation and any residual dynamic sorting into integer sorts.
+  The rank index is updated as symbols are interned; because interning is
+  monotonic and the spelling is fixed, a symbol's spelling-rank *relative to all
+  symbols interned so far* is stable enough to compute the permutation lazily at
+  first observation and memoize it. (The rank table is a sorted view over the
+  symbol spellings, rebuilt incrementally; details in
+  [frontend, parser, and IR](04-frontend-parser-and-ir.md).)
+
+```rust
+impl Shape {
+    /// Returns the slot indices of this shape in lexicographic
+    /// attribute-name order, matching C++ Nix's observable ordering for
+    /// `attrNames` / `attrValues` / `derivationStrict`.
+    ///
+    /// Computed once per shape and cached; all instances share the result.
+    pub fn iteration_order(&self) -> &[u32] { /* memoized lexicographic permutation */ }
+}
+```
+
+For `Hamt` instances, which have no flat slot vector, the ordered view is
+produced by collecting the trie's keys and sorting them by cached symbol rank,
+memoized alongside the HAMT root so a given immutable HAMT value sorts once.
+Because HAMT-backed sets are the override-heavy minority and are typically
+enumerated far less often than they are selected from, this is acceptable; §8
+measures whether an order-indexed HAMT variant is warranted.
+
+### 7.4 `derivationStrict` is the acceptance-critical consumer
+
+`builtins.derivationStrict` collects the derivation's attribute set into a
+string-valued environment **in deterministic (lexicographic) attribute order**,
+then hands it to the nix-compat `Derivation` builder for ATerm serialization
+and SHA-256 input-/content-addressed output-path hashing
+(see [derivation and store compatibility](11-derivation-and-store-compatibility.md)).
+The ordering produced by §7.3 is *the* input to this path. The acceptance gate
+(the `.drv`-diff harness) is, in effect, a continuous end-to-end test of this
+section. We therefore treat §7 as the highest-risk part of the attribute-set
+subsystem and over-test it: every shape's `iteration_order` is cross-checked
+against the sorted spelling on the tree-walk oracle, and the harness diffs
+real derivation envs against `nix-instantiate` byte-for-byte.
+
+## 8. Measure-first, validation, and tuning surface
+
+Per the measure-first gate of [motivation and goals](01-motivation-and-goals.md),
+none of the thresholds, caps, or representation choices here are committed on
+intuition. The instrumentation plan:
+
+- **Shape census.** Over a full AOS package-set evaluation, count distinct
+  shapes, instances per shape, and the shape-multiplicity distribution. This
+  validates (or refutes) the "few shapes, many instances" assumption that
+  justifies the whole subsystem. Compare against `NIX_SHOW_STATS` counters from
+  C++ Nix (values, thunks, function calls) as a sanity cross-check.
+- **IC state histogram.** Per select site, record the terminal IC state
+  (mono/poly/mega) and the hit rate of the monomorphic fast path. If
+  megamorphic sites dominate, the IC is not paying for itself and the policy or
+  `N` must change.
+- **`//` size and chain-depth distribution.** Measure operand sizes and
+  override-chain depths to calibrate the `Flat`↔`Hamt` threshold. The HAMT is
+  only justified where deep chains over large bases actually occur; if they do
+  not, `Hamt` may be deferred entirely as a measured follow-up (consistent with
+  the ranked-subset roadmap in [roadmap and risks](17-roadmap-and-risks.md),
+  where hidden classes + PIC precede HAMT and the deeper JIT work).
+- **Order parity.** The differential `.drv`-diff harness against
+  `nix-instantiate` over the whole AOS closure is the acceptance gate; a single
+  byte of `.drv` divergence attributable to attribute order fails the gate and
+  blocks default-on, exactly as specified in
+  [compatibility constraints](02-compatibility-constraints.md).
+
+The tuning surface exposed by this subsystem is therefore: the polymorphic cap
+`N`; the `Flat`→`Hamt` size threshold and chain-depth trigger; whether the
+tree-walk oracle carries degenerate ICs; and the HAMT node layout
+(textbook HAMT vs. CHAMP). All are runtime/config choices that **cannot** alter
+produced bytes, only speed — a property the harness enforces.
+
+## 9. Relationship to the rest of RFC-0007
+
+- **Builds on** [value representation](05-value-representation.md): an
+  attribute-set value is a tagged value whose payload is an `AttrSetRepr`;
+  shape identity feeds hash-consing and the WHNF/tagging discipline.
+- **Builds on** [memory management and GC](06-memory-management-and-gc.md):
+  shapes, the symbol/rank tables, and the transition tree are long-lived,
+  read-mostly, shared structures; value arrays and HAMT nodes are GC-managed
+  (bump-arena in one-shot mode, precise generational in daemon mode), and
+  HAMT's pointer-dense nodes want the precise collector to avoid Boehm-style
+  false retention.
+- **Compiled by** [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md):
+  IC guards, slot loads, and the slow-path/deopt edges are emitted by the
+  baseline and optimized tiers; `select_ic`/`select_slow`/`alloc` are runtime
+  symbols.
+- **Dispatches through** [primops and runtime ABI](10-primops-and-runtime-abi.md):
+  the select/update/alloc runtime symbols and their uniform
+  `extern "C" fn(*Runtime, ...) -> Value` ABI.
+- **Feeds** [derivation and store compatibility](11-derivation-and-store-compatibility.md):
+  the lexicographic iteration order is the input to `derivationStrict` and
+  thence to the `.drv` bytes — the acceptance-critical path.
+- **Feeds** [incremental evaluation cache](12-incremental-evaluation-cache.md):
+  shape fingerprints and hash-consed instances give cheap, stable value-hashes
+  for early-cutoff memoization (xxh3 in-process, blake3 for the durable shared
+  cache; SHA-256 reserved strictly for Nix-observed store/derivation hashes).
+- **Shared by** [parallel evaluation](13-parallel-evaluation.md): the shape,
+  transition, symbol, and rank tables are immutable/append-only and shared
+  across forcing workers without locks.
+
+## 10. Summary of decisions
+
+| Decision | Choice | Primary source | Why it is *more* effective in Nix |
+|----------|--------|----------------|-----------------------------------|
+| Attribute names | Intern to `u32` `Symbol` | C++ Nix, universal | Append-only + immutable ⇒ lock-free shared table |
+| Per-instance keys | Factor into shared `Shape` via transition tree | Self maps; V8 hidden classes | Sets never mutate ⇒ shape is permanent, no invalidation |
+| Selection `a.b` | Polymorphic inline cache (mono→poly→mega, cap `N`=4) | Self PICs (Hölzle et al. 1991); V8/HotSpot | Polymorphism is never spurious; no write barrier |
+| Small / static `//` | Shape-transition + flat copy | C++ Nix | Optimal for the small-set majority |
+| Large / override-heavy `//` | HAMT/CHAMP persistent map, structural sharing | Bagwell 2001; Clojure; Steindorfer & Vinju 2015 | Immutability makes persistence free; overlays don't copy the base |
+| Iteration order | Lexicographic-by-spelling, cached permutation per shape | C++ Nix observable semantics | Hard correctness constraint, not an optimization |
+| Representation choice | Measured `Flat`↔`Hamt` policy; invisible to `.drv` bytes | measure-first gate | Speed-only; never alters produced bytes |
+
+Open questions: **O-1** (byte- vs codepoint-collation of attribute names —
+§7.2); the `Flat`↔`Hamt` thresholds and whether `Hamt` ships in the first cut
+at all (§8, deferred to measurement); whether HAMT-valued select sites need a
+dedicated IC entry kind or fold into megamorphic (§6.4). All are gated behind
+the differential harness and resolved by measurement, never by assumption.
+
+## References
+
+- Urs Hölzle, Craig Chambers, David Ungar. *Optimizing Dynamically-Typed
+  Object-Oriented Languages With Polymorphic Inline Caches.* ECOOP 1991.
+  Origin of PICs and the mono/poly/mega state machine, for Self.
+  <https://bibliography.selflanguage.org/pics.html> ·
+  <https://link.springer.com/chapter/10.1007/BFb0057013>
+- Craig Chambers, David Ungar, Elgin Lee. *An Efficient Implementation of SELF,
+  a Dynamically-Typed Object-Oriented Language Based on Prototypes.* OOPSLA
+  1989. Origin of "maps" (hidden classes).
+  <https://bibliography.selflanguage.org/>
+- V8 hidden classes / shapes, transition trees, and IC states
+  (monomorphic/polymorphic/megamorphic, ≤4 cap before megamorphic).
+  <https://dev.to/omriluz1/hidden-classes-and-inline-caches-in-v8-fj7> ·
+  <https://draft.li/blog/2016/11/28/javascript-engines-hidden-classes/>
+- Phil Bagwell. *Ideal Hash Trees.* EPFL/LAMP technical report, 2001. Origin of
+  the HAMT. <https://en.wikipedia.org/wiki/Hash_array_mapped_trie>
+- Michael J. Steindorfer, Jurgen J. Vinju. *Optimizing Hash-Array Mapped Tries
+  for Fast and Lean Immutable JVM Collections (CHAMP).* OOPSLA 2015.
+  <https://michael.steindorfer.name/publications/oopsla15.pdf> ·
+  <https://blog.acolyer.org/2015/11/27/hamt/>
+- Clojure / Scala persistent maps via HAMT (structural sharing).
+  <https://www.javacodegeeks.com/2026/02/clojures-persistent-data-structures-immutability-without-the-performance-hit.html>
+- Nix Reference Manual — `builtins.attrNames` returns names alphabetically
+  sorted; `attrValues` follows sorted-name order.
+  <https://nix.dev/manual/nix/2.28/language/builtins.html> ·
+  <https://nixos.org/manual/nix/stable/language/builtins.html>

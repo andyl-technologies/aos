@@ -24,5 +24,6 @@ topic files.
 | [0003](0003-install-from-image.md) | 2026-06-12 | Installation from image (UEFI + Ignition first boot, CI-enforced) | Implemented (`checks.fleet.install-from-image`) |
 | [0004](0004-registry-hub.md) | 2026-06-12 | `aos-registry-hub`, a multi-tenant registry management WebUI | Proposed |
 | [0005](0005-ca-trust-map.md) | 2026-06-12 | The `store/` realisation graph: content-addressed closure validation | Proposed |
+| [0007](0007-nix-evaluator/README.md) | 2026-06-15 | `aos-nix` - a state-of-the-art Nix evaluator in Rust | Proposed (design only) |
 
 Numbering is chronological by the date the design entered the tree.

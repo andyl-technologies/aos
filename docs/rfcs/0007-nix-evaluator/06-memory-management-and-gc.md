@@ -1,0 +1,690 @@
+# RFC-0007 - Memory Management and Garbage Collection
+
+This document specifies the heap and garbage-collection design for `aos-nix`.
+It covers the dual-tier allocator (a bump-pointer one-shot arena for CLI
+evaluation, a precise generational copying collector for the daemon), the
+*alloc-via-symbols* indirection that lets the JIT stay oblivious to GC strategy,
+region inference as a finer-grained refinement, and the path to concurrent
+low-pause collection. It also explains *why* a Nix evaluator is an unusually
+favorable target for the most aggressive of these techniques — and why the
+single biggest GC win is simply deleting C++ Nix's Boehm conservative collector.
+
+Memory management is the second-ranked item in the RFC roadmap (after the
+incremental early-cutoff cache), and for a reason this document makes precise:
+the Nix evaluator is allocation-bound. It manufactures, touches once, and
+discards an enormous population of short-lived thunks and attribute sets. The
+allocator *is* the inner loop. The value representation those allocations carry
+is specified separately — see [value representation](05-value-representation.md);
+the analyses that *avoid* allocation (strictness, escape analysis, scalar
+replacement) are specified in
+[laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md).
+This document owns the heap underneath all of that.
+
+---
+
+## 1. Why memory management dominates Nix evaluation
+
+### 1.1 The allocation profile of an evaluator
+
+A Nix evaluation is not a long-running mutator with a stable working set; it is
+a *fan-out batch transformation*. Evaluating `nixpkgs`-scale expression trees
+allocates millions of heap objects, the overwhelming majority of which are:
+
+- **Thunks** — `(code_ptr, captured_env, state)` triples created to defer a
+  subexpression, forced exactly once (or never), then never touched again.
+- **Attribute sets** — the result of every `{ ... }`, every `//`, every
+  `derivation` call, every recursive `rec { ... }` environment.
+- **Cons cells / list backbones** — `map`, `genList`, `++`, `filter`.
+- **Strings** — store-path fragments, interpolation results, `toString` output.
+
+The defining statistic, confirmable with `NIX_SHOW_STATS=1` on any real C++ Nix
+evaluation, is the ratio of *allocated* objects to *live-at-any-instant*
+objects. It is enormous. Intermediate thunks are born, forced, and die within
+the dynamic extent of a single `force` call. This is the **generational
+hypothesis** — "most objects die young" — not as a statistical tendency but as a
+near-law. In a Java heap the hypothesis holds for perhaps 90–98% of objects; in
+a Nix evaluation it holds for *almost all* intermediate allocation, because the
+language has no mutation, no long-lived mutable caches in user code, and a value
+graph that is a pure function of its inputs.
+
+This single fact drives the entire design:
+
+1. The allocator's *fast path* (allocate) must be as close to free as a pointer
+   bump and a compare.
+2. The reclaimer must exploit the fact that almost everything it scans is
+   already dead — i.e. a **copying** collector that touches only survivors, not
+   a mark-sweep collector that touches corpses.
+3. In the common CLI case we should not reclaim *at all* — we should allocate
+   until the process exits and let the OS reclaim the address space in one
+   `munmap`.
+
+### 1.2 The baseline we are beating: Boehm conservative GC
+
+C++ Nix uses the **Boehm–Demers–Weiser** conservative garbage collector
+(`libgc`). BDW-GC is a remarkable piece of engineering — a drop-in
+`malloc`/`free` replacement that works "in an uncooperative environment" where
+the compiler provides no type information, by scanning the stack and heap and
+conservatively treating any word-aligned bit pattern that *could* be a pointer
+into the heap as if it *were* one ([Boehm, *Garbage Collection in an
+Uncooperative Environment*][bdwgc-paper]). That conservatism is exactly its
+weakness for our workload:
+
+- **False retention.** Any integer, packed bitfield, or stale stack slot whose
+  bits happen to look like a heap address pins the pointed-to object and its
+  entire transitive closure. In a Nix evaluation that manipulates 64-bit
+  integers, hashes, and string-context bitsets, the probability that *some* live
+  word aliases *some* dead object is non-trivial, and the retained object can be
+  arbitrarily large (an attrset closure, a parsed file). Managing this
+  unnecessary retention "continues to be an important problem" for conservative
+  collectors ([BDW-GC project][bdwgc-repo]).
+- **No compaction / no copying.** Because BDW-GC cannot move objects (it does
+  not know which words are pointers that would need updating), it cannot
+  compact. It is fundamentally mark-sweep, which means its work is proportional
+  to the *dead* set it must sweep and the fragmentation it must tolerate — the
+  opposite of what a high-mortality nursery wants.
+- **Cache-hostile layout.** Mark-sweep leaves survivors wherever they were
+  allocated; a copying collector compacts survivors into a dense region,
+  restoring locality. For an evaluator that walks large attrset closures, layout
+  *is* throughput.
+
+The Nix community has repeatedly measured GC as a dominant cost of evaluation,
+and BDW-GC tuning (heap-size hints, `GC_INITIAL_HEAP_SIZE`) is folklore for
+making `nix` eval-heavy commands fast. **Replacing the conservative collector is
+therefore not a micro-optimization; it is removing the single largest structural
+inefficiency in the reference implementation's eval path.** Because `aos-nix`
+controls its own value representation (see
+[value representation](05-value-representation.md)) it can be *precise*: it knows
+exactly which fields of which objects are pointers, so it can move objects,
+compact, and never falsely retain.
+
+This is the rare situation where a clean-room reimplementation has a structural
+advantage the incumbent cannot retrofit: C++ Nix cannot become precise without
+rewriting its value representation, because BDW-GC's whole premise is *not*
+knowing the layout.
+
+---
+
+## 2. The `alloc-via-symbols` contract
+
+Before describing any GC strategy, we fix the interface, because the interface
+is what makes the strategies swappable. **Every heap allocation in compiled
+code, in interpreted code, and in primops goes through a small, stable set of
+runtime symbols.** The JIT never emits an inline bump sequence; it emits a call
+(direct, and in the hot path inlined by the optimizing tier — see §6.3) to a
+runtime entry point.
+
+```rust
+/// The allocation ABI. Every tier (tree-walk, baseline JIT, optimized JIT)
+/// and every primop allocates exclusively through these symbols. The concrete
+/// `Heap` behind them is chosen at startup; compiled code is identical
+/// regardless of which collector is installed.
+///
+/// # Safety
+///
+/// All of these return raw, uninitialized (header-initialized only) memory.
+/// The caller MUST fully initialize the object's pointer fields before the
+/// next safepoint, or a moving collector may scan garbage. See §6.4.
+unsafe extern "C" fn aos_alloc_thunk(rt: *mut Runtime, code: CodePtr, env: *const Env) -> *mut Thunk;
+unsafe extern "C" fn aos_alloc_attrs(rt: *mut Runtime, shape: ShapeId, n: u32) -> *mut Attrs;
+unsafe extern "C" fn aos_alloc_cons(rt: *mut Runtime, head: Value, tail: *const List) -> *mut List;
+unsafe extern "C" fn aos_alloc_string(rt: *mut Runtime, len: usize) -> *mut StrHeader;
+unsafe extern "C" fn aos_alloc_raw(rt: *mut Runtime, size: usize, align: usize, tag: TypeTag) -> *mut u8;
+```
+
+These symbols are registered into the Cranelift JIT module exactly like primops
+are (`JITBuilder::symbol`, see
+[primops and runtime ABI](10-primops-and-runtime-abi.md)); the Cranelift JIT
+crate "takes care of managing a symbol table, allocating memory, and performing
+relocations" ([wasmtime cranelift-jit][cranelift-jit]), so a `call` to
+`aos_alloc_attrs` is resolved at finalize time to the installed implementation.
+
+Why this indirection is non-negotiable:
+
+| Property | Consequence |
+|---|---|
+| **GC strategy is a startup choice** | `aos-nix eval` (one shot) installs the bump arena; `aos-nix daemon` installs the generational collector. No recompilation of JIT code. |
+| **The collector can evolve independently** | We can ship the bump arena first, add generational collection later, add concurrency later still, *without touching the compiler or the 120 primops*. This is what de-risks the roadmap. |
+| **Safepoints are centralized** | The allocators are the natural place to poll for a GC request (the "allocation safepoint" model used by HotSpot and most managed runtimes). Compiled code does not need explicit poll instructions on every back-edge in the first cut. |
+| **Write barriers live behind one wall** | When the generational/concurrent collectors need card-marking or load/store barriers, they are emitted by the runtime around these symbols and a small set of mutator helpers, not scattered through every codegen site. |
+
+The cost is one (often inlinable) call per allocation. The benefit is that the
+hardest, most experimental component of the system — the moving, concurrent
+collector — is hidden behind a frozen ABI that the rest of the evaluator was
+written against on day one. This mirrors how managed runtimes separate the
+*allocation sequence* the JIT emits from the *collector* that services it: in
+HotSpot the JIT emits a TLAB bump-and-check and calls into the runtime on slow
+path; here we start with the call always going to the runtime and inline it only
+where measurement justifies it.
+
+---
+
+## 3. Tier A — the bump-pointer one-shot arena (CLI)
+
+### 3.1 Rationale: a batch job should never collect
+
+`aos-nix eval file.nix -A pkg` is a *batch process with a bounded lifetime*. It
+reads inputs, computes a `.drv` graph, writes the `.drv` files, and exits. For
+such a process the theoretically optimal memory strategy is well known and
+brutally simple: **allocate forever, never free, and let `exit()` reclaim
+everything at once.** Any cycle spent reclaiming memory mid-run is wasted,
+because the OS will reclaim the entire address space in a single `munmap` when
+the process dies — work that is `O(1)` in the number of objects.
+
+This is the *arena* / *region* / *bump allocator* pattern, and it is the fastest
+allocator that exists: allocation is
+
+```text
+ptr  = arena.cursor
+next = ptr + round_up(size, align)
+if next > arena.limit { slow_path_new_chunk() }   // rare
+arena.cursor = next
+return ptr
+```
+
+— an add, a compare, and a predicted-not-taken branch. No free lists, no size
+classes, no GC headers needed for reclamation (objects still carry a *type* tag
+for the evaluator's own use, but no *mark* bits), no synchronization in the
+single-threaded case. It is the same discipline `bumpalo` provides in Rust and
+that arena allocators provide in compilers (LLVM's `BumpPtrAllocator`, the rustc
+arenas) precisely because a compiler pass, like an evaluator run, is a
+bounded-lifetime batch.
+
+### 3.2 Structure
+
+```text
+                 arena (one per worker thread)
+   ┌───────────────────────────────────────────────────────────┐
+   │ chunk 0 (2 MiB, mmap'd)                                     │
+   │ ┌───────┬───────┬───────┬───────┬─────────── free ───────┐ │
+   │ │ thunk │ attrs │ cons  │ str   │^cursor                 │ │
+   │ └───────┴───────┴───────┴───────┴────────────────────────┘ │
+   │ chunk 1 (2 MiB) ...                                         │
+   │ chunk 2 (grows geometrically) ...                          │
+   └───────────────────────────────────────────────────────────┘
+   drop = for each chunk: munmap(chunk)   // O(#chunks), not O(#objects)
+```
+
+- Chunks are `mmap`'d in geometric steps (e.g. 2 MiB → 4 MiB → …) to amortize
+  the syscall and keep the chunk list short.
+- The arena is **thread-local** for the coarse parallel model (see
+  [parallel evaluation](13-parallel-evaluation.md)): each top-level derivation
+  is evaluated on a worker with its own arena, and the only cross-thread sharing
+  is *immutable, never-collected* tables (interned symbols, hash-consed values,
+  parsed IR). No locks on the allocation fast path.
+- Hash-consed / maximally-shared values (see
+  [value representation](05-value-representation.md)) live in a **distinct,
+  permanent arena** keyed by the dedup table, so a worker arena drop never frees
+  a shared value another worker might still reference.
+
+### 3.3 Bounded memory and the spill safety valve
+
+The honest objection to "never free" is *peak memory*. A pathological
+expression could allocate without bound and OOM. Three mitigations, in order of
+preference:
+
+1. **Most allocation is dead and most peaks are modest.** Real `nixpkgs`
+   evaluation has a large *cumulative* allocation but a far smaller *live* set;
+   the arena's high-water mark is driven by live data plus the dead data we
+   chose not to collect *within the current evaluation*. In practice this fits
+   comfortably in memory for whole-package-set instantiation, which C++ Nix also
+   does in a single process.
+2. **Region inference (§5) reclaims the obvious wins even in arena mode.**
+   Inferred regions give us *intra-run* reclamation of provably-dead sub-arenas
+   without a full collector — a stack of regions, popped at region exit, exactly
+   in the Tofte–Talpin discipline.
+3. **A configurable high-water threshold flips Tier A into Tier B.** If the
+   arena crosses a memory ceiling, the runtime can install the generational
+   collector *for the remainder of the run* (the `alloc-via-symbols` contract
+   makes this a pointer swap on the allocator vtable, not a recompile). This is
+   a safety valve, not the common path.
+
+### 3.4 When Tier A is correct
+
+Tier A is correct **whenever the process is single-shot and the peak live +
+retained set fits the memory budget.** That is the default for `aos-nix eval`
+and for the differential harness (which runs one instantiation per invocation).
+It is *incorrect* for a long-lived daemon that evaluates many independent
+requests over hours, because retained-but-dead memory would grow without bound
+across requests. That case is Tier B.
+
+---
+
+## 4. Tier B — precise generational copying GC (daemon)
+
+### 4.1 When and why
+
+A long-lived `aos-nix` daemon (serving editor integrations, a registry hub, or
+repeated CI evaluations in one process — see
+[integration with AOS](14-integration-with-aos.md)) must reclaim memory *within*
+its lifetime. Here we install a **precise, generational, copying** collector.
+Each adjective is load-bearing:
+
+- **Precise** (not conservative): the collector knows the exact pointer layout
+  of every heap object from its type tag and shape, so it can (a) never falsely
+  retain and (b) *move* objects, updating every reference. This is the
+  capability BDW-GC structurally lacks and the primary reason we win.
+- **Generational**: collect the young generation (nursery) frequently and
+  cheaply; promote survivors to an old generation collected rarely. Justified by
+  the extreme generational hypothesis of §1.1.
+- **Copying** (for the nursery): a copying collector's work is proportional to
+  *live* data, not *allocated* data. When 99% of the nursery is dead at
+  collection time, a copying collector copies the surviving 1% and resets the
+  nursery to empty in `O(survivors)`. A mark-sweep collector would instead do
+  work proportional to the dead 99%. **This is the single most important
+  algorithmic choice in the collector**, and it is the same choice GHC makes for
+  the same reason ([Marlow et al., *Parallel Generational-Copying GC with a
+  Block-Structured Heap*][ghc-gc]).
+
+### 4.2 The GHC lineage and why Nix fits it even better
+
+GHC's runtime is the closest prior art, because Haskell, like Nix, is a lazy,
+immutable, garbage-collected functional language. GHC allocates *everything*
+(including every thunk) in a nursery, runs a generational copying collector, and
+"exploits the immutability of data … immutable data can be copied in parallel"
+([GHC GC paper][ghc-gc]). The design lessons transfer directly:
+
+| GHC property | Nix analogue | Why it's *stronger* in Nix |
+|---|---|---|
+| Bump-allocate thunks in nursery | Same | Nix has no `IORef`/mutable arrays in the language; the heap is *more* immutable than Haskell's. |
+| Two generations, copying young gen | Same | Nix's young-death rate is at least as extreme. |
+| Immutability ⇒ parallel/concurrent copying is sound | Same | A pure value graph has *no* mutator-visible mutation except thunk update (§6.4), so the barrier surface is tiny. |
+| Block-structured heap, per-block bump | Same | Lets workers allocate lock-free from private blocks. |
+
+The one place Nix is *harder* than idealized immutable data is **thunk update**:
+forcing a thunk overwrites its `state` from `Suspended` to `Blackhole` to
+`Forced(value)`. That is the *only* mutation in the value graph, and it is the
+source of the single write barrier the generational and concurrent collectors
+need (§4.5, §6.4). Compared to Java — where every field of every object can be
+mutated at any time and the GC must assume so — Nix's mutation surface is a
+single, well-typed transition on one object kind. This is precisely why
+techniques that are *partial* on the JVM become *total* here.
+
+### 4.3 Heap layout
+
+```text
+ nursery (young gen)                old generation
+ ┌──────────────────────┐          ┌───────────────────────────────┐
+ │ from-space  to-space │  promote │ blocks (mark-compact or        │
+ │ ┌────────┐ ┌───────┐ │ ───────▶ │  generational copy on major GC)│
+ │ │ bump → │ │       │ │          │ remembered set ◀── card table  │
+ │ └────────┘ └───────┘ │          └───────────────────────────────┘
+ └──────────────────────┘
+   minor GC: copy live from-space → to-space (+ promote aged) ; swap
+   major GC: collect old gen (rare)
+```
+
+- **Nursery**: sized to comfortably fit in L2/L3 so that the entire
+  allocate-then-collect cycle is cache-resident — the *cache-resident nursery*
+  technique that makes minor GC nearly free because both the bump allocation and
+  the survivor copy stay in fast cache. A minor collection is triggered when the
+  nursery fills; it copies survivors to to-space (or promotes them), then the
+  nursery is reset to empty.
+- **Old generation**: holds promoted survivors. Collected by a major GC, which
+  is rare. Initially a stop-the-world mark-compact (or full copy); upgraded to
+  concurrent in §6.
+- **Promotion policy**: copy-count or age-based. Objects surviving *N* minor GCs
+  are promoted. Because hash-consed values are effectively immortal, they are
+  allocated directly in a non-collected permanent space (or the oldest
+  generation with a never-collect flag), bypassing promotion churn entirely.
+
+### 4.4 Precise root and field scanning
+
+Precision requires the collector to enumerate, for any object, exactly which
+words are heap pointers. We get this from the value representation:
+
+- **Type tag → layout.** Each heap object's header (or its NaN-box/pointer tag —
+  see [value representation](05-value-representation.md)) identifies its kind:
+  `Thunk`, `Attrs`, `Cons`, `String`, `Lambda`. Thunks have `(code, env)`
+  pointers; attrsets have a `shape` pointer plus `n` value words; cons cells
+  have head/tail; strings and integers have no outgoing pointers.
+- **Shape → attrset field map.** An attrset's `ShapeId` (see
+  [attribute sets, hidden classes, and inline caches](09-attribute-sets-hidden-classes-and-inline-caches.md))
+  names a hidden class whose descriptor records which slots are values to scan.
+  The collector consults the shape, not a per-object map — one descriptor shared
+  across all attrsets of that shape, which is both compact and cache-friendly.
+- **Roots.** Unlike BDW-GC, we do **not** conservatively scan the C stack.
+  Roots are explicit: the current evaluation's value stack, the in-flight
+  `force` continuation chain, primop argument registers spilled at safepoints,
+  and the interned/hash-consed tables (treated as permanent roots). At JIT tiers
+  this requires **stack maps** describing which registers/stack slots hold live
+  `Value`s at each safepoint; Cranelift emits stack maps for exactly this purpose
+  and they are consumed by the collector to find roots precisely.
+
+Because scanning is driven by tags and shapes rather than guesswork, there is
+**zero false retention** and objects are **movable**.
+
+### 4.5 The generational write barrier (one, and only one)
+
+Generational collection requires the collector to find old→young pointers
+without scanning the whole old generation, or it would lose the entire benefit
+of "collect young cheaply". The standard solution is a **write barrier** that
+records when a mutator writes a young pointer into an old object, maintaining a
+**remembered set** (commonly via a **card table**). In Java this barrier fires
+on *every* reference-field store, a pervasive tax.
+
+In Nix the barrier surface collapses to essentially one site: **thunk update.**
+The value graph is built bottom-up and immutable; the only way an *already
+allocated* (possibly already promoted/old) object acquires a *new* pointer to a
+*younger* object is when an old, blackholed thunk is resolved to a value that was
+allocated after the thunk — i.e. `Thunk::state` transitions `Blackhole →
+Forced(young_value)`. We therefore emit the card-marking write barrier *only*
+around the thunk-update helper, not around general field stores (there are no
+general field stores — attrsets, cons cells, and strings are initialized once
+and never mutated). This is a direct dividend of immutability: the generational
+collector's most invasive instrumentation shrinks to a single, centralized,
+rarely-hot code path behind the `alloc-via-symbols` wall.
+
+```rust
+/// Resolves a forced thunk to its value. This is the ONLY mutating write into
+/// an already-allocated heap object, and therefore the only site that needs a
+/// generational write barrier.
+///
+/// # Safety
+///
+/// Caller holds the forcing right to `thunk` (it is blackholed by this thread).
+/// The barrier records `thunk -> value` in the remembered set if `thunk` is old
+/// and `value` is young.
+unsafe fn thunk_resolve(rt: *mut Runtime, thunk: *mut Thunk, value: Value) {
+    // SAFETY: thunk is blackholed and owned by the current forcing context.
+    // `state` is the AtomicU64 from doc 05 §6; publish the Forced(value)
+    // encoding with a release store so other threads see a fully-initialized
+    // result (see parallel evaluation, doc 13).
+    (*thunk).state.store(encode_forced(value), Ordering::Release);
+    aos_gc_write_barrier(rt, thunk as *mut Obj, value); // card-mark if old<-young
+}
+```
+
+---
+
+## 5. Region inference (Tofte–Talpin) as the finer-grained generalization
+
+### 5.1 The idea
+
+**Region-based memory management** (Tofte and Talpin) infers, by a type-and-
+effect analysis, the *lifetime* of every allocated value and assigns it to a
+**region**; the store becomes a *stack of regions*, and memory management
+"predominantly consists of pushing and popping regions"
+([Tofte & Talpin, *Region-Based Memory Management*][tofte-talpin];
+[*A Retrospective*][region-retro]). The headline guarantee — proven for the full
+language including higher-order functions and recursive datatypes — is that
+"all well-typed programs will be free of dangling pointers at runtime" *without*
+a garbage collector. The ML Kit with Regions demonstrated a real,
+GC-free Standard ML implementation on this basis.
+
+For `aos-nix`, region inference is the principled generalization that connects
+the two tiers:
+
+- The **one-shot arena** of Tier A is the degenerate case: *one* region for the
+  whole program, popped at `exit`.
+- **Inferred sub-regions** let us pop provably-dead allocations *during* a run
+  without a tracing collector — recovering memory in CLI mode (addressing the
+  §3.3 peak-memory objection) and reducing nursery pressure in daemon mode.
+- Where region inference is *imprecise* (a value's lifetime is data-dependent
+  and not statically bounded), allocation falls back to the GC'd heap. **Regions
+  and tracing GC compose**: regions handle the statically-obvious lifetimes
+  (the common case in a batch evaluator with lots of locally-scoped `let` and
+  `with`), the collector handles the residue.
+
+### 5.2 Why Nix is a good fit, and the open questions
+
+Nix's purity and absence of mutable references remove the hardest cases the ML
+Kit had to handle (regions interacting with `ref` cells). Many Nix allocation
+sites are obviously region-scoped: the attrset built inside a `let` body that
+does not escape, the cons cells of an intermediate list consumed by a `foldl'`,
+the temporary environment of a non-escaping lambda application. These overlap
+heavily with the **escape analysis** of
+[laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md);
+indeed escape analysis is the dual — "does not escape" ⇒ "stack/region
+allocatable" ⇒ "scalar-replaceable".
+
+**This is the most research-grade part of the GC design, and we mark it
+explicitly as such.** Open questions:
+
+- **Laziness vs. region lifetimes.** A thunk allocated in region *r* may be
+  forced after *r* would naively be popped (the value escapes via a captured
+  closure). The type-and-effect system must account for the latent effect of
+  forcing. The interaction of *full region inference* with *non-strict
+  evaluation* is precisely where the classical algorithm is most delicate, and
+  we do not assume the textbook algorithm transfers unchanged.
+- **Cost/benefit vs. just running the generational collector.** A
+  cache-resident copying nursery is *already* nearly free for short-lived data.
+  Region inference must earn its complexity by reclaiming things the nursery
+  cannot cheaply reach (large, medium-lived intermediate structures), or by
+  enabling GC-free CLI runs with bounded peak. This is a **measure-first**
+  decision (RFC §Roadmap): ship the arena + generational GC first, add region
+  inference only where profiles show medium-lived allocation that neither tier
+  handles well.
+
+We therefore scope region inference as: (1) a *conceptual unification* of arena
+and nursery, realized concretely as (2) a **lexical/escape-driven region pass**
+that pops obvious non-escaping sub-arenas, with (3) *full* effect-based region
+inference flagged as an open research item, not a committed deliverable.
+
+---
+
+## 6. Concurrent, low-pause collection (daemon, follow-up)
+
+### 6.1 When it matters
+
+Stop-the-world pauses are irrelevant to a CLI batch job (Tier A never collects)
+and tolerable for a daemon doing bulk CI evaluation. They become a problem only
+for *interactive* daemon use (editor integration, a responsive registry hub)
+where a multi-hundred-millisecond major-GC pause is user-visible. Concurrent
+collection is therefore explicitly a **measured follow-up**, last in the RFC's
+ranked subset, not part of the first cut.
+
+### 6.2 The ZGC / Shenandoah model and how it maps
+
+When we do build it, the model is **colored pointers + load barriers**, as in
+**ZGC** and **Shenandoah**. ZGC stores GC metadata *in spare high bits of the
+pointer* (the "color"), encoding whether the referent is known-live, whether the
+address is current, etc., and uses a **load barrier**: when the mutator loads a
+reference, a small injected code sequence checks the color and, if the pointer
+is stale (the object was concurrently relocated), repairs it to the new location
+before the mutator ever sees a bad address ([JEP 333][jep-333];
+[*Deep Dive into ZGC*, TOPLAS][zgc-toplas]; [JEP 439, Generational
+ZGC][jep-439]). This lets the collector relocate objects *concurrently with a
+running mutator* with sub-millisecond pauses, agreeing on pointer *color* rather
+than synchronizing on every object's authoritative address.
+
+This dovetails with our design in two convenient ways:
+
+1. **We already tag pointers.** The WHNF/constructor pointer tagging from
+   [value representation](05-value-representation.md) means the mutator already
+   masks pointer bits before dereferencing. A GC color is *more* tag bits in the
+   same spare-bits budget, and the unmask already on the hot path can fold in the
+   load-barrier check. The marginal cost of the barrier is lower than in a
+   runtime that wasn't already tagging.
+2. **The barrier surface is tiny.** A ZGC load barrier fires on reference loads;
+   our reference loads are concentrated in `force`, `select` (attrset access),
+   and list traversal — the same handful of runtime symbols we already route
+   through. Emitting load barriers becomes "augment `force`/`select_ic` and the
+   GC read path", not "instrument every memory access".
+
+### 6.3 Inlining the barriers without breaking `alloc-via-symbols`
+
+The `alloc-via-symbols` contract says compiled code calls runtime symbols. For
+the *cold* tree-walk and baseline tiers, a `call` to `aos_gc_read_barrier` is
+fine. For the *optimized* tier, an out-of-line call on every reference load
+would dominate; there the optimizing JIT **inlines the barrier fast path**
+(color-check, predicted not-taken) and calls out only on the slow path
+(relocation/repair) — exactly HotSpot's strategy of inlining the TLAB/barrier
+fast path and calling the runtime on the slow path. Crucially, *which* barrier is
+inlined is a property of the installed collector, decided when the optimized
+tier compiles; the *interpreted* and *baseline* tiers continue to go through the
+symbol. The ABI stays frozen; only the optimizer specializes.
+
+### 6.4 The hard part: concurrent GC × thunk mutation
+
+The genuinely difficult interaction — flagged here as the central risk of
+concurrent collection — is **thunk update racing with relocation**. Forcing
+mutates a thunk (§4.5); a concurrent collector may be relocating that same
+thunk. The mutation surface being a *single* well-typed transition
+(`Suspended → Blackhole → Forced`) is what makes this tractable: the CAS that
+claims a thunk for forcing (see
+[parallel evaluation](13-parallel-evaluation.md)) and the load barrier that
+repairs a relocated reference must be made jointly atomic with respect to the
+`state` word. This is one focused concurrency problem on one object kind, versus
+the JVM's "any field of any object, any time". We still treat it as research-
+grade and gate it behind the differential harness and stress testing.
+
+---
+
+## 7. The dual-tier decision and its rationale
+
+```text
+                aos-nix invocation
+                       │
+          ┌────────────┴─────────────┐
+          │                          │
+   single-shot CLI / harness    long-lived daemon
+          │                          │
+   install BUMP ARENA          install GENERATIONAL GC
+   (Tier A)                     (Tier B)
+   - alloc = ptr bump           - cache-resident copying nursery
+   - never collect              - precise (tag+shape scanning)
+   - drop arena at exit         - one write barrier (thunk update)
+   - region pops for peak       - major GC rare
+          │                          │
+          │                    interactive daemon?
+          │                          │ yes
+          │                    upgrade to CONCURRENT
+          │                    (colored ptrs + load barriers)
+          └──────────── same compiled code, same primops ───────────┘
+                        (alloc-via-symbols makes both identical)
+```
+
+The two tiers are not a hedge; they are the *correct* answer to two genuinely
+different workloads. A batch job's optimal allocator (never free) and a daemon's
+optimal allocator (collect young cheaply, relocate concurrently) are different
+points in design space, and the only reason we can serve both from one codebase
+is the `alloc-via-symbols` indirection. The default and overwhelmingly common
+case for AOS's build-time bottleneck — `aos-nix eval` shelling out a `.drv` —
+is **Tier A**, whose allocation fast path (a pointer bump) is about as cheap as
+allocation gets, and which is also the simplest and lowest-risk to ship first.
+
+---
+
+## 8. Correctness, determinism, and the compatibility constraint
+
+GC must be **observationally invisible**. The acceptance gate (see
+[differential testing and benchmarking](15-differential-testing-and-benchmarking.md))
+diffs `.drv` bytes against `nix-instantiate`; memory management may not perturb a
+single byte. Two specific hazards:
+
+1. **GC must not change value identity in observable ways.** Nix exposes no
+   `eq`-by-address operation to user code, and `==` on attrsets/lists is
+   structural, so a *moving* collector is observationally invisible *provided*
+   it updates every reference precisely. Hash-consing (which gives O(1) pointer
+   equality used *internally* for the incremental cache) must be consistent
+   across collection — hash-consed permanent values are not relocated by the
+   nursery collector, preserving their identity for the cache keys in
+   [incremental evaluation cache](12-incremental-evaluation-cache.md).
+2. **Allocation order / addresses must not leak into output.** No `.drv` content
+   may depend on a heap address (it must not in C++ Nix either, since BDW-GC
+   addresses are nondeterministic). Deterministic attribute iteration order
+   comes from the shape/sorted-key representation, *not* from allocation order
+   (see
+   [attribute sets, hidden classes, and inline caches](09-attribute-sets-hidden-classes-and-inline-caches.md)),
+   so a collector that compacts and reorders the physical heap cannot change
+   observed order.
+
+The collector is therefore validated on two fronts: the **differential `.drv`
+harness** (end-to-end observational equivalence) and **miri / sanitizers run
+against the safe tree-walk oracle** (memory-safety of the GC-free path), with the
+moving collector additionally stress-tested under forced-frequent-GC modes (a
+"GC stress" flag that collects at every safepoint to flush out missing roots and
+barrier bugs — the standard technique GHC and the JVM both use to validate
+collectors).
+
+---
+
+## 9. Implementation phasing
+
+Aligned with the RFC roadmap (memory management is item 2, after the incremental
+cache):
+
+| Phase | Deliverable | Risk | Depends on |
+|---|---|---|---|
+| **M0** | `alloc-via-symbols` ABI; allocator vtable; tree-walk oracle allocates through it | Low | value rep (05) |
+| **M1** | **Bump arena (Tier A)**; drop-at-exit; this alone services all CLI eval | Low | M0 |
+| **M2** | Precise root/field scanning via tags + shapes; stack maps from Cranelift | Med | M0, shapes (09), Cranelift tiering (08) |
+| **M3** | **Generational copying GC (Tier B)**; cache-resident nursery; single thunk-update write barrier | Med | M2 |
+| **M4** | Escape-driven region pops (lexical region inference); bounded-peak CLI | Med | escape analysis (07) |
+| **M5** | Full effect-based region inference | **Research** | M4 |
+| **M6** | Concurrent colored-pointer + load-barrier collector; barrier inlining in optimized tier | **Research** | M3, pointer tagging (05), parallel (13) |
+
+M1 is the high-value, low-risk first cut: it makes CLI evaluation use the
+fastest possible allocator and is sufficient to ship the differential harness
+and the eval-time baseline. Everything past M3 is gated on measurement.
+
+---
+
+## 10. Open questions
+
+1. **Nursery sizing policy.** Fixed (cache-resident) vs. adaptive? GHC uses a
+   tunable nursery; the optimum for `nixpkgs`-shaped fan-out is unmeasured.
+2. **Region inference under laziness.** Does the type-and-effect system remain
+   sound and *useful* when latent forcing effects extend region lifetimes, or
+   does it degrade to "almost everything is the global region"? (§5.2)
+3. **Hash-cons table lifetime in the daemon.** Permanent hash-consed values are
+   immortal by construction, but a long-lived daemon may want to *evict* cold
+   interned values. Eviction interacts with the incremental cache's pointer-
+   equality keys (12). Likely answer: never evict within a run; clear between
+   epochs.
+4. **Concurrent-GC × CAS-thunk atomicity.** The precise memory ordering that
+   makes thunk-claim CAS and load-barrier repair jointly correct (§6.4) needs a
+   formal argument and TSAN/loom validation before M6 ships. (13)
+5. **Cross-tier flip cost.** When Tier A's safety valve installs Tier B
+   mid-run, the already-allocated arena must become a GC root region. Cost and
+   correctness of that transition are unverified; the safe fallback is to treat
+   the pre-flip arena as one immortal old-generation region.
+
+---
+
+## References
+
+Memory-management and collector prior art verified for this document:
+
+- Hans-J. Boehm, *Garbage Collection in an Uncooperative Environment* — the
+  conservative collector C++ Nix relies on; its false-retention and
+  non-moving limitations are the baseline we beat.
+  <http://shiftleft.com/mirrors/www.hpl.hp.com/personal/Hans_Boehm/spe_gc_paper/preprint.pdf>
+- BDW-GC project (bdwgc) — confirms conservative scanning and unnecessary-
+  retention as an open problem.
+  <https://github.com/bdwgc/bdwgc>
+- Marlow, Harris, James, Peyton Jones, *Parallel Generational-Copying Garbage
+  Collection with a Block-Structured Heap* (ISMM 2008) — GHC's nursery +
+  copying + immutability-enables-parallel-copy design, the closest lineage.
+  <https://www.microsoft.com/en-us/research/wp-content/uploads/2008/06/par-gc-ismm08.pdf>
+- Tofte & Talpin, *Region-Based Memory Management* (Information and Computation,
+  1997) — region inference, stack-of-regions, dangling-pointer-freedom proof.
+  <http://ropas.snu.ac.kr/lib/dock/ToTa1997.pdf>
+- Tofte et al., *A Retrospective on Region-Based Memory Management* (HOSC 2004)
+  — ML Kit with Regions, GC-free SML, practical lessons.
+  <https://link.springer.com/article/10.1023/B:LISP.0000029446.78563.a4>
+- A. Shipilev, *JVM Anatomy Quark #18: Scalar Replacement* — clarifies that
+  HotSpot does scalar replacement, not literal stack allocation; the precise
+  semantics our escape-analysis tie-in relies on.
+  <https://shipilev.net/jvm/anatomy-quarks/18-scalar-replacement/>
+- JEP 333, *ZGC: A Scalable Low-Latency Garbage Collector* — colored pointers +
+  load barriers, the concurrent-collection model for the daemon tier.
+  <https://openjdk.org/jeps/333>
+- JEP 439, *Generational ZGC* — generational extension of ZGC.
+  <https://openjdk.org/jeps/439>
+- *Deep Dive into ZGC: A Modern Garbage Collector in OpenJDK* (ACM TOPLAS) —
+  authoritative architecture reference for colored pointers and load barriers.
+  <https://dl.acm.org/doi/full/10.1145/3538532>
+- Cranelift JIT (`cranelift-jit`) — symbol table, memory allocation, and
+  relocation management used to register `aos_alloc_*` and primops.
+  <https://github.com/bytecodealliance/wasmtime/tree/HEAD/cranelift/jit>
+
+[bdwgc-paper]: http://shiftleft.com/mirrors/www.hpl.hp.com/personal/Hans_Boehm/spe_gc_paper/preprint.pdf
+[bdwgc-repo]: https://github.com/bdwgc/bdwgc
+[ghc-gc]: https://www.microsoft.com/en-us/research/wp-content/uploads/2008/06/par-gc-ismm08.pdf
+[tofte-talpin]: http://ropas.snu.ac.kr/lib/dock/ToTa1997.pdf
+[region-retro]: https://link.springer.com/article/10.1023/B:LISP.0000029446.78563.a4
+[jep-333]: https://openjdk.org/jeps/333
+[jep-439]: https://openjdk.org/jeps/439
+[zgc-toplas]: https://dl.acm.org/doi/full/10.1145/3538532
+[cranelift-jit]: https://github.com/bytecodealliance/wasmtime/tree/HEAD/cranelift/jit

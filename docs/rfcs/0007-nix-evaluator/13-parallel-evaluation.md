@@ -1,0 +1,587 @@
+# RFC-0007 - Parallel Evaluation
+
+> Part of the RFC-0007 aos-nix documentation set. This document covers how
+> aos-nix exploits multiple cores: lock-free CAS thunks, work-stealing forcing,
+> coarse top-level parallelism, and the hard interaction between parallel
+> forcing and the precise garbage collector. It builds on
+> [value representation](05-value-representation.md),
+> [memory management and GC](06-memory-management-and-gc.md),
+> [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md),
+> and [the incremental evaluation cache](12-incremental-evaluation-cache.md).
+
+## 1. Why parallelism, and why it is dangerous
+
+A Nix evaluation of the AOS package set forces tens of thousands of top-level
+derivations, each the root of a deep lazy thunk graph. On a modern build host
+(the `builder-hil1-*` machines have many cores) a single-threaded evaluator
+leaves all but one core idle while it grinds through `derivationStrict` for the
+whole closure. Evaluation is embarrassingly parallel *in principle*: Nix is a
+pure language, every value is immutable once forced, and two independent
+derivations share no mutable state. There is no user-visible nondeterminism to
+preserve — the same `.drv` files must come out regardless of how many threads
+produced them (see [compatibility constraints](02-compatibility-constraints.md)).
+
+The trap is that *purity is a property of values, not of the implementation*.
+The thunk graph is **shared mutable state**: forcing a thunk overwrites it in
+place, transitioning `Suspended -> Blackhole -> Forced` (see
+[value representation](05-value-representation.md)). Two threads that reach the
+same shared thunk — and sharing is the entire point of laziness, so this happens
+constantly — race on that mutation. A naive parallel evaluator either:
+
+1. **double-evaluates** the thunk (correct values, wasted work, and *broken
+   infinite-recursion detection* because the blackhole no longer means "I am
+   already forcing this"); or
+2. **corrupts** the thunk by interleaving two in-place updates; or
+3. **deadlocks** when thread A blocks on a thunk being forced by thread B while
+   B blocks on a thunk being forced by A.
+
+This is the same problem GHC solved for parallel Haskell, and the same problem
+the C++ Nix multithreaded evaluator (edolstra's `NixOS/nix#10938`, shipped in
+Determinate Nix 3.11.1) solved in 2024-2025. We adopt their proven protocol and
+extend it with a coarser, lower-risk outer layer and a GC interaction design
+that C++ Nix sidesteps only because it uses conservative Boehm GC — a luxury we
+deliberately gave up (see [memory management and GC](06-memory-management-and-gc.md)).
+
+> **Measure-first gate.** Parallel forcing is item (5) on the RFC-0007 roadmap —
+> a *measured follow-up*, not a phase-1 deliverable. The incremental
+> early-cutoff cache (item 1) and the bump-arena/precise-GC heap (item 2)
+> attack the systemic cost first. We turn on parallelism only after the
+> single-threaded evaluator is correct, the differential harness is green, and
+> profiling shows that *forcing* (not allocation, not hashing, not `.drv`
+> serialization) is the remaining wall-clock bottleneck. A parallel evaluator
+> that races to the wrong answer is infinitely slower than a correct serial one,
+> because a single divergent `.drv` triggers a from-source toolchain rebuild.
+
+## 2. Design layers
+
+aos-nix exposes parallelism at two granularities, with sharply different
+risk/reward profiles. We build them in this order:
+
+| Layer | Unit of parallelism | Shared mutable state | Risk | Status |
+|-------|---------------------|----------------------|------|--------|
+| **L1 — coarse top-level** | independent top-level derivations | only *immutable* tables (IR, symbols, hash-cons, primops) | low | first target |
+| **L2 — lock-free forcing** | individual thunks | the thunk graph (CAS-claimed) | high | measured follow-up |
+
+The thesis is that **L1 captures most of the available speedup at a fraction of
+the complexity**, and L2 is only worth its danger once L1's load imbalance (a
+few enormous derivations dominating the tail) is the measured limiter. We
+describe L2 in full because its protocol is also what makes L1's *occasional*
+cross-derivation sharing safe.
+
+```text
+                 aos-nix parallel evaluation
+
+   ┌───────────────────────────────────────────────────────────┐
+   │  L1: work-stealing pool over top-level derivations         │
+   │                                                            │
+   │   worker0      worker1      worker2      worker3           │
+   │   ┌────┐       ┌────┐       ┌────┐       ┌────┐            │
+   │   │drvA│       │drvB│       │drvC│       │drvD│  ← deques  │
+   │   │drvE│       │drvF│       │ -- │  ◄────│drvG│  (steal)   │
+   │   └────┘       └────┘       └────┘       └────┘            │
+   │     │            │            │            │               │
+   │  nursery0     nursery1     nursery2     nursery3  (private)│
+   └─────┼────────────┼────────────┼────────────┼──────────────┘
+         │            │            │            │
+         └────────────┴─────┬──────┴────────────┘
+                            ▼
+        ┌──────────────────────────────────────────┐
+        │ SHARED, IMMUTABLE (read-only after build):│
+        │  • parsed/compiled IR (content-addressed) │
+        │  • symbol table (u32 interning)           │
+        │  • hash-cons table (maximal sharing)      │
+        │  • primop registry / perfect-hash table   │
+        │  • incremental eval cache (concurrent map)│
+        └──────────────────────────────────────────┘
+                            ▲
+                            │  L2: CAS-claimed thunks live here,
+                            │  in shared regions of the heap
+```
+
+## 3. L2: lock-free CAS thunks
+
+### 3.1 The thunk state machine, made atomic
+
+In the serial design (see [value representation](05-value-representation.md)) a
+thunk is `(code_ptr, captured_env, state)` and `state` is a plain enum mutated
+by the forcing thread. For L2 we promote the discriminant to an **atomic word**
+and force every transition through compare-and-swap. We follow the exact state
+set that C++ Nix's multithreaded evaluator settled on, because it is the minimal
+set that preserves blackhole semantics under contention:
+
+```text
+  Suspended ──CAS──► Pending ──────► Forced     (uncontended fast path)
+      │                 │
+      │                 ├──(another thread arrives)──► Awaited
+      │                 │                                  │
+      │                 └────────► Failed ◄────────────────┘
+      │                              (exception propagated to waiters)
+      │
+   Forced / Blackhole (cyclic)  ← already-resolved, pure tag test
+```
+
+| State | Meaning | Who sets it | Who reads it |
+|-------|---------|-------------|--------------|
+| `Suspended` | unforced; `(code, env)` valid | thunk allocator | the claimer (via CAS) |
+| `Pending` | one thread is forcing; no waiters yet | claimer (CAS from `Suspended`) | arrivals |
+| `Awaited` | being forced; ≥1 thread blocked waiting | a late arrival (CAS from `Pending`) | the forcer, on completion |
+| `Forced` | result installed; value valid | the forcer (release store) | everyone (acquire) |
+| `Failed` | forcing threw; error stashed | the forcer | waiters (re-raise) |
+| `Blackhole` | self-referential cycle detected | forcer detecting recursion on its *own* stack | itself |
+
+The critical distinction — and the reason this is not just "a mutex per thunk" —
+is between **inter-thread blocking** (`Pending`/`Awaited`, two *different*
+threads) and **intra-thread cycle detection** (`Blackhole`, the *same* thread
+re-entering a thunk it is already forcing). C++ Nix's `Blackhole` historically
+meant "infinite recursion." Under parallelism that meaning would be wrong: a
+second thread hitting a thunk the first is legitimately forcing is *not* a cycle.
+So we split the concept: cross-thread reentry parks the arriving thread;
+same-thread reentry (detected by recording the owning thread/fiber id in the
+`Pending` word) is the genuine `infinite recursion encountered` error that Nix
+programs depend on.
+
+### 3.2 The claim protocol
+
+```rust
+/// Forces `thunk` to WHNF, coordinating with concurrent forcers.
+///
+/// # Errors
+/// Returns the underlying evaluation error if forcing the thunk fails, or a
+/// cycle error if the *current* worker re-enters a thunk it is already forcing.
+fn force(rt: &Runtime, thunk: &Thunk) -> Result<Value, EvalError> {
+    loop {
+        // Acquire: observe a fully-published Forced/Failed result.
+        match thunk.state.load(Acquire) {
+            State::Forced => return Ok(thunk.value_unchecked()),
+            State::Failed => return Err(thunk.error_unchecked()),
+            State::Suspended => {
+                // Try to claim. Encode our worker id so self-reentry is
+                // detectable as a real cycle.
+                let claimed = State::Pending(rt.worker_id());
+                if thunk
+                    .state
+                    .compare_exchange(State::Suspended, claimed, AcqRel, Acquire)
+                    .is_ok()
+                {
+                    return evaluate_and_publish(rt, thunk); // we own it
+                }
+                // Lost the race; re-observe.
+            }
+            State::Pending(owner) | State::Awaited(owner) => {
+                if owner == rt.worker_id() {
+                    return Err(EvalError::InfiniteRecursion); // genuine cycle
+                }
+                // Someone else owns it: don't spin. Help or wait (§3.3).
+                return wait_or_steal(rt, thunk);
+            }
+        }
+    }
+}
+```
+
+`evaluate_and_publish` runs the compiled thunk body, then performs a **release
+store** of `Forced` (or `Failed`) and wakes any parked waiters registered while
+we held `Pending`/`Awaited`. The acquire/release pairing is what gives other
+threads a correct, fully-constructed value: the C++ Nix design relies on the
+same `std::atomic` type field with the same memory-ordering discipline, and we
+mirror it exactly so our reasoning inherits theirs.
+
+> **Why CAS, not a lock.** A per-thunk `Mutex` would be correct but pays an
+> uncontended-lock cost on *every* force, and forces happen billions of times.
+> The uncontended path here is a single relaxed-ish CAS that almost always wins
+> immediately — the same reason LuaJIT, the JVM biased-locking lineage, and
+> GHC's eager-blackholing all reach for a single atomic word over a lock object.
+> Contention is rare because the thunk graph is mostly tree-shaped per
+> derivation; the genuinely shared nodes are few and usually already `Forced`
+> by the time a second thread arrives, collapsing to a pure tag test (§3.4).
+
+### 3.3 Waiting vs. work-stealing on a claimed thunk
+
+When a worker finds a thunk owned by another worker it has two options, and the
+choice is the single most consequential tuning decision in L2:
+
+1. **Park and wait** (the C++ Nix choice): register as a waiter, CAS
+   `Pending -> Awaited`, and block until the owner publishes. Simple, no
+   double work, but the waiting core is idle unless we hand it other work.
+2. **Work-steal elsewhere** (the GHC spark choice): instead of blocking, the
+   worker returns to its scheduler, pops the next independent task off its own
+   deque, or steals one from a peer, and only revisits the blocked thunk later.
+
+aos-nix uses a **hybrid**: a worker that blocks on a foreign thunk does *not*
+busy-spin and does *not* immediately OS-park. It first attempts to drain its own
+deque and steal a peer task (keeping the core busy), and only if there is
+genuinely no other work does it park on the thunk's waiter list. This is exactly
+GHC's runtime behaviour — sparks are load-balanced by work-stealing, and a
+thread that blocks on a black hole yields to the scheduler rather than spinning.
+Determinate Systems' parallel Nix takes the simpler park-only route because its
+unit of work is coarse (whole attribute paths from `nix flake show` /
+`nix search`); our finer L2 grain makes the steal-before-park hybrid worthwhile.
+
+```text
+  worker hits foreign Pending/Awaited thunk T
+        │
+        ├─ own deque non-empty?  ──yes──► pop & run other task, retry T later
+        │
+        ├─ peer deque stealable?  ──yes──► steal & run, retry T later
+        │
+        └─ no work anywhere ─────────────► register waiter, park until T.Forced
+```
+
+We deliberately **do not** implement GHC-style *helping* (a waiter re-doing the
+foreign thunk's work speculatively). Helping risks double evaluation, which for
+a pure value is merely wasteful — but `derivationStrict` and `import` have
+*observable* effects (writing a `.drv` to the store, registering an
+incremental-cache node); redoing them under a race is a correctness hazard we
+refuse to take for a marginal latency win. Wait-or-steal never re-runs a claimed
+thunk.
+
+### 3.4 The fast path is a tag test, not an atomic
+
+The overwhelmingly common case is forcing a thunk that is **already `Forced`**
+(a let-binding referenced many times, an interned store-path string, a shared
+attrset). Pointer tagging (see [value representation](05-value-representation.md),
+the GHC spineless-tagless trick) encodes evaluatedness in spare pointer bits, so
+the hot path is:
+
+```rust
+#[inline(always)]
+fn force_fast(v: Value) -> Option<Value> {
+    // WHNF bit set in the pointer tag => no atomic load, no CAS, no branch
+    // into the runtime. Already-evaluated values are returned by inspection.
+    if v.is_whnf_tagged() { Some(v) } else { None } // fall through to force()
+}
+```
+
+Only a *tag miss* (a genuinely `Suspended` value) drops into the atomic protocol
+of §3.2. This keeps the parallel overhead off the path that dominates dynamic
+counts, which is why CAS-per-thunk is affordable: we pay it rarely.
+
+## 4. L1: coarse top-level parallelism
+
+### 4.1 Why this is the first target
+
+The roadmap ranks L1 ("coarse, low-risk") ahead of L2 because it delivers the
+bulk of the speedup while touching almost no shared mutable state. The shape of
+a full AOS evaluation is a wide fan of independent top-level derivations
+(`pkgs.foo`, `pkgs.bar`, …), each an island. If we schedule *whole derivation
+subtrees* onto a work-stealing thread pool and give each worker its **own GC
+nursery**, the only shared state is **immutable and read-only after
+construction**:
+
+- the parsed/compiled IR (content-addressed, built once — see
+  [frontend, parser and IR](04-frontend-parser-and-ir.md));
+- the symbol table (u32 interning — see
+  [attribute sets, hidden classes and inline caches](09-attribute-sets-hidden-classes-and-inline-caches.md));
+- the hash-cons / maximal-sharing table (see
+  [value representation](05-value-representation.md));
+- the primop registry and its perfect-hash dispatch table (see
+  [primops and runtime ABI](10-primops-and-runtime-abi.md));
+- the incremental evaluation cache (a concurrent content-addressed map — see
+  [the incremental evaluation cache](12-incremental-evaluation-cache.md)).
+
+Determinate Systems made the symbol table lock-free precisely because it is the
+one "immutable" structure that still mutates *during* evaluation (new identifiers
+intern lazily). We pre-build or grow these tables under the same lock-free /
+read-mostly discipline (§4.3).
+
+### 4.2 The scheduler: a work-stealing pool
+
+L1 runs on a Chase-Lev work-stealing deque pool — the design that underlies
+Rayon and most modern task runtimes, and the same structure GHC uses to
+load-balance sparks. Each worker owns a deque; it pushes/pops its own tasks at
+one end (LIFO, cache-friendly: a freshly-pushed subtree is hot) and idle peers
+steal from the other end (FIFO, stealing the *oldest*, largest-grained task to
+minimize steal frequency). The Chase-Lev algorithm is lock-free except for the
+rare allocation when the deque grows, which matches our "no locks on the hot
+path" rule.
+
+```text
+   roots = [ pkgs.a, pkgs.b, pkgs.c, ... pkgs.zzz ]   (tens of thousands)
+
+   seed:  round-robin roots onto worker deques
+   run:   each worker  pop() ─► force derivation subtree ─► emit .drv
+   steal: empty worker  steal() oldest task from a random victim
+   done:  all deques empty AND all workers idle (termination barrier)
+```
+
+We do **not** spawn a task per thunk — that would be the per-thunk-activation
+trap RFC-0007 explicitly rejects (billions of tasks). The task grain is a
+top-level derivation (tens of thousands), large enough that scheduling overhead
+is negligible against the forcing work inside.
+
+### 4.3 Growing the shared immutable tables safely
+
+The symbol table and hash-cons table must accept inserts during parallel
+evaluation (a new string literal interns; a new attrset hash-conses). We use the
+read-mostly concurrent-map discipline rather than a global lock:
+
+- **Symbol table**: append-only interner. Lookups are lock-free reads of a
+  stable index; the rare new-symbol insert uses a sharded, lock-free hash map
+  (insert-or-get returns the existing id on a race, so two threads interning the
+  same string converge to one u32). This is the lock-free symbol table
+  Determinate Nix shipped.
+- **Hash-cons table**: same insert-or-get contract. Because Nix values are
+  immutable, two threads independently constructing the structurally-identical
+  attrset must end up sharing one allocation; the table's atomic insert-or-get
+  guarantees it. Maximal sharing is *strengthened* by parallelism, not
+  threatened by it — see [value representation](05-value-representation.md).
+- **Incremental cache**: a concurrent map keyed on `hash(expr ⊕ env)`. Two
+  workers computing the same memoized node race to insert; the loser discards
+  its (identical, pure) result. Early-cutoff comparisons remain valid because
+  the stored value-hash is deterministic — see
+  [the incremental evaluation cache](12-incremental-evaluation-cache.md).
+
+The soundness argument is uniform: **every shared table has an idempotent,
+order-independent insert-or-get**, so races produce convergent results, never
+divergent `.drv` output.
+
+### 4.4 Determinism of output under nondeterministic scheduling
+
+This is the compatibility crux. Threads finish in arbitrary order, but the
+`.drv` files and store paths must be byte-identical to `nix-instantiate` every
+time (see [compatibility constraints](02-compatibility-constraints.md) and
+[derivation and store compatibility](11-derivation-and-store-compatibility.md)).
+We guarantee it structurally:
+
+1. **`derivationStrict` reads only immutable, fully-forced inputs.** Attr
+   iteration order is fixed by the deterministic attrset representation, *not* by
+   evaluation order (see
+   [attribute sets, hidden classes and inline caches](09-attribute-sets-hidden-classes-and-inline-caches.md)).
+2. **String contexts union order-independently.** Contexts are interned
+   copy-on-write bitsets of store-path ids; set union is commutative and
+   associative, so the order threads merge them in cannot change the result
+   (see [derivation and store compatibility](11-derivation-and-store-compatibility.md)).
+3. **Output collection is sorted, not arrival-ordered.** The `.drv` writer sorts
+   inputs/outputs/env by the canonical Nix order before ATerm serialization, so
+   which worker produced which input is irrelevant.
+4. **Hashing is on content, never on identity.** All Nix-observed hashes are
+   SHA-256 over canonical bytes; no thread id, pointer, or timestamp enters the
+   hash.
+
+The differential harness (see
+[differential testing and benchmarking](15-differential-testing-and-benchmarking.md))
+runs the *parallel* evaluator against `nix-instantiate` across the full package
+set, and additionally runs it at thread counts `{1, 2, 8, N}` asserting
+identical output across all of them — a cheap, devastating fuzz test for any
+order-dependence bug.
+
+## 5. The hard problem: parallel GC × thunk mutation
+
+This is where aos-nix's choices make parallelism genuinely difficult, and where
+we diverge most from C++ Nix.
+
+### 5.1 Why C++ Nix gets this for free (and we don't)
+
+C++ Nix uses Boehm conservative GC. Boehm is non-moving: an object never changes
+address, so a pointer read is just a load — no barrier, no coordination with the
+collector. That is precisely why edolstra's multithreaded evaluator could focus
+entirely on the thunk protocol and ignore GC: the collector and the mutators
+don't fight over object locations. The price Boehm pays — false retention from
+conservative stack scanning, and being "the dominant cost" in C++ Nix per our
+profiling — is exactly the cost RFC-0007 set out to eliminate with a **precise,
+moving** collector (see [memory management and GC](06-memory-management-and-gc.md)).
+
+A moving collector relocates objects. The moment a collector thread can move an
+object while a mutator thread is forcing a thunk, we have three new hazards on
+top of the thunk race:
+
+1. **Mutator/collector race on the thunk word.** A collector updating a moved
+   object's forwarding pointer vs. a mutator CAS-ing the same object's state
+   word.
+2. **Stale pointers after relocation.** A worker holding a raw `*Value` that the
+   collector just moved.
+3. **Cross-nursery references.** L1 gives each worker a private nursery, but a
+   hash-consed value shared across workers lives in a shared/tenured region;
+   write-tracking those cross-region edges is the classic generational
+   remembered-set problem, now concurrent.
+
+### 5.2 Tiered answer, matching the GC tiers
+
+Our GC has two tiers (see [memory management and GC](06-memory-management-and-gc.md)),
+and parallel-GC interaction is answered per tier:
+
+| Mode | GC | Parallel-GC strategy |
+|------|----|----------------------|
+| **Tier A — one-shot CLI** | bump-arena, never free, drop at exit | **trivial**: no collection during eval, so no mutator/collector race exists. Parallel forcing is fully unconstrained. |
+| **Tier B — daemon / long-lived** | precise generational copying; optional concurrent (ZGC/Shenandoah-style) | **hard**: requires stop-the-world phases or load barriers (§5.3). |
+
+The Tier-A escape hatch is enormous and deliberate: **for the build-time
+bottleneck this RFC actually targets — `aos build` shelling out a fresh
+evaluation — Tier A is the mode that runs.** A one-shot evaluation never
+collects (it bump-allocates and drops the whole arena at `exit`), so the
+collector simply does not run concurrently with forcing. L1 and L2 parallelism
+in Tier A need *zero* GC coordination. This is the single most important
+simplification in the whole parallel design: **the common case has no
+parallel-GC problem at all.**
+
+### 5.3 Tier B: stop-the-world first, concurrent later
+
+For the daemon (long-lived evaluator serving many requests, where the heap must
+be reclaimed), we stage it:
+
+**Stage B0 — stop-the-world parallel GC.** All workers reach a safepoint, the
+collector runs (itself parallel across cores), then mutators resume. This is the
+G1/parallel-collector model. Reaching a safepoint requires every worker to be at
+a GC-poll point with a precisely-described stack — which our precise collector
+needs anyway. Because forcing is short and frequent, safepoint latency is low.
+This is correct, simple, and sufficient until pause times measurably hurt daemon
+latency. **No load barriers, no concurrent relocation, no mutator/collector
+race** — the collector only runs when *no* thunk is being forced.
+
+**Stage B1 — concurrent low-pause GC (research-grade).** Only if Stage-B0 pauses
+become the measured limiter do we adopt colored-pointer + load-barrier
+collection in the ZGC/Shenandoah lineage. The mechanism:
+
+- **Colored pointers**: metadata (mark/relocation state) lives in spare
+  high-order pointer bits — the same bits we already use for WHNF tagging, so the
+  schemes must be co-designed (this is a noted constraint, not a solved problem).
+- **Load barrier**: every pointer load runs a small check that, if the pointee
+  was relocated, follows the forwarding pointer and "self-heals" the slot. ZGC
+  brings pauses from 50-500 ms down to 1-5 ms this way, at ~2× heap overhead.
+- **Interaction with the thunk CAS**: the load barrier must fire *before* the
+  thunk-state CAS, so the CAS targets the relocated copy. Concretely, forcing
+  becomes "load-barrier the thunk pointer, then CAS its state word." Shenandoah's
+  Brooks-pointer indirection or ZGC's colored-pointer self-healing both make the
+  *address* stable-enough for the CAS within a single forcing operation; getting
+  this provably right under our exact WHNF-tag layout is an **open question** we
+  flag explicitly below.
+
+```text
+   Tier B0 (ship first):           Tier B1 (research, measured follow-up):
+
+   mutators ──┐                    mutator: load ─► [barrier] ─► CAS state
+              ▼ safepoint                              │
+   ┌──────────────────┐                                ▼ (if relocated)
+   │ parallel collector│                          follow forwarding ptr,
+   │ (world stopped)   │                          heal slot, then CAS
+   └──────────────────┘                          collector relocates
+              ▲ resume                            CONCURRENTLY with forcing
+   mutators ──┘
+```
+
+### 5.4 Region inference reduces the problem before GC runs
+
+Tofte-Talpin region inference and escape analysis (see
+[laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md))
+shrink the parallel-GC problem from the *language* side rather than the runtime
+side. Whole-program analysis proves that most intermediate thunks built inside a
+single derivation's evaluation **never escape that derivation**. Such values can
+be confined to the worker's private nursery (or scalar-replaced away entirely),
+so they are *never* candidates for cross-thread sharing or cross-region
+remembered-set tracking. The remembered set the concurrent collector must
+maintain is reduced to the genuinely shared, hash-consed, long-lived values —
+which are few. Purity makes escape analysis far more effective here than on the
+JVM, and that effectiveness directly buys down the hardest part of §5.3.
+
+## 6. Failure, exceptions, and cancellation
+
+Nix evaluation can abort: `builtins.throw`, `assert` failure, type errors, or
+infinite recursion. Under parallelism, an error in one derivation must not
+corrupt another, and must surface deterministically.
+
+- **Per-thunk `Failed` state.** A forcing thread that throws publishes `Failed`
+  with the stashed error; waiters re-raise it. The error is a value, captured
+  once, observed identically by all waiters — no double-throw, no lost error.
+- **Independent derivations are isolated.** L1 workers evaluate islands; an error
+  in `pkgs.broken` fails only that root's task. The pool collects per-root
+  results (`Ok(drv)` / `Err`) and reports them together.
+- **Cancellation is cooperative.** If the caller wants fail-fast (`aos build`
+  aborting on first error), a worker that publishes `Failed` on a *requested*
+  root sets a shared `cancelled` flag; other workers check it at their GC-poll /
+  task-boundary safepoints and unwind. We never forcibly kill a worker
+  mid-force, which would leave a thunk stuck in `Pending` and deadlock its
+  waiters.
+- **Deterministic error selection.** When multiple roots fail, the *reported*
+  error is chosen by canonical order (e.g. lowest attr path), not by which thread
+  failed first — so the error message is reproducible, matching C++ Nix's
+  single-threaded "first failure encountered in evaluation order" as closely as
+  the differential harness demands.
+
+## 7. What we explicitly do not do
+
+- **No per-thunk OS threads or per-thunk tasks.** The grain is a derivation
+  subtree (L1) or a CAS on an existing thunk (L2). Spawning per activation is the
+  billions-of-units trap RFC-0007 rejects in its execution model.
+- **No speculative helping / re-execution of claimed thunks.** Risks double
+  execution of effectful primops (`import`, `derivationStrict`); we wait-or-steal
+  instead (§3.3).
+- **No lock-based thunk protection on the hot path.** A single atomic word with
+  CAS, fronted by a tag-test fast path (§3.4).
+- **No concurrent GC in the one-shot CLI path.** Tier A never collects; the
+  hardest interaction simply does not arise for the build-time bottleneck we
+  target (§5.2).
+- **No nondeterminism leaking into output.** Every shared table is insert-or-get
+  idempotent; every Nix-observed hash is content-only (§4.4).
+
+## 8. Open questions and research-grade items
+
+These are flagged as uncertain; none block the phase-1 serial evaluator or the
+L1 coarse pool.
+
+1. **WHNF tag bits vs. colored-pointer GC bits (Stage B1).** Both want spare
+   pointer bits. Co-designing the WHNF/constructor tag layout with ZGC-style
+   color bits is unsolved; it may force a wider value or a different tagging
+   scheme. *Open.*
+2. **Load barrier on the thunk-state CAS.** Proving the relocate-then-CAS
+   sequence is race-free under our exact memory model and tag layout needs the
+   formal-verification rigor applied to Chase-Lev deques under weak memory.
+   Until then, Stage B0 (stop-the-world) is the shipping answer. *Open.*
+3. **L1 load imbalance / the long tail.** A handful of giant derivations
+   (the toolchain, `systemd`) can dominate the tail and starve L1 parallelism.
+   The mitigation is L2 (force *within* a giant derivation in parallel), but the
+   crossover point where L2's risk is worth its reward is a measurement, not a
+   prediction. *Open, measure-first.*
+4. **Memory-ordering audit.** The acquire/release discipline (§3.2) is borrowed
+   from C++ Nix; re-deriving it in Rust's atomics model and validating it under
+   `loom`/Miri on the safe tree-walk oracle is required before L2 ships. *Planned.*
+5. **Cross-nursery sharing cost.** How often hash-consed values are genuinely
+   touched by multiple workers (forcing shared-region access and, in Tier B,
+   remembered-set churn) is unknown until measured on the real AOS closure.
+   *Open.*
+
+## 9. Summary
+
+Parallelism is sound for Nix because values are immutable, but the *thunk graph*
+is shared mutable state, so we adopt the proven CAS-claimed thunk protocol from
+GHC and C++ Nix's multithreaded evaluator: an atomic state word, a
+`Suspended -> Pending -> Awaited -> Forced/Failed` lifecycle, a tag-test fast
+path for already-evaluated values, and wait-or-steal (never speculative re-run)
+on contention. We layer this under a coarse, low-risk work-stealing pool over
+independent top-level derivations whose only shared state is immutable
+insert-or-get tables, which captures most of the win at a fraction of the risk
+and is the first target. The genuinely hard part — parallel forcing against a
+precise *moving* collector — is dissolved in the one-shot CLI path (Tier A never
+collects, so the build-time bottleneck we target has no parallel-GC problem),
+answered by stop-the-world parallel collection in the daemon, and only escalates
+to colored-pointer/load-barrier concurrent GC as a measured, research-grade
+follow-up. Throughout, byte-identical `.drv` output is preserved structurally —
+order-independent context unions, sorted output collection, content-only SHA-256
+hashing — and asserted by running the differential harness across thread counts.
+
+## References
+
+- Determinate Systems, *Parallel Nix evaluation* — atomic `type` field,
+  `Pending`/`Awaited`/`Failed` thunk states, lock-free symbol table, 4.1×
+  (`nix flake show`, 23.70s→5.77s) and 3.0× (`nix search`) speedups.
+  <https://determinate.systems/blog/parallel-nix-eval/>
+- Determinate Systems, *Parallel evaluation comes to Determinate Nix (3.11.1)*.
+  <https://determinate.systems/blog/changelog-determinate-nix-3111/>
+- NixOS/nix PR #10938, *Multithreaded evaluator* (edolstra).
+  <https://github.com/NixOS/nix/pull/10938>
+- Simon Marlow et al., *Runtime Support for Multicore Haskell* — sparks,
+  work-stealing spark distribution, eager vs. lazy blackholing.
+  <https://www.microsoft.com/en-us/research/wp-content/uploads/2009/09/multicore-ghc.pdf>
+- GHC User's Guide, *Using SMP parallelism* — `par`/spark semantics,
+  `-feager-blackholing`.
+  <https://downloads.haskell.org/ghc/latest/docs/users_guide/using-concurrent.html>
+- Chase & Lev, *Dynamic Circular Work-Stealing Deque* (lock-free; basis for
+  Rayon/crossbeam). Formal verification under weak memory:
+  <https://arxiv.org/pdf/2309.03642>
+- crossbeam / Chase-Lev deque in Rust.
+  <https://docs.rs/crossbeam/0.3.2/crossbeam/sync/chase_lev/index.html>
+- JEP 333, *ZGC: A Scalable Low-Latency Garbage Collector* — colored pointers,
+  load barriers.
+  <https://openjdk.org/jeps/333>
+- *Deep Dive into ZGC* (ACM TOPLAS) — concurrent relocation, load-barrier
+  self-healing.
+  <https://dl.acm.org/doi/full/10.1145/3538532>

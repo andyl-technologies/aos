@@ -1,0 +1,710 @@
+# RFC-0007 - Primops and the Runtime ABI
+
+> Part of the RFC-0007 aos-nix documentation set. This document specifies the
+> *runtime substrate* of the evaluator: the ~120 builtin primitive operations
+> ("primops"), the symbol table through which compiled code reaches them, the
+> perfect-hash dispatch for builtin lookup, the semantics and caching of
+> `import`, and the single uniform calling convention (the runtime ABI) that
+> stitches the tree-walking oracle, the Cranelift JIT tiers, and the garbage
+> collector into one coherent system.
+>
+> Cross-references use relative filenames: see
+> [value representation](05-value-representation.md),
+> [memory management and GC](06-memory-management-and-gc.md),
+> [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md),
+> [attribute sets, hidden classes, and inline caches](09-attribute-sets-hidden-classes-and-inline-caches.md),
+> [derivation and store compatibility](11-derivation-and-store-compatibility.md),
+> and [the incremental evaluation cache](12-incremental-evaluation-cache.md).
+
+---
+
+## 1. Why this layer is load-bearing
+
+The builtins are not an afterthought bolted onto a language core; in Nix they
+*are* a large fraction of the language. `nixpkgs` is, to a first approximation,
+a giant fixpoint over `builtins.derivationStrict`, `import`, `map`, `genList`,
+`foldl'`, `listToAttrs`, the string primitives, and `builtins.hashString` /
+`builtins.toJSON`. An evaluator that is fast at thunk forcing but slow at
+builtins is slow at the only workload that matters.
+
+This places three hard requirements on the runtime layer:
+
+1. **Bug-for-bug compatibility.** Every primop must reproduce C++ Nix
+   semantics *exactly* — including argument-forcing order, error messages where
+   they are observable, string-context propagation, and the deterministic attr
+   ordering that feeds `derivationStrict`. A primop that forces arguments in the
+   wrong order, or that drops a string-context element, produces a different
+   `.drv`, a different store path, and a total cache miss that rebuilds the
+   from-source toolchain (see
+   [compatibility constraints](02-compatibility-constraints.md)). The
+   acceptance gate is the differential harness, not a unit test.
+
+2. **A single uniform ABI.** The tree-walk oracle (tier 0), the Cranelift
+   baseline JIT (tier 1), and the optimized JIT (tier 2) must all be able to
+   call a primop, and a primop must be able to call back into `force`,
+   `select_ic`, and the allocator without knowing which tier called it. There
+   is exactly one calling convention. A primop is "just Rust" that obeys it.
+
+3. **Indirection through symbols, not addresses.** Compiled code never embeds
+   the address of a primop, an allocator, or a force routine as a baked-in
+   constant. It references a *symbol name*; the JIT resolves that name through a
+   runtime symbol table at link time. This is what lets the GC strategy swap
+   (bump arena ↔ generational copying, see
+   [memory management](06-memory-management-and-gc.md)) without recompiling a
+   single line of JIT output, and what lets the tree-walk oracle and the JIT
+   share one implementation of every builtin.
+
+The rest of this document specifies these three things and the cross-cutting
+machinery (perfect hashing, `import` caching) that makes them fast.
+
+---
+
+## 2. The uniform runtime ABI
+
+### 2.1 The one calling convention
+
+Every entity that compiled code can *call* — a primop, a user lambda's compiled
+body, a runtime helper like `force` — presents the same C ABI signature:
+
+```rust
+/// The single calling convention shared by tree-walk, baseline JIT, and
+/// optimized JIT. `Runtime` is the evaluator's mutable world (heap, symbol
+/// table, caches, GC state). `Env` is the captured environment (the closure's
+/// slot vector). Additional `Value` arguments are passed positionally.
+///
+/// # Safety
+/// Callers must pass a valid `*mut Runtime` and a valid `*const Env` for the
+/// callee's expected arity. The return `Value` is owned by the runtime heap.
+pub type PrimopFn = unsafe extern "C" fn(rt: *mut Runtime, env: *const Env) -> Value;
+
+pub type PrimopFn1 = unsafe extern "C" fn(rt: *mut Runtime, env: *const Env, a0: Value) -> Value;
+pub type PrimopFn2 = unsafe extern "C" fn(rt: *mut Runtime, env: *const Env, a0: Value, a1: Value) -> Value;
+pub type PrimopFn3 = unsafe extern "C" fn(rt: *mut Runtime, env: *const Env, a0: Value, a1: Value, a2: Value) -> Value;
+```
+
+The contract, stated precisely:
+
+- **`rt: *mut Runtime`** — the ambient world. Threading the runtime as an
+  explicit first argument (rather than a thread-local or a global) keeps primops
+  re-entrant and makes parallel forcing (see
+  [parallel evaluation](13-parallel-evaluation.md)) tractable: each worker can,
+  in principle, carry its own `Runtime` view while sharing the immutable
+  interned tables. It also matches how `rustc_codegen_cranelift` and the
+  Cranelift JIT demo thread state explicitly rather than relying on hidden
+  globals.
+
+- **`env: *const Env`** — the lexical environment as a flat slot vector indexed
+  by the de Bruijn-style indices the frontend assigned (see
+  [frontend and IR](04-frontend-parser-and-ir.md)). A primop that takes no Nix
+  arguments still receives `env` so that partially-applied builtins and
+  closures share one shape.
+
+- **`Value`** — a 16-byte tagged value in the first cut, NaN-boxed as a measured
+  optimization (see [value representation](05-value-representation.md)). Because
+  the value is at most 16 bytes, Cranelift passes it in a pair of registers on
+  x86-64 SysV and AArch64 AAPCS, so primop calls touch no extra memory for
+  argument marshalling. This is the concrete reason the value layout and the ABI
+  are co-designed: the ABI is cheap *because* the value fits in registers.
+
+- **`unsafe extern "C"`** — `extern "C"` so Cranelift can emit a normal call to
+  a symbol with a stable, non-Rust-mangled signature; `unsafe` because the
+  pointers are raw and the heap is manually managed. This is the justified
+  exception to AOS's "avoid unsafe at all costs" rule (see
+  [integration with AOS](14-integration-with-aos.md)): every such function
+  carries a `// SAFETY:` comment, and the safe tree-walk oracle is what miri and
+  the sanitizers run against.
+
+### 2.2 Arity, currying, and over/under-application
+
+Nix functions are unary and curried; `builtins.map f xs` is
+`(builtins.map f) xs`. Builtins, however, are most naturally written as
+multi-argument Rust functions. We bridge this exactly as C++ Nix and Snix do:
+each primop carries a static **arity** and is wrapped in a *partial-application
+value* (a `PrimopApp`) that accumulates arguments until the arity is reached,
+then performs the call.
+
+```rust
+/// A primop together with already-supplied arguments. A `Value::PrimopApp`
+/// with `args.len() == primop.arity` is immediately reducible; below that it
+/// behaves as a normal (forced) function value.
+pub struct PrimopApp {
+    pub primop: &'static Primop,
+    pub args: SmallVec<[Value; 3]>, // most builtins are arity <= 3
+}
+```
+
+The forcing machinery treats a saturated `PrimopApp` like any other redex: it
+calls the underlying `PrimopFnN` with the collected arguments. An *under*-applied
+primop is a perfectly good WHNF value (a function), exactly as in C++ Nix —
+`builtins.map` on its own is a value you can pass around. This matters for
+compatibility: code that relies on partial builtin application (and `nixpkgs`
+does, constantly, e.g. `map (x: ...)` pipelines) must see the same value
+identity behavior.
+
+The wrapper is generated once per primop from its declared arity; tier-2 can
+*inline* the wrapper away at saturated call sites it can prove are monomorphic,
+collapsing `map f xs` into a direct call to the arity-2 entry point — an
+optimization neither C++ Nix nor Snix's bytecode VM performs, and one that is
+sound here precisely because builtins are pure and their arities are fixed at
+compile time.
+
+### 2.3 Argument forcing is part of the contract
+
+A subtle but critical compatibility point: **the order and timing of argument
+forcing is observable** and must match C++ Nix. `builtins.add a b` forces `a`
+then `b`; `builtins.elemAt xs n` forces the list then the index; `x // y`
+forces both operands to attrsets. Where Nix is lazy in an argument (e.g.
+`builtins.seq` forces only its first argument to WHNF, `builtins.deepSeq` forces
+recursively), aos-nix must be lazy in exactly the same place.
+
+We encode this not as convention but as the *body of each primop*: the primop
+receives values that may be thunks and calls `rt.force(v)` (a runtime symbol,
+§3) at exactly the points C++ Nix's `state.forceValue` is called in
+`primops.cc`. The differential harness (see
+[differential testing](15-differential-testing-and-benchmarking.md)) catches any
+divergence because forcing order changes which `builtins.trace` lines fire and,
+more importantly for the gate, which thunks evaluate and in what order errors
+surface.
+
+```text
+  PRIMOP CALL FRAME (uniform across tiers)
+  ┌──────────────────────────────────────────────────────────┐
+  │ caller (tree-walk OR JIT-emitted call site)               │
+  │   value a0..an already evaluated to WHNF *iff* the primop  │
+  │   is strict in that position; otherwise passed as a thunk  │
+  │                                                            │
+  │   call  <symbol "nix.builtin.<name>">(rt, env, a0..an)     │
+  └───────────────┬────────────────────────────────────────────┘
+                  │ extern "C", Value in registers
+                  ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │ primop body (plain Rust)                                  │
+  │   rt.force(a0)  // strict positions, matching primops.cc  │
+  │   ...                                                      │
+  │   rt.alloc_*(...) via runtime symbol  // never bakes addr  │
+  │   return Value                                            │
+  └──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. The runtime symbol table
+
+### 3.1 What lives in it
+
+Compiled code reaches the outside world only through a fixed, named set of
+**runtime symbols**. These fall into four groups:
+
+| Group | Examples | Why a symbol (not an inlined address) |
+|-------|----------|----------------------------------------|
+| Allocation | `aos_alloc_thunk`, `aos_alloc_attrs`, `aos_alloc_list`, `aos_alloc_string` | GC strategy swaps (bump arena ↔ generational) with zero JIT recompilation |
+| Forcing / control | `aos_force`, `aos_force_deep`, `aos_blackhole_check` | One canonical force implementation shared by all tiers; deopt hooks here |
+| Attrset access | `aos_select_ic`, `aos_has_attr`, `aos_update` (`//`) | Inline-cache cells live in the runtime; see [hidden classes](09-attribute-sets-hidden-classes-and-inline-caches.md) |
+| Builtins | `nix.builtin.map`, `nix.builtin.derivationStrict`, … (~120) | Shared between oracle and JIT; perfect-hashed dispatch (§4) |
+
+The allocation indirection is the single most important design decision in this
+layer. Tier A of the GC is a bump-pointer arena that never frees and is dropped
+wholesale at process exit; Tier B is a precise generational copying collector
+(see [memory management](06-memory-management-and-gc.md)). Both expose the same
+`aos_alloc_*` symbols. JIT code emitted in a one-shot CLI run and JIT code
+emitted in a long-lived daemon are *byte-identical*; only the resolved symbol
+target differs. This mirrors how managed runtimes (HotSpot, V8) route all
+allocation through a runtime stub so the collector can be replaced behind a
+stable interface — but it is *more* effective here because Nix purity means the
+collector never has to coordinate with finalizers or mutable object identity.
+
+### 3.2 How symbols are registered with Cranelift
+
+Cranelift's JIT (the `cranelift-jit` crate) resolves names that are *declared
+but not defined* in a compiled module through a host-provided symbol table.
+`JITBuilder` exposes `symbol(name, addr)` to bind a single name to a host
+function pointer and `symbols(iter)` / `symbol_lookup_fn(...)` to bind many or
+to install a fallback resolver. The JIT uses this table to satisfy external
+references at finalize time, and the resulting function pointer remains valid
+until the module's memory is freed.
+
+aos-nix registers the entire runtime symbol set once, at JIT construction:
+
+```rust
+/// Install every runtime symbol the JIT can reference. Called once when the
+/// `JITModule` is built; thereafter all compiled tiers resolve `aos_*` and
+/// `nix.builtin.*` names through this table.
+fn install_runtime_symbols(builder: &mut JITBuilder, rt: &Runtime) {
+    // Allocation + control + attrset-access helpers.
+    builder.symbol("aos_force",        aos_force        as *const u8);
+    builder.symbol("aos_force_deep",   aos_force_deep   as *const u8);
+    builder.symbol("aos_alloc_thunk",  aos_alloc_thunk  as *const u8);
+    builder.symbol("aos_alloc_attrs",  aos_alloc_attrs  as *const u8);
+    builder.symbol("aos_alloc_list",   aos_alloc_list   as *const u8);
+    builder.symbol("aos_select_ic",    aos_select_ic    as *const u8);
+    builder.symbol("aos_update",       aos_update       as *const u8);
+
+    // All ~120 builtins, by canonical name.
+    for p in PRIMOP_TABLE.iter() {
+        builder.symbol(p.symbol_name, p.entry as *const u8);
+    }
+}
+```
+
+> **Verification note.** The exact builder method is `JITBuilder::symbol` (and
+> `symbols` / `symbol_lookup_fn`); these are the documented entry points on
+> `cranelift_jit::JITBuilder`, and `JITModule::get_finalized_function` returns
+> the callable pointer. The historical `cranelift-simplejit::SimpleJITBuilder`
+> was renamed to `cranelift-jit::JITBuilder`; aos-nix targets the current
+> `cranelift-jit`. See References.
+
+Because every symbol is a real Rust function compiled into the aos-nix binary,
+the *same* `aos_force` / `nix.builtin.map` implementation backs both the JIT
+(reached via the symbol table) and the tree-walk oracle (reached via a direct
+Rust call). There is no second implementation to drift out of compatibility.
+
+### 3.3 Symbol naming and stability
+
+Symbol names are part of an internal ABI, but they are *stable* internal ABI:
+the JIT-emitted call to `nix.builtin.derivationStrict` must resolve to the same
+Rust function across runs and across the persisted incremental cache (a
+compiled-IR artifact persisted in run N must still link in run N+1, see
+[incremental evaluation cache](12-incremental-evaluation-cache.md)). We
+therefore freeze the naming scheme:
+
+- Builtins: `nix.builtin.<name>` where `<name>` is the Nix-visible identifier
+  (`map`, `genList`, `derivationStrict`, `__add` is exposed as both `add` and
+  its `__`-prefixed alias where Nix does).
+- Runtime helpers: `aos_<verb>[_<qualifier>]`.
+
+The dot-qualified builtin names are not valid C identifiers, which is fine —
+Cranelift's symbol table is a string map, not a C linker — and serves as a
+deliberate guard against accidentally colliding with a host C symbol.
+
+---
+
+## 4. Perfect hashing for builtin dispatch
+
+### 4.1 The dispatch problem
+
+There are two distinct lookups, and they have different performance profiles:
+
+1. **Name → primop, at compile time.** When the frontend resolves the
+   identifier `map` in the `builtins` scope, or lowers `builtins.foldl'`, it
+   must map a string to a `Primop`. This happens once per *occurrence in source*
+   — tens of thousands of times for the whole AOS package set, but never in an
+   inner loop.
+
+2. **`builtins.<x>` select, at run time.** A `select` on the `builtins` attrset
+   with a *dynamic* attr name (rare but legal, e.g. `builtins.${name}`) needs a
+   runtime name→primop lookup.
+
+Both want an O(1), collision-free, branch-light lookup over a *fixed, known-at-
+build-time* key set of ~120 names. That is exactly the use case minimal perfect
+hashing was invented for: the canonical motivating example in the literature
+(and in `gperf`'s own documentation) is hashing reserved words / keywords of a
+programming language.
+
+### 4.2 The construction: compile-time MPHF
+
+We generate a minimal perfect hash function over the frozen set of builtin names
+*at aos-nix build time*, using `rust-phf` (which defaults to the CHD algorithm
+and is the standard Rust choice for compile-time static maps). The output is a
+`phf::Map<&'static str, &'static Primop>` baked into the binary:
+
+```rust
+/// Compile-time perfect-hash map from builtin name to its descriptor.
+/// Generated by `phf` from the frozen ~120-entry key set; no runtime
+/// construction, no collisions, one probe per lookup.
+static BUILTINS: phf::Map<&'static str, &'static Primop> = phf::phf_map! {
+    "abort"            => &PRIMOP_ABORT,
+    "add"              => &PRIMOP_ADD,
+    "derivationStrict" => &PRIMOP_DERIVATION_STRICT,
+    "foldl'"           => &PRIMOP_FOLDL_STRICT,
+    "genList"          => &PRIMOP_GEN_LIST,
+    "import"           => &PRIMOP_IMPORT,
+    "map"              => &PRIMOP_MAP,
+    // ... ~120 entries ...
+};
+```
+
+A perfect hash gives the property that matters for a dispatch table: there is
+**no probe sequence and no per-bucket chain** — the hash maps each present key to
+its own slot, so a hit is one hash + one slot load + one equality check. The
+final `==` is still required: a perfect hash guarantees no collisions only *among
+the key set*, so an *absent* key (a typo'd or dynamic builtin name) can still
+hash into an occupied slot and must be rejected by the spelling compare. This is
+faster and more cache-friendly than a general `HashMap` and has zero construction
+cost at startup.
+
+### 4.3 Why this is more than a micro-optimization here
+
+In C++ Nix the `builtins` set is built once into a `Bindings` and looked up via
+the normal attrset path. aos-nix can do better because the builtin key set is
+*closed and known at our build time*, whereas a user attrset is not. We exploit
+the closed set twice:
+
+- The frontend can resolve `builtins.<staticName>` (the overwhelmingly common
+  case — `builtins.map`, `builtins.fetchurl`, `builtins.toJSON` are written
+  literally) **entirely at parse/lower time** into a direct symbol reference,
+  emitting a Cranelift `call nix.builtin.map` with no attrset lookup at all. The
+  PHF backs the lowering; the runtime sees a direct call.
+
+- The rare dynamic `builtins.${name}` falls back to the PHF at runtime, which is
+  still O(1) and branch-light.
+
+So perfect hashing is not merely "a fast map" — it is the mechanism that lets
+the common builtin call *disappear* from the runtime entirely, becoming a direct
+symbol-table call site (which tier-2 can then inline). This is the same move V8
+makes when it turns a property load on a well-known object into a direct
+reference, generalized by the fact that our well-known object (`builtins`) is
+frozen at build time.
+
+### 4.4 The `builtins` attrset itself
+
+Despite the lowering above, the reified `builtins` attrset must still *exist* as
+a value, because Nix code can bind it (`let b = builtins; in b.map`), pass it
+around, and enumerate it (`builtins.attrNames builtins`). We materialize it
+lazily as an ordinary attrset whose entries are the `PrimopApp` wrappers, with a
+hidden class shared by all `builtins` references (see
+[hidden classes](09-attribute-sets-hidden-classes-and-inline-caches.md)). Its
+attribute *order* must match C++ Nix's `builtins` ordering exactly, because
+`builtins.attrNames builtins` is observable and, transitively, could feed a
+derivation. We pin that order from the frozen key set.
+
+---
+
+## 5. The ~120 builtins
+
+### 5.1 Inventory and structure
+
+aos-nix implements the full primop surface of the target C++ Nix version (on the
+order of ~120 entries; the exact count is version-pinned and validated against
+`builtins.attrNames builtins` of the reference `nix` in the differential
+harness). They group as follows:
+
+| Category | Representative primops |
+|----------|------------------------|
+| Arithmetic / comparison | `add`, `sub`, `mul`, `div`, `lessThan`, `bitAnd`, `bitOr`, `bitXor`, `ceil`, `floor` |
+| Type predicates / coercion | `typeOf`, `isAttrs`, `isList`, `isFunction`, `isString`, `isInt`, `isFloat`, `isBool`, `isNull`, `isPath`, `toString`, `toPath` |
+| Lists | `map`, `filter`, `foldl'`, `genList`, `elemAt`, `elem`, `head`, `tail`, `length`, `concatLists`, `concatMap`, `sort`, `partition`, `groupBy`, `all`, `any`, `genericClosure` |
+| Attrsets | `attrNames`, `attrValues`, `getAttr`, `hasAttr`, `removeAttrs`, `listToAttrs`, `intersectAttrs`, `catAttrs`, `mapAttrs`, `functionArgs`, `zipAttrsWith` |
+| Strings | `substring`, `stringLength`, `replaceStrings`, `concatStringsSep`, `split`, `match`, `splitVersion`, `compareVersions`, `unsafeDiscardStringContext`, `getContext`, `appendContext`, `hasContext`, `addDrvOutputDependencies` |
+| Hashing / encoding | `hashString`, `hashFile`, `toJSON`, `fromJSON`, `toXML`, `toBase32` (where present) |
+| I/O / impure (eval-time) | `readFile`, `readDir`, `pathExists`, `readFileType`, `path`, `filterSource`, `fetchurl`, `fetchTarball`, `fetchGit`, `findFile`, `getEnv`, `trace`, `traceVerbose` |
+| Control / laziness | `seq`, `deepSeq`, `tryEval`, `throw`, `abort`, `addErrorContext`, `break` |
+| Imports / scope | `import`, `scopedImport` |
+| Fixpoint / misc | `genericClosure`, `functionArgs`, `currentSystem`, `currentTime`, `nixVersion`, `langVersion`, `storeDir`, `placeholder` |
+| **Derivations** | `derivationStrict`, `outputOf`, `unsafeDiscardOutputDependency` |
+
+Each is a plain Rust function obeying the §2 ABI. The list above is illustrative;
+the *authoritative* set is whatever `builtins.attrNames builtins` reports for the
+pinned `nix` version, and the harness fails the build if aos-nix's set differs.
+
+### 5.2 The compatibility-critical primops
+
+A handful of primops are disproportionately dangerous because a tiny semantic
+slip changes a `.drv`:
+
+- **`derivationStrict`** — the heart of compatibility. It collects the
+  environment in *deterministic attr order*, builds a `nix-compat`
+  `Derivation`, serializes it as ATerm, computes input-addressed (and CA)
+  output paths with SHA-256, and writes the `.drv`. This is large enough to own
+  its own document; see
+  [derivation and store compatibility](11-derivation-and-store-compatibility.md).
+  From the ABI's perspective it is just another primop, but it is the one whose
+  output the acceptance gate diffs byte-for-byte.
+
+- **String-context primops** — `getContext`, `appendContext`,
+  `hasContext`, `unsafeDiscardStringContext`, `addDrvOutputDependencies`,
+  `unsafeDiscardOutputDependency`. String contexts are interned copy-on-write
+  bitsets of store-path ids that flow through every string operation and are
+  read by `derivationStrict` to compute a derivation's input set (see
+  [value representation](05-value-representation.md) and
+  [derivation compatibility](11-derivation-and-store-compatibility.md)). The
+  *general* string primops (`substring`, `replaceStrings`, `concatStringsSep`,
+  `++` on strings, interpolation) must **union** contexts exactly as C++ Nix
+  does. A dropped context element silently changes a derivation's inputs.
+
+- **`hashString` / `hashFile` / `toJSON`** — feed derivation attributes
+  directly. Byte-exact output (including `toJSON`'s key ordering and number
+  formatting, and the SHA-256/SHA-1/MD5 digests) is required.
+
+- **`sort`** — Nix's `sort` is a specific stable-comparison algorithm whose
+  result order is observable when the comparator yields ties; it must match.
+
+These get *adversarial* differential coverage, not just example-based tests.
+
+### 5.3 Strict-fold and the worker/wrapper payoff
+
+`foldl'` deserves a note because it shows how this layer cooperates with the
+whole-program analyses (see
+[laziness and analyses](07-laziness-and-whole-program-analyses.md)). `foldl'` is
+*strict in the accumulator* — that is its entire reason for existing over
+`foldl`. The primop forces the accumulator on every step. When strictness
+analysis has already determined that the accumulator is strict (which `foldl'`
+guarantees by construction), the worker/wrapper transform can compile the fold
+body to operate on an *unboxed* accumulator with no per-step thunk allocation —
+turning the canonical `nixpkgs` `foldl' (acc: x: ...) init list` pattern into a
+tight loop. Neither C++ Nix nor Snix performs this; it is available to us
+because `foldl'`'s strictness is statically known and Nix values are immutable.
+
+### 5.4 `tryEval`, `throw`, and the error model
+
+`tryEval` must catch exactly the errors C++ Nix's `tryEval` catches (assertion
+failures, `throw`, `abort` is *not* caught) and no others, and must restore
+evaluator state cleanly. In the tree-walk oracle this is a Rust `Result`
+unwinding boundary; in the JIT tiers it is implemented as a runtime symbol
+(`aos_try_begin`/`aos_try_end`) that installs a catch frame, because we do *not*
+want C++-exception-style unwinding through JIT frames. This is also where the
+"catchable error" distinction (which Snix makes explicit) is encoded: only
+catchable errors propagate as values into `tryEval`'s `{ success; value; }`
+result; everything else aborts evaluation.
+
+---
+
+## 6. `import` and import caching
+
+### 6.1 Semantics
+
+`import path` parses and evaluates the Nix file at `path` and returns its value.
+`scopedImport attrs path` is the same but extends the lexical scope of the
+imported file with `attrs`. The compatibility-relevant facts, confirmed against
+Nix's own source and docs:
+
+- **`import` is memoized; `scopedImport` is not.** C++ Nix caches the *result*
+  of importing a given path; importing the same file twice returns the cached
+  value (and re-runs no `builtins.trace`). `scopedImport` deliberately does
+  **not** memoize the evaluation result — the same file imported via
+  `scopedImport` twice produces two distinct evaluations, observable via
+  `builtins.trace` and side effects. aos-nix must reproduce this asymmetry
+  exactly, or a `nixpkgs` that leans on import memoization for performance will
+  diverge in behavior (and timing).
+
+- **`import` of a directory** imports `<dir>/default.nix`.
+
+- **`import` of a derivation / store path** forces the path (realising it if it
+  carries a string context) and imports the resulting file — this is how
+  `import (fetchTarball ...)` works.
+
+### 6.2 The two-level cache
+
+aos-nix layers two caches, keyed differently, because the parse artifact and the
+evaluation result have different invalidation rules:
+
+```text
+  import "<path>"
+        │
+        ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │ 1. PARSE/COMPILE CACHE   key = realpath + content-hash      │
+  │    (blake3 of file bytes)                                   │
+  │    value = compiled IR (arena AST + scope-resolved slots)   │
+  │    -> the package set is parsed ONCE; shared across runs    │
+  │       (persisted, content-addressed; see doc 04 & 12)       │
+  └───────────────────────┬───────────────────────────────────┘
+                          │ (scopedImport stops here:
+                          │  reuses parse, re-evaluates)
+                          ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │ 2. RESULT MEMO CACHE     key = realpath (canonicalized)     │
+  │    value = the imported file's evaluated Value (a thunk     │
+  │            forced at most once)                             │
+  │    -> matches C++ Nix `import` memoization exactly          │
+  │    -> NOT populated/consulted by scopedImport               │
+  └───────────────────────────────────────────────────────────┘
+```
+
+The **parse/compile cache** is keyed on *realpath plus content hash*. Realpath
+canonicalization (resolving symlinks) is mandatory for compatibility: C++ Nix
+keys import on the canonical path, and `nixpkgs` relies on this when the same
+file is reachable by multiple symlinked paths. The content hash (blake3, our
+durable content-addressed hashing choice; see
+[incremental cache](12-incremental-evaluation-cache.md)) lets the *persisted*
+artifact survive across runs and across CI machines — a file whose bytes are
+unchanged is never re-parsed, even in a fresh process. This is the parse-once
+property that makes whole-package-set evaluation start fast.
+
+The **result memo cache** reproduces C++ Nix's `import` memoization. It is keyed
+on canonical path alone (matching Nix) and stores the *value*, so a second
+`import` of the same file is a hash-map hit returning an already-forced (or
+forcing-in-progress) thunk. `scopedImport` deliberately bypasses this level: it
+reuses the parse cache (parsing is pure and scope-independent up to the injected
+names) but allocates a *fresh* thunk evaluated under the extended scope every
+time, exactly as Nix does.
+
+### 6.3 Interaction with the incremental cache
+
+The two-level import cache is the *in-process* fast path. It composes with the
+cross-run incremental evaluation cache (see
+[incremental cache](12-incremental-evaluation-cache.md)): the parse/compile
+cache is itself a content-addressed artifact persisted via the same mechanism,
+and the *result* of evaluating an imported file participates in early-cutoff
+memoization keyed on the file's expression hash plus captured environment.
+Editing a comment in an imported file changes its blake3 content hash (forcing a
+re-parse of *that file*) but, after re-evaluation, yields the same value-hash, so
+early cutoff stops propagation — downstream importers do not re-evaluate. This is
+the systemic win described in doc 12; `import` is its natural granularity
+boundary because files are the unit users actually edit.
+
+### 6.4 `findFile` and the lookup path
+
+`import <nixpkgs>` and `<...>` angle-bracket paths resolve through `findFile`
+against `NIX_PATH`. For byte-identical `.drv` output this must resolve to the
+*same* concrete store path C++ Nix would resolve, so `findFile` honors the same
+`NIX_PATH` / `-I` precedence and the same caching of negative and positive
+lookups. In AOS practice the package set is pinned (flake or pinned `NIX_PATH`),
+so this is deterministic, but the harness still diffs it because a wrong
+`<nixpkgs>` resolution is a silent, catastrophic divergence.
+
+---
+
+## 7. End-to-end: a builtin call across the tiers
+
+To make the ABI concrete, trace `builtins.map f xs` from source to result.
+
+**Frontend (doc 04).** The lexer/parser produces `Select(Var "builtins", "map")`
+applied to `f` and `xs`. Scope resolution recognizes `builtins` as the special
+builtins scope and `map` as a static key; using the PHF (§4) it rewrites the
+node to a direct primop reference `Primop(nix.builtin.map)` with arity 2,
+applied to `f` and `xs`. No attrset lookup survives.
+
+**Tier 0 (tree-walk oracle, doc 08).** The interpreter sees the saturated
+primop application, forces neither `f` nor `xs` itself (map's primop is
+responsible for forcing `xs` to a list and is lazy in the elements), and calls
+the Rust function `nix_builtin_map(rt, env, f, xs)` directly. Inside, it forces
+`xs`, allocates a result list via `aos_alloc_list` (a direct Rust call here),
+and builds per-element thunks of `f elem`.
+
+**Tier 1/2 (Cranelift JIT, doc 08).** The hot thunk containing this call is
+compiled. Cranelift emits a `call` to the symbol `nix.builtin.map` (resolved via
+the JIT symbol table, §3.2) with `(rt, env, f_val, xs_val)` in registers
+(`Value` is 16 bytes → register pair). The same Rust `nix_builtin_map` runs;
+inside it, its `aos_alloc_list` and `aos_force` calls are *also* symbol
+references, so when this runs in a daemon the allocations route to the
+generational collector with no change to the emitted code. Tier 2, if it has
+proven the call monomorphic, may inline the `PrimopApp` wrapper and even the
+list-spine construction, scalar-replacing the result list if escape analysis
+shows it does not escape (doc 07).
+
+**Result.** A list value, identical in structure and (after hash-consing, doc
+05) often identical in *identity* to a structurally-equal list computed
+elsewhere — which is what makes the value-hash cheap for the incremental cache.
+
+The point of the trace is that *one* Rust implementation of `map` served all
+three tiers, reached either by direct call or by symbol, with allocation and
+forcing always indirected through symbols so the GC and tier machinery stayed
+invisible to it.
+
+---
+
+## 8. Compatibility hazards specific to this layer
+
+A consolidated checklist of where this layer can silently break the
+byte-identical-`.drv` gate, each of which gets adversarial differential coverage:
+
+1. **Forcing order** in strict primops (§2.3) — wrong order changes which thunk
+   errors first and which `trace` lines fire.
+2. **String-context propagation** through string primops (§5.2) — a dropped or
+   spuriously-added context element changes a derivation's input set.
+3. **`derivationStrict` attr ordering** (§5.2, doc 11) — must be the exact
+   deterministic order C++ Nix collects env attrs in.
+4. **`toJSON` / `hashString` byte output** (§5.2) — key order, number
+   formatting, digest encoding.
+5. **`sort` tie-breaking and stability** (§5.2).
+6. **`import` memoization vs `scopedImport` non-memoization** (§6.1) —
+   observable via `trace` and timing; affects which side effects run.
+7. **`findFile` / `<nixpkgs>` resolution** (§6.4) — wrong store path → wrong
+   everything.
+8. **`builtins` attr order and membership** (§4.4) — `attrNames builtins` is
+   observable and version-pinned.
+9. **Error catchability in `tryEval`** (§5.4) — catching too much or too little
+   changes evaluated values.
+10. **Integer/float semantics** — Nix ints are `i64`; overflow, `div` truncation
+    toward zero, and int/float coercion in arithmetic primops must match
+    (relevant to the value layout choice, doc 05).
+
+None of these are theoretical; each corresponds to a real C++ Nix behavior that
+`nixpkgs` (and therefore the AOS package set) depends on.
+
+---
+
+## 9. Open questions and research-grade items
+
+- **Dynamic-builtins surface.** Some downstream code uses
+  `builtins.${name}` with a computed `name`; we fall back to the PHF at runtime
+  (§4.3). It is an open question whether tier-2 can profitably speculate on a
+  monomorphic `name` at such sites (PIC-style, doc 09) often enough to matter,
+  or whether they are rare enough to leave as a slow path. *Measure first.*
+
+- **Inlining the most expensive primops.** Whether to give Cranelift IR-level
+  bodies (not just symbol calls) for a tiny hot core (`map`, `elemAt`,
+  `length`, `concatMap`, `++`) is a measured follow-up. The benefit is removing
+  the call and enabling cross-primop optimization; the cost is duplicating
+  semantics out of the single Rust oracle, which risks compatibility drift. The
+  default position is **symbol call only**, and we only special-case after the
+  benchmark says so. This is the conservative reading of the measure-first gate
+  (doc 01).
+
+- **`nix-compat` API churn.** `derivationStrict` depends on the `nix-compat`
+  crate (from the Snix project) for ATerm and store-path hashing. That crate's
+  API is not yet stable; we pin a git rev and expect to upstream fixes. Tracked
+  in doc 11 and the risk register (doc 17).
+
+- **Impure primops and the incremental cache.** `readFile`, `readDir`,
+  `pathExists`, `getEnv`, `currentTime`, `fetchurl`/`fetchGit` are eval-time
+  *effects*. Their results must be keyed into the incremental cache as explicit
+  dependencies (a `readFile` result is invalidated when the file's content hash
+  changes; `getEnv` when the variable changes; `currentTime` is, strictly, not
+  cacheable and `nixpkgs` avoids it in pure-eval mode). Getting the dependency
+  edges exactly right is the boundary between this layer and doc 12, and is
+  marked research-grade there.
+
+---
+
+## 10. Summary
+
+The runtime layer rests on three pillars. **One uniform ABI** —
+`extern "C" fn(*Runtime, *Env[, Value...]) -> Value`, with the 16-byte value
+passed in registers — lets the tree-walk oracle and both Cranelift tiers call
+primops and call back into the runtime identically. **One runtime symbol table**
+— `aos_alloc_*`, `aos_force`, `aos_select_ic`, and `nix.builtin.*` registered via
+`JITBuilder::symbol` — means compiled code never bakes in an address, so the GC
+strategy and tier machinery swap underneath it invisibly, and every builtin has
+exactly one Rust implementation shared by all tiers. **Perfect-hash dispatch**
+over the frozen ~120-name builtin set lets the common `builtins.<static>` call
+collapse into a direct symbol call at compile time, with an O(1) runtime fallback
+for the dynamic case. `import` is memoized at two levels (content-addressed parse
+cache + Nix-faithful result memo), `scopedImport` is deliberately not, and both
+compose with the cross-run incremental cache that is, ultimately, where the
+order-of-magnitude win lives. Every primop is held to the same unforgiving
+standard as the rest of aos-nix: byte-identical `.drv`, exact string contexts,
+SHA-256 store hashes — verified by the differential harness, never assumed.
+
+---
+
+## References
+
+- Cranelift JIT — `JITBuilder` / `JITModule` symbol registration and finalized
+  function pointers:
+  - <https://docs.rs/cranelift-jit/latest/cranelift_jit/struct.JITBuilder.html>
+  - <https://docs.rs/cranelift-jit/latest/cranelift_jit/struct.JITModule.html>
+  - cranelift-jit-demo (host symbols / `symbol` usage):
+    <https://github.com/bytecodealliance/cranelift-jit-demo>
+  - `rustc_codegen_cranelift` JIT driver (explicit symbol/runtime threading):
+    <https://github.com/rust-lang/rust/blob/main/compiler/rustc_codegen_cranelift/src/driver/jit.rs>
+- Perfect / minimal-perfect hashing for fixed keyword sets:
+  - rust-phf (compile-time static maps, CHD): <https://github.com/rust-phf/rust-phf>
+  - "rust-phf: the perfect hash function" (Mainmatter):
+    <https://mainmatter.com/blog/2022/06/23/the-perfect-hash-function/>
+  - gperf — A Perfect Hash Function Generator (Schmidt; reserved-word motivation):
+    <https://www.dre.vanderbilt.edu/~schmidt/PDF/gperf.pdf>
+- Nix builtins, `import`/`scopedImport` semantics and memoization:
+  - Nix Reference Manual — Built-in Functions:
+    <https://nix.dev/manual/nix/2.34/language/builtins>
+  - `scopedImport` primop commit (NixOS/nix):
+    <https://github.com/NixOS/nix/commit/c273c15cb13bb86420dda1e5341a4e19517532b5>
+  - `src/libexpr/primops.cc` (reference forcing order / semantics):
+    <https://github.com/NixOS/nix/blob/master/src/libexpr/primops.cc>
+  - `derivation` vs `derivationStrict` discrepancy (issue #7569):
+    <https://github.com/NixOS/nix/issues/7569>
+- Snix / Tvix (prior art for Rust Nix builtins, `nix-compat`, catchable errors):
+  - Snix builtins component: <https://snix.dev/docs/components/eval/builtins/>
+  - Snix component overview / `nix-compat`: <https://snix.dev/docs/components/overview/>
+  - Snix catchable errors: <https://snix.dev/docs/components/eval/catchable-errors/>
+  - `tvix_eval` API docs: <https://docs.tvix.dev/rust/tvix_eval/index.html>
