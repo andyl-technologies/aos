@@ -127,11 +127,14 @@ async fn security_headers_on_every_route_class() {
         "/demo/does-not-exist",                            // 404s carry the headers too
     ] {
         let (_, headers, _) = get(&app, uri).await;
+        // The default CSP now carries `frame-ancestors 'none'` for
+        // anti-clickjacking; `/demo/HEAD` is a non-document machine path, so it
+        // keeps the strict default rather than the producer `sandbox` policy.
         assert_eq!(
             headers
                 .get("content-security-policy")
                 .and_then(|v| v.to_str().ok()),
-            Some("default-src 'self'"),
+            Some("default-src 'self'; frame-ancestors 'none'"),
             "CSP missing on {uri}"
         );
         assert_eq!(
@@ -140,6 +143,12 @@ async fn security_headers_on_every_route_class() {
                 .and_then(|v| v.to_str().ok()),
             Some("nosniff"),
             "nosniff missing on {uri}"
+        );
+        // Legacy belt-and-braces framing protection alongside frame-ancestors.
+        assert_eq!(
+            headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
+            Some("DENY"),
+            "X-Frame-Options missing on {uri}"
         );
     }
 }
@@ -386,29 +395,71 @@ async fn generated_web_surface_serves_through_facade() {
     .unwrap();
     generate_web_surface(&committed, &surface, WebConfig::default()).unwrap();
 
-    // index.html — served as a machine path with HTML content type.
+    // index.html — a producer-controlled document, served inert: the bytes
+    // are preserved (content type, body), but a `sandbox` CSP plus
+    // `Content-Disposition: attachment` keep the same-origin hub from ever
+    // running producer script in the authenticated origin (sec H3/M5).
     let (status, headers, body) = get(&app, "/demo/index.html").await;
     assert_eq!(status, StatusCode::OK);
     assert!(headers[header::CONTENT_TYPE]
         .to_str()
         .unwrap()
         .starts_with("text/html"));
+    assert_eq!(
+        headers
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok()),
+        Some("sandbox"),
+    );
+    assert_eq!(
+        headers
+            .get(header::CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok()),
+        Some("attachment"),
+    );
     assert!(body.contains("curl"), "{body}");
     assert!(body.contains("browse/curl.html"), "{body}");
 
-    // web/index.json — JSON snapshot.
+    // web/index.json — a non-document machine path: served verbatim with its
+    // JSON content type, its mutable cache header, and no inert treatment (the
+    // global `default-src 'self'` applies; no per-response sandbox/disposition).
     let (status, headers, body) = get(&app, "/demo/web/index.json").await;
     assert_eq!(status, StatusCode::OK);
     assert!(headers[header::CONTENT_TYPE]
         .to_str()
         .unwrap()
         .starts_with("application/json"));
+    // The global layer applies the strict default CSP; the facade adds no
+    // per-response sandbox, and the bytes are not forced to a download.
+    assert_eq!(
+        headers
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok()),
+        Some("default-src 'self'; frame-ancestors 'none'"),
+        "data-plane JSON must not be sandboxed",
+    );
+    assert!(
+        headers.get(header::CONTENT_DISPOSITION).is_none(),
+        "data-plane JSON must not be forced to a download",
+    );
     let snapshot: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(snapshot["packages"][0]["name"], "curl");
 
-    // browse/curl.html — per-package static page.
-    let (status, _, body) = get(&app, "/demo/browse/curl.html").await;
+    // browse/curl.html — a producer document, likewise inert.
+    let (status, headers, body) = get(&app, "/demo/browse/curl.html").await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok()),
+        Some("sandbox"),
+    );
+    assert_eq!(
+        headers
+            .get(header::CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok()),
+        Some("attachment"),
+    );
     assert!(body.contains("x86_64-linux"), "{body}");
     assert!(body.contains("/h7j3k8l2m9n4.narinfo"), "{body}");
 
@@ -416,4 +467,66 @@ async fn generated_web_surface_serves_through_facade() {
     let (status, _, body) = get_with_accept(&app, "/demo/", Some("application/json")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("curl"), "{body}");
+}
+
+/// Producer-uploaded JS is served inert, but the immutable data plane the
+/// same surface carries (narinfos, NARs, objects) is untouched — the inert
+/// treatment keys on document kind (provenance), not on a hub allowlist
+/// (sec H3/M5 regression guard).
+#[tokio::test]
+async fn producer_js_is_inert_but_data_plane_is_verbatim() {
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("surface");
+    std::fs::create_dir_all(&surface).unwrap();
+    let fixture = common::standard_registry(&surface);
+    // The fixture wrote a signed narinfo + nix-cache surface; add a producer
+    // JS file under the producer-writable `web/` prefix (the exact bytes a
+    // `publish`-scoped uploader could PUT through the facade).
+    std::fs::create_dir_all(surface.join("web")).unwrap();
+    std::fs::write(
+        surface.join("web").join("app.js"),
+        b"fetch('/account').then(r=>r.text())",
+    )
+    .unwrap();
+    let (app, _db) = serve_fixture(&surface, &fixture).await;
+
+    // Producer JS: a `sandbox` CSP (no script execution, no same-origin
+    // context) and forced to a download. No script-permitting CSP anywhere.
+    let (status, headers, _) = get(&app, "/demo/web/app.js").await;
+    assert_eq!(status, StatusCode::OK);
+    let csp = headers
+        .get(header::CONTENT_SECURITY_POLICY)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert_eq!(csp, "sandbox", "producer JS must be sandboxed: {csp}");
+    assert!(!csp.contains("script-src"), "{csp}");
+    assert!(!csp.contains("'self'"), "{csp}");
+    assert_eq!(
+        headers
+            .get(header::CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok()),
+        Some("attachment"),
+    );
+
+    // The narinfo data plane: served verbatim with its wire content type and
+    // immutable/mutable cache header, never sandboxed or forced to a download.
+    let (status, headers, body) = get(&app, "/demo/h7j3k8l2m9n4.narinfo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .starts_with("text/x-nix-narinfo"));
+    assert!(
+        headers.get(header::CONTENT_DISPOSITION).is_none(),
+        "narinfo must not be forced to a download",
+    );
+    // The global default CSP applies; the facade never sandboxes data bytes.
+    assert_eq!(
+        headers
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok()),
+        Some("default-src 'self'; frame-ancestors 'none'"),
+        "narinfo must not be sandboxed",
+    );
+    assert!(body.contains("StorePath:"), "verbatim narinfo: {body}");
 }

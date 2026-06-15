@@ -21,8 +21,13 @@
 //!
 //! Every response — pages, machine bytes, assets, errors — carries the
 //! first-party security headers (`Content-Security-Policy:
-//! default-src 'self'`, `X-Content-Type-Options: nosniff`) per RFC-0004's
-//! asset policy, and the whole router sits behind a panic-catching layer.
+//! default-src 'self'; frame-ancestors 'none'`, `X-Content-Type-Options:
+//! nosniff`, `X-Frame-Options: DENY`) per RFC-0004's asset policy, and the
+//! whole router sits behind a panic-catching layer. Producer-controlled
+//! machine-surface documents (HTML/JS a `publish`-scoped producer can upload)
+//! are served inert instead — a `sandbox` CSP plus `Content-Disposition:
+//! attachment` — so same-origin producer bytes cannot run script in the
+//! authenticated hub origin (see [`crate::compat::web_surface_csp`]).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -379,18 +384,26 @@ async fn security_headers(
 ) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    // Default policy is `default-src 'self'` (no inline scripts). The passkey
-    // pages are the one no-JS exception (WebAuthn requires `navigator.
-    // credentials`): they set their own per-request CSP carrying a nonce in
-    // `script-src` before this layer runs, so honor a handler-set CSP rather
-    // than clobbering it. Every other response gets the strict default.
+    // Default policy is `default-src 'self'; frame-ancestors 'none'` (no inline
+    // scripts, and the response may not be framed — anti-clickjacking for the
+    // console and the device-approval `/activate` page). The passkey pages are
+    // the one no-JS exception (WebAuthn requires `navigator.credentials`): they
+    // set their own per-request CSP carrying a nonce in `script-src` before
+    // this layer runs, so honor a handler-set CSP rather than clobbering it.
+    // Producer machine-surface documents likewise set their own `sandbox` CSP
+    // (which already forbids framing). Every other response gets the strict
+    // default. `frame-ancestors` is the modern control; `X-Frame-Options:
+    // DENY` is set unconditionally below as the legacy belt-and-braces, so even
+    // a handler that supplies its own CSP without `frame-ancestors` stays
+    // unframeable.
     headers
         .entry(header::CONTENT_SECURITY_POLICY)
-        .or_insert_with(|| HeaderValue::from_static("default-src 'self'"));
+        .or_insert_with(|| HeaderValue::from_static("default-src 'self'; frame-ancestors 'none'"));
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     response
 }
 
