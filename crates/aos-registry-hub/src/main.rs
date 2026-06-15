@@ -795,6 +795,7 @@ async fn main() -> Result<()> {
             let db = Database::open(&root.join("hub.db"))?;
             match command {
                 OrgCommand::Add { slug, name } => {
+                    validate_slug(&slug)?;
                     let id = db.create_org(&slug, &name)?;
                     println!("created org '{slug}' (id {id})");
                 }
@@ -1868,23 +1869,15 @@ fn parse_depth(depth: &str) -> Result<aos_registry_hub::validation::ValidationDe
 }
 
 /// Reject slugs that would collide with reserved top-level routes or the
-/// `/-/` namespace.
+/// `/-/` namespace, or that fall outside the canonical single-segment
+/// charset.
+///
+/// Thin CLI adapter over the shared
+/// [`aos_registry_hub::domain::iam::validate_org_slug`] ruleset, so the CLI,
+/// the Connect RPC, and the web console enforce the *same* slug grammar.
 fn validate_slug(slug: &str) -> Result<()> {
-    const RESERVED: &[&str] = &[
-        "_assets", "healthz", "metrics", "-", "login", "activate", "account", "new", "oauth2",
-        "api",
-    ];
-    if slug.is_empty()
-        || RESERVED.contains(&slug)
-        || !slug
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-    {
-        anyhow::bail!(
-            "invalid slug '{slug}': lowercase ascii, digits, '-', '_' only, not a reserved name"
-        );
-    }
-    Ok(())
+    aos_registry_hub::domain::iam::validate_org_slug(slug)
+        .map_err(|e| anyhow::anyhow!("invalid slug '{slug}': {e}"))
 }
 
 /// Parse a `org/project…/name` canonical path into its `(org, project_path,

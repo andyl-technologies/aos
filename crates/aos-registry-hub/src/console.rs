@@ -1576,13 +1576,14 @@ async fn new_org_submit(
     if slug.is_empty() || name.is_empty() {
         return reject("Enter both a slug and a display name.");
     }
-    // The slug becomes a scope segment and a URL path, so constrain it to a
-    // conservative URL-safe charset (no slashes, spaces, or control chars).
-    if !slug
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return reject("The slug may contain only letters, digits, '-', and '_'.");
+    // The slug becomes a scope segment and a URL path, so constrain it to the
+    // shared canonical single-segment charset (no slashes, spaces, control,
+    // or uppercase chars, and not a reserved name) — the same ruleset the
+    // CLI and Connect RPC enforce, so the surfaces never drift (sec CR-2).
+    if let Err(err) = iam::validate_org_slug(slug) {
+        return reject(&format!(
+            "The slug may contain only lowercase letters, digits, '-', and '_', and must not be a reserved name ({err})."
+        ));
     }
     let result = (|| {
         if state.db.org_by_slug_including_deleted(slug)?.is_some() {

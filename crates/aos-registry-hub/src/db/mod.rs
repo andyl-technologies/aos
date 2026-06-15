@@ -3681,11 +3681,22 @@ impl Database {
 
     /// Create an organization; returns its new id.
     ///
+    /// The `slug` is validated against the canonical single-segment ruleset
+    /// ([`crate::domain::iam::validate_org_slug`]) as a persistence-layer
+    /// backstop: an org slug is a single URL/scope path segment, so it may
+    /// not contain `/` or any out-of-charset character. This prevents any
+    /// caller — RPC, console, or CLI — from writing a slug that
+    /// [`crate::domain::Scope::parse`] would later normalize into an
+    /// unintended ancestor scope (sec CR-2).
+    ///
     /// # Errors
     ///
-    /// Returns an error on database failure, including a unique-constraint
-    /// violation when `slug` is already taken.
+    /// Returns an error when `slug` fails validation, and on database
+    /// failure, including a unique-constraint violation when `slug` is
+    /// already taken.
     pub fn create_org(&self, slug: &str, name: &str) -> Result<i64> {
+        crate::domain::iam::validate_org_slug(slug)
+            .map_err(|e| anyhow::anyhow!("invalid org slug '{slug}': {e}"))?;
         self.backend.execute_insert(
             "INSERT INTO orgs (slug, name, created_at) VALUES (?1, ?2, ?3)",
             &vals![slug, name, unix_now()],
@@ -4007,9 +4018,20 @@ impl Database {
     /// `scope` and `role` strings are the wire forms produced by
     /// [`crate::domain::Scope::as_str`] and [`crate::domain::Role::as_str`].
     ///
+    /// As a persistence-layer backstop (sec CR-2), `scope` is required to be
+    /// in canonical form ([`crate::domain::Scope::is_canonical`]): a
+    /// non-canonical scope such as `"/"`, `"/victimorg"`, `"foo/"`, or
+    /// `"foo//bar"` is rejected, because [`crate::domain::Scope::parse`] would
+    /// normalize it into a *different*, broader scope than its literal text —
+    /// the exact surprise that lets a caller smuggle an instance-root or
+    /// victim-org grant. Legitimately formed scopes round-trip and are
+    /// accepted: the instance root `""`, an org `"acme"`, and a multi-segment
+    /// registry scope `"acme/cdn"` all pass.
+    ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error when `scope` is not in canonical form, and on
+    /// database failure.
     pub fn grant_membership(
         &self,
         principal_kind: &str,
@@ -4017,6 +4039,9 @@ impl Database {
         scope: &str,
         role: &str,
     ) -> Result<()> {
+        if !crate::domain::Scope::is_canonical(scope) {
+            bail!("refusing to grant membership at non-canonical scope '{scope}'");
+        }
         self.backend.execute(
             "INSERT INTO memberships
              (principal_kind, principal_id, scope, role, created_at)
@@ -9303,6 +9328,61 @@ mod tests {
         assert!(grants
             .iter()
             .any(|(s, r)| s.as_str() == "acme" && *r == Role::Owner));
+    }
+
+    #[test]
+    fn create_org_backstop_rejects_non_segment_slugs() {
+        // CR-2 persistence backstop: even if a caller bypasses the RPC/console
+        // validator, the db refuses to write an org slug that is not a single
+        // path segment, so it can never normalize into an ancestor scope.
+        let db = Database::open_in_memory().unwrap();
+        for bad in ["/", "/victimorg", "foo/bar", "foo ", "Acme", ""] {
+            assert!(
+                db.create_org(bad, "Name").is_err(),
+                "create_org should reject slug {bad:?}"
+            );
+            assert!(db.org_by_slug(bad).unwrap().is_none());
+        }
+        // A normal single-segment slug still succeeds.
+        assert!(db.create_org("acme", "Acme").is_ok());
+        assert_eq!(db.org_by_slug("acme").unwrap().unwrap().slug, "acme");
+    }
+
+    #[test]
+    fn grant_membership_backstop_rejects_non_canonical_scopes() {
+        // CR-2 persistence backstop: grant_membership refuses any scope that
+        // `Scope::parse` would normalize into a different (broader) string,
+        // blocking the "/"->root and "/victimorg"->victimorg escalations.
+        use crate::domain::{Principal, Role};
+        let db = Database::open_in_memory().unwrap();
+        let user = db.create_user("u@example.com", None).unwrap();
+        for bad in ["/", "/victimorg", "foo/", "foo//bar", "/foo/"] {
+            assert!(
+                db.grant_membership("user", user, bad, Role::Owner.as_str())
+                    .is_err(),
+                "grant_membership should reject non-canonical scope {bad:?}"
+            );
+        }
+        // The user gained no grant from any rejected call.
+        assert!(db
+            .effective_scopes(Principal::user(user))
+            .unwrap()
+            .is_empty());
+
+        // Legitimately formed scopes still work: the instance root "", an org
+        // scope "acme", and a multi-segment registry scope "acme/cdn".
+        for good in ["", "acme", "acme/cdn", "acme/infra/prod/cdn"] {
+            db.grant_membership("user", user, good, Role::Viewer.as_str())
+                .unwrap_or_else(|e| panic!("scope {good:?} should be accepted: {e}"));
+        }
+        let scopes: Vec<String> = db
+            .effective_scopes(Principal::user(user))
+            .unwrap()
+            .into_iter()
+            .map(|(s, _)| s.as_str().to_string())
+            .collect();
+        assert!(scopes.iter().any(|s| s.is_empty()), "root scope granted");
+        assert!(scopes.iter().any(|s| s == "acme/cdn"));
     }
 
     /// Test helper: register a managed registry owned by `org` at `slug` with a

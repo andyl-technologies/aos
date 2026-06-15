@@ -23,7 +23,7 @@
 
 pub mod iam;
 
-pub use iam::{allow, role_grants, Permission, Role, Scope};
+pub use iam::{allow, role_grants, validate_org_slug, Permission, Role, Scope, SlugError};
 
 /// The kind of principal a membership or token belongs to.
 ///
