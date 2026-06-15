@@ -69,14 +69,13 @@
           label = "aos-root-b";
           wipeFilesystem = false;
         }
-        {
-          # ignition formats /var ext4 for the Setup-Mode first boot;
-          # aos-var-crypt LUKS-converts it on the first enforcing boot.
-          device = "/dev/disk/by-partlabel/var";
-          format = "ext4";
-          label = "aos-var";
-          wipeFilesystem = false;
-        }
+        # /var is deliberately NOT formatted by ignition. aos-var-crypt
+        # owns its filesystem: plain ext4 on the Setup boot, LUKS2 once
+        # enforcing. If ignition managed /var (format=ext4,
+        # wipeFilesystem=false), it would FAIL on the unlock reboot — the
+        # partition is then crypto_LUKS, not the ext4 it expects — and that
+        # failure cascades (aos-var-crypt/mount-var require ignition-disks)
+        # into a stuck initrd.
       ];
     };
   };
@@ -130,7 +129,7 @@ in {
           return out
 
       # ════ 1. First boot — Setup Mode; vTPM present ════════════════════
-      target.succeed("systemctl is-active multi-user.target")
+      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=180)
       assert efivar_byte("SetupMode") == 1, "expected Setup Mode before enrollment"
       assert efivar_byte("SecureBoot") == 0, "SB should not be enforcing yet"
       # The emulated TPM is wired in and the kernel TCG driver bound it.
@@ -148,7 +147,7 @@ in {
       target.reboot()
 
       # ════ 3. First enforcing boot — /var sealed to the signed policy ══
-      target.succeed("systemctl is-active multi-user.target")
+      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=180)
       assert efivar_byte("SecureBoot") == 1, "Secure Boot should be enforcing"
       # /var is now a LUKS2 device, mounted via the device-mapper node.
       # isLuks confirms LUKS; the systemd-tpm2 token (a LUKS2-only feature)
@@ -166,23 +165,16 @@ in {
       pcrs = target.succeed("systemd-analyze pcrs 2>&1 || true")
       print("=== systemd-analyze pcrs ===\n" + pcrs)
 
-      # This test asserts the full measured-boot SEAL path: the firmware
-      # measures into the vTPM, the UKI is PCR-policy-signed, and /var is
-      # LUKS2-encrypted with its key sealed to the signed TPM2 policy
-      # (PCR 11) + pinned PCR 7, plus an escrowable recovery key — verified
-      # on the first enforcing boot above (which itself crosses a reboot,
-      # exercising the in-VM-reset vTPM-continuity harness).
-      #
-      # NOT YET asserted: unattended TPM2 unlock on a *further* reboot
-      # (i.e. booting with /var already sealed). The seal/enroll is correct
-      # (verified above), but that reboot fails to unlock /var in CI under
-      # the emulated TPM: the LUKS2 var device is not ready when
-      # aos-var-crypt/mount-var evaluate, so /var is condition-skipped and
-      # the boot fails at switch_root (os-release missing). This is a
-      # device-readiness/ordering issue in the sealed-/var reboot path
-      # (needs an explicit wait on the var .device unit), tracked as a
-      # follow-up in RFC-0006 measured-boot.md. Phases 1/2/4 and the seal
-      # path here are unaffected.
-      print("=== /var sealed to signed TPM2 policy + recovery key (verified) ===")
+      # ════ 4. Reboot — /var must unlock UNATTENDED via the TPM2 token ══
+      target.reboot()
+      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=180)
+      assert efivar_byte("SecureBoot") == 1
+      src = var_source()
+      assert src == "/dev/mapper/var", (
+          f"/var did not unlock via TPM2 on reboot (source {src!r})"
+      )
+      dump = target.succeed(f"{CS} luksDump {VARDEV}")
+      assert "systemd-tpm2" in dump, "TPM2 token vanished across reboot"
+      print("=== /var unsealed UNATTENDED via TPM2 across reboot ===")
     '';
 }

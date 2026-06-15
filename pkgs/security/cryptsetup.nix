@@ -74,6 +74,13 @@ in
           # OSSL_KDF_PARAM_ARGON2_VERSION succeeds and sets
           # use_internal_argon2=0. Do NOT pass --enable-libargon2 —
           # configure.ac's AC_MSG_ERROR would reject it.
+          # External LUKS2 token plugins (e.g. systemd's
+          # libcryptsetup-token-systemd-tpm2.so) are dlopen'd by ABSOLUTE
+          # path from this dir — and the systemd-tpm2 plugin lives in
+          # systemd's store path, not cryptsetup's. Point the search at a
+          # runtime dir so a consumer (the measured-boot /var unlock) can
+          # symlink the systemd plugin into it; LD_LIBRARY_PATH does not
+          # affect this absolute-path dlopen. (RFC-0006 phase 3.)
           ./configure \
             --prefix=$out \
             --disable-static \
@@ -82,6 +89,7 @@ in
             --disable-nls \
             --disable-selinux \
             --with-crypto_backend=openssl \
+            --with-luks2-external-tokens-path=/run/cryptsetup/tokens \
             --with-tmpfilesdir=$out/lib/tmpfiles.d
         '';
       }
@@ -92,9 +100,18 @@ in
         '';
       }
       {
+        # `make install` (install-data-local) tries to mkdir the external
+        # tokens path /run/cryptsetup/tokens, which is absolute and outside
+        # $out — it fails in the sandbox. Install through a staging DESTDIR
+        # so that absolute mkdir lands harmlessly in the stage, then copy
+        # just the $out subtree back. (The real /run dir is created at boot
+        # by the consumer.)
         name = "install";
         script = ''
-          make install
+          stage=$TMPDIR/cs-stage
+          make install DESTDIR="$stage"
+          mkdir -p $out
+          cp -a "$stage$out/." $out/
         '';
       }
       {
