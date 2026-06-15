@@ -6374,15 +6374,21 @@ impl Database {
     /// 2. Otherwise, when `email` is IdP-*verified* and its domain is captured
     ///    by `org_id`, the identity links to the existing user with that email
     ///    ([`IdentityLink::Linked`]).
-    /// 3. Otherwise, when `allow_jit`, a fresh user and identity are created
-    ///    ([`IdentityLink::Created`]).
+    /// 3. Otherwise, when `allow_jit`, a *fresh* user and identity are created
+    ///    ([`IdentityLink::Created`]) — JIT never reconciles onto an existing
+    ///    user by email. If the asserted email already belongs to a user, the
+    ///    login is refused (the only safe email→user link is step 2's verified
+    ///    captured-domain path); a self-hosted IdP could otherwise assert a
+    ///    victim's address and graft onto their account.
     ///
     /// Returns `Ok(None)` when no identity exists, no auto-link applies, and
     /// `allow_jit` is false — the caller rejects the login.
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error on database failure, or when `allow_jit` JIT would
+    /// collide onto a pre-existing account by email (see step 3) — the caller
+    /// maps the error to a denied login.
     pub fn link_or_create_identity(
         &self,
         issuer: &str,
@@ -6429,7 +6435,20 @@ impl Database {
             Some(addr) => addr.to_string(),
             None => format!("{subject}@{}", issuer_host(issuer)),
         };
-        let user_id = self.find_or_create_user(&user_email)?;
+        // JIT must *create* a user — never reconcile onto an existing one by
+        // email. A self-hosted IdP can assert any address, so grafting a new
+        // `(iss, sub)` onto a pre-existing account by matching email is an
+        // account-takeover primitive: the safe email→user link is step 2's
+        // verified-domain path alone. If the asserted email already belongs to
+        // a user, refuse — the account holder must capture and verify the
+        // domain to link the IdP, not have JIT silently adopt it.
+        if self.user_by_email(&user_email)?.is_some() {
+            bail!(
+                "an account with this email already exists and cannot be \
+                 just-in-time linked; verify the email's domain to link it"
+            );
+        }
+        let user_id = self.create_user(&user_email, None)?;
         self.insert_identity(issuer, subject, user_id, email, now)?;
         Ok(Some(IdentityLink::Created(user_id)))
     }
