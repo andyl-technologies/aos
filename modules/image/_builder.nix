@@ -95,8 +95,8 @@
   };
 
   ukiFilename = "aos-${name}-${version}.efi";
-in
-  pkgs.mkDerivation {
+
+  imageDrv = pkgs.mkDerivation {
     name = "aos-image-${name}";
     src = null;
 
@@ -256,4 +256,10 @@ in
         '';
       }
     ];
-  }
+  };
+in
+  # Expose the assembled UKI (the exact `.efi` written to the ESP) as a
+  # passthru attribute so callers can publish or measure it directly
+  # (RFC-0006 phase 4: `apr publish --image <uki>` derives Secure Boot
+  # facts from this signed binary).
+  imageDrv // {inherit uki;}

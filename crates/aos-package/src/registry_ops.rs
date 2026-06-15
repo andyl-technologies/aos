@@ -63,9 +63,9 @@ use crate::gitcmd;
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::nixcache;
-use crate::registry::sb_certs::{self, RevokedSbCert, SbCert, SbCertsToml};
 use crate::registry::objectstore;
 use crate::registry::pack;
+use crate::registry::sb_certs::{self, RevokedSbCert, SbCert, SbCertsToml};
 use crate::registry::state;
 use crate::registry::static_upload;
 use crate::registry::store::{self, DepEdge, NarBytes, Realisation, StoreMap, UpsertOutcome};
@@ -1746,8 +1746,9 @@ struct SbFacts {
     signer_cert_sha256: Option<String>,
     /// SBAT component/generation pairs from the PE `.sbat` section.
     sbat: Vec<SbatEntry>,
-    /// `systemd-measure`-predicted PCR-11 for this UKI (the UKI's own
-    /// contribution only; see [`extract_expected_pcr11`]).
+    /// `systemd-measure`-predicted PCR-11 over this UKI's measured sections
+    /// (the post-section, pre-phase value sd-stub seals against; see
+    /// [`extract_expected_pcr11`]).
     expected_pcr11: Option<String>,
 }
 
@@ -2090,7 +2091,9 @@ fn der_take(data: &[u8]) -> Result<(&[u8], &[u8])> {
 
 /// Decode a DER length field, returning `(length, header_byte_count)`.
 fn der_len(data: &[u8]) -> Result<(usize, usize)> {
-    let first = *data.first().ok_or_else(|| anyhow::anyhow!("missing DER length"))?;
+    let first = *data
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("missing DER length"))?;
     if first < 0x80 {
         return Ok((first as usize, 1));
     }
@@ -2191,6 +2194,58 @@ fn parse_sbat_csv(text: &str) -> Result<Vec<SbatEntry>> {
     Ok(entries)
 }
 
+/// Dump a single PE section of `uki` to a fresh temp file with `objcopy`.
+///
+/// Returns the temp file holding the section bytes, or `Ok(None)` when the
+/// section is absent (or empty). The returned handle keeps the file alive;
+/// drop it to remove the temp file.
+///
+/// # Errors
+///
+/// Returns an error if `objcopy` cannot be spawned, or fails for a reason
+/// other than the section being absent.
+fn dump_pe_section(uki: &Path, section: &str) -> Result<Option<tempfile::NamedTempFile>> {
+    let tmp = tempfile::Builder::new()
+        .prefix("aos-uki-section-")
+        .tempfile()
+        .with_context(|| format!("creating temp file for {section} dump"))?;
+    let output = Command::new("objcopy")
+        .arg("-O")
+        .arg("binary")
+        .arg(format!("--only-section={section}"))
+        .arg(uki)
+        .arg(tmp.path())
+        .output()
+        .with_context(|| {
+            format!(
+                "running objcopy --only-section={section} on {}",
+                uki.display()
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("can't dump section")
+            || stderr.contains(section)
+            || stderr.contains("no symbols")
+        {
+            return Ok(None);
+        }
+        bail!(
+            "objcopy --only-section={section} on {} failed: {}",
+            uki.display(),
+            stderr.trim()
+        );
+    }
+    // objcopy emits an empty file for an absent section rather than failing.
+    let len = fs::metadata(tmp.path())
+        .with_context(|| format!("stat-ing dumped {section} section"))?
+        .len();
+    if len == 0 {
+        return Ok(None);
+    }
+    Ok(Some(tmp))
+}
+
 /// Predict the TPM PCR-11 contribution of a UKI via `systemd-measure`.
 ///
 /// Runs `systemd-measure calculate` over the assembled UKI and returns the
@@ -2198,31 +2253,74 @@ fn parse_sbat_csv(text: &str) -> Result<Vec<SbatEntry>> {
 /// `systemd-measure` is not available, so a publish never fails merely
 /// because the measurement tool is missing.
 ///
+/// # What is measured
+///
+/// `systemd-measure` must be fed the UKI's individual PE *sections* — the
+/// same inputs sd-stub hashes into PCR 11 — not the whole UKI as a kernel
+/// image. This dumps each section sd-stub measures (`.linux`, `.osrel`,
+/// `.cmdline`, `.initrd`, `.ucode`, `.splash`, `.dtb`, `.uname`, `.sbat`,
+/// `.pcrpkey`), skipping any that are absent, and passes the present ones
+/// to `systemd-measure calculate --bank=sha256`. The result is exactly the
+/// value sd-stub leaves in PCR 11 after measuring the UKI's sections, which
+/// is also the value `ukify` signs into the `.pcrsig` policy — so a machine
+/// that boots this UKI and seals against the signed policy is sealing
+/// against this digest.
+///
 /// # Scope caveat
 ///
-/// PCR 11 on a running machine is the cumulative extension of the
-/// sd-boot/stub *boot-phase* measurements (`systemd-pcrextend`), not the
-/// UKI alone. `systemd-measure calculate` over a UKI therefore records the
-/// **UKI's own contribution**, which will not equal a machine's measured
-/// PCR 11 unless the verifier replays the remaining phase events. This
-/// value is recorded and labelled as such; downstream attestation must
-/// reconstruct the full phase sequence before asserting equality (see
-/// RFC-0006 `registry-catalog.md` and `test-plan.md` phase 3/4).
+/// This is the PCR 11 value **after section measurement, before boot-phase
+/// extension**. A running machine extends PCR 11 further as
+/// `systemd-pcrextend` records each phase (`enter-initrd`, `leave-initrd`,
+/// `sysinit`, `ready`, …). An attestation verifier comparing a live
+/// `systemd-analyze pcrs` reading must replay those phase events on top of
+/// this base; the TPM-sealed-unlock path uses the signed policy (which
+/// pins this base via PCR 11 in the relevant phase) rather than a raw
+/// equality check. See RFC-0006 `registry-catalog.md` / `measured-boot.md`.
 ///
 /// # Errors
 ///
-/// Returns an error if `systemd-measure` is found but exits non-zero, or
-/// its output cannot be parsed into a PCR-11 digest.
+/// Returns an error if `objcopy` or `systemd-measure` is found but exits
+/// non-zero, or its output cannot be parsed into a PCR-11 digest.
 fn extract_expected_pcr11(uki: &Path) -> Result<Option<String>> {
-    let output = match Command::new("systemd-measure")
-        .arg("calculate")
-        .arg(format!("--linux={}", uki.display()))
-        .output()
-    {
+    // Section name -> systemd-measure flag, in sd-stub measurement order.
+    // (systemd-measure applies its own canonical order internally, so the
+    // flag order here is not significant.)
+    const SECTIONS: &[(&str, &str)] = &[
+        (".linux", "--linux"),
+        (".osrel", "--osrel"),
+        (".cmdline", "--cmdline"),
+        (".initrd", "--initrd"),
+        (".ucode", "--ucode"),
+        (".splash", "--splash"),
+        (".dtb", "--dtb"),
+        (".uname", "--uname"),
+        (".sbat", "--sbat"),
+        (".pcrpkey", "--pcrpkey"),
+    ];
+
+    let mut cmd = Command::new("systemd-measure");
+    cmd.arg("calculate").arg("--bank=sha256");
+    // Hold the section temp files alive until systemd-measure has run.
+    let mut held = Vec::new();
+    let mut any = false;
+    for (section, flag) in SECTIONS {
+        if let Some(tmp) = dump_pe_section(uki, section)? {
+            cmd.arg(format!("{flag}={}", tmp.path().display()));
+            held.push(tmp);
+            any = true;
+        }
+    }
+    // No measurable sections (e.g. not actually a UKI) — nothing to record.
+    if !any {
+        return Ok(None);
+    }
+
+    let output = match cmd.output() {
         Ok(output) => output,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
-            return Err(err).with_context(|| format!("running systemd-measure on {}", uki.display()));
+            return Err(err)
+                .with_context(|| format!("running systemd-measure on {}", uki.display()));
         }
     };
     if !output.status.success() {
@@ -5435,11 +5533,7 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
 /// Returns an error when the registry name cannot be resolved, the clone is
 /// not writable, the catalog fails validation, the commit-signing key cannot
 /// be resolved, or the write/commit fails.
-pub fn run_sb_certs(
-    config: &ApmConfig,
-    command: &SbCertsCommand,
-    printer: &Printer,
-) -> Result<()> {
+pub fn run_sb_certs(config: &ApmConfig, command: &SbCertsCommand, printer: &Printer) -> Result<()> {
     match command {
         SbCertsCommand::List { registry } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
@@ -8293,9 +8387,18 @@ mod tests {
         assert_eq!(
             entries,
             vec![
-                SbatEntry { component: "sbat".into(), generation: 1 },
-                SbatEntry { component: "aos".into(), generation: 2 },
-                SbatEntry { component: "systemd".into(), generation: 1 },
+                SbatEntry {
+                    component: "sbat".into(),
+                    generation: 1
+                },
+                SbatEntry {
+                    component: "aos".into(),
+                    generation: 2
+                },
+                SbatEntry {
+                    component: "systemd".into(),
+                    generation: 1
+                },
             ]
         );
     }
@@ -8375,8 +8478,7 @@ mod tests {
         tail.resize(tail.len() + 16 * 8, 0);
         // Write security entry (index 4): offset + size.
         let entry_in_tail = (dir_start - pe.len()) + 4 * 8;
-        tail[entry_in_tail..entry_in_tail + 4]
-            .copy_from_slice(&(cert_off as u32).to_le_bytes());
+        tail[entry_in_tail..entry_in_tail + 4].copy_from_slice(&(cert_off as u32).to_le_bytes());
         tail[entry_in_tail + 4..entry_in_tail + 8]
             .copy_from_slice(&(win_cert.len() as u32).to_le_bytes());
         pe.extend_from_slice(&tail);
@@ -8450,7 +8552,8 @@ mod tests {
 
         let extracted = first_certificate_der(&pkcs7).unwrap();
         assert_eq!(
-            extracted, signer.as_slice(),
+            extracted,
+            signer.as_slice(),
             "signer cert (issuer 0xBB / serial 9) must be selected, not the first cert"
         );
 
