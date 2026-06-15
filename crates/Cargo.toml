@@ -101,6 +101,12 @@ semver = "1"
 
 # Registry hub (pure-Rust zlib for git loose objects; wasm-clean rust backend)
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Pure-Rust NAR decompressors used by the mirror/pull-through to verify a
+# compressed NAR's *decompressed* bytes against the signed NarHash (sec CR-1).
+# In-process (no subprocess) so the verification path cannot be subverted by a
+# missing/hijacked external binary, and pure-Rust to stay wasm-clean.
+lzma-rs = "0.3"
+bzip2-rs = "0.1"
 
 # Dev
 tempfile = "3"

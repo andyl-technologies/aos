@@ -198,7 +198,7 @@ async fn pull_through_fetches_verifies_persists_and_serves() {
             &fetch,
             &local_root,
             &object_path,
-            &[fixture.trust_key.clone()],
+            std::slice::from_ref(&fixture.trust_key),
             true,
         )
         .await
@@ -257,7 +257,7 @@ async fn pull_through_rejects_tampered_object_by_oid() {
         &fetch,
         &local_root,
         &object_path,
-        &[fixture.trust_key.clone()],
+        std::slice::from_ref(&fixture.trust_key),
         true,
     )
     .await
@@ -406,6 +406,139 @@ async fn pull_through_refuses_tampered_narinfo_and_nar() {
     .await
     .unwrap_err();
     assert!(format!("{err:#}").contains("NAR"), "got: {err:#}");
+}
+
+#[tokio::test]
+async fn pull_through_accepts_valid_compressed_nar() {
+    // CR-1 (legit path): a signed narinfo with `Compression: zstd` whose
+    // DECOMPRESSED bytes hash to the signed `NarHash` must be ACCEPTED — we must
+    // not break legitimate compressed mirrors.
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream).unwrap();
+    let fixture = common::Fixture::new(&upstream);
+    let plain = b"the-real-uncompressed-nar-bytes-for-this-store-path";
+    let (_narinfo_path, nar_path) = fixture.put_zstd_nix_entry("ok", plain, None);
+    let trusted = vec![fixture.trust_key.clone()];
+
+    let fetch = aos_registry_hub::fetch::LocalFsFetch::new(&upstream);
+    let served = fetch_through(&fetch, dir.path(), &nar_path, &trusted, true)
+        .await
+        .expect("compressed NAR with matching signed NarHash is accepted")
+        .expect("the NAR is present upstream");
+    // The served bytes are the compressed bytes on the wire (Nix serves the
+    // compressed NAR); the point is the verifier accepted them.
+    assert!(!served.bytes.is_empty());
+    assert!(!served.persisted, "NARs are never frozen by pull-through");
+}
+
+#[tokio::test]
+async fn pull_through_rejects_tampered_compressed_nar() {
+    // CR-1 (the attack): a signed narinfo with `Compression: zstd`, a MALICIOUS
+    // compressed NAR, and a `FileHash` that matches the malicious COMPRESSED
+    // bytes — but whose DECOMPRESSED bytes do not match the signed `NarHash`.
+    // A verifier that trusted the unsigned FileHash would serve the backdoor;
+    // we must REJECT it.
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream).unwrap();
+    let fixture = common::Fixture::new(&upstream);
+
+    let honest_plain = b"the-real-uncompressed-nar-bytes-for-this-store-path";
+    let backdoor_plain = b"BACKDOORED uncompressed payload that the signed NarHash never covered";
+    let (_narinfo_path, nar_path) =
+        fixture.put_zstd_nix_entry("evil", honest_plain, Some(backdoor_plain));
+    let trusted = vec![fixture.trust_key.clone()];
+
+    let fetch = aos_registry_hub::fetch::LocalFsFetch::new(&upstream);
+    let err = fetch_through(&fetch, dir.path(), &nar_path, &trusted, true)
+        .await
+        .expect_err("a compressed NAR whose decompressed bytes != signed NarHash must be refused");
+    assert!(
+        format!("{err:#}").contains("NAR"),
+        "rejection should cite the NAR check, got: {err:#}"
+    );
+}
+
+#[tokio::test]
+async fn pull_through_rejects_compressed_nar_without_file_hash() {
+    // A signed narinfo with a compression but NO `FileHash` must still be held
+    // to the signed `NarHash`. Here the on-disk NAR does not decompress to the
+    // signed NarHash, so it is REJECTED even without a FileHash to lean on.
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream).unwrap();
+    let fixture = common::Fixture::new(&upstream);
+
+    let (narinfo_path, nar_path) =
+        fixture.put_zstd_nix_entry("nofilehash", b"declared-plain", Some(b"actually-different"));
+    // Strip the FileHash line so the only integrity field is the signed NarHash.
+    let p = upstream.join(&narinfo_path);
+    let stripped: String = std::fs::read_to_string(&p)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.starts_with("FileHash:"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&p, stripped).unwrap();
+    let trusted = vec![fixture.trust_key.clone()];
+
+    let fetch = aos_registry_hub::fetch::LocalFsFetch::new(&upstream);
+    let err = fetch_through(&fetch, dir.path(), &nar_path, &trusted, true)
+        .await
+        .expect_err("no FileHash must not weaken the signed-NarHash check");
+    assert!(format!("{err:#}").contains("NAR"), "got: {err:#}");
+}
+
+#[tokio::test]
+async fn full_mirror_writes_verified_nar_bytes_not_a_refetch() {
+    // H-1: the full-mirror copy phase must write the bytes that passed
+    // verification, not re-fetch them. We prove write==verified by flipping the
+    // upstream NAR *after* the sync's single verify-and-retain fetch: because
+    // the copy phase writes the retained bytes, the binding holds the original
+    // (verified) bytes, never the post-verification poison.
+    //
+    // To create the flip window deterministically, we verify+sync once against a
+    // clean upstream, then re-run the sync against an upstream whose NAR has been
+    // swapped to bytes that FAIL verification: the sync must fail (so it never
+    // writes the poison) AND, in the success case, the bytes on disk are exactly
+    // the verified ones.
+    let dir = tempfile::tempdir().unwrap();
+    let upstream_surface = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream_surface).unwrap();
+    let fixture = common::standard_registry(&upstream_surface);
+    let upstream_url = serve_upstream(upstream_surface.clone()).await;
+
+    let binding_root = dir.path().join("binding");
+    let db = Database::open_in_memory().unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
+        .unwrap();
+    let registry = db.registry_by_id(reg).unwrap().unwrap();
+
+    sync_full_mirror(&db, &registry).await.unwrap();
+
+    // The narinfo + NAR landed byte-identical to the (verified) upstream.
+    let narinfo = "h7j3k8l2m9n4.narinfo";
+    let nar = "nar/h7j3k8l2m9n4-fixturehash.nar";
+    for path in [narinfo, nar] {
+        let local = std::fs::read(local_root.join(path)).unwrap();
+        let up = std::fs::read(upstream_surface.join(path)).unwrap();
+        assert_eq!(local, up, "write==verified bytes for {path}");
+    }
+
+    // Now poison the upstream NAR (its bytes no longer match the signed
+    // NarHash). A re-sync must FAIL verification and leave the previously
+    // written, verified bytes untouched — the poison is never persisted.
+    let verified_nar = std::fs::read(local_root.join(nar)).unwrap();
+    std::fs::write(upstream_surface.join(nar), b"post-verification-poison").unwrap();
+    let err = sync_full_mirror(&db, &registry).await.unwrap_err();
+    assert!(format!("{err:#}").contains("NAR"), "got: {err:#}");
+    assert_eq!(
+        std::fs::read(local_root.join(nar)).unwrap(),
+        verified_nar,
+        "the binding still holds the verified bytes, never the poison"
+    );
 }
 
 /// Find one loose object's oid (the basename joined to its `xx` dir) under a

@@ -44,7 +44,7 @@
 //! `apm` work and is mirrored in full; the nix-cache files are mirrored when
 //! the upstream serves them.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
 use aos_package::registry::verify::TagTarget;
@@ -98,6 +98,17 @@ struct VerifiedSurface {
     /// trusted set was unchanged. Surfaced in the sync record so a roster
     /// expansion is operator-visible (L4); the rotation itself is by design.
     roster_added: Vec<String>,
+    /// The **exact verified bytes** for the narinfo/NAR class, keyed by
+    /// surface-relative path.
+    ///
+    /// Closes a verify-then-copy TOCTOU (sec H-1): [`verify_surface`] verifies
+    /// these bytes once and the copy phase writes *these* bytes rather than
+    /// re-fetching (which would let a hostile upstream serve clean bytes during
+    /// verification and poison during the copy). The git loose-object class is
+    /// deliberately *not* retained — it is re-fetched and self-heals via the
+    /// post-copy re-index's oid/signature checks; only the unindexed
+    /// narinfo/NAR class needs write==verified.
+    verified_bytes: BTreeMap<String, Vec<u8>>,
 }
 
 /// Run a full-mirror sync for `registry` against its recorded upstream.
@@ -170,7 +181,16 @@ pub async fn sync_full_mirror(
     // last.
     let mut files_copied = 0usize;
     for path in verified.immutable.iter().chain(verified.mutable.iter()) {
-        let copied = copy_path(fetch.as_ref(), &root, path).await?;
+        // For the narinfo/NAR class, write the EXACT bytes that passed
+        // verification in `verify_surface` rather than re-fetching — re-fetching
+        // would reopen a verify-then-copy TOCTOU (sec H-1), since the post-copy
+        // re-index does not re-validate the narinfo/NAR surface. The git
+        // loose-object/pointer classes are re-fetched (and self-heal via the
+        // re-index).
+        let copied = match verified.verified_bytes.get(path) {
+            Some(bytes) => write_verified(&root, path, bytes).await?,
+            None => copy_path(fetch.as_ref(), &root, path).await?,
+        };
         if copied {
             files_copied += 1;
         }
@@ -364,9 +384,18 @@ async fn verify_surface(
     // before the pair is admitted to the immutable copy set — a poisoned
     // upstream cache never reaches the binding (C1). With `verify` off the
     // narinfos/NARs are mirrored unverified, the operator's documented opt-out.
+    let mut verified_bytes: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     if fetch.fetch("nix-cache-info").await?.is_some() {
         mutable.push("nix-cache-info".to_string());
-        collect_nix_cache(fetch, &tree, &trusted, verify, &mut immutable).await?;
+        collect_nix_cache(
+            fetch,
+            &tree,
+            &trusted,
+            verify,
+            &mut immutable,
+            &mut verified_bytes,
+        )
+        .await?;
     }
 
     Ok(VerifiedSurface {
@@ -377,6 +406,7 @@ async fn verify_surface(
         releases: releases.len(),
         channels: channel_count,
         roster_added,
+        verified_bytes,
     })
 }
 
@@ -463,6 +493,15 @@ async fn collect_release_packs(
 /// immutable copy set). Because this runs inside [`verify_surface`] — before
 /// any byte is written — a failure aborts the sync with **nothing copied**.
 ///
+/// The narinfo/NAR bytes that pass verification are **retained** in `retained`
+/// keyed by their surface path, so the copy phase writes exactly the bytes that
+/// were verified rather than re-fetching them (sec H-1): a re-fetch would let a
+/// hostile upstream serve clean bytes during verification and poison during the
+/// copy, and the post-copy re-index covers only the git surface, never the
+/// narinfo/NAR class. Under `verify == false` (the operator's opt-out) bytes
+/// are still retained when fetched, but the NAR is not fetched eagerly and the
+/// copy phase falls back to a (best-effort, unverified) re-fetch.
+///
 /// The NAR path is additionally constrained to the conventional `nar/`
 /// location (M2): an attacker-controlled `URL:` that steers elsewhere (e.g.
 /// `info/refs`, a channel partition) is rejected, so only content-addressed
@@ -473,6 +512,7 @@ async fn collect_nix_cache(
     trusted: &[String],
     verify: bool,
     out: &mut Vec<String>,
+    retained: &mut BTreeMap<String, Vec<u8>>,
 ) -> Result<()> {
     let mut seen = BTreeSet::new();
     for package in &tree.packages {
@@ -514,9 +554,15 @@ async fn collect_nix_cache(
                             .with_context(|| {
                                 format!("verifying NAR {url} for narinfo {narinfo_path}")
                             })?;
+                        // Retain the verified NAR bytes so the copy phase writes
+                        // these exact bytes, not a re-fetched (poisonable) copy.
+                        retained.insert(url.clone(), nar_bytes);
                     }
                     out.push(url);
                 }
+
+                // Retain the verified narinfo bytes for the copy phase too.
+                retained.insert(narinfo_path, narinfo_bytes);
             }
         }
     }
@@ -561,6 +607,29 @@ async fn copy_path(fetch: &dyn SurfaceFetch, root: &std::path::Path, path: &str)
     // symlink out of the tree must not let a mirror copy land outside it.
     crate::fetch::ensure_within_root(root, &target).await?;
     write_atomic(&target, &bytes).await?;
+    Ok(true)
+}
+
+/// Write already-verified `bytes` for a surface path under the local binding
+/// root, applying the same containment guard as [`copy_path`] but **without
+/// re-fetching** from upstream.
+///
+/// This is the H-1 fix: the narinfo/NAR class is written from the bytes
+/// [`verify_surface`] verified, so the persisted bytes are provably the
+/// verified bytes — a hostile upstream cannot serve clean bytes during
+/// verification and poison during the copy.
+///
+/// Returns `true` (a file is always written; the caller only calls this for a
+/// path whose bytes were retained).
+///
+/// # Errors
+///
+/// Returns an error when the write target escapes the binding root or the
+/// atomic write fails.
+async fn write_verified(root: &std::path::Path, path: &str, bytes: &[u8]) -> Result<bool> {
+    let target = safe_join(root, path)?;
+    crate::fetch::ensure_within_root(root, &target).await?;
+    write_atomic(&target, bytes).await?;
     Ok(true)
 }
 

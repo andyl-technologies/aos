@@ -865,49 +865,195 @@ fn narinfo_field(text: &str, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// Verify downloaded NAR `bytes` against the hashes a narinfo declares.
+/// Verify downloaded NAR `bytes` against the **signed** `NarHash` a narinfo
+/// declares, decompressing per its `Compression:` field first.
 ///
-/// Prefers `FileHash` (the hash of the compressed NAR as stored, which is what
-/// is downloaded); falls back to `NarHash` only when the NAR is uncompressed
-/// (`Compression: none`), since `NarHash` is over the uncompressed bytes.
+/// # Why the signed `NarHash` is authoritative
 ///
-/// The check **fails closed**: a declared hash whose encoding cannot be parsed
-/// (`sha256_hash_matches` returns `None`) does not short-circuit to
-/// [`DeepCheck::Ok`] — instead it falls through to the next available hash. If
-/// the narinfo declares *some* hash but none of them can be parsed and matched,
-/// the result is [`DeepCheck::Corrupt`]: a payload whose declared integrity is
-/// uncheckable is treated as a finding, not silently accepted. Only a narinfo
-/// that declares **no** integrity field at all is [`DeepCheck::Ok`] (there is
-/// genuinely nothing to refute).
+/// A narinfo's Ed25519 `Sig:` covers **only** the fingerprint
+/// `1;<StorePath>;<NarHash>;<NarSize>;<refs>` — `FileHash`, `FileSize`, `URL`,
+/// and `Compression` are *unsigned*. An adversary who keeps a genuinely-signed
+/// narinfo's signed fields can still set `Compression: zstd` plus an
+/// attacker-chosen `URL`/`FileHash` describing a backdoored compressed NAR. The
+/// only field a downloaded NAR can be held to without a private key is the
+/// signed `NarHash`, which is the hash of the **uncompressed** NAR. So the
+/// authoritative check is: decompress `bytes` per the declared `Compression`
+/// and confirm the result hashes to the signed `NarHash` (sec CR-1).
+///
+/// `FileHash` (the hash of the compressed bytes) is used only as an optional
+/// cheap pre-screen — never as the sole or authoritative check — and a
+/// `FileHash` mismatch alone is enough to reject (it means the served bytes are
+/// not even the bytes the narinfo describes).
+///
+/// # Fail-closed contract
+///
+/// Returns [`DeepCheck::Corrupt`] (reject) when any of the following holds:
+///
+/// - the narinfo declares **no** parseable signed `NarHash` (nothing trustworthy
+///   to check against — an unsigned-integrity payload is not accepted on a
+///   trust path);
+/// - the declared `Compression` is one this hub cannot decompress, or is
+///   missing/unparseable (a missing `Compression` is treated conservatively as
+///   *not* `none`);
+/// - decompression fails, or the decompressed stream would exceed
+///   [`MAX_NAR_BYTES`](crate::fetch::MAX_NAR_BYTES) (decompression-bomb guard);
+/// - an optional `FileHash` is present but does not match the compressed bytes;
+/// - the decompressed bytes do not match the signed `NarHash`.
+///
+/// Returns [`DeepCheck::Ok`] only when the decompressed bytes match the signed
+/// `NarHash` (and any present `FileHash` matched the compressed bytes).
 fn verify_nar_bytes(narinfo: &str, bytes: &[u8]) -> DeepCheck {
-    let digest = Sha256::digest(bytes);
-    let file_hash = narinfo_field(narinfo, "FileHash");
-    // `NarHash` only applies to the raw bytes when the NAR is uncompressed.
-    let uncompressed = narinfo_field(narinfo, "Compression")
-        .map(|c| c == "none")
-        .unwrap_or(true);
-    let nar_hash = if uncompressed {
-        narinfo_field(narinfo, "NarHash")
-    } else {
-        None
+    // The signed NarHash is the only field an adversary cannot forge without a
+    // trusted key. A narinfo that declares no parseable NarHash gives us
+    // nothing trustworthy to check; reject rather than fall back to the
+    // unsigned FileHash (sec CR-1).
+    let Some(nar_hash) = narinfo_field(narinfo, "NarHash") else {
+        return DeepCheck::Corrupt;
     };
 
-    // No usable integrity field at all: nothing to refute.
-    if file_hash.is_none() && nar_hash.is_none() {
-        return DeepCheck::Ok;
-    }
-
-    // A definite match on any declared hash confirms integrity; an
-    // unparseable declared hash is *not* a pass — fall through to the next.
-    for declared in [file_hash, nar_hash].into_iter().flatten() {
-        match sha256_hash_matches(&declared, &digest) {
-            Some(true) => return DeepCheck::Ok,
-            Some(false) => return DeepCheck::Corrupt,
-            None => continue,
+    // Optional cheap pre-screen: if FileHash is present it must match the
+    // compressed bytes we were handed. A mismatch means the served payload is
+    // not even what the narinfo describes — reject early. (FileHash is unsigned,
+    // so a *match* proves nothing on its own; it is never the sole check.)
+    if let Some(file_hash) = narinfo_field(narinfo, "FileHash") {
+        let compressed_digest = Sha256::digest(bytes);
+        if matches!(
+            sha256_hash_matches(&file_hash, &compressed_digest),
+            Some(false)
+        ) {
+            return DeepCheck::Corrupt;
         }
     }
-    // A hash was declared but none could be parsed and matched: fail closed.
-    DeepCheck::Corrupt
+
+    // Decompress per the declared Compression (missing/unsupported => reject),
+    // bounding the output to guard against a decompression bomb.
+    let Some(compression) = nar_compression(narinfo) else {
+        // Missing or unparseable Compression: fail closed rather than guess.
+        return DeepCheck::Corrupt;
+    };
+    let Ok(plain) =
+        decompress_nar_bounded(bytes, compression, crate::fetch::MAX_NAR_BYTES as usize)
+    else {
+        return DeepCheck::Corrupt;
+    };
+
+    // The decompressed bytes must hash to the SIGNED NarHash.
+    let nar_digest = Sha256::digest(&plain);
+    match sha256_hash_matches(&nar_hash, &nar_digest) {
+        Some(true) => DeepCheck::Ok,
+        // A mismatch, or a NarHash whose encoding we cannot parse, both fail
+        // closed: a payload whose signed integrity is uncheckable is rejected.
+        Some(false) | None => DeepCheck::Corrupt,
+    }
+}
+
+/// The NAR compression algorithm a narinfo declares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NarCompression {
+    /// `Compression: none` (or `""`): the NAR bytes are the uncompressed NAR.
+    None,
+    /// `Compression: zstd`.
+    Zstd,
+    /// `Compression: xz` (or `lzma`): XZ container / raw LZMA stream.
+    Xz,
+    /// `Compression: bzip2`.
+    Bzip2,
+    /// `Compression: gzip` (or `gz`).
+    Gzip,
+}
+
+/// Parse a narinfo's `Compression:` field into a [`NarCompression`].
+///
+/// Returns `None` when the field is **absent** or names a codec this hub
+/// cannot decompress. A missing field is treated conservatively as unknown
+/// (not `none`): the signature does not cover `Compression`, so a NAR served
+/// without one cannot be assumed uncompressed — the caller fails closed.
+fn nar_compression(narinfo: &str) -> Option<NarCompression> {
+    match narinfo_field(narinfo, "Compression")?.as_str() {
+        "none" | "" => Some(NarCompression::None),
+        "zstd" => Some(NarCompression::Zstd),
+        "xz" | "lzma" => Some(NarCompression::Xz),
+        "bzip2" => Some(NarCompression::Bzip2),
+        "gzip" | "gz" => Some(NarCompression::Gzip),
+        _ => None,
+    }
+}
+
+/// Decompress `bytes` per `compression`, refusing to produce more than `cap`
+/// output bytes (a decompression-bomb guard).
+///
+/// All codecs are decoded **in-process** (no subprocess): a verification path
+/// must not depend on an external `xz`/`bzip2` binary that could be missing or
+/// hijacked. `zstd` uses the RustCrypto-adjacent `zstd` crate; `xz`/`lzma`,
+/// `bzip2`, and `gzip` use pure-Rust decoders.
+///
+/// # Errors
+///
+/// Returns an error when the input is not valid for the named codec or when
+/// the decompressed stream would exceed `cap` bytes.
+fn decompress_nar_bounded(
+    bytes: &[u8],
+    compression: NarCompression,
+    cap: usize,
+) -> Result<Vec<u8>> {
+    match compression {
+        NarCompression::None => {
+            if bytes.len() > cap {
+                anyhow::bail!("NAR exceeds the {cap}-byte size cap");
+            }
+            Ok(bytes.to_vec())
+        }
+        NarCompression::Zstd => {
+            let decoder = zstd::Decoder::new(bytes).context("opening zstd NAR decoder")?;
+            read_to_end_bounded(decoder, cap)
+        }
+        NarCompression::Xz => {
+            // `lzma-rs` writes into a Vec; bound it after the fact (it does not
+            // expose a streaming reader). The XZ container is the modern Nix
+            // form; fall back to the legacy raw-LZMA decoder if the XZ magic is
+            // absent.
+            let mut out = Vec::new();
+            let mut input = std::io::Cursor::new(bytes);
+            if lzma_rs::xz_decompress(&mut input, &mut out).is_err() {
+                out.clear();
+                let mut input = std::io::Cursor::new(bytes);
+                lzma_rs::lzma_decompress(&mut input, &mut out)
+                    .context("decompressing xz/lzma NAR")?;
+            }
+            if out.len() > cap {
+                anyhow::bail!("decompressed NAR exceeds the {cap}-byte size cap");
+            }
+            Ok(out)
+        }
+        NarCompression::Bzip2 => {
+            let decoder = bzip2_rs::DecoderReader::new(bytes);
+            read_to_end_bounded(decoder, cap)
+        }
+        NarCompression::Gzip => {
+            let decoder = flate2::read::GzDecoder::new(bytes);
+            read_to_end_bounded(decoder, cap)
+        }
+    }
+    .map_err(|err: anyhow::Error| err)
+}
+
+/// Read a decoder to end, erroring once it produces more than `cap` bytes.
+///
+/// `Read::take(cap + 1)` caps the work the decoder does, then a length check
+/// distinguishes a stream that exactly fits from one that overflows.
+fn read_to_end_bounded<R: std::io::Read>(reader: R, cap: usize) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut out = Vec::new();
+    // Bound the bytes pulled from the decoder so a bomb cannot exhaust memory.
+    let limit = (cap as u64).saturating_add(1);
+    reader
+        .take(limit)
+        .read_to_end(&mut out)
+        .context("decompressing NAR")?;
+    if out.len() > cap {
+        anyhow::bail!("decompressed NAR exceeds the {cap}-byte size cap");
+    }
+    Ok(out)
 }
 
 /// Verify that a narinfo carries at least one valid Ed25519 `Sig:` by a key
@@ -1018,25 +1164,27 @@ pub fn verify_narinfo_signature(narinfo: &str, trusted_keys: &[String]) -> Resul
     )
 }
 
-/// Verify downloaded NAR `bytes` against the hashes a narinfo declares,
-/// returning an error on a mismatch (the public, fail-on-corrupt wrapper of
-/// [`verify_nar_bytes`]).
+/// Verify downloaded NAR `bytes` against the **signed** `NarHash` a narinfo
+/// declares (the public, fail-on-corrupt wrapper of [`verify_nar_bytes`]).
 ///
-/// Used by the mirror sync and pull-through paths, which must *reject* a NAR
-/// whose bytes do not match the (now signature-verified) narinfo rather than
-/// merely flag it. Mirrors the semantics of [`verify_nar_bytes`]: a narinfo
-/// declaring no integrity field at all is accepted (there is nothing to
-/// refute), but a declared-yet-unmatchable hash fails closed.
+/// Used by the mirror sync and pull-through trust paths, which must *reject* a
+/// NAR whose decompressed bytes do not match the (signature-verified) narinfo's
+/// signed `NarHash` rather than merely flag it. Fully fail-closed (sec CR-1):
+/// a NAR with no parseable signed `NarHash`, an unsupported/missing
+/// `Compression`, a decompression failure, or a hash mismatch all error.
 ///
 /// # Errors
 ///
-/// Returns an error when the NAR bytes do not match a declared `FileHash`/
-/// `NarHash`, or when an integrity field is declared but cannot be parsed and
-/// matched.
+/// Returns an error when the decompressed NAR bytes do not match the signed
+/// `NarHash`, when the narinfo declares no parseable signed `NarHash`, when the
+/// `Compression` is missing or unsupported, or when decompression fails or
+/// overflows the size cap.
 pub fn verify_nar_against_narinfo(narinfo: &str, bytes: &[u8]) -> Result<()> {
     match verify_nar_bytes(narinfo, bytes) {
         DeepCheck::Ok => Ok(()),
-        DeepCheck::Corrupt => anyhow::bail!("NAR bytes do not match the narinfo's declared hash"),
+        DeepCheck::Corrupt => anyhow::bail!(
+            "NAR bytes do not verify against the narinfo's signed NarHash (after decompression)"
+        ),
         // `verify_nar_bytes` never returns `Missing` (it only inspects the
         // bytes it was handed); treat it as a corrupt finding defensively.
         DeepCheck::Missing => anyhow::bail!("NAR integrity could not be established"),
@@ -1181,8 +1329,8 @@ enum DeepCheck {
 }
 
 /// Deep check for a `file://` cache: verify the narinfo's `Sig:` against the
-/// trust roster, then read the NAR the narinfo names and verify its content
-/// hash against the declared `FileHash` (falling back to `NarHash`).
+/// trust roster, then read the NAR the narinfo names and verify its
+/// decompressed bytes against the signed `NarHash` (see [`verify_nar_bytes`]).
 ///
 /// The signature check is what makes a green deep result mean *authenticity*,
 /// not just internal consistency: an adversary controlling both the narinfo
@@ -1531,9 +1679,11 @@ mod tests {
             DeepCheck::Corrupt
         ));
 
-        // No integrity field at all: nothing to refute -> Ok.
+        // No *signed* NarHash at all: there is nothing trustworthy to check, so
+        // the trust path fails closed rather than accepting an unsigned payload
+        // (sec CR-1). (Pre-CR-1 this returned `Ok`.)
         let none = "StorePath: /x\nCompression: none\n";
-        assert!(matches!(verify_nar_bytes(none, bytes), DeepCheck::Ok));
+        assert!(matches!(verify_nar_bytes(none, bytes), DeepCheck::Corrupt));
     }
 
     #[tokio::test]
