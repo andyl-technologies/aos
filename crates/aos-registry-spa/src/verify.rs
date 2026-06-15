@@ -89,8 +89,13 @@ impl VerifiedBadge {
 /// any active key whose `id` also appears under `[[revoked]]`. This mirrors
 /// the roster semantics `aos_package::registry::keys` enforces: the trust
 /// anchor is the active set minus revocations. A deliberately tiny scanner
-/// (the SPA ships no TOML parser) — it reads `[[active]]` / `[[revoked]]`
+/// (the SPA ships no TOML parser) — it reads `[[keys]]` / `[[revoked]]`
 /// tables and their `id` / `key` string values, ignoring everything else.
+///
+/// The active table is spelled `[[keys]]` to match the on-disk format the
+/// server writes and reads: `aos_package::registry::keys::KeysToml` declares
+/// its active vector as `#[serde(rename = "keys")]`, so a real committed
+/// `keys.toml` lists active keys under `[[keys]]`, never `[[active]]`.
 ///
 /// # Errors
 ///
@@ -116,7 +121,7 @@ pub fn roster_keys(keys_toml: &str) -> Result<Vec<String>> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if line == "[[active]]" {
+        if line == "[[keys]]" {
             table = 1;
             active.push(Entry::default());
             continue;
@@ -294,11 +299,11 @@ mod tests {
     const ROSTER: &str = r#"
 schema = 1
 
-[[active]]
+[[keys]]
 id = "root"
 key = "PLACEHOLDER"
 
-[[active]]
+[[keys]]
 id = "ci"
 key = "PLACEHOLDER_CI"
 
@@ -319,11 +324,50 @@ reason = "rotated"
 
     #[test]
     fn roster_keys_handles_single_quotes_and_no_revocations() {
-        let toml = "[[active]]\nid = 'only'\nkey = 'aos:Ed25519:K'\n";
+        let toml = "[[keys]]\nid = 'only'\nkey = 'aos:Ed25519:K'\n";
         assert_eq!(
             roster_keys(toml).unwrap(),
             vec!["aos:Ed25519:K".to_string()]
         );
+    }
+
+    /// Cross-format regression: the SPA scanner must accept the *exact*
+    /// bytes the server writer (`aos_package::registry::keys::write_keys_toml`
+    /// via `toml::to_string_pretty`, and the hub seed at `seed.rs`) produces.
+    ///
+    /// Both server paths spell the active table `[[keys]]` (the serde
+    /// `rename = "keys"` on `KeysToml::active`). This fixture replicates the
+    /// hub seed's literal blob format
+    /// (`"schema = 1\n\n[[keys]]\nid = \"…\"\nkey = \"…\"\n"`, see
+    /// `seed.rs` ~288) plus a `[[revoked]]` table, and asserts the scanner
+    /// recovers the same trusted set the server's `KeysToml` deserialization
+    /// yields: the active keys minus revocations. Before the `[[active]]` →
+    /// `[[keys]]` fix this returned an empty set against every real registry.
+    #[test]
+    fn roster_keys_matches_server_keys_table_spelling() {
+        // The exact wire shape produced by the hub seed writer (seed.rs),
+        // extended with a second key and a revocation so the active-minus-
+        // revoked semantics are exercised against the real table name.
+        let keys_toml = concat!(
+            "schema = 1\n",
+            "\n",
+            "[[keys]]\n",
+            "id = \"maintainer\"\n",
+            "key = \"aos-core:Ed25519:bWFpbnRhaW5lcg==\"\n",
+            "\n",
+            "[[keys]]\n",
+            "id = \"ci\"\n",
+            "key = \"aos-core:Ed25519:Y2k=\"\n",
+            "\n",
+            "[[revoked]]\n",
+            "id = \"ci\"\n",
+            "reason = \"rotated out\"\n",
+        );
+
+        let keys = roster_keys(keys_toml).unwrap();
+        // The revoked `ci` key is dropped; only the active `maintainer`
+        // key remains trusted — the same set the server roster computes.
+        assert_eq!(keys, vec!["aos-core:Ed25519:bWFpbnRhaW5lcg==".to_string()]);
     }
 
     /// An in-memory surface: a path → bytes map.
@@ -343,7 +387,7 @@ reason = "rotated"
         let trusted = sshsig::trusted_key_line("root", &key.verifying_key());
 
         // keys.toml blob.
-        let keys_toml = format!("schema = 1\n\n[[active]]\nid = \"root\"\nkey = \"{trusted}\"\n");
+        let keys_toml = format!("schema = 1\n\n[[keys]]\nid = \"root\"\nkey = \"{trusted}\"\n");
         let keys_blob = keys_toml.into_bytes();
         let keys_oid = hash_object(ObjectKind::Blob, &keys_blob);
 

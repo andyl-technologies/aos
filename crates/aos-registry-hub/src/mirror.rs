@@ -532,7 +532,11 @@ async fn collect_release_packs(
 ///    roster, extended by the verified in-band roster) with
 ///    [`crate::validation::verify_narinfo_signature`]. A narinfo with no valid
 ///    trusted signature **fails the whole sync** — a mirror is a byte courier,
-///    not a trust party, so it must not launder an unsigned/forged narinfo.
+///    not a trust party, so it must not launder an unsigned/forged narinfo. The
+///    narinfo's signed `StorePath` hash is then bound to the `<hash>` it was
+///    fetched under (sec M-5): a genuinely-signed narinfo for a *different*
+///    store hash served at this path is a substitution and **fails the sync**,
+///    because the path a narinfo is served at is not covered by its signature.
 /// 2. The NAR the (now-trusted) narinfo names is fetched and its bytes verified
 ///    against the narinfo's `FileHash`/`NarHash`
 ///    ([`crate::validation::verify_nar_against_narinfo`]). A mismatch **fails
@@ -588,6 +592,27 @@ async fn collect_nix_cache(
                 if verify {
                     crate::validation::verify_narinfo_signature(narinfo, trusted)
                         .with_context(|| format!("verifying narinfo {narinfo_path}"))?;
+                    // Bind the signed narinfo's `StorePath` hash to the `<hash>`
+                    // we fetched it under (sec M-5). `verify_narinfo_signature`
+                    // only attests that some trusted key signed the narinfo's own
+                    // StorePath; it does not bind that store path to `{hash}`.
+                    // Without this a hostile upstream serves a genuinely-signed
+                    // narinfo for store hash HASHY at the path `HASHX.narinfo`,
+                    // laundering HASHY's content into HASHX's binding slot — the
+                    // signed fingerprint covers StorePath but the path it is
+                    // served at is not part of any signature. Mirrors the
+                    // pull-through NAR/Narinfo branches' requested-hash binding.
+                    let parsed = aos_core::nar::info::parse(narinfo)
+                        .with_context(|| format!("parsing narinfo {narinfo_path} for hash binding"))?;
+                    let declared_hash = aos_core::nar::info::store_hash(&parsed.store_path);
+                    if declared_hash != hash {
+                        bail!(
+                            "narinfo {narinfo_path} declares StorePath {} (hash \
+                             {declared_hash}), which does not match the requested \
+                             store hash {hash}; refusing substitution",
+                            parsed.store_path
+                        );
+                    }
                 }
 
                 out.push(narinfo_path.clone());
@@ -868,8 +893,10 @@ pub async fn fetch_through(
             // verify the NAR bytes against it. Without the narinfo we cannot
             // establish the NAR's expected hash, so we refuse rather than proxy.
             if verify {
-                let narinfo_path = narinfo_path_for_nar(path)
-                    .with_context(|| format!("cannot derive narinfo path for pulled NAR {path}"))?;
+                let (narinfo_path, requested_store_hash) =
+                    narinfo_path_and_store_hash_for_nar(path).with_context(|| {
+                        format!("cannot derive narinfo path for pulled NAR {path}")
+                    })?;
                 let narinfo_bytes = fetch.fetch(&narinfo_path).await?.with_context(|| {
                     format!("narinfo {narinfo_path} for pulled NAR {path} is missing upstream")
                 })?;
@@ -877,13 +904,27 @@ pub async fn fetch_through(
                     .with_context(|| format!("narinfo {narinfo_path} is not UTF-8"))?;
                 crate::validation::verify_narinfo_signature(narinfo, trusted_keys)
                     .with_context(|| format!("verifying narinfo {narinfo_path} for NAR {path}"))?;
-                // Bind the governing narinfo to the requested NAR path (sec
-                // M-5): a request for `nar/X` must only be answered with the NAR
-                // its narinfo's `URL:` actually names. Otherwise a hostile
-                // upstream could serve `nar/Y` (a trusted-signed but different,
-                // possibly older/vulnerable NAR) under the name `nar/X`. The
-                // narinfo derived above is `<store-hash>.narinfo`, so this also
-                // confirms the served NAR belongs to the requested store hash.
+                // Bind the governing narinfo to the requested store hash AND the
+                // requested NAR path (sec M-5). Two independent bindings, because
+                // the signed fingerprint covers StorePath/NarHash/NarSize/
+                // References but NOT the `URL:` field — `URL:` is unsigned and
+                // attacker-malleable.
+                //
+                // 1. StorePath binding: the narinfo's signed `StorePath` hash
+                //    MUST equal the `<store-hash>` named by the requested
+                //    `nar/<store-hash>-...` path. Without it a hostile upstream
+                //    takes packageA's genuinely-signed narinfo (store hash
+                //    HASHY), rewrites only its unsigned `URL:` to
+                //    `nar/HASHX-...`, and serves it at `HASHX.narinfo`; the
+                //    signature still verifies (it attests A) and the URL binding
+                //    below still passes (URL: == requested), so A's content is
+                //    served under HASHX. This check makes the served NAR
+                //    *provably* belong to the requested store hash — matching the
+                //    sibling Narinfo branch's `assert_narinfo_matches_requested`.
+                // 2. URL binding: a request for `nar/X` is only answered with the
+                //    NAR its narinfo's `URL:` actually names, so a trusted-signed
+                //    but different NAR (`nar/Y`) cannot be served under `nar/X`.
+                assert_nar_store_hash_matches_requested(path, narinfo, requested_store_hash)?;
                 assert_nar_matches_requested(path, narinfo)?;
                 crate::validation::verify_nar_against_narinfo(narinfo, &bytes)
                     .with_context(|| format!("verifying pulled NAR {path}"))?;
@@ -963,19 +1004,63 @@ fn assert_nar_matches_requested(path: &str, narinfo: &str) -> Result<()> {
     Ok(())
 }
 
-/// Derive the `<hash>.narinfo` path for a `nar/<store-hash>-<…>` NAR path.
+/// Assert that the governing narinfo's signed `StorePath` hash equals the
+/// `<store-hash>` named by the requested `nar/<store-hash>-<…>` NAR path (sec
+/// M-5).
+///
+/// This is the NAR-branch counterpart to [`assert_narinfo_matches_requested`].
+/// The signed narinfo fingerprint covers `StorePath` (among NarHash, NarSize,
+/// References) but **not** the unsigned, attacker-malleable `URL:` field — so
+/// the `URL:` binding in [`assert_nar_matches_requested`] alone does not prove
+/// the served NAR belongs to the requested store hash. A hostile upstream can
+/// take a genuinely trusted-signed narinfo for store hash `HASHY`, rewrite only
+/// its `URL:` to `nar/HASHX-…`, and serve it at `HASHX.narinfo`: the signature
+/// verifies (it attests `HASHY`) and the `URL:` matches the request, yet
+/// `HASHY`'s content is served under `HASHX`. Binding the signed `StorePath`
+/// hash to the requested `<store-hash>` closes that substitution.
+///
+/// # Errors
+///
+/// Returns an error when the narinfo cannot be parsed, or when the store hash
+/// derived from its signed `StorePath` does not equal `requested_store_hash`.
+fn assert_nar_store_hash_matches_requested(
+    path: &str,
+    narinfo: &str,
+    requested_store_hash: &str,
+) -> Result<()> {
+    let info = aos_core::nar::info::parse(narinfo)
+        .with_context(|| format!("parsing governing narinfo for NAR {path} for hash binding"))?;
+    let store_hash = aos_core::nar::info::store_hash(&info.store_path);
+    if store_hash != requested_store_hash {
+        bail!(
+            "governing narinfo for NAR {path} declares StorePath {} (hash \
+             {store_hash}), which does not match the requested store hash \
+             {requested_store_hash}; refusing substitution",
+            info.store_path
+        );
+    }
+    Ok(())
+}
+
+/// Derive both the `<hash>.narinfo` path and the `<store-hash>` component for a
+/// `nar/<store-hash>-<…>` NAR path.
 ///
 /// The static-cache NAR URL is `nar/<store-hash>-<nar-hash>.<ext>` (see
 /// `aos_core::nar::cache::nar_url`), so the store hash is the basename segment
 /// before the first `-`, and its narinfo lives at `<store-hash>.narinfo` at the
-/// surface root. Returns `None` for a path that does not fit that shape.
-fn narinfo_path_for_nar(nar_path: &str) -> Option<String> {
+/// surface root. The pull-through NAR branch needs the bare `<store-hash>` (not
+/// just the derived narinfo path) so it can bind the governing narinfo's signed
+/// `StorePath` hash back to the hash the client asked for via
+/// [`assert_nar_store_hash_matches_requested`] — the `URL:` field that names the
+/// narinfo cannot be relied on for that binding because it is unsigned. Returns
+/// `None` for a path that does not fit the `nar/<store-hash>-<…>` shape.
+fn narinfo_path_and_store_hash_for_nar(nar_path: &str) -> Option<(String, &str)> {
     let name = nar_path.strip_prefix("nar/")?;
     let (store_hash, _) = name.split_once('-')?;
     if store_hash.is_empty() {
         return None;
     }
-    Some(format!("{store_hash}.narinfo"))
+    Some((format!("{store_hash}.narinfo"), store_hash))
 }
 
 /// Parse the oid named by a loose-object path (`objects/<xx>/<62-hex>`).
@@ -1139,12 +1224,56 @@ mod tests {
     }
 
     #[test]
-    fn derives_narinfo_path_for_nar() {
-        assert_eq!(
-            narinfo_path_for_nar("nar/abc123-sha256-def.nar.zst").as_deref(),
-            Some("abc123.narinfo")
+    fn derives_narinfo_path_and_store_hash_for_nar() {
+        // The NAR branch needs the bare `<store-hash>` to bind it to the
+        // narinfo's signed StorePath. The store hash is the segment before the
+        // first `-` in the basename.
+        let (narinfo_path, store_hash) =
+            narinfo_path_and_store_hash_for_nar("nar/abc123-sha256-def.nar.zst").unwrap();
+        assert_eq!(narinfo_path, "abc123.narinfo");
+        assert_eq!(store_hash, "abc123");
+        assert!(narinfo_path_and_store_hash_for_nar("nar/nodash.nar").is_none());
+    }
+
+    #[test]
+    fn nar_store_hash_binding_rejects_url_only_substitution() {
+        // FINDING #4 regression (sec M-5): the signed narinfo fingerprint covers
+        // StorePath/NarHash/NarSize/References but NOT the `URL:` field. A hostile
+        // upstream takes a genuinely trusted-signed narinfo for store hash HASHY
+        // and rewrites only its (unsigned) `URL:` to `nar/HASHX-...`, serving it
+        // at `HASHX.narinfo`. The signature still verifies (it attests HASHY) and
+        // the URL binding (`assert_nar_matches_requested`) still passes (URL: ==
+        // requested), so without a StorePath-hash binding HASHY's content is
+        // served under HASHX. `assert_nar_store_hash_matches_requested` is what
+        // refuses that substitution.
+        let requested_nar = "nar/HASHX-sha256-deadbeef.nar.zst";
+        let (_narinfo_path, requested_store_hash) =
+            narinfo_path_and_store_hash_for_nar(requested_nar).unwrap();
+        assert_eq!(requested_store_hash, "HASHX");
+
+        // A foreign-but-genuine narinfo: signed StorePath is HASHY, but its
+        // (unsigned) URL has been rewritten to point at the requested HASHX NAR.
+        let foreign = "StorePath: /nix/store/HASHY-pkg-1.0\n\
+                       URL: nar/HASHX-sha256-deadbeef.nar.zst\n\
+                       NarHash: sha256:abc\nNarSize: 1\nReferences: \n";
+        // The URL binding passes — URL: matches the requested NAR path exactly,
+        // which is precisely why it is insufficient on its own.
+        assert_nar_matches_requested(requested_nar, foreign)
+            .expect("URL binding passes for a URL-only substitution");
+        // The StorePath-hash binding catches it: HASHY != requested HASHX.
+        let err = assert_nar_store_hash_matches_requested(requested_nar, foreign, requested_store_hash)
+            .expect_err("store-hash binding rejects the cross-hash substitution");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("HASHY") && msg.contains("HASHX") && msg.contains("refusing substitution"),
+            "error should cite both hashes and refuse, got: {msg}"
         );
-        assert!(narinfo_path_for_nar("nar/nodash.nar").is_none());
-        assert!(narinfo_path_for_nar("objects/ab/cd").is_none());
+
+        // The honest case: narinfo's StorePath hash equals the requested hash.
+        let honest = "StorePath: /nix/store/HASHX-pkg-1.0\n\
+                      URL: nar/HASHX-sha256-deadbeef.nar.zst\n\
+                      NarHash: sha256:abc\nNarSize: 1\nReferences: \n";
+        assert_nar_store_hash_matches_requested(requested_nar, honest, requested_store_hash)
+            .expect("matching store hash is accepted");
     }
 }

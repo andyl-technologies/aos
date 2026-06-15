@@ -373,7 +373,7 @@ fn copy_tree(src: &Path, dest: &Path) -> Result<usize> {
 pub fn purge_expired_orgs(db: &Database, now: i64) -> Result<Vec<String>> {
     let mut purged = Vec::new();
     for org in db.list_purgeable_orgs(now)? {
-        match db.hard_purge_org(org.id) {
+        match db.hard_purge_org(org.id, now) {
             Ok(true) => purged.push(org.slug),
             Ok(false) => {}
             Err(err) => {

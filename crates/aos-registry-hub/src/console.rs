@@ -1804,6 +1804,50 @@ async fn new_org_submit(
             "The slug may contain only lowercase letters, digits, '-', and '_', and must not be a reserved name ({err})."
         ));
     }
+    // regression: this path previously checked only CSRF + signup policy and
+    // skipped BOTH abuse bounds the `CreateOrg` RPC enforces, so a browser
+    // session could mint orgs past the per-owner cap and the CreateOrg rate
+    // limit. (No console handler test harness exists in this module; the bounds
+    // themselves are covered by the RPC and ratelimit/db unit tests.)
+    // SECURITY: the console create-org path must enforce the same two abuse
+    // bounds as the `CreateOrg` RPC (see `rpc.rs`), or a browser session is a
+    // free bypass of both. Mirror the RPC exactly — same key derivation, same
+    // class, same per-owner cap, and the same ordering (after the cheap
+    // input/policy gates, so a malformed or forbidden request does not consume
+    // the caller's creation budget; the limit meters genuine creation attempts,
+    // not validation failures).
+    let principal = session.principal();
+    // (a) Per-principal creation rate limit. The console session is always a
+    // `user`, so this key is `user:<id>` — identical to the RPC's
+    // `format!("{}:{}", claims.owner_kind, claims.owner_id)` for a web caller,
+    // so the two surfaces share one window and cannot be played off each other.
+    let rl_key = format!("{}:{}", principal.kind.as_str(), principal.id);
+    if let crate::ratelimit::RateDecision::Limited { retry_after } = state.ratelimit.check(
+        crate::ratelimit::RateClass::CreateOrg,
+        &rl_key,
+        crate::server::now_secs(),
+    ) {
+        return crate::server::too_many_requests(retry_after);
+    }
+    // (b) Per-owner total cap: a user may own only `MAX_ORGS_PER_OWNER` orgs at
+    // once, so a slow loop cannot accumulate namespace pollution past the burst
+    // the rate limit blunts. The RPC rejects this with `ResourceExhausted`; the
+    // console's nearest equivalent rejection is the same `403` it uses for the
+    // invite-only policy gate above.
+    match state.db.count_user_owned_orgs(principal.id) {
+        Ok(owned) if owned >= crate::ratelimit::MAX_ORGS_PER_OWNER => {
+            return (
+                StatusCode::FORBIDDEN,
+                format!(
+                    "owned-org limit reached ({} max); contact an instance admin",
+                    crate::ratelimit::MAX_ORGS_PER_OWNER
+                ),
+            )
+                .into_response();
+        }
+        Ok(_) => {}
+        Err(err) => return internal(err),
+    }
     let result = (|| {
         if state.db.org_by_slug_including_deleted(slug)?.is_some() {
             return Ok(Err("That slug is already taken."));

@@ -145,6 +145,24 @@ fn fetch_err(message: impl Into<String>) -> anyhow::Error {
 ///   address the socket dials is the address that was validated, because the
 ///   only addresses the connector ever sees are ones this resolver already
 ///   approved.
+///
+/// # Literal-IP hosts
+///
+/// reqwest invokes a custom [`reqwest::dns::Resolve`] **only for DNS names** —
+/// a URL whose host is already an IP literal (`http://169.254.169.254/…`,
+/// `http://[fd00::1]/…`) is handed straight to the connector and never reaches
+/// [`ValidatingResolver`]. The resolver therefore cannot, on its own, stop a
+/// hub-originated request to an internal/metadata literal IP. That gap is
+/// closed by gating **every** hub-originated request URL through
+/// [`is_safe_remote_url`] at its call site before it is issued:
+/// [`is_safe_remote_url`] parses the host and, when it is an IP literal, checks
+/// it directly with [`is_global_ip`] (the *same* predicate the resolver uses),
+/// rejecting loopback/link-local/private/metadata literals. The two mechanisms
+/// are complementary — the resolver covers names (and DNS rebinding), the
+/// call-site check covers literals — and together they reject every
+/// local/internal target uniformly regardless of whether the host is a name or
+/// an IP. The [`AOS_HUB_ALLOW_LOCAL_REMOTES`](allow_local_remotes) debug hatch
+/// relaxes both consistently.
 pub fn hardened_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -956,8 +974,13 @@ mod tests {
         use axum::response::IntoResponse as _;
         let app = axum::Router::new().route("/go", get(redirect));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        // A literal-IP host bypasses the validating resolver, so this needs no
-        // env hatch: we are exercising the redirect policy, not the resolver.
+        // A literal-IP host bypasses the validating resolver (reqwest only
+        // consults the resolver for DNS names), so this needs no env hatch: we
+        // are exercising the redirect policy here, not the resolver. The
+        // literal-IP SSRF defense lives at the call sites via
+        // `is_safe_remote_url` (see
+        // `literal_ip_metadata_host_is_rejected_by_the_call_site_predicate`),
+        // which a raw `client.get` in this test deliberately skips.
         let url = format!("http://{}/go", listener.local_addr().unwrap());
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -994,6 +1017,36 @@ mod tests {
         // The failure originates in the DNS layer; reqwest surfaces it as a
         // request/connect error.
         assert!(err.is_request() || err.is_connect(), "got: {err:?}");
+    }
+
+    #[test]
+    fn literal_ip_metadata_host_is_rejected_by_the_call_site_predicate() {
+        // SECURITY regression (SSRF, finding #7): a hub-originated request to a
+        // literal-IP internal/metadata host must be refused. reqwest hands an
+        // IP-literal host straight to the connector and never consults the
+        // `ValidatingResolver` (which only sees DNS names), so the literal-IP
+        // defense is `is_safe_remote_url` applied at every call site. This test
+        // pins the predicate the call sites rely on: every internal literal —
+        // loopback, the cloud-metadata link-local, RFC-1918, and their
+        // IPv4-mapped IPv6 / IPv6 forms — is rejected, while a public literal
+        // passes. (The hatch is never set in the lib test binary.)
+        assert!(std::env::var_os("AOS_HUB_ALLOW_LOCAL_REMOTES").is_none());
+        for blocked in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1/x.narinfo",
+            "http://10.0.0.5/x.narinfo",
+            "http://192.168.1.1/x.narinfo",
+            "http://[::1]/x.narinfo",
+            "http://[fd00::1]/x.narinfo",
+            "http://[::ffff:169.254.169.254]/x.narinfo",
+        ] {
+            assert!(
+                is_safe_remote_url(blocked).is_err(),
+                "literal-IP internal host must be refused: {blocked}"
+            );
+        }
+        // A public literal still passes, so legitimate IP-addressed caches work.
+        assert!(is_safe_remote_url("http://93.184.216.34/x.narinfo").is_ok());
     }
 
     #[test]
