@@ -102,31 +102,63 @@ pub fn content_type(path: &str) -> &'static str {
     }
 }
 
-/// The `Content-Security-Policy` for a web-surface path that boots the SPA,
-/// or `None` for every other machine path.
+/// The locked-down `Content-Security-Policy` for a producer-controlled web
+/// document (HTML or JS), or `None` for every other machine path.
 ///
-/// The global security-header layer ([`crate::server`]) applies the strict
-/// `default-src 'self'` everywhere by default. The on-CDN Leptos-CSR SPA
-/// (RFC-0004's web surface) is the one exception: running WebAssembly on
-/// Chromium requires `'wasm-unsafe-eval'` in `script-src`, and the SPA's
-/// ES-module loader is a same-origin (`'self'`) first-party script with no
-/// inline body, so no nonce is needed. This relaxation is scoped to the
-/// exact paths that execute the SPA — the proxied `index.html`, the
-/// `browse/<name>.html` pages, and the `web/app-*.js`/`web/app-*_bg.wasm`
-/// assets — so every other response (narinfos, objects, JSON snapshots,
-/// the human `/-/` namespace) keeps the strict default.
+/// **Provenance, not filename, drives this.** Every byte under a registry's
+/// machine surface — `index.html`, `browse/<name>.html`, `web/*.js`, and any
+/// other `.html`/`.js` document — is written through the producer-facing
+/// upload facade ([`crate::facade`]), which checks only [`is_machine_path`]
+/// and a size cap: it never inspects content or provenance. A producer
+/// holding only `Permission::Publish` can therefore `PUT` arbitrary bytes to
+/// these paths and then make the registry public. Because the hub serves
+/// every registry's machine surface **same-origin** under the authenticated
+/// console (`/{slug}/<path>`), any script those bytes carry would run in the
+/// hub origin — able to read the logged-in admin's session-scoped pages and
+/// drive authenticated mutations. So all producer documents are untrusted and
+/// must be served inert.
 ///
-/// On a *direct* frontend the SPA is served by plain static hosting with no
-/// hub in the path, so no hub CSP applies; this header only matters on a
-/// *hub-proxied* frontend, where the hub serves these bytes.
+/// The hub never needs to *execute* producer JS: RFC-0004's Leptos-CSR web
+/// surface (the SPA that does want `script-src 'self' 'wasm-unsafe-eval'`) is
+/// served from the **CDN**, not from the hub — a direct frontend serves it
+/// from plain static hosting with no hub in the path. The hub only ever
+/// serves these bytes as a byte-faithful origin/cache mirror, where rendering
+/// them as active content has no legitimate purpose. So this function returns
+/// the strongest no-script policy for every producer document:
+///
+/// ```text
+/// Content-Security-Policy: sandbox
+/// ```
+///
+/// `sandbox` with no tokens disables script execution, plugins, forms,
+/// same-origin context, and popups, so even a document loaded directly cannot
+/// reach the hub origin. [`serve_machine_path`] pairs it with
+/// `Content-Disposition: attachment` and the existing `X-Content-Type-Options:
+/// nosniff` so the bytes are never treated as live content. Non-document
+/// machine paths (narinfos, objects, NARs, JSON snapshots, `info/refs`,
+/// `nix-cache-info`) return `None` and keep the global `default-src 'self'`
+/// the [`crate::server`] header layer applies, served verbatim with their
+/// cache headers.
+///
+/// The hub's own first-party assets are served from dedicated `/_assets/…`
+/// routes (not the machine-path facade), so they are never producer content
+/// and are unaffected.
 pub fn web_surface_csp(path: &str) -> Option<&'static str> {
-    let runs_spa = path == "index.html"
-        || (path.starts_with("browse/") && path.ends_with(".html"))
-        || (path.starts_with("web/") && (path.ends_with(".js") || path.ends_with(".wasm")));
-    runs_spa.then_some(
-        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
-         style-src 'self' 'unsafe-inline'; connect-src 'self'",
-    )
+    let is_producer_document = is_producer_document(path);
+    is_producer_document.then_some("sandbox")
+}
+
+/// Whether a machine path is a producer-controlled *document* — HTML or JS —
+/// that could carry executable script.
+///
+/// These are the paths the upload facade lets a `publish`-scoped producer
+/// write as opaque bytes: the proxied `index.html`, the `browse/<name>.html`
+/// pages, and any `web/*.js` (or any other `.html`/`.js` under the surface).
+/// They are served inert (see [`web_surface_csp`]); every other machine path
+/// (narinfos, objects, NARs, `*.json`, `*.wasm`, `*.css`, plain-text pointers)
+/// is data and served verbatim.
+fn is_producer_document(path: &str) -> bool {
+    path.ends_with(".html") || path.ends_with(".js")
 }
 
 /// Serve one machine path for a registry.
@@ -194,13 +226,22 @@ pub async fn serve_machine_path(registry: &RegistryRecord, path: &str) -> Respon
                 header::CACHE_CONTROL,
                 HeaderValue::from_static(cache_control(path)),
             );
-            // Web-surface paths that boot the SPA get the relaxed CSP that
-            // permits same-origin WASM; every other path keeps the strict
-            // `default-src 'self'` the global header layer applies.
+            // Producer-controlled HTML/JS documents are served inert: a
+            // `sandbox` CSP (no script, no same-origin context) plus
+            // `Content-Disposition: attachment` so the same-origin hub never
+            // renders producer bytes as active content. The global header
+            // layer's `nosniff` stays in force. Non-document machine paths
+            // (narinfos, objects, NARs, JSON snapshots, pointers) get `None`
+            // and keep the strict `default-src 'self'` default, served
+            // verbatim. See [`web_surface_csp`] for the provenance rationale.
             if let Some(csp) = web_surface_csp(path) {
                 headers.insert(
                     header::CONTENT_SECURITY_POLICY,
                     HeaderValue::from_static(csp),
+                );
+                headers.insert(
+                    header::CONTENT_DISPOSITION,
+                    HeaderValue::from_static("attachment"),
                 );
             }
             response
@@ -362,35 +403,43 @@ mod tests {
     }
 
     #[test]
-    fn web_surface_csp_relaxes_only_spa_executing_paths() {
-        // Paths that boot the SPA get 'wasm-unsafe-eval' in script-src.
-        for spa_path in [
+    fn web_surface_csp_sandboxes_producer_documents() {
+        // Producer-controlled HTML/JS documents are served inert: a `sandbox`
+        // CSP with no script-permitting tokens, keyed on document kind
+        // (provenance) rather than a hub-trusted filename.
+        for document in [
             "index.html",
             "browse/curl.html",
             "web/app-ab12cd.js",
-            "web/app-ab12cd_bg.wasm",
+            "web/evil.js",
+            "deeply/nested/page.html",
         ] {
-            let csp = web_surface_csp(spa_path).unwrap_or_default();
-            assert!(csp.contains("wasm-unsafe-eval"), "{spa_path}: {csp}");
-            assert!(csp.contains("default-src 'self'"), "{spa_path}");
+            let csp = web_surface_csp(document).unwrap_or_default();
+            assert_eq!(csp, "sandbox", "{document}: {csp}");
+            // No relaxation a producer could ever exploit to run script.
+            assert!(!csp.contains("script-src"), "{document}");
+            assert!(!csp.contains("'self'"), "{document}");
+            assert!(!csp.contains("wasm-unsafe-eval"), "{document}");
         }
-        // Every other machine path keeps the strict default (None → the
-        // global `default-src 'self'`).
-        for strict in [
+        // Non-document machine paths keep the strict default (None → the
+        // global `default-src 'self'`) and serve verbatim — including the
+        // SPA's WASM blob, which is data, not an executable document.
+        for data in [
             "web/config.json",
             "web/index.json",
             "web/packages/curl.json",
             "web/style-ab12cd.css",
+            "web/app-ab12cd_bg.wasm",
             "objects/ab/cd",
             "abcd.narinfo",
             "HEAD",
         ] {
-            assert!(web_surface_csp(strict).is_none(), "{strict}");
+            assert!(web_surface_csp(data).is_none(), "{data}");
         }
     }
 
     #[tokio::test]
-    async fn serves_index_html_with_relaxed_spa_csp() {
+    async fn serves_index_html_inert() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("index.html"),
@@ -400,12 +449,22 @@ mod tests {
         let registry = test_registry(dir.path().display().to_string());
         let response = serve_machine_path(&registry, "index.html").await;
         assert_eq!(response.status(), StatusCode::OK);
+        // Producer HTML carries the inert `sandbox` CSP and is forced to a
+        // download, so the same-origin hub never renders it as active content.
         let csp = response
             .headers()
             .get(header::CONTENT_SECURITY_POLICY)
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
-        assert!(csp.contains("wasm-unsafe-eval"), "got: {csp}");
+        assert_eq!(csp, "sandbox", "got: {csp}");
+        assert!(!csp.contains("script-src"), "got: {csp}");
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_DISPOSITION)
+                .and_then(|v| v.to_str().ok()),
+            Some("attachment"),
+        );
     }
 
     #[tokio::test]
