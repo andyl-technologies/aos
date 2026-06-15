@@ -43,7 +43,8 @@
 //! source                          postgres                  mysql
 //! INTEGER PRIMARY KEY             BIGSERIAL PRIMARY KEY     BIGINT AUTO_INCREMENT PRIMARY KEY
 //! INTEGER (bare column type)      BIGINT                    BIGINT
-//! TEXT                            TEXT                      TEXT (see note)
+//! TEXT                            TEXT                      VARCHAR(255) (see note)
+//! LONGTEXT                        TEXT                      LONGTEXT
 //! BLOB                            BYTEA                     LONGBLOB
 //! AUTOINCREMENT (sqlite-only)     (removed)                 (removed)
 //! ```
@@ -53,6 +54,16 @@
 //! …). The mysql translation therefore narrows `TEXT` to `VARCHAR(255)`,
 //! which is ample for the hub's hex hashes, slugs, and UUIDs and is indexable.
 //! On postgres and sqlite `TEXT` is unbounded and kept verbatim.
+//!
+//! `VARCHAR(255)` would, however, **silently truncate** a value longer than 255
+//! characters on mysql — which for a sealed secret, a public-key line, a JSON
+//! array, or a webhook payload would corrupt the value and break decryption or
+//! signature verification. Such columns are declared `LONGTEXT` in the source
+//! DDL: an unbounded text type that is never indexed and so never needs a
+//! bounded `VARCHAR`. `LONGTEXT` maps to mysql `LONGTEXT`, to postgres `TEXT`
+//! (which has no `LONGTEXT` and is already unbounded), and is kept verbatim on
+//! sqlite (where it has plain `TEXT` affinity). The `TEXT -> VARCHAR(255)`
+//! narrowing is careful not to rewrite the `TEXT` *inside* `LONGTEXT`.
 //!
 //! # DML divergences not handled by `translate`
 //!
@@ -217,13 +228,42 @@ impl Dialect {
         // Bare INTEGER -> BIGINT. After the PK replacement no `INTEGER PRIMARY
         // KEY` remains, so any leftover INTEGER is a plain column/reference.
         s = s.replace("INTEGER", "BIGINT");
-        match self {
+        // `LONGTEXT` is the source marker for an *unbounded* text column — a
+        // sealed secret, a public-key line, a JSON array, or a webhook payload —
+        // that must never be silently truncated. It is never indexed, so it does
+        // not need a bounded VARCHAR. Stash it behind a sentinel so the generic
+        // `TEXT -> VARCHAR(255)` narrowing below cannot rewrite the `TEXT`
+        // *inside* `LONGTEXT`, then restore it to the dialect's unbounded type.
+        // The sentinel must not itself contain the substring `TEXT`, or the
+        // narrowing below would rewrite it to `VARCHAR(255)` and the restore
+        // would no longer match. Use null-byte delimiters around a `TEXT`-free
+        // token (null can never appear in the source DDL).
+        const LONGTEXT_SENTINEL: &str = "\u{0}LONG_UNBOUNDED\u{0}";
+        s = s.replace("LONGTEXT", LONGTEXT_SENTINEL);
+        let mut s = match self {
             Dialect::Postgres => s.replace("BLOB", "BYTEA"),
+            // mysql: narrow only the *bounded, indexable* `TEXT` columns (hex
+            // hashes, slugs, UUIDs, key ids — all well under 255) to an
+            // indexable `VARCHAR(255)`, because mysql cannot PK/index a `TEXT`
+            // without a prefix length. The `LONGTEXT` columns are exempt (stashed
+            // above) so a long secret/key/payload is stored intact rather than
+            // truncated to 255 chars, which would corrupt a sealed secret or a
+            // public key and break decryption/verification.
             Dialect::Mysql => s
                 .replace("BLOB", "LONGBLOB")
                 .replace("TEXT", "VARCHAR(255)"),
             Dialect::Sqlite => unreachable!(),
-        }
+        };
+        // Restore the unbounded text type: `LONGTEXT` on mysql, plain `TEXT` on
+        // postgres (which has no `LONGTEXT` and whose `TEXT` is already
+        // unbounded).
+        let unbounded = match self {
+            Dialect::Mysql => "LONGTEXT",
+            Dialect::Postgres => "TEXT",
+            Dialect::Sqlite => unreachable!(),
+        };
+        s = s.replace(LONGTEXT_SENTINEL, unbounded);
+        s
     }
 
     /// Rewrites the recognizable sqlite/postgres `ON CONFLICT` upserts into
@@ -441,6 +481,75 @@ mod tests {
         let my = Dialect::Mysql.translate(src).unwrap();
         assert!(my.sql.contains("id VARCHAR(255) PRIMARY KEY"), "{}", my.sql);
         assert!(my.sql.contains("name VARCHAR(255)"), "{}", my.sql);
+    }
+
+    #[test]
+    fn ddl_longtext_is_not_narrowed_to_varchar() {
+        // A `LONGTEXT` column (a sealed secret, key line, or payload) must keep
+        // an unbounded type on mysql — never `VARCHAR(255)`, which would
+        // truncate a secret — and map to plain `TEXT` on postgres/sqlite. The
+        // sibling bounded `TEXT` column still narrows on mysql.
+        let src = "CREATE TABLE t (id TEXT PRIMARY KEY, secret_enc LONGTEXT NOT NULL)";
+
+        let my = Dialect::Mysql.translate(src).unwrap().sql;
+        assert!(my.contains("secret_enc LONGTEXT NOT NULL"), "{my}");
+        assert!(
+            !my.contains("secret_enc VARCHAR(255)") && !my.contains("LONGVARCHAR"),
+            "a LONGTEXT secret must not be narrowed/corrupted: {my}"
+        );
+        // The bounded indexable column still narrows.
+        assert!(my.contains("id VARCHAR(255) PRIMARY KEY"), "{my}");
+
+        for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+            let out = dialect.translate(src).unwrap().sql;
+            // postgres/sqlite have no LONGTEXT: postgres maps it to TEXT, sqlite
+            // keeps it verbatim (TEXT affinity). Either way the secret column is
+            // unbounded and never a VARCHAR.
+            assert!(!out.contains("VARCHAR"), "{dialect:?}: {out}");
+        }
+        assert!(Dialect::Postgres
+            .translate(src)
+            .unwrap()
+            .sql
+            .contains("secret_enc TEXT NOT NULL"));
+    }
+
+    #[test]
+    fn ddl_real_secret_columns_are_unbounded_on_mysql() {
+        // Guard the actual migrations: every security-relevant secret/key/JSON
+        // column declared LONGTEXT must translate to an unbounded mysql type,
+        // never VARCHAR(255). This catches a regression where a column is
+        // changed back to TEXT or a new secret column is added as TEXT.
+        let mut saw_secret_enc = false;
+        for migration in crate::db::MIGRATIONS {
+            for stmt in crate::db::backend::split_statements(migration) {
+                let my = Dialect::Mysql.translate(&stmt).unwrap().sql;
+                // A corrupted stash would leave `LONGVARCHAR(255)` anywhere.
+                assert!(
+                    !my.contains("LONGVARCHAR"),
+                    "corrupted LONGTEXT stash: {my}"
+                );
+                // Every column whose name ends in `secret_enc` (`secret_enc`,
+                // `client_secret_enc`) must be unbounded on mysql, not a
+                // truncating VARCHAR. Scan the column declaration lines.
+                for line in my.lines() {
+                    let trimmed = line.trim_start();
+                    if trimmed.starts_with("secret_enc") || trimmed.starts_with("client_secret_enc")
+                    {
+                        saw_secret_enc = true;
+                        assert!(
+                            trimmed.contains("LONGTEXT"),
+                            "a *secret_enc column must be LONGTEXT on mysql: {line:?}"
+                        );
+                        assert!(
+                            !trimmed.contains("VARCHAR"),
+                            "a *secret_enc column must not be a bounded VARCHAR: {line:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(saw_secret_enc, "expected a secret_enc column in the schema");
     }
 
     #[test]

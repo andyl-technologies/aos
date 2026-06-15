@@ -305,6 +305,12 @@ impl HttpFetch {
 #[async_trait]
 impl SurfaceFetch for HttpFetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        // The local-FS fetcher guards traversal via `safe_join`; the HTTP
+        // fetcher cannot traverse a filesystem, but a hostile `path` could still
+        // steer the request to a different URL path or host. Several path
+        // segments derive from a remote's own info/refs/channel data during a
+        // mirror sync, so validate before interpolating.
+        validate_http_surface_path(path)?;
         let url = format!("{}/{path}", self.base);
         let response = self
             .client
@@ -560,6 +566,60 @@ fn is_global_ipv6(v6: Ipv6Addr) -> bool {
         || is_documentation)
 }
 
+/// Validate a relative surface path before interpolating it into an HTTP URL.
+///
+/// [`HttpFetch::fetch`] builds `"{base}/{path}"`, so a `path` that is absolute,
+/// contains a `..` segment, embeds a scheme (`://`), starts a network-path
+/// reference (`//host`), or carries control characters could escape the base or
+/// repoint the request at a different host. Because several surface segments
+/// derive from a remote's own `info/refs`/channel data during a mirror sync,
+/// this guard gives the HTTP transport protection equivalent to the local
+/// fetcher's [`safe_join`] (which it cannot reuse — there is no filesystem to
+/// canonicalize against).
+///
+/// Legitimate surface paths (`nar/<hash>.nar.zst`, `objects/ab/cdef…`,
+/// `channels/stable/00`, `info/refs`, `<hash>.narinfo`) pass unchanged.
+///
+/// # Errors
+///
+/// Returns a [`FetchError`] when `path` is empty, absolute (leading `/`),
+/// contains a `\` or a control character, embeds `://`, or has any `.`/`..`
+/// or empty path segment (which includes a leading `//`).
+pub fn validate_http_surface_path(path: &str) -> Result<()> {
+    let reject = |reason: &str| {
+        Err(fetch_err(format!(
+            "refusing HTTP surface path '{path}': {reason}"
+        )))
+    };
+    if path.is_empty() {
+        return reject("path is empty");
+    }
+    if path.starts_with('/') {
+        return reject("path is absolute");
+    }
+    if path.contains('\\') {
+        return reject("path contains a backslash");
+    }
+    if path.contains("://") {
+        return reject("path embeds a URL scheme");
+    }
+    if path.chars().any(|c| c.is_control()) {
+        return reject("path contains a control character");
+    }
+    // Reject `..`/`.`/empty segments. An empty segment covers a leading `//`
+    // (network-path reference) and any doubled slash that could collapse the
+    // base, and `..` covers traversal toward the host root.
+    for segment in path.split('/') {
+        if segment.is_empty() {
+            return reject("path contains an empty segment (e.g. a leading or doubled '/')");
+        }
+        if segment == ".." || segment == "." {
+            return reject("path contains a '.' or '..' segment");
+        }
+    }
+    Ok(())
+}
+
 /// Join a relative surface path onto a root, rejecting traversal.
 ///
 /// # Errors
@@ -577,6 +637,88 @@ pub fn safe_join(root: &std::path::Path, relative: &str) -> Result<PathBuf> {
         }
     }
     Ok(root.join(rel))
+}
+
+/// Verify that a write target stays within `root` even through symlinks.
+///
+/// [`safe_join`] rejects `..` and absolute components in the relative path, but
+/// a write through it still *follows symlinks*: a binding-root component that is
+/// itself a symlink pointing outside the root would let a `PUT`/mirror copy land
+/// outside the surface (the read path guards against this by canonicalizing and
+/// `starts_with`-checking the resolved file). This applies the same containment
+/// to writes: it canonicalizes the *parent directory* of `target` — which must
+/// already exist for an atomic write — and requires it to live under the
+/// canonicalized `root`. The target file itself need not exist yet (a fresh
+/// object), so only the parent is resolved.
+///
+/// Call this before creating/writing `target`. When the parent directory does
+/// not yet exist, the nearest existing ancestor under the root is resolved
+/// instead, so a brand-new `objects/ab/` subtree is still accepted as long as no
+/// resolved ancestor escapes the root.
+///
+/// # Errors
+///
+/// Returns a [`FetchError`] when `root` cannot be canonicalized, the nearest
+/// existing ancestor of `target` cannot be canonicalized, or the resolved
+/// ancestor does not start with the canonicalized `root` (a symlink escape).
+pub async fn ensure_within_root(root: &std::path::Path, target: &std::path::Path) -> Result<()> {
+    // Resolve the nearest *existing* ancestor of the root. On a brand-new
+    // binding the root directory may not exist yet (the first publish's
+    // `create_dir_all` will make it), so canonicalize the longest prefix that
+    // does exist — that is the real, symlink-resolved base the new tree will
+    // hang off of.
+    let canonical_root = nearest_existing_canonical(root).await?.ok_or_else(|| {
+        fetch_err(format!(
+            "no existing ancestor for surface root {}",
+            root.display()
+        ))
+    })?;
+    // Resolve the nearest existing ancestor of the target the same way. The
+    // immediate parent may not exist yet for a fresh subtree; what matters is
+    // that the existing portion of the path does not already route through a
+    // symlink that leaves the root.
+    let resolved = nearest_existing_canonical(target).await?.ok_or_else(|| {
+        fetch_err(format!(
+            "no existing ancestor for write target {}",
+            target.display()
+        ))
+    })?;
+    if !resolved.starts_with(&canonical_root) {
+        return Err(fetch_err(format!(
+            "write target {} escapes the binding root via symlink",
+            target.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Canonicalize the nearest existing ancestor of `path` (including `path`
+/// itself when it exists), walking up until a component that exists is found.
+///
+/// Returns `Ok(None)` only when no ancestor at all exists (an empty or
+/// fully-absent path), which the callers treat as an error.
+///
+/// # Errors
+///
+/// Returns a [`FetchError`] when an existing ancestor cannot be canonicalized
+/// for a reason other than absence.
+async fn nearest_existing_canonical(path: &std::path::Path) -> Result<Option<PathBuf>> {
+    let mut current = Some(path);
+    while let Some(dir) = current {
+        match tokio::fs::canonicalize(dir).await {
+            Ok(canonical) => return Ok(Some(canonical)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                current = dir.parent();
+            }
+            Err(err) => {
+                return Err(fetch_err(format!(
+                    "canonicalizing {}: {err}",
+                    dir.display()
+                )));
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -607,6 +749,31 @@ mod tests {
         assert!(err.to_string().contains("escapes"), "got: {err:#}");
     }
 
+    #[tokio::test]
+    async fn ensure_within_root_allows_real_subtree_and_rejects_symlink_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("binding");
+        std::fs::create_dir_all(root.join("objects/ab")).unwrap();
+
+        // A normal write under a real binding tree is allowed, including a fresh
+        // subtree whose immediate parent does not exist yet.
+        let ok = safe_join(&root, "objects/ab/cd").unwrap();
+        ensure_within_root(&root, &ok).await.unwrap();
+        let fresh = safe_join(&root, "objects/zz/new").unwrap();
+        ensure_within_root(&root, &fresh).await.unwrap();
+
+        // A binding-root component that is a symlink pointing outside the root
+        // must be refused: `safe_join` admits the path (no `..`), but the
+        // canonicalized parent escapes the root.
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        let target = safe_join(&root, "escape/loot").unwrap();
+        let err = ensure_within_root(&root, &target).await.unwrap_err();
+        assert!(is_fetch_error(&err), "got: {err:#}");
+        assert!(err.to_string().contains("escapes"), "got: {err:#}");
+    }
+
     #[test]
     fn safe_join_rejects_traversal() {
         let root = std::path::Path::new("/srv/reg");
@@ -614,6 +781,39 @@ mod tests {
         assert!(safe_join(root, "../etc/passwd").is_err());
         assert!(safe_join(root, "/etc/passwd").is_err());
         assert!(safe_join(root, "a/../../b").is_err());
+    }
+
+    #[test]
+    fn validate_http_surface_path_allows_legit_and_rejects_escapes() {
+        // Legitimate surface paths pass unchanged.
+        for ok in [
+            "nar/0a1b2c.nar.zst",
+            "objects/ab/cdef0123",
+            "channels/stable/00",
+            "info/refs",
+            "abc123.narinfo",
+            "HEAD",
+        ] {
+            assert!(validate_http_surface_path(ok).is_ok(), "should allow {ok}");
+        }
+        // Escapes and repointing attempts are rejected.
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../secret",
+            "objects/../../etc/passwd",
+            "//evil.example.com/x",
+            "objects//ab",
+            "https://evil.example.com/x",
+            "objects/ab\\cd",
+            "objects/ab/cd\r\nHost: evil",
+            "objects/./ab",
+        ] {
+            assert!(
+                validate_http_surface_path(bad).is_err(),
+                "should reject {bad:?}"
+            );
+        }
     }
 
     #[test]

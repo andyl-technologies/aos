@@ -33,12 +33,23 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::Router;
 use tower_http::catch_panic::CatchPanicLayer;
+
+/// Maximum inbound request-body size for the RPC, console, and browse surfaces
+/// (8 MiB).
+///
+/// ConnectRPC requests, console form posts, and browse reads carry small JSON
+/// or form bodies; capping them well below the process's memory budget keeps a
+/// hostile or buggy client from streaming an unbounded body into a handler that
+/// buffers it. The large surface-upload `PUT` path is exempt — it is scoped to
+/// its own, far larger [`crate::facade::MAX_UPLOAD_BYTES`] limit so legitimate
+/// release packs still upload.
+pub const RPC_MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 use crate::auth::extract::AuthState;
 use crate::compat;
@@ -302,6 +313,25 @@ pub fn router(state: Arc<AppState>) -> Router {
         .collect();
     let connect_service = connect_router.into_axum_service();
 
+    // Mount the ConnectRPC method paths into a dedicated sub-router so a small
+    // inbound body cap can be scoped to *just* the RPC surface (the large
+    // surface-upload PUT path keeps its own, far larger limit). Applying
+    // `DefaultBodyLimit` at this sub-router level bounds every RPC body without
+    // touching the upload or browse routes.
+    let mut rpc_router: Router<Arc<AppState>> = Router::new();
+    for path in &connect_paths {
+        rpc_router = rpc_router.route_service(path, connect_service.clone());
+    }
+    // Use tower-http's `RequestBodyLimitLayer` rather than axum's
+    // `DefaultBodyLimit` here: the ConnectRPC routes are raw tower services that
+    // read the request body directly, so they never consult the axum extractor
+    // limit. `RequestBodyLimitLayer` enforces the cap at the body-stream level
+    // (rejecting with `413 Payload Too Large`) regardless of how the inner
+    // service consumes the body.
+    let rpc_router = rpc_router.layer(tower_http::limit::RequestBodyLimitLayer::new(
+        RPC_MAX_BODY_BYTES,
+    ));
+
     // The `/oauth2/token` exchange fragment runs on Arc<AuthState>; bind its
     // state up front so it merges into the AppState-typed router below.
     let oauth2 = crate::auth::extract::oauth2_router().with_state(Arc::clone(&state.auth));
@@ -332,11 +362,16 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(machine_path)
                 .post(post_machine_path)
                 .put(put_machine_path)
-                .head(head_machine_path),
+                .head(head_machine_path)
+                // The surface-upload PUT/POST legitimately carries large release
+                // packs, so this route opts out of the small global RPC body cap
+                // and uses the facade's own large limit. Applied as a per-route
+                // layer, it overrides the router-wide `DefaultBodyLimit` below
+                // (per-route layers run inside the router layer, so the
+                // innermost limit the body extractor sees wins).
+                .layer(DefaultBodyLimit::max(crate::facade::MAX_UPLOAD_BYTES)),
         );
-    for path in connect_paths {
-        router = router.route_service(&path, connect_service.clone());
-    }
+    router = router.merge(rpc_router);
     // The nested-canonical catch-all is registered last: axum's
     // static-over-dynamic precedence keeps the explicit routes above
     // (healthz, _assets, oauth2, RPC method paths, the flat `/{slug}` shapes)
@@ -359,6 +394,16 @@ pub fn router(state: Arc<AppState>) -> Router {
             resolve_session,
         ))
         .with_state(state)
+        // Router-wide inbound body cap. The RPC surface is already bounded to
+        // the smaller `RPC_MAX_BODY_BYTES` by its own sub-router layer above
+        // (which, being closer to the handler, wins for those routes). This
+        // outer default bounds every *other* route — including the
+        // nested-canonical upload fallback — at the surface-upload limit, so a
+        // large release pack still uploads while no route is left with an
+        // unbounded inbound body. The flat upload route additionally pins this
+        // same large limit explicitly so its bound is independent of layer
+        // ordering.
+        .layer(DefaultBodyLimit::max(crate::facade::MAX_UPLOAD_BYTES))
         // Panics become plain 500s instead of dropped connections; the
         // security-header layer wraps everything (including those 500s).
         .layer(CatchPanicLayer::new())

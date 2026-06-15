@@ -380,7 +380,7 @@ const MIGRATIONS: &[&str] = &[
         id          INTEGER PRIMARY KEY,
         slug        TEXT NOT NULL UNIQUE,
         source_url  TEXT NOT NULL,
-        trust_keys  TEXT NOT NULL DEFAULT '[]',  -- JSON array of name:Ed25519:b64
+        trust_keys  LONGTEXT NOT NULL DEFAULT '[]',  -- JSON array of name:Ed25519:b64 (unbounded; never truncate)
         require_signatures INTEGER NOT NULL DEFAULT 1,
         created_at  INTEGER NOT NULL
     );
@@ -419,8 +419,8 @@ const MIGRATIONS: &[&str] = &[
         nar_hash    TEXT NOT NULL,
         nar_size    INTEGER NOT NULL,
         closure_size INTEGER NOT NULL,
-        refs        TEXT NOT NULL,                -- JSON array of store hashes
-        images      TEXT NOT NULL,                -- JSON array of {format,store_path,nar_hash,nar_size}
+        refs        LONGTEXT NOT NULL,            -- JSON array of store hashes (unbounded; never truncate)
+        images      LONGTEXT NOT NULL,            -- JSON array of {format,store_path,nar_hash,nar_size} (unbounded)
         UNIQUE (version_id, platform)
     );
     CREATE TABLE channels (
@@ -449,7 +449,7 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE key_rosters (
         registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
         key_id      TEXT NOT NULL,
-        public_key  TEXT NOT NULL,
+        public_key  LONGTEXT NOT NULL,            -- name:Alg:<base64> key line (unbounded; never truncate)
         status      TEXT NOT NULL,                -- active|revoked
         PRIMARY KEY (registry_id, key_id)
     );
@@ -594,7 +594,7 @@ const MIGRATIONS: &[&str] = &[
         approved_by_user INTEGER,                 -- approving user id once approved
         denied      INTEGER NOT NULL DEFAULT 0,
         issued_token_id TEXT,                     -- id of the minted token, once approved
-        issued_token_secret TEXT                  -- the minted secret, delivered once at poll
+        issued_token_secret LONGTEXT              -- the minted secret, delivered once at poll (unbounded; never truncate)
     );
     CREATE TABLE magic_links (
         token_hash  TEXT PRIMARY KEY,             -- SHA-256 hex of the link secret
@@ -691,7 +691,7 @@ const MIGRATIONS: &[&str] = &[
     // only use the flat [[caches]] list; the flattened endpoints still
     // populate the caches table either way, so the column is purely additive.
     "
-    ALTER TABLE registry_index ADD COLUMN cache_stack TEXT;
+    ALTER TABLE registry_index ADD COLUMN cache_stack LONGTEXT; -- JSON cache stack (unbounded; never truncate)
     ",
     // v9: per-org OIDC SSO (RFC-0004 \"Per-org OIDC SSO\"). Three
     // system-of-record tables that exist nowhere on the registry surface:
@@ -719,10 +719,10 @@ const MIGRATIONS: &[&str] = &[
         token_endpoint        TEXT NOT NULL,
         jwks_uri              TEXT NOT NULL,
         client_id             TEXT NOT NULL,
-        client_secret_enc     TEXT,                       -- sealed; never plaintext
+        client_secret_enc     LONGTEXT,                   -- sealed; never plaintext (unbounded; never truncate)
         scopes                TEXT NOT NULL DEFAULT 'openid email profile',
         groups_claim          TEXT,
-        role_map_json         TEXT NOT NULL DEFAULT '{}',
+        role_map_json         LONGTEXT NOT NULL DEFAULT '{}', -- OIDC group->role JSON (unbounded; never truncate)
         allow_jit             INTEGER NOT NULL DEFAULT 1,
         enforce_sso           INTEGER NOT NULL DEFAULT 0,
         default_role          TEXT NOT NULL DEFAULT 'viewer',
@@ -762,8 +762,8 @@ const MIGRATIONS: &[&str] = &[
         id          INTEGER PRIMARY KEY,
         org_id      INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
         key_id      TEXT NOT NULL,
-        public_key  TEXT NOT NULL,                -- name:Ed25519:<base64> trusted-key line
-        secret_enc  TEXT NOT NULL,                -- sealed 32-byte Ed25519 seed; never plaintext
+        public_key  LONGTEXT NOT NULL,            -- name:Ed25519:<base64> trusted-key line (unbounded; never truncate)
+        secret_enc  LONGTEXT NOT NULL,            -- sealed 32-byte Ed25519 seed; never plaintext (unbounded; never truncate)
         created_at  INTEGER NOT NULL,
         UNIQUE (org_id, key_id)
     );
@@ -790,7 +790,7 @@ const MIGRATIONS: &[&str] = &[
         id          INTEGER PRIMARY KEY,
         org_id      INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
         url         TEXT NOT NULL,
-        secret      TEXT NOT NULL,                -- HMAC-SHA256 signing secret (shared with subscriber)
+        secret      LONGTEXT NOT NULL,            -- HMAC-SHA256 signing secret, shared with subscriber (unbounded; never truncate)
         events      TEXT NOT NULL,                -- JSON array of subscribed event-type strings ([] = all)
         active      INTEGER NOT NULL DEFAULT 1,
         created_at  INTEGER NOT NULL
@@ -800,7 +800,7 @@ const MIGRATIONS: &[&str] = &[
         id              INTEGER PRIMARY KEY,
         webhook_id      INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
         event           TEXT NOT NULL,            -- the event-type string
-        payload         TEXT NOT NULL,            -- the JSON body, as signed and POSTed
+        payload         LONGTEXT NOT NULL,        -- the JSON body, as signed and POSTed (unbounded; never truncate)
         status          TEXT NOT NULL,            -- pending|delivered|failed
         response_code   INTEGER,                  -- last HTTP status observed, when any
         attempts        INTEGER NOT NULL DEFAULT 0,
@@ -988,7 +988,7 @@ const MIGRATIONS: &[&str] = &[
         id            INTEGER PRIMARY KEY,
         user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         credential_id TEXT NOT NULL UNIQUE,         -- base64url of the raw cred id
-        public_key    TEXT NOT NULL,                -- base64 of the COSE public key
+        public_key    LONGTEXT NOT NULL,            -- base64 of the COSE public key (RSA keys exceed 255 chars; never truncate)
         sign_count    INTEGER NOT NULL DEFAULT 0,   -- authenticator signature counter
         transports    TEXT,                         -- advisory: JSON array of transports
         label         TEXT,                         -- advisory: human label
@@ -6679,6 +6679,16 @@ impl Database {
         result_tag: Option<&str>,
         detail: Option<&str>,
     ) -> Result<i64> {
+        // Sanitize the caller-controlled text fields against log/stored
+        // injection: `actor_label` (token/session labels), `scope` (registry and
+        // org slugs), and `detail` (free-form context, often a URL or name) can
+        // carry attacker-influenced strings. Stripping embedded C0 controls here
+        // — the single audit choke point — protects every caller without
+        // touching the dozens of call sites. `actor_kind`/`action` are
+        // hub-internal enum literals and are recorded verbatim.
+        let actor_label = sanitize_log_text(actor_label);
+        let scope = sanitize_log_text(scope);
+        let detail = detail.map(sanitize_log_text);
         self.backend.execute_insert(
             "INSERT INTO audit_log
              (change_id, actor_kind, actor_id, actor_label, action, scope,
@@ -7497,6 +7507,34 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// Strip C0 control characters (except tab) from a string destined for the
+/// audit log or a structured log field.
+///
+/// Audit `actor_label`/`scope`/`detail` and similar fields can carry
+/// caller-controlled text (token labels, package names, OIDC subjects, fetch
+/// URLs). A `CR`/`LF` or other C0 control embedded in that text could forge or
+/// corrupt a log line (log injection) or store a value that misleads an
+/// operator reading the audit feed. The WebUI HTML-escapes on render, so this
+/// is *not* an XSS guard — it protects log/stored integrity. `\t` (0x09) is
+/// preserved as benign whitespace; every other character below `0x20` and the
+/// `DEL` (0x7f) control are replaced with a single space, so the field's length
+/// and word boundaries are preserved while line and field structure cannot be
+/// broken.
+fn sanitize_log_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c == '\t' {
+                c
+            } else if c.is_control() {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7974,6 +8012,51 @@ mod tests {
         let all = db.list_audit("").unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].action, "b", "newest first");
+    }
+
+    #[test]
+    fn sanitize_log_text_strips_c0_controls_but_keeps_tab() {
+        // CR/LF and other C0 controls collapse to spaces; a tab is preserved.
+        assert_eq!(sanitize_log_text("a\r\nb"), "a  b");
+        assert_eq!(sanitize_log_text("x\tnice"), "x\tnice");
+        assert_eq!(sanitize_log_text("ctrl\x07bell\x7fdel"), "ctrl bell del");
+        assert_eq!(sanitize_log_text("clean/path-1.0"), "clean/path-1.0");
+    }
+
+    #[test]
+    fn record_audit_sanitizes_crlf_in_detail_and_label() {
+        let db = Database::open_in_memory().unwrap();
+        // A forged label/detail with embedded CRLF must be stored sanitized so a
+        // reader of the audit feed (or a log line derived from it) cannot be
+        // fooled by an injected newline.
+        db.record_audit(
+            "token",
+            None,
+            "label\r\nINJECTED admin",
+            "publish",
+            "acme/cdn",
+            None,
+            None,
+            None,
+            Some("fetching http://host/x\r\nFAKE: line"),
+        )
+        .unwrap();
+        let rows = db.list_audit("acme/cdn").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            !rows[0].actor_label.contains('\n') && !rows[0].actor_label.contains('\r'),
+            "label retained CR/LF: {:?}",
+            rows[0].actor_label
+        );
+        let detail = rows[0].detail.as_deref().unwrap_or("");
+        assert!(
+            !detail.contains('\n') && !detail.contains('\r'),
+            "detail retained CR/LF: {detail:?}"
+        );
+        assert!(
+            detail.contains("http://host/x"),
+            "content preserved: {detail:?}"
+        );
     }
 
     #[test]

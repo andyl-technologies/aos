@@ -343,16 +343,24 @@ enum CoseValue {
 /// Reads the `kty` (label 1), `alg` (label 3), `crv` (label -1), and the key
 /// material (`x` = label -2, `y` = label -3), then dispatches on `kty`:
 ///
-/// - OKP / Ed25519 (kty 1, crv 6): label -2 is the 32-byte public key.
+/// - OKP / Ed25519 (kty 1, crv 6, alg -8): label -2 is the 32-byte public key.
 /// - EC2 / P-256 (kty 2, crv 1, alg -7): labels -2/-3 are the 32-byte
 ///   coordinates; an uncompressed SEC1 point is reconstructed.
 /// - RSA (kty 3, alg -257): label -1 is the modulus `n`, label -2 is the
 ///   exponent `e`.
 ///
+/// The COSE `alg` label is required, must be in the supported set
+/// {-8 EdDSA, -7 ES256, -257 RS256}, and must be consistent with the key type
+/// (e.g. an EC2 key must carry `alg = -7`). A credential whose `alg` is missing,
+/// outside the set, or inconsistent with its `kty`/`crv` is refused — hardening
+/// against a malformed registration even though the assertion verifier
+/// independently dispatches on the decoded key variant.
+///
 /// # Errors
 ///
-/// Returns an error on malformed CBOR, an unsupported `kty`/`crv`/`alg`, a
-/// missing key component, or an invalid key encoding.
+/// Returns an error on malformed CBOR, a missing/unsupported/inconsistent
+/// `alg`, an unsupported `kty`/`crv`, a missing key component, or an invalid
+/// key encoding.
 pub fn decode_cose_key(cbor: &[u8]) -> Result<VerifyingPublicKey> {
     let value: ciborium::value::Value =
         ciborium::de::from_reader(cbor).context("decoding COSE key CBOR")?;
@@ -389,9 +397,28 @@ pub fn decode_cose_key(cbor: &[u8]) -> Result<VerifyingPublicKey> {
     };
 
     let kty = int(1).ok_or_else(|| anyhow!("COSE key has no kty (label 1)"))?;
+    // The credential's declared COSE algorithm (label 3) must be present, in the
+    // supported set, and consistent with the key type below. Even though the
+    // verifier later dispatches on the decoded key *variant* (so a forged `alg`
+    // cannot induce algorithm confusion at verification time), a registration
+    // whose `alg` disagrees with its `kty`/`crv` — or names an algorithm the hub
+    // does not support — is malformed and is refused here so it never reaches
+    // the credential store. Supported: -8 (EdDSA/Ed25519), -7 (ES256/P-256),
+    // -257 (RS256/RSA).
+    let alg = int(3).ok_or_else(|| anyhow!("COSE key has no alg (label 3)"))?;
+    match alg {
+        -8 | -7 | -257 => {}
+        other => bail!(
+            "unsupported COSE algorithm alg={other} \
+             (only -8 EdDSA, -7 ES256, -257 RS256 are supported)"
+        ),
+    }
     match kty {
         // OKP / Ed25519.
         1 => {
+            if alg != -8 {
+                bail!("COSE alg={alg} is inconsistent with OKP key type (EdDSA / -8 required)");
+            }
             let crv = int(-1).ok_or_else(|| anyhow!("OKP key has no crv"))?;
             if crv != 6 {
                 bail!("unsupported OKP curve {crv} (only Ed25519 / crv 6 is supported)");
@@ -406,6 +433,9 @@ pub fn decode_cose_key(cbor: &[u8]) -> Result<VerifyingPublicKey> {
         }
         // EC2 / P-256, ES256.
         2 => {
+            if alg != -7 {
+                bail!("COSE alg={alg} is inconsistent with EC2 key type (ES256 / -7 required)");
+            }
             let crv = int(-1).ok_or_else(|| anyhow!("EC2 key has no crv"))?;
             if crv != 1 {
                 bail!("unsupported EC2 curve {crv} (only P-256 / crv 1 is supported)");
@@ -426,6 +456,9 @@ pub fn decode_cose_key(cbor: &[u8]) -> Result<VerifyingPublicKey> {
         }
         // RSA, RS256.
         3 => {
+            if alg != -257 {
+                bail!("COSE alg={alg} is inconsistent with RSA key type (RS256 / -257 required)");
+            }
             use rsa::traits::PublicKeyParts as _;
             use rsa::BigUint;
             let n = bytes(-1).ok_or_else(|| anyhow!("RSA key has no modulus n"))?;
@@ -1202,6 +1235,85 @@ mod tests {
         let mut out = Vec::new();
         ciborium::ser::into_writer(&Value::Map(map), &mut out).unwrap();
         out
+    }
+
+    /// Re-encode a COSE key CBOR map with the `alg` (label 3) entry replaced by
+    /// `new_alg`, preserving every other entry. Used to forge an inconsistent or
+    /// unsupported algorithm label.
+    fn cose_with_alg(cose: &[u8], new_alg: i64) -> Vec<u8> {
+        use ciborium::value::{Integer, Value};
+        let value: Value = ciborium::de::from_reader(cose).unwrap();
+        let mut map = value.as_map().unwrap().clone();
+        for (k, v) in &mut map {
+            if matches!(k, Value::Integer(i) if i128::from(*i) == 3) {
+                *v = Value::Integer(Integer::from(new_alg));
+            }
+        }
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(map), &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn cose_rejects_unsupported_and_inconsistent_alg() {
+        // Supported, consistent keys decode (sanity: the helper preserves them).
+        let ed = SoftAuthenticator::ed25519(b"x").cose_public_key();
+        let p = SoftAuthenticator::p256(b"x").cose_public_key();
+        assert!(decode_cose_key(&ed).is_ok());
+        assert!(decode_cose_key(&p).is_ok());
+
+        // An algorithm outside the supported set is rejected (ES384 = -35).
+        assert!(
+            decode_cose_key(&cose_with_alg(&p, -35)).is_err(),
+            "an unsupported alg must be rejected"
+        );
+
+        // An EC2 (P-256) key labelled EdDSA (-8) is inconsistent -> rejected.
+        assert!(
+            decode_cose_key(&cose_with_alg(&p, -8)).is_err(),
+            "alg=-8 on an EC2 key must be rejected"
+        );
+        // An OKP (Ed25519) key labelled ES256 (-7) is inconsistent -> rejected.
+        assert!(
+            decode_cose_key(&cose_with_alg(&ed, -7)).is_err(),
+            "alg=-7 on an OKP key must be rejected"
+        );
+        // An OKP key labelled RS256 (-257) is inconsistent -> rejected.
+        assert!(
+            decode_cose_key(&cose_with_alg(&ed, -257)).is_err(),
+            "alg=-257 on an OKP key must be rejected"
+        );
+    }
+
+    #[test]
+    fn register_rejects_inconsistent_alg_credential() {
+        // A full registration whose attested COSE key carries an inconsistent
+        // alg must be refused at finish_registration, not just at decode.
+        let db = Database::open_in_memory().unwrap();
+        let user = db.create_user("u@x.com", None).unwrap();
+        let auth = SoftAuthenticator::p256(b"p256-badalg");
+        let challenge = begin_registration(&db, user, "u@x.com", RP_ID, "Hub")
+            .unwrap()
+            .challenge;
+        // Build attested authenticatorData, then rewrite the embedded COSE key's
+        // alg to an inconsistent value (-8 EdDSA on an EC2 key). The COSE key is
+        // the trailing bytes of the attested authData.
+        let auth_data = auth.authenticator_data(RP_ID, 0, true);
+        let good_cose = auth.cose_public_key();
+        let bad_cose = cose_with_alg(&good_cose, -8);
+        let split = auth_data.len() - good_cose.len();
+        let mut tampered = auth_data[..split].to_vec();
+        tampered.extend_from_slice(&bad_cose);
+        let cdj = client_data_json(TYPE_CREATE, &challenge, ORIGIN);
+        let response = RegistrationResponse {
+            client_data_json: cdj,
+            attestation_object: attestation_object(&tampered, "none"),
+        };
+        let err = finish_registration(&db, user, RP_ID, ORIGIN, &response, None);
+        assert!(
+            err.is_err(),
+            "inconsistent-alg registration must be refused"
+        );
     }
 
     #[test]

@@ -554,6 +554,12 @@ async fn copy_path(fetch: &dyn SurfaceFetch, root: &std::path::Path, path: &str)
         return Ok(false);
     };
     let target = safe_join(root, path)?;
+    // Containment (L1): mirror copies write into a local binding root the same
+    // way the upload facade does. `safe_join` rejects `..`/absolute paths but
+    // follows symlinks, so require the canonicalized write parent to stay under
+    // the canonicalized root before writing — a binding-root component that is a
+    // symlink out of the tree must not let a mirror copy land outside it.
+    crate::fetch::ensure_within_root(root, &target).await?;
     write_atomic(&target, &bytes).await?;
     Ok(true)
 }
@@ -709,6 +715,9 @@ pub async fn fetch_through(
             crate::surface::object::decode_loose(&bytes, Some(oid))
                 .with_context(|| format!("verifying pulled object {path}"))?;
             let target = safe_join(root, path)?;
+            // Containment (L1): same symlink-escape guard as the copy/upload
+            // paths before persisting a pulled-through object into the cache.
+            crate::fetch::ensure_within_root(root, &target).await?;
             write_atomic(&target, &bytes).await?;
             Ok(Some(PullResult {
                 bytes,

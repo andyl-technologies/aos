@@ -345,6 +345,20 @@ pub async fn put_machine_path(
         Ok(target) => target,
         Err(_) => return (StatusCode::BAD_REQUEST, "unsafe surface path").into_response(),
     };
+    // Containment (L1): `safe_join` rejects `..`/absolute components but still
+    // follows symlinks. Require the canonicalized write parent to stay under the
+    // canonicalized binding root, mirroring the read facade, so a binding-root
+    // component that is a symlink out of the tree cannot steer a `PUT` outside
+    // the surface. A normal write under a real binding tree is unaffected.
+    if let Err(err) = crate::fetch::ensure_within_root(&root, &target).await {
+        tracing::warn!(
+            slug = %registry.slug,
+            %path,
+            error = %format!("{err:#}"),
+            "refusing upload that escapes the binding root"
+        );
+        return (StatusCode::BAD_REQUEST, "unsafe surface path").into_response();
+    }
     // The old on-disk size, if any, drives the overwrite delta below. Read it
     // before reserving and before writing so an overwrite charges only the
     // size change, and a brand-new object charges its full size.
@@ -387,6 +401,18 @@ pub async fn put_machine_path(
 
     let mutable = is_mutable_pointer(path);
     if mutable {
+        // SECURITY/TODO(L6): this publish lease is process-local (an in-memory
+        // `Mutex<HashMap>` in `AppState`). It correctly serializes pointer flips
+        // within a single hub process — the common single-replica deployment —
+        // but in a multi-replica HA deployment two publishers landing on
+        // *different* replicas each see an empty local lease map, so both can
+        // acquire and interleave their pointer flips for the same registry. The
+        // intended fix is a DB-backed lease: an atomic lease row keyed by
+        // `registry_id` holding `(holder_token_id, deadline)`, acquired with a
+        // single conditional upsert (take iff no live lease or already mine) and
+        // released on publish completion, so the lease is shared across replicas.
+        // Deferred here because it adds a cross-dialect migration and changes the
+        // hot publish path; tracked as RFC-0004 "later phase" multi-process work.
         if let Err(holder) = state.leases.acquire(registry.id, &token_id, unix_now()) {
             // Release the reservation we just made: this write is rejected, so
             // its bytes never land.
