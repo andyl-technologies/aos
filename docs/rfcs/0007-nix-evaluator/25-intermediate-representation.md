@@ -600,6 +600,52 @@ demand graph (§6).
   blake3 over file content + schema version, with file-local symbol remapping for
   load-order independence.
 
+## Implementation checklist
+
+Per-feature tracker for the intermediate representation (the node taxonomy, the scope-resolved typed form, runtime-concept encodings, the effect-class annotation, demand-graph integration, and serialization); master roll-up: [implementation checklist (all phases)](22-implementation-checklist-all-phases.md). Per the unlimited-budget mandate, every item here is in scope — including research-grade ones — built in dependency order and gated by the differential harness, never cut for scope.
+
+The IR is the **P1** contract (decision `S-19`): the single arena IR every tier consumes. Every item lands under the tree-walk oracle and is gated by the differential `.drv` harness ([15](15-differential-testing-and-benchmarking.md)) plus the conformance surfaces ([20](20-nix-language-conformance.md)/[21](21-builtins-conformance.md)); the IR pipeline that produces it is owned by [frontend, parser, and IR](04-frontend-parser-and-ir.md).
+
+### Arena and node taxonomy (§2)
+
+- [ ] Flat-arena `Vec<IrNode>`: fixed-stride `IrNode { kind, span, effect, data }`, `u32` `NodeId`/`Symbol`, variable-arity children in a `(start, len)` `ChildPool` slice — position-independent, near-`memcpy`-serializable (§2, §2.1) — **P1**, `S-19`.
+- [ ] The closed `NodeKind` taxonomy (literals, de Bruijn variables, binders, construction, access, control, operators, application, primop, interp, `ThunkAlloc`, `DerivationStrict`); adding a kind is a schema-version bump (§2, §2.1) — **P1**, `S-19`.
+- [ ] `BinOpKind`/`UnOpKind` enums with `+` overload deferred to evaluation, matching C++ Nix (§2.1) — **P1**; operator conformance ([20](20-nix-language-conformance.md)).
+- [ ] Side tables: `ChildPool`/`ChildSlice`, `FrameInfo`, `Upvalue`, `AttrPathSeg` (static-symbol / dynamic-`${}`); inline literal payloads (`i64`/`f64`/bit/interned `Symbol`) (§2.2) — **P1**, `S-19`.
+
+### Scope-resolved typed form (§3)
+
+- [ ] Born-resolved invariant: no name lookup survives except `WithVar`; lexical access is `(depth, slot)` array indexing (§3 item 1) — **P1**, `S-19`/`S-11`.
+- [ ] Exact per-lambda capture list in `FrameInfo.captures` (free-var set, nothing more) — precondition for cheap GC tracing and escape analysis (§3 item 2) — **P1**.
+- [ ] Explicit thunk placement: `ThunkAlloc` materialized conservatively (everything non-trivial), with thunk *placement* part of the IR contract (§3 item 3) — **P1**; strictness later *removes* `ThunkAlloc` nodes (**P4**, [07](07-laziness-and-whole-program-analyses.md)).
+
+### Runtime-concept encodings (§4)
+
+- [ ] `ThunkAlloc(inner)` → `aos_alloc_thunk`; forcing is the consuming node's `aos_force` demand (not an IR node) (§4.1) — **P1**; native-compile lowering **P6** ([08](08-execution-tiers-and-cranelift.md)).
+- [ ] `Lambda` encoding: pattern (single param / formal set with lazy per-formal defaults + ellipsis + `@`-alias), frame, captures; curried single-arg `Apply`; observable arity/missing/extra-attr errors (§4.2) — **P1**; pattern conformance ([20](20-nix-language-conformance.md)).
+- [ ] `AttrSet` carrying a hidden-class `shape` ref, ordered entries, `rec`, `has_dynamic`; source-order + attr-path merge preserved (observable in `.drv`) (§4.3) — **P1** ordering correctness; hidden-class machinery **P5** ([09](09-attribute-sets-hidden-classes-and-inline-caches.md), `S-10`).
+- [ ] `Select`/`HasAttr` with `AttrPathSeg` path + `or` default + a stable inline-cache site id routed through `aos_select_ic` (§4.3) — **P1** node shape; the PIC itself **P5**, `S-10`.
+- [ ] `With(scrutinee, body)` + `WithVar(sym, WithChainId)` baking in lexical-beats-`with` / inner-beats-outer probe order; runtime probe on the inline-cache machinery (§4.4) — **P1**; `with`-scope conformance.
+- [ ] `PrimOp(prim, args)` as a *direct* statically-known builtin call (vs `GlobalVar`/`Apply` for indirected builtins), per-primop argument strictness matching C++ Nix (§4.5) — **P1**, `S-12`.
+- [ ] String-context encoding: `Interp` fixes fragment order for deterministic context union; `BinOp(Add)` unions; context builtins are ordinary `PrimOp`s — IR never reorders/drops context-bearing concat (§4.6) — **P1**; string-context parity (`S-13`).
+- [ ] `DerivationStrict(arg)` as the first-class, statically-locatable `.drv` boundary node — always `Effectful`, a hard speculation barrier (§4.7) — **P1**, `S-13`; the differential harness anchors here.
+
+### Effect-class annotation (§5)
+
+- [ ] `EffectClass { Pure, Effectful }` on every node; classification rule (effectful = `DerivationStrict`, `import`, IFD, fs/env readers; pure = everything else) (§5) — **P1**, `S-19`/`C-20`.
+- [ ] The error-quarantine discipline consumed in all three places — speculation, the simplifier, the demand graph — so no speculative/eager work surfaces an error or effect until genuinely demanded (§5) — **P1** contract; enforced by speculation (`C-19`, [04](04-frontend-parser-and-ir.md) §9.6), the simplifier (`C-21`, [07](07-laziness-and-whole-program-analyses.md) §7.5.3), and the cache (`C-20`, [12](12-incremental-evaluation-cache.md)).
+
+### Demand-graph integration (§6)
+
+- [ ] IR produced by a **compile-node** mapping source bytes → IR keyed by content/AST hash; the simplifier a second compile-node keyed by input-IR hash; native compile a lazier compile-node over the same IR (§6) — parse-/simplify-nodes **P1–P2** (`C-19`/`C-20`/`C-21`); native-compile **P6**.
+- [ ] Disambiguation held in code/comments: "demand graph" (memoization graph) vs "graph reduction" (lazy evaluation) vs "derivation graph" (`.drv` DAG); IR nodes vs graph nodes never conflated (§6) — **P1** discipline.
+
+### Serialization (§7)
+
+- [ ] Serialize the resolved IR arena + side tables + file-local symbol table by near-`memcpy`; `mmap` zero-copy load; `ir.bin`/`symbols.bin`/`meta.toml` layout (§7.1) — **P1**, `S-19`/`S-11`.
+- [ ] `blake3` content-addressed cache key over file content + `evaluator_schema_version` + lex/parse flags; wholesale invalidation on schema bump; advisory function-table semantics (§7.2) — **P1**, `S-15`.
+- [ ] File-local `Symbol` remapping for load-order-independent IR hash (precondition for stable cross-run/cross-machine early cutoff) (§7.3) — **P1**, `S-14` enabler.
+
 ## References
 
 - de Bruijn indexing (scope resolution by counting intervening binders) —

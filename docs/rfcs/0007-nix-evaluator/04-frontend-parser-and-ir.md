@@ -944,6 +944,53 @@ exists before any Cranelift work begins.
    entirely to runtime inline caches. Cross-cuts
    [attribute sets, hidden classes, and inline caches](09-attribute-sets-hidden-classes-and-inline-caches.md).
 
+## Implementation checklist
+
+Per-feature tracker for the frontend (lexer, parser, arena AST, scope resolution, IR lowering, and the parse/compile cache); master roll-up: [implementation checklist (all phases)](22-implementation-checklist-all-phases.md). Per the unlimited-budget mandate, every item here is in scope — including research-grade ones — built in dependency order and gated by the differential harness, never cut for scope.
+
+Frontend is the **P1** foundation (decision `S-11`): every item below lands under the tree-walk oracle and is gated by the differential `.drv` harness plus the token-/parse-level conformance layers ([20](20-nix-language-conformance.md)) before any optimization tier exists.
+
+### Lexer (§3)
+
+- [ ] Byte-oriented zero-copy scanner emitting `Token { kind, span }` with one-token lookahead, no per-token allocation (§3.1) — **P1**, `S-11`; token-level differential conformance ([15](15-differential-testing-and-benchmarking.md)).
+- [ ] `TokenKind` taxonomy incl. path / search-path (`<nixpkgs>`) / URI-as-literal classes and the maximal-munch boundary rules (`a/b` vs `a /b` vs `./a`, float boundaries) (§3.2) — **P1**; parity-hazard conformance (§8, doc 20).
+- [ ] String-fragment state machine: `StrStart`/`StrPart`/`DollarBrace`/… mode stack for double-quoted and indented strings (§3.3) — **P1**; corner-case suite.
+- [ ] Indented-string de-indentation algorithm (common-indentation, blank-line, line-start `${}` rules) reproduced bit-for-bit, plus all escape forms (§3.3) — **P1**; dedicated corner-case conformance suite.
+- [ ] Trivia emission (whitespace/comments) for tooling, skipped by the parser's `bump()`; trivia-suppressing pure-eval mode left as a single retained-trivia lexer for now (§3.2, §12 Q3) — **P1** baseline, `M-16` (measure-gated; single lexer is the default).
+- [ ] Symbol interner at the lexer/parser seam: dense `u32` `Symbol`, shared append-only table, deterministic renumbering for cache serialization (§3.4) — **P1**, `S-11`.
+
+### Parser (§4)
+
+- [ ] Compact arena AST: single `Vec<Node>`, `u32` `NodeId` cross-references, side child pool for variable-arity children — no `Box`/`Rc` (§4.1) — **P1**, `S-11`; differential parser tests vs the rnix oracle (`C-7`).
+- [ ] Recursive-descent statement skeleton (`let`/`with`/`assert`/`if`, lambda patterns, attrset/list bodies) (§4.2) — **P1**.
+- [ ] Bounded-lookahead lambda-vs-attrset disambiguation reproducing C++ Nix's yacc ambiguity (§4.2) — **P1**; dedicated parity tests.
+- [ ] Pratt operator sub-parser with the exact Nix binding-power table, incl. non-associative chaining rejection and `+` overload deferral (§4.3) — **P1**; full precedence/associativity conformance (§8, doc 20).
+- [ ] `Select`/`HasAttr` attribute-path parsing with `or` defaults and dynamic `${}` components (§4.3) — **P1**.
+- [ ] Parse-time desugarings — interpolation → `Interp`, attr-path merge, `inherit` / `inherit (e)`, indented-string resolution — each proven order-/error-preserving, with no constant folding or binding reorder (§4.4) — **P1**; attr-path merge + `inherit`-scope conformance (§8).
+- [ ] First-error stop on the hot path plus span/trivia retention for a C++ Nix-compatible diagnostics mode (§4.5) — **P1**; error-class parity (soft gate, `C-26`/process decision).
+
+### Scope resolution → IR (§5–§6)
+
+- [ ] Bottom-up resolver turning every `Ident` into `LocalVar(slot)` / `UpvalVar(depth, slot)` / `GlobalVar(sym)` / `WithVar(...)` via a scope-frame stack (de Bruijn `(depth, slot)`) (§6.1–§6.2) — **P1**, `S-11`.
+- [ ] Self-visible `rec`/`let` frames pushed before resolving RHSes, preserving Nix thunk-cycle/blackhole behavior (§6.2) — **P1**.
+- [ ] `with`-classification: emit `WithVar` only when no lexical binder shadows; record the innermost-first `with` chain; reproduce lexical-beats-`with` / inner-beats-outer probe order exactly (§6.3) — **P1**; `with`-scope conformance (§8). Frontend `with`-shape speculation hooks left entirely to runtime inline caches (`R-8`, **P5/P8** research-grade) — IN SCOPE, deferred in dependency order.
+- [ ] Precise per-lambda upvalue/free-variable capture set computation (no over-capture) (§6.4) — **P1**; prerequisite for escape analysis ([07](07-laziness-and-whole-program-analyses.md)).
+- [ ] Resolver side tables: `FrameInfo { slot_count, captures, rec, has_with }`, `Upvalue { depth, slot }`, index-addressed for serialization (§6.5) — **P1**.
+- [ ] IR lowering: variables-resolved, thunking-explicit, single-source-for-all-tiers arena IR; conservatively thunk everything non-trivial (§5, §5.1) — **P1**, `S-11`/`S-19` (taxonomy owned by [25](25-intermediate-representation.md)).
+
+### Parse / compile cache (§9)
+
+- [ ] Content-addressed parse cache: `blake3(file_content ⧺ schema_version ⧺ flags)` key, content-not-mtime, schema-version wholesale invalidation (§9.2) — **P1**, `S-11`/`S-15`.
+- [ ] Serialize the scope-resolved IR arena + side tables by near-`memcpy`; `mmap` zero-copy load; cache layout `ir.bin`/`symbols.bin`/`meta.toml` (§9.3–§9.4) — **P1**.
+- [ ] File-local symbol-table remapping for load-order-independent cache keys (precondition for stable cross-run/cross-machine early cutoff) (§9.3) — **P1**, `S-14` enabler.
+- [ ] `import`/file-resolution memoization keyed on realpath + content hash, shared IR across symlink/search-path indirection (§9.2) — **P1**, `S-12`.
+
+### Parse/compile as demand-graph nodes (§9.6)
+
+- [ ] Lazy split: parse on first `import` demand, native-compile deferred until hot — parse and compile as two demand-graph nodes with different eagerness (§9.6) — **P1** parse-lazy committed; native-compile-on-heat ties to tiers ([08](08-execution-tiers-and-cranelift.md), **P6**); `C-19`/`C-20`.
+- [ ] Parallel parse/compile of independent files on the rayon work-stealing pool (§9.6) — **P3.5**, `C-19`; differential identity vs sequential oracle + `loom`/Miri audit (`R-4`).
+- [ ] Speculative prefetch along statically-known import edges, with the error-quarantine guardrail (speculative parse failure stashed, raised only on genuine demand) and bounded idle-worker scheduling (§9.6) — **P3.5/P8**, `C-19`/`M-23` (measure-gated aggressiveness, IN SCOPE); error-quarantine soundness via the effect-class discipline ([25](25-intermediate-representation.md) §5).
+
 ## References
 
 - rnix-parser (Rust Nix parser, built on `rowan`, lossless CST):

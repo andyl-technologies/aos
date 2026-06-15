@@ -702,6 +702,54 @@ at all (§8, deferred to measurement); whether HAMT-valued select sites need a
 dedicated IC entry kind or fold into megamorphic (§6.4). All are gated behind
 the differential harness and resolved by measurement, never by assumption.
 
+## Implementation checklist
+
+Per-feature tracker for attribute sets — hidden classes, inline caches, HAMT
+overlays, and iteration-order compatibility; master roll-up:
+[implementation checklist (all phases)](22-implementation-checklist-all-phases.md).
+Per the unlimited-budget mandate, every item here is in scope — including
+research-grade ones — built in dependency order and gated by the differential
+harness, never cut for scope.
+
+### Symbol interning (foundation)
+
+- [ ] Global append-only `SymbolTable` interning attribute names to dense `u32` `Symbol` at parse time; spelling + lexicographic sort rank retained ([§3](#3-symbol-interning-attribute-names-are-u32)) — P1, `S-10`; gate: conformance 20-21.
+- [ ] Lock-free / unsynchronized shared read access for parallel forcing workers (append-only ⇒ no reader lock) ([§3](#3-symbol-interning-attribute-names-are-u32), [13](13-parallel-evaluation.md)) — P3.5, `C-12`; gate: loom.
+
+### Hidden classes (shapes) and the transition tree
+
+- [ ] `Shape` descriptor: ordered key vector, symbol → slot-offset map, cached iteration order, xxh3 key-vector fingerprint ([§4.1](#41-the-factoring)) — P5, `S-10`.
+- [ ] Instance layout `{ shape: &Shape, values: [Value; n] }` (pointer + flat value array) ([§4.1](#41-the-factoring)) — P5.
+- [ ] Transition tree rooted at the empty shape; `Symbol -> &Shape` edges cached on each parent; pointer-identity shape equality ([§4.2](#42-the-transition-tree)) — P5, `S-10`.
+- [ ] Compile-time shape resolution for static `{ ... }` literals (no per-instance shape lookup; runtime just fills a values array) ([§4.2](#42-the-transition-tree)) — P5.
+- [ ] Shape interning by fingerprint + instance hash-consing (same shape + pointerwise-equal values collapse to one heap object) ([§4.3](#43-interaction-with-hash-consing)) — P5, `S-7`.
+
+### Inline caches on selection sites
+
+- [ ] `InlineCache` state machine `Uninitialized → Monomorphic → Polymorphic → Megamorphic`, cap `N` (default 4), no invalidation protocol (immutability) ([§5.1](#51-the-mechanism)) — P5, `S-10`; gate: differential `.drv` harness.
+- [ ] Monomorphic fast path: shape guard + constant-offset load, slow path widens the IC ([§5.2](#52-what-the-baseline-tier-emits)) — P5.
+- [ ] Slow-path edge doubles as the deopt / uncommon-trap edge in the optimized tier ([§5.2](#52-what-the-baseline-tier-emits), [08 §3](08-execution-tiers-and-cranelift.md)) — P7, `S-5`.
+- [ ] `select_slow` general resolver dispatching on representation (binary search for `Flat`, HAMT `get` for `Hamt`) ([§5.1](#51-the-mechanism), [§6.4](#64-interaction-with-inline-caches)) — P5.
+
+### The update operator `//`
+
+- [ ] Small / shape-stable case: result-shape via transition tree + flat copy, preserving a-then-new-b order ([§6.1](#61-small--shape-stable-case-transition--flat-copy)) — P5.
+- [ ] Large / override-heavy case: persistent HAMT (CHAMP layout) with structural sharing ([§6.2](#62-large--override-heavy-case-hamt-persistent-map)) — P5, `S-10`; gate: benchmark.
+- [ ] `AttrSetRepr` `Flat` ↔ `Hamt` measured promotion policy, invisible to `.drv` bytes ([§6.3](#63-the-policy-and-the-unified-value-view)) — P5; gate: differential `.drv` harness (both representations diffed).
+- [ ] HAMT-valued select-site IC policy (distinguished HAMT entry vs fold into megamorphic) ([§6.4](#64-interaction-with-inline-caches)) — P5.
+
+### Iteration-order compatibility (acceptance-critical)
+
+- [ ] Decoupled storage order (internal) vs observable lexicographic-by-spelling order (C++-Nix-identical) ([§7.1](#71-two-distinct-orders), [§7.2](#72-the-subtlety-symbol-id-order-vs-spelling-order)) — P1, `S-10`/`S-2`; gate: differential `.drv` harness.
+- [ ] Raw unsigned-byte `&[u8]` collation (not locale/Unicode), adversarial non-ASCII key cases in the harness (O-1) ([§7.2](#72-the-subtlety-symbol-id-order-vs-spelling-order)) — P1; gate: conformance 20-21 + harness (research-grade until confirmed).
+- [ ] Cached lexicographic permutation per shape + per-symbol sort rank (integer-compare ordering) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.
+- [ ] Ordered view for `Hamt` instances (collect keys, sort by cached rank, memoize on the root) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.
+- [ ] `derivationStrict` consumes the cached order; every shape's `iteration_order` cross-checked against sorted spelling on the oracle ([§7.4](#74-derivationstrict-is-the-acceptance-critical-consumer)) — P1, `S-13`; gate: differential `.drv` harness.
+
+### Measure-first instrumentation
+
+- [ ] Shape census, IC terminal-state histogram, `//` size + chain-depth distribution, order-parity harness ([§8](#8-measure-first-validation-and-tuning-surface)) — P5; tuning surface (`N`, `Flat`↔`Hamt` thresholds) cannot alter produced bytes.
+
 ## References
 
 - Urs Hölzle, Craig Chambers, David Ungar. *Optimizing Dynamically-Typed

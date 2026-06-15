@@ -600,6 +600,34 @@ whether it is committed (C-21) or measure-gated (M-24) per the
 content-addressed compile-node, validated end-to-end by the byte-identical `.drv`
 gate of [differential testing and benchmarking](15-differential-testing-and-benchmarking.md).
 
+## Implementation checklist
+
+Per-feature tracker for the optimization pass catalog (the simplifier driver and its 14 IR-to-IR passes); master roll-up: [implementation checklist (all phases)](22-implementation-checklist-all-phases.md). Per the unlimited-budget mandate, every item here is in scope — including research-grade ones — built in dependency order and gated by the differential harness, never cut for scope. This is the compact roll-up; each per-pass §2.N subsection above is the spec the implementor builds from (its own **Status** line is authoritative), and this list does **not** duplicate those Matches/Rewrite/Precondition contracts.
+
+The simplifier is the GHC-style Core-to-Core optimizer (decision `C-21`), a memoized pure compile-node landing in **P4** (it consumes the strictness/cardinality/escape analyses of [07](07-laziness-and-whole-program-analyses.md) and annotates the IR the tier-0 oracle walks, before any JIT exists). Every rewrite is validated end-to-end by the byte-identical `.drv` gate ([15](15-differential-testing-and-benchmarking.md)), anchored at the `DerivationStrict` nodes.
+
+### The driver (§1, §3)
+
+- [ ] Memoized fixpoint driver: phased `Gentle → Main → Final`, repeat-to-local-fixpoint per phase, analyses interleaved (`refresh_facts` on the smaller IR), capped at `MAX_ITERS`, the whole pipeline one compile-node keyed by input-IR hash (§1) — **P4**, `C-21`; iteration count / aggressiveness `M-24`.
+- [ ] The "expose before exploit" phase ordering and the binding soundness floor — only observably-transparent rewrites, never fold a failing/effectful node eagerly (error quarantine), never make a binding strict unless *proven* (§1, §3) — **P4**, `C-21`.
+
+### The 14 passes (§2.1–§2.14)
+
+- [ ] 2.1 Inlining / beta-reduction — the keystone, re-thunking substituted args to preserve call-by-need (§2.1) — **P4**, committed `C-21`; size threshold / used-once policy `M-24`.
+- [ ] 2.2 Constant folding — total, `Pure` operations only; a fold that would raise declines (§2.2) — **P4**, `C-21`.
+- [ ] 2.3 Case-of-known — `select`/`if`/has-attr on a statically-known value, no dynamic keys (§2.3) — **P4**, `C-21`.
+- [ ] 2.4 Dead-binding elimination — cardinality `Absent`, `Pure` bindings only (§2.4) — **P4**, `C-21`.
+- [ ] 2.5 Common-subexpression elimination — licensed by immutability/hash-consing, cheap on the arena (§2.5) — **P4**, `C-21`.
+- [ ] 2.6 Eta-reduction / eta-expansion — arity-observability-preserving; expansion shapes the worker convention (§2.6) — **P4**, committed core; aggressive expansion `M-24`.
+- [ ] 2.7 let-floating (float-out / float-in) — purity floor; effectful bindings pinned; aggressive in the arena tier (§2.7) — **P4**, `C-21`; daemon residency policy `R-6`.
+- [ ] 2.8 Strictness-driven eager lowering — positive proof from the backward demand fixpoint drops the `ThunkAlloc` (§2.8) — **P4**, committed (analysis lands before any Cranelift work); aggressiveness `M-24`.
+- [ ] 2.9 Worker/wrapper split — unboxed strict args + always-inline wrapper (§2.9) — **P4**, committed core; boxity decisions measure-gated.
+- [ ] 2.10 Cardinality-driven single-entry thunks — `Once` drops the blackhole/update machinery; call-by-name downgrade only for escape-proven *frame-local* thunks so it stays sound under parallel forcing (§2.10) — **P4**, committed; `C-8`; cardinality precision an open research edge.
+- [ ] 2.11 Escape analysis → scalar replacement — `NoEscape` decided against the per-primop escape-signature table; transient aggregates only, interning is the escape boundary (§2.11) — **P4** analysis; escape-signature table property-fuzzed, default-off until green `R-9`.
+- [ ] 2.12 Specialization — statically-known function argument, exact under whole-program closure (§2.12) — **P4**, measure-gated `M-24` (over-specialization bloats IR).
+- [ ] 2.13 Rewrite RULES / list fusion — semantics-preserving algebraic identities on pure immutable lists; the highest-value Nix-specific rewrite (§2.13) — **P4**, measure-gated `M-24` (over-eager fusion can change observable sharing; reverted by the harness).
+- [ ] 2.14 Unboxing / unboxed returns / join points — Cranelift multi-return + SSA block params let §2.9/§2.11 scalars cross control-flow merges (§2.14) — **P4** IR shape; register-allocation specifics belong to the Cranelift tiers (**P6**/**P7**, [08](08-execution-tiers-and-cranelift.md)).
+
 ## References
 
 - GHC Core-to-Core simplifier (the iterated IR-to-IR pipeline, gentle-to-final

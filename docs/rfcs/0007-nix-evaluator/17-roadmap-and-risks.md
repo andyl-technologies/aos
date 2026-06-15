@@ -27,6 +27,51 @@ lives only in the set's `README.md`.
 
 ---
 
+## 0. Budget and scope mandate (unlimited budget)
+
+This is an **unlimited-budget, non-time-bounded** implementation whose goal is
+the **absolute fastest and most efficient** Nix evaluator achievable — not a
+pragmatic, schedule-bounded fix for AOS build time. That mandate changes what
+the rest of this document means, and it is important to separate *what relaxes*
+from *what does not*.
+
+**What the budget mandate relaxes — the economic gates:**
+
+- **The full technique stack is committed.** There is no "90% subset" scope cut.
+  The research-grade (`R-*`) tail in the [decision register](19-decision-register.md)
+  — concurrent moving GC, full effect-based region inference, an **LLVM AOT
+  tier-3** for peak throughput beyond the Cranelift JIT, and the rest — is **in
+  scope**, not deferred.
+- **The ranked subset (§2) is a *build sequence*, not a scope boundary.** Its
+  order is dictated by dependency, correctness, and risk; with unlimited people
+  the independent workstreams proceed in parallel.
+- **`P1.5` is no longer a kill/re-scope gate** (§3). It becomes *baseline
+  characterization*: we still measure where eval time goes, but a finding that
+  eval is a small fraction of build time does not stop the project — the goal is
+  the fastest evaluator regardless.
+- **"Measure-first" is reinterpreted, not discarded.** It changes from "build
+  only if proven worth it" to **"build the competing variants, measure, keep the
+  winner."** The `M-*` register items (NaN-box vs. tagged value, fiber I/O
+  turn-on, inlining thresholds, fusion aggressiveness) become *build-and-select*
+  decisions: we implement the alternatives and let the benchmark choose — and we
+  **never ship a regression**.
+
+**What the budget mandate does *not* relax — the correctness gates (absolute):**
+
+- The differential `.drv`-diff harness (byte parity) gates every feature, always.
+- The `loom`/Miri memory-ordering audit (no data races) gates the parallel tier.
+- The conformance suite ([20](20-nix-language-conformance.md)/[21](21-builtins-conformance.md))
+  gates language/builtins parity.
+- **Oracle-first, atomic-thunks-from-day-1, parity-before-trust** stay — these
+  are *correctness sequencing*, not economics, and no amount of budget waives
+  them.
+
+The implementation is tracked feature-by-feature: each topic doc carries its own
+`## Implementation checklist`, and the master roll-up is
+[the all-phases checklist](22-implementation-checklist-all-phases.md).
+
+---
+
 ## 1. The two invariants that fix the build order
 
 The roadmap is not free to schedule work however it likes. Two invariants,

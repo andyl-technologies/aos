@@ -799,6 +799,54 @@ encoding choices, validated by the same acceptance gate
 
 ---
 
+## Implementation checklist
+
+Per-feature tracker for the value representation (tagged values, pointer tagging, NaN-boxing, hash-consing, thunk/string/list/container layout); master roll-up: [implementation checklist (all phases)](22-implementation-checklist-all-phases.md). Per the unlimited-budget mandate, every item here is in scope — including research-grade ones — built in dependency order and gated by the differential harness, never cut for scope.
+
+Value representation has no observable effect on `.drv` output by construction (§11); the gate for every item is the differential `.drv` harness running the optimized representation against the safe tree-walk oracle, plus miri/ASan on the oracle.
+
+### Tagged-value baseline (§2)
+
+- [ ] 16-byte tagged `Value` (`tag` word + `payload` union), `Copy`, register-pair-passable; full `i64`/`f64`/`bool` inline, heap forms behind `NonNull` (§2.2) — **P1**, `S-6`/`M-4` default (no NaN-box first).
+- [ ] `ValueTag` taxonomy covering every Nix value form (int/float/bool/null/string/path/list/attrs/lambda/primop/external) plus the non-WHNF `Thunk` (§1, §2.2) — **P1**.
+- [ ] `force` WHNF fast path: single tag-compare, predicted-not-taken branch, no heap load (§2.3) — **P1**.
+- [ ] Safe checked accessors/getters asserting tag-payload agreement in debug builds for the oracle (§11) — **P1**, `S-17`; miri/ASan-clean on the oracle.
+
+### Pointer tagging and the WHNF bit (§3)
+
+- [ ] Pointer tagging of the low 3 bits of 8-byte-aligned heap pointers; the thunk `FORCED` shortcut bit (`b0`) skipping the atomic state load / slow-path call on the already-forced path (§3.1) — **P8**, `S-6`; benchmark-gated (rank-5 follow-up), IN SCOPE.
+- [ ] Optional small-constructor (0/1/2-element) inline encoding for small lists/attrs so `length`/single-key `select` skip a header load (§3, §7) — **P8**, measure-gated default-off; benchmark delta required (`C6`).
+- [ ] Monotonic-`FORCED` read discipline: unsynchronized in single-threaded mode, single acquire-load under parallel forcing (§3.1–§3.2) — single-threaded **P1**; parallel acquire path **P3.5** (`C-12`, `loom`/Miri audit `R-4`).
+
+### NaN-boxing variant (§4) — build-and-measure alongside the tagged baseline
+
+- [ ] NaN-box encode/decode: quiet-NaN prefix + 3-bit tag + 48-bit payload, real `f64` stored verbatim, canonical-prefix normalization (§4) — **P8**, `M-4`/`Q-E`; built as a competing variant, selected by register-passing benchmark vs the 16-byte baseline (winner kept, not a stop gate).
+- [ ] The i64 resolution: box-only-large-integers vs the favored approach (2) NaN-box only inside homogeneous nursery containers vs the 128-bit do-nothing option (§4.1) — **P8**, `M-4` (research-grade, IN SCOPE); benchmark-selected.
+- [ ] Precise-GC agreement on boxed pointers: GC value-scanner masks the tag, treats heap-pointer payloads as roots, never mistakes a real `f64` for a pointer (§4.2) — **P8**, depends on precise GC ([06](06-memory-management-and-gc.md) **P3**).
+
+### Hash-consing / maximal sharing (§5)
+
+- [ ] `intern(ConsTable, HeapObject)` with bottom-up structural hashing (children interned-and-hashed first), xxh3 key + structural-equality tiebreak, hash stored in the object header (§5.3, §5.4) — **P2**, `S-7`; enables O(1) equality and the incremental-cache key.
+- [ ] Interning policy: always-intern strings/symbols/small+recurring attrsets/derivation-env values; intern-on-promotion for large composites; never-intern thunks/distinct-env lambdas/externals (§5.3) — **P2**, `S-7`; intern-on-promotion threshold `M`-gated.
+- [ ] Three-function hashing split wired through the cons-table: xxh3 in-process, blake3 durable/shared, SHA-256 only Nix-observed — none leaking into `.drv` (§5.4) — **P2**, `S-15`; leak-invariant conformance ([12](12-incremental-evaluation-cache.md) §5.2).
+- [ ] GC interaction: cons-table as arena-dropped set in Tier A; weak hash table scavenged-and-forwarded in Tier B (never resurrects garbage, pointers updated on move) (§5.5) — Tier A **P3**, Tier B weak-table **P3** (`M-12` sizing measure-gated).
+
+### Thunk representation (§6)
+
+- [ ] `Thunk { state: AtomicU64, code, env }` with the serial `Suspended → Blackhole → Forced` machine (the subset of the parallel superset), blackhole infinite-recursion detection (§6) — **P1**, `S-6`/`C-12` (atomic word from day 1).
+- [ ] Strictness-driven thunk deletion (worker-wrapper eager compile → no `Thunk` struct) and cardinality-driven collapse (single-entry → no blackhole/update machinery) (§6) — **P4**, `S-9`; analyses owned by [07](07-laziness-and-whole-program-analyses.md), reductions by [26](26-optimization-pass-catalog.md).
+
+### Containers and strings (§7–§8)
+
+- [ ] `NixList`: length-prefixed contiguous `[Value]`, constant-time `elemAt`/`length`/iteration, intern-heavy; not assumed heap-resident (scalar-replaceable) (§7) — **P1** layout; scalar replacement **P4** ([07](07-laziness-and-whole-program-analyses.md)).
+- [ ] `NixString { bytes, context }`: byte string + interned COW-bitset string context; context union on `+`/interp; context included in the cons key so identical-bytes/different-context strings do not collapse (§8) — **P1** correctness (string contexts are `.drv`-observable, `S-13`); bitset-vs-smallvec crossover `M-13` (measure-gated, IN SCOPE).
+- [ ] Aggressive byte-level hash-consing of store-path strings (§8) — **P2**, `S-7`.
+
+### Verification (§11)
+
+- [ ] `// SAFETY:` invariant comments on every `unsafe` block (alignment ≥ 8, tag-payload agreement, canonical NaN-box pattern) (§11) — every phase touching the representation, `S-17`.
+- [ ] Differential check of every `unsafe` fast path (pointer tags, NaN-box) against the safe oracle: byte-identical `.drv` across the AOS package set is the complete correctness definition (§11) — gated by the differential harness in every phase.
+
 ## References
 
 - Simon Peyton Jones, *Implementing lazy functional languages on stock hardware:

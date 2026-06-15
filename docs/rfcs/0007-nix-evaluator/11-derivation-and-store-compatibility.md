@@ -781,6 +781,59 @@ diff* — is what converts these from risks into test cases.
 
 ---
 
+## Implementation checklist
+
+Per-feature tracker for derivation and store compatibility; master roll-up:
+[implementation checklist (all phases)](22-implementation-checklist-all-phases.md).
+Per the unlimited-budget mandate, every item here is in scope — including
+research-grade ones — built in dependency order and gated by the differential
+harness, never cut for scope.
+
+### `nix-compat` dependency and the format boundary (foundation)
+
+- [ ] Pin a `nix-compat` git rev; vendor only patched modules; wrap behind a thin `aos_nix::drv` adapter ([§7](#7-the-nix-compat-dependency-buy-the-format-build-the-evaluator)) — P1, `S-13`/`C-5`; gate: differential `.drv` harness on every bump.
+- [ ] `Derivation` seven-field struct populated correctly (`outputs`, `input_sources`, `input_derivations`, `system`, `builder`, `arguments`, `environment`) ([§3](#3-the-store-derivation-what-derivationstrict-produces)) — P1, `S-13`; gate: differential `.drv` harness.
+- [ ] `BString` env values (lossless arbitrary-byte round-trip), `BTreeMap`/`BTreeSet` bytewise-`Ord` sorted containers ([§3](#3-the-store-derivation-what-derivationstrict-produces)) — P1; gate: property test vs `nix-compat` ordering.
+
+### `derivationStrict` algorithm
+
+- [ ] Six-step algorithm: force-to-WHNF, extract special attrs, deterministic-order string coercion with context accumulation, resolve `outputs`, partition contexts into inputs, build+serialize+hash+write ([§3.1](#31-the-derivationstrict-algorithm-step-by-step)) — P1, `S-13`; gate: differential `.drv` harness.
+- [ ] Exact coercion rules (bool → `"1"`/`""`, int decimal, list space-join, path → store copy + `input_sources`, attrset-with-`outPath`) ([§3.1](#31-the-derivationstrict-algorithm-step-by-step)) — P1; gate: conformance 20-21.
+- [ ] `__ignoreNulls` (omit null attrs) and `__structuredAttrs` (`__json` blob, nested JSON ordering/escaping) ([§3.2](#32-__structuredattrs-and-__ignorenulls)) — P1, `M-20`; gate: harness on structured-attrs packages (torture: stdenv).
+
+### ATerm serialization
+
+- [ ] `Derive(...)` seven-tuple via `to_aterm_bytes`: no whitespace, fixed positions, sorted lists (outputs/inputDrvs/inputSrcs/env) vs insertion-order `arguments` ([§4](#4-aterm-serialization-the-exact-wire-format)) — P1, `S-13`; gate: differential `.drv` harness (byte parity).
+- [ ] Exact string escaping (`"`, `\`, `\n`, `\r`, `\t` only; all other bytes verbatim); empty output fields for IA; name absent from ATerm ([§4](#4-aterm-serialization-the-exact-wire-format)) — P1; gate: harness.
+
+### Store-path computation (both addressing regimes)
+
+- [ ] `.drv` text path via `build_text_path`: fingerprint → SHA-256 → `compressHash` XOR-fold → Nix base-32; references = `input_sources ∪ keys(input_derivations)`; name in path hash but not ATerm ([§5.1](#51-the-drv-store-path-text-hashing)) — P1, `S-13`; gate: drv-path parity.
+- [ ] **Input-addressed path:** `hash_derivation_modulo` (recursive, memoized; FOD vs IA recursion bottoming at fixed-output leaves) and `output:<name>` path derivation, with self-referential placeholder scheme reproduced byte-for-byte ([§5.2](#52-hash-derivation-modulo-the-indirection-that-makes-fixed-output-work)–[§5.3](#53-input-addressed-output-paths)) — P1, `S-13`/`C-6`/`R-11`; gate: differential `.drv` harness (#1 focus).
+- [ ] **Content-addressed path:** floating CA outputs (empty path, `ca_hash` method `r:sha256`/`sha256`) and fixed-output (eval-time-resolvable) outputs, first-class from Phase 1 ([§5.4](#54-content-addressed-ca-derivation-outputs)) — P1, `C-11`/`C-6`; gate: harness with synthesized CA fixtures + RFC-0005 graph.
+
+### Deterministic ordering (highest-risk surface)
+
+- [ ] Every sorted ATerm field bytewise (not locale-aware): `outputs`, `input_derivations` (+ inner output-name set), `input_sources`, `environment`; `arguments` insertion-order ([§6](#6-deterministic-ordering-the-single-highest-risk-surface)) — P1, `S-2`; gate: differential `.drv` harness on multi-output/multi-input/many-env-var packages (gcc/glibc/systemd).
+- [ ] Attr coercion traversal order matched to C++ Nix (drives context-accumulation order) ([§6](#6-deterministic-ordering-the-single-highest-risk-surface), [09 §7](09-attribute-sets-hidden-classes-and-inline-caches.md)) — P1; gate: harness.
+
+### String contexts (the dependency graph inside strings)
+
+- [ ] Context-element kinds (constant/opaque, single-output `!out!`, deep `=`) and the partition into `input_sources` / `input_derivations` ([§8.1](#81-what-a-context-is)) — P1, `S-13`; gate: conformance 20-21.
+- [ ] Propagation rules: union on concat/interp; `toString` carries `outPath` context; whole-context preservation through `substring`/`replaceStrings`; `unsafeDiscardStringContext`/`unsafeDiscardOutputDependency`/`addDrvOutputDependencies`/`hasContext`/`getContext`/`appendContext` ([§8.2](#82-how-contexts-propagate-through-the-language)) — P1, `R-12`; gate: differential harness + C++ Nix language test suite (rare primops research-grade).
+- [ ] Representation: store-path refs interned to `u32`, context as COW hash-consed bitset/sorted-set with deriving-path kind ([§8.3](#83-representation-interned-copy-on-write-bitsets)) — P1, `S-7`/`M-13`; gate: harness (hazard #2).
+
+### Hashing policy
+
+- [ ] Type-enforced three-hash split: SHA-256 only where Nix observes bytes; blake3 durable cache; xxh3 in-process — store-path hashing flows exclusively through `nix-compat` SHA-256 APIs ([§9](#9-hashing-policy-three-hashes-three-jobs)) — P1/P2, `S-15`; gate: leak-invariant harness.
+
+### Acceptance gate and RFC-0005/0006 tie-in
+
+- [ ] Byte-identical `.drv` + drv-path + output-path parity over the **full transitive closure**, deepest-divergence-first reporting; binary gate, default-off until green ([§11](#11-the-acceptance-gate-for-this-layer)) — P1, `S-2`/`C-18`; gate: differential `.drv` harness.
+- [ ] Deriving-path parity so RFC-0005's realisation graph is identical regardless of front evaluator; correct CA emission so RFC-0005 can do build-layer early cutoff ([§10](#10-rfc-0005-tie-in-the-realisation-graph-and-ca-derivations)) — P1, `C-11`; gate: harness + RFC-0005 graph.
+
+---
+
 ## References
 
 Verified against primary sources during authoring:

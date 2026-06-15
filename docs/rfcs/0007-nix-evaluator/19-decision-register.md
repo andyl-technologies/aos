@@ -23,6 +23,18 @@ Phase 1.** Phase 1 ([roadmap](17-roadmap-and-risks.md) §6) touches only Settled
 and Closed decisions. Measurement-dependent and research-grade items are, by
 construction, downstream of the baseline the gate produces.
 
+> **Budget mandate (see [roadmap](17-roadmap-and-risks.md) §0).** This is an
+> unlimited-budget, non-time-bounded build of the absolute fastest evaluator, so
+> the two soft statuses are re-read accordingly: **Measure-gated** no longer
+> means "defer until proven worth it" — it means **build the competing variants,
+> measure, and keep the winner** (e.g. NaN-box vs. tagged value, fiber I/O
+> turn-on, inlining thresholds), never shipping a regression. **Research-grade**
+> items are **in scope**, not dropped — they remain hard/uncertain but are
+> committed deliverables (concurrent moving GC, full region inference, the LLVM
+> AOT tier-3). What is *unchanged*: the **Settled** and **Closed** rows, and
+> every correctness gate (differential harness, `loom` audit, conformance) —
+> those are absolute regardless of budget.
+
 ---
 
 ## 1. Settled baseline decisions
@@ -48,10 +60,11 @@ the [README decision log](README.md#decision-log).
 | S-14 | Incremental cache | Demand-driven memoization with early cutoff; the headline systemic win; sound because Nix is pure. | [12](12-incremental-evaluation-cache.md) |
 | S-15 | Hashing split | xxh3 in-process; blake3 durable/shared cache; SHA-256 *only* for Nix-observed hashes. | [12](12-incremental-evaluation-cache.md) |
 | S-16 | Integration | `trait NixEval` seam; `AOS_NIX_NATIVE` gate; `NixCli` permanent fallback; staged rollout. | [14](14-integration-with-aos.md) |
-| S-17 | `unsafe` policy | Justified exception (NaN-box/JIT/raw heap); `// SAFETY:` comments; miri/sanitizer CI on the safe tree-walk tier. | [14](14-integration-with-aos.md) |
+| S-17 | `unsafe` policy | A standing, scoped waiver of AOS's "avoid `unsafe` at all costs" rule for this crate, for performance: NaN-box/tagged values, JIT fn-ptr calls, raw heap/GC, stackful fibers, lock-free CAS concurrency, and `mmap`/out-of-core — a surface the unlimited-budget mandate enlarges. Fenced into an audited core (`#![deny(unsafe_op_in_unsafe_fn)]`, `// SAFETY:` on every block) behind a `#![forbid(unsafe_code)]` oracle; gated by miri/ASan/UBSan/`loom`/TSan/fuzz + two-maintainer review; `.unwrap()`/`.expect()` ban still applies. | [14](14-integration-with-aos.md) §10 |
 | S-18 | Process discipline | Measure-first: confirm eval (not build) is the bottleneck before optimizing. | [01](01-motivation-and-goals.md), [15](15-differential-testing-and-benchmarking.md) |
 | S-19 | IR contract | A single arena IR with a closed `NodeKind` taxonomy, scope-resolved de-Bruijn form, per-node effect-class annotation, and the "one IR for all tiers" rule (oracle interprets, Cranelift compiles, simplifier rewrites). | [25](25-intermediate-representation.md) |
 | S-20 | Optimization pass catalog | The simplifier (C-21) specified pass-by-pass over the IR (S-19): matched `NodeKind`s, the before→after rewrite, effect-class/totality/proven-fact preconditions, fixpoint phase order, and committed-vs-measure-gated status. | [26](26-optimization-pass-catalog.md) |
+| S-21 | Engineering standards | A workspace of focused crates with a crate-level safe/unsafe fence; `thiserror` errors (`anyhow` only at the binary boundary); `tracing`-only structured logging (no raw stdout/stderr from libraries); docs.rs-quality docs; traits for swappable seams but never `Box<dyn>` on the force hot path; layered tests (unit + differential + conformance + proptest + fuzz + loom + miri + criterion) with a ≥90% core coverage floor; debugging hooks; PR-level commit messages. File-size and dir-tree conventions for 100k+ LOC. | [27](27-engineering-standards.md) |
 
 ---
 
@@ -85,6 +98,7 @@ in the owning doc, so an implementer of the relevant component has the call made
 | C-25 | `nixVersion`/`langVersion` | **Spoof to the exact pinned C++ Nix version** (parity requirement, not cosmetic): version-gated nixpkgs/AOS code (`lib.versionAtLeast builtins.nixVersion …`) must take identical branches, or the `.drv` diverges. | [23](23-scope-platform-and-modes.md) |
 | C-26 | Error-reporting library | **miette** — a diagnostic *framework* (codes, severity, help, multi-span labels, `thiserror` integration, fancy renderer; pure-Rust). ariadne (render-only) considered, kept as a future renderer swap. Presentation (miette) is separate from parity: error-**class** parity is hard, error-**text** parity best-effort. | [24](24-observability-and-diagnostics.md) |
 | C-27 | IFD eval→build handoff | **aos-nix evaluates only; an IFD demand realises the build through the AOS build path** (`NixCli::realise` / `aos build`), never aos-nix itself. The IFD-blocked **fiber parks** while the build runs (tokio-driven subprocess), freeing its worker; the result is keyed on the built output's content address (early cutoff). IFD semantics pinned to C++ Nix for parity. | [14](14-integration-with-aos.md) §9 |
+| C-28 | Operating-system support | **Both Linux and macOS (Darwin), like vanilla Nix** — the support matrix is `{x86_64, aarch64} × {linux, darwin}`. Portable by default; OS-specific optimizations sit behind `#[cfg]` build gates with correct fallbacks (Linux `madvise(PAGEOUT/COLD)`/THP; macOS Apple-Silicon JIT `MAP_JIT` + W^X toggling). The host OS affects eval *speed*, never *output*; the harness runs on both. | [23](23-scope-platform-and-modes.md) §3.5, [08](08-execution-tiers-and-cranelift.md) §5.1, [06](06-memory-management-and-gc.md) §3.5 |
 | C-7 | Permanent `rnix → arena IR` shim, or hand-roll only? | **Hand-roll exclusively;** rnix is a test-only differential oracle. No second production frontend to keep in parity. | [04](04-frontend-parser-and-ir.md) §12 |
 | C-8 | Are single-entry (blackhole-skipping) thunks sound under parallel forcing? | **Yes, when restricted to escape-analysis-proven *frame-local* thunks.** Escaped thunks keep the full CAS protocol regardless of cardinality. No sequential-tier carve-out needed. | [07](07-laziness-and-whole-program-analyses.md) §10 |
 | C-9 | Which Nix version / `NIX_SHOW_STATS` schema to baseline against? | **Pin the single C++ Nix version AOS builds with** (same rev as the `nix-compat` pin); parse stats defensively; bumps are deliberate + harness-gated. | [15](15-differential-testing-and-benchmarking.md) §9 |
@@ -166,7 +180,7 @@ A few items are neither settled design nor measurable defaults — they are
 
 ## 6. Summary
 
-- **18 Settled + 27 Closed decisions** mean Phase 1 — and the rank-1 cache — are
+- **21 Settled + 28 Closed decisions** mean Phase 1 — and the rank-1 cache — are
   buildable from this RFC with no unstated design calls. (C-11/C-12 promote
   content-addressed derivations and parallel thunk-graph evaluation to first-class,
   early scope; C-13–C-18 settle the cache storage engine, materialization

@@ -10,8 +10,9 @@ project from one page.
 
 It is bound to three upstream documents and must not contradict them:
 
-- the [roadmap](17-roadmap-and-risks.md) — the phase table (P1–P8), the ranked
-  90% subset (ranks 0–5), the risk register, and the Phase-1 checklist;
+- the [roadmap](17-roadmap-and-risks.md) — the budget mandate (§0), the phase
+  table (P1–P8), the ranked subset (ranks 0–5, now a *build sequence* not a scope
+  cut), the risk register, and the Phase-1 checklist;
 - the [decision register](19-decision-register.md) — every Settled / Closed /
   Measure-gated / Research-grade decision, by ID (`S-*`, `C-*`, `M-*`, `R-*`);
 - the [AOS integration](14-integration-with-aos.md) — the `NixEval` seam and the
@@ -27,6 +28,44 @@ The conformance surface it turns green is owned by two sibling documents:
 
 Per RFC discipline this document makes no status claim; the maturity header
 lives only in the set's `README.md`.
+
+---
+
+## Budget mandate (read first)
+
+This checklist is governed by the **unlimited-budget, non-time-bounded** mandate
+in the [roadmap](17-roadmap-and-risks.md) §0: the goal is the *absolute fastest
+and most efficient* Nix evaluator achievable, not a schedule-bounded fix for AOS
+build time. That reframes how every box below is read:
+
+- **The full technique stack is committed — there is no "90% subset."** The
+  ranked subset is retained below only as a *build sequence*. The research-grade
+  (`R-*`) tail in the [decision register](19-decision-register.md) — the **LLVM
+  AOT tier-3** (peak throughput beyond the Cranelift JIT), a **concurrent moving
+  GC**, and **full effect-based region inference** — is **in scope**, a committed
+  deliverable, not "ship only if measured."
+- **The P-phases are a build *order*, not a scope boundary.** Their sequence is
+  dictated by dependency, correctness, and risk; with unlimited people the
+  independent workstreams (frontend, cache, heap/GC, analyses, shapes, JIT tiers,
+  AOT, parallelism) proceed **in parallel**. A box does not have to wait on an
+  unrelated phase — only on its true predecessor (the gate dependencies in
+  [17](17-roadmap-and-risks.md) §3 and the per-doc checklists).
+- **"Measure-first" means *build-the-variants-and-select-the-winner*, not
+  stop/descope.** The `M-*` register items (NaN-box vs. tagged value, fiber I/O
+  turn-on, inlining thresholds, fusion aggressiveness, tier policies) are
+  **build-and-select** decisions: implement the alternatives, benchmark, keep the
+  winner — and **never ship a regression**. A measured finding does not cancel a
+  deliverable; it chooses among implementations of it.
+- **The correctness gates remain absolute — no amount of budget waives them.**
+  The differential `.drv`-diff harness (byte parity), the `loom`/Miri
+  memory-ordering audit (no data races), and the conformance suite
+  ([20](20-nix-language-conformance.md)/[21](21-builtins-conformance.md)) gate
+  **every** feature, always. Oracle-first, atomic-thunks-from-day-1, and
+  parity-before-trust are *correctness sequencing*, not economics, and they stay.
+
+The implementation is tracked **feature-by-feature**: every topic doc now carries
+its own `## Implementation checklist`, and this document is the **roll-up**. See
+the [per-doc checklist index](#per-doc-checklist-index) below.
 
 ---
 
@@ -54,10 +93,14 @@ lives only in the set's `README.md`.
   ([17](17-roadmap-and-risks.md) R1).
 - **Tick a box only when its evidence exists** — a green harness run, a recorded
   benchmark delta, a `miri`/sanitizer-clean CI job. Falsifiable, not aspirational.
-- **A phase does not begin until its predecessor's exit criterion holds** (the
-  gate dependencies in [17](17-roadmap-and-risks.md) §3). The one hard kill gate
-  is **P1.5** (measure-first): if eval is not the bottleneck, the project
-  **stops or re-scopes** ([01](01-motivation-and-goals.md) §5.2).
+- **A phase does not begin until its true predecessor's exit criterion holds**
+  (the gate dependencies in [17](17-roadmap-and-risks.md) §3) — but under the
+  budget mandate the workstreams otherwise run in **parallel**, not strictly
+  serial. **P1.5 is no longer a kill gate.** Under the unlimited-budget mandate
+  it is **baseline characterization**: we still measure where eval time goes, but
+  a finding that eval is a minor fraction of build time does **not** stop the
+  project — the goal is the fastest evaluator regardless
+  ([17](17-roadmap-and-risks.md) §0; recast in the P1.5 section below).
 
 ### The invariants, restated (do not violate)
 
@@ -70,8 +113,11 @@ lives only in the set's `README.md`.
   (`S-3`, `S-5`) — the fast path is never the final arbiter of a store path.
 - **The incremental early-cutoff cache is the biggest expected win** (`S-14`),
   built *first* among the optimizations and possibly sufficient alone (`M-1`).
-- **Measure-first** (`S-18`): no optimizing-compiler work until P1 data proves
-  eval is the dominant cost.
+- **Measure-first**, reinterpreted under the budget mandate (`S-18`,
+  [17](17-roadmap-and-risks.md) §0): not "build only if proven worth it" but
+  **build the competing variants, measure, keep the winner** — and never ship a
+  regression. P1 data orders and parallelizes the work; it does not gate whether
+  the optimization stack is built.
 
 ---
 
@@ -80,7 +126,7 @@ lives only in the set's `README.md`.
 | Phase | Goal | Rollout gate unlocked | Status |
 |-------|------|-----------------------|--------|
 | **P1** | Frontend + scope + tree-walk oracle + `.drv` harness; **full language + builtins parity achieved, IA *and* CA derivations** (C-11); thunk state atomic from day 1 (C-12) | Phase A (default Off, harness in CI); Phase B (Shadow) once enough of the closure is byte-green | ☐ |
-| **P1.5** | Measure-first decision (kill/continue gate) | — (decides whether P2–P8 happen at all) | ☐ |
+| **P1.5** | **Baseline characterization** (measure-first, *not* a kill gate): record where eval time goes; P2–P8 are built regardless | — (informs ordering/parallelism; does **not** decide whether P2–P8 happen) | ☐ |
 | **P2** | Incremental early-cutoff cache + hash-consing (rank 1) | Phase B (Shadow) hardened; Phase C (On for `eval_expr`) becomes reachable | ☐ |
 | **P3** | Bump-arena heap + precise generational GC (rank 2) | (parity held; trust schedule continues) | ☐ |
 | **P3.5** | **Parallel graph evaluation** (C-12): L1 work-stealing pool + L2 lock-free CAS thunks; `loom`/Miri audit green | (parity held; multi-core speedup; oracle stays ground truth) | ☐ |
@@ -88,7 +134,8 @@ lives only in the set's `README.md`.
 | **P5** | Hidden classes + PIC (rank 4a) | (parity held; Phase C in effect) | ☐ |
 | **P6** | Cranelift baseline JIT, tier 1 (rank 4b) | Phase D (On for `instantiate`, verify-sampling kept) becomes reachable | ☐ |
 | **P7** | Cranelift optimized + deopt + OSR, tier 2 (rank 4c) | Phase D hardened across all tiers | ☐ |
-| **P8** | Measured follow-ups (rank 5): pointer tagging, full-laziness, region inference, concurrent *moving* GC | Phase E (verify sampling reduced; `NixCli` retained) | ☐ |
+| **P7.5** | **LLVM AOT tier-3** (committed): peak throughput beyond the Cranelift JIT for ahead-of-time / daemon-resident hot code; oracle remains correctness backstop | (parity held; tier-3 differentially identical to the oracle) | ☐ |
+| **P8** | **Committed advanced stack** (formerly "measured follow-ups"): pointer tagging, full-laziness, **concurrent *moving* GC**, **full effect-based region inference** — all in scope, each carrying its own measured delta; build-the-variants-and-keep-the-winner | Phase E (verify sampling reduced; `NixCli` retained) | ☐ |
 
 Legend: ☐ not started · ◐ in progress · ☑ exit criterion met.
 
@@ -181,35 +228,44 @@ traffic ([14](14-integration-with-aos.md) §7.1; [17](17-roadmap-and-risks.md)
 
 ---
 
-## Phase 1.5 — Measure-first decision (the kill/continue gate)
+## Phase 1.5 — Baseline characterization (measure-first, not a kill gate)
 
-**GOAL.** Decide, from P1 data alone, whether *evaluation* (not build, not I/O)
-is the dominant repeated cost on representative AOS workloads — and therefore
-whether the optimization phases happen at all.
+**GOAL.** Characterize, from P1 data, *where eval time goes* on representative
+AOS workloads — which constructs, which phases of evaluation, cold vs. warm — so
+the optimization workstreams are ordered and parallelized by evidence. Under the
+[budget mandate](17-roadmap-and-risks.md) §0 this is **characterization, not a
+kill/continue gate**: a finding that eval is a minor fraction of build time does
+**not** stop or re-scope the project. The goal is the fastest evaluator
+regardless, and P2–P8 are built either way.
 
 **Deliverables.**
 
-- [ ] A documented determination from the P1 baseline (`nix-instantiate`
-      wall-clock + `NIX_SHOW_STATS` vs build/I/O time) that eval is or is not the
-      bottleneck ([01](01-motivation-and-goals.md) §5.1–5.2).
-- [ ] If eval is **not** dominant → record the STOP/re-scope decision; the
-      cheap, independently-useful P1 artifacts (oracle + harness) remain valuable
-      for validating `NixCli` itself ([17](17-roadmap-and-risks.md) R6).
+- [ ] A documented **characterization** from the P1 baseline (`nix-instantiate`
+      wall-clock + `NIX_SHOW_STATS` vs build/I/O time): the eval-time breakdown,
+      the hottest constructs, and the cold/warm split
+      ([01](01-motivation-and-goals.md) §5.1–5.2).
+- [ ] The breakdown is used to **prioritize and parallelize** the workstreams
+      (which of cache / heap / analyses / shapes / JIT / AOT to staff first), not
+      to gate whether they happen. Even if eval is a small fraction, the cheap P1
+      artifacts (oracle + harness) also keep validating `NixCli` itself
+      ([17](17-roadmap-and-risks.md) R6).
 
 **Conformance.** No new surface; parity from P1 holds.
 
 **Decisions closed/measured.**
 
-- [ ] Measures `M-1` opening data (does the cache plausibly clear the goal?),
+- [ ] Measures `M-1` opening data (how much does the cache plausibly buy?),
       `M-3` (cold vs warm fraction, first read).
-- [ ] Resolves `Q-B`; informs `Q-A`/`Q-C`.
+- [ ] Resolves `Q-B`; informs `Q-A`/`Q-C` and the staffing order of P2–P8.
 
-**EXIT CRITERIA (falsifiable).** A written determination exists, grounded in P1
-numbers, stating eval is the dominant AOS cost (continue) or is not (stop /
-re-scope). This is the only phase whose exit can cancel the project.
+**EXIT CRITERIA (falsifiable).** A written eval-time **characterization** exists,
+grounded in P1 numbers, breaking down where time is spent and feeding the
+workstream ordering. No exit of this phase can cancel the project — under the
+budget mandate the optimization stack is committed regardless of the breakdown.
 
-**Rollout gate unlocked.** None directly — it *gates whether P2–P8 are built*.
-The trust schedule (Phases A/B) continues independently.
+**Rollout gate unlocked.** None directly — it *informs the ordering and
+parallelism of P2–P8*, which are built unconditionally. The trust schedule
+(Phases A/B) continues independently.
 
 ---
 
@@ -564,58 +620,162 @@ traffic for a long window, `AOS_NIX_NATIVE` may default **On** for `instantiate`
 
 ---
 
-## Phase 8 — Measured follow-ups (rank 5)
+## Phase 7.5 — LLVM AOT tier-3 (committed)
 
-**GOAL.** The explicitly-uncertain tail. Each item ships **only** on a recorded
-benchmark delta against AOS traces; any that fails to show a delta is dropped,
-not shipped (C6). None is on the critical path.
+**GOAL.** Push **peak throughput beyond the Cranelift JIT**: an ahead-of-time
+LLVM compilation tier for the hottest, daemon-resident code, where Cranelift's
+fast-warmup baseline/optimized tiers leave throughput on the table. Under the
+[budget mandate](17-roadmap-and-risks.md) §0 this is a **committed deliverable**,
+not "only if measured" — the measure-first work here is *which* code reaches
+tier-3 and how the LLVM and Cranelift backends compare, decided by
+build-the-variants-and-keep-the-winner. The tree-walk oracle remains the deopt
+target and the permanent correctness backstop; tier-3 never arbitrates a store
+path.
 
-**Deliverables (each independently gated on a measured delta).**
+**Deliverables.**
 
-- [ ] `value/tag.rs` — pointer tagging for WHNF-test fast paths
-      ([05](05-value-representation.md)); NaN-boxing remains open because Nix
-      `i64` ints do not fit a NaN-box payload (`M-4`/`Q-E`).
-- [ ] `analysis/full_laziness.rs` — full-laziness / let-floating
-      ([07](07-laziness-and-whole-program-analyses.md); daemon residency policy
-      `R-6`).
-- [ ] `heap/region.rs` — lexical/escape region inference *only* where profiles
-      show medium-lived allocation (`M-14`); full effect-based region inference
-      stays research-grade (`R-5`).
-- [ ] `heap/concurrent_gc.rs` — concurrent/moving GC for daemon mode
-      (ZGC/Shenandoah-style colored pointers + load barriers), **daemon-only**,
-      sidestepped by the bump arena in CLI mode (`R-1`/`R-2`/`R-3`/`R-4`; the
-      deepest unsolved coupling, [17](17-roadmap-and-risks.md) R9).
+- [ ] `aot/llvm.rs` — the LLVM AOT backend: lower the annotated IR
+      ([25](25-intermediate-representation.md)) through LLVM, sharing the same
+      uniform `extern "C"` runtime ABI and `aos_alloc_*` symbols as the Cranelift
+      tiers ([08](08-execution-tiers-and-cranelift.md); [10](10-primops-and-runtime-abi.md)).
+- [ ] `aot/tier.rs` — tier-3 promotion policy (very-hot, long-lived code in the
+      daemon case); a Cranelift-tier-2 vs LLVM-tier-3 throughput comparison
+      recorded as the build-and-select evidence.
+- [ ] `aot/cache.rs` — persistence/reuse of AOT-compiled code keyed on the same
+      content-addressed identity as the rest of the pipeline (compile once, reuse
+      across daemon lifetimes).
+- [ ] `unsafe` discipline matching the JIT tiers: `aot/` under
+      `#![deny(unsafe_op_in_unsafe_fn)]`, `// SAFETY:` per block, two-maintainer
+      review, ASan/UBSan CI (`S-17`).
 
 **Conformance (hold parity).**
 
-- [ ] Harness stays byte-green for **each** follow-up independently
-      ([20](20-nix-language-conformance.md) + [21](21-builtins-conformance.md)
-      invariant); a follow-up that cannot stay byte-green is dropped.
-- [ ] Concurrent-GC × thunk-mutation interactions verified under `loom`/`miri`
-      before shipping (`R-4`), daemon-mode only.
+- [ ] **Tier-3 (LLVM AOT) output is differentially identical to the tier-0
+      oracle** across the closure ([20](20-nix-language-conformance.md) +
+      [21](21-builtins-conformance.md) held invariant); deopt from tier-3 lands in
+      semantics identical to the oracle.
+- [ ] Harness byte-green **under all tiers** simultaneously (oracle, tier 1,
+      tier 2, tier 3).
 
 **Decisions closed/measured.**
 
-- [ ] Measures: `M-4`/`Q-E` (NaN-box pays off?), `M-13` (context bitset vs
-      smallvec crossover), `M-14`/`R-5` (region inference), `M-17`/`M-18`
-      (parallel-forcing granularity / shared-value touch cost), `Q-G` (daemon
-      model).
-- [ ] Research-grade tail held under their defaults until measured:
-      `R-1`/`R-2`/`R-3`/`R-4` (concurrent moving GC), `R-6` (daemon float-out),
-      `R-7` (super-node IR — deferred).
+- [ ] Measures: the LLVM-AOT-vs-Cranelift throughput crossover and which code
+      reaches tier-3 (build-and-select; never ship a regression vs tier 2).
 
-**EXIT CRITERIA (falsifiable).** Each of pointer tagging / NaN-box /
-full-laziness / region inference / concurrent *moving* GC lands *only*
-with a recorded benchmark delta (C6); any that fails to show a delta is dropped,
-not shipped; the harness stays byte-green throughout
-([17](17-roadmap-and-risks.md) §3, P8). (Parallel *forcing* is no longer in this
-tail — it is the committed P3.5 below/above; only the concurrent *moving
-collector* remains here.)
+**EXIT CRITERIA (falsifiable).** Very-hot daemon-resident code compiles via LLVM
+AOT; tier-3 output is differentially identical to the oracle across the closure;
+a recorded throughput delta over tier-2 Cranelift on the daemon workload; the
+harness is byte-green under all tiers.
+
+**Rollout gate unlocked.** None new (parity held; the trust schedule continues).
+Tier-3 deepens the daemon-mode win without changing the trust gradient — the
+oracle is still the tie-breaker.
+
+---
+
+## Phase 8 — Committed advanced stack (formerly the rank-5 tail)
+
+**GOAL.** The advanced stack, now **fully committed** under the
+[budget mandate](17-roadmap-and-risks.md) §0. These are no longer "ship only if
+the delta appears" follow-ups: pointer tagging, full-laziness, **concurrent
+*moving* GC**, and **full effect-based region inference** are all **in scope and
+built**. "Measure-first" here means *build the competing variants and keep the
+winner* — each shipped form carries its own recorded benchmark delta and we
+**never ship a regression**, but the deliverable itself is not optional.
+
+**Deliverables (each built; the benchmark selects the implementation, not whether
+it ships).**
+
+- [ ] `value/tag.rs` — pointer tagging for WHNF-test fast paths
+      ([05](05-value-representation.md)); NaN-boxing remains a *variant to
+      evaluate* because Nix `i64` ints do not fit a NaN-box payload — build both
+      and select (`M-4`/`Q-E`).
+- [ ] `analysis/full_laziness.rs` — full-laziness / let-floating
+      ([07](07-laziness-and-whole-program-analyses.md); daemon residency policy
+      `R-6`).
+- [ ] `heap/region.rs` — region inference: lexical/escape regions, extended to
+      **full effect-based region inference** as a committed deliverable (`R-5`)
+      rather than a research-grade maybe; profiles (`M-14`) tune *where* regions
+      replace generational allocation, not *whether* the analysis is built.
+- [ ] `heap/concurrent_gc.rs` — **concurrent *moving* GC** for daemon mode
+      (ZGC/Shenandoah-style colored pointers + load barriers), a committed
+      deliverable; **daemon-only**, sidestepped by the bump arena in CLI mode
+      (`R-1`/`R-2`/`R-3`/`R-4`; the deepest coupling,
+      [17](17-roadmap-and-risks.md) R9).
+
+**Conformance (hold parity).**
+
+- [ ] Harness stays byte-green for **each** deliverable independently
+      ([20](20-nix-language-conformance.md) + [21](21-builtins-conformance.md)
+      invariant); a *variant* that cannot stay byte-green is not selected, but the
+      feature is still delivered via the variant that holds parity.
+- [ ] Concurrent-GC × thunk-mutation interactions verified under `loom`/`miri`
+      before shipping (`R-4`), daemon-mode only — the memory-ordering audit is an
+      **absolute** gate, not relaxed by the budget mandate.
+
+**Decisions closed/measured.**
+
+- [ ] Closes (as committed deliverables): `R-1`/`R-2`/`R-3` (concurrent moving
+      GC), `R-5` (full effect-based region inference), `R-6` (daemon float-out).
+- [ ] Measures (build-and-select among variants): `M-4`/`Q-E` (NaN-box vs.
+      tagged value), `M-13` (context bitset vs smallvec crossover), `M-14`
+      (region granularity), `M-17`/`M-18` (parallel-forcing granularity /
+      shared-value touch cost), `Q-G` (daemon model). `R-7` (super-node IR) stays
+      deferred only because it is unspecified, not for budget reasons.
+
+**EXIT CRITERIA (falsifiable).** Pointer tagging, full-laziness, full
+effect-based region inference, and the concurrent *moving* GC are all **built and
+benchmarked**; each ships in the variant carrying a recorded benchmark delta with
+no regression (C6); the `loom`/Miri audit is green for the concurrent collector;
+the harness stays byte-green throughout ([17](17-roadmap-and-risks.md) §0, §3).
+(Parallel *forcing* is not in this stack — it is the committed P3.5; the
+concurrent *moving collector* lives here.)
 
 **Rollout gate unlocked.** **Phase E** (verify-sampling reduced; `NixCli`
 retained as the permanent fallback). Even at default-on, `AOS_NIX_NATIVE_VERIFY`
 sampling stays as a residual canary and `AOS_NIX_NATIVE=0` remains the one-line
 kill switch ([14](14-integration-with-aos.md) §7.2, §10).
+
+---
+
+## Per-doc checklist index
+
+Under the [budget mandate](17-roadmap-and-risks.md) §0 the project is tracked
+**feature-by-feature**: every design doc now carries its own
+`## Implementation checklist` section, and this all-phases document is the
+**roll-up** across them. Each row links the topic doc to its per-feature
+checklist (anchor `#implementation-checklist`). The phase sections above remain
+the *order* in which these features are built and rolled out; the per-doc
+checklists are the *fine-grained* trackers the phases aggregate.
+
+| Doc | Topic | Checklist |
+|-----|-------|-----------|
+| [04](04-frontend-parser-and-ir.md) | Frontend: lexer, parser, arena AST, scope, IR lowering | [checklist](04-frontend-parser-and-ir.md#implementation-checklist) |
+| [05](05-value-representation.md) | Value representation: tagged values, pointer tagging, NaN-box, hash-consing | [checklist](05-value-representation.md#implementation-checklist) |
+| [06](06-memory-management-and-gc.md) | Memory: alloc-via-symbols, bump arena, generational + concurrent GC, regions | [checklist](06-memory-management-and-gc.md#implementation-checklist) |
+| [07](07-laziness-and-whole-program-analyses.md) | Laziness + whole-program analyses (strictness, cardinality, full-laziness, escape) | [checklist](07-laziness-and-whole-program-analyses.md#implementation-checklist) |
+| [08](08-execution-tiers-and-cranelift.md) | Execution tiers: tree-walk oracle, Cranelift JIT, LLVM AOT tier-3 | [checklist](08-execution-tiers-and-cranelift.md#implementation-checklist) |
+| [09](09-attribute-sets-hidden-classes-and-inline-caches.md) | Attribute sets: hidden classes, inline caches, HAMT, iteration order | [checklist](09-attribute-sets-hidden-classes-and-inline-caches.md#implementation-checklist) |
+| [10](10-primops-and-runtime-abi.md) | Primops + the runtime ABI | [checklist](10-primops-and-runtime-abi.md#implementation-checklist) |
+| [11](11-derivation-and-store-compatibility.md) | Derivation + store compatibility (the CA store, ATerm, output paths) | [checklist](11-derivation-and-store-compatibility.md#implementation-checklist) |
+| [12](12-incremental-evaluation-cache.md) | Incremental evaluation cache (demand graph, early cutoff, hash-consing) | [checklist](12-incremental-evaluation-cache.md#implementation-checklist) |
+| [13](13-parallel-evaluation.md) | Parallel evaluation (work-stealing, fibers, lock-free CAS thunks) | [checklist](13-parallel-evaluation.md#implementation-checklist) |
+| [14](14-integration-with-aos.md) | Integration with AOS: `NixEval` seam, gating, fallback, `unsafe` policy | [checklist](14-integration-with-aos.md#implementation-checklist) |
+| [15](15-differential-testing-and-benchmarking.md) | Differential testing + benchmarking (the `.drv`-diff harness) | [checklist](15-differential-testing-and-benchmarking.md#implementation-checklist) |
+| [23](23-scope-platform-and-modes.md) | Scope, platform, and language modes | [checklist](23-scope-platform-and-modes.md#implementation-checklist) |
+| [24](24-observability-and-diagnostics.md) | Observability and diagnostics | [checklist](24-observability-and-diagnostics.md#implementation-checklist) |
+| [25](25-intermediate-representation.md) | The intermediate representation (IR) | [checklist](25-intermediate-representation.md#implementation-checklist) |
+| [26](26-optimization-pass-catalog.md) | The optimization pass catalog (the simplifier) | [per-pass status](26-optimization-pass-catalog.md) |
+
+**Notes.**
+
+- Docs [20](20-nix-language-conformance.md) (language) and
+  [21](21-builtins-conformance.md) (builtins) are the **conformance checklists** —
+  the parity surface held invariant from Phase 1 on — rather than per-feature
+  build trackers; they are not duplicated as rows above.
+- Doc [26](26-optimization-pass-catalog.md) carries **per-pass status** (each
+  simplifier pass records its own Soundness/Status note) instead of a single
+  `## Implementation checklist` section.
 
 ---
 
@@ -626,7 +786,8 @@ kill switch ([14](14-integration-with-aos.md) §7.2, §10).
               SLOW tree-walk oracle.  Harness byte-green on full closure.
                          │
                          ▼   parity is now an INVARIANT
-   P2 cache / P3 heap / P4 analyses / P5 shapes / P6 jit-1 / P7 jit-2 / P8 tail
+   P2 cache / P3 heap / P3.5 parallel / P4 analyses / P5 shapes /
+   P6 jit-1 / P7 jit-2 / P7.5 LLVM-AOT-tier-3 / P8 concurrent-moving-GC + regions
         each phase changes ONLY performance; the harness (doc 15) re-proves
         parity after every change. A phase that cannot stay byte-green is
         reverted, not shipped.
@@ -647,20 +808,32 @@ slow `.drv` is merely slow ([17](17-roadmap-and-risks.md) §4.1).
 The RFC-0007 implementation is **done** when all of the following hold
 simultaneously:
 
-- [ ] **Harness byte-green on the full closure.** The differential `.drv`-diff
-      harness ([15](15-differential-testing-and-benchmarking.md)) is byte-green
-      across the *entire* AOS package set — every `.drv` and store path identical
-      to the pinned C++ Nix, identical error/no-error outcomes — and stays green
-      in CI, under all execution tiers (oracle, tier 1, tier 2 with
-      deopt/OSR exercised). The full [20](20-nix-language-conformance.md) and
-      [21](21-builtins-conformance.md) surfaces are green and held invariant.
+- [ ] **The full stack is built and benchmarked.** Under the
+      [budget mandate](17-roadmap-and-risks.md) §0, "done" requires the *entire*
+      committed technique stack to be implemented and measured — not a 90% subset:
+      the incremental early-cutoff cache, the bump arena + precise generational GC,
+      the parallel work-stealing/fiber evaluator with lock-free CAS thunks, the
+      whole-program analyses, hidden classes + inline caches, the Cranelift JIT
+      tiers, the **LLVM AOT tier-3**, the **concurrent *moving* GC**, and **full
+      effect-based region inference**. Each carries its own recorded benchmark
+      delta (build-the-variants-and-keep-the-winner); no committed deliverable is
+      dropped for scope.
+- [ ] **Harness byte-green on the full closure, throughout.** The differential
+      `.drv`-diff harness ([15](15-differential-testing-and-benchmarking.md)) is
+      byte-green across the *entire* AOS package set — every `.drv` and store path
+      identical to the pinned C++ Nix, identical error/no-error outcomes — and
+      stays green in CI **through every change**, under **all** execution tiers
+      (oracle, tier 1, tier 2 with deopt/OSR exercised, tier-3 LLVM AOT). The full
+      [20](20-nix-language-conformance.md) and [21](21-builtins-conformance.md)
+      surfaces are green and held invariant; the `loom`/Miri audit is green for the
+      parallel evaluator and the concurrent collector.
 - [ ] **A measured win.** A recorded benchmark delta on representative AOS
       workloads shows native eval is materially faster than the `nix-instantiate`
-      baseline from P1 — with the expected CLI win attributed to cache + arena
-      (and analyses), per the measure-first discipline (`S-18`,
-      [15](15-differential-testing-and-benchmarking.md) §6). Every shipped
-      optimization carries its own measured delta; un-delivering ones were
-      dropped, not shipped.
+      baseline from P1, pursued to the *fastest evaluator achievable* rather than a
+      sufficiency threshold. Every shipped optimization — through tier-3, the
+      concurrent collector, and region inference — carries its own measured delta
+      and never ships a regression (`S-18`,
+      [15](15-differential-testing-and-benchmarking.md) §6).
 - [ ] **`AOS_NIX_NATIVE` default-On with `NixCli` fallback retained.**
       `AOS_NIX_NATIVE` defaults **On** for `instantiate` (Phase D/E) only after
       the closure has been byte-green and Shadow/verify-sampling silent on real
@@ -669,10 +842,12 @@ simultaneously:
       `AOS_NIX_NATIVE_VERIFY` canary remains ([14](14-integration-with-aos.md)
       §7.1, §10; `S-16`).
 
-If P1.5 determined eval is *not* the bottleneck, "done" is instead the recorded
-STOP/re-scope decision plus the independently-useful P1 artifacts (the oracle
-and the `.drv`-diff harness) — and phases P2–P8 are never built
-([01](01-motivation-and-goals.md) §5.2, [17](17-roadmap-and-risks.md) R6).
+Under the [budget mandate](17-roadmap-and-risks.md) §0 there is no STOP branch:
+P1.5 is **baseline characterization**, not a kill gate, so a finding that eval is
+a small fraction of build time does not change the definition of done. The full
+stack above is built and benchmarked regardless; the P1.5 breakdown only orders
+and parallelizes the workstreams ([01](01-motivation-and-goals.md) §5.2,
+[17](17-roadmap-and-risks.md) §0, R6).
 
 ---
 

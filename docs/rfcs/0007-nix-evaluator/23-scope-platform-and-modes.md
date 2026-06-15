@@ -321,6 +321,47 @@ AOS expressions derive that platform from `builtins.currentSystem`. So:
 
 ---
 
+## 3.5 Operating-system support: Linux and macOS
+
+aos-nix targets **both Linux and macOS (Darwin)**, exactly as upstream vanilla
+Nix does — Nix is used as heavily on macOS for development as on Linux, and the
+evaluator must run natively on both even though AOS-the-distribution is Linux.
+The host-independence invariant of §3.3 extends from architecture to OS:
+**the host operating system affects evaluation *speed*, never evaluation
+*output*** — the same `.nix` evaluates to the same `.drv` on a Linux host and a
+macOS host for a given `builtins.currentSystem`. The differential harness
+([15](15-differential-testing-and-benchmarking.md)) runs on both OSes, each
+against its platform's `nix-instantiate`, and `currentSystem` reports the Darwin
+strings (`x86_64-darwin`, `aarch64-darwin`) on macOS.
+
+**Decision (closed): portable by default; OS-specific optimizations behind
+`#[cfg]` build gates with correct portable fallbacks.** Nothing OS-specific is
+allowed to change observable behavior — it may only change performance. The two
+directions of OS-specific code:
+
+- **Linux-only optimizations, `#[cfg(target_os = "linux")]`-gated.** The
+  page-level cooperation in [memory management](06-memory-management-and-gc.md)
+  §3.5 — `madvise(MADV_PAGEOUT/MADV_COLD)` and transparent huge pages
+  (`MADV_HUGEPAGE`) — does not exist with the same semantics on macOS. These sit
+  behind the `advise_*` portability shim (06 §3.5), which lowers to the best
+  available primitive per platform and **falls back to a no-op** where the OS
+  lacks it. Because paging advice is observationally invisible (06 §8), the
+  fallback is always correct; macOS simply forgoes those particular peak-memory
+  optimizations.
+- **macOS-only code, `#[cfg(target_os = "macos")]`-gated.** The JIT
+  ([execution tiers](08-execution-tiers-and-cranelift.md)) needs Apple Silicon's
+  hardened-runtime W^X handling (`MAP_JIT` + per-thread
+  `pthread_jit_write_protect_np()`) on `aarch64-darwin`; this is macOS-specific
+  plumbing the Linux build does not compile. Cranelift, fibers, the `mmap`'d CA
+  store, and the LLVM AOT tier are otherwise portable across both OSes.
+
+Two platforms × two architectures (`{x86_64, aarch64} × {linux, darwin}`) is the
+support matrix, matching vanilla Nix; 32-bit and other OSes are out of scope
+(§3.3). The CI differential harness is run on at least one Linux and one macOS
+target so OS-specific code paths are parity-checked, not just compiled.
+
+---
+
 ## 4. `nixVersion` / `langVersion` spoofing is a parity requirement
 
 > **Decision.** aos-nix MUST report, via `builtins.nixVersion` and
@@ -413,6 +454,33 @@ the cross-host and error-outcome gates in
 decision record in [decision register](19-decision-register.md).
 
 ---
+
+## Implementation checklist
+
+Per-feature tracker for scope, platform, and language modes (flakes-out, restricted/pure-eval + allowed-paths, multi-arch host-independence, and `nixVersion`/`langVersion` spoofing); master roll-up: [implementation checklist (all phases)](22-implementation-checklist-all-phases.md). Per the unlimited-budget mandate, every item here is in scope — including research-grade ones — built in dependency order and gated by the differential harness, never cut for scope.
+
+These are **P1** parity decisions: each draws the box around what aos-nix evaluates such that getting it wrong either inflates the parity surface beyond what the harness can prove (flakes) or silently violates parity inside the surface kept (modes, arch, version reporting). All are gated by the differential `.drv` harness ([15](15-differential-testing-and-benchmarking.md)) including its error-outcome and cross-host checks.
+
+### Flakes are out of scope (§1)
+
+- [ ] Stub the three flake builtins (`getFlake`, `parseFlakeRef`, `flakeRefToString`) in the builtin table to raise `NativeEvalError::Unsupported{feature:"flakes"}`, triggering transparent top-level `NixCli` fallback — no partial flake support, no flake fixtures in the harness (the AOS closure contains none); a future flake entry point shows up as a fallback-counter increment, never a divergence (§1.1, §1.3) — **P1**, `C-22`; the excluded surface (`flake.nix` schema, `flake.lock`, flakeref grammar, flake eval cache, `getFlake` impurity rules) is documented as out-of-box (§1.2).
+
+### Restricted / pure-eval modes and allowed-paths (§2)
+
+- [ ] `--pure-eval` semantics matching the pinned C++ Nix *as behaviors*: `currentTime`/`currentSystem`/`storePath` unavailable, `getEnv` not reading the ambient env, `exec` disabled, `$NIX_PATH`/`-I` ignored, fetchers require pinning with no FS access outside fetched paths (§2.1) — **P1**, `C-23`; harness catches a divergent branch as a `.drv` byte diff or an error-outcome mismatch.
+- [ ] `restrict-eval` / `allowed-paths` / `allowed-uris` mediating the three eval-time operations (`readFile`/path-coercion, `import`, fetchers) with the *same* admit/refuse decisions C++ Nix makes — match, never innovate; error-class parity on forbidden reads (§2.2) — **P1**, `C-23`.
+- [ ] The allowed-paths/allowed-uris check as the single eval-time I/O choke point: a forbidden read refused *before* it becomes an awaited fiber I/O future, and every *permitted* impure read folded into the incremental-cache key so a cached result cannot outlive its input (§2.3) — co-designed with the fiber/tokio model ([13](13-parallel-evaluation.md) §5.5, **P3.5**) and impure-read cache keying ([12](12-incremental-evaluation-cache.md), **P2**), `C-23`/`R-10`.
+
+### Multi-arch portability and the host-independence invariant (§3)
+
+- [ ] Support x86-64 and aarch64 hosts (both AOS targets), 32-bit unsupported — the NaN-boxed/tagged value layout assumes 64-bit words, 8-byte-aligned heap objects, canonical addresses, which hold on both and on neither 32-bit target (§3.1) — **P1** value layout (`S-6`/`M-4`), Cranelift dual-backend **P6** (`S-3`); `C-24`.
+- [ ] The critical invariant — host architecture affects eval *speed* (codegen, register allocation, in-memory IC shapes), **never** eval *output*: the same `builtins.currentSystem` yields the byte-identical `.drv` on an x86-64 and an aarch64 host (§3.2, §3.3) — **P1**, `C-24`; defense-in-depth is the same JIT-vs-oracle relation.
+- [ ] The cross-host harness obligation: instantiate the AOS closure on an x86-64 builder and an aarch64 builder (pinning `currentSystem` identically) and assert byte-identical `.drv` closures to each other and to `NixCli` — over and above the per-host gate (§3.3) — gated by [15](15-differential-testing-and-benchmarking.md), `C-24`.
+- [ ] `currentSystem`/`system` report the configured **target** system string (taken from the same `system`-setting/override channel C++ Nix uses), not an introspected host triple — so cross-builds (x86-64 host, `aarch64-linux` target) and the host an eval runs on stay invisible to the `.drv` (§3.4) — **P1**, `C-24`.
+
+### `nixVersion` / `langVersion` spoofing (§4)
+
+- [ ] `builtins.nixVersion` and `builtins.langVersion` report the **exact pinned C++ Nix version** aos-nix targets — a parity requirement, not cosmetic: `lib.versionAtLeast builtins.nixVersion "2.x"` gates must take identical branches or the `.drv` diverges and fans out to a from-source rebuild (§4.1, §4.2) — **P1**, `C-25`; single source of truth shared with the harness oracle (`C-9`), so the string can never drift from the behavior it advertises.
 
 ## References
 

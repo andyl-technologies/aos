@@ -460,6 +460,45 @@ separate:
    spans that point at *sensible* original bytes (so diagnostics on desugared
    constructs are not misleading) is an ongoing fit-and-finish item.
 
+## Implementation checklist
+
+Per-feature tracker for observability and diagnostics (the miette error framework, span-driven diagnostics, `--show-trace` parity, the native-backed REPL, internal `tracing` instrumentation, and the `builtins.trace` split); master roll-up: [implementation checklist (all phases)](22-implementation-checklist-all-phases.md). Per the unlimited-budget mandate, every item here is in scope — including research-grade ones — built in dependency order and gated by the differential harness, never cut for scope.
+
+The governing rule binds every item: **presentation is not parity.** How an error is *rendered* is a free choice with no `.drv` impact; *which* error fires and *of what class* is owned by the conformance and `.drv`-diff harnesses ([15](15-differential-testing-and-benchmarking.md) §3.3), not by anything here. These items are mostly **P1** instrumentation (spans, error types, REPL, `tracing`) that surface the work the optimization phases do.
+
+### Error reporting: miette as the diagnostic framework (§2)
+
+- [ ] Adopt `miette` as the `Diagnostic`-trait error *framework* for all user-facing parse/eval errors (codes, severity, help, url, multi-span labels, `thiserror` derive integration, built-in fancy renderer, pure-Rust/hermetic); ariadne considered, kept only as a future *renderer* swap behind the report-printing seam (§2.1–§2.3) — **P1**, `C-26`/`D-OBS-1`.
+
+### The presentation-vs-parity separation (§3)
+
+- [ ] Encode error **class** in the `EvalError`/`ParseError`/`TypeError` enum variants (the parity-relevant axis, hard-gated by conformance + `.drv`-diff) and error **presentation** in the `Diagnostic` impl (the free axis); adding a `help` or recoloring a label is never a parity event, while renaming/merging a variant so a former `TypeError` surfaces as a `throw` *is* — caught by the conformance suite (§3) — **P1**, `C-26`; error-text parity stays best-effort, soft-gated, per-case enumerated.
+
+### Spans: diagnostics into the original `.nix` (§4)
+
+- [ ] Map each error `Span = (u32,u32)` to a miette `LabeledSpan` against a `NamedSource`; emit multiple labels for errors with two relevant locations (redefinition, operand type mismatch); spans survive the content-addressed parse cache and all execution tiers with zero fixup, so a cache-loaded or JIT-raised error points at the same bytes (§4.1, §4.2) — **P1**, depends on the arena-AST spans of [04](04-frontend-parser-and-ir.md) §3.1.
+- [ ] Parse errors stop at the first error (no LSP recovery) with a byte-exact span; desugaring nodes carry sensible spans (§4.3, open question 4) — **P1** core; span-fidelity-through-desugaring is an ongoing fit-and-finish item.
+
+### `--show-trace` parity: structural, not textual (§5)
+
+- [ ] Reconstruct the `--show-trace` frame chain from the evaluator's own *logical* eval/force-context stack (an `addErrorContext`-equivalent threaded onto the context), **not** the OS call stack — mandatory because under the fiber model the native stack reflects scheduling, not Nix evaluation order (§5.1) — **P1** logical stack, validated against the fiber model ([13](13-parallel-evaluation.md) §5.5, **P3.5**); `D-OBS-2`.
+- [ ] Target structural parity (same frames, same order, same file:line:col from spans); frame *wording* best-effort; assemble the full chain only when tracing is requested, summarized by default, with lazy-vs-eager frame-string materialization a measure-first question (§5.2, §5.3, open question 1) — **P1**, `D-OBS-2`; text parity soft-gated like all error text (§3).
+
+### The native-backed REPL (§6)
+
+- [ ] Back `aos repl` with the native evaluator when `AOS_NIX_NATIVE` selects it — a dev tool, parity best-effort and **not** gated (it is not a `.drv` producer), held only to the same value-rendering expectations as the `eval-okay` corpus (§6.1) — **P1**+, `D-OBS-3`.
+- [ ] Reproduce the load-bearing `nix repl` meta-commands (`:load`/`:l`, `:reload`/`:r`, `:t`, `:p`, `:b`, `:q`, binding/scope inspection from the resolver's `(depth, slot)` scope frames) (§6.2) — **P1**+; `:b` derivation output *is* gate-relevant.
+- [ ] Make the REPL incremental/cache-assisted: `:load` and imports hit the content-addressed parse cache, `:reload` after a localized edit triggers early cutoff (the interactive face of criterion **C4**, instrumented by `early_cutoffs`) (§6.3) — **P2** (depends on the incremental cache, [12](12-incremental-evaluation-cache.md)).
+
+### Internal instrumentation: the `tracing` crate (§7)
+
+- [ ] Use `tracing` (already a workspace dep, runtime-agnostic) for all internal spans/events/counters — orthogonal to miette — carrying the aos-nix statistics counters (`thunks_forced`/`allocated`/`elided`, `inline_cache_hits`/`misses`, `shape_transitions`, `tier_promotions`, `deopts`, `cache_hits`/`early_cutoffs`) and the `NixEval`-seam counters (native successes/fallbacks/shadow divergences), named to parallel `NIX_SHOW_STATS` for a field-by-field diff (§7.1) — counters land as each subsystem does (cache **P2**, shapes **P5**, tiers **P6/P7**); `D-OBS-4` ([15](15-differential-testing-and-benchmarking.md) §4.2).
+- [ ] Keep `builtins.trace` / `builtins.traceVerbose` as user-facing stderr output matching C++ Nix (`traceVerbose` gated on `--trace-verbose`, both returning the second argument) — **not** routed through `tracing` (which would filter them and change what the user sees); hard *behavioral* parity, best-effort text (§7.2) — **P1**, builtins surface ([21](21-builtins-conformance.md)).
+
+### Open questions (research-grade, in scope)
+
+- [ ] A C++-Nix-exact renderer (a miette `ReportHandler` or an ariadne swap) for the enumerated error-text-parity packages; a REPL `--debugger` equivalent built on the logical eval-context stack + scope frames (§9 open questions 2, 3) — deferred research/fit-and-finish, in scope under the unlimited-budget mandate, built only once the REPL/error surfaces are in real use.
+
 ## References
 
 External claims in this document were verified against the following sources.

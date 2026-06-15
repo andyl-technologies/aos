@@ -942,6 +942,50 @@ aos-nix is ever trusted by default.
 
 ---
 
+## Implementation checklist
+
+Per-feature tracker for differential testing and benchmarking (the `.drv`-diff acceptance gate, conformance-suite reuse, the internal/parity fuzzers and property tests, eval statistics, per-commit benchmarking, and the cutover gate); master roll-up: [implementation checklist (all phases)](22-implementation-checklist-all-phases.md). Per the unlimited-budget mandate, every item here is in scope — including research-grade ones — built in dependency order and gated by the differential harness, never cut for scope.
+
+This document *is* the gate. The differential `.drv`-diff harness is a **P1** deliverable built *before* a single Cranelift instruction is emitted, and it is the standing regression guard that holds parity invariant through every optimization phase — the absolute correctness gate the whole RFC is subordinate to (§1, §6.1).
+
+### The differential `.drv`-diff harness — the acceptance gate (§2)
+
+- [ ] `diff_closure(oracle, cand, file, attr, mode)` over the `NixEval` trait, closure-complete (walks `inputDrvs` to the leaves), asserting store-path + ATerm-byte equality *and* error/no-error parity per node (§2.1) — **P1**, `S-2`/`C-18`; the harness is a third consumer of the `NixEval` seam ([14](14-integration-with-aos.md) §3).
+- [ ] `DiffMode::{Path, Byte, Structural}` — Path for triage, Byte as the authoritative gate, Structural parsing both ATerms via `nix-compat` to localize the first differing field and disambiguate the bug class (§2.3) — **P1**, `S-13`.
+- [ ] Root-vs-contaminated bisection: topologically order the divergent set, report nodes with no divergent input as the roots, collapse the contaminated rest; per-root self-contained reproduction (§2.4) — **P1**, `C-18`.
+- [ ] Two incarnations over one implementation: the Rust integration test (`crates/aos-nix/tests/drv_diff.rs`, gates merges) and the `aos nix-diff` subcommand (interactive localization) (§2.5) — **P1**, `S-2`.
+- [ ] The auto-derived corpus from the AOS package set: all packages, all `systems/` toplevels, the toolchain closure explicitly (source bootstrap, `gcc3_4→gcc14`, mrustc→rustc, JDK 8→25, Bazel, LLVM), plus the conformance corpus — grows automatically as AOS gains packages (§2.7) — **P1**, `S-2`.
+- [ ] The binary all-or-nothing gate semantics: no "98% passing" unlocks default-on, because one foundational divergence is a full distribution rebuild (§2.2) — **P1**, `C-18`/`S-2`.
+
+### Conformance-suite reuse (§3)
+
+- [ ] Reuse the C++ Nix `tests/functional/lang/` corpus as Tvix/Snix does: reimplement `lang.sh` discovery + version-reactive skip logic, in all four categories `eval-okay`/`eval-fail`/`parse-okay`/`parse-fail` (§3.1, §3.2) — **P1**, criterion **C2**; owned jointly with [20](20-nix-language-conformance.md)/[21](21-builtins-conformance.md).
+- [ ] Error-**class** parity (type stays type, `throw` stays `throw`, assert stays assert) — hard; error-**text** parity a non-goal for the first gate, with documented intentional `skip` exclusions for unused corners only (§3.3, §3.4) — **P1**; the basis for the `EvalError`-vs-`Unsupported` fallback ([14](14-integration-with-aos.md) §6).
+
+### The tree-walk oracle and the fuzzers (§7)
+
+- [ ] Tree-walk oracle as the **internal** differential check: every optimized-tier thunk result diffed against the tier-0 oracle in test/fuzz configs; the oracle is `#![forbid(unsafe_code)]` so the conformance suite runs under `miri` against it (§7) — oracle **P1**, the internal differential active once tiers exist (**P6**/**P7**), `S-5`/`S-17`.
+- [ ] Internal differential fuzzer: random valid Nix expressions, optimized tier vs the oracle — by construction finds JIT/analysis bugs, never serialization/context bugs (§7.1) — **P6**+, feeds the `cargo fuzz` targets ([14](14-integration-with-aos.md) §9.3).
+- [ ] Parity fuzzer (aos-nix whole vs `nix-instantiate`): structure-aware `Arbitrary`/grammar-based valid-AST generation, coverage-guided under `cargo-fuzz`/libFuzzer (and optionally AFL++), seeded by the §2.7 corpus, with automatic test-case reduction — finds bugs *both* aos-nix tiers share (§7.2) — **P1** scaffold seeded, exercised through every later phase, `R-13`.
+- [ ] Property-based tests (`proptest`) for the slippery invariants: string-context propagation, attribute collation/iteration order, hash determinism, derivation-env ordering, `//` update and `++` concat semantics — bounded generation at named invariants with free shrinking (§7.3) — **P1**+, run against the oracle and against `nix-instantiate`.
+
+### Eval statistics: where the time goes (§4)
+
+- [ ] `NIX_SHOW_STATS` / `NIX_SHOW_STATS_PATH` baseline capture (JSON, `jq`-queryable) on representative AOS workloads, parsed defensively against the single pinned Nix version (§4.1) — **P1**, `C-9`; the phase-attribution data the measure-first gate consumes.
+- [ ] aos-nix mirrored counters named to parallel `NIX_SHOW_STATS` (`thunks_forced`/`allocated`/`elided`, `inline_cache_hits`/`misses`, `shape_transitions`, `gc_bytes`/`gc_pause_us`, `tier_promotions`, `deopts`, `cache_hits`/`early_cutoffs`), surfaced through `tracing` (§4.2) — counters land as each subsystem does (`early_cutoffs` **P2**, shape counters **P5**, tier counters **P6/P7**); `early_cutoffs` is the direct instrument for criterion **C4** ([24](24-observability-and-diagnostics.md) §7).
+
+### Per-commit benchmarking — the defended budget (§5)
+
+- [ ] Windtunnel-style per-commit benchmark suite: re-run fixed eval benchmarks, record timings keyed by commit sha, warn/block on a statistically-significant regression annotated with the `NIX_SHOW_STATS` delta (§5.1) — **P1** scaffold, runs every later phase, `M-19` (noise band + runner pinning).
+- [ ] The benchmark corpus: full system-variant toplevel eval, toolchain-closure eval, leaf-package spread, the **cold-vs-warm split** of each (isolates the G2 incremental-cache win — the most-watched number), and diagnostic microbenchmarks (§5.2) — **P1** for cold; warm meaningful once the cache exists (**P2**).
+- [ ] Every benchmark run gated on the `.drv` parity check (shadow-style) before recording a timing — a number from a divergent evaluator is meaningless; no target multiple committed up front, baseline sets the target (§5.3) — **P1**, `S-18`/`S-2`.
+
+### The measure-first principle and the cutover gate (§6, §8)
+
+- [ ] The opening measurement (the **P1.5** kill/continue gate): phase-attribute wall-clock (`nix-instantiate` vs `nix-build`), `NIX_SHOW_STATS` breakdown, cold-vs-warm — proceed with the ranked roadmap iff eval is dominant, else STOP/re-scope (§6.1) — **P1.5**, `S-18`/`M-1`/`M-2`/`M-3`. *Under the unlimited-budget mandate this is the one hard kill gate; the measure-first elsewhere selects winners, never descopes.*
+- [ ] The standing perf-PR admissibility rule wired into CI: green `.drv` gate (veto) **and** a real-workload wall-clock improvement (budget) **and** a counter breakdown explaining the win (diagnosis) — missing any one means it does not land as a perf win (§6.2) — every phase, criterion **C6**.
+- [ ] The single falsifiable cutover gate (§8.1) — full-closure byte parity (zero divergent roots, incl. the toolchain ladder), conformance green with documented exclusions, a fuzzing budget at zero new divergence (clock resets on any evaluator change), a shadow-mode soak at zero divergence, the benchmark premise met, and `NixCli` retained permanently — every box a harness result, any one unchecked keeps the default off (§8, §8.1) — `C-18`; unlocks rollout **Phase D** default-on for `instantiate`.
+
 ## References
 
 External claims in this document were verified against the following sources.

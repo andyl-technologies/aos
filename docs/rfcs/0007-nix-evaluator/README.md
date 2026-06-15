@@ -62,6 +62,20 @@ sound here.
 - **A stable public API or a new CLI surface** beyond the `NixEval` seam
   and diagnostic subcommands.
 
+## Engineering standards (read before writing code)
+
+Full spec: **[27 — engineering standards and code quality](27-engineering-standards.md)**. The non-negotiables an implementor inherits on day one:
+
+- **Workspace of focused crates**, with the safe/unsafe fence made *crate-level*: safe crates (`aos-nix-syntax`/`-ir`/`-oracle`/`-compat`/harness) carry `#![forbid(unsafe_code)]`; the unsafe core (`-value`/`-gc`/`-jit`/`-cache`/`-parallel`) carries `#![deny(unsafe_op_in_unsafe_fn)]` with a `// SAFETY:` on every block. `unsafe` is explicitly, narrowly **waived for this crate for performance** (see [14](14-integration-with-aos.md) §10).
+- **Errors:** `thiserror` typed errors in the libraries (`anyhow` only at the binary boundary); errors carry source spans and are error-*class*-compatible with C++ Nix. **No `.unwrap()`/`.expect()` in production.**
+- **Logging:** `tracing` only — **no raw stdout/stderr from a library crate**; the sole user-facing output is the deliberate Nix-compatible surface (`builtins.trace`, the final result).
+- **Docs:** docs.rs quality — `//!` crate/module headers, `///` on every public item with `# Errors`/`# Panics`, tagged fences (an untagged fence becomes a failing doctest).
+- **Traits** for swappable seams (`NixEval`, the allocator/GC, the storage engine, the executor tier) — but **never `Box<dyn>` on the force hot path**.
+- **Tests:** layered (unit + the differential `.drv` harness + conformance + `proptest` + `cargo-fuzz` + `loom` + `miri` + `criterion`), a ≥90% coverage floor on core crates, a test per builtin and per optimization pass, and **no benchmark regressions**.
+- **Files** ≲500 lines (hard cap ~800 → split into a `mod/` dir); **commits are PR-level documents** citing the RFC docs, the decision IDs they close/measure, the conformance items they green, and benchmark deltas.
+
+**Platform support:** Linux **and** macOS (Darwin), matching vanilla Nix — the matrix is `{x86_64, aarch64} × {linux, darwin}`. OS-specific optimizations sit behind `#[cfg]` build gates with correct fallbacks; the host OS affects eval *speed*, never `.drv` *output* (see [23](23-scope-platform-and-modes.md) §3.5).
+
 ## Document index
 
 | Doc | Topic |
@@ -92,6 +106,7 @@ sound here.
 | [24](24-observability-and-diagnostics.md) | Observability and diagnostics: miette error reporting, presentation-vs-parity, `--show-trace`, the REPL, and tracing |
 | [25](25-intermediate-representation.md) | The intermediate representation (IR) contract: node taxonomy, scope-resolved de Bruijn form, thunk/closure/attrset/primop/string-context encoding, effect-class annotation, demand-graph relationship, and serialization for the parse/compile cache |
 | [26](26-optimization-pass-catalog.md) | The optimization pass catalog: the simplifier specified pass-by-pass over the IR (matched node kinds, before→after rewrite, preconditions, fixpoint phase order, committed vs measure-gated) |
+| [27](27-engineering-standards.md) | Engineering standards: crate/dir structure + safe/unsafe fence, error handling (thiserror/anyhow), `tracing` logging, docs, trait abstractions, performance, test coverage, debugging hooks, file-size limits, commit hygiene |
 
 ## Decision log
 

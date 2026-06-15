@@ -834,6 +834,58 @@ This is the largest single performance lever in the RFC, it pays off even on the
 tree-walk oracle independent of interpreter speed, and the differential harness
 ([15](15-differential-testing-and-benchmarking.md)) is its correctness backstop.
 
+## Implementation checklist
+
+Per-feature tracker for the incremental evaluation cache; master roll-up:
+[implementation checklist (all phases)](22-implementation-checklist-all-phases.md).
+Per the unlimited-budget mandate, every item here is in scope — including
+research-grade ones — built in dependency order and gated by the differential
+harness, never cut for scope.
+
+### The demand graph and memoization (foundation)
+
+- [ ] The demand graph: graph nodes, demand edges, Adapton-style tracing dependency capture, inner/outer-observer separation ([§2](#2-evaluation-as-a-demand-driven-incremental-computation-graph), [§3.1](#31-what-a-node-is)) — P2, `S-14`/`C-20`; gate: differential `.drv` harness.
+- [ ] `force_memoized` wrapping force: consult/populate the cache, node created only on demand ([§3.1](#31-what-a-node-is)) — P2, `S-14`.
+- [ ] Cache-key combiner: `H(expr_identity ‖ length-prefixed free-var value-hashes in canonical slot order)` — **ordered, never bare XOR** ([§3.2](#32-constructing-the-dependency-key)) — P2, `C-1`; gate: harness (false-hit = correctness bug).
+- [ ] Expression identity from source content hash + IR node position; free-variable narrowing reusing the strictness/escape FV set ([§3.2](#32-constructing-the-dependency-key)) — P2, `C-2`; gate: harness.
+- [ ] Memoization granularity policy (always / conditionally / never cache) ([§3.3](#33-granularity-what-we-memoize-and-what-we-do-not)) — P2, `M-11`; gate: AOS hit/overhead traces (start coarse).
+- [ ] Three-layer dedup (compile-time thunk sharing, runtime coarse memoization, post-force value hash-consing); **unforced thunks are never hashed** ([§3.5](#35-the-deduplication-story-three-layers-and-why-thunks-are-not-all-hashed)) — P2/P4, `C-15`/`S-7`.
+
+### Early cutoff
+
+- [ ] Salsa red-green early cutoff: recompute, compare new vs old value-hash, stop propagation on no-change ([§4.1](#41-the-mechanism)) — P2, `S-14`; gate: differential `.drv` harness.
+- [ ] `derivationStrict`-node early cutoff short-circuiting the SHA-256 `.drv`/store-path computation ([§4.3](#43-interaction-with-the-sha-256-boundary)) — P2; gate: harness.
+
+### Hashing policy and the leak invariant
+
+- [ ] Three-hash split: xxh3 in-process keys, blake3 durable value-hashes / CA-store keys, SHA-256 only Nix-observed ([§5](#5-hashing-policy)) — P2, `S-15`.
+- [ ] **Leak invariant**: no xxh3/blake3 output ever reaches a SHA-256 store-path/`.drv` hash; type-enforced ([§5.2](#52-the-leak-invariant)) — P2, `S-15`; gate: differential `.drv` harness.
+
+### Storage engine (the durable CA store)
+
+- [ ] Custom mmap'd append-only **packfile** for immutable content-addressed `values/`/`files/` blobs: zero-copy `&[u8]` reads, append-only writes, GC-by-repack ([§6.5](#65-storage-engine-two-engines-for-two-data-natures)) — P2, `C-13`; gate: harness (advisory cache).
+- [ ] `heed`/LMDB for mutable `nodes/` metadata + blake3 → offset index: zero-copy MVCC reads (readers never block), single batched idempotent writer, relaxed sync (`MDB_NOSYNC`/`MDB_MAPASYNC`) ([§6.5](#65-storage-engine-two-engines-for-two-data-natures)) — P2, `C-13`; gate: loom (parallel readers).
+- [ ] Versioned `nodes/values/files` on-disk schema with schema-version field + discard-on-mismatch ([§6.1](#61-the-persistent-value-store), [§8.4](#84-open-questions-collected)) — P2, `R-14`.
+- [ ] redb as the pure-Rust hermetic drop-in if LMDB's C dependency becomes friction ([§6.5](#65-storage-engine-two-engines-for-two-data-natures)) — P2/P8, `C-13`.
+
+### The persistent demand graph and Attic integration
+
+- [ ] Materialization (disk-tier) threshold: two-conjunct rule `eval_cost > hash+serialize+IO` **and** likely re-demanded across runs ([§3.4](#34-the-materialization-threshold-when-a-memoized-result-hits-disk)) — P2, `C-14`; gate: AOS traces.
+- [ ] Content-addressed persistence: verifying traces in `nodes/`, constructive store in `values/`, durable parse/compile cache in `files/`; global dedup via hash-consing ([§6.1](#61-the-persistent-value-store)–[§6.2](#62-why-content-addressing-is-the-right-shape-here)) — P2, `S-14`.
+- [ ] `import`/`readFile`/`readDir`/`pathExists` reads reified as content-hashed leaves of the demand graph ([§6.3](#63-treating-importreadfile-reads-as-hashed-inputs)) — P2, `R-10`; gate: harness (edge-exactness research-grade).
+- [ ] Cross-machine sharing in a dedicated `andyl-os` eval-cache Attic namespace; blake3 self-verifying fetch; advisory-never-authoritative; layered GC ([§6.2](#62-why-content-addressing-is-the-right-shape-here), [§6.4](#64-cache-poisoning-and-the-trust-model)) — P2, `C-3`.
+- [ ] Persistent-store single-flight (CAS) for two machines missing the same key ([§8.4](#84-open-questions-collected)) — P3.5, `R-4`; gate: loom.
+
+### Out-of-core spill (the swap-to-disk Nix lacks)
+
+- [ ] Eviction of cold hash-consed values to the CA store with rematerialization on demand (zero-copy mmap read by value-hash) ([§6.6](#66-out-of-core-evaluation-the-mmapd-value-store-is-the-spill-to-disk-nix-lacks)) — P2/P3, `C-17`; gate: harness.
+- [ ] OS-level demand paging of the mmap'd value closure; write-back-free eviction (blake3 hash *is* the address — clean immutable values just drop) ([§6.6](#66-out-of-core-evaluation-the-mmapd-value-store-is-the-spill-to-disk-nix-lacks)) — P3, `C-17`; couples with the in-process GC ([06](06-memory-management-and-gc.md)).
+
+### Correctness backstops (in-process counterpart)
+
+- [ ] In-process CAS single-flight on the node table for concurrent same-key misses ([§8.4](#84-open-questions-collected), [13](13-parallel-evaluation.md)) — P3.5, `R-4`; gate: loom.
+- [ ] `AOS_NIX_CACHE=0` bypass + periodic cold full-closure re-validation in CI ([§8.3](#83-correctness-anxiety-and-the-safety-net)) — P2, `S-14`; gate: differential `.drv` harness (cached vs uncached byte-identical).
+
 ## References
 
 - Salsa, *The "red-green" algorithm* (incremental recomputation, early cutoff):

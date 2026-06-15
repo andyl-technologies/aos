@@ -485,6 +485,19 @@ It is chosen for four reasons, in priority order:
    This is exactly what the daemon-mode generational collector
    ([06](06-memory-management-and-gc.md)) requires. See [§6](#6-cranelift-the-gc-and-stack-maps).
 
+**Executable-memory portability (Linux + macOS).** aos-nix targets both Linux
+and macOS ([scope and platform](23-scope-platform-and-modes.md) §3.5), and
+writing-then-executing JIT code is the one place the OS shows through. On Linux
+the JIT maps a buffer, writes code, and `mprotect`s it executable. On Apple
+Silicon (`aarch64-darwin`) the hardened runtime enforces W^X, so executable
+pages must be mapped with `MAP_JIT` and the writer must toggle protection
+per-thread via `pthread_jit_write_protect_np()` around code emission — macOS-only
+plumbing behind `#[cfg(all(target_os = "macos", target_arch = "aarch64"))]`.
+`cranelift-jit`'s memory manager encapsulates most of this, but the requirement
+is called out because it is the JIT's one genuinely OS-divergent path; it changes
+*how* code is installed, never *what* the code computes, so it has no bearing on
+`.drv` output.
+
 ### 5.2 Not LLVM
 
 LLVM produces better code (Cranelift is ~14% slower than a WAVM/LLVM Wasm pipeline
@@ -812,6 +825,71 @@ package set, not by assertion:
 - All of it is downstream of **measure-first** and the **byte-identical `.drv`
   acceptance gate**: tiers are observationally invisible, the oracle defines the
   meaning, the harness is the judge, and `AOS_NIX_NATIVE` stays off until green.
+
+---
+
+## Implementation checklist
+
+Per-feature tracker for the execution tiers and the Cranelift JIT; master
+roll-up: [implementation checklist (all phases)](22-implementation-checklist-all-phases.md).
+Per the unlimited-budget mandate, every item here is in scope — including
+research-grade ones — built in dependency order and gated by the differential
+harness, never cut for scope.
+
+### Tier 0 — the tree-walk oracle (foundation)
+
+- [ ] Recursive IR interpreter in **safe Rust** (no `unsafe`, no raw function
+      pointers), the permanent correctness oracle and deopt target ([§2.1](#21-tier-0--the-tree-walk-oracle)) — P1, `S-3`/`S-5`; gate: differential `.drv` harness + miri/sanitizer on the safe tree.
+- [ ] Thunk state machine `Suspended → Blackhole → Forced` with *infinite
+      recursion encountered* on a forced black hole ([§1.2](#12-the-execution-unit-thunk-and-lambda)) — P1, `C-12` (atomic thunk word from day 1); gate: conformance 20-21.
+- [ ] Degenerate per-site inline cache on tier-0 select nodes (optional, toggleable off for cross-checking) ([§4](#4-the-compilation-pipeline), [09 §5.3](09-attribute-sets-hidden-classes-and-inline-caches.md)) — P5.
+- [ ] Source-span-carrying evaluation traces / stepping for `.drv`-divergence debugging ([§2.1](#21-tier-0--the-tree-walk-oracle)) — P1.
+
+### Runtime ABI and symbol table (the tier-invariant spine)
+
+- [ ] Uniform `extern "C"` `ThunkFn`/`LambdaFn` signature `(rt, env[, arg]) -> Value`, 16-byte `Value` register-passed ([§7.1](#71-the-uniform-calling-convention)) — P6, `S-4`/`S-12`; gate: differential `.drv` harness.
+- [ ] Runtime symbol table registered via `JITBuilder::symbol`: `aos_force`, `aos_apply`, `aos_alloc_thunk`, `aos_alloc_attrs`, `aos_select_ic`, `aos_env_get`, `aos_prim_<name>`, `aos_deopt`, `aos_throw` ([§7.2](#72-the-runtime-symbol-table)) — P6, `S-12`.
+- [ ] GC-strategy-agnostic allocation indirection (all alloc through `aos_alloc_*`, body swaps arena ↔ generational with byte-identical compiled code) ([§7.2](#72-the-runtime-symbol-table)) — P3/P6, `S-8`.
+- [ ] `import` at the ABI seam (`aos_prim_import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.
+
+### Tier 1 — the Cranelift baseline JIT
+
+- [ ] IR → Cranelift CLIF tree-directed lowering, fully generic (boxed values, generic `select`, runtime-checked arithmetic, every force a call) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§4](#4-the-compilation-pipeline)) — P6, `S-3`/`S-5`; gate: differential identity vs tier-0 oracle.
+- [ ] `JITBuilder`/`JITModule` construction + external-symbol resolution for the runtime ABI ([§5.1](#51-cranelift-the-chosen-backend)) — P6.
+- [ ] Safepoints + user stack maps emitted **unconditionally** from tier 1 (frontend obligation; daemon GC root-finding) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§6](#6-cranelift-the-gc-and-stack-maps)) — P6; gate: loom/miri once daemon GC lands.
+- [ ] Counter-based tier-0 → tier-1 promotion (invocation counter beside `code_ptr`) ([§3.4](#34-promotion-policy)) — P6.
+- [ ] Pin a Cranelift git revision (user-stack-maps API churn) ([§10](#10-open-questions)) — P6, `C-5`.
+
+### Tier 2 — the Cranelift optimized JIT
+
+- [ ] Shape speculation: guard `shape == expected` + constant-offset load, deopt on miss ([§2.3](#23-tier-2--the-cranelift-optimized-jit)) — P7, `S-5`; gate: differential `.drv` harness with deopt exercised.
+- [ ] Type speculation: unboxed `i64` add guarded by tag check, deopt to boxed path ([§2.3](#23-tier-2--the-cranelift-optimized-jit)) — P7.
+- [ ] Strictness baking / worker-wrapper: thunk-free eager compilation of proven-always-forced bindings ([§2.3](#23-tier-2--the-cranelift-optimized-jit), [07](07-laziness-and-whole-program-analyses.md)) — P7, `S-9`.
+- [ ] Escape-analyzed scalar replacement of non-escaping attrsets/thunks ([§2.3](#23-tier-2--the-cranelift-optimized-jit)) — P7, `S-9`.
+- [ ] Inlining + join points for small lambdas / partial applications, unboxed multi-returns ([§2.3](#23-tier-2--the-cranelift-optimized-jit)) — P7.
+- [ ] Counter + profile-stability tier-1 → tier-2 promotion; per-guard deopt-count blacklisting ([§3.4](#34-promotion-policy)) — P7.
+
+### Speculation, deoptimization, and OSR
+
+- [ ] Uncommon-trap guards with a deopt edge per speculation ([§3.1](#31-uncommon-traps--deopt-points)) — P7, `S-5`; gate: differential `.drv` harness.
+- [ ] `DeoptPoint` side tables (`ir_node`, `live_slots`, `scalar_repl`, `guard_kind`) reconstructing abstract state into the tier-0 oracle ([§3.2](#32-deopt-metadata)) — P7.
+- [ ] Scalar-replaced-object **materialization** on the deopt path; first cut: never scalar-replace across a deopt point ([§3.2](#32-deopt-metadata)) — P7, `M-7`; gate: harness once tiering is real.
+- [ ] On-stack replacement (OSR) into running activations (deep `foldl'` / long `genList` / `fix`-points) ([§3.3](#33-on-stack-replacement-osr)) — P7, `M-6`; gate: profile for long single activations.
+
+### GC integration (Cranelift stack maps)
+
+- [ ] Safepoints placed at allocation sites and `aos_force` calls; live-reference annotations consumed by the precise generational collector (daemon) ([§6](#6-cranelift-the-gc-and-stack-maps)) — P3/P7, `S-8`.
+- [ ] Tier-2 + concurrent-GC load barriers (ZGC/Shenandoah colored pointers) — daemon-only ([§6](#6-cranelift-the-gc-and-stack-maps), [§10](#10-open-questions)) — P8, `R-2`/`R-3`/`R-4`; gate: loom/miri.
+
+### Peak-throughput backends (alternative tier-1 / AOT, in scope under the budget mandate)
+
+- [ ] **LLVM AOT tier-3** for the stable hot core (`stdenv`/`mkDerivation`/prelude): content-addressed ahead-of-time native compilation, loaded with zero JIT warmup, strictly additive to Cranelift ([§5.2](#52-not-llvm)) — P8; gate: benchmark + differential `.drv` harness.
+- [ ] **Copy-and-patch** stencil baseline as an alternative tier 1 (microsecond compile) ([§5.4](#54-copy-and-patch-a-noted-alternative-baseline)) — P6/P8, `M-8`; gate: tier-1 compile-time benchmark.
+- [ ] NaN-boxing of the register-passed `Value` and its i64-out-of-line handling across the ABI ([§10](#10-open-questions), [05](05-value-representation.md)) — P8, `M-4`; gate: register-passing benchmark.
+
+### Determinism gate (observational invisibility)
+
+- [ ] No tier reorders attr iteration; no tier changes observed-error order; deopt value-identical to no-speculation ([§8](#8-determinism-and-the-compatibility-constraint)) — every JIT phase, `S-2`; gate: differential `.drv` harness with native off vs on, byte-identical.
 
 ---
 

@@ -743,6 +743,49 @@ follow-up. Throughout, byte-identical `.drv` output is preserved structurally �
 order-independent context unions, sorted output collection, content-only SHA-256
 hashing — and asserted by running the differential harness across thread counts.
 
+## Implementation checklist
+
+Per-feature tracker for parallel evaluation (the L1 work-stealing pool, the L2 lock-free CAS thunk protocol, the fiber/tokio I/O runtime, the loom/Miri/TSan audit, and the parallel-GC interaction); master roll-up: [implementation checklist (all phases)](22-implementation-checklist-all-phases.md). Per the unlimited-budget mandate, every item here is in scope — including research-grade ones — built in dependency order and gated by the differential harness, never cut for scope.
+
+Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-5 tail to a committed early phase, placed after P3 so per-worker nurseries build on the bump arena. Two guardrails are absolute and bind every item below: the **sequential** tree-walk oracle stays the correctness ground truth the parallel tier is differentially diffed against, and the parallel tier ships **only after** the `loom`/Miri/TSan audit (`R-4`) is green — *no data races, ever*.
+
+### L2 — lock-free CAS thunks (§3)
+
+- [ ] Atomic thunk state word with the superset machine `Suspended → Pending → Awaited → Forced/Failed` plus same-thread `Blackhole` cycle detection (worker/fiber id in the `Pending` word distinguishes cross-thread reentry from a genuine cycle) (§3.1) — **P3.5**, `C-12`; the word is already atomic from **P1**, so this adds a scheduler, not a representation change.
+- [ ] The `force` claim protocol: acquire-load the state, single-winner CAS `Suspended → Pending`, self-reentry → `InfiniteRecursion`, release-store of `Forced`/`Failed` with waiter wakeup (§3.2) — **P3.5**, `C-12`; gated by the loom audit (§3.6).
+- [ ] Wait-or-steal on a foreign claimed thunk: drain own deque, then steal a peer task, then park on the waiter list — never busy-spin, never speculative *helping* (re-running a claimed effectful thunk) (§3.3) — **P3.5**, `C-12`.
+- [ ] Tag-test fast path: WHNF-tagged values return by inspection with no atomic load/CAS; only a tag miss enters the protocol (§3.4) — **P3.5**, `C-12`; co-designed with the pointer-tag work (`M-4`/`S-6`).
+
+### L1 — coarse top-level parallelism (§4)
+
+- [ ] Chase-Lev work-stealing deque pool over independent top-level derivations, each worker with its own bump nursery; round-robin seed, LIFO local push/pop, FIFO steal, termination barrier (§4.1–§4.2) — **P3.5**, `C-12`; task grain is a derivation subtree, never per-thunk (§7).
+- [ ] Read-mostly concurrent shared tables with idempotent insert-or-get: lock-free append-only symbol interner, hash-cons table, and the incremental cache as a concurrent content-addressed map — races converge, never diverge (§4.3) — **P3.5**, `C-12`; the hash-cons table is the `S-7`/`P2` substrate.
+- [ ] Output-determinism guarantees under nondeterministic scheduling: order-independent string-context union, sorted `.drv` output collection, content-only SHA-256 hashing, deterministic-iteration attrsets (§4.4) — **P3.5**, `C-12`/`S-13`; differential `.drv` harness asserts identical output across thread counts `{1, 2, 8, N}`.
+
+### Concurrency runtime — rayon, fibers, tokio (§5.5)
+
+- [ ] rayon (crossbeam Chase-Lev) for CPU-bound thunk-graph forcing; tokio reactor on its own threads for genuinely-blocking eval-time I/O (IFD, network fetchers) (§5.5.1–§5.5.2) — **P3.5**, `C-16`.
+- [ ] Stackful fibers (green threads) so an I/O-blocked eval node parks its whole synchronous recursive force stack and frees its worker (M:N, Go-style) **without** async-coloring `force`; full async-coloring documented and rejected (§5.5.3) — **P3.5**, `C-16`; the fiber stack-switch is fenced `unsafe` (§ doc [14](14-integration-with-aos.md) §10 item 4).
+- [ ] Correctness/perf rules: local fast reads (`readFile`/`readDir`/`pathExists`/local `import`) stay synchronous; never `block_on` a compute worker; a fiber blocked on a *claimed thunk* yields the same way as one blocked on I/O; scheduling nondeterminism never reaches output (§5.5.4) — **P3.5**, `C-16`.
+- [ ] Measure-gated fiber turn-on: build sync core + rayon + tokio reactor first; enable fiber suspension only when eval-time blocking-I/O concurrency (IFD/fetch-heavy) justifies it (§5.5.5) — **P3.5**; `M-22` (build the variants, measure, keep the winner; never a descope).
+
+### The loom / Miri / TSan audit (§3.6, the shipping gate)
+
+- [ ] loom model of the `Suspended → Pending → Awaited → Forced/Failed` machine with 2–3 racing workers plus a self-reentry case (§3.6) — **P3.5**, `R-4` (committed early gate per `C-12`).
+- [ ] The five loom-checked invariants: no lost wakeup, no double-force of an effectful primop, no torn read of the thunk word, no deadlock on a claimed thunk, correct acquire/release pairing on the value publish (§3.6) — **P3.5**, `R-4`; loom green is a *precondition* of shipping, not a follow-up.
+- [ ] Miri over the safe tree-walk oracle + small parallel harnesses (UB + data-race checking) and ThreadSanitizer over the *actual* parallel binary (scheduler glue, shared insert-or-get tables, fiber runtime) (§3.6) — **P3.5**, `R-4`/`S-17`.
+
+### Parallel GC × thunk mutation (§5)
+
+- [ ] Tier-A one-shot CLI: per-worker bump nurseries, never-free, drop the arena at exit — **no collection during eval, so no mutator/collector race**; L1 + L2 fully unconstrained (§5.2) — **P3.5**, `C-12`; this is the build-time bottleneck mode and the most important simplification.
+- [ ] Tier-B Stage B0 stop-the-world parallel collector for the daemon: safepoint all workers, collect (itself parallel), resume — no load barriers, no concurrent relocation (§5.3) — **P8** (daemon-only, downstream of `S-8` Tier B).
+- [ ] Region inference / escape analysis to confine non-escaping intermediates to the private nursery, shrinking the cross-region remembered set before GC runs (§5.4) — **P4** analyses ([07](07-laziness-and-whole-program-analyses.md), `S-9`); feeds the single-entry-thunk frame-local restriction (`C-8`).
+- [ ] **Research-grade, in scope:** Stage B1 concurrent low-pause moving GC (ZGC/Shenandoah-style colored pointers + load barriers), the load-barrier-before-CAS sequence, and the WHNF-tag vs colored-pointer-bit co-design (§5.3, open questions §8.1–§8.2) — **P8**, `R-1`/`R-2`/`R-3`/`R-4`; daemon-only, verified under loom/Miri before shipping, built (not dropped) under the unlimited-budget mandate.
+
+### Failure, exceptions, cancellation (§6)
+
+- [ ] Per-thunk `Failed` state (error captured once, re-raised identically by all waiters); L1 island isolation; cooperative cancellation checked at GC-poll/task-boundary safepoints (never a forced mid-force kill); deterministic canonical-order error selection (§6) — **P3.5**, `C-12`.
+
 ## References
 
 - Determinate Systems, *Parallel Nix evaluation* — atomic `type` field,

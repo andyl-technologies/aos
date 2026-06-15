@@ -812,6 +812,53 @@ and the eval-time baseline. Everything past M3 is gated on measurement.
 
 ---
 
+## Implementation checklist
+
+Per-feature tracker for memory management and garbage collection (the alloc-via-symbols ABI, the bump arena, out-of-core spill, precise generational GC, region inference, and concurrent low-pause collection); master roll-up: [implementation checklist (all phases)](22-implementation-checklist-all-phases.md). Per the unlimited-budget mandate, every item here is in scope — including research-grade ones — built in dependency order and gated by the differential harness, never cut for scope.
+
+GC must be observationally invisible (§8): every item is gated by the differential `.drv` harness (no perturbed byte), by miri/ASan on the safe tree-walk oracle, and — for the moving and concurrent collectors — by a GC-stress mode that collects at every safepoint, plus `loom`/Miri for the concurrent interactions.
+
+### The `alloc-via-symbols` ABI (§2)
+
+- [ ] The frozen allocation ABI — `aos_alloc_thunk` / `aos_alloc_attrs` / `aos_alloc_cons` / `aos_alloc_string` / `aos_alloc_raw` — that every tier and primop allocates through; allocator vtable chosen at startup (§2) — **M0** (within **P3**), `S-8`; ABI in place from P1's oracle so the collector is swappable without recompiling JIT code.
+- [ ] Centralized allocation safepoints and the single write-barrier wall behind these symbols (§2) — **P3**, `S-8`.
+
+### Tier A — bump-pointer one-shot arena (§3)
+
+- [ ] Bump allocator: cursor add + limit compare + geometric `mmap` chunk growth; thread-local per worker; drop = per-chunk `munmap` (O(#chunks)) (§3.1–§3.2) — **P3**, `S-8`/`C-10` (per-invocation first); this alone services all CLI eval. Differential harness byte-green under Tier A.
+- [ ] Distinct permanent arena for hash-consed/shared values, never freed by a worker-arena drop (§3.2) — **P3**, ties to hash-consing ([05](05-value-representation.md) §5.5).
+- [ ] Configurable high-water memory budget (one knob) driving the three escalating responses (§3.6) — **P3**, `C-17`.
+
+### Out-of-core spill and OS cooperation (§3.4–§3.5)
+
+- [ ] CA-store-backed spill: evict cold hash-consed values to the `mmap`'d CA store leaving a content-hash handle, rematerialize on demand, write-back-free because the hash is the address (§3.4) — **P3/P8**, `C-17`; depends on the incremental cache's CA store ([12](12-incremental-evaluation-cache.md)).
+- [ ] `madvise` portability shim (`advise_dead`/`advise_cold`/`advise_evict`/`advise_huge` → `DONTNEED`/`FREE`/`COLD`/`PAGEOUT`/`HUGEPAGE`), no-op fallback off-Linux; correctness never depends on advice being honored (§3.5) — **P3/P8**, `C-17`; benchmark-gated.
+- [ ] Region-pop reclamation within arena mode (intra-run dead sub-arena pop) (§3.3 item 2, §5) — see region inference below.
+
+### Tier B — precise generational copying GC (§4)
+
+- [ ] Precise, generational, copying collector for the daemon: cache-resident copying nursery (work ∝ survivors), promotion policy, rarely-collected old generation (§4.1–§4.3) — **P3**, `S-8`; harness byte-green under Tier B, miri/ASan-clean.
+- [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
+- [ ] The single generational write barrier at `thunk_resolve` (`Blackhole → Forced(young)`), card-marking only there — no general field-store barrier (§4.5) — **P3**, `S-8`.
+- [ ] Hash-consed values allocated in non-collected permanent space, bypassing promotion churn (§4.3) — **P3**, `M-12` sizing measure-gated.
+- [ ] Cross-tier flip: Tier A safety valve installs Tier B mid-run, treating the pre-flip arena as one immortal old-generation region (§3.3 item 3, §10.5) — **P3**, research-grade transition cost (IN SCOPE), gated by harness + GC stress.
+
+### Region inference (§5)
+
+- [ ] Lexical/escape-driven region pass: pop obvious non-escaping sub-arenas (the committed subset, dual of escape analysis) (§5.1–§5.2) — **P8** (`M4`-style escape-region pops), `M-14`; depends on escape analysis ([07](07-laziness-and-whole-program-analyses.md) **P4**); benchmark-gated.
+- [ ] Full effect-based region inference (Tofte–Talpin) accounting for latent forcing effects under laziness — the research-grade tail, now IN SCOPE (§5.2) — **P8**, `R-5`; built in dependency order after the lexical pass, gated by the differential harness; not cut for scope.
+
+### Concurrent, low-pause collection (§6)
+
+- [ ] Concurrent moving collector for interactive daemon use: colored pointers + load barriers (ZGC/Shenandoah model), co-designed with the existing WHNF/constructor pointer tag bits (§6.1–§6.2) — **P8**, `R-1`/`R-3` (research-grade, IN SCOPE), daemon-only; sidestepped by the bump arena in CLI mode.
+- [ ] Load-barrier fast-path inlining in the optimized tier without breaking `alloc-via-symbols` (cold tiers keep the symbol call) (§6.3) — **P8**, `R-2`; depends on tier-2 ([08](08-execution-tiers-and-cranelift.md) **P7**).
+- [ ] The hard interaction: thunk-update CAS made jointly atomic with load-barrier relocation repair on the `state` word (§6.4) — **P8**, `R-4` (the load-barrier proof remains research-grade with R-1/R-2); gated by `loom`/Miri + GC stress before shipping.
+
+### Correctness gates (§8)
+
+- [ ] Moving collector preserves value identity (precise reference update) and never leaks allocation order/addresses into `.drv`; deterministic iteration comes from shape/sorted-key order, not allocation order (§8) — every GC phase, harness byte-green.
+- [ ] GC-stress mode (collect at every safepoint) to flush missing roots / barrier bugs (§8) — **P3** onward.
+
 ## References
 
 Memory-management and collector prior art verified for this document:

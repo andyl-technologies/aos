@@ -678,7 +678,11 @@ AOS's workspace rule (`CLAUDE.md`) is blunt: **"Avoid `unsafe` at all costs.
 Use it only for an explicit, justified performance need, and document the
 invariants with a `// SAFETY:` comment."** `aos-nix` is the one crate in the
 monorepo that needs a *standing, scoped waiver* of the "at all costs" framing,
-because three of its core mechanisms are irreducibly `unsafe`:
+because several of its core mechanisms are irreducibly `unsafe` — and the
+unlimited-budget mandate ([roadmap](17-roadmap-and-risks.md) §0), which commits
+the full performance stack rather than a subset, *enlarges* that surface, so the
+waiver is accompanied by commensurately heavier verification (below). The
+`unsafe` mechanisms:
 
 1. **NaN-boxed / tagged values** (see [value representation](05-value-representation.md)).
    The optimized value layout reinterprets bit patterns and reads payloads
@@ -695,9 +699,26 @@ because three of its core mechanisms are irreducibly `unsafe`:
    The bump arena and the precise copying collector manage raw memory, rewrite
    pointers during a move, and reinterpret object headers — none of which fits
    the borrow checker.
+4. **Stackful fibers** (see [parallel evaluation](13-parallel-evaluation.md) §5.5).
+   The green-thread runtime that parks an I/O-blocked eval node switches stacks,
+   which is `unsafe` by construction (the `corosensei`/`may`-style stack-switch
+   primitive). Confined to the fiber scheduler module.
+5. **Lock-free concurrency** (see [parallel evaluation](13-parallel-evaluation.md)).
+   The compare-and-swap (CAS) thunk protocol and the work-stealing deques use
+   atomics and shared mutation that the borrow checker cannot express. This is
+   the surface the `loom`/Miri audit (§3.6 there, register `R-4`) exists to
+   verify.
+6. **`mmap` and out-of-core paths** (see
+   [memory management and GC](06-memory-management-and-gc.md) and
+   [the incremental cache](12-incremental-evaluation-cache.md)).
+   The `mmap`'d CA store, the zero-copy reads into mapped pages, and the
+   `madvise` hints are raw-syscall, raw-pointer operations.
 
 These are not gratuitous; they are the mechanisms by which `aos-nix` beats C++
-Nix at all. The policy that fences them is what makes the waiver responsible.
+Nix at all — and under the unlimited-budget mandate the *full* set (including the
+LLVM AOT tier-3 and the concurrent moving collector) is built, so the surface is
+larger than a typical crate's, not smaller. The policy that fences it is what
+makes the standing waiver responsible.
 
 ### 10.1 The fence: a small, audited `unsafe` core
 
@@ -768,6 +789,8 @@ The standing discipline that accompanies the waiver:
 | `cargo miri` on the conformance suite| safe oracle tree            | catch UB in the path that doesn't need real codegen  |
 | ASan/UBSan CI job                    | full crate                  | catch heap/UB bugs in the `unsafe` core              |
 | `cargo fuzz` targets                 | value decode, GC, ATerm     | stress the bit-level and pointer-rewriting code      |
+| `loom` model checker                 | CAS thunk protocol, deques  | exhaustively permute atomics interleavings (`R-4`)   |
+| ThreadSanitizer (TSan) CI job        | the parallel binary         | catch races the lock-free + fiber paths can hide     |
 | two-maintainer review of `unsafe`    | every new `unsafe` block    | no `unsafe` lands without a second set of eyes        |
 
 `miri` cannot execute JIT-compiled machine code or the raw-syscall paths, which
@@ -871,6 +894,54 @@ the more conservative the harness around it must be.
   silent *correctness* event — the gate still diffs every byte.
 
 ---
+
+## Implementation checklist
+
+Per-feature tracker for AOS integration (the `NixEval` seam, the `AOS_NIX_NATIVE` gating and staged rollout, the failure/fallback model, the IFD eval→build handoff, and the `unsafe`-core fence); master roll-up: [implementation checklist (all phases)](22-implementation-checklist-all-phases.md). Per the unlimited-budget mandate, every item here is in scope — including research-grade ones — built in dependency order and gated by the differential harness, never cut for scope.
+
+The seam itself is the *least clever* part of the RFC and is **P1** scope (`S-16`): a narrow trait, a default-off flag, a transparent fallback, a fenced `unsafe` core. The riskier the engine below it, the more conservative this harness around it must be. Every flip from Off → Shadow → On is unlocked by a differential-harness result ([15](15-differential-testing-and-benchmarking.md)), never by belief.
+
+### The `NixEval` trait and `NixCli` fallback (§2–§4)
+
+- [ ] `NixEval` trait in `aos-core` (`instantiate`, `instantiate_expr`, `eval_expr`, `name`) — object-safe, returns a `.drv` `PathBuf` (not an in-memory value graph) so the harness diffs exact bytes; `aos-core` never depends on the heavy `aos-nix` crate in its default build (§3, §3.1, §3.3) — **P1**, `S-16`.
+- [ ] `impl NixEval for NixCli` by delegating to the existing subprocess wrappers, adding the `eval_expr` arm wrapping `nix-instantiate --eval --strict --json`; `NixCli` is the **permanent** default + oracle + runtime fallback, never removed (§4.1) — **P1**, `S-16`; the tier `-1` of the trust gradient.
+- [ ] `NixNative` shim over the `aos-nix` public API, owning the long-lived evaluator context (interned symbols, parsed-IR cache, hash-cons tables, incremental-cache handle) reused across `instantiate` calls; `.drv` serialization/store-path hashing come from pinned `nix-compat`, never reimplemented (§4.2) — `NixNative` stub **P1**, real impl grows across **P1–P7**; `S-13`/`C-5`.
+
+### Gating: `AOS_NIX_NATIVE` and the selection factory (§5)
+
+- [ ] `select_evaluator` factory reading `AOS_NIX_NATIVE` once at process start; three states `Off`/`On`/`Shadow`, defaulting `Off`; `native-eval` feature-gate with warn-and-fall-back when the flag requests native but the crate is not compiled in (§5) — **P1**, `S-16`/`S-2`.
+- [ ] `Shadow` mode: run both evaluators, return `NixCli` (authoritative), diff `NixNative` byte-for-byte in the background, never let native output reach the store — the rollout workhorse turning the CI fleet into an always-on differential harness (§5.1) — **P2-hardened**, rollout **Phase B** ([15](15-differential-testing-and-benchmarking.md) §2.6).
+- [ ] Process-global, per-invocation granularity (no mid-closure evaluator mixing); `AOS_NIX_NATIVE` never forwarded into Nix subprocesses (`aos_nix_env()`) so the build half is unaware native eval happened (§5.2, §5.3) — **P1**, `S-16`.
+
+### Failure model and fallback (§6)
+
+- [ ] `NativeEvalError` taxonomy — `Unsupported{feature,span}` (transparent `NixCli` retry), `EvalError(NixThrow)` (surface as-is, do **not** fall back), `Internal` (fall back + loud diagnostic) — with a counter so fallbacks are visible, not silent (§6.1) — **P1**, `S-16`; the `Unsupported`-vs-`EvalError` split is what the harness error-parity check guards.
+- [ ] Divergence handling: there is no in-process signal, so it is defended by the four layers — default `Off`, `Shadow`, `AOS_NIX_NATIVE_VERIFY` sampling canary, permanent `NixCli` fallback — never self-corrected at runtime (§6.2, §7.2) — rollout **Phases A–E**, `C-18`.
+
+### The acceptance gate and staged flip (§7)
+
+- [ ] The hard rule wired into CI: `AOS_NIX_NATIVE` defaults `On` **only after** the differential `.drv`-diff harness is byte-green across the *entire* AOS closure and stays green (§7) — `C-18`; the falsifiable cutover gate is owned by [15](15-differential-testing-and-benchmarking.md) §8.1.
+- [ ] The phased flip A→E (Off+harness → Shadow → On-`eval_expr` → On-`instantiate`+verify-sampling → verify-reduced+permanent-fallback); `eval_expr` flips before `instantiate` for blast-radius asymmetry (§7.1) — rollout schedule, `S-16`/`C-4`.
+
+### IFD and the eval→build handoff (§9)
+
+- [ ] IFD detection during forcing of a store-path-reading builtin; hand-back to the AOS build path (`NixCli::realise` / `aos build`), never aos-nix itself; re-enter eval with the built output's bytes (§9.1, §9.2) — **P1** semantics, `C-27`/`S-1`.
+- [ ] IFD-blocked **fiber parks** (its whole synchronous force stack saved) while the realisation runs as a tokio-driven subprocess, unifying "waiting on a build" with "waiting on a peer's claimed thunk" under one scheduler (§9.3) — **P3.5**, `C-16`/`C-27` ([13](13-parallel-evaluation.md) §5.5).
+- [ ] IFD result keyed on the **content address of the built output** for incremental-cache early cutoff; IFD semantics pinned byte-identical to C++ Nix (when/which/what), with `Unsupported` fallback where a form is not yet reproduced (§9.4, §9.5) — **P2** caching, `C-27`/`R-10`; gated by the differential harness on IFD-bearing inputs.
+
+### The `unsafe` policy and tooling discipline (§10)
+
+- [ ] Standing, scoped waiver of the workspace "avoid `unsafe` at all costs" rule for `aos-nix` only, covering the six irreducibly-`unsafe` mechanisms (tagged values, JIT fn-ptr calls, raw heap/GC, stackful fibers, lock-free CAS, `mmap`/out-of-core) — *enlarged* by the unlimited-budget mandate, hence heavier verification (§10, §10.0) — `S-17`; this checklist only **references** the §10 policy, it does not restate it.
+- [ ] The fence: `#![forbid(unsafe_code)]` on the tree-walk oracle / frontend / `nix-compat` glue / harness; `#![deny(unsafe_op_in_unsafe_fn)]` + per-block `// SAFETY:` on value-repr/jit/gc/runtime-abi modules; the safe oracle is the `miri`-clean trust core (§10.1, §10.2) — **P1** discipline, held every later phase, `S-17`.
+- [ ] Tooling discipline as standing CI controls: `cargo miri` on the conformance suite, ASan/UBSan, `cargo fuzz` (value decode / GC / ATerm), `loom` (CAS protocol, deques — `R-4`), ThreadSanitizer (parallel binary), two-maintainer review of every new `unsafe` block; `.unwrap()`/`.expect()` ban still applies (§10.3) — **P1**→**P8** as each mechanism lands, `S-17`.
+
+### Observability and operator controls (§11)
+
+- [ ] `name()` logged per top-level instantiation (and on fallback) via `tracing`; counters for native successes, fallbacks-by-variant, shadow divergences, verify-sample mismatches mirroring `NIX_SHOW_STATS`; self-contained divergence reports (file+attr, both `.drv` paths, ATerm byte diff); `AOS_NIX_NATIVE=0` as the one-line kill switch (§11) — **P1** seam instrumentation, `S-16` ([24](24-observability-and-diagnostics.md), [15](15-differential-testing-and-benchmarking.md) §4).
+
+### Open questions, decided (§13)
+
+- [ ] Per-invocation process first (Tier-A bump arena); persistent eval daemon is a measure-gated follow-up leaving the seam unchanged (`C-10`, **P8**); cache transport rides Attic *beside* the trait (`C-3`, **P2**); `eval_expr` `--eval --json` parity is its own gate before Phase C (`C-4`, **P4**); pin exact `nix-compat`/Cranelift revs, gate bumps on the full harness (`C-5`, **P1**) (§13) — decisions closed, build as recorded.
 
 ## References
 

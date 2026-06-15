@@ -687,6 +687,61 @@ SHA-256 store hashes — verified by the differential harness, never assumed.
 
 ---
 
+## Implementation checklist
+
+Per-feature tracker for the primops and the runtime ABI; master roll-up:
+[implementation checklist (all phases)](22-implementation-checklist-all-phases.md).
+Per the unlimited-budget mandate, every item here is in scope — including
+research-grade ones — built in dependency order and gated by the differential
+harness, never cut for scope.
+
+### The uniform runtime ABI (foundation)
+
+- [ ] One `unsafe extern "C"` calling convention `PrimopFn[N](rt: *mut Runtime, env: *const Env[, a0..an: Value]) -> Value`, 16-byte `Value` register-passed ([§2.1](#21-the-one-calling-convention)) — P6, `S-12`; gate: differential `.drv` harness.
+- [ ] `// SAFETY:` discipline at every `unsafe` boundary; the safe tree-walk oracle is what miri/sanitizers run against ([§2.1](#21-the-one-calling-convention)) — P1/P6, `S-17`; gate: miri/sanitizer CI on the safe tree.
+- [ ] Arity + currying via `PrimopApp` partial-application value; under-application is a WHNF function value ([§2.2](#22-arity-currying-and-overunder-application)) — P1, `S-12`; gate: conformance 21.
+- [ ] Tier-2 inlining of the `PrimopApp` wrapper at proven-monomorphic saturated call sites ([§2.2](#22-arity-currying-and-overunder-application)) — P7.
+- [ ] Argument-forcing order/timing matched to `primops.cc` per position (strict vs lazy, e.g. `seq`/`deepSeq`) ([§2.3](#23-argument-forcing-is-part-of-the-contract)) — P1, `S-12`; gate: differential `.drv` harness (compatibility hazard #1).
+
+### The runtime symbol table
+
+- [ ] Fixed named symbol set registered once via `JITBuilder::symbol`: allocation (`aos_alloc_*`), forcing/control (`aos_force`/`aos_force_deep`/`aos_blackhole_check`), attrset access (`aos_select_ic`/`aos_has_attr`/`aos_update`), builtins (`nix.builtin.*`) ([§3.1](#31-what-lives-in-it)–[§3.2](#32-how-symbols-are-registered-with-cranelift)) — P6, `S-12`.
+- [ ] Allocation indirection so the GC strategy swaps (bump arena ↔ generational) with byte-identical JIT output ([§3.1](#31-what-lives-in-it)) — P3/P6, `S-8`.
+- [ ] Frozen, stable symbol naming scheme (`nix.builtin.<name>`, `aos_<verb>`) so persisted compiled-IR artifacts re-link across runs ([§3.3](#33-symbol-naming-and-stability)) — P2/P6, `R-14`.
+
+### Perfect-hash builtin dispatch
+
+- [ ] Compile-time minimal perfect hash (`rust-phf`/CHD) over the frozen ~120-name builtin set, baked into the binary ([§4.1](#41-the-dispatch-problem)–[§4.2](#42-the-construction-compile-time-mphf)) — P1, `S-12`.
+- [ ] Frontend lowering of static `builtins.<name>` to a direct symbol call (no attrset lookup survives) ([§4.3](#43-why-this-is-more-than-a-micro-optimization-here)) — P1.
+- [ ] Runtime PHF fallback for dynamic `builtins.${name}`; tier-2 monomorphic-name speculation ([§4.3](#43-why-this-is-more-than-a-micro-optimization-here), [§9](#9-open-questions-and-research-grade-items)) — P7, `M-10`; gate: site-frequency profile.
+- [ ] Reified lazy `builtins` attrset (bindable/enumerable) with C++-Nix-pinned attr order ([§4.4](#44-the-builtins-attrset-itself)) — P1; gate: differential `.drv` harness (hazard #8).
+
+### The ~120 builtins
+
+- [ ] Full primop surface as plain Rust obeying the §2 ABI; authoritative set validated against `builtins.attrNames builtins` of the pinned Nix ([§5.1](#51-inventory-and-structure)) — P1, `S-12`/`C-9`; gate: conformance 21.
+- [ ] Compatibility-critical primops with adversarial coverage: `derivationStrict`, string-context family, `hashString`/`hashFile`/`toJSON`, `sort` tie-breaking ([§5.2](#52-the-compatibility-critical-primops)) — P1, `S-13`; gate: differential `.drv` harness.
+- [ ] `foldl'` worker/wrapper payoff: unboxed accumulator, no per-step thunk ([§5.3](#53-strict-fold-and-the-workerwrapper-payoff), [07](07-laziness-and-whole-program-analyses.md)) — P4, `S-9`.
+- [ ] `tryEval`/`throw`/`abort` error model: catchable-error distinction; `aos_try_begin`/`aos_try_end` catch frames in the JIT (no C++-style unwinding through JIT frames) ([§5.4](#54-tryeval-throw-and-the-error-model)) — P1/P6; gate: conformance 21 (hazard #9).
+- [ ] Inline hottest primops (`map`/`elemAt`/`length`/`concatMap`/`++`) as Cranelift IR bodies; default symbol-call only ([§9](#9-open-questions-and-research-grade-items)) — P6, `M-9`; gate: per-primop benchmark.
+
+### `import` and import caching
+
+- [ ] Two-level cache: content-addressed parse/compile cache (realpath + blake3) and Nix-faithful result memo (realpath only) ([§6.1](#61-semantics)–[§6.2](#62-the-two-level-cache)) — P2, `S-12`; gate: differential `.drv` harness (hazard #6).
+- [ ] `import` memoized, `scopedImport` deliberately **not** (reuses parse, re-evaluates) ([§6.1](#61-semantics), [§6.2](#62-the-two-level-cache)) — P2; gate: conformance 21.
+- [ ] Composition with the cross-run incremental cache; import as the early-cutoff granularity boundary ([§6.3](#63-interaction-with-the-incremental-cache), [12](12-incremental-evaluation-cache.md)) — P2, `S-14`.
+- [ ] `findFile` / `<nixpkgs>` resolution honoring `NIX_PATH`/`-I` precedence and lookup caching ([§6.4](#64-findfile-and-the-lookup-path)) — P1; gate: differential `.drv` harness (hazard #7).
+
+### Impure primops and the concurrency runtime
+
+- [ ] Impure eval-time effects (`readFile`/`readDir`/`pathExists`/`getEnv`/`currentTime`/`fetchurl`/`fetchGit`) keyed as explicit content-hash inputs into the incremental cache; `currentTime` not cached ([§9](#9-open-questions-and-research-grade-items), [12](12-incremental-evaluation-cache.md)) — P2, `R-10`; gate: differential `.drv` harness (research-grade edge exactness).
+- [ ] Blocking I/O primops (IFD, network fetchers) park the fiber via the tokio reactor; fast local reads stay synchronous ([§9](#9-open-questions-and-research-grade-items), [13](13-parallel-evaluation.md)) — P3.5, `C-16`/`C-27`; gate: loom.
+
+### Compatibility-hazard gate
+
+- [ ] All ten §8 hazards (forcing order, context propagation, `derivationStrict` ordering, `toJSON`/`hashString` bytes, `sort`, import memoization, `findFile`, `builtins` order/membership, `tryEval` catchability, int/float semantics) under adversarial differential coverage ([§8](#8-compatibility-hazards-specific-to-this-layer)) — P1, `S-2`; gate: differential `.drv` harness.
+
+---
+
 ## References
 
 - Cranelift JIT — `JITBuilder` / `JITModule` symbol registration and finalized

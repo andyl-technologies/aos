@@ -792,6 +792,47 @@ The analyses make laziness cheap; the [incremental cache](12-incremental-evaluat
 makes it unnecessary; together they are how `aos-nix` intends to beat C++ Nix on
 the AOS closure without ever diverging from it by a single byte.
 
+## Implementation checklist
+
+Per-feature tracker for the whole-program analyses (strictness/demand + worker-wrapper, cardinality, full-laziness, escape analysis + scalar replacement) and the demand/usage fact infrastructure; master roll-up: [implementation checklist (all phases)](22-implementation-checklist-all-phases.md). Per the unlimited-budget mandate, every item here is in scope — including research-grade ones — built in dependency order and gated by the differential harness, never cut for scope.
+
+This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining, beta, constant folding, case-/select-of-known, DCE, CSE, eta, let-floating, rewrite RULES / list fusion) are the simplifier, catalogued pass-by-pass in the [optimization pass catalog](26-optimization-pass-catalog.md) (`C-21`/`S-20`). Every analysis defaults to the conservative choice, so a bug degrades to *slower*, never *wrong* (§9); the gate is the differential `.drv` harness plus `NIX_SHOW_STATS`-style thunk-count deltas.
+
+### Fact infrastructure (§9)
+
+- [ ] `ExprFacts { strictness, cardinality, escape }` per-IR-node record, all fields defaulting to the conservative choice (`Unknown`/`Many`/`Escapes`) (§9) — **P4**, `S-9`; annotations over the one IR ([25](25-intermediate-representation.md)), consumed by the oracle before any JIT exists.
+- [ ] Facts cached content-addressed by IR hash in the same CA store as parse/compile artifacts (analyzed once per package-set version, reused across runs/CI) (§9, §8.1) — **P4**, ties to `S-14`/`S-15`.
+
+### Strictness / demand analysis + worker-wrapper (§4)
+
+- [ ] Backward demand-propagation fixpoint over the IR, seeded from strict primops / `if`-condition / `derivationStrict` / interpolation / `foldl'` etc., iterated to a fixed point over the closed AOS call graph (§4.1) — **P4**, `S-9`.
+- [ ] Worker/wrapper transform: split into an unboxed-strict-args worker + an always-inline lazy-convention wrapper that forces strict args and tail-calls the worker (§4.2) — **P4**, `S-9`; reductions in [26](26-optimization-pass-catalog.md).
+- [ ] Soundness discipline: eager lowering licensed only by *proven* strictness, never heuristic; an unproven binding stays a thunk (§4.3) — **P4**; harness byte-green is the hard gate (a forced should-be-lazy `throw` is a loud test failure).
+
+### Cardinality / usage analysis 0/1/many (§5)
+
+- [ ] Usage component of the demand fixpoint computing absent / used-once / many per binding (§5) — **P4**, `S-9`.
+- [ ] Single-entry thunks: drop the `Blackhole`/`Forced` update machinery (or downgrade to call-by-name) for used-at-most-once bindings (§5.1) — **P4**; the blackhole-skip restricted to escape-proven *frame-local* thunks so it is sound under parallel forcing (§10 item 4, `C-8`); ties to [13](13-parallel-evaluation.md) **P3.5**.
+- [ ] Absence → dead-binding elimination via the dual of the demand fixpoint (worker takes a dummy, code never emitted) (§5.2) — **P4**, `S-9`; reduction in [26](26-optimization-pass-catalog.md).
+- [ ] Cardinality precision under higher-order Nix (`map`/`foldl'`/recursion schemes), pushed as far as it pays before the incremental cache subsumes the win (§5.3, §10 item 1) — **P4/P8**, `M-15` (measure-gated precision, IN SCOPE — chased, not cut).
+
+### Full laziness / let-floating (§6)
+
+- [ ] Float-outward: hoist a let-binding out of an enclosing lambda when it does not depend on the parameter, so a loop-invariant is computed once (§6.1) — **P8**, `S-9`; `analysis/full_laziness.rs`, benchmark-gated.
+- [ ] Float-inward: sink a binding to the smallest scope dominating its uses (branch-gated allocation avoidance), run before the strictness fixpoint (§6.2) — **P8**.
+- [ ] Residency policy: float aggressively in Tier A (one-shot arena, no space-leak hazard); in daemon mode bound the size/cost of what is floated (§6.3) — **P8**, `R-6` (daemon residency tuning, research-grade, IN SCOPE).
+
+### Escape analysis + scalar replacement (§7)
+
+- [ ] Escape analysis as a syntactic-reachability check over the closed program (returned-from-frame / stored-into-escaping-object / passed-to-non-transparent-primop) (§7.1, §7.3) — **P4**, `S-9`; depends on precise capture sets ([04](04-frontend-parser-and-ir.md) §6.4).
+- [ ] Scalar Replacement of Aggregates: decompose a non-escaping attrset/list/thunk into SSA values (Cranelift block params as join points; unboxed multi-returns) — no heap object at all (§7.1, §7.4) — **P4** facts / **P6–P7** CLIF realization ([08](08-execution-tiers-and-cranelift.md)); reduction in [26](26-optimization-pass-catalog.md).
+- [ ] Escape-signature table for the ~120-primop surface, with the to-be-interned boundary treated as an escape (§7.3) — **P4**, `R-9`; property-test fuzzing (not just the closure diff), default-off until green.
+
+### Whole-program closed-world enablers (§8)
+
+- [ ] Closed-world fixpoint infrastructure exploiting the fully-known import closure, immutability, and effect-freedom to compute *exact* (not approximate) demand/escape facts (§8) — **P4**, `S-9`; the qualitative advantage over GHC/HotSpot.
+- [ ] Interaction with parallel forcing re-examined for single-entry thunks under work-stealing schedules (§10 item 4) — **P3.5/P4**, `C-8` (closed); `loom`/Miri audit `R-4`.
+
 ## References
 
 External claims in this document were verified against the following sources.
