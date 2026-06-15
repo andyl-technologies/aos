@@ -37,7 +37,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-use crate::types::{PackageMeta, SysrootImageEntry, package_name_bucket, validate_package_name};
+use crate::types::{
+    PackageMeta, SbatEntry, SysrootImageEntry, package_name_bucket, validate_package_name,
+};
 
 // ---------------------------------------------------------------------------
 // Package TOML schema (registry format)
@@ -120,6 +122,15 @@ struct ImageEntry {
     nar_hash: String,
     /// Uncompressed NAR size of the image in bytes.
     nar_size: u64,
+    /// Lowercase hex SHA-256 of the signer leaf cert, when signed.
+    #[serde(default)]
+    sb_signer_cert_sha256: Option<String>,
+    /// SBAT component/generation pairs from the image's `.sbat` section.
+    #[serde(default)]
+    sbat: Vec<SbatEntry>,
+    /// Predicted PCR-11 for the image's UKI, when measured.
+    #[serde(default)]
+    expected_pcr11: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +297,9 @@ fn package_metas_for_platform(toml: &PackageToml, platform: &str) -> Vec<Package
                     store_path: img.store_path.clone(),
                     nar_hash: img.nar_hash.clone(),
                     nar_size: img.nar_size,
+                    sb_signer_cert_sha256: img.sb_signer_cert_sha256.clone(),
+                    sbat: img.sbat.clone(),
+                    expected_pcr11: img.expected_pcr11.clone(),
                 })
                 .collect();
 

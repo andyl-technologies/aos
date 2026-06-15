@@ -9,6 +9,21 @@ Without it, SB is load-time only and `/var` (every generation, apm state, the
 /nix overlay upper, user data) sits in cleartext on disk
 ([`current-state.md`](current-state.md) disk-encryption section).
 
+> **Implementation status (PR #102).** All bring-up steps below are
+> implemented: the TPM stack is packaged, the kernel has TCG drivers, systemd
+> is built `-Dtpm2=enabled`, the UKI carries a signed PCR policy, OVMF is built
+> `TPM2_ENABLE`, the CI harness attaches a swtpm vTPM, and `aos-var-crypt`
+> LUKS2-formats `/var` and enrolls a TPM2 token sealed to the signed policy
+> (PCR 11) + pinned PCR 7 plus a recovery key. `checks.fleet.measured-boot`
+> verifies the **seal + recovery enrollment** end to end (LUKS2 `systemd-tpm2`
+> and `systemd-recovery` tokens present after the first enforcing boot). The
+> one piece **not yet green in CI** is the *unattended unlock on a subsequent
+> reboot*: the sealed-`/var` reboot hangs early in the initrd under the
+> emulated TPM. The remaining work is materializing the UKI's `.pcrsig`
+> signature where `systemd-cryptsetup` reads it at unlock and stabilizing the
+> relaunched-vTPM/udev interaction — the finicky last mile of systemd measured
+> boot. Tracked as a follow-up; phases 1, 2, and 4 are unaffected.
+
 ## What's missing (all of it)
 
 From [`current-state.md`](current-state.md): no TPM packages, systemd built

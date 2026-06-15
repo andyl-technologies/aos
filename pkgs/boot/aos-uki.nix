@@ -25,6 +25,13 @@
 ##!                from the systemd package
 ##!   secureBootKey  — optional db private key (PEM) to sign the UKI
 ##!   secureBootCert — optional db certificate (PEM); required with key
+##!   pcrPrivateKey  — optional PCR-policy private key (PEM); when set,
+##!                    ukify measures the UKI and signs a PCR policy into
+##!                    the `.pcrsig` section so TPM-sealed secrets unseal
+##!                    against "any UKI signed by this key" (survives OTA —
+##!                    RFC-0006 measured-boot.md)
+##!   pcrPublicKey   — optional PCR-policy public key (PEM); embedded in
+##!                    the `.pcrpkey` section, required with pcrPrivateKey
 ##!
 ##! Output: $out/aos-${name}-${version}.efi
 {
@@ -41,6 +48,8 @@
   stub ? null,
   secureBootKey ? null,
   secureBootCert ? null,
+  pcrPrivateKey ? null,
+  pcrPublicKey ? null,
 }: let
   effectiveStub =
     if stub != null
@@ -50,6 +59,13 @@
   signArgs =
     if signing
     then "--signtool=sbsign --secureboot-private-key=${secureBootKey} --secureboot-certificate=${secureBootCert}"
+    else "";
+  # Signing a PCR policy makes the seal track the policy key, not a fixed
+  # hash, so any db-signed UKI unseals /var across upgrades.
+  measuring = pcrPrivateKey != null;
+  pcrArgs =
+    if measuring
+    then "--pcr-private-key=${pcrPrivateKey} --pcr-public-key=${pcrPublicKey}"
     else "";
 in
   mkDerivation {
@@ -75,6 +91,12 @@ in
         name = "build";
         script = ''
           mkdir -p $out
+          # When signing a PCR policy, ukify shells out to systemd-measure
+          # to compute the section measurements. It lives in systemd's
+          # lib/systemd (not bin), so put that on PATH — otherwise ukify
+          # falls back to /usr/lib/systemd/systemd-measure (absent in the
+          # sandbox) and fails.
+          export PATH="${systemd}/lib/systemd''${PATH:+:$PATH}"
           # cmdline arrives as a Nix string; materialize to a file so
           # ukify's @path read path handles special characters and
           # trailing-newline rules consistently.
@@ -92,6 +114,9 @@ in
 
           # ${signArgs} is empty unless SB signing is configured, in
           # which case ukify signs the assembled PE with sbsign.
+          # ${pcrArgs} is empty unless PCR-policy signing is configured, in
+          # which case ukify measures the assembled sections and writes a
+          # signed PCR policy (.pcrsig/.pcrpkey) for TPM-sealed unlock.
           ${systemd.tools}/bin/ukify build \
             --stub=${effectiveStub} \
             --linux="$vmlinuz" \
@@ -99,6 +124,7 @@ in
             --cmdline=@cmdline \
             --os-release=@${osRelease} \
             ${signArgs} \
+            ${pcrArgs} \
             --output=$out/aos-${name}-${version}.efi
         '';
       }

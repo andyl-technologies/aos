@@ -19,6 +19,12 @@
 ##!                      CONFIG_MODULE_SIG_KEY (RFC-0006 phase 2 lockdown
 ##!                      overlay). A DISTINCT key from db — module signing
 ##!                      is a separate trust domain from UEFI SB.
+##!   pcr.key, pcr.pem — PCR-policy signing key (private) and public key
+##!                      (RFC-0006 phase 3). ukify signs the UKI's PCR
+##!                      policy with pcr.key and embeds pcr.pem; /var is
+##!                      sealed to "any UKI signed by this key". Again
+##!                      DISTINCT from db and the module-signing key — a
+##!                      release-time offline key in production.
 {
   mkDerivation,
   openssl,
@@ -70,6 +76,13 @@ in
           # the private key followed by the X.509 cert.
           ${mkReq "AOS Test Module Signing" "modsign.key" "modsign.crt"}
           cat modsign.key modsign.crt > modsign.pem
+
+          # --- PCR-policy signing key (phase 3 measured boot) ---
+          # ukify signs the UKI's PCR policy with the private key and
+          # embeds the public key; systemd-cryptenroll --tpm2-public-key
+          # seals /var to that public key. A plain RSA keypair (no X.509).
+          openssl genrsa -out pcr.key 2048
+          openssl rsa -in pcr.key -pubout -out pcr.pem
 
           # The private keys other than db are not needed downstream, but
           # keeping them is harmless for a test fixture and aids debugging.
