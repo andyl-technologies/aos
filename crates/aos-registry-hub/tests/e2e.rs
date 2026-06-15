@@ -107,7 +107,7 @@ async fn fixture_surface_indexes_and_serves() {
     let (status, headers, _) = get(&app, "/demo/h7j3k8l2m9n4.narinfo").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CONTENT_TYPE], "text/x-nix-narinfo");
-    let (status, headers, _) = get(&app, "/demo/nar/h7j3k8l2m9n4.nar.zst").await;
+    let (status, headers, _) = get(&app, "/demo/nar/h7j3k8l2m9n4-fixturehash.nar").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         headers[header::CACHE_CONTROL],

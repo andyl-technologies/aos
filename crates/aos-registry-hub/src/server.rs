@@ -1290,13 +1290,15 @@ async fn serve_registry_machine_path(
 /// Pull-through fetch-on-miss for a proxied pull-through mirror.
 ///
 /// When `registry` is a `pullthrough` mirror, fetches the missing machine
-/// `path` from its upstream, verifies it (content-addressed objects/NARs by
-/// hash; pointers fetched live and not frozen), persists content-addressed
-/// payloads into the binding `root`, and serves the bytes with the path's
-/// machine cache-control. Returns `None` when the registry is not a
+/// `path` from its upstream, verifies it (loose objects by oid; narinfos by
+/// `Sig:` against the registry's trust roster; NARs by hash against their
+/// verified narinfo; pointers fetched live and not frozen), persists the
+/// hash-checked objects into the binding `root`, and serves the bytes with the
+/// path's machine cache-control. Returns `None` when the registry is not a
 /// pull-through mirror, the path is not a machine path, or the upstream lacks
-/// it — letting the caller fall back to its `404`. Upstream errors map to
-/// `502 Bad Gateway` so the proxy never hangs or 500s on an upstream fault.
+/// it — letting the caller fall back to its `404`. A verification failure or
+/// upstream error maps to `502 Bad Gateway` so a tampered narinfo/NAR is
+/// refused rather than proxied, and the proxy never hangs or 500s.
 async fn pull_through_machine_path(
     state: &AppState,
     registry: &RegistryRecord,
@@ -1321,7 +1323,15 @@ async fn pull_through_machine_path(
         Ok(fetch) => fetch,
         Err(err) => return Some(internal(err)),
     };
-    match crate::mirror::fetch_through(fetch.as_ref(), root, path).await {
+    match crate::mirror::fetch_through(
+        fetch.as_ref(),
+        root,
+        path,
+        &registry.trust_keys,
+        source.verify,
+    )
+    .await
+    {
         Ok(Some(result)) => {
             let mut response = result.bytes.into_response();
             let headers = response.headers_mut();

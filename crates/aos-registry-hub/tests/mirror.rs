@@ -194,10 +194,16 @@ async fn pull_through_fetches_verifies_persists_and_serves() {
     // bytes (isolates the facade wiring from the mirror logic).
     {
         let fetch = aos_registry_hub::fetch::HttpFetch::new(&upstream_url);
-        let direct = fetch_through(&fetch, &local_root, &object_path)
-            .await
-            .expect("fetch_through ok")
-            .expect("upstream has the object");
+        let direct = fetch_through(
+            &fetch,
+            &local_root,
+            &object_path,
+            &[fixture.trust_key.clone()],
+            true,
+        )
+        .await
+        .expect("fetch_through ok")
+        .expect("upstream has the object");
         assert!(direct.persisted);
         std::fs::remove_file(local_root.join(&object_path)).unwrap();
     }
@@ -247,9 +253,15 @@ async fn pull_through_rejects_tampered_object_by_oid() {
     let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
 
     let fetch = aos_registry_hub::fetch::HttpFetch::new(&upstream_url);
-    let err = fetch_through(&fetch, &local_root, &object_path)
-        .await
-        .unwrap_err();
+    let err = fetch_through(
+        &fetch,
+        &local_root,
+        &object_path,
+        &[fixture.trust_key.clone()],
+        true,
+    )
+    .await
+    .unwrap_err();
     assert!(
         format!("{err:#}").contains("verifying pulled object"),
         "got: {err:#}"
@@ -259,6 +271,141 @@ async fn pull_through_rejects_tampered_object_by_oid() {
         "a tampered object is never persisted"
     );
     let _ = reg;
+}
+
+#[tokio::test]
+async fn full_mirror_rejects_unsigned_narinfo() {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream_surface = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream_surface).unwrap();
+    let fixture = common::standard_registry(&upstream_surface);
+
+    // Strip the narinfo's `Sig:` line: a poisoned cache with no trusted
+    // signature. The git surface still verifies, but the nix-cache must not.
+    let narinfo_path = upstream_surface.join("h7j3k8l2m9n4.narinfo");
+    let original = std::fs::read_to_string(&narinfo_path).unwrap();
+    let unsigned: String = original
+        .lines()
+        .filter(|l| !l.starts_with("Sig:"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&narinfo_path, unsigned).unwrap();
+    let upstream_url = serve_upstream(upstream_surface.clone()).await;
+
+    let binding_root = dir.path().join("binding");
+    let db = Database::open_in_memory().unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
+        .unwrap();
+    let registry = db.registry_by_id(reg).unwrap().unwrap();
+
+    let err = sync_full_mirror(&db, &registry).await.unwrap_err();
+    assert!(format!("{err:#}").contains("narinfo"), "got: {err:#}");
+    // Fail-closed: nothing was written, not even the git surface.
+    assert!(
+        !local_root.join("HEAD").exists(),
+        "no surface bytes written when a narinfo fails verification"
+    );
+    let source = db.mirror_source(reg).unwrap().unwrap();
+    assert_eq!(source.last_sync_status.as_deref(), Some("failed"));
+}
+
+#[tokio::test]
+async fn full_mirror_rejects_tampered_nar() {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream_surface = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream_surface).unwrap();
+    let fixture = common::standard_registry(&upstream_surface);
+
+    // Tamper the NAR bytes: the narinfo's Sig still verifies (signed metadata),
+    // but the NAR no longer matches the declared FileHash/NarHash.
+    std::fs::write(
+        upstream_surface.join("nar/h7j3k8l2m9n4-fixturehash.nar"),
+        b"tampered-nar-bytes",
+    )
+    .unwrap();
+    let upstream_url = serve_upstream(upstream_surface.clone()).await;
+
+    let binding_root = dir.path().join("binding");
+    let db = Database::open_in_memory().unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
+        .unwrap();
+    let registry = db.registry_by_id(reg).unwrap().unwrap();
+
+    let err = sync_full_mirror(&db, &registry).await.unwrap_err();
+    assert!(format!("{err:#}").contains("NAR"), "got: {err:#}");
+    assert!(
+        !local_root.join("HEAD").exists(),
+        "no surface bytes written when a NAR fails verification"
+    );
+    let source = db.mirror_source(reg).unwrap().unwrap();
+    assert_eq!(source.last_sync_status.as_deref(), Some("failed"));
+}
+
+#[tokio::test]
+async fn pull_through_refuses_tampered_narinfo_and_nar() {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream_surface = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream_surface).unwrap();
+    let fixture = common::standard_registry(&upstream_surface);
+
+    let binding_root = dir.path().join("binding");
+    let db = Database::open_in_memory().unwrap();
+    let (_reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    let trusted = vec![fixture.trust_key.clone()];
+
+    // A correctly-signed narinfo and matching NAR are served.
+    let fetch = aos_registry_hub::fetch::LocalFsFetch::new(&upstream_surface);
+    assert!(
+        fetch_through(&fetch, &local_root, "h7j3k8l2m9n4.narinfo", &trusted, true)
+            .await
+            .unwrap()
+            .is_some(),
+        "a valid narinfo is served"
+    );
+    assert!(
+        fetch_through(
+            &fetch,
+            &local_root,
+            "nar/h7j3k8l2m9n4-fixturehash.nar",
+            &trusted,
+            true
+        )
+        .await
+        .unwrap()
+        .is_some(),
+        "a valid NAR is served"
+    );
+
+    // Tamper the narinfo's Sig: pull-through must refuse it, not proxy poison.
+    let narinfo_path = upstream_surface.join("h7j3k8l2m9n4.narinfo");
+    let original = std::fs::read_to_string(&narinfo_path).unwrap();
+    let bad_sig = original.replace("Sig: demo:", "Sig: demo:AAAA");
+    std::fs::write(&narinfo_path, &bad_sig).unwrap();
+    let err = fetch_through(&fetch, &local_root, "h7j3k8l2m9n4.narinfo", &trusted, true)
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("narinfo"), "got: {err:#}");
+
+    // Restore the narinfo, then tamper the NAR bytes: the NAR fails its hash
+    // check against the (now-trusted) narinfo and is refused.
+    std::fs::write(&narinfo_path, &original).unwrap();
+    std::fs::write(
+        upstream_surface.join("nar/h7j3k8l2m9n4-fixturehash.nar"),
+        b"poisoned-nar",
+    )
+    .unwrap();
+    let err = fetch_through(
+        &fetch,
+        &local_root,
+        "nar/h7j3k8l2m9n4-fixturehash.nar",
+        &trusted,
+        true,
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{err:#}").contains("NAR"), "got: {err:#}");
 }
 
 /// Find one loose object's oid (the basename joined to its `xx` dir) under a

@@ -22,14 +22,16 @@
 //!    verifies against upstream's roster.
 //!
 //! 2. **Pull-through cache** ([`fetch_through`]) — a *proxied* frontend that
-//!    fetches-on-miss from upstream, verifies, persists content-addressed
-//!    payloads to the local binding, and serves. Content-addressed payloads
-//!    (`objects/<oid>`, `nar/<hash>`, release packs) are verified by hash and
-//!    are trivially safe to persist; pointers (`info/refs`, `HEAD`,
-//!    `channels/**`, `nix-cache-info`) are self-verifying through signatures +
-//!    name binding but are fetched fresh and **not** frozen as immutable —
-//!    fall-through to upstream on every local miss is the completeness
-//!    guarantee.
+//!    fetches-on-miss from upstream, verifies, persists the loose objects it
+//!    can hash-check to the local binding, and serves. Loose `objects/<oid>`
+//!    are verified by oid and frozen. Narinfos are signature-verified against
+//!    the trust roster, and NARs are hash-verified against their
+//!    (signature-verified) narinfo, before either is served — a tampered
+//!    narinfo or NAR is refused, never proxied, so poison never propagates even
+//!    though these are not frozen. Release packs (no in-band checksum) and
+//!    pointers (`info/refs`, `HEAD`, `channels/**`, `nix-cache-info`) are
+//!    fetched fresh and **not** frozen — fall-through to upstream on every
+//!    local miss is the completeness guarantee.
 //!
 //! # Surface enumeration
 //!
@@ -91,6 +93,11 @@ struct VerifiedSurface {
     releases: usize,
     /// Number of resolved channels.
     channels: usize,
+    /// Roster keys the verified upstream's `keys.toml` added beyond the
+    /// mirror's configured `trust_keys` (in-band rotation). Empty when the
+    /// trusted set was unchanged. Surfaced in the sync record so a roster
+    /// expansion is operator-visible (L4); the rotation itself is by design.
+    roster_added: Vec<String>,
 }
 
 /// Run a full-mirror sync for `registry` against its recorded upstream.
@@ -175,7 +182,23 @@ pub async fn sync_full_mirror(
         .await
         .with_context(|| format!("re-indexing mirror '{}' after sync", registry.slug))?;
 
-    db.update_mirror_sync(registry.id, now, "ok", None, verified.frontier.as_deref())?;
+    // Surface an in-band roster expansion in the sync record so the trusted
+    // set never silently widens (L4). The rotation is by design; this is the
+    // operator-visible signal that it happened.
+    let roster_note = if verified.roster_added.is_empty() {
+        None
+    } else {
+        let summary = format!("roster changed: +{}", verified.roster_added.join(", +"));
+        tracing::info!(slug = %registry.slug, detail = %summary, "mirror roster expanded");
+        Some(summary)
+    };
+    db.update_mirror_sync(
+        registry.id,
+        now,
+        "ok",
+        roster_note.as_deref(),
+        verified.frontier.as_deref(),
+    )?;
 
     Ok(MirrorSyncResult {
         commit: verified.commit,
@@ -239,12 +262,16 @@ async fn verify_surface(
     }
 
     // The verified roster extends the trusted set, mirroring apm's in-band
-    // rotation (and the indexer).
+    // rotation (and the indexer). Each newly-trusted active key is recorded so
+    // a roster expansion is operator-visible (L4): the rotation is by design,
+    // but silently widening the trusted set is not — the sync surfaces it.
     let tree = load_registry_tree(fetch, commit_oid).await?;
+    let mut roster_added: Vec<String> = Vec::new();
     if let Some(keys) = &tree.keys {
         for key in &keys.active {
             if !trusted.contains(&key.key) {
                 trusted.push(key.key.clone());
+                roster_added.push(key.key.clone());
             }
         }
     }
@@ -331,10 +358,15 @@ async fn verify_surface(
     }
 
     // Nix-cache files (best effort): when the upstream serves a nix-cache-info,
-    // mirror it plus the narinfos and NARs the indexed store paths name.
+    // mirror it plus the narinfos and NARs the indexed store paths name. Under
+    // `verify` (the default), every narinfo's `Sig:` is checked against the
+    // trust roster and every NAR's bytes against the narinfo's FileHash/NarHash
+    // before the pair is admitted to the immutable copy set — a poisoned
+    // upstream cache never reaches the binding (C1). With `verify` off the
+    // narinfos/NARs are mirrored unverified, the operator's documented opt-out.
     if fetch.fetch("nix-cache-info").await?.is_some() {
         mutable.push("nix-cache-info".to_string());
-        collect_nix_cache(fetch, &tree, &mut immutable).await?;
+        collect_nix_cache(fetch, &tree, &trusted, verify, &mut immutable).await?;
     }
 
     Ok(VerifiedSurface {
@@ -344,6 +376,7 @@ async fn verify_surface(
         mutable,
         releases: releases.len(),
         channels: channel_count,
+        roster_added,
     })
 }
 
@@ -407,16 +440,38 @@ async fn collect_release_packs(
     Ok(())
 }
 
-/// Collect the nix-cache narinfo + NAR paths the registry's store paths name
-/// (best effort).
+/// Collect — and, under `verify`, authenticate — the nix-cache narinfo + NAR
+/// paths the registry's store paths name (best effort).
 ///
 /// For each `version_platforms` store path in the loaded tree's packages, the
 /// narinfo is `<hash>.narinfo` and (if the upstream serves it) the NAR is the
-/// file the narinfo's `URL` field names. We mirror the narinfo and, when the
-/// narinfo parses, the NAR it points at.
+/// file the narinfo's `URL` field names.
+///
+/// When `verify` is true (the default, high-assurance posture):
+///
+/// 1. The narinfo's `Sig:` is checked against `trusted` (the registry's trust
+///    roster, extended by the verified in-band roster) with
+///    [`crate::validation::verify_narinfo_signature`]. A narinfo with no valid
+///    trusted signature **fails the whole sync** — a mirror is a byte courier,
+///    not a trust party, so it must not launder an unsigned/forged narinfo.
+/// 2. The NAR the (now-trusted) narinfo names is fetched and its bytes verified
+///    against the narinfo's `FileHash`/`NarHash`
+///    ([`crate::validation::verify_nar_against_narinfo`]). A mismatch **fails
+///    the whole sync**.
+///
+/// Only narinfos and NARs that pass both checks are pushed to `out` (the
+/// immutable copy set). Because this runs inside [`verify_surface`] — before
+/// any byte is written — a failure aborts the sync with **nothing copied**.
+///
+/// The NAR path is additionally constrained to the conventional `nar/`
+/// location (M2): an attacker-controlled `URL:` that steers elsewhere (e.g.
+/// `info/refs`, a channel partition) is rejected, so only content-addressed
+/// `nar/` payloads ever enter the immutable phase.
 async fn collect_nix_cache(
     fetch: &dyn SurfaceFetch,
     tree: &crate::surface::load::LoadedTree,
+    trusted: &[String],
+    verify: bool,
     out: &mut Vec<String>,
 ) -> Result<()> {
     let mut seen = BTreeSet::new();
@@ -435,12 +490,31 @@ async fn collect_nix_cache(
                     continue;
                 }
                 let narinfo_path = format!("{hash}.narinfo");
-                let Some(narinfo) = fetch.fetch(&narinfo_path).await? else {
+                let Some(narinfo_bytes) = fetch.fetch(&narinfo_path).await? else {
                     continue;
                 };
-                out.push(narinfo_path);
-                // The NAR path is the narinfo's URL field (relative to root).
-                if let Some(url) = narinfo_url(&narinfo) {
+                let narinfo = std::str::from_utf8(&narinfo_bytes)
+                    .with_context(|| format!("{narinfo_path} is not UTF-8"))?;
+
+                if verify {
+                    crate::validation::verify_narinfo_signature(narinfo, trusted)
+                        .with_context(|| format!("verifying narinfo {narinfo_path}"))?;
+                }
+
+                out.push(narinfo_path.clone());
+
+                // The NAR path is the narinfo's URL field (relative to root),
+                // constrained to the conventional `nar/` location.
+                if let Some(url) = narinfo_nar_url(narinfo) {
+                    if verify {
+                        let nar_bytes = fetch.fetch(&url).await?.with_context(|| {
+                            format!("NAR {url} named by {narinfo_path} is missing upstream")
+                        })?;
+                        crate::validation::verify_nar_against_narinfo(narinfo, &nar_bytes)
+                            .with_context(|| {
+                                format!("verifying NAR {url} for narinfo {narinfo_path}")
+                            })?;
+                    }
                     out.push(url);
                 }
             }
@@ -449,16 +523,22 @@ async fn collect_nix_cache(
     Ok(())
 }
 
-/// Extract the `URL:` field from narinfo bytes (the NAR's surface-relative
-/// path), if present and relative.
-fn narinfo_url(bytes: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(bytes).ok()?;
+/// Extract the `URL:` field from narinfo text (the NAR's surface-relative
+/// path), if present, relative, and under the conventional `nar/` location.
+///
+/// Constraining the path to a `nar/` prefix (M2) means a hostile upstream
+/// cannot point the `URL:` at a pointer file (`info/refs`, `channels/**`) and
+/// smuggle it into the immutable copy phase, breaking the immutable-first
+/// write ordering. `safe_join` separately guards `..`; this prefix check is an
+/// allow-list on top. An absolute or off-surface URL is skipped.
+fn narinfo_nar_url(text: &str) -> Option<String> {
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("URL:") {
             let url = rest.trim();
-            // Only mirror relative URLs (the standard `nar/<hash>.nar.zst`
-            // form); an absolute URL points off-surface and is skipped.
-            if !url.is_empty() && !url.contains("://") && !url.starts_with('/') {
+            // Only mirror relative `nar/<hash>.nar.zst` paths; an absolute URL
+            // points off-surface and anything outside `nar/` is not a
+            // content-addressed NAR.
+            if url.starts_with("nar/") && !url.contains("://") {
                 return Some(url.to_string());
             }
         }
@@ -513,16 +593,21 @@ enum PullClass {
     /// the object is frozen into the local cache. The only class persisted by
     /// the pull-through cache.
     VerifiedObject,
+    /// A `<hash>.narinfo` pointer: fetched fresh and served, but only after its
+    /// `Sig:` verifies against the trust roster (M1). Never frozen — narinfos
+    /// are pointers, re-fetched on each miss.
+    Narinfo,
+    /// A `nar/<…>` payload: fetched fresh and served, but only after the bytes
+    /// verify against the corresponding (signature-verified) narinfo's
+    /// FileHash/NarHash (M1). Never frozen.
+    Nar,
     /// A payload that is content-addressed in principle but that the
-    /// pull-through cache cannot currently verify before persisting — NARs
-    /// (whose filename encodes the *uncompressed* NAR hash while the fetched
-    /// bytes are the *compressed* file) and release packs (whose checksum is
-    /// in the pack trailer). To avoid persisting unverified upstream bytes
-    /// (cache poisoning), these are fetched live and served but **never
-    /// frozen**, exactly like a pointer, until hash verification exists.
+    /// pull-through cache cannot verify before serving — release packs (whose
+    /// checksum is in the pack trailer). Served live but **never frozen**, like
+    /// a pointer, until hash verification exists.
     UnverifiableLive,
     /// A self-verifying pointer (`info/refs`, `HEAD`, `channels/**`,
-    /// `nix-cache-info`, `*.narinfo`): fetched fresh, served, never frozen.
+    /// `nix-cache-info`): fetched fresh, served, never frozen.
     Pointer,
 }
 
@@ -530,23 +615,31 @@ enum PullClass {
 ///
 /// Only loose git objects under `objects/<xx>/<62-hex>` are
 /// [`PullClass::VerifiedObject`] — their path is their git oid, so the
-/// inflated content can be hash-checked before persisting. NARs and release
-/// packs are content-addressed but not verifiable here (the NAR filename
-/// encodes the uncompressed hash, not the compressed bytes; a pack's checksum
-/// is in its trailer), so they are [`PullClass::UnverifiableLive`]: served but
-/// never persisted. Everything else is a [`PullClass::Pointer`] fetched live.
+/// inflated content can be hash-checked before persisting. A `<hash>.narinfo`
+/// is a [`PullClass::Narinfo`] (signature-verified before serving) and a
+/// `nar/<…>` payload is a [`PullClass::Nar`] (hash-verified against its narinfo
+/// before serving). Release packs are content-addressed but not verifiable
+/// here (the checksum is in the trailer), so they are
+/// [`PullClass::UnverifiableLive`]: served but never persisted. Everything else
+/// is a [`PullClass::Pointer`] fetched live.
 ///
 /// The invariant: **no content-addressed payload is persisted into the local
-/// cache without verifying its hash.**
+/// cache without verifying its hash, and no narinfo/NAR is served through the
+/// pull-through without verifying its signature/hash.**
 fn pull_class(path: &str) -> PullClass {
     let is_loose_object = path
         .strip_prefix("objects/")
         .is_some_and(|rest| !rest.starts_with("info/") && rest.contains('/'));
     let is_nar = path.starts_with("nar/");
+    let is_narinfo = path.ends_with(".narinfo") && !path.contains('/');
     let is_release_pack = path.starts_with("releases/") && path.contains("/objects/pack/");
     if is_loose_object {
         PullClass::VerifiedObject
-    } else if is_nar || is_release_pack {
+    } else if is_narinfo {
+        PullClass::Narinfo
+    } else if is_nar {
+        PullClass::Nar
+    } else if is_release_pack {
         PullClass::UnverifiableLive
     } else {
         PullClass::Pointer
@@ -567,24 +660,33 @@ pub struct PullResult {
 /// content-addressed payloads) persisting it.
 ///
 /// A loose-object path is verified against the oid embedded in its path before
-/// being persisted. NARs and release packs are **not** persisted: their hash
-/// cannot be verified here (the NAR filename encodes the uncompressed hash, not
-/// the fetched compressed bytes; a pack's checksum is in its trailer), so they
-/// are served live but never frozen to avoid caching tampered upstream bytes.
-/// Pointers (`info/refs`, partition tags, `nix-cache-info`, narinfos) are
+/// being persisted. A narinfo's `Sig:` is verified against `trusted_keys`
+/// before it is served; a NAR is verified against its (signature-verified)
+/// narinfo's FileHash/NarHash before it is served — a tampered narinfo or NAR
+/// is refused (error) rather than proxied, so the pull-through never propagates
+/// poison even though it persists nothing (M1). Release packs cannot be
+/// verified here (their checksum is in the trailer) and are served live but
+/// never frozen. Pointers (`info/refs`, partition tags, `nix-cache-info`) are
 /// likewise fetched live and returned without persisting, so the next request
 /// re-fetches the current pointer.
+///
+/// When `verify` is false (the operator's documented opt-out), the narinfo/NAR
+/// signature and hash checks are skipped and the bytes are served verbatim.
 ///
 /// Returns `Ok(None)` when the upstream definitively lacks the path (404).
 ///
 /// # Errors
 ///
 /// Returns an error on a transport failure, an oid mismatch (a tampered loose
-/// object), or a write failure.
+/// object), a narinfo with no valid trusted `Sig:`, a NAR whose bytes do not
+/// match its narinfo, or a write failure. The server maps these to
+/// `502 Bad Gateway` so poison is refused, not proxied.
 pub async fn fetch_through(
     fetch: &dyn SurfaceFetch,
     root: &std::path::Path,
     path: &str,
+    trusted_keys: &[String],
+    verify: bool,
 ) -> Result<Option<PullResult>> {
     let Some(bytes) = fetch.fetch(path).await? else {
         return Ok(None);
@@ -613,13 +715,63 @@ pub async fn fetch_through(
                 persisted: true,
             }))
         }
-        // NARs, release packs, and pointers are served live but never frozen,
-        // because their content hash cannot be verified before persisting.
+        PullClass::Narinfo => {
+            // Verify the narinfo's Sig against the trust roster before serving.
+            if verify {
+                let text = std::str::from_utf8(&bytes)
+                    .with_context(|| format!("pulled narinfo {path} is not UTF-8"))?;
+                crate::validation::verify_narinfo_signature(text, trusted_keys)
+                    .with_context(|| format!("verifying pulled narinfo {path}"))?;
+            }
+            Ok(Some(PullResult {
+                bytes,
+                persisted: false,
+            }))
+        }
+        PullClass::Nar => {
+            // Fetch and signature-verify the narinfo that names this NAR, then
+            // verify the NAR bytes against it. Without the narinfo we cannot
+            // establish the NAR's expected hash, so we refuse rather than proxy.
+            if verify {
+                let narinfo_path = narinfo_path_for_nar(path)
+                    .with_context(|| format!("cannot derive narinfo path for pulled NAR {path}"))?;
+                let narinfo_bytes = fetch.fetch(&narinfo_path).await?.with_context(|| {
+                    format!("narinfo {narinfo_path} for pulled NAR {path} is missing upstream")
+                })?;
+                let narinfo = std::str::from_utf8(&narinfo_bytes)
+                    .with_context(|| format!("narinfo {narinfo_path} is not UTF-8"))?;
+                crate::validation::verify_narinfo_signature(narinfo, trusted_keys)
+                    .with_context(|| format!("verifying narinfo {narinfo_path} for NAR {path}"))?;
+                crate::validation::verify_nar_against_narinfo(narinfo, &bytes)
+                    .with_context(|| format!("verifying pulled NAR {path}"))?;
+            }
+            Ok(Some(PullResult {
+                bytes,
+                persisted: false,
+            }))
+        }
+        // Release packs and pointers are served live but never frozen, because
+        // their content hash cannot be verified before persisting.
         PullClass::UnverifiableLive | PullClass::Pointer => Ok(Some(PullResult {
             bytes,
             persisted: false,
         })),
     }
+}
+
+/// Derive the `<hash>.narinfo` path for a `nar/<store-hash>-<…>` NAR path.
+///
+/// The static-cache NAR URL is `nar/<store-hash>-<nar-hash>.<ext>` (see
+/// `aos_core::nar::cache::nar_url`), so the store hash is the basename segment
+/// before the first `-`, and its narinfo lives at `<store-hash>.narinfo` at the
+/// surface root. Returns `None` for a path that does not fit that shape.
+fn narinfo_path_for_nar(nar_path: &str) -> Option<String> {
+    let name = nar_path.strip_prefix("nar/")?;
+    let (store_hash, _) = name.split_once('-')?;
+    if store_hash.is_empty() {
+        return None;
+    }
+    Some(format!("{store_hash}.narinfo"))
 }
 
 /// Parse the oid named by a loose-object path (`objects/<xx>/<62-hex>`).
@@ -648,9 +800,12 @@ mod tests {
     fn classifies_pull_paths() {
         // Only loose git objects are verifiable-and-persisted.
         assert_eq!(pull_class("objects/ab/cdef"), PullClass::VerifiedObject);
-        // NARs and release packs are content-addressed but unverifiable here:
-        // served live, never persisted.
-        assert_eq!(pull_class("nar/x.nar.zst"), PullClass::UnverifiableLive);
+        // A narinfo is signature-verified before serving; a NAR is hash-
+        // verified against its narinfo before serving.
+        assert_eq!(pull_class("abc.narinfo"), PullClass::Narinfo);
+        assert_eq!(pull_class("nar/x.nar.zst"), PullClass::Nar);
+        // Release packs are content-addressed but unverifiable here: served
+        // live, never persisted.
         assert_eq!(
             pull_class("releases/1/0/0/objects/pack/p.pack"),
             PullClass::UnverifiableLive
@@ -661,20 +816,17 @@ mod tests {
             "objects/info/packs",
             "channels/stable/00",
             "nix-cache-info",
-            "abc.narinfo",
         ] {
             assert_eq!(pull_class(pointer), PullClass::Pointer, "{pointer}");
         }
     }
 
     #[tokio::test]
-    async fn nar_and_pack_payloads_are_served_but_never_persisted() {
+    async fn pack_payloads_are_served_but_never_persisted() {
         use crate::fetch::LocalFsFetch;
 
-        // An upstream surface carrying a NAR and a release pack.
+        // An upstream surface carrying a release pack.
         let upstream = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(upstream.path().join("nar")).unwrap();
-        std::fs::write(upstream.path().join("nar/x.nar.zst"), b"upstream-nar-bytes").unwrap();
         std::fs::create_dir_all(upstream.path().join("releases/1/0/0/objects/pack")).unwrap();
         std::fs::write(
             upstream.path().join("releases/1/0/0/objects/pack/p.pack"),
@@ -685,27 +837,20 @@ mod tests {
         let local = tempfile::tempdir().unwrap();
         let fetch = LocalFsFetch::new(upstream.path());
 
-        for (path, bytes) in [
-            ("nar/x.nar.zst", b"upstream-nar-bytes".as_slice()),
-            (
-                "releases/1/0/0/objects/pack/p.pack",
-                b"upstream-pack-bytes".as_slice(),
-            ),
-        ] {
-            let result = fetch_through(&fetch, local.path(), path)
-                .await
-                .unwrap()
-                .unwrap();
-            // The bytes are served...
-            assert_eq!(result.bytes, bytes, "{path} served");
-            // ...but the payload is never frozen into the local cache, so a
-            // tampered upstream payload cannot poison it.
-            assert!(!result.persisted, "{path} must not be persisted");
-            assert!(
-                !local.path().join(path).exists(),
-                "{path} must not be written to the local binding"
-            );
-        }
+        let path = "releases/1/0/0/objects/pack/p.pack";
+        let result = fetch_through(&fetch, local.path(), path, &[], true)
+            .await
+            .unwrap()
+            .unwrap();
+        // The bytes are served...
+        assert_eq!(result.bytes, b"upstream-pack-bytes", "{path} served");
+        // ...but the payload is never frozen into the local cache, so a
+        // tampered upstream payload cannot poison it.
+        assert!(!result.persisted, "{path} must not be persisted");
+        assert!(
+            !local.path().join(path).exists(),
+            "{path} must not be written to the local binding"
+        );
     }
 
     #[test]
@@ -718,11 +863,27 @@ mod tests {
     }
 
     #[test]
-    fn extracts_relative_narinfo_url() {
-        let info = b"StorePath: /s/abc\nURL: nar/abc.nar.zst\nCompression: zstd\n";
-        assert_eq!(narinfo_url(info).as_deref(), Some("nar/abc.nar.zst"));
+    fn extracts_relative_nar_url_under_nar_prefix() {
+        let info = "StorePath: /s/abc\nURL: nar/abc.nar.zst\nCompression: zstd\n";
+        assert_eq!(narinfo_nar_url(info).as_deref(), Some("nar/abc.nar.zst"));
         // Absolute URLs point off-surface and are skipped.
-        let abs = b"URL: https://other/nar/abc.nar.zst\n";
-        assert!(narinfo_url(abs).is_none());
+        let abs = "URL: https://other/nar/abc.nar.zst\n";
+        assert!(narinfo_nar_url(abs).is_none());
+        // A URL outside `nar/` (an attacker steering at a pointer file) is
+        // rejected (M2), so it can never enter the immutable copy phase.
+        let outside = "URL: info/refs\n";
+        assert!(narinfo_nar_url(outside).is_none());
+        let channel = "URL: channels/stable/00\n";
+        assert!(narinfo_nar_url(channel).is_none());
+    }
+
+    #[test]
+    fn derives_narinfo_path_for_nar() {
+        assert_eq!(
+            narinfo_path_for_nar("nar/abc123-sha256-def.nar.zst").as_deref(),
+            Some("abc123.narinfo")
+        );
+        assert!(narinfo_path_for_nar("nar/nodash.nar").is_none());
+        assert!(narinfo_path_for_nar("objects/ab/cd").is_none());
     }
 }

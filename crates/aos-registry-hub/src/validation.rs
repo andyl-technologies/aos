@@ -10,14 +10,18 @@
 //!   `URL:` field, and check the referenced NAR exists (HEAD), with a
 //!   `file://`-only size sanity check against the narinfo's `FileSize`.
 //! - **deep** — beyond integrity, on a deterministic *sample* of up to
-//!   [`DEEP_SAMPLE_SIZE`] hashes, actually download the NAR and verify its
-//!   content hash against the narinfo's declared `FileHash` (falling back to
-//!   `NarHash`). A hash whose bytes do not match its declared hash is a
-//!   `corrupt` finding, recorded distinctly from `missing` — corruption
-//!   cannot be repaired by a content-addressed copy (the copy would carry the
-//!   same bad bytes), so it flags a cache that must be re-uploaded from a good
-//!   source. The sample is the first [`DEEP_SAMPLE_SIZE`] hashes in sorted
-//!   order, so reruns are stable.
+//!   [`DEEP_SAMPLE_SIZE`] hashes, verify the narinfo's `Sig:` against the
+//!   registry's trust roster ([`verify_narinfo_signature`]) and download the
+//!   NAR to verify its content hash against the narinfo's declared `FileHash`
+//!   (falling back to `NarHash`). A narinfo with no trusted signature, or a
+//!   NAR whose bytes do not match its declared hash, is a `corrupt` finding,
+//!   recorded distinctly from `missing` — corruption cannot be repaired by a
+//!   content-addressed copy (the copy would carry the same bad bytes), so it
+//!   flags a cache that must be re-uploaded from a good source. The signature
+//!   check is what lets a green deep result mean *authenticity* rather than
+//!   mere internal consistency: the hash check alone cannot catch an adversary
+//!   who controls both files. The sample is the first [`DEEP_SAMPLE_SIZE`]
+//!   hashes in sorted order, so reruns are stable.
 //!
 //! # Stack-aware coverage
 //!
@@ -82,6 +86,14 @@ pub const MAX_HASHES_PER_RUN: usize = 4096;
 /// subset of the closure rather than the whole set. The sample is the first
 /// `DEEP_SAMPLE_SIZE` hashes in sorted order, so the choice is deterministic
 /// and reruns are stable for tests.
+///
+/// The deep run verifies each sampled narinfo's `Sig:` against the registry's
+/// trust roster *and* its NAR content hash. Note the hash check alone cannot
+/// detect an adversary who controls *both* the narinfo and the NAR (they can
+/// forge a self-consistent `FileHash`/`NarHash`); the `Sig:` check is what
+/// establishes authenticity, since it requires a trusted private key. The
+/// sample bound trades coverage for cost — a clean deep result attests the
+/// sampled subset, not the entire closure.
 pub const DEEP_SAMPLE_SIZE: usize = 16;
 
 /// The depth of a consistency-validation run.
@@ -293,7 +305,7 @@ pub async fn validate_registry(
         std::collections::HashMap::new();
     for cache_url in cache_urls {
         let started_at = unix_now();
-        let outcome = probe_cache(&client, &cache_url, &hashes, depth).await;
+        let outcome = probe_cache(&client, &cache_url, &hashes, depth, &registry.trust_keys).await;
         let finished_at = unix_now();
 
         db.record_validation_run_with_findings(
@@ -898,6 +910,139 @@ fn verify_nar_bytes(narinfo: &str, bytes: &[u8]) -> DeepCheck {
     DeepCheck::Corrupt
 }
 
+/// Verify that a narinfo carries at least one valid Ed25519 `Sig:` by a key
+/// in the registry's trust roster.
+///
+/// This is the **single source of truth** for narinfo authenticity across the
+/// hub: the full-mirror sync ([`crate::mirror::sync_full_mirror`]), the
+/// pull-through cache ([`crate::mirror::fetch_through`]), and the deep
+/// health-validation path all call it so a poisoned narinfo is rejected
+/// uniformly.
+///
+/// A narinfo `Sig:` field is `name:<base64-ed25519-sig>`; the signature is
+/// over the Nix narinfo *fingerprint*
+/// `1;<store_path>;<nar_hash>;<nar_size>;<refs,…>` (see
+/// [`aos_core::nar::cache::NarInfoSigner::fingerprint`]). The reference paths
+/// in the fingerprint are full store paths, reconstructed by re-rooting each
+/// `References:` basename under the directory of `StorePath`. A trusted key is
+/// a registry roster line `name:Ed25519:<base64-wire-blob>` (the same form
+/// the git-commit/tag trust anchor uses); its `name` must match the `Sig:`
+/// name and its Ed25519 key must verify the fingerprint.
+///
+/// Verification is **fail-closed**: an unparseable narinfo, a missing `Sig:`,
+/// or no signature that verifies against a trusted key all return an error.
+/// A narinfo that an adversary controls the *bytes* of (so it could forge a
+/// self-consistent `FileHash`/`NarHash`) cannot forge this signature without a
+/// trusted private key, which is what makes the NAR hash check downstream
+/// trustworthy.
+///
+/// # Errors
+///
+/// Returns an error when `trusted_keys` is empty, the narinfo cannot be
+/// parsed, it declares no `Sig:`, or none of its signatures is a valid
+/// Ed25519 signature over the fingerprint by a trusted key.
+pub fn verify_narinfo_signature(narinfo: &str, trusted_keys: &[String]) -> Result<()> {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    if trusted_keys.is_empty() {
+        anyhow::bail!("cannot verify narinfo signature: trusted key set is empty");
+    }
+    let info =
+        aos_core::nar::info::parse(narinfo).context("parsing narinfo for signature check")?;
+    if info.signatures.is_empty() {
+        anyhow::bail!("narinfo for {} carries no Sig", info.store_path);
+    }
+
+    // The fingerprint references are full store paths: re-root each
+    // `References:` basename under the StorePath's own store directory.
+    let store_dir = info
+        .store_path
+        .rsplit_once('/')
+        .map(|(dir, _)| dir.to_string())
+        .unwrap_or_default();
+    let refs: Vec<String> = info
+        .references
+        .iter()
+        .map(|r| {
+            let base = r.rsplit('/').next().unwrap_or(r);
+            if store_dir.is_empty() {
+                base.to_string()
+            } else {
+                format!("{store_dir}/{base}")
+            }
+        })
+        .collect();
+    let fingerprint = aos_core::nar::cache::NarInfoSigner::fingerprint(
+        &info.store_path,
+        &info.nar_hash,
+        info.nar_size as i64,
+        &refs,
+    );
+
+    // Index the trust roster by signature name so a `Sig:` only verifies
+    // against a key the registry actually pins under that name.
+    for sig in &info.signatures {
+        let Some((sig_name, sig_b64)) = sig.split_once(':') else {
+            continue;
+        };
+        let Ok(sig_bytes) = base64::engine::general_purpose::STANDARD.decode(sig_b64) else {
+            continue;
+        };
+        let Ok(signature) = Signature::from_slice(&sig_bytes) else {
+            continue;
+        };
+        for trusted in trusted_keys {
+            let Ok((key_name, raw_key)) =
+                aos_registry_surface::sshsig::trusted_key_ed25519(trusted)
+            else {
+                continue;
+            };
+            if key_name != sig_name {
+                continue;
+            }
+            let Ok(verifying_key) = VerifyingKey::from_bytes(&raw_key) else {
+                continue;
+            };
+            if verifying_key
+                .verify(fingerprint.as_bytes(), &signature)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+    }
+    anyhow::bail!(
+        "narinfo for {} has no valid Sig by a trusted key",
+        info.store_path
+    )
+}
+
+/// Verify downloaded NAR `bytes` against the hashes a narinfo declares,
+/// returning an error on a mismatch (the public, fail-on-corrupt wrapper of
+/// [`verify_nar_bytes`]).
+///
+/// Used by the mirror sync and pull-through paths, which must *reject* a NAR
+/// whose bytes do not match the (now signature-verified) narinfo rather than
+/// merely flag it. Mirrors the semantics of [`verify_nar_bytes`]: a narinfo
+/// declaring no integrity field at all is accepted (there is nothing to
+/// refute), but a declared-yet-unmatchable hash fails closed.
+///
+/// # Errors
+///
+/// Returns an error when the NAR bytes do not match a declared `FileHash`/
+/// `NarHash`, or when an integrity field is declared but cannot be parsed and
+/// matched.
+pub fn verify_nar_against_narinfo(narinfo: &str, bytes: &[u8]) -> Result<()> {
+    match verify_nar_bytes(narinfo, bytes) {
+        DeepCheck::Ok => Ok(()),
+        DeepCheck::Corrupt => anyhow::bail!("NAR bytes do not match the narinfo's declared hash"),
+        // `verify_nar_bytes` never returns `Missing` (it only inspects the
+        // bytes it was handed); treat it as a corrupt finding defensively.
+        DeepCheck::Missing => anyhow::bail!("NAR integrity could not be established"),
+    }
+}
+
 /// Whether a declared `sha256:`/`sha256-` hash matches a computed digest.
 ///
 /// Accepts the three encodings a narinfo hash may use — hex
@@ -945,15 +1090,21 @@ fn encode_nix_base32(bytes: &[u8]) -> String {
 }
 
 /// Probe one cache for every hash at the requested depth.
+///
+/// `trusted_keys` is the registry's narinfo trust roster, used at
+/// [`ValidationDepth::Deep`] to verify each sampled narinfo's `Sig:`.
 async fn probe_cache(
     client: &reqwest::Client,
     cache_url: &str,
     hashes: &[String],
     depth: ValidationDepth,
+    trusted_keys: &[String],
 ) -> ProbeOutcome {
     match classify_cache(cache_url) {
-        Some(CacheKind::File(root)) => probe_file_cache(&root, hashes, depth).await,
-        Some(CacheKind::Http(base)) => probe_http_cache(client, &base, hashes, depth).await,
+        Some(CacheKind::File(root)) => probe_file_cache(&root, hashes, depth, trusted_keys).await,
+        Some(CacheKind::Http(base)) => {
+            probe_http_cache(client, &base, hashes, depth, trusted_keys).await
+        }
         None => {
             tracing::warn!(cache = %cache_url, "unsupported cache URL scheme; recording unreachable");
             ProbeOutcome::unreachable()
@@ -964,8 +1115,14 @@ async fn probe_cache(
 /// Filesystem probe: `<root>/<hash>.narinfo` must exist; at integrity depth
 /// its `URL:` NAR must exist too and (when `FileSize` is present) match the
 /// NAR file's byte length; at deep depth a deterministic sample additionally
-/// has its NAR content hash verified against the narinfo's declared hash.
-async fn probe_file_cache(root: &Path, hashes: &[String], depth: ValidationDepth) -> ProbeOutcome {
+/// has its narinfo `Sig:` verified against `trusted_keys` and its NAR content
+/// hash verified against the narinfo's declared hash.
+async fn probe_file_cache(
+    root: &Path,
+    hashes: &[String],
+    depth: ValidationDepth,
+    trusted_keys: &[String],
+) -> ProbeOutcome {
     if !root.is_dir() {
         return ProbeOutcome::unreachable();
     }
@@ -984,7 +1141,7 @@ async fn probe_file_cache(root: &Path, hashes: &[String], depth: ValidationDepth
             continue;
         }
         if deep_sample.contains(hash.as_str()) {
-            match file_deep_ok(root, &narinfo_path).await {
+            match file_deep_ok(root, &narinfo_path, trusted_keys).await {
                 DeepCheck::Ok => {}
                 DeepCheck::Missing => missing.push(hash.clone()),
                 DeepCheck::Corrupt => corrupt.push(hash.clone()),
@@ -1023,13 +1180,22 @@ enum DeepCheck {
     Corrupt,
 }
 
-/// Deep check for a `file://` cache: read the NAR the narinfo names and verify
-/// its content hash against the declared `FileHash` (falling back to
-/// `NarHash`).
-async fn file_deep_ok(root: &Path, narinfo_path: &Path) -> DeepCheck {
+/// Deep check for a `file://` cache: verify the narinfo's `Sig:` against the
+/// trust roster, then read the NAR the narinfo names and verify its content
+/// hash against the declared `FileHash` (falling back to `NarHash`).
+///
+/// The signature check is what makes a green deep result mean *authenticity*,
+/// not just internal consistency: an adversary controlling both the narinfo
+/// and the NAR can forge a self-consistent `FileHash`/`NarHash`, but cannot
+/// forge a `Sig:` by a trusted key. When `trusted_keys` is empty (an unsigned
+/// registry), the signature step is skipped and only the hash is checked.
+async fn file_deep_ok(root: &Path, narinfo_path: &Path, trusted_keys: &[String]) -> DeepCheck {
     let Ok(text) = tokio::fs::read_to_string(narinfo_path).await else {
         return DeepCheck::Missing;
     };
+    if !trusted_keys.is_empty() && verify_narinfo_signature(&text, trusted_keys).is_err() {
+        return DeepCheck::Corrupt;
+    }
     let Some(nar_rel) = narinfo_field(&text, "URL") else {
         // No URL to download; nothing to deep-verify.
         return DeepCheck::Ok;
@@ -1073,6 +1239,7 @@ async fn probe_http_cache(
     base: &str,
     hashes: &[String],
     depth: ValidationDepth,
+    trusted_keys: &[String],
 ) -> ProbeOutcome {
     let deep_sample = deep_sample(hashes, depth);
     let mut missing = Vec::new();
@@ -1108,7 +1275,7 @@ async fn probe_http_cache(
             }
         }
         if deep_sample.contains(hash.as_str()) {
-            match http_deep_ok(client, base, &narinfo_url).await {
+            match http_deep_ok(client, base, &narinfo_url, trusted_keys).await {
                 DeepCheck::Ok => {}
                 DeepCheck::Missing => missing.push(hash.clone()),
                 DeepCheck::Corrupt => corrupt.push(hash.clone()),
@@ -1123,9 +1290,19 @@ async fn probe_http_cache(
     }
 }
 
-/// Deep check for an HTTP cache: GET the narinfo, GET the NAR it names, and
-/// verify the downloaded NAR's content hash against the declared hash.
-async fn http_deep_ok(client: &reqwest::Client, base: &str, narinfo_url: &str) -> DeepCheck {
+/// Deep check for an HTTP cache: GET the narinfo, verify its `Sig:` against
+/// the trust roster, then GET the NAR it names and verify the downloaded NAR's
+/// content hash against the declared hash.
+///
+/// As with [`file_deep_ok`], the signature check raises the deep result from
+/// internal consistency to authenticity; it is skipped only when
+/// `trusted_keys` is empty.
+async fn http_deep_ok(
+    client: &reqwest::Client,
+    base: &str,
+    narinfo_url: &str,
+    trusted_keys: &[String],
+) -> DeepCheck {
     let Ok(response) = client.get(narinfo_url).send().await else {
         return DeepCheck::Missing;
     };
@@ -1135,6 +1312,9 @@ async fn http_deep_ok(client: &reqwest::Client, base: &str, narinfo_url: &str) -
     let Ok(text) = response.text().await else {
         return DeepCheck::Missing;
     };
+    if !trusted_keys.is_empty() && verify_narinfo_signature(&text, trusted_keys).is_err() {
+        return DeepCheck::Corrupt;
+    }
     let Some(nar_rel) = narinfo_field(&text, "URL") else {
         return DeepCheck::Ok;
     };
@@ -1199,6 +1379,93 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a signed narinfo for `nar_bytes` and the matching trust roster
+    /// key for a fixed test key, returning `(narinfo_text, trust_key_line)`.
+    /// The narinfo's `FileHash`/`NarHash` are the SHA-256 of `nar_bytes`, so
+    /// the NAR hash check passes and only the *signature* distinguishes a
+    /// trusted from an untrusted roster.
+    fn signed_narinfo_fixture(nar_bytes: &[u8]) -> (String, String) {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let trust_key =
+            aos_registry_surface::sshsig::trusted_key_line("demo", &key.verifying_key());
+
+        let mut secret = Vec::with_capacity(64);
+        secret.extend_from_slice(&key.to_bytes());
+        secret.extend_from_slice(key.verifying_key().as_bytes());
+        let secret_b64 = base64::engine::general_purpose::STANDARD.encode(&secret);
+        let signer =
+            aos_core::nar::cache::NarInfoSigner::from_key_content(&format!("demo:{secret_b64}"))
+                .unwrap();
+
+        let store_path = "/var/lib/store/abc123-pkg";
+        let hash = format!("sha256:{}", hex::encode(sha2::Sha256::digest(nar_bytes)));
+        let size = nar_bytes.len() as u64;
+        let fingerprint =
+            aos_core::nar::cache::NarInfoSigner::fingerprint(store_path, &hash, size as i64, &[]);
+        let sig = signer.sign(&fingerprint).unwrap();
+        let narinfo = format!(
+            "StorePath: {store_path}\nURL: nar/abc.nar\nCompression: none\n\
+             FileHash: {hash}\nFileSize: {size}\nNarHash: {hash}\nNarSize: {size}\nSig: {sig}\n",
+        );
+        (narinfo, trust_key)
+    }
+
+    #[test]
+    fn narinfo_signature_accepts_trusted_and_rejects_others() {
+        let (narinfo, trust_key) = signed_narinfo_fixture(b"narbytes");
+
+        // A valid Sig by a trusted key verifies.
+        verify_narinfo_signature(&narinfo, std::slice::from_ref(&trust_key)).unwrap();
+
+        // An empty roster fails closed.
+        assert!(verify_narinfo_signature(&narinfo, &[]).is_err());
+
+        // A different trusted key (right name, wrong key) does not verify.
+        let other = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let wrong = aos_registry_surface::sshsig::trusted_key_line("demo", &other.verifying_key());
+        assert!(verify_narinfo_signature(&narinfo, &[wrong]).is_err());
+
+        // A narinfo with no Sig at all is rejected.
+        let unsigned: String = narinfo
+            .lines()
+            .filter(|l| !l.starts_with("Sig:"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert!(verify_narinfo_signature(&unsigned, std::slice::from_ref(&trust_key)).is_err());
+    }
+
+    #[tokio::test]
+    async fn deep_validation_flags_untrusted_narinfo_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("nar")).unwrap();
+
+        let nar_bytes = b"good-nar-bytes";
+        let (narinfo, trust_key) = signed_narinfo_fixture(nar_bytes);
+        std::fs::write(dir.path().join("nar/abc.nar"), nar_bytes).unwrap();
+        std::fs::write(dir.path().join("abc.narinfo"), &narinfo).unwrap();
+        let hashes = vec!["abc".to_string()];
+
+        // With the correct trust key, both the signature and the NAR hash pass:
+        // a clean deep result, no corrupt finding.
+        let trusted = vec![trust_key.clone()];
+        let signed = probe_file_cache(dir.path(), &hashes, ValidationDepth::Deep, &trusted).await;
+        assert!(signed.corrupt.is_empty(), "trusted narinfo passes deep");
+        assert!(signed.missing.is_empty());
+
+        // With an untrusted roster, the narinfo is flagged corrupt purely on
+        // the failed signature, even though the NAR bytes match the declared
+        // hash.
+        let other = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
+        let untrusted = vec![aos_registry_surface::sshsig::trusted_key_line(
+            "demo",
+            &other.verifying_key(),
+        )];
+        let bad = probe_file_cache(dir.path(), &hashes, ValidationDepth::Deep, &untrusted).await;
+        assert_eq!(bad.corrupt, vec!["abc".to_string()]);
+    }
 
     #[test]
     fn classify_dispatches_schemes() {
@@ -1275,13 +1542,18 @@ mod tests {
         std::fs::write(dir.path().join("aaa.narinfo"), b"StorePath: /x\n").unwrap();
         let hashes = vec!["aaa".to_string(), "bbb".to_string()];
 
-        let outcome = probe_file_cache(dir.path(), &hashes, ValidationDepth::Presence).await;
+        let outcome = probe_file_cache(dir.path(), &hashes, ValidationDepth::Presence, &[]).await;
         assert!(outcome.reachable);
         assert_eq!(outcome.checked, 2);
         assert_eq!(outcome.missing, vec!["bbb".to_string()]);
 
-        let gone =
-            probe_file_cache(&dir.path().join("nope"), &hashes, ValidationDepth::Presence).await;
+        let gone = probe_file_cache(
+            &dir.path().join("nope"),
+            &hashes,
+            ValidationDepth::Presence,
+            &[],
+        )
+        .await;
         assert!(!gone.reachable);
         assert_eq!(gone.checked, 0);
     }
@@ -1306,10 +1578,11 @@ mod tests {
         .unwrap();
         let hashes = vec!["aaa".to_string(), "bbb".to_string()];
 
-        let presence = probe_file_cache(dir.path(), &hashes, ValidationDepth::Presence).await;
+        let presence = probe_file_cache(dir.path(), &hashes, ValidationDepth::Presence, &[]).await;
         assert_eq!(presence.missing, Vec::<String>::new());
 
-        let integrity = probe_file_cache(dir.path(), &hashes, ValidationDepth::Integrity).await;
+        let integrity =
+            probe_file_cache(dir.path(), &hashes, ValidationDepth::Integrity, &[]).await;
         assert_eq!(integrity.missing, vec!["bbb".to_string()]);
 
         // A size mismatch also fails integrity.
@@ -1318,8 +1591,13 @@ mod tests {
             b"StorePath: /z\nURL: nar/aaa.nar\nFileSize: 999\n",
         )
         .unwrap();
-        let mismatch =
-            probe_file_cache(dir.path(), &["ccc".to_string()], ValidationDepth::Integrity).await;
+        let mismatch = probe_file_cache(
+            dir.path(),
+            &["ccc".to_string()],
+            ValidationDepth::Integrity,
+            &[],
+        )
+        .await;
         assert_eq!(mismatch.missing, vec!["ccc".to_string()]);
     }
 
@@ -1397,12 +1675,13 @@ mod tests {
         let hashes = vec!["good".to_string(), "bad".to_string()];
 
         // Integrity passes both (NAR present, size matches).
-        let integrity = probe_file_cache(dir.path(), &hashes, ValidationDepth::Integrity).await;
+        let integrity =
+            probe_file_cache(dir.path(), &hashes, ValidationDepth::Integrity, &[]).await;
         assert!(integrity.missing.is_empty());
         assert!(integrity.corrupt.is_empty());
 
         // Deep flags the tampered NAR as corrupt, not missing.
-        let deep = probe_file_cache(dir.path(), &hashes, ValidationDepth::Deep).await;
+        let deep = probe_file_cache(dir.path(), &hashes, ValidationDepth::Deep, &[]).await;
         assert!(deep.missing.is_empty(), "corrupt is not missing");
         assert_eq!(deep.corrupt, vec!["bad".to_string()]);
         assert_eq!(deep.problem_count(), 1);
