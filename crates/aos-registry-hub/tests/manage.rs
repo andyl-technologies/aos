@@ -1012,6 +1012,61 @@ async fn instance_admin_verifies_a_captured_domain() {
         .any(|a| a.action == "domain.verify"));
 }
 
+/// H7: an admin of one org cannot seize a domain already claimed by another.
+#[tokio::test]
+async fn add_domain_rejects_cross_org_claim_theft() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    db.create_org("globex", "Globex").unwrap();
+    let acme_id = db.org_by_slug("acme").unwrap().unwrap().id;
+
+    // Acme claims and an instance admin verifies acme.com.
+    db.add_org_domain(acme_id, "acme.com").unwrap();
+    db.verify_org_domain("acme.com").unwrap();
+    let before = db.org_domain("acme.com").unwrap().unwrap();
+    assert_eq!(before.org_id, acme_id);
+    assert!(before.verified_at.is_some());
+
+    // An owner of Globex tries to claim acme.com through the console.
+    let attacker = db.find_or_create_user("attacker@globex.com").unwrap();
+    db.grant_membership("user", attacker, "globex", "owner")
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let cookie = login(&app, &db, "attacker@globex.com").await;
+    let csrf = csrf_for(&cookie);
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/globex/sso",
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&op=add-domain&domain=acme.com")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
+
+    // Acme's row is untouched: still owned by Acme and still verified.
+    let after = db.org_domain("acme.com").unwrap().unwrap();
+    assert_eq!(after.org_id, acme_id, "ownership unchanged");
+    assert_eq!(
+        after.verified_at, before.verified_at,
+        "verification unchanged"
+    );
+    assert_eq!(
+        after.txt_challenge, before.txt_challenge,
+        "challenge unrotated"
+    );
+
+    // The owning org CAN re-claim its own domain (re-issues the challenge).
+    let challenge = db.add_org_domain(acme_id, "acme.com").unwrap();
+    let reclaimed = db.org_domain("acme.com").unwrap().unwrap();
+    assert_eq!(reclaimed.org_id, acme_id);
+    assert!(
+        reclaimed.verified_at.is_none(),
+        "re-claim resets verification"
+    );
+    assert_eq!(reclaimed.txt_challenge, challenge);
+}
+
 #[tokio::test]
 async fn project_and_binding_delete_with_in_use_guard() {
     let db = Arc::new(Database::open_in_memory().unwrap());
@@ -1119,6 +1174,79 @@ async fn member_role_change_and_last_owner_guard() {
         .unwrap()
         .iter()
         .any(|(k, id, r)| k == "user" && *id == owner && r == "owner"));
+}
+
+/// H1: an org admin (members.manage, NOT iam.admin) cannot grant `owner` —
+/// neither to a peer nor to itself — and the rejected grant never lands.
+#[tokio::test]
+async fn admin_cannot_escalate_to_owner() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.create_org("acme", "Acme").unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").unwrap();
+    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let admin = db.find_or_create_user("admin@acme.com").unwrap();
+    db.grant_membership("user", admin, "acme", "admin").unwrap();
+    let victim = db.find_or_create_user("victim@acme.com").unwrap();
+    db.grant_membership("user", victim, "acme", "viewer")
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let cookie = login(&app, &db, "admin@acme.com").await;
+    let csrf = csrf_for(&cookie);
+
+    // The admin tries to promote a viewer straight to owner: forbidden.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/members/role",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&principal_kind=user&principal_id={victim}&role=owner"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    // The victim's role is unchanged.
+    assert!(db
+        .list_members_of_scope("acme")
+        .unwrap()
+        .iter()
+        .any(|(k, id, r)| k == "user" && *id == victim && r == "viewer"));
+
+    // The admin tries to promote ITSELF to owner: also forbidden.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/members/role",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&principal_kind=user&principal_id={admin}&role=owner"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    assert!(db
+        .list_members_of_scope("acme")
+        .unwrap()
+        .iter()
+        .any(|(k, id, r)| k == "user" && *id == admin && r == "admin"));
+
+    // The admin may still make a lateral/lower grant (viewer -> developer).
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/members/role",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&principal_kind=user&principal_id={victim}&role=developer"
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    assert!(db
+        .list_members_of_scope("acme")
+        .unwrap()
+        .iter()
+        .any(|(k, id, r)| k == "user" && *id == victim && r == "developer"));
 }
 
 #[tokio::test]

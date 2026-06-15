@@ -72,6 +72,27 @@ pub fn verify_password(plaintext: &str, phc: &str) -> bool {
         .is_ok()
 }
 
+/// A fixed Argon2id PHC string whose only purpose is to spend a verify's cost.
+///
+/// Generated once under the same [`Argon2::default`] parameters every real
+/// hash uses (see [`hash_password`]); the plaintext it encodes is irrelevant.
+/// [`spend_dummy_verify`] verifies against it on the login miss path so the
+/// timing of a missing/password-less account matches that of a real one.
+const DUMMY_PHC: &str =
+    "$argon2id$v=19$m=19456,t=2,p=1$Hf6tDGIFjyjXMOlsUpc92w$8znWZDimMm6NUMbkSUX3kJ53+OTOHA7rfeJIkm/k9r8";
+
+/// Performs an Argon2id verify against a fixed dummy hash and discards it.
+///
+/// Call this on a password-login path that has *no* stored hash to verify
+/// against — a missing account or one with no password set — so every login
+/// attempt pays comparable Argon2id cost regardless of whether the account
+/// exists. This closes the wall-clock account-existence / password-set oracle
+/// (M10). The result is intentionally ignored: the caller always returns the
+/// same generic failure.
+pub fn spend_dummy_verify(plaintext: &str) {
+    let _ = verify_password(plaintext, DUMMY_PHC);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,6 +119,21 @@ mod tests {
         // Both still verify the same plaintext.
         assert!(verify_password("same", &a));
         assert!(verify_password("same", &b));
+    }
+
+    #[test]
+    fn dummy_phc_is_a_valid_argon2id_hash() {
+        // `spend_dummy_verify` only buys timing parity if `DUMMY_PHC` actually
+        // parses — a malformed string would short-circuit in `verify_password`
+        // and skip the Argon2id work, reopening the M10 oracle. Assert it is a
+        // real, parseable Argon2id hash so the miss path spends real time.
+        assert!(DUMMY_PHC.starts_with("$argon2id$"), "{DUMMY_PHC}");
+        assert!(
+            PasswordHash::new(DUMMY_PHC).is_ok(),
+            "DUMMY_PHC must parse as a PHC string"
+        );
+        // The plaintext is irrelevant; the call must not panic.
+        spend_dummy_verify("any submitted password");
     }
 
     #[test]

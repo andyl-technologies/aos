@@ -286,6 +286,9 @@ fn membership_revoke_revert_produces_invitation_not_silent_regrant() {
     let actor = Principal::user(7);
     let member = Principal::user(42);
     let scope = Scope::parse("acme");
+    // The actor must hold authority over the scope to grant: the engine's
+    // privilege ceiling (H1) rejects a grant exceeding the actor's own rank.
+    db.grant_membership("user", 7, "acme", "owner").unwrap();
 
     // Grant, then revoke through the engine (so the revoke records old_json).
     config::change_membership(
