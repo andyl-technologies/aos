@@ -631,3 +631,77 @@ async fn identity_link_existing_then_link_paths() {
     // Sanity: oidc module re-exported types are usable.
     let _ = oidc::FLOW_TTL_SECS;
 }
+
+#[tokio::test]
+async fn jit_refuses_to_graft_onto_existing_account_by_email() {
+    // Security (H2): a self-hosted IdP asserts a victim's address with a brand
+    // new (iss, sub). Step 1 (existing identity) and step 2 (verified captured
+    // domain) do not apply — the attacker's org never captured the victim's
+    // domain — so JIT is reached. JIT must REFUSE rather than reconcile onto
+    // the victim's pre-existing user row by email.
+    let db = Database::open_in_memory().unwrap();
+    let attacker_org = db.create_org("attacker", "Attacker Inc").unwrap();
+
+    // Victim user already exists (e.g. created via a different org's SSO).
+    let victim = db.create_user("ceo@othercorp.com", None).unwrap();
+
+    let denied = db.link_or_create_identity(
+        "https://attacker-idp",
+        "sub-attacker",
+        Some("ceo@othercorp.com"),
+        // Even a *claimed*-verified email must not link: the attacker controls
+        // the IdP and the email_verified flag, and never captured othercorp.com.
+        true,
+        attacker_org,
+        true, // allow_jit on
+    );
+
+    assert!(
+        denied.is_err(),
+        "JIT must refuse to link an asserted email belonging to another user"
+    );
+    // No identity row was grafted onto the victim, and the victim's id was not
+    // returned — no session could have been minted as them.
+    assert_eq!(
+        db.identity_user("https://attacker-idp", "sub-attacker")
+            .unwrap(),
+        None,
+        "a denied JIT must not create an (iss, sub) identity row"
+    );
+    // The victim's account is untouched and still resolves only by its email.
+    assert_eq!(db.user_by_email("ceo@othercorp.com").unwrap(), Some(victim));
+}
+
+#[tokio::test]
+async fn jit_provisions_a_fresh_user_for_a_new_email() {
+    // Regression: a genuinely new SSO user (no pre-existing account) still
+    // provisions a fresh user + identity when allow_jit is on.
+    let db = Database::open_in_memory().unwrap();
+    let org_id = db.create_org("acme", "Acme").unwrap();
+
+    assert_eq!(db.user_by_email("dana@newcomer.com").unwrap(), None);
+    let link = db
+        .link_or_create_identity(
+            "https://idp",
+            "sub-dana",
+            Some("dana@newcomer.com"),
+            true,
+            org_id,
+            true,
+        )
+        .unwrap()
+        .unwrap();
+    let new_user = match link {
+        IdentityLink::Created(id) => id,
+        other => panic!("expected a freshly created user, got {other:?}"),
+    };
+    // The fresh user and its (iss, sub) identity both exist.
+    assert_eq!(
+        db.user_by_email("dana@newcomer.com").unwrap(),
+        Some(new_user)
+    );
+    assert_eq!(
+        db.identity_user("https://idp", "sub-dana").unwrap(),
+        Some(new_user)
+    );
+}
