@@ -725,9 +725,14 @@ Flagged so the design record does not overstate certainty.
 1. **`NIX_SHOW_STATS` field stability across Nix versions.** The exact JSON
    field set (`nrThunks`, function-call counts, GC fields) varies by C++ Nix
    release, and the format has been the subject of "make it machine-parsable"
-   work upstream. The benchmark harness must pin the C++ Nix version it baselines
-   against (the same version AOS builds with) and tolerate field additions.
-   *Open: which version to pin, and how to track field renames.*
+   work upstream. **Decision (closed): pin the single C++ Nix version AOS builds
+   with as the one baseline reference** — both the `.drv`/store oracle and the
+   `NIX_SHOW_STATS` schema — and parse stats defensively (tolerate added fields,
+   match known fields by name, fail loudly only on a *renamed* field the harness
+   reads). The pinned Nix version is the same rev the `nix-compat` pin must match
+   ([14](14-integration-with-aos.md) §12); bumping it is a deliberate,
+   harness-gated event, not an ambient float. A second-version forward-compat
+   canary is an optional later add, not part of the first gate.
 
 2. **Statistical significance threshold for regressions.** Per-commit eval
    timings are noisy on shared CI runners. The regression detector needs a noise

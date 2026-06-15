@@ -84,8 +84,16 @@ sound here.
 | [16](16-prior-art-and-references.md) | Tvix/Snix, C++ Nix, hnix, GHC, HotSpot, V8/LuaJIT/PyPy, Salsa/Adapton/Skip, Cranelift - with citations |
 | [17](17-roadmap-and-risks.md) | The phased build order, the ranked 90% subset, the risk register, and open questions |
 | [18](18-glossary.md) | Terms: WHNF, thunk, hidden class, inline cache, early cutoff, hash-consing, ATerm, deopt, and more |
+| [19](19-decision-register.md) | Consolidated decision register: every settled, closed, measure-gated, and research-grade decision, with its resolution or gating measurement |
 
 ## Decision log
+
+The table below is the top-level summary. The **exhaustive register** — every
+settled, review-closed, measure-gated, and research-grade decision, each with its
+resolution or the exact measurement that will settle it — is
+[19 - decision register](19-decision-register.md). It is the single source of
+truth an implementer should work from; nothing measure-gated or research-grade
+blocks Phase 1.
 
 | Decision | Rationale |
 | --- | --- |

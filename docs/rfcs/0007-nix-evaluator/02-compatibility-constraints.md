@@ -577,9 +577,12 @@ implementation phases:
    enable build-layer early cutoff and tie into AOS RFC-0005's realisation graph
    (see [derivation and store compatibility](11-derivation-and-store-compatibility.md)).
    Their ATerm encoding is explicitly the "not yet stable" part of the format.
-   **Open:** decide whether the first acceptance gate scopes to input-addressed
-   derivations only (the bulk of the AOS toolchain) and defers CA-derivation
-   parity to a later phase.
+   **Decision (closed): the first acceptance gate scopes to input-addressed (IA)
+   derivations only** — the overwhelming bulk of the AOS toolchain — and defers
+   CA-derivation byte-parity to a later phase, where synthesized CA fixtures
+   (rather than the naturally IA-dominated package set) exercise it. CA support
+   is *designed in* (see [derivation and store compatibility](11-derivation-and-store-compatibility.md)
+   §5.4); it is simply not on the critical path for the first green gate.
 
 3. **`nix-compat` / Snix API instability.** The crate's CLI and APIs are
    explicitly unstable, and the project disclaims real-world performance

@@ -223,8 +223,20 @@ trying to eliminate. Three mechanisms keep environment hashing cheap:
    expression can actually reference*, not the whole frame. A thunk that closes
    over a 200-binding `let` but uses two of them keys on two value-hashes.
 
-The key is therefore `xxh3(expr_identity ⊕ vhash(fv₁) ⊕ … ⊕ vhash(fvₙ))`,
-computed in-process with xxh3 for speed (§5).
+The key is therefore
+`xxh3(expr_identity ‖ len₁‖vhash(fv₁) ‖ … ‖ lenₙ‖vhash(fvₙ))`, computed
+in-process with xxh3 for speed (§5).
+
+> **Decision (closed): ordered, length-prefixed combiner — never bare XOR.**
+> An earlier draft combined the free-variable hashes with XOR (`⊕`). XOR is
+> order- and multiplicity-blind: permuting two slots, or two slots sharing a
+> value-hash, collide to the same key, producing a *false cache hit* — a stale
+> value surviving a real change, i.e. a correctness bug, not merely a perf one.
+> The combiner is therefore the free-variable hashes concatenated **in
+> canonical slot order, each length-prefixed** (`‖` above), then hashed once.
+> Wherever this document writes `⊕` as shorthand for "expression combined with
+> environment" (the diagrams in §3.1, §6), it denotes this ordered combiner,
+> not arithmetic XOR.
 
 ### 3.3 Granularity: what we memoize and what we do not
 
@@ -532,9 +544,13 @@ record the limits honestly.
   imprecise, a thunk that closes over a large frame may rekey on irrelevant slot
   changes, recomputing spuriously. This is a *performance* bug, never a
   correctness bug (a spurious recompute yields the same value and then hits early
-  cutoff at its consumers), but it erodes the win. **Open question:** is
-  free-variable narrowing from the existing strictness pass precise enough, or do
-  we need a dedicated dependency-minimization analysis?
+  cutoff at its consumers), but it erodes the win. **Decision (closed):** the
+  baseline reuses the free-variable set the strictness/escape pass
+  ([07](07-laziness-and-whole-program-analyses.md)) already computes — no extra
+  analysis in the rank-1 cut. A dedicated dependency-minimization pass is a
+  **measure-gated** follow-up, built only if the harness shows spurious-recompute
+  rates that materially erode the cache win; because imprecision here is purely a
+  performance bug (never correctness), shipping the cheap FV set first is safe.
 
 ### 8.2 Cache size and hashing overhead
 
@@ -577,8 +593,9 @@ order of strength:
 
 - **Granularity policy (§3.3, §8.2):** the right set of "always/conditionally/
   never cache" rules is empirical and must be derived from AOS traces.
-- **Free-variable precision (§8.1):** does the strictness pass's FV set suffice as
-  the environment-hash narrowing, or is a dedicated minimization needed?
+- **Free-variable precision (§8.1):** *closed* — baseline reuses the strictness
+  pass's FV set; a dedicated minimization pass is a measure-gated follow-up only
+  if spurious-recompute rates warrant it (§8.1).
 - **Persistence format stability:** the on-disk `nodes/values/files` schema is a
   data contract; versioning and migration are unspecified here and need a
   schema-version field and a "discard on mismatch" policy.

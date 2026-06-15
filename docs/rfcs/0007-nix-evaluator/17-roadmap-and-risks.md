@@ -383,7 +383,83 @@ here so the design record does not overstate certainty.
 
 ---
 
-## 6. Summary
+## 6. Phase 1 — implementer checklist
+
+Phase 1 has zero unsettled design decisions (every choice it touches is recorded
+in the [decision register](19-decision-register.md)); it is buildable end-to-end
+from this RFC. It produces the two things that gate everything after it: the
+baseline cold-eval number and the proof that `.drv` parity is achievable on the
+AOS package set. Build it in this order.
+
+**Crate skeleton (`crates/aos-nix/`).**
+
+- [ ] Add `aos-nix` to the workspace (`crates/Cargo.toml` members) with pinned
+      `nix-compat` (git rev) and the `xxhash-rust`/`blake3`/`sha2` deps. No
+      Cranelift dependency yet — Phase 1 is tree-walk only.
+- [ ] `lib.rs` `//!` crate overview + module map, to the AOS Rust doc standard.
+- [ ] Wire the `NixEval` trait in `aos-core` ([14](14-integration-with-aos.md)):
+      define the trait, keep `NixCli` as its first impl, add a stub `NixNative`
+      behind `AOS_NIX_NATIVE` (off by default).
+
+**Frontend ([04](04-frontend-parser-and-ir.md)).**
+
+- [ ] `syntax/lexer.rs` — hand-written lexer; tokens are `Copy` (span + 1-byte
+      kind). Trivia retained.
+- [ ] `syntax/ast.rs` — compact arena AST, `u32` NodeIds, fixed-stride nodes.
+- [ ] `syntax/parser.rs` — recursive-descent + Pratt for operators; **no rnix in
+      the production path** (rnix is a test-only oracle).
+- [ ] `compile/scope.rs` — name resolution to de Bruijn `(depth, slot)` indices.
+- [ ] `cache/parse.rs` — content-addressed (blake3) parse-artifact cache so the
+      package set parses once.
+
+**Value + heap (Phase-1 subset, [05](05-value-representation.md)/[06](06-memory-management-and-gc.md)).**
+
+- [ ] `value.rs` — the 16-byte tagged `Value` (i64/f64 inline; heap forms behind
+      `NonNull`). **No NaN-boxing** (measure-gated, [05](05-value-representation.md) §12).
+- [ ] `heap/arena.rs` — bump-arena Tier A (allocate, never free, drop at exit),
+      with all allocation behind `aos_alloc_*`-shaped entry points so the GC tier
+      can swap in later without touching callers. **No GC in Phase 1.**
+- [ ] `attrs.rs` — sorted-vec + binary-search attrsets with `u32`-interned
+      symbols; deterministic iteration order. Hidden classes are Phase-4.
+
+**Tree-walk oracle ([08](08-execution-tiers-and-cranelift.md) §2.1).**
+
+- [ ] `eval/tree_walk.rs` — the call-by-need interpreter: thunks
+      (`Suspended → Blackhole → Forced`), forcing, closures, `with`, `rec`,
+      `let`, `if`, operators. This is the permanent correctness oracle.
+- [ ] `runtime/builtins/` — the primop surface ([10](10-primops-and-runtime-abi.md))
+      as plain Rust, dispatched by an interned-symbol table (PHF can wait).
+      `import` caches parsed+compiled files by realpath + content hash.
+
+**Compatibility core ([11](11-derivation-and-store-compatibility.md)).**
+
+- [ ] `store/derivation.rs` — `derivationStrict`: collect the string env in
+      deterministic attr order → `nix-compat` `Derivation` → ATerm `.drv` →
+      IA output-path hashing (SHA-256). Delegate hashing to `nix-compat`; do not
+      reimplement `compressHash`. **Scope: input-addressed only** (CA deferred,
+      [02](02-compatibility-constraints.md) §8).
+- [ ] `store/context.rs` — string contexts as interned COW bitsets, unioned
+      through string ops, read by `derivationStrict`.
+
+**The gate ([15](15-differential-testing-and-benchmarking.md)) — the deliverable.**
+
+- [ ] `aos nix-diff` (or a Rust test) that walks the closure and asserts
+      **byte-identical `.drv`** from `NixNative` vs `nix-instantiate`, against the
+      single pinned C++ Nix version, over the full AOS package set.
+- [ ] Capture the baseline: `nix-instantiate` wall-clock + `NIX_SHOW_STATS`
+      (thunks, fn calls, gc) for the AOS closure — this is the number that sets
+      C3's target and answers whether eval is even the bottleneck (Q-B).
+- [ ] Differential parser tests against the rnix oracle; seed the
+      `cargo fuzz` differential fuzzer.
+
+**Phase-1 exit criteria.** The `.drv`-diff harness is byte-green on the full AOS
+closure under the tree-walk oracle; the baseline eval-time and `NIX_SHOW_STATS`
+numbers are recorded; `AOS_NIX_NATIVE` still defaults off. Only then do the
+ranked items (cache, arena/GC, analyses, JIT) begin — in the order of §2.
+
+---
+
+## 7. Summary
 
 The roadmap is fixed at its head and ranked through its body. Phase 1 — parser,
 scope resolution, the tree-walk correctness oracle, and the differential

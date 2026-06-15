@@ -835,9 +835,13 @@ exists before any Cranelift work begins.
 
 ## 12. Open questions
 
-1. **rnix shim: maintain or not?** Do we keep a permanent `rnix → arena IR`
-   lowering path for tooling/interop, or hand-roll exclusively and use rnix only
-   in the test harness? Tracked in [roadmap and risks](17-roadmap-and-risks.md).
+1. **rnix shim: maintain or not?** **Decision (closed): hand-roll exclusively;
+   rnix is a test-harness-only dependency.** The production path is the
+   hand-written lexer/parser → arena IR; rnix is used solely as a cross-checking
+   oracle in the differential parser tests (and any external tooling that wants a
+   lossless CST consumes rnix directly, not through aos-nix). No permanent
+   `rnix → arena IR` lowering path is maintained, avoiding a second frontend to
+   keep in parity. Tracked in [roadmap and risks](17-roadmap-and-risks.md).
 2. **Diagnostic message parity depth.** How closely must error *text* match C++
    Nix? `.drv` parity does not require it, but the conformance suite asserts on
    some messages. We treat message parity as a soft, best-effort gate.

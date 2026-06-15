@@ -652,11 +652,14 @@ to "research-grade for Nix specifically." Marked honestly:
    write must be re-examined under parallelism: the blackhole is *also* how a
    second thread detects an in-progress force. A used-once thunk that is *actually*
    only entered once is fine; one mis-classified as used-once under a parallel
-   schedule that does enter it twice could race. **Open:** whether single-entry
-   thunks are sound under work-stealing forcing, or must be restricted to the
-   sequential tier. Tentatively, restrict the call-by-name downgrade to thunks
-   the analysis proves are *frame-local* (never published to a shared slot), which
-   the escape analysis already computes.
+   schedule that does enter it twice could race. **Decision (closed): the
+   blackhole-skipping call-by-name downgrade is restricted to thunks the escape
+   analysis proves are *frame-local*** (never published to a shared slot, so no
+   second thread can reach them). Any thunk that escapes to a shared slot keeps
+   the full `Suspended → Blackhole → Forced` CAS protocol regardless of
+   cardinality. This makes single-entry optimization sound under work-stealing
+   forcing ([13](13-parallel-evaluation.md)) without a sequential-tier carve-out,
+   and it reuses a fact escape analysis already computes.
 
 5. **Measure-first ordering.** Per [motivation and goals](01-motivation-and-goals.md)
    and the roadmap, none of this is justified until the baseline harness confirms

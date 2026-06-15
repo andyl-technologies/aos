@@ -725,33 +725,39 @@ the more conservative the harness around it must be.
 
 ## 12. Open questions
 
-- **Long-lived daemon vs per-invocation process.** This document assumes the
-  per-invocation `aos` process model, where the GC is the bump-arena Tier A
-  (allocate, never free, drop at exit; see
-  [memory and GC](06-memory-management-and-gc.md)). If we later run `aos-nix` as
-  a persistent eval daemon to amortize warmup and share the incremental cache
-  across invocations, the `NixEval` seam is unchanged but the implementation
-  flips to the generational/concurrent GC tier, and the trait may need an
-  explicit lifecycle (`shutdown`/`flush`). Deferred until the per-process numbers
-  justify a daemon.
-- **Sharing the incremental cache across machines through the trait.** The
-  early-cutoff cache ([incremental cache](12-incremental-evaluation-cache.md)) is
-  content-addressed and intended to ride AOS's existing Attic infrastructure.
-  Whether cache push/pull is plumbed through `NixEval` or sits beside it (as the
-  build-output cache does today) is unresolved; leaning toward beside-it to keep
-  the trait minimal.
-- **`eval_expr` value-rendering parity.** Matching `nix-instantiate --eval
-  --json` formatting exactly (float formatting, attr ordering in JSON, context
-  string handling) for the metadata path needs its own small differential check
-  distinct from the `.drv` harness. Low blast radius, but it must be green before
-  Phase C.
-- **`nix-compat` API churn.** `NixNative` depends on the Snix/Tvix `nix-compat`
-  crate pinned to a git rev for ATerm/store-path/hash logic. The crate's public
-  API is explicitly pre-1.0 and has moved (Tvix → Snix rename, March 2025;
-  Derivation/ATerm sliced out and reparsed since). We pin a rev and expect to
-  carry local patches / contribute fixes upstream; a breaking change there is a
-  maintenance risk on the parity-critical path, not a correctness risk (the
-  output is still diffed by the gate).
+- **Long-lived daemon vs per-invocation process.** **Decision (closed):
+  per-invocation first.** The first cut is the per-invocation `aos` process
+  model, where the GC is the bump-arena Tier A (allocate, never free, drop at
+  exit; see [memory and GC](06-memory-management-and-gc.md)). A persistent eval
+  daemon (amortizing warmup, sharing the in-memory cache across invocations) is
+  a **measure-gated** follow-up justified only by the per-process numbers; the
+  `NixEval` seam is unchanged by that flip, but the implementation would move to
+  the generational/concurrent GC tier and the trait would gain an explicit
+  lifecycle (`shutdown`/`flush`). Not built until the data demands it.
+- **Sharing the incremental cache across machines.** **Decision (closed): beside
+  the trait, not through it.** The early-cutoff cache
+  ([incremental cache](12-incremental-evaluation-cache.md)) is content-addressed
+  and rides AOS's existing Attic infrastructure exactly as the build-output
+  cache does today. `NixEval` stays minimal and transport-agnostic: the
+  evaluator reads/writes the local cache store, and replication (push/pull) is
+  an out-of-band concern beside the trait, not a set of trait methods.
+- **`eval_expr` value-rendering parity.** **Decision (closed): a dedicated
+  `--eval --json` differential check, owned by
+  [differential testing](15-differential-testing-and-benchmarking.md), required
+  green before Phase C.** Matching `nix-instantiate --eval --json` formatting
+  exactly (float formatting, attr ordering in JSON, string-context handling) is
+  a distinct surface from the `.drv` harness and gets its own small gate; it is
+  low blast radius but blocks the metadata path's flip to native.
+- **`nix-compat` / Cranelift revision pinning.** **Decision (closed): pin exact
+  git revisions, vendor only patched modules, gate bumps in CI.** `NixNative`
+  depends on the Snix `nix-compat` crate (ATerm/store-path/hash logic) and on
+  Cranelift (whose user-stack-maps API is new); both are pre-1.0 and move
+  (Tvix → Snix rename, March 2025). The policy: pin both to specific revs
+  recorded in `Cargo.lock`; carry local patches as a small vendored overlay
+  rather than forking wholesale; and treat a rev bump as a change that must pass
+  the full differential `.drv` harness before it lands. A breaking change
+  upstream is then a *maintenance* event on the parity-critical path, never a
+  silent *correctness* event — the gate still diffs every byte.
 
 ---
 
