@@ -421,6 +421,32 @@ pub(crate) fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Rate-limit an anonymous browse/search request, keyed on the client IP.
+///
+/// Resolves the client IP exactly as the auth handlers do
+/// ([`client_ip_for`]) and meters it under
+/// [`RateClass::BrowseSearch`](crate::ratelimit::RateClass::BrowseSearch).
+/// Returns `Some(429)` (with `Retry-After`) when the loose per-IP browse
+/// budget is exhausted, and `None` when the request may proceed. Both the flat
+/// `/{slug}/-/packages` route and the nested-canonical `org/registry/-/…`
+/// resolver call this so neither entrypoint is an unthrottled hole.
+pub(crate) fn browse_rate_limited(
+    state: &AppState,
+    headers: &HeaderMap,
+    peer: Option<SocketAddr>,
+) -> Option<Response> {
+    let ip = client_ip_for(headers, peer, state.trusted_proxy);
+    match state
+        .ratelimit
+        .check(crate::ratelimit::RateClass::BrowseSearch, &ip, now_secs())
+    {
+        crate::ratelimit::RateDecision::Limited { retry_after } => {
+            Some(too_many_requests(retry_after))
+        }
+        crate::ratelimit::RateDecision::Allowed => None,
+    }
+}
+
 /// A `429 Too Many Requests` response carrying a `Retry-After` header.
 pub(crate) fn too_many_requests(retry_after: i64) -> Response {
     (
@@ -701,9 +727,14 @@ fn font_response(bytes: &'static [u8]) -> Response {
 
 async fn instance_home(
     State(state): State<Arc<AppState>>,
+    PeerAddr(peer): PeerAddr,
     headers: HeaderMap,
     Query(params): Query<SearchParams>,
 ) -> Response {
+    // Anonymous: it scans and visibility-filters every registry. Throttle per IP.
+    if let Some(limited) = browse_rate_limited(&state, &headers, peer) {
+        return limited;
+    }
     let started = Instant::now();
     let result = (|| {
         let mut rows = Vec::new();
@@ -801,6 +832,21 @@ async fn registry_home(
     respond_page(result)
 }
 
+/// Maximum packages loaded for one anonymous browse page view.
+///
+/// The browse UI filters, sorts, and paginates in Rust over the whole package
+/// `Vec` (the filter is a rich expression that does not push cleanly into
+/// SQL), so a registry indexed with an arbitrarily large package set would
+/// otherwise let an attacker dictate the per-request memory and CPU cost. The
+/// set is capped here with a DB-side `LIMIT`; the page renders a "first N of
+/// many" notice when the cap bites. Combined with the per-IP browse rate limit
+/// ([`RateClass::BrowseSearch`](crate::ratelimit::RateClass::BrowseSearch)) and
+/// the indexer's package cap
+/// ([`MAX_PACKAGES`](crate::surface::load::MAX_PACKAGES)), this bounds the work
+/// a single browse request can force. Sized far above any realistic registry so
+/// normal browsing is never truncated.
+const MAX_BROWSE_PACKAGES: usize = 10_000;
+
 /// Render the package index for one registry: apply the `?filter=` expression,
 /// the `?sort=`/`?dir=` column order, and the `?page=` slice, then build the
 /// page.
@@ -823,7 +869,9 @@ fn package_index_html(
 ) -> Result<String, anyhow::Error> {
     use crate::filter::{version_key, Filter};
 
-    let all = state.db.list_packages(registry.id)?;
+    let (all, truncated) = state
+        .db
+        .list_packages_capped(registry.id, MAX_BROWSE_PACKAGES)?;
     let total_all = all.len();
     let filter_text = params.filter();
 
@@ -892,6 +940,7 @@ fn package_index_html(
         page_number,
         total_matches,
         total_all,
+        truncated,
         names: &names,
         versions: &versions,
         licenses: &licenses,
@@ -922,8 +971,14 @@ fn distinct_capped(values: impl Iterator<Item = String>) -> Vec<String> {
 async fn package_index(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
+    PeerAddr(peer): PeerAddr,
+    headers: HeaderMap,
     Query(params): Query<SearchParams>,
 ) -> Response {
+    // Anonymous and expensive (full re-load + filter + sort): throttle per IP.
+    if let Some(limited) = browse_rate_limited(&state, &headers, peer) {
+        return limited;
+    }
     let started = Instant::now();
     let result = (|| {
         let Some((registry, status)) = load_registry(&state, &slug)? else {
@@ -1140,6 +1195,7 @@ async fn health_page(State(state): State<Arc<AppState>>, Path(slug): Path<String
 async fn machine_path(
     State(state): State<Arc<AppState>>,
     Path((slug, path)): Path<(String, String)>,
+    PeerAddr(peer): PeerAddr,
     uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
@@ -1165,7 +1221,7 @@ async fn machine_path(
             {
                 return response;
             }
-            resolve_nested(&state, &uri, &headers, Instant::now()).await
+            resolve_nested(&state, &uri, &headers, peer, Instant::now()).await
         }
         Err(err) => internal(err),
     }
@@ -1397,6 +1453,7 @@ enum PageKind {
 async fn nested_catch_all(
     State(state): State<Arc<AppState>>,
     method: axum::http::Method,
+    PeerAddr(peer): PeerAddr,
     uri: axum::http::Uri,
     headers: HeaderMap,
     body: axum::body::Bytes,
@@ -1416,9 +1473,9 @@ async fn nested_catch_all(
             {
                 return response;
             }
-            resolve_nested(&state, &uri, &headers, Instant::now()).await
+            resolve_nested(&state, &uri, &headers, peer, Instant::now()).await
         }
-        _ => resolve_nested(&state, &uri, &headers, Instant::now()).await,
+        _ => resolve_nested(&state, &uri, &headers, peer, Instant::now()).await,
     }
 }
 
@@ -1458,6 +1515,7 @@ async fn resolve_nested(
     state: &AppState,
     uri: &axum::http::Uri,
     headers: &HeaderMap,
+    peer: Option<SocketAddr>,
     started: Instant,
 ) -> Response {
     let raw = uri.path().trim_start_matches('/');
@@ -1479,7 +1537,7 @@ async fn resolve_nested(
                 if let Err(deny) = authorize_registry_read(state, &registry, headers) {
                     return *deny;
                 }
-                render_page(state, &registry, page, &params, headers, started).await
+                render_page(state, &registry, page, &params, headers, peer, started).await
             }
             Ok(None) => StatusCode::NOT_FOUND.into_response(),
             Err(err) => internal(err),
@@ -1496,7 +1554,16 @@ async fn resolve_nested(
             }
             if tail.is_empty() {
                 let params = SearchParams::from_query(uri.query());
-                render_page(state, &registry, PageKind::Home, &params, headers, started).await
+                render_page(
+                    state,
+                    &registry,
+                    PageKind::Home,
+                    &params,
+                    headers,
+                    peer,
+                    started,
+                )
+                .await
             } else {
                 serve_registry_machine_path(state, &registry, &tail).await
             }
@@ -1561,8 +1628,17 @@ async fn render_page(
     page: PageKind,
     params: &SearchParams,
     headers: &HeaderMap,
+    peer: Option<SocketAddr>,
     started: Instant,
 ) -> Response {
+    // The org-scoped (`org/registry/-/…`) URLs reach the package browser and
+    // registry home through here rather than the flat routes; throttle the
+    // same expensive, anonymous page kinds per IP so this path is no weaker.
+    if matches!(page, PageKind::Home | PageKind::Packages) {
+        if let Some(limited) = browse_rate_limited(state, headers, peer) {
+            return limited;
+        }
+    }
     let status = match state.db.index_status(registry.id) {
         Ok(status) => status,
         Err(err) => return internal(err),

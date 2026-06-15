@@ -39,10 +39,14 @@
 //! balloon the limiter's tracking map). With `trusted_proxy = false` the
 //! forged header is discarded and the peer address is the limiter key.
 //!
-//! **Bounded tracking.** The window map is pruned of expired entries on each
-//! insert and hard-capped at [`MAX_TRACKED`] entries (evicting the
-//! oldest-started window when full), so a flood of distinct keys — forged or
-//! genuine — cannot grow it without bound.
+//! **Bounded tracking.** The window map is hard-capped at [`MAX_TRACKED`]
+//! entries, so a flood of distinct keys — forged or genuine — cannot grow it
+//! without bound. Eviction is sub-linear under such a flood: an auxiliary
+//! ordered index (keyed by window start) makes "evict the oldest window" an
+//! `O(log n)` operation instead of an `O(n)` min-scan, and expired entries are
+//! pruned lazily (every [`PRUNE_INTERVAL`] new keys) rather than with a full
+//! `O(n)` sweep on every call. A high-cardinality flood therefore no longer
+//! turns each check into `O(n)` work under the global lock.
 //!
 //! # Testability
 //!
@@ -51,7 +55,7 @@
 //! returns [`RateDecision::Allowed`] or [`RateDecision::Limited`] with the
 //! `retry_after` seconds to surface in a `429` `Retry-After` header.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 
 /// Default fixed-window length, in seconds, shared by every class.
@@ -93,12 +97,22 @@ pub const BROWSE_SEARCH: u32 = 300;
 /// rarely the binding constraint.
 pub const MAX_TRACKED: usize = 100_000;
 
+/// Number of new-key inserts between lazy expired-entry sweeps.
+///
+/// Pruning every elapsed window on *every* `check` would cost `O(n)` per call
+/// under a distinct-key flood. Instead the limiter amortizes the sweep, running
+/// it once per this many new keys; between sweeps the [`MAX_TRACKED`] cap and
+/// the per-key window reset keep the map correct and bounded. Eviction of the
+/// single oldest window (when at the cap) remains `O(log n)` and runs whenever
+/// needed regardless of this interval.
+pub const PRUNE_INTERVAL: u64 = 1024;
+
 /// A rate-limited endpoint class.
 ///
 /// Each class carries its own per-window budget via [`RateClass::budget`]; the
 /// limiter keys buckets on `(class, key)`, so the same source IP is metered
 /// independently across classes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RateClass {
     /// `POST /oauth2/device_authorization` — keyed per source IP.
     DeviceAuthorization,
@@ -164,6 +178,23 @@ struct Window {
     count: u32,
 }
 
+/// The mutable state behind the limiter's single lock.
+///
+/// Two structures kept in lock-step: `windows` is the authoritative
+/// `(class, key) → counter` map, and `by_start` is an ordered index of
+/// `(window_start, class, key)` over the *same* keys, so the oldest-started
+/// window is `by_start.first()` — an `O(log n)` lookup instead of an `O(n)`
+/// min-scan. `inserts` counts new keys to drive the lazy prune.
+#[derive(Debug, Default)]
+struct State {
+    /// Authoritative per-`(class, key)` window counters.
+    windows: HashMap<(RateClass, String), Window>,
+    /// Window-start index over the same keys, for `O(log n)` oldest eviction.
+    by_start: BTreeSet<(i64, RateClass, String)>,
+    /// New-key inserts since the last lazy expired-entry sweep.
+    inserts: u64,
+}
+
 /// A process-local fixed-window rate limiter keyed by `(class, key)`.
 ///
 /// Cheap to share behind an `Arc`; the single `Mutex` is held only for the
@@ -171,7 +202,7 @@ struct Window {
 /// model and class budgets.
 #[derive(Debug, Default)]
 pub struct RateLimiter {
-    windows: Mutex<HashMap<(RateClass, String), Window>>,
+    state: Mutex<State>,
 }
 
 impl RateLimiter {
@@ -192,32 +223,53 @@ impl RateLimiter {
     /// until the window resets.
     pub fn check(&self, class: RateClass, key: &str, now: i64) -> RateDecision {
         let budget = class.budget();
-        let mut windows = self.windows.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let map_key = (class, key.to_string());
-        // Bound the map before inserting a *new* key: sweep entries whose
-        // window has fully elapsed, then, if still at the cap, evict the
-        // oldest-started window. An existing key is refreshed in place and
-        // needs neither, so the bookkeeping is paid only on growth.
-        if !windows.contains_key(&map_key) {
-            Self::prune_expired(&mut windows, now);
-            if windows.len() >= MAX_TRACKED {
-                Self::evict_oldest(&mut windows);
+
+        // Refresh-in-place for an already-tracked key: reset the window if it
+        // elapsed (re-indexing its start), then meter. No growth bookkeeping is
+        // paid on the hot path of a returning key.
+        if let Some(window) = state.windows.get(&map_key).copied() {
+            if now.saturating_sub(window.started_at) >= WINDOW_SECS {
+                // Window elapsed: re-key its index entry to the new start.
+                state
+                    .by_start
+                    .remove(&(window.started_at, class, key.to_string()));
+                state.by_start.insert((now, class, key.to_string()));
+                let entry = state.windows.entry(map_key).or_insert(window);
+                entry.started_at = now;
+                entry.count = 1;
+                return RateDecision::Allowed;
             }
+            if window.count >= budget {
+                let retry_after = (window.started_at + WINDOW_SECS - now).max(1);
+                return RateDecision::Limited { retry_after };
+            }
+            if let Some(entry) = state.windows.get_mut(&map_key) {
+                entry.count += 1;
+            }
+            return RateDecision::Allowed;
         }
-        let entry = windows.entry(map_key).or_insert(Window {
-            started_at: now,
-            count: 0,
-        });
-        // Reset the window if the prior one has elapsed.
-        if now.saturating_sub(entry.started_at) >= WINDOW_SECS {
-            entry.started_at = now;
-            entry.count = 0;
+
+        // A new key: bound the map first. Prune expired entries lazily (every
+        // PRUNE_INTERVAL inserts, amortizing the O(n) sweep), then — if still
+        // at the cap — evict the single oldest-started window in O(log n) via
+        // the ordered index.
+        state.inserts = state.inserts.wrapping_add(1);
+        if state.inserts.is_multiple_of(PRUNE_INTERVAL) {
+            Self::prune_expired(&mut state, now);
         }
-        if entry.count >= budget {
-            let retry_after = (entry.started_at + WINDOW_SECS - now).max(1);
-            return RateDecision::Limited { retry_after };
+        if state.windows.len() >= MAX_TRACKED {
+            Self::evict_oldest(&mut state);
         }
-        entry.count += 1;
+        state.windows.insert(
+            map_key,
+            Window {
+                started_at: now,
+                count: 1,
+            },
+        );
+        state.by_start.insert((now, class, key.to_string()));
         RateDecision::Allowed
     }
 
@@ -226,8 +278,18 @@ impl RateLimiter {
     /// An elapsed window would reset to a fresh budget on its next touch
     /// anyway, so removing it is free of behavioral effect and bounds the map
     /// against keys that are never seen again (e.g. one-shot forged values).
-    fn prune_expired(windows: &mut HashMap<(RateClass, String), Window>, now: i64) {
-        windows.retain(|_, w| now.saturating_sub(w.started_at) < WINDOW_SECS);
+    /// Both the authoritative map and the ordered index are pruned together.
+    fn prune_expired(state: &mut State, now: i64) {
+        let expired: Vec<(i64, RateClass, String)> = state
+            .by_start
+            .iter()
+            .take_while(|(started, _, _)| now.saturating_sub(*started) >= WINDOW_SECS)
+            .cloned()
+            .collect();
+        for (started, class, key) in expired {
+            state.windows.remove(&(class, key.clone()));
+            state.by_start.remove(&(started, class, key));
+        }
     }
 
     /// Evict the entry whose window started earliest (least recently opened).
@@ -235,14 +297,13 @@ impl RateLimiter {
     /// The hard backstop when the map is at [`MAX_TRACKED`] and every tracked
     /// window is still live: evicting the oldest only resets that one key's
     /// budget early, which is acceptable under a key flood and keeps the map
-    /// from growing past the cap.
-    fn evict_oldest(windows: &mut HashMap<(RateClass, String), Window>) {
-        if let Some(oldest) = windows
-            .iter()
-            .min_by_key(|(_, w)| w.started_at)
-            .map(|(k, _)| k.clone())
-        {
-            windows.remove(&oldest);
+    /// from growing past the cap. `O(log n)` via the window-start index, not an
+    /// `O(n)` min-scan.
+    fn evict_oldest(state: &mut State) {
+        if let Some(oldest) = state.by_start.iter().next().cloned() {
+            let (started, class, key) = oldest;
+            state.windows.remove(&(class, key.clone()));
+            state.by_start.remove(&(started, class, key));
         }
     }
 }
@@ -378,18 +439,58 @@ mod tests {
     }
 
     #[test]
-    fn expired_windows_are_pruned_on_insert() {
+    fn expired_windows_are_pruned_lazily() {
         let limiter = RateLimiter::new();
-        // Open windows for 50 distinct keys at t=0.
-        for i in 0..50 {
+        // Open windows for many distinct keys at t=0 — enough to cross the
+        // lazy prune interval so the sweep runs.
+        let seed = PRUNE_INTERVAL as usize;
+        for i in 0..seed {
             limiter.check(RateClass::BrowseSearch, &format!("k{i}"), 0);
         }
-        assert_eq!(limiter.windows.lock().unwrap().len(), 50);
-        // A new key well past the window sweeps every elapsed entry first, so
-        // only the freshly inserted key remains.
-        limiter.check(RateClass::BrowseSearch, "fresh", WINDOW_SECS + 1);
-        let windows = limiter.windows.lock().unwrap();
-        assert_eq!(windows.len(), 1, "expired entries must be swept");
-        assert!(windows.contains_key(&(RateClass::BrowseSearch, "fresh".to_string())));
+        assert_eq!(limiter.state.lock().unwrap().windows.len(), seed);
+        // New keys well past the window sweep every elapsed entry; after the
+        // prune interval is crossed only the recent (un-elapsed) keys remain.
+        for i in 0..PRUNE_INTERVAL {
+            limiter.check(
+                RateClass::BrowseSearch,
+                &format!("fresh{i}"),
+                WINDOW_SECS + 1,
+            );
+        }
+        let state = limiter.state.lock().unwrap();
+        assert!(
+            state.windows.len() <= PRUNE_INTERVAL as usize,
+            "expired entries must be swept; got {} live",
+            state.windows.len()
+        );
+        // The two index structures stay in lock-step.
+        assert_eq!(state.windows.len(), state.by_start.len());
+    }
+
+    #[test]
+    fn distinct_key_flood_stays_bounded_and_enforces_limits() {
+        let limiter = RateLimiter::new();
+        // Flood a single class with many distinct keys; the map must stay
+        // bounded and each key must still get its own budget.
+        for i in 0..(PRUNE_INTERVAL as usize * 4) {
+            assert!(limiter
+                .check(RateClass::PasswordEmail, &format!("user{i}@acme.com"), 0)
+                .is_allowed());
+        }
+        // One flooded key is still independently limited at its budget.
+        let key = "user0@acme.com";
+        let mut allowed = 1; // already spent one above
+        while limiter.check(RateClass::PasswordEmail, key, 0).is_allowed() {
+            allowed += 1;
+            assert!(allowed <= PASSWORD_PER_EMAIL, "limit must eventually bite");
+        }
+        assert_eq!(allowed, PASSWORD_PER_EMAIL);
+        let state = limiter.state.lock().unwrap();
+        assert!(state.windows.len() <= MAX_TRACKED, "map must stay bounded");
+        assert_eq!(
+            state.windows.len(),
+            state.by_start.len(),
+            "the window map and its ordered index must stay in lock-step"
+        );
     }
 }

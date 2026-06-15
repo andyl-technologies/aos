@@ -364,6 +364,14 @@ macro_rules! vals {
 /// `aos-server` bug where this window was recorded but not honored).
 const ROTATION_GRACE_SECS: i64 = 3600;
 
+/// Maximum `audit_log` rows scanned per [`Database::list_audit`] call.
+///
+/// The audit log is append-only and unbounded, so the query reads at most this
+/// many most-recent rows (`ORDER BY id DESC LIMIT`) before scope-filtering them
+/// in Rust — a single request can never materialize the whole table. Generous
+/// enough that a paged console/RPC view always sees recent activity.
+const MAX_AUDIT_SCAN: i64 = 10_000;
+
 /// Ordered schema migrations; index = version - 1.
 const MIGRATIONS: &[&str] = &[
     // v1: initial schema.
@@ -3137,52 +3145,143 @@ impl Database {
             .transpose()
     }
 
-    /// List packages with their newest indexed version.
+    /// List every package in a registry with its newest indexed version.
+    ///
+    /// Used by the registry home, the indexer's package count, and the
+    /// `ListPackages` RPC. For the anonymous browse UI — whose request cost an
+    /// attacker controls by indexing an arbitrarily large registry — prefer
+    /// [`Database::list_packages_capped`], which bounds the rows loaded.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
     pub fn list_packages(&self, registry_id: i64) -> Result<Vec<PackageRow>> {
-        let rows = self.backend.query(
-            "SELECT p.id, p.name, p.description, p.license,
-                    (SELECT v.version FROM package_versions v
-                     WHERE v.package_id = p.id ORDER BY v.id DESC LIMIT 1)
-             FROM packages p WHERE p.registry_id = ?1 ORDER BY p.name",
-            &vals![registry_id],
-        )?;
-        rows.iter()
-            .map(|row| {
-                let package_id: i64 = row.get(0)?;
-                // Closure size + platform list of the newest version, used to
-                // make index rows scannable. One small query per package keeps
-                // the join dialect-portable; the registry's package set is in
-                // the low hundreds, so the cost is negligible.
-                let platform_rows = self.backend.query(
-                    "SELECT vp.platform, vp.closure_size
-                     FROM version_platforms vp
-                     WHERE vp.version_id = (SELECT MAX(v.id) FROM package_versions v
-                                            WHERE v.package_id = ?1)
-                     ORDER BY vp.platform",
-                    &vals![package_id],
-                )?;
-                let mut platforms = Vec::with_capacity(platform_rows.len());
-                let mut closure_size = None;
-                for prow in &platform_rows {
-                    platforms.push(prow.get::<String>(0)?);
-                    if closure_size.is_none() {
-                        closure_size = Some(prow.get::<u64>(1)?);
-                    }
-                }
-                Ok(PackageRow {
+        let (rows, _truncated) = self.query_package_rows(registry_id, None)?;
+        Ok(rows)
+    }
+
+    /// List a registry's packages for the browse UI, capped at `limit` rows.
+    ///
+    /// Identical in shape to [`Database::list_packages`] but applies a DB-side
+    /// `LIMIT` so a pathologically large registry cannot force the hub to
+    /// materialize an unbounded package set per anonymous page view. Returns
+    /// the (name-ordered) rows and a `truncated` flag that is `true` when the
+    /// registry holds more packages than `limit` — the handler surfaces this as
+    /// a "showing first N of many" indicator. The rich client-side filter still
+    /// operates over the capped set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn list_packages_capped(
+        &self,
+        registry_id: i64,
+        limit: usize,
+    ) -> Result<(Vec<PackageRow>, bool)> {
+        self.query_package_rows(registry_id, Some(limit))
+    }
+
+    /// Single-query package listing shared by [`Database::list_packages`] and
+    /// [`Database::list_packages_capped`].
+    ///
+    /// Joins each package to its newest version (`MAX(package_versions.id)`)
+    /// and that version's platform artifacts in **one** round-trip — replacing
+    /// the former per-package sub-query (an O(packages) N+1) with a single
+    /// `LEFT JOIN`. Rows arrive ordered by package name then platform, so the
+    /// per-package platform list and primary-platform closure size are folded
+    /// in a single linear pass.
+    ///
+    /// When `limit` is `Some(n)`, the package set is bounded with a DB-side
+    /// `LIMIT` over a name-ordered subquery; the returned flag is `true` when
+    /// the registry actually holds more than `n` packages. With `None` every
+    /// package is returned and the flag is always `false`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    fn query_package_rows(
+        &self,
+        registry_id: i64,
+        limit: Option<usize>,
+    ) -> Result<(Vec<PackageRow>, bool)> {
+        // Bound the *packages* (not the joined platform rows) so the LIMIT
+        // selects whole packages: filter to a capped name-ordered subset of
+        // package ids, then join in their newest version's platforms. One
+        // extra row beyond the cap is requested to detect truncation without a
+        // second COUNT query.
+        let probe = limit.map(|n| n.saturating_add(1) as i64);
+        let rows = match probe {
+            Some(probe) => self.backend.query(
+                "SELECT p.id, p.name, p.description, p.license,
+                        (SELECT v.version FROM package_versions v
+                         WHERE v.package_id = p.id ORDER BY v.id DESC LIMIT 1),
+                        vp.platform, vp.closure_size
+                 FROM (SELECT id, name, description, license
+                       FROM packages
+                       WHERE registry_id = ?1
+                       ORDER BY name LIMIT ?2) p
+                 LEFT JOIN version_platforms vp
+                   ON vp.version_id = (SELECT MAX(v.id) FROM package_versions v
+                                       WHERE v.package_id = p.id)
+                 ORDER BY p.name, vp.platform",
+                &vals![registry_id, probe],
+            )?,
+            None => self.backend.query(
+                "SELECT p.id, p.name, p.description, p.license,
+                        (SELECT v.version FROM package_versions v
+                         WHERE v.package_id = p.id ORDER BY v.id DESC LIMIT 1),
+                        vp.platform, vp.closure_size
+                 FROM packages p
+                 LEFT JOIN version_platforms vp
+                   ON vp.version_id = (SELECT MAX(v.id) FROM package_versions v
+                                       WHERE v.package_id = p.id)
+                 WHERE p.registry_id = ?1
+                 ORDER BY p.name, vp.platform",
+                &vals![registry_id],
+            )?,
+        };
+
+        // Fold the joined rows into one [`PackageRow`] per package, in the
+        // name order the query guarantees. A package with no platform
+        // artifacts appears as a single row with NULL platform/closure.
+        let mut out: Vec<PackageRow> = Vec::new();
+        let mut current_id: Option<i64> = None;
+        for row in &rows {
+            let package_id: i64 = row.get(0)?;
+            if current_id != Some(package_id) {
+                current_id = Some(package_id);
+                out.push(PackageRow {
                     name: row.get(1)?,
                     description: row.get(2)?,
                     license: row.get(3)?,
                     latest_version: row.get(4)?,
-                    closure_size,
-                    platforms,
-                })
-            })
-            .collect()
+                    closure_size: None,
+                    platforms: Vec::new(),
+                });
+            }
+            // `out` is non-empty: the first iteration always pushes (its id
+            // cannot equal the sentinel `None`), and later iterations only skip
+            // the push when the current package's row is already on top.
+            if let Some(entry) = out.last_mut() {
+                if let Some(platform) = row.get::<Option<String>>(5)? {
+                    entry.platforms.push(platform);
+                    if entry.closure_size.is_none() {
+                        entry.closure_size = row.get::<Option<u64>>(6)?;
+                    }
+                }
+            }
+        }
+
+        // The probe row (cap + 1th package) signals truncation; drop it so the
+        // caller sees exactly `limit` packages.
+        let truncated = match limit {
+            Some(n) if out.len() > n => {
+                out.truncate(n);
+                true
+            }
+            _ => false,
+        };
+        Ok((out, truncated))
     }
 
     /// Load one package's full detail.
@@ -3469,6 +3568,11 @@ impl Database {
     }
 
     /// List verified releases, newest first.
+    ///
+    /// Naturally bounded: the indexer writes at most
+    /// [`MAX_SEMVER_TAGS`](crate::indexer::MAX_SEMVER_TAGS) (1024) release rows
+    /// per registry, so the result set cannot grow without bound and needs no
+    /// additional DB-side `LIMIT`.
     ///
     /// # Errors
     ///
@@ -6603,6 +6707,13 @@ impl Database {
     /// [`crate::domain::Scope::contains`]. The root scope (`""`) lists every
     /// entry instance-wide.
     ///
+    /// The `audit_log` is append-only and grows without bound, so the DB read
+    /// is capped at [`MAX_AUDIT_SCAN`] **most-recent** rows before the
+    /// scope filter is applied in Rust: a single request can never materialize
+    /// the whole table. Scope-filtered results are therefore drawn from the
+    /// most recent [`MAX_AUDIT_SCAN`] entries — ample for the console's paged
+    /// audit view and the `ListAudit` RPC, which surface recent activity.
+    ///
     /// # Errors
     ///
     /// Returns an error on database failure.
@@ -6610,8 +6721,8 @@ impl Database {
         let rows = self.backend.query(
             "SELECT id, change_id, actor_kind, actor_label, action, scope,
                     result_commit, result_tag, detail, created_at
-             FROM audit_log ORDER BY id DESC",
-            &[],
+             FROM audit_log ORDER BY id DESC LIMIT ?1",
+            &vals![MAX_AUDIT_SCAN],
         )?;
         let target = crate::domain::Scope::parse(scope);
         let mut out = Vec::new();
@@ -7584,11 +7695,24 @@ mod tests {
             None
         );
 
-        // list_packages carries the latest version's closure size + platforms.
+        // list_packages carries the latest version's closure size + platforms,
+        // now via a single JOIN (no per-package N+1 sub-query).
         let packages = db.list_packages(id).unwrap();
+        assert_eq!(packages.len(), 2, "both packages, name-ordered");
+        assert_eq!(packages[0].name, "curl");
         let curl_row = packages.iter().find(|p| p.name == "curl").unwrap();
         assert_eq!(curl_row.closure_size, Some(20));
         assert_eq!(curl_row.platforms, vec!["x86_64-linux".to_string()]);
+
+        // The capped browse listing returns the same rows under a high cap and
+        // reports truncation when the cap is below the package count.
+        let (uncapped, trunc) = db.list_packages_capped(id, 1000).unwrap();
+        assert_eq!(uncapped.len(), 2);
+        assert!(!trunc, "two packages are well under the cap");
+        let (capped, trunc) = db.list_packages_capped(id, 1).unwrap();
+        assert_eq!(capped.len(), 1, "cap limits the loaded set");
+        assert_eq!(capped[0].name, "curl", "cap takes the name-ordered prefix");
+        assert!(trunc, "a registry larger than the cap is flagged truncated");
     }
 
     #[test]
@@ -8574,6 +8698,48 @@ mod tests {
         let remaining = db.list_repair_jobs(id, 10).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].store_hash, "new01");
+    }
+
+    #[test]
+    fn list_audit_is_bounded_and_newest_first() {
+        let db = Database::open_in_memory().unwrap();
+        // Append a batch of audit rows under one scope.
+        let rows = 50;
+        for i in 0..rows {
+            db.record_audit(
+                "user",
+                None,
+                "alice@acme.com",
+                &format!("action.{i}"),
+                "acme/infra",
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        }
+
+        // A root-scoped query returns every row (all under the cap), capped at
+        // MAX_AUDIT_SCAN, newest (highest id) first.
+        let all = db.list_audit("").unwrap();
+        assert_eq!(all.len(), rows);
+        assert!(
+            all.len() <= MAX_AUDIT_SCAN as usize,
+            "bounded by the scan cap"
+        );
+        assert_eq!(
+            all[0].action,
+            format!("action.{}", rows - 1),
+            "newest first"
+        );
+        for pair in all.windows(2) {
+            assert!(pair[0].id > pair[1].id, "ids strictly descending");
+        }
+
+        // Scope filtering still works over the bounded read.
+        assert_eq!(db.list_audit("acme").unwrap().len(), rows);
+        assert!(db.list_audit("other").unwrap().is_empty());
     }
 
     #[test]

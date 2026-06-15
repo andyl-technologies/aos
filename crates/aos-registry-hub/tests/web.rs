@@ -253,6 +253,61 @@ async fn package_search_filters_by_substring() {
 }
 
 #[tokio::test]
+async fn anonymous_browse_is_rate_limited_on_flat_and_nested_paths() {
+    use aos_registry_hub::ratelimit::BROWSE_SEARCH;
+
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("surface");
+    std::fs::create_dir_all(&surface).unwrap();
+    let fixture = common::standard_registry(&surface);
+
+    // One app, two registries indexed from the same surface: a flat slug and a
+    // nested (org-scoped) slug that reaches the browser through the nested
+    // resolver rather than the flat route.
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    for slug in ["demo", "acme/infra"] {
+        db.register_registry(
+            slug,
+            surface.to_str().unwrap(),
+            std::slice::from_ref(&fixture.trust_key),
+            true,
+        )
+        .unwrap();
+        let registry = db.registry_by_slug(slug).unwrap().unwrap();
+        index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
+            .await
+            .unwrap();
+    }
+    let app = router(Arc::new(AppState::new(
+        Arc::clone(&db),
+        "http://127.0.0.1:8420".into(),
+    )));
+
+    // Tests share one process-wide-free limiter per AppState; with no
+    // ConnectInfo every request keys on the same (empty) IP, so the per-IP
+    // BrowseSearch budget is shared across the routes below. Exhaust it on the
+    // flat packages route, then assert every browse entrypoint is 429'd.
+    for _ in 0..BROWSE_SEARCH {
+        let (status, _, _) = get(&app, "/demo/-/packages").await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // Flat packages route: over budget now.
+    let (status, headers, _) = get(&app, "/demo/-/packages").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(headers.contains_key(header::RETRY_AFTER), "Retry-After set");
+
+    // Nested-canonical packages route (org/registry/-/packages) is throttled
+    // through the same per-IP budget.
+    let (status, _, _) = get(&app, "/acme/infra/-/packages").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+    // The instance home (anonymous registry scan) shares the budget too.
+    let (status, _, _) = get(&app, "/").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
 async fn autoindex_lists_channel_partitions() {
     let dir = tempfile::tempdir().unwrap();
     let surface = dir.path().join("surface");

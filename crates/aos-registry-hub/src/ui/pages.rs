@@ -545,7 +545,16 @@ pub struct PackageBrowse<'a> {
     /// Count of packages matching the filter (across all pages).
     pub total_matches: usize,
     /// Count of packages in the registry, before filtering.
+    ///
+    /// When [`PackageBrowse::truncated`] is set this is the number actually
+    /// loaded (the browse cap), not the registry's true package count.
     pub total_all: usize,
+    /// Whether the package set was capped at the browse limit.
+    ///
+    /// `true` when the registry holds more packages than the hub loads for the
+    /// browse UI (see `MAX_BROWSE_PACKAGES`); the page then shows a "first N of
+    /// many" notice and the filter/sort operate over the capped set only.
+    pub truncated: bool,
     /// Distinct package names, for the filter autocomplete (capped, sorted).
     pub names: &'a [String],
     /// Distinct latest versions, for the filter autocomplete.
@@ -651,6 +660,7 @@ pub fn package_index(
         page_number,
         total_matches,
         total_all,
+        truncated,
         names,
         versions,
         licenses,
@@ -758,6 +768,16 @@ pub fn package_index(
         );
     } else {
         let _ = writeln!(body, "<p class=\"dim\">{total_all} packages</p>");
+    }
+
+    // A pathologically large registry is capped at the browse limit; tell the
+    // viewer the filter/sort only see the first N packages.
+    if truncated {
+        let _ = writeln!(
+            body,
+            "<p class=\"dim\">showing the first {total_all} packages of a larger \
+             registry · filtering and sorting apply to this subset</p>",
+        );
     }
 
     if body_rows.is_empty() {
@@ -2143,6 +2163,7 @@ mod tests {
                 page_number: 2,
                 total_matches: 250,
                 total_all: 300,
+                truncated: false,
                 names: &names,
                 versions: &versions,
                 licenses: &licenses,
@@ -2183,6 +2204,7 @@ mod tests {
                 page_number: 1,
                 total_matches: 3,
                 total_all: 3,
+                truncated: false,
                 names: &names,
                 versions: &versions,
                 licenses: &licenses,
@@ -2208,6 +2230,7 @@ mod tests {
                 page_number: 1,
                 total_matches: 3,
                 total_all: 3,
+                truncated: false,
                 names: &names,
                 versions: &versions,
                 licenses: &licenses,
@@ -2229,6 +2252,7 @@ mod tests {
                 page_number: 1,
                 total_matches: 3,
                 total_all: 3,
+                truncated: false,
                 names: &names,
                 versions: &versions,
                 licenses: &licenses,
