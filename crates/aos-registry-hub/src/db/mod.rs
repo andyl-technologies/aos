@@ -5376,13 +5376,33 @@ impl Database {
     /// a *separate* step (the caller deletes the binding root dir), since the
     /// surface lives outside SQL. Returns `Ok(false)` when the org is unknown.
     ///
+    /// SECURITY: the delete re-asserts the exact predicate
+    /// [`Database::list_purgeable_orgs`] selects on — still soft-deleted and
+    /// past its grace window — rather than deleting on `id` alone. The purge job
+    /// lists purgeable orgs and then deletes them one by one with no transaction
+    /// spanning the list and the delete, while [`Database::restore_org`] can
+    /// clear `deleted_at`/`purge_after` concurrently (via the `org restore`
+    /// CLI). Were the delete unconditional, a restore landing in that window
+    /// would be silently destroyed, cascading away the now-active org's
+    /// projects, registries, members, tokens, and bindings. Re-checking the
+    /// predicate makes the delete a no-op (returning `Ok(false)`) for any org
+    /// restored after it was listed. The caller passes the *same* `now` it gave
+    /// [`Database::list_purgeable_orgs`] (see
+    /// [`purge_expired_orgs`](crate::export::purge_expired_orgs)), so one
+    /// consistent timestamp spans the list and every delete in a purge tick.
+    ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub fn hard_purge_org(&self, org_id: i64) -> Result<bool> {
-        let n = self
-            .backend
-            .execute("DELETE FROM orgs WHERE id = ?1", &vals![org_id])?;
+    pub fn hard_purge_org(&self, org_id: i64, now: i64) -> Result<bool> {
+        let n = self.backend.execute(
+            "DELETE FROM orgs
+             WHERE id = ?1
+               AND deleted_at IS NOT NULL
+               AND purge_after IS NOT NULL
+               AND purge_after <= ?2",
+            &vals![org_id, now],
+        )?;
         Ok(n > 0)
     }
 
@@ -9694,8 +9714,33 @@ mod tests {
         // Past the grace window it is listed and can be purged.
         let purgeable = db.list_purgeable_orgs(now + 200).unwrap();
         assert_eq!(purgeable.len(), 1);
-        assert!(db.hard_purge_org(org).unwrap());
+        assert!(db.hard_purge_org(org, now + 200).unwrap());
         assert!(db.org_by_slug_including_deleted("acme").unwrap().is_none());
+    }
+
+    // regression: a restore landing between `list_purgeable_orgs` and
+    // `hard_purge_org` (the unguarded list+delete race) must not destroy the
+    // now-active org. `hard_purge_org` re-asserts the soft-deleted/past-grace
+    // predicate, so the delete is a no-op once the org is restored.
+    #[test]
+    fn purge_is_no_op_for_org_restored_in_window() {
+        let db = Database::open_in_memory().unwrap();
+        let org = db.create_org("acme", "Acme").unwrap();
+        db.register_owned(org, "acme/cdn");
+        // Soft-delete with a zero grace window so the org is purgeable now.
+        db.soft_delete_org(org, 0).unwrap();
+        let purgeable = db.list_purgeable_orgs(unix_now()).unwrap();
+        assert_eq!(purgeable.len(), 1);
+
+        // The admin restores it before the purge job reaches the delete.
+        assert!(db.restore_org(org).unwrap());
+
+        // The purge delete is now a no-op: it returns `Ok(false)` and the
+        // org — and everything it owns — survives.
+        assert!(!db.hard_purge_org(org, unix_now()).unwrap());
+        assert!(db.org_by_slug("acme").unwrap().is_some());
+        assert!(db.org_is_active(org).unwrap());
+        assert_eq!(db.list_registries().unwrap().len(), 1);
     }
 
     #[test]

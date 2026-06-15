@@ -37,16 +37,20 @@
 //! # Repair planning
 //!
 //! [`plan_repair`] turns the latest runs into a list of [`RepairAction`]s:
-//! for each missing `(cache, hash)` it finds another cache that *has* the
-//! hash to copy from (content-addressed, so always safe). [`execute_repair`]
-//! carries out `file://`-to-`file://` repairs by copying the narinfo and its
-//! NAR.
+//! for each missing `(cache, hash)` it finds another cache that *has* the hash
+//! to copy from. A repair propagates bytes onto a cache the hub treats as
+//! trusted, so it is **never** a blind copy: both [`execute_repair`]
+//! (`file://`-to-`file://`) and [`execute_repair_http`] run the *same* trust
+//! gate the mirror path uses — [`verify_narinfo_signature`] against the
+//! registry's roster and [`verify_nar_against_narinfo`] against the signed
+//! `NarHash` — before writing anything, and constrain the NAR `URL:` to the
+//! conventional `nar/` location. A source is a byte courier, not a trust party.
 //!
 //! For an **http target the hub is authorized to write** — a managed registry
 //! facade URL the hub serves — [`run_repairs`] mints an internal short-lived
 //! Publish token (the same path as [`crate::rpc`]'s `MintUploadCredentials`)
-//! and PUTs the narinfo + NAR to the target through the facade with a Bearer
-//! JWT ([`execute_repair_http`]). Targets the hub has *no* credential for
+//! and PUTs the verified narinfo + NAR to the target through the facade with a
+//! Bearer JWT ([`execute_repair_http`]). Targets the hub has *no* credential for
 //! (arbitrary external caches) remain plan-only: [`run_repairs`] records them
 //! as `plan_only` repair jobs and never writes to them. Every repair attempt
 //! is recorded in `repair_jobs` (`pending | done | failed | plan_only`).
@@ -428,9 +432,10 @@ pub fn plan_repair(db: &Database, registry: &RegistryRecord) -> Result<Vec<Repai
 struct RepairObject {
     /// The narinfo file's text (`<hash>.narinfo`).
     narinfo: String,
-    /// The narinfo's `URL:` (NAR path relative to the cache root), if any.
+    /// The narinfo's `URL:` NAR path, relative to the cache root and constrained
+    /// to the conventional `nar/` location ([`narinfo_nar_url`]), if present.
     nar_rel: Option<String>,
-    /// The NAR bytes, when a `URL:` named one.
+    /// The NAR bytes, when a `nar/`-constrained `URL:` named one.
     nar_bytes: Option<Vec<u8>>,
 }
 
@@ -438,9 +443,15 @@ struct RepairObject {
 ///
 /// Works against a `file://`/bare-path source (filesystem read) or an
 /// `http(s)://` source (GET through the hardened client). The narinfo's `URL:`
-/// NAR is fetched too when present. Content is **not** trusted blindly — the
-/// caller verifies the hash before writing it anywhere (content-addressed, so
-/// a hash mismatch means the source itself is corrupt and is rejected).
+/// NAR is fetched too when present.
+///
+/// SECURITY: the `URL:` field is taken only when it names a relative path under
+/// the conventional `nar/` location ([`narinfo_nar_url`]) — an
+/// attacker-influenced `URL:` that steers at a pointer/channel path (or
+/// off-surface absolute URL, or filesystem traversal) is dropped, so a repair
+/// can never copy or PUT bytes onto a non-NAR surface path. Content is **not**
+/// trusted blindly — the caller verifies the narinfo `Sig:` against the trust
+/// roster and the NAR against the signed `NarHash` before writing it anywhere.
 ///
 /// # Errors
 ///
@@ -456,7 +467,7 @@ async fn read_repair_object(
             let narinfo = tokio::fs::read_to_string(root.join(&narinfo_name))
                 .await
                 .with_context(|| format!("reading source narinfo for {store_hash}"))?;
-            let nar_rel = narinfo_field(&narinfo, "URL");
+            let nar_rel = narinfo_nar_url(&narinfo);
             let nar_bytes = match &nar_rel {
                 Some(rel) => Some(
                     tokio::fs::read(root.join(rel))
@@ -475,7 +486,7 @@ async fn read_repair_object(
             let narinfo = http_get_text(client, &format!("{base}/{narinfo_name}"))
                 .await
                 .with_context(|| format!("fetching source narinfo for {store_hash}"))?;
-            let nar_rel = narinfo_field(&narinfo, "URL");
+            let nar_rel = narinfo_nar_url(&narinfo);
             let nar_bytes = match &nar_rel {
                 Some(rel) => {
                     let nar_url = format!("{}/{}", base, rel.trim_start_matches('/'));
@@ -497,11 +508,42 @@ async fn read_repair_object(
     }
 }
 
+/// Extract the `URL:` field from narinfo text (the NAR's surface-relative path),
+/// if present, relative, and under the conventional `nar/` location.
+///
+/// SECURITY: this mirrors [`crate::mirror`]'s mirror-path constraint (M2). A
+/// repair propagates the named NAR onto a hub-trusted facade (an http PUT) or
+/// into a sibling cache (a file copy); constraining the path to a `nar/` prefix
+/// means an attacker-controlled `URL:` cannot steer that write at a pointer file
+/// (`info/refs`, `channels/**`), an off-surface absolute URL (`https://…`), or a
+/// filesystem traversal. Anything outside `nar/` is dropped (the repair then
+/// carries the narinfo only, which downstream rejects when no NAR bytes are
+/// available to verify).
+fn narinfo_nar_url(text: &str) -> Option<String> {
+    let url = narinfo_field(text, "URL")?;
+    // Only a relative path under `nar/` is a content-addressed NAR; an absolute
+    // URL points off-surface and anything outside `nar/` is not a NAR. The
+    // `nar/` prefix rules out a leading `/` or `..`, but guard traversal
+    // explicitly for defense in depth.
+    if url.starts_with("nar/") && !url.contains("://") && !url.contains("..") {
+        Some(url)
+    } else {
+        None
+    }
+}
+
 /// GET a URL and return its body text, erroring on any non-200.
 ///
 /// The body is read with the surface cap ([`MAX_FETCH_BYTES`](crate::fetch::MAX_FETCH_BYTES)) so a hostile
 /// upstream cannot stream an unbounded narinfo/text body into memory.
+///
+/// SECURITY: the URL is gated through [`crate::fetch::is_safe_remote_url`]
+/// first. Repair sources come from a registry's committed cache list, so a
+/// committed literal-IP source (which would bypass the validating DNS resolver)
+/// must be refused rather than dialed.
 async fn http_get_text(client: &reqwest::Client, url: &str) -> Result<String> {
+    crate::fetch::is_safe_remote_url(url)
+        .with_context(|| format!("refusing to fetch unsafe repair source {url}"))?;
     let response = client.get(url).send().await?;
     if response.status() != reqwest::StatusCode::OK {
         anyhow::bail!("GET {url}: HTTP {}", response.status());
@@ -518,7 +560,13 @@ async fn http_get_text(client: &reqwest::Client, url: &str) -> Result<String> {
 ///
 /// The body is read with the generous NAR cap ([`MAX_NAR_BYTES`](crate::fetch::MAX_NAR_BYTES)) so a
 /// legitimate large NAR is accepted while a runaway body is still bounded.
+///
+/// SECURITY: the URL is gated through [`crate::fetch::is_safe_remote_url`]
+/// first, for the same reason as [`http_get_text`] — a committed literal-IP
+/// repair source bypasses the validating resolver and must be refused.
 async fn http_get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
+    crate::fetch::is_safe_remote_url(url)
+        .with_context(|| format!("refusing to fetch unsafe repair source {url}"))?;
     let response = client.get(url).send().await?;
     if response.status() != reqwest::StatusCode::OK {
         anyhow::bail!("GET {url}: HTTP {}", response.status());
@@ -527,21 +575,38 @@ async fn http_get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> 
         .await
 }
 
-/// Execute a `file://`-to-`file://` repair by content-addressed copy.
+/// Execute a `file://`-to-`file://` repair by verified content-addressed copy.
 ///
-/// Copies `<hash>.narinfo` from the source directory into the target
-/// directory, then copies the NAR file the narinfo's `URL:` field names
-/// (resolved relative to each cache root). For HTTP *targets*, use
-/// [`execute_repair_http`] instead.
+/// Reads `<hash>.narinfo` and its NAR from the source directory, runs the full
+/// mirror-path trust gate, then writes both into the target directory. For HTTP
+/// *targets*, use [`execute_repair_http`] instead.
 ///
-/// Returns the number of files copied (1 for the narinfo plus 1 for the NAR
-/// when a `URL:` is present).
+/// SECURITY (finding #8): even a local-to-local repair propagates bytes onto a
+/// cache the hub treats as trusted, so it is gated exactly as the http path is —
+/// a repair source is a byte courier, not a trust party:
+///
+/// 1. [`verify_narinfo_signature`] against the registry's `trust_keys` — the
+///    narinfo must carry a valid Ed25519 `Sig:` by a pinned key (authenticity;
+///    a self-consistent forged `FileHash`/`NarHash` cannot satisfy this).
+/// 2. [`verify_nar_against_narinfo`] — the NAR's decompressed bytes must match
+///    the *signed* `NarHash` (fail-closed).
+///
+/// The narinfo's NAR path is taken only when it names a relative path under the
+/// conventional `nar/` location ([`read_repair_object`]/[`narinfo_nar_url`]), and
+/// the source read and target write are both resolved through
+/// [`fetch::safe_join`] + [`fetch::ensure_within_root`] against their respective
+/// roots, so an attacker-influenced `URL: ../../../etc/…` can neither read
+/// outside the source cache nor write outside the target cache. A narinfo with
+/// no propagatable NAR is rejected rather than copied alone.
+///
+/// Returns the number of files written (2: the narinfo plus its NAR).
 ///
 /// # Errors
 ///
 /// Returns an error when either endpoint is not a local directory, the source
-/// narinfo is missing or malformed, or a filesystem copy fails.
-pub async fn execute_repair(action: &RepairAction) -> Result<usize> {
+/// narinfo/NAR is missing, malformed, fails verification against `trust_keys`,
+/// the NAR path escapes either cache root, or a write fails.
+pub async fn execute_repair(action: &RepairAction, trust_keys: &[String]) -> Result<usize> {
     let source = local_root(&action.source_cache_url).with_context(|| {
         format!(
             "repair source {} is not a local cache",
@@ -557,28 +622,63 @@ pub async fn execute_repair(action: &RepairAction) -> Result<usize> {
         .await
         .with_context(|| format!("reading source narinfo {}", src_narinfo.display()))?;
 
+    // Trust gate, step 1: the narinfo must be signed by a trusted key.
+    verify_narinfo_signature(&narinfo_text, trust_keys).with_context(|| {
+        format!(
+            "source {} narinfo for {} is not signed by a trusted key; refusing to propagate",
+            action.source_cache_url, action.store_hash,
+        )
+    })?;
+
+    // The `nar/`-constrained NAR path; a narinfo with no propagatable NAR cannot
+    // complete the gate, so reject rather than copy the pointer alone.
+    let nar_rel = narinfo_nar_url(&narinfo_text).with_context(|| {
+        format!(
+            "source {} narinfo for {} has no propagatable NAR (missing or off-`nar/` URL); refusing to propagate narinfo alone",
+            action.source_cache_url, action.store_hash,
+        )
+    })?;
+
+    // Containment: resolve the NAR path against BOTH roots through `safe_join`
+    // (rejects `..`/absolute) and `ensure_within_root` (rejects symlink escapes),
+    // so the read cannot leave the source cache nor the write the target cache.
+    let src_nar = fetch::safe_join(&source, &nar_rel)?;
+    fetch::ensure_within_root(&source, &src_nar).await?;
+    let nar_bytes = tokio::fs::read(&src_nar)
+        .await
+        .with_context(|| format!("reading source NAR {}", src_nar.display()))?;
+
+    // Trust gate, step 2: the NAR bytes must match the signed NarHash.
+    verify_nar_against_narinfo(&narinfo_text, &nar_bytes).with_context(|| {
+        format!(
+            "source {} holds a NAR for {} that does not verify against the signed narinfo; refusing to propagate",
+            action.source_cache_url, action.store_hash,
+        )
+    })?;
+
+    // Resolve the target paths under the target root with the same containment.
+    let dst_narinfo = fetch::safe_join(&target, &narinfo_name)?;
+    let dst_nar = fetch::safe_join(&target, &nar_rel)?;
     tokio::fs::create_dir_all(&target)
         .await
         .with_context(|| format!("creating repair target {}", target.display()))?;
-    tokio::fs::copy(&src_narinfo, target.join(&narinfo_name))
-        .await
-        .with_context(|| format!("copying narinfo into {}", target.display()))?;
-    let mut copied = 1;
-
-    if let Some(nar_rel) = narinfo_field(&narinfo_text, "URL") {
-        let src_nar = source.join(&nar_rel);
-        let dst_nar = target.join(&nar_rel);
-        if let Some(parent) = dst_nar.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .with_context(|| format!("creating NAR directory {}", parent.display()))?;
-        }
-        tokio::fs::copy(&src_nar, &dst_nar).await.with_context(|| {
-            format!("copying NAR {} -> {}", src_nar.display(), dst_nar.display())
-        })?;
-        copied += 1;
+    fetch::ensure_within_root(&target, &dst_narinfo).await?;
+    if let Some(parent) = dst_nar.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("creating NAR directory {}", parent.display()))?;
     }
-    Ok(copied)
+    fetch::ensure_within_root(&target, &dst_nar).await?;
+
+    // Write the verified bytes (the narinfo text we verified and the NAR bytes
+    // we verified), never a re-read that a racing writer could swap.
+    tokio::fs::write(&dst_narinfo, narinfo_text.as_bytes())
+        .await
+        .with_context(|| format!("writing narinfo into {}", dst_narinfo.display()))?;
+    tokio::fs::write(&dst_nar, &nar_bytes)
+        .await
+        .with_context(|| format!("writing NAR into {}", dst_nar.display()))?;
+    Ok(2)
 }
 
 /// A credential for writing one missing object into an http target the hub is
@@ -613,40 +713,87 @@ pub trait RepairAuthorizer: Send + Sync {
 
 /// Execute a repair into an **http** target the hub is authorized to write.
 ///
-/// Reads the `(narinfo, NAR)` object from the source cache (file or http),
-/// **verifies the NAR's content hash against the narinfo** before trusting it
-/// (a source whose bytes do not match is corrupt and is rejected, never
-/// propagated), then PUTs the narinfo and NAR to the target through the
-/// registry facade with the supplied Bearer JWT, exactly as `apr origin
-/// upload` would. Surface paths are written relative to `credential.upload_url`
-/// (`<hash>.narinfo` and the narinfo's `URL:` NAR path).
+/// Reads the `(narinfo, NAR)` object from the source cache (file or http) and,
+/// before propagating any byte onto the hub-trusted facade, runs the **full**
+/// mirror-path trust gate (the same contract as [`crate::mirror`]'s
+/// `collect_nix_cache`):
 ///
-/// Returns the number of files PUT (1 for the narinfo plus 1 for the NAR when
-/// the narinfo names one).
+/// 1. [`verify_narinfo_signature`] against the registry's `trust_keys` — the
+///    narinfo must carry a valid Ed25519 `Sig:` by a key the registry pins.
+///    This is the authenticity check: a content-hash check alone cannot catch
+///    an adversary who controls *both* the narinfo and the NAR (they forge a
+///    self-consistent `FileHash`/`NarHash`), so only the signature establishes
+///    trust. A repair source is a byte courier, never a trust party.
+/// 2. [`verify_nar_against_narinfo`] — the NAR's decompressed bytes must match
+///    the *signed* `NarHash`.
+///
+/// A narinfo that carries no propagatable NAR (no `URL:` under the conventional
+/// `nar/` location, so [`read_repair_object`] could fetch no NAR bytes) is
+/// **rejected** rather than PUT alone: a narinfo without its verified NAR cannot
+/// complete the trust gate, and serving the pointer without the object would
+/// leave the facade advertising bytes it cannot back. Only an object that passes
+/// both checks is PUT to the target through the registry facade with the
+/// supplied Bearer JWT, exactly as `apr origin upload` would. Surface paths are
+/// written relative to `credential.upload_url` (`<hash>.narinfo` and the
+/// narinfo's `nar/`-constrained `URL:` NAR path).
+///
+/// Returns the number of files PUT (2: the narinfo plus its NAR).
 ///
 /// # Errors
 ///
-/// Returns an error when the source object cannot be read, the source NAR
-/// fails content-hash verification, or a target PUT returns a non-2xx status.
+/// Returns an error when the source object cannot be read, the source narinfo's
+/// `Sig:` does not verify against `trust_keys`, the source NAR is absent or
+/// fails verification against the signed `NarHash`, or a target PUT returns a
+/// non-2xx status.
 pub async fn execute_repair_http(
     client: &reqwest::Client,
     action: &RepairAction,
     credential: &RepairCredential,
+    trust_keys: &[String],
 ) -> Result<usize> {
     let object = read_repair_object(client, &action.source_cache_url, &action.store_hash).await?;
 
-    // Content-addressed safety: never propagate bytes that do not match the
-    // narinfo. (file:// repair copies bit-for-bit so it is trivially safe; an
-    // http round-trip is where a mid-flight corruption could enter.)
-    if let Some(bytes) = &object.nar_bytes {
-        if matches!(verify_nar_bytes(&object.narinfo, bytes), DeepCheck::Corrupt) {
-            anyhow::bail!(
-                "source {} holds a corrupt NAR for {} (content hash mismatch); refusing to propagate",
-                action.source_cache_url,
-                action.store_hash,
-            );
-        }
-    }
+    // SECURITY (finding #3): a repair propagates the source object onto a
+    // hub-trusted facade, so it must clear the SAME trust gate the mirror path
+    // uses — never a content-hash check alone. First, the narinfo must carry a
+    // valid Sig by a key the registry trusts; a self-consistent forged
+    // FileHash/NarHash cannot satisfy this without a trusted private key.
+    verify_narinfo_signature(&object.narinfo, trust_keys).with_context(|| {
+        format!(
+            "source {} narinfo for {} is not signed by a trusted key; refusing to propagate",
+            action.source_cache_url, action.store_hash,
+        )
+    })?;
+
+    // A narinfo with no verifiable NAR cannot complete the gate. Reject rather
+    // than PUT the pointer alone onto the facade.
+    let nar_bytes = match (&object.nar_rel, &object.nar_bytes) {
+        (Some(_), Some(bytes)) => bytes,
+        _ => anyhow::bail!(
+            "source {} holds a narinfo for {} with no propagatable NAR (missing or off-`nar/` URL); refusing to propagate narinfo alone",
+            action.source_cache_url,
+            action.store_hash,
+        ),
+    };
+
+    // Second, the NAR's decompressed bytes must match the SIGNED NarHash
+    // (fail-closed). This is the mirror path's verify_nar_against_narinfo.
+    verify_nar_against_narinfo(&object.narinfo, nar_bytes).with_context(|| {
+        format!(
+            "source {} holds a NAR for {} that does not verify against the signed narinfo; refusing to propagate",
+            action.source_cache_url, action.store_hash,
+        )
+    })?;
+
+    // Both checks passed and both the narinfo and its NAR are present (the
+    // `match` above bailed otherwise), so write the verified pair. The NAR path
+    // is the `nar/`-constrained `URL:` from `read_repair_object`.
+    let (Some(rel), Some(bytes)) = (object.nar_rel, object.nar_bytes) else {
+        anyhow::bail!(
+            "internal: verified repair object for {} lost its NAR before write",
+            action.store_hash,
+        );
+    };
 
     let base = credential.upload_url.trim_end_matches('/');
     put_surface_file(
@@ -658,21 +805,17 @@ pub async fn execute_repair_http(
     )
     .await
     .context("PUT narinfo to repair target")?;
-    let mut written = 1;
 
-    if let (Some(rel), Some(bytes)) = (object.nar_rel, object.nar_bytes) {
-        put_surface_file(
-            client,
-            &format!("{base}/{}", rel.trim_start_matches('/')),
-            &credential.bearer_jwt,
-            "application/x-nix-nar",
-            bytes,
-        )
-        .await
-        .context("PUT NAR to repair target")?;
-        written += 1;
-    }
-    Ok(written)
+    put_surface_file(
+        client,
+        &format!("{base}/{}", rel.trim_start_matches('/')),
+        &credential.bearer_jwt,
+        "application/x-nix-nar",
+        bytes,
+    )
+    .await
+    .context("PUT NAR to repair target")?;
+    Ok(2)
 }
 
 /// PUT one surface file to a facade target with a Bearer JWT.
@@ -713,7 +856,7 @@ pub struct RepairSummary {
 ///
 /// Plans with [`plan_repair`], then for each action:
 ///
-/// - a `file://`/bare-path target is repaired by content-addressed copy
+/// - a `file://`/bare-path target is repaired by verify-then-write
 ///   ([`execute_repair`]) and recorded `done` (or `failed`);
 /// - an `http(s)://` target the `authorizer` grants a [`RepairCredential`] for
 ///   is repaired by fetch-verify-PUT ([`execute_repair_http`]) and recorded
@@ -775,11 +918,16 @@ pub async fn run_repairs(
             }
         };
 
+        // Both repair paths verify the source against the registry's trust
+        // roster before propagating any byte (finding #3/#8): a repair source is
+        // a byte courier, not a trust party.
         let result = match &credential {
-            Some(credential) => execute_repair_http(client, action, credential)
-                .await
-                .map(|_| ()),
-            None => execute_repair(action).await.map(|_| ()),
+            Some(credential) => {
+                execute_repair_http(client, action, credential, &registry.trust_keys)
+                    .await
+                    .map(|_| ())
+            }
+            None => execute_repair(action, &registry.trust_keys).await.map(|_| ()),
         };
         match result {
             Ok(()) => {
@@ -1451,6 +1599,13 @@ async fn http_deep_ok(
     narinfo_url: &str,
     trusted_keys: &[String],
 ) -> DeepCheck {
+    // SECURITY: gate the committed cache URL through the SSRF predicate before
+    // any request. A literal-IP cache URL bypasses the validating DNS resolver,
+    // so without this an internal/metadata host could be reached. Treat an
+    // unsafe URL as an absent object rather than fetching it.
+    if crate::fetch::is_safe_remote_url(narinfo_url).is_err() {
+        return DeepCheck::Missing;
+    }
     let Ok(response) = client.get(narinfo_url).send().await else {
         return DeepCheck::Missing;
     };
@@ -1479,6 +1634,10 @@ async fn http_deep_ok(
         base.trim_end_matches('/'),
         nar_rel.trim_start_matches('/')
     );
+    // SECURITY: re-gate the NAR URL (same SSRF predicate) before fetching it.
+    if crate::fetch::is_safe_remote_url(&nar_url).is_err() {
+        return DeepCheck::Missing;
+    }
     let Ok(response) = client.get(&nar_url).send().await else {
         return DeepCheck::Missing;
     };
@@ -1507,6 +1666,12 @@ async fn http_integrity_ok(
     base: &str,
     narinfo_url: &str,
 ) -> Option<bool> {
+    // SECURITY: gate the committed cache URL through the SSRF predicate before
+    // any request (a literal-IP cache URL bypasses the validating resolver).
+    // An unsafe URL is treated as a transport failure (`None` => unreachable).
+    if crate::fetch::is_safe_remote_url(narinfo_url).is_err() {
+        return None;
+    }
     let response = client.get(narinfo_url).send().await.ok()?;
     if response.status() != reqwest::StatusCode::OK {
         return None;
@@ -1536,7 +1701,19 @@ async fn http_integrity_ok(
 }
 
 /// HEAD a URL, returning its status or `None` on transport error.
+///
+/// SECURITY: the URL is gated through [`crate::fetch::is_safe_remote_url`]
+/// before any request is issued. The cache endpoints probed here come from a
+/// registry's committed `[cache_stack]`/`[[caches]]` and are re-checked on
+/// every reindex tick, so a committed literal-IP URL like
+/// `http://169.254.169.254/<hash>.narinfo` must not be reachable: the
+/// [`ValidatingResolver`](crate::fetch) only covers DNS *names*, not literal-IP
+/// hosts, so without this call an internal/metadata IP would be dialed
+/// directly. An unsafe URL is treated as a transport failure (`None`).
 async fn head_status(client: &reqwest::Client, url: &str) -> Option<reqwest::StatusCode> {
+    if crate::fetch::is_safe_remote_url(url).is_err() {
+        return None;
+    }
     client.head(url).send().await.ok().map(|r| r.status())
 }
 
@@ -1904,9 +2081,18 @@ mod tests {
     /// Build a registry whose index references a single store hash `abc`,
     /// with the given `[[caches]]` URLs, in a fresh in-memory db.
     fn registry_with_caches(caches: Vec<(String, u32)>) -> (Database, RegistryRecord) {
+        registry_with_caches_and_keys(caches, &[])
+    }
+
+    /// As [`registry_with_caches`], but with an explicit narinfo trust roster so
+    /// repair tests can exercise the signature gate.
+    fn registry_with_caches_and_keys(
+        caches: Vec<(String, u32)>,
+        trust_keys: &[String],
+    ) -> (Database, RegistryRecord) {
         let db = Database::open_in_memory().unwrap();
         let id = db
-            .register_registry("demo", "/srv/demo", &[], false)
+            .register_registry("demo", "/srv/demo", trust_keys, false)
             .unwrap();
         let package: aos_package::registry::parse::PackageToml = toml::from_str(
             r#"
@@ -1944,22 +2130,22 @@ mod tests {
         let complete = tempfile::tempdir().unwrap();
         let incomplete = tempfile::tempdir().unwrap();
 
-        // The complete cache holds abc.narinfo + its NAR; the incomplete one
-        // is empty.
+        // The complete cache holds a *signed* abc.narinfo + its NAR; the
+        // incomplete one is empty. `execute_repair` now runs the full trust gate
+        // (sig + signed NarHash), so the source object must verify against the
+        // registry's trust roster.
+        let nar_bytes = b"narbytes";
+        let (narinfo, trust_key) = signed_narinfo_fixture(nar_bytes);
         std::fs::create_dir_all(complete.path().join("nar")).unwrap();
-        std::fs::write(complete.path().join("nar/abc.nar"), b"narbytes").unwrap();
-        std::fs::write(
-            complete.path().join("abc.narinfo"),
-            b"StorePath: /var/lib/store/abc-curl-8.5.0\nURL: nar/abc.nar\nFileSize: 8\n",
-        )
-        .unwrap();
+        std::fs::write(complete.path().join("nar/abc.nar"), nar_bytes).unwrap();
+        std::fs::write(complete.path().join("abc.narinfo"), &narinfo).unwrap();
 
         let complete_url = format!("file://{}", complete.path().display());
         let incomplete_url = format!("file://{}", incomplete.path().display());
-        let (db, registry) = registry_with_caches(vec![
-            (complete_url.clone(), 100),
-            (incomplete_url.clone(), 50),
-        ]);
+        let (db, registry) = registry_with_caches_and_keys(
+            vec![(complete_url.clone(), 100), (incomplete_url.clone(), 50)],
+            std::slice::from_ref(&trust_key),
+        );
 
         // First validation: the incomplete cache is missing the hash.
         let summaries = validate_registry(&db, &registry, ValidationDepth::Presence)
@@ -1983,8 +2169,9 @@ mod tests {
             }],
         );
 
-        // Execute copies the narinfo + NAR into the incomplete cache.
-        let copied = execute_repair(&plan[0]).await.unwrap();
+        // Execute verifies and writes the narinfo + NAR into the incomplete
+        // cache.
+        let copied = execute_repair(&plan[0], &registry.trust_keys).await.unwrap();
         assert_eq!(copied, 2);
         assert!(incomplete.path().join("abc.narinfo").exists());
         assert!(incomplete.path().join("nar/abc.nar").exists());
@@ -2000,6 +2187,118 @@ mod tests {
         assert_eq!(incomplete_after.missing, 0);
         assert_eq!(incomplete_after.coverage_percent, 100.0);
         assert!(plan_repair(&db, &registry).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn execute_repair_rejects_untrusted_and_path_escaping_sources() {
+        // SECURITY regression (finding #8): a file->file repair must refuse a
+        // source whose narinfo is not signed by a trusted key, and must never
+        // let an attacker-controlled `URL:` escape the source/target cache root.
+        let complete = tempfile::tempdir().unwrap();
+        let incomplete = tempfile::tempdir().unwrap();
+        let nar_bytes = b"narbytes";
+        let (narinfo, trust_key) = signed_narinfo_fixture(nar_bytes);
+        std::fs::create_dir_all(complete.path().join("nar")).unwrap();
+        std::fs::write(complete.path().join("nar/abc.nar"), nar_bytes).unwrap();
+        std::fs::write(complete.path().join("abc.narinfo"), &narinfo).unwrap();
+
+        let action = RepairAction {
+            cache_url: format!("file://{}", incomplete.path().display()),
+            store_hash: "abc".to_string(),
+            source_cache_url: format!("file://{}", complete.path().display()),
+        };
+
+        // An EMPTY trust roster fails closed: signature verification cannot pass.
+        let err = execute_repair(&action, &[]).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("trusted key"),
+            "empty roster must reject: {err:#}"
+        );
+        assert!(
+            !incomplete.path().join("abc.narinfo").exists(),
+            "nothing must be written when verification fails"
+        );
+
+        // A WRONG trusted key (right name, wrong key) also rejects.
+        let other = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let wrong = aos_registry_surface::sshsig::trusted_key_line("demo", &other.verifying_key());
+        assert!(execute_repair(&action, &[wrong]).await.is_err());
+
+        // A narinfo whose `URL:` tries to traverse out of the cache root is
+        // dropped by the `nar/` constraint, so the repair has no propagatable
+        // NAR and is refused — the traversal target is never read or written.
+        // Take the signed narinfo (the Sig covers StorePath/NarHash/refs, NOT
+        // the URL) and swap in an off-`nar/`, traversing URL. The signature
+        // still verifies, but `narinfo_nar_url` drops the URL, so the repair
+        // finds no propagatable NAR and is refused before any traversal read.
+        let stripped: String = narinfo
+            .lines()
+            .filter(|l| !l.starts_with("URL:"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let escaping_narinfo = format!("{stripped}URL: ../../../etc/evil\n");
+        let escaping = tempfile::tempdir().unwrap();
+        std::fs::write(escaping.path().join("abc.narinfo"), &escaping_narinfo).unwrap();
+        let escaping_action = RepairAction {
+            cache_url: format!("file://{}", incomplete.path().display()),
+            store_hash: "abc".to_string(),
+            source_cache_url: format!("file://{}", escaping.path().display()),
+        };
+        let err = execute_repair(&escaping_action, std::slice::from_ref(&trust_key))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("no propagatable NAR"),
+            "off-`nar/` URL must yield no propagatable NAR: {err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_repair_http_rejects_unsigned_source_before_any_put() {
+        // SECURITY regression (finding #3): an http repair must verify the
+        // source narinfo's Sig against the registry trust roster BEFORE it
+        // propagates any byte onto the hub-trusted facade. Here the source is a
+        // local cache holding a well-formed but UNSIGNED narinfo (its FileHash/
+        // NarHash are self-consistent, the forgery the signature check defeats).
+        // With an empty roster the signature check fails closed, so the function
+        // errors out before reaching the PUT — the unreachable `upload_url` is
+        // never contacted (a PUT would surface as a transport error, not the
+        // trust error we assert on).
+        let source = tempfile::tempdir().unwrap();
+        let nar_bytes = b"narbytes";
+        let good = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
+        std::fs::create_dir_all(source.path().join("nar")).unwrap();
+        std::fs::write(source.path().join("nar/abc.nar"), nar_bytes).unwrap();
+        std::fs::write(
+            source.path().join("abc.narinfo"),
+            format!(
+                "StorePath: /var/lib/store/abc-pkg\nURL: nar/abc.nar\nCompression: none\nFileHash: {good}\nFileSize: {len}\nNarHash: {good}\nNarSize: {len}\n",
+                len = nar_bytes.len()
+            ),
+        )
+        .unwrap();
+
+        let action = RepairAction {
+            cache_url: "https://hub.example.com/acme/infra/prod".to_string(),
+            store_hash: "abc".to_string(),
+            source_cache_url: format!("file://{}", source.path().display()),
+        };
+        let credential = RepairCredential {
+            // Deliberately unroutable: the trust gate must reject before we ever
+            // try to reach this.
+            upload_url: "http://203.0.113.1/should-never-be-reached".to_string(),
+            bearer_jwt: "dummy".to_string(),
+        };
+        let client = fetch::hardened_client();
+
+        // Empty roster => signature verification fails closed, nothing PUT.
+        let err = execute_repair_http(&client, &action, &credential, &[])
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("trusted key"),
+            "unsigned/untrusted source must be rejected before any PUT: {err:#}"
+        );
     }
 
     #[tokio::test]

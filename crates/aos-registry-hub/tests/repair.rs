@@ -106,6 +106,18 @@ async fn rpc(
 /// managed registry at `acme/infra/prod/cdn` with surface prefix `cdn` and the
 /// given visibility. Returns the registry id.
 fn create_managed_with_visibility(db: &Database, binding_root: &Path, visibility: &str) -> i64 {
+    create_managed_with_keys(db, binding_root, visibility, &[])
+}
+
+/// As [`create_managed_with_visibility`], but enrolls a narinfo trust roster so
+/// the repair path's mandatory signature gate can be exercised against a signed
+/// source object.
+fn create_managed_with_keys(
+    db: &Database,
+    binding_root: &Path,
+    visibility: &str,
+    trust_keys: &[String],
+) -> i64 {
     let org = db.create_org("acme", "Acme, Inc.").unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", binding_root.to_str().unwrap())
@@ -117,7 +129,7 @@ fn create_managed_with_visibility(db: &Database, binding_root: &Path, visibility
         visibility,
         Some(binding),
         "cdn",
-        &[],
+        trust_keys,
         false,
     )
     .unwrap()
@@ -126,6 +138,38 @@ fn create_managed_with_visibility(db: &Database, binding_root: &Path, visibility
 /// [`create_managed_with_visibility`] with `private` visibility.
 fn create_managed(db: &Database, binding_root: &Path) -> i64 {
     create_managed_with_visibility(db, binding_root, "private")
+}
+
+/// Build a *signed* `abc.narinfo` (store hash `abc`, NAR at `nar/abc.nar`)
+/// whose Ed25519 `Sig:` verifies against the returned trust-roster line.
+///
+/// The repair path now mandates that a source narinfo carry a valid signature
+/// from the registry's trust roster before its bytes may be propagated onto the
+/// hub facade, so repair tests must source a signed object rather than a raw
+/// hash-consistent one.
+fn signed_abc_narinfo(nar_bytes: &[u8]) -> (String, String) {
+    use base64::Engine as _;
+
+    let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+    let trust_key = aos_registry_hub::surface::sshsig::trusted_key_line("demo", &key.verifying_key());
+
+    let mut secret = Vec::with_capacity(64);
+    secret.extend_from_slice(&key.to_bytes());
+    secret.extend_from_slice(key.verifying_key().as_bytes());
+    let secret_b64 = base64::engine::general_purpose::STANDARD.encode(&secret);
+    let signer =
+        aos_core::nar::cache::NarInfoSigner::from_key_content(&format!("demo:{secret_b64}")).unwrap();
+
+    let store_path = "/var/lib/store/abc-curl-8.5.0";
+    let hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
+    let size = nar_bytes.len() as i64;
+    let fingerprint = aos_core::nar::cache::NarInfoSigner::fingerprint(store_path, &hash, size, &[]);
+    let sig = signer.sign(&fingerprint).unwrap();
+    let narinfo = format!(
+        "StorePath: {store_path}\nURL: nar/abc.nar\nCompression: none\n\
+         FileHash: {hash}\nFileSize: {size}\nNarHash: {hash}\nNarSize: {size}\nSig: {sig}\n",
+    );
+    (narinfo, trust_key)
 }
 
 /// A package referencing a single store hash `abc`, for an index snapshot.
@@ -237,29 +281,30 @@ async fn mint_upload_credentials_authz_scope_and_expiry() {
 
 #[tokio::test]
 async fn http_repair_fetches_verifies_and_puts_to_facade() {
-    // The repair *source*: a file:// cache holding abc.narinfo + its NAR.
+    // The repair *source*: a file:// cache holding a *signed* abc.narinfo + its
+    // NAR. The repair path verifies the source narinfo's `Sig:` against the
+    // registry trust roster before propagating it onto the hub facade, so an
+    // unsigned source would (correctly) be refused.
     let source_dir = tempfile::tempdir().unwrap();
     let nar_bytes = b"the-real-nar-bytes";
-    let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
+    let (narinfo, trust_key) = signed_abc_narinfo(nar_bytes);
     std::fs::create_dir_all(source_dir.path().join("nar")).unwrap();
     std::fs::write(source_dir.path().join("nar/abc.nar"), nar_bytes).unwrap();
-    std::fs::write(
-        source_dir.path().join("abc.narinfo"),
-        format!(
-            "StorePath: /var/lib/store/abc-curl-8.5.0\nURL: nar/abc.nar\n\
-             Compression: none\nFileSize: {}\nFileHash: {file_hash}\nNarHash: {file_hash}\n",
-            nar_bytes.len()
-        ),
-    )
-    .unwrap();
+    std::fs::write(source_dir.path().join("abc.narinfo"), &narinfo).unwrap();
     let source_url = format!("file://{}", source_dir.path().display());
 
-    // The repair *target*: a managed registry served by a real hub. Its
-    // binding root (the cdn prefix under it) is initially empty.
+    // The repair *target*: a managed registry served by a real hub, enrolling
+    // the source's trust key so the signature gate passes. Its binding root
+    // (the cdn prefix under it) is initially empty.
     let binding_dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open_in_memory().unwrap());
     // Public so the validation HEAD probe (anonymous) can read the facade.
-    let reg_id = create_managed_with_visibility(&db, binding_dir.path(), "public");
+    let reg_id = create_managed_with_keys(
+        &db,
+        binding_dir.path(),
+        "public",
+        std::slice::from_ref(&trust_key),
+    );
 
     // Bring up the real hub so the facade accepts PUTs.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

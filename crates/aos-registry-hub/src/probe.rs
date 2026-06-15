@@ -130,7 +130,17 @@ async fn probe_one(http: &reqwest::Client, cache_url: &str) -> CacheProbe {
     let (status, observed) = if let Some(root) = local_root(cache_url) {
         probe_file(&root)
     } else if cache_url.starts_with("http://") || cache_url.starts_with("https://") {
-        probe_http(http, cache_url).await
+        // SECURITY (SSRF): the hardened client's ValidatingResolver only vets
+        // DNS hostnames — a cache URL whose host is a literal internal/link-
+        // local/metadata IP (e.g. http://169.254.169.254/) is never routed
+        // through the resolver and would otherwise be fetched. Pre-check the
+        // URL exactly as the frontend probe does and record an unsafe target as
+        // unreachable (fail-closed), never issuing the request.
+        if crate::fetch::is_safe_remote_url(cache_url).is_err() {
+            (ProbeStatus::Unreachable, false)
+        } else {
+            probe_http(http, cache_url).await
+        }
     } else {
         (ProbeStatus::Unreachable, false)
     };
@@ -421,5 +431,22 @@ mod tests {
     fn file_probe_unreachable_when_root_missing() {
         let (status, _) = probe_file(std::path::Path::new("/nonexistent/aos-probe-root"));
         assert_eq!(status, ProbeStatus::Unreachable);
+    }
+
+    /// A cache URL whose host is a literal internal/metadata IP must be
+    /// recorded as unreachable without a request being issued — the
+    /// `ValidatingResolver` only vets DNS hostnames, so the
+    /// [`crate::fetch::is_safe_remote_url`] pre-check in [`probe_one`] is what
+    /// closes the SSRF hole. The link-local metadata address is refused by the
+    /// pre-check, so this test issues no live network request.
+    #[tokio::test]
+    async fn probe_one_rejects_literal_internal_ip_cache() {
+        let http = crate::fetch::hardened_client();
+        let probe = probe_one(&http, "http://169.254.169.254/").await;
+        assert_eq!(probe.status, ProbeStatus::Unreachable);
+        assert!(!probe.observed_nix_cache_info);
+        // Sanity: the pre-check itself rejects this target, so `probe_one`
+        // never reaches `probe_http`/`send()`.
+        assert!(crate::fetch::is_safe_remote_url("http://169.254.169.254/").is_err());
     }
 }
