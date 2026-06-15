@@ -44,6 +44,7 @@
 //! cloneable.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -1746,8 +1747,8 @@ struct SbFacts {
     signer_cert_sha256: Option<String>,
     /// SBAT component/generation pairs from the PE `.sbat` section.
     sbat: Vec<SbatEntry>,
-    /// `systemd-measure`-predicted PCR-11 over this UKI's measured sections
-    /// (the post-section, pre-phase value sd-stub seals against; see
+    /// `systemd-measure`-predicted PCR-11 over this UKI's measured sections at
+    /// the `enter-initrd` boot phase (where `/var` is unsealed; see
     /// [`extract_expected_pcr11`]).
     expected_pcr11: Option<String>,
 }
@@ -1786,6 +1787,57 @@ fn find_uki_in_store_path(store_path: &str) -> Option<PathBuf> {
     walk(root)
 }
 
+/// Build a [`Command`] for an external Secure Boot helper (`sbverify`,
+/// `objcopy`, `systemd-measure`) that can be resolved through the caller's
+/// `PATH`.
+///
+/// The `aos`/`apm`/`apr` wrappers replace `PATH` with a minimal hermetic tool
+/// set (bash/git/nix/…) and stash the caller's original `PATH` in
+/// `AOS_HOST_PATH`. These SB helpers are *not* in the hermetic set, so a bare
+/// `Command::new` for one of them fails with `NotFound` under the wrappers. We
+/// therefore run them with `PATH` = hermetic entries followed by
+/// `AOS_HOST_PATH`, mirroring [`crate::gitcmd`]'s transport handling: AOS-built
+/// tools keep priority, while host-provided `sbverify`/`objcopy`/
+/// `systemd-measure` become reachable. Outside the wrappers (`AOS_HOST_PATH`
+/// unset) the process `PATH` is left untouched.
+fn sb_tool_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    if let Some(path) = host_augmented_path() {
+        cmd.env("PATH", path);
+    }
+    cmd
+}
+
+/// Concatenate the process `PATH` and the caller's `AOS_HOST_PATH` (hermetic
+/// first), dropping duplicate directories while preserving order.
+///
+/// Returns `None` when `AOS_HOST_PATH` is unset (not running under a wrapper),
+/// so the command inherits the process `PATH` unchanged.
+fn host_augmented_path() -> Option<OsString> {
+    augment_path_with_host(std::env::var_os("PATH"), std::env::var_os("AOS_HOST_PATH"))
+}
+
+/// Pure core of [`host_augmented_path`]: append `host_path` after
+/// `process_path`, de-duplicating directories while preserving order.
+///
+/// Returns `None` when `host_path` is absent (the command should inherit the
+/// process `PATH` unchanged).
+fn augment_path_with_host(
+    process_path: Option<OsString>,
+    host_path: Option<OsString>,
+) -> Option<OsString> {
+    let host_path = host_path?;
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for source in [process_path, Some(host_path)].into_iter().flatten() {
+        for dir in std::env::split_paths(&source) {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    std::env::join_paths(dirs).ok()
+}
+
 /// Hash the signer leaf certificate of a UKI's Authenticode signature.
 ///
 /// Confirms the binary is signed with `sbverify --list <uki>`, then reads
@@ -1801,7 +1853,7 @@ fn find_uki_in_store_path(store_path: &str) -> Option<PathBuf> {
 /// other than "no signature", or the PE/PKCS#7 structure cannot be parsed
 /// into a leaf certificate.
 fn extract_sb_signer_cert_sha256(uki: &Path) -> Result<Option<String>> {
-    let output = Command::new("sbverify")
+    let output = sb_tool_command("sbverify")
         .arg("--list")
         .arg(uki)
         .output()
@@ -2133,7 +2185,7 @@ fn extract_sbat_entries(uki: &Path) -> Result<Vec<SbatEntry>> {
         .prefix("aos-sbat-")
         .tempfile()
         .context("creating temp file for .sbat dump")?;
-    let output = Command::new("objcopy")
+    let output = sb_tool_command("objcopy")
         .arg("-O")
         .arg("binary")
         .arg("--only-section=.sbat")
@@ -2209,7 +2261,7 @@ fn dump_pe_section(uki: &Path, section: &str) -> Result<Option<tempfile::NamedTe
         .prefix("aos-uki-section-")
         .tempfile()
         .with_context(|| format!("creating temp file for {section} dump"))?;
-    let output = Command::new("objcopy")
+    let output = sb_tool_command("objcopy")
         .arg("-O")
         .arg("binary")
         .arg(format!("--only-section={section}"))
@@ -2260,22 +2312,26 @@ fn dump_pe_section(uki: &Path, section: &str) -> Result<Option<tempfile::NamedTe
 /// image. This dumps each section sd-stub measures (`.linux`, `.osrel`,
 /// `.cmdline`, `.initrd`, `.ucode`, `.splash`, `.dtb`, `.uname`, `.sbat`,
 /// `.pcrpkey`), skipping any that are absent, and passes the present ones
-/// to `systemd-measure calculate --bank=sha256`. The result is exactly the
-/// value sd-stub leaves in PCR 11 after measuring the UKI's sections, which
+/// to `systemd-measure calculate --bank=sha256`. The result is the PCR 11
+/// value sd-stub + `systemd-pcrextend` reach for the measured sections, which
 /// is also the value `ukify` signs into the `.pcrsig` policy — so a machine
 /// that boots this UKI and seals against the signed policy is sealing
 /// against this digest.
 ///
+/// `systemd-measure calculate` emits one `11:sha256=` line per boot phase
+/// (`enter-initrd` → `enter-initrd:leave-initrd:sysinit:ready`); this records
+/// the **first** — the `enter-initrd` phase, which is where
+/// `systemd-cryptsetup` unseals `/var` against the signed policy, so it is the
+/// load-bearing value for TPM-sealed unlock.
+///
 /// # Scope caveat
 ///
-/// This is the PCR 11 value **after section measurement, before boot-phase
-/// extension**. A running machine extends PCR 11 further as
-/// `systemd-pcrextend` records each phase (`enter-initrd`, `leave-initrd`,
-/// `sysinit`, `ready`, …). An attestation verifier comparing a live
-/// `systemd-analyze pcrs` reading must replay those phase events on top of
-/// this base; the TPM-sealed-unlock path uses the signed policy (which
-/// pins this base via PCR 11 in the relevant phase) rather than a raw
-/// equality check. See RFC-0006 `registry-catalog.md` / `measured-boot.md`.
+/// PCR 11 on a *running* machine continues to advance as `systemd-pcrextend`
+/// records later phases (`leave-initrd`, `sysinit`, `ready`, …). An
+/// attestation verifier comparing a live `systemd-analyze pcrs` reading must
+/// account for the phase the quote was taken at; the TPM-sealed-unlock path
+/// itself uses the signed policy rather than a raw equality check. See
+/// RFC-0006 `registry-catalog.md` / `measured-boot.md`.
 ///
 /// # Errors
 ///
@@ -2298,7 +2354,7 @@ fn extract_expected_pcr11(uki: &Path) -> Result<Option<String>> {
         (".pcrpkey", "--pcrpkey"),
     ];
 
-    let mut cmd = Command::new("systemd-measure");
+    let mut cmd = sb_tool_command("systemd-measure");
     cmd.arg("calculate").arg("--bank=sha256");
     // Hold the section temp files alive until systemd-measure has run.
     let mut held = Vec::new();
@@ -2364,7 +2420,7 @@ fn parse_pcr11(text: &str) -> Option<String> {
 /// Returns an error if `sbverify` cannot be spawned or reports the
 /// signature does not verify against `db_cert_pem`.
 fn verify_uki_against_db_cert(uki: &Path, db_cert_pem: &Path) -> Result<()> {
-    let output = Command::new("sbverify")
+    let output = sb_tool_command("sbverify")
         .arg("--cert")
         .arg(db_cert_pem)
         .arg(uki)
@@ -8413,6 +8469,30 @@ mod tests {
         let out = "11:sha256=abcdef0123\n12:sha256=ffff\n";
         assert_eq!(parse_pcr11(out).as_deref(), Some("abcdef0123"));
         assert_eq!(parse_pcr11("no pcr lines here"), None);
+    }
+
+    #[test]
+    fn parse_pcr11_takes_first_phase_line() {
+        // `systemd-measure calculate` prints one 11: line per boot phase
+        // (enter-initrd first). We record the enter-initrd value, so the
+        // parser must return the FIRST 11: line, not the last.
+        let out = "# PCR[11] Phase <enter-initrd>\n\
+                   # PCR[11] Phase <enter-initrd:leave-initrd>\n\
+                   11:sha256=aaaa\n\
+                   11:sha256=bbbb\n";
+        assert_eq!(parse_pcr11(out).as_deref(), Some("aaaa"));
+    }
+
+    #[test]
+    fn augment_path_appends_host_after_process_dedup() {
+        use std::ffi::OsString;
+        // No host path -> inherit process PATH unchanged (None).
+        assert!(augment_path_with_host(Some(OsString::from("/a:/b")), None).is_none());
+        // Host path appended after process path, duplicates dropped, order kept.
+        let joined =
+            augment_path_with_host(Some(OsString::from("/a:/b")), Some(OsString::from("/b:/c")))
+                .unwrap();
+        assert_eq!(joined, OsString::from("/a:/b:/c"));
     }
 
     #[test]

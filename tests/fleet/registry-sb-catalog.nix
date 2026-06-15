@@ -204,12 +204,14 @@ in {
             fi
           done
           systemd-measure calculate --bank=sha256 $ARGS > "$WORK/measure.out"
+          # systemd-measure prints one `11:sha256=` line per boot phase
+          # (enter-initrd → …:ready). Mirror the Rust parser: take the FIRST
+          # such line (the enter-initrd phase, where /var is unsealed), and
+          # the hex after the last `=`.
           DIGEST=""
           while IFS= read -r line; do
             case "$line" in
-              # Mirror the Rust parser: for an `11:...` line, take the hex
-              # after the last `=` (handles `11:sha256=<hex>` and `11:<hex>`).
-              11:*) rest=''${line#11:}; DIGEST=''${rest##*=} ;;
+              11:*) rest=''${line#11:}; DIGEST=''${rest##*=}; break ;;
             esac
           done < "$WORK/measure.out"
           printf '%s' "$DIGEST"
