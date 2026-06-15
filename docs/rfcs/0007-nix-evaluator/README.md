@@ -85,6 +85,9 @@ sound here.
 | [17](17-roadmap-and-risks.md) | The phased build order, the ranked 90% subset, the risk register, and open questions |
 | [18](18-glossary.md) | Terms: WHNF, thunk, hidden class, inline cache, early cutoff, hash-consing, ATerm, deopt, and more |
 | [19](19-decision-register.md) | Consolidated decision register: every settled, closed, measure-gated, and research-grade decision, with its resolution or gating measurement |
+| [20](20-nix-language-conformance.md) | Nix *language* conformance checklist: every syntax/semantic/edge-case rule to reproduce for parity (operators, attrsets, fixpoints, scoping, strings/contexts, coercions) |
+| [21](21-builtins-conformance.md) | Builtins conformance catalog: every `builtins.*` primop with signature, parity notes, edge cases, and the impure-builtin cache-keying table |
+| [22](22-implementation-checklist-all-phases.md) | Implementation checklist across all phases (P1–P8 + P3.5), with deliverables, conformance gates, decisions closed, and exit criteria |
 
 ## Decision log
 
@@ -111,6 +114,8 @@ blocks Phase 1.
 | **`NixEval` trait + `AOS_NIX_NATIVE` gate** | Native eval is opt-in; `NixCli` subprocess remains a permanent fallback; default off until parity proven. See [14](14-integration-with-aos.md). |
 | **`unsafe` is the justified exception here** | NaN-boxing, JIT fn-ptr calls, and a raw heap require it; mitigated with SAFETY comments and miri/sanitizer CI on the safe tier. See [14](14-integration-with-aos.md). |
 | **Measure-first** | Confirm eval, not build, is the bottleneck before optimizing; quantify against the harness. See [15](15-differential-testing-and-benchmarking.md). |
+| **Content-addressed derivations are first-class** | CA is in the first acceptance gate (not deferred); AOS's store model is content-addressed (RFC-0005). See [11](11-derivation-and-store-compatibility.md), [19](19-decision-register.md) C-11. |
+| **Parallel graph evaluation is promoted early** | Lock-free CAS thunks + work-stealing forcing as an early phase (P3.5), not a rank-5 tail; sequential oracle stays ground truth, `loom`/Miri-gated. Concurrent *moving* GC stays deferred. See [13](13-parallel-evaluation.md), [19](19-decision-register.md) C-12. |
 
 ## Roadmap
 

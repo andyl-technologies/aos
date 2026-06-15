@@ -9,6 +9,18 @@
 > [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md),
 > and [the incremental evaluation cache](12-incremental-evaluation-cache.md).
 
+> **Status (decision C-12): first-class, promoted early.** Parallel graph
+> evaluation is no longer a rank-5 "measured follow-up" — it is a committed early
+> phase (**P3.5** in [roadmap](17-roadmap-and-risks.md) §3): the L1 work-stealing
+> pool (§4) and the L2 lock-free CAS thunk protocol (§3). Two guardrails make
+> that safe rather than reckless: (1) the **sequential** tree-walk oracle stays
+> the correctness ground truth the parallel tier is differentially diffed
+> against, and (2) the parallel tier ships only after the `loom`/Miri
+> memory-ordering audit (§3.2, R-4) is green — *no data races, ever*. What stays
+> deferred is the **concurrent moving collector** (§5.3): it is a *separate*
+> problem from parallel forcing, and one-shot CLI mode sidesteps it with
+> per-worker bump nurseries + never-free.
+
 ## 1. Why parallelism, and why it is dangerous
 
 A Nix evaluation of the AOS package set forces tens of thousands of top-level

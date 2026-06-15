@@ -65,7 +65,9 @@ in the owning doc, so an implementer of the relevant component has the call made
 | C-3 | Cache transport: through `NixEval` or beside it? | **Beside the trait.** Push/pull rides the existing Attic content-addressed path; `NixEval` stays minimal and transport-agnostic. | [14](14-integration-with-aos.md) §12 |
 | C-4 | `eval_expr` JSON-rendering parity | **A dedicated `--eval --json` differential check**, owned by doc 15, required green before Phase C. | [14](14-integration-with-aos.md) §12, [15](15-differential-testing-and-benchmarking.md) |
 | C-5 | `nix-compat` / Cranelift revision churn | **Pin exact git revs (`Cargo.lock`); vendor only patched modules; gate every bump on the full `.drv` harness.** Breakage becomes a maintenance event, never a silent correctness event. | [14](14-integration-with-aos.md) §12 |
-| C-6 | First acceptance-gate scope: IA-only or include CA? | **Input-addressed only** for the first green gate (CA is the IA-dominated set's thin tail); CA parity is designed-in but deferred to synthesized CA fixtures. | [02](02-compatibility-constraints.md) §8, [11](11-derivation-and-store-compatibility.md) §5.4 |
+| C-6 | First acceptance-gate scope: IA-only or include CA? | **Both input-addressed AND content-addressed from the first gate** (superseded — see C-11). AOS's store model is content-addressed (RFC-0005), so CA parity is on the critical path, not a tail. | [02](02-compatibility-constraints.md) §8, [11](11-derivation-and-store-compatibility.md) §5.4 |
+| C-11 | Content-addressed derivations: deferred or first-class? | **First-class from the start.** `derivationStrict` handles floating + fixed CA outputs in Phase 1; the gate covers CA; coverage comes from CA fixtures + the AOS RFC-0005 realisation graph. Parity targets the *pinned* Nix's CA (ATerm) encoding, which is an experimental/"not yet stable" surface — hence the exact-rev pin (C-5/C-9). | [11](11-derivation-and-store-compatibility.md) §5.4, [02](02-compatibility-constraints.md) §8 |
+| C-12 | Parallel graph evaluation: rank-5 follow-up or first-class? | **First-class, promoted early.** The lock-free CAS thunk protocol is atomic from Phase 1; the L1 work-stealing pool + L2 graph forcing ([13](13-parallel-evaluation.md)) land as an early phase (P3.5), not P8. Non-negotiable guardrails: the **sequential** tree-walk oracle stays the correctness ground truth, and the parallel tier ships only after the `loom`/Miri memory-ordering audit (R-4, now committed-early) is green. Concurrent *moving* GC (R-1/R-2) stays separate and deferred — one-shot mode uses per-worker bump nurseries + never-free, which sidesteps it. | [13](13-parallel-evaluation.md) |
 | C-7 | Permanent `rnix → arena IR` shim, or hand-roll only? | **Hand-roll exclusively;** rnix is a test-only differential oracle. No second production frontend to keep in parity. | [04](04-frontend-parser-and-ir.md) §12 |
 | C-8 | Are single-entry (blackhole-skipping) thunks sound under parallel forcing? | **Yes, when restricted to escape-analysis-proven *frame-local* thunks.** Escaped thunks keep the full CAS protocol regardless of cardinality. No sequential-tier carve-out needed. | [07](07-laziness-and-whole-program-analyses.md) §10 |
 | C-9 | Which Nix version / `NIX_SHOW_STATS` schema to baseline against? | **Pin the single C++ Nix version AOS builds with** (same rev as the `nix-compat` pin); parse stats defensively; bumps are deliberate + harness-gated. | [15](15-differential-testing-and-benchmarking.md) §9 |
@@ -97,7 +99,7 @@ decides whether to change it. **None of these block Phase 1** — most are
 | M-14 | Region inference vs just the generational GC. | Arena + generational GC first; lexical/escape region pass only where profiles show medium-lived allocation. | Allocation-lifetime profile. | [06](06-memory-management-and-gc.md) §5.2 |
 | M-15 | How much cardinality precision to chase. | Standard strictness/worker-wrapper; stop where the cache subsumes the win. | Spurious-recompute + thunk-count stats. | [07](07-laziness-and-whole-program-analyses.md) §10 |
 | M-16 | Trivia-suppressing lexer mode for pure eval. | Single lexer with trivia retained. | Hot-path lexer profile. | [04](04-frontend-parser-and-ir.md) §12 |
-| M-17 | L1 coarse pool vs L2 intra-derivation parallel forcing. | L1 only first. | Tail-latency / load-imbalance profile. | [13](13-parallel-evaluation.md) §8 |
+| M-17 | L2 intra-derivation parallel forcing depth. | Build the parallel pool by default (C-12); L1 coarse + L2 graph forcing are committed. The remaining *measure-gated* knob is how aggressively L2 forces *within* one giant derivation before the overhead outweighs the tail-latency win. | Tail-latency / load-imbalance profile. | [13](13-parallel-evaluation.md) §8 |
 | M-18 | Cross-nursery shared-value touch cost. | (Assume low; measure under Tier B.) | Multi-worker sharing profile. | [13](13-parallel-evaluation.md) §8 |
 | M-19 | Regression-detector noise band + runner pinning. | Use self-hosted-runner determinism; tune a band. | CI timing variance. | [15](15-differential-testing-and-benchmarking.md) §9 |
 | M-20 | `__structuredAttrs` JSON byte-parity. | Trust `nix-compat`; verify. | Harness on structured-attrs packages. | [11](11-derivation-and-store-compatibility.md) §12 |
@@ -114,7 +116,7 @@ Outside the 90% subset. The default is "do not build yet"; the baseline holds.
 | R-1 | Concurrent moving GC (ZGC/Shenandoah-style) × monotonic thunk mutation. | Daemon-only; single-threaded precise-generational first cut sidesteps it. | [03](03-architecture-overview.md), [13](13-parallel-evaluation.md) |
 | R-2 | Tier-2-emitted GC load barriers. | Out of scope for the first JIT; Stage B0 stop-the-world is the shipping answer. | [08](08-execution-tiers-and-cranelift.md), [13](13-parallel-evaluation.md) |
 | R-3 | WHNF tag bits vs colored-pointer bits co-design. | Unsolved; may force a wider value. Deferred to daemon GC work. | [13](13-parallel-evaluation.md) §8 |
-| R-4 | Load-barrier-on-CAS formal verification (weak memory). | Required before L2 ships; `loom`/Miri on the safe oracle. | [13](13-parallel-evaluation.md) §8 |
+| R-4 | Memory-ordering audit of the parallel thunk protocol (weak memory). | **Promoted to a committed, early gate** (C-12): the acquire/release CAS discipline must pass a `loom`/Miri audit *before the parallel tier is trusted* — it is the safety gate on shipping parallel graph evaluation, not a deferred nicety. (The harder *load-barrier* proof for a concurrent moving collector remains research-grade with R-1/R-2.) | [13](13-parallel-evaluation.md) §8 |
 | R-5 | Full effect-based region inference. | Flagged research item, not a committed deliverable; the lexical/escape pass is the committed subset. | [06](06-memory-management-and-gc.md) §5.2 |
 | R-6 | Daemon float-outward residency policy. | Tuning parameter; no daemon workload exists yet. | [07](07-laziness-and-whole-program-analyses.md) §10 |
 | R-7 | Tier-2-only fused "super-node" IR. | Deferred; the "one IR for all tiers" invariant holds until tiering is measured. | [04](04-frontend-parser-and-ir.md) §12 |
@@ -144,8 +146,10 @@ A few items are neither settled design nor measurable defaults — they are
 
 ## 6. Summary
 
-- **18 Settled + 10 Closed decisions** mean Phase 1 — and the rank-1 cache — are
-  buildable from this RFC with no unstated design calls.
+- **18 Settled + 12 Closed decisions** mean Phase 1 — and the rank-1 cache — are
+  buildable from this RFC with no unstated design calls. (C-11/C-12 promote
+  content-addressed derivations and parallel graph evaluation to first-class,
+  early scope.)
 - **21 Measure-gated** items each carry a buildable default; the harness and
   profiler (not a meeting) decide whether to move off it.
 - **14 Research-grade** items are explicitly deferred with a holding default.

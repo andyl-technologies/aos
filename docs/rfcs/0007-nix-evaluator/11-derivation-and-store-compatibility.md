@@ -756,10 +756,17 @@ Marked explicitly, per the RFC discipline of not overclaiming:
    contract), we must track the *specific* `nix-instantiate` version AOS pins.
    **The differential harness must run against the exact pinned Nix.**
 
-4. **CA-derivation coverage.** The present AOS set is overwhelmingly
-   input-addressed, so CA paths are under-exercised by the harness. CA
-   correctness is *designed in* (§5.4) but *lightly tested* until the package
-   set uses more CA derivations or we synthesize CA fixtures. **Open.**
+4. **CA-derivation coverage.** **Decision (closed, C-11): CA derivations are
+   first-class and in the first gate's scope** — `derivationStrict` implements
+   floating and fixed CA outputs in Phase 1, because AOS's store model is
+   content-addressed ([RFC-0005](../0005-ca-trust-map.md)). The naturally
+   IA-dominated package set under-exercises CA paths, so coverage is *built*, not
+   waited for: synthesized CA fixtures plus the RFC-0005 realisation graph
+   exercise the CA path in the harness from the start. The residual *empirical*
+   risk is that CA's ATerm encoding is the experimental, "not yet stable" part of
+   the format, so we pin the exact Nix version (C-9) and track its CA encoding
+   deliberately. The design is settled; the encoding is verified by diff, like
+   everything else here.
 
 5. **Context-granularity edge cases.** A handful of context primops
    (`addDrvOutputDependencies`, `unsafeDiscardOutputDependency`,

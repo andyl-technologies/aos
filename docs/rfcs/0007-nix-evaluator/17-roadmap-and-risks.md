@@ -189,11 +189,24 @@ delta: **pointer tagging** for WHNF-test fast paths ([05](05-value-representatio
 **NaN-boxing** (open question, since Nix `i64` ints do not fit a NaN-box
 payload — [01](01-motivation-and-goals.md) §7, [05](05-value-representation.md)),
 **full-laziness / let-floating** ([07](07-laziness-and-whole-program-analyses.md)),
-**region inference**, **parallel forcing** ([13](13-parallel-evaluation.md)), and
-**concurrent/moving GC** for daemon mode (ZGC/Shenandoah-style colored pointers +
-load barriers — [06](06-memory-management-and-gc.md)). None of these is committed;
-each is a hypothesis to be confirmed against AOS traces before it lands (C6 in
+**region inference**, and **concurrent/moving GC** for daemon mode
+(ZGC/Shenandoah-style colored pointers + load barriers —
+[06](06-memory-management-and-gc.md)). None of these is committed; each is a
+hypothesis to be confirmed against AOS traces before it lands (C6 in
 [01](01-motivation-and-goals.md) §6).
+
+> **Promoted out of rank 5 (decision C-11/C-12).** **Content-addressed
+> derivations** and **parallel graph evaluation** are no longer deferred
+> follow-ups — they are first-class. CA is built into the Phase-1 compatibility
+> core (it is on AOS's critical path via RFC-0005); parallel graph evaluation
+> (lock-free CAS thunks + work-stealing forcing, [13](13-parallel-evaluation.md))
+> is its own early phase (P3.5 below). Two guardrails make "right away" safe
+> rather than reckless: the **sequential** tree-walk oracle remains the
+> correctness ground truth that the parallel tier is diffed against, and the
+> parallel tier ships only after a `loom`/Miri memory-ordering audit (R-4,
+> now a committed gate). Note that *concurrent moving GC* stays in rank 5 — it is
+> a distinct problem from parallel forcing, and one-shot mode sidesteps it with
+> per-worker bump nurseries + never-free.
 
 ### The ranked subset, summarized
 
@@ -210,8 +223,14 @@ each is a hypothesis to be confirmed against AOS traces before it lands (C6 in
                                                                  helps the oracle directly
    4    hidden classes + PIC, then Cranelift tiering   P2, P4    constant-factor on the
         + deopt                                                  residue the cache can't elide
+  3.5   parallel graph evaluation (CAS thunks +        ‖         first-class (C-12); uses all
+        work-stealing forcing)                                   cores; oracle stays ground truth
    5    pointer tagging, NaN-box, full-laziness,       P1/P3/P4  measured follow-ups; ship
-        region inf., parallel forcing, concurrent GC   + ‖       only on a measured delta
+        region inference, concurrent moving GC         + ‖       only on a measured delta
+```
+```text
+  NOTE  content-addressed derivations (C-11) are built into P1's compat core,
+        not a later phase — AOS's store model is content-addressed (RFC-0005).
 ```
 
 The shape of the table is the argument: ranks 1–3 each carry independent value
@@ -236,15 +255,16 @@ in the last column).
 
 | Phase | Scope (rank) | Exit criterion (falsifiable) | Effort | Gated on |
 |-------|--------------|------------------------------|--------|----------|
-| **P1** | Frontend + tree-walk oracle + `.drv` harness (rank 0) | Harness runs the *full* AOS closure under the oracle vs `NixCli`; baseline eval-time and `NIX_SHOW_STATS` numbers recorded; parity demonstrated on `mkDerivation`/`ccWrapper`/`evalModules` constructs (zero divergence on the tested subset). | **L** | — |
+| **P1** | Frontend + tree-walk oracle + `.drv` harness (rank 0); compat core covers **both IA and CA derivations** (C-11); thunk state machine **atomic from day 1** to admit parallelism later (C-12) | Harness runs the *full* AOS closure under the oracle vs `NixCli`; baseline eval-time and `NIX_SHOW_STATS` numbers recorded; parity demonstrated on `mkDerivation`/`ccWrapper`/`evalModules` constructs **and on CA-derivation fixtures + the RFC-0005 graph** (zero divergence on the tested subset). | **L** | — |
 | **P1.5** | Measure-first decision | Documented determination, from P1 data, that eval (not build/I/O) is the dominant AOS cost. If not → **STOP/re-scope** ([01](01-motivation-and-goals.md) §5.2). | **S** | P1 |
 | **P2** | Incremental cache + hash-consing (rank 1) | A semantically-irrelevant edit (comment/whitespace/leaf-package) recomputes a *bounded, small* fraction of the closure and emits unchanged `.drv` downstream (C4 in [01](01-motivation-and-goals.md) §6); `AOS_NIX_CACHE=0` and cached runs agree byte-for-byte on the harness. | **L** | P1.5 |
 | **P3** | Bump-arena + precise generational GC (rank 2) | One-shot CLI eval allocates through `aos_alloc_*`, frees nothing, drops at exit; measured allocation/GC time on the oracle is materially below the Boehm baseline from P1; precise GC passes `miri`/ASan on the safe tree. | **M** | P2 |
-| **P4** | Strictness + escape analysis (rank 3) | Annotated IR compiles provably-strict bindings eagerly (measured drop in thunk-allocation count vs P1 `NIX_SHOW_STATS`); harness stays byte-green; analysis is sound (no eager forcing of a binding the oracle leaves unforced). | **M** | P3 |
+| **P3.5** | Parallel graph evaluation (rank 3.5, C-12): L1 work-stealing pool + L2 lock-free CAS thunk forcing ([13](13-parallel-evaluation.md)) | The parallel evaluator is differentially identical to the **sequential** oracle across the full closure (output determinism under nondeterministic scheduling); the `loom`/Miri memory-ordering audit (R-4) is green; measured multi-core speedup over the serial baseline on the AOS closure. **No data races, ever.** | **L** | P3 |
+| **P4** | Strictness + escape analysis (rank 3) | Annotated IR compiles provably-strict bindings eagerly (measured drop in thunk-allocation count vs P1 `NIX_SHOW_STATS`); harness stays byte-green; analysis is sound (no eager forcing of a binding the oracle leaves unforced); single-entry-thunk downgrade restricted to frame-local thunks (C-8), keeping it sound under P3.5 parallelism. | **M** | P3 |
 | **P5** | Hidden classes + PIC (rank 4a) | `select` sites resolve via shape-check + constant-offset load with a polymorphic inline cache; attr iteration order remains byte-identical to C++ Nix (the ordering invariant of [09](09-attribute-sets-hidden-classes-and-inline-caches.md)); harness byte-green. | **M** | P4 |
 | **P6** | Cranelift baseline JIT (rank 4b, tier 1) | Hot thunks compile per-expression once via Cranelift; tier-1 output is differentially identical to the tier-0 oracle across the closure; warmup cost measured against one-shot CLI workload. | **L** | P5 |
 | **P7** | Cranelift optimized + deopt + OSR (rank 4c, tier 2) | Speculation guarded by uncommon traps; every deopt path lands in semantics identical to the oracle (no observable `.drv` difference, ever); OSR enters hot loops mid-execution; harness byte-green under all tiers. | **XL** | P6 |
-| **P8** | Measured follow-ups (rank 5) | Each of pointer tagging / NaN-box / full-laziness / region inference / parallel forcing / concurrent GC lands *only* with a recorded benchmark delta (C6); any that fails to show a delta is dropped, not shipped. | **XL** | P7 |
+| **P8** | Measured follow-ups (rank 5) | Each of pointer tagging / NaN-box / full-laziness / region inference / concurrent *moving* GC lands *only* with a recorded benchmark delta (C6); any that fails to show a delta is dropped, not shipped. (Parallel *forcing* is no longer here — it is P3.5; only the concurrent *moving collector* remains deferred.) | **XL** | P7 |
 
 A few properties of the table are deliberate and worth stating:
 
@@ -426,7 +446,15 @@ AOS package set. Build it in this order.
 
 - [ ] `eval/tree_walk.rs` — the call-by-need interpreter: thunks
       (`Suspended → Blackhole → Forced`), forcing, closures, `with`, `rec`,
-      `let`, `if`, operators. This is the permanent correctness oracle.
+      `let`, `if`, operators. This is the permanent **sequential** correctness
+      oracle. Thunk state is an `AtomicU64` **from day 1** (release/acquire
+      stores) so the P3.5 parallel tier ([13](13-parallel-evaluation.md)) needs
+      no thunk-representation change — only a scheduler — even though P1 itself
+      runs single-threaded.
+- [ ] Conformance: the full [language surface](20-nix-language-conformance.md)
+      and [pure builtins](21-builtins-conformance.md) must diff-green under this
+      oracle. **Parity is a Phase-1 requirement, then held invariant** through
+      every later optimization (see [all-phases checklist](22-implementation-checklist-all-phases.md)).
 - [ ] `runtime/builtins/` — the primop surface ([10](10-primops-and-runtime-abi.md))
       as plain Rust, dispatched by an interned-symbol table (PHF can wait).
       `import` caches parsed+compiled files by realpath + content hash.
@@ -435,9 +463,12 @@ AOS package set. Build it in this order.
 
 - [ ] `store/derivation.rs` — `derivationStrict`: collect the string env in
       deterministic attr order → `nix-compat` `Derivation` → ATerm `.drv` →
-      IA output-path hashing (SHA-256). Delegate hashing to `nix-compat`; do not
-      reimplement `compressHash`. **Scope: input-addressed only** (CA deferred,
-      [02](02-compatibility-constraints.md) §8).
+      output-path hashing (SHA-256). Delegate hashing to `nix-compat`; do not
+      reimplement `compressHash`. **Scope: input-addressed *and*
+      content-addressed** derivations from the start (C-11) — floating + fixed CA
+      outputs, with CA fixtures + the [RFC-0005](../0005-ca-trust-map.md) graph in
+      the harness ([02](02-compatibility-constraints.md) §8,
+      [11](11-derivation-and-store-compatibility.md) §5.4).
 - [ ] `store/context.rs` — string contexts as interned COW bitsets, unioned
       through string ops, read by `derivationStrict`.
 

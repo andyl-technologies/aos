@@ -577,12 +577,16 @@ implementation phases:
    enable build-layer early cutoff and tie into AOS RFC-0005's realisation graph
    (see [derivation and store compatibility](11-derivation-and-store-compatibility.md)).
    Their ATerm encoding is explicitly the "not yet stable" part of the format.
-   **Decision (closed): the first acceptance gate scopes to input-addressed (IA)
-   derivations only** — the overwhelming bulk of the AOS toolchain — and defers
-   CA-derivation byte-parity to a later phase, where synthesized CA fixtures
-   (rather than the naturally IA-dominated package set) exercise it. CA support
-   is *designed in* (see [derivation and store compatibility](11-derivation-and-store-compatibility.md)
-   §5.4); it is simply not on the critical path for the first green gate.
+   **Decision (closed, updated): content-addressed derivations are in scope from
+   the first acceptance gate, alongside input-addressed.** AOS's own store model
+   is content-addressed ([RFC-0005](../0005-ca-trust-map.md)'s realisation
+   graph), so CA parity is on the critical path, not a deferred tail.
+   `derivationStrict` handles floating and fixed CA outputs in Phase 1 (see
+   [derivation and store compatibility](11-derivation-and-store-compatibility.md)
+   §5.4); coverage comes from CA fixtures plus the RFC-0005 graph. The one honest
+   caveat: CA's ATerm encoding is the experimental, "not yet stable" part of the
+   format, so CA parity targets the *exact pinned* Nix version (C-9) and tracks
+   its CA encoding deliberately rather than assuming a stable contract.
 
 3. **`nix-compat` / Snix API instability.** The crate's CLI and APIs are
    explicitly unstable, and the project disclaims real-world performance
