@@ -2092,10 +2092,8 @@ mod tests {
     use crate::types::{SbatEntry, SysrootImageEntry};
     use tempfile::TempDir;
 
-    const SIGNER_ACTIVE: &str =
-        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
-    const SIGNER_RETIRED: &str =
-        "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752";
+    const SIGNER_ACTIVE: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    const SIGNER_RETIRED: &str = "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752";
 
     fn sb_sbat(pairs: &[(&str, u32)]) -> Vec<SbatEntry> {
         pairs
@@ -2218,9 +2216,7 @@ mod tests {
 
         // At/above the floor: accepted.
         let ok = vec![signed_image(SIGNER_ACTIVE, &[("aos", 5)])];
-        assert!(
-            validate_sysroot_secure_boot_in(&ok, "aos", catalog_dir, None, &printer).is_ok()
-        );
+        assert!(validate_sysroot_secure_boot_in(&ok, "aos", catalog_dir, None, &printer).is_ok());
     }
 
     #[test]
@@ -2251,9 +2247,7 @@ mod tests {
         write_sb_certs_toml(tmp.path(), &SbCertsToml::default()).unwrap();
         let printer = Printer::new(0, true, false);
         let img = vec![signed_image(SIGNER_ACTIVE, &[("aos", 1)])];
-        assert!(
-            validate_sysroot_secure_boot_in(&img, "aos", tmp.path(), None, &printer).is_err()
-        );
+        assert!(validate_sysroot_secure_boot_in(&img, "aos", tmp.path(), None, &printer).is_err());
     }
 
     #[test]

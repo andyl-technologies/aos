@@ -47,7 +47,11 @@ fn sbat(pairs: &[(&str, u32)]) -> Vec<SbatEntry> {
 }
 
 /// Build a signed image entry as `apr publish` would record it.
-fn signed_image(signer: &str, sbat_pairs: &[(&str, u32)], pcr11: Option<&str>) -> SysrootImageEntry {
+fn signed_image(
+    signer: &str,
+    sbat_pairs: &[(&str, u32)],
+    pcr11: Option<&str>,
+) -> SysrootImageEntry {
     SysrootImageEntry {
         format: "raw".into(),
         store_path: "/nix/store/deadbeef-aos-image".into(),
