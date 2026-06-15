@@ -91,6 +91,35 @@
       }
     );
 
+  fetchNpmDeps = args:
+    lib.fetchNpmDeps (
+      args
+      // {
+        nodejs = self.nodejs;
+        python3 = self.python3;
+        caCertificates = self.ca-certificates;
+        inherit bootstrapTools;
+        extraPaths = [
+          stdenv.coreutils
+          stdenv.tar
+          stdenv.gzip
+          stdenv.bash
+          stdenv.gnumake
+          stdenv.sed
+          stdenv.grep
+          stdenv.gawk
+          stdenv.findutils
+          self.git
+        ];
+        extraLibPaths =
+          [
+            self.openssl
+            self.zlib
+          ]
+          ++ (args.extraLibPaths or []);
+      }
+    );
+
   # Attrs that mkCargoPackage consumes (not passed to mkDerivation)
   cargoSpecificAttrs = [
     "cargoDeps"
@@ -395,7 +424,7 @@
       # --- Plumbing ---
       inherit mkDerivation fetchurl lib;
       inherit mkCargoPackage mkGoPackage mkBazelPackage;
-      inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchBazelDeps;
+      inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;
       fakeHash = lib.fakeHash;
       # --- Build infrastructure ---
