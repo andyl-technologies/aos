@@ -293,3 +293,55 @@ async fn connectrpc_read_path_serves_index() {
     assert_ne!(status, StatusCode::OK, "body: {body}");
     assert!(body.contains("not_found"), "body: {body}");
 }
+
+/// An RPC request whose body exceeds the small inbound RPC cap is rejected
+/// before the handler runs, while a normal small RPC body is served — proving
+/// the `DefaultBodyLimit` is scoped to the RPC surface.
+#[tokio::test]
+async fn rpc_inbound_body_cap_rejects_oversized_request() {
+    use aos_registry_hub::server::RPC_MAX_BODY_BYTES;
+
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(Arc::new(AppState::new(db, "http://127.0.0.1:8420".into())));
+
+    let post = |body: Vec<u8>| {
+        let app = app.clone();
+        async move {
+            // Set an explicit Content-Length (real Connect clients always do)
+            // so the body-limit layer can reject an over-cap request up front
+            // with 413, exactly as it would in production.
+            let len = body.len();
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/aos.registry.v1.PackageService/ListPackages")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::CONTENT_LENGTH, len)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        }
+    };
+
+    // A body just over the cap is rejected with 413 Payload Too Large; the
+    // handler (which would otherwise return NotFound for an unknown slug) is
+    // never reached.
+    let oversized = post(vec![b' '; RPC_MAX_BODY_BYTES + 1]).await;
+    assert_eq!(
+        oversized,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "an over-cap RPC body must be rejected"
+    );
+
+    // A small, well-formed body is accepted by the layer and handled normally
+    // (NotFound for the missing registry — not a 413).
+    let small = post(br#"{"slug":"missing"}"#.to_vec()).await;
+    assert_ne!(
+        small,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "a small RPC body must not be capped"
+    );
+}

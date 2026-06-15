@@ -29,7 +29,7 @@ axum = { workspace = true }
 jsonwebtoken = { workspace = true }
 rand = { workspace = true }
 uuid = { workspace = true }
-tower-http = { workspace = true, features = ["catch-panic"] }
+tower-http = { workspace = true, features = ["catch-panic", "limit"] }
 clap = { workspace = true }
 url = { workspace = true }
 reqwest = { workspace = true }
