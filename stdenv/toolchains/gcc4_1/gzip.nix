@@ -13,7 +13,10 @@
   hostPlatform,
 }: let
   src = builtins.fetchTarball {
-    url = "https://mirrors.kernel.org/gnu/gzip/gzip-1.3.5.tar.gz";
+    # mirrors.kernel.org dropped pre-1.4 gzip from its GNU mirror
+    # (404); alpha.gnu.org still serves the original 1.3.5 tarball
+    # (and is what the gcc3_4 toolchains already pin).
+    url = "https://alpha.gnu.org/gnu/gzip/gzip-1.3.5.tar.gz";
     sha256 = "1pkqayhb6rs3aj858wxyga4q3nha8x9y7bn5lbqad4985y5a0hm7";
   };
 in
