@@ -22,6 +22,8 @@
 //! password (per IP)       client IP                 PASSWORD_PER_IP / window
 //! token_exchange          token id or client IP     TOKEN_EXCHANGE / window
 //! browse_search           client IP                 BROWSE_SEARCH / window (loose)
+//! create_org              JWT principal id          CREATE_ORG_PER_OWNER / window
+//! device_activate         session user + client IP  DEVICE_ACTIVATE / window
 //! ```
 //!
 //! The magic-link issuance surface is rate-limited on **both** the target
@@ -84,8 +86,42 @@ pub const PASSWORD_PER_IP: u32 = 20;
 /// Default OAuth2 token exchanges allowed per key (token id or IP) per window.
 pub const TOKEN_EXCHANGE: u32 = 60;
 
+/// Default org creations allowed per authenticated principal per window.
+///
+/// Tight: org creation mints a namespace, a membership scope, and an `Owner`
+/// grant, and bloats every `list_orgs`/instance-home scan. A handful per
+/// window is ample for a human (or a CI principal) and blunts a loop that mints
+/// orgs to pollute the namespace. The per-owner *total* is additionally capped
+/// by [`MAX_ORGS_PER_OWNER`].
+pub const CREATE_ORG_PER_OWNER: u32 = 5;
+
+/// Default device-activation (approve) views/submits allowed per session user
+/// (combined with the source IP) per window.
+///
+/// The `/activate` approve page keys a pending grant solely on its `user_code`
+/// with no ownership predicate, so without a throttle an authenticated user
+/// could enumerate the code space at full speed to discover and hijack other
+/// users' in-flight device grants. This bounds the guess rate per signed-in
+/// user; the 15-minute grant TTL and the code entropy remain the other
+/// barriers.
+pub const DEVICE_ACTIVATE: u32 = 30;
+
 /// Default anonymous browse/search requests allowed per IP per window (loose).
 pub const BROWSE_SEARCH: u32 = 300;
+
+/// Hard cap on the number of orgs a single user may *own* (hold an `Owner`
+/// membership on) at once.
+///
+/// A complement to the [`RateClass::CreateOrg`] rate limit: the rate limit
+/// bounds the *burst* of creations, while this bounds the steady-state total a
+/// principal can accumulate, so a slow loop cannot pollute the namespace over
+/// time. Enforced in the `CreateOrg` RPC handler against the caller's current
+/// owned-org count (via
+/// [`Database::count_user_owned_orgs`](crate::db::Database::count_user_owned_orgs))
+/// before the org row is written. Sized
+/// generously for a legitimate user running several orgs; instance admins are
+/// the path for anyone who genuinely needs more.
+pub const MAX_ORGS_PER_OWNER: i64 = 50;
 
 /// Maximum number of `(class, key)` windows the limiter tracks at once.
 ///
@@ -130,6 +166,13 @@ pub enum RateClass {
     TokenExchange,
     /// Anonymous browse/search — keyed per source IP (loose).
     BrowseSearch,
+    /// `CreateOrg` RPC — keyed per authenticated **principal** (the JWT owner),
+    /// bounding the rate at which one caller can mint orgs.
+    CreateOrg,
+    /// `/activate` device-approval page (GET form + POST submit) — keyed per
+    /// **session user combined with source IP**, bounding `user_code`
+    /// enumeration of other users' in-flight device grants.
+    DeviceActivate,
 }
 
 impl RateClass {
@@ -144,6 +187,8 @@ impl RateClass {
             RateClass::PasswordIp => PASSWORD_PER_IP,
             RateClass::TokenExchange => TOKEN_EXCHANGE,
             RateClass::BrowseSearch => BROWSE_SEARCH,
+            RateClass::CreateOrg => CREATE_ORG_PER_OWNER,
+            RateClass::DeviceActivate => DEVICE_ACTIVATE,
         }
     }
 }

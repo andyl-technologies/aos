@@ -1173,12 +1173,45 @@ struct ActivateQuery {
     message: Option<String>,
 }
 
+/// Rate-limit a device-activation request for the signed-in `session`.
+///
+/// The `/activate` approve surface keys a pending device grant solely on its
+/// `user_code` with no ownership predicate, so without a throttle a signed-in
+/// user could enumerate the code space at full speed to discover and inspect
+/// (or hijack) other users' in-flight grants (sec L-4). This meters under
+/// [`RateClass::DeviceActivate`](crate::ratelimit::RateClass::DeviceActivate)
+/// keyed on the **session user combined with the client IP**, so neither a
+/// single account nor a single source can spin the wheel quickly, and returns
+/// `Some(429)` (with `Retry-After`) when the budget is exhausted. Both the GET
+/// form and the POST submit call it. (The future polling endpoint, when wired,
+/// should meter the same class on the requesting CLI principal.)
+fn activate_rate_limited(
+    state: &AppState,
+    session: &Session,
+    headers: &HeaderMap,
+    peer: Option<std::net::SocketAddr>,
+) -> Option<Response> {
+    let ip = crate::server::client_ip_for(headers, peer, state.trusted_proxy);
+    let key = format!("{}|{ip}", session.auth.user_id);
+    match state.ratelimit.check(
+        crate::ratelimit::RateClass::DeviceActivate,
+        &key,
+        crate::server::now_secs(),
+    ) {
+        crate::ratelimit::RateDecision::Limited { retry_after } => {
+            Some(crate::server::too_many_requests(retry_after))
+        }
+        crate::ratelimit::RateDecision::Allowed => None,
+    }
+}
+
 /// `GET /activate` — the device-approval page.
 ///
 /// Prefills the user code from `?user_code=` and, when it resolves to a live
 /// pending grant, shows the requested scope/permissions and the approve form.
 async fn activate_form(
     State(state): State<Arc<AppState>>,
+    crate::server::PeerAddr(peer): crate::server::PeerAddr,
     headers: HeaderMap,
     Query(query): Query<ActivateQuery>,
 ) -> Response {
@@ -1186,6 +1219,9 @@ async fn activate_form(
         Ok(s) => s,
         Err(resp) => return *resp,
     };
+    if let Some(resp) = activate_rate_limited(&state, &session, &headers, peer) {
+        return resp;
+    }
     let user_code = query.user_code.unwrap_or_default();
     let request = if user_code.is_empty() {
         None
@@ -1223,6 +1259,7 @@ struct ActivateForm {
 /// grant denied. Redirects back to `/activate` with a result message.
 async fn activate_submit(
     State(state): State<Arc<AppState>>,
+    crate::server::PeerAddr(peer): crate::server::PeerAddr,
     headers: HeaderMap,
     Form(form): Form<ActivateForm>,
 ) -> Response {
@@ -1230,6 +1267,9 @@ async fn activate_submit(
         Ok(s) => s,
         Err(resp) => return *resp,
     };
+    if let Some(resp) = activate_rate_limited(&state, &session, &headers, peer) {
+        return resp;
+    }
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }

@@ -567,6 +567,61 @@ async fn rpc_create_org_rejects_scope_smuggling_slugs() {
 }
 
 #[tokio::test]
+async fn rpc_create_org_is_rate_limited_per_principal() {
+    // L-3: an authenticated principal must not be able to loop CreateOrg to
+    // mint an unbounded number of orgs. The per-principal rate limit caps the
+    // burst; a fresh principal is unaffected.
+    use aos_registry_hub::ratelimit::CREATE_ORG_PER_OWNER;
+
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.set_signup_policy(aos_registry_hub::db::SignupPolicy::Open)
+        .unwrap();
+    let founder = db.create_user("founder@acme.com", None).unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let token = bearer(Principal::user(founder), "", &[]);
+
+    // The first CREATE_ORG_PER_OWNER creations in the window succeed.
+    for i in 0..CREATE_ORG_PER_OWNER {
+        let (status, value) = rpc(
+            &app,
+            "OrgService/CreateOrg",
+            serde_json::json!({"slug": format!("acme{i}"), "name": "Acme"}),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create #{i}: {value}");
+    }
+
+    // The next one over the budget is rejected. Connect maps ResourceExhausted
+    // to HTTP 429.
+    let (status, value) = rpc(
+        &app,
+        "OrgService/CreateOrg",
+        serde_json::json!({"slug": "acme-over", "name": "Acme"}),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{value}");
+    assert!(db.org_by_slug("acme-over").unwrap().is_none());
+
+    // A *different* principal is unaffected — the limit is per-caller.
+    let other = db.create_user("other@acme.com", None).unwrap();
+    let other_token = bearer(Principal::user(other), "", &[]);
+    let (status, value) = rpc(
+        &app,
+        "OrgService/CreateOrg",
+        serde_json::json!({"slug": "beta", "name": "Beta"}),
+        Some(&other_token),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "fresh principal unaffected: {value}"
+    );
+}
+
+#[tokio::test]
 async fn soft_deleted_org_registry_is_not_found_over_rpc() {
     let dir = tempfile::tempdir().unwrap();
     let surface = dir.path().join("surface");

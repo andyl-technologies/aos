@@ -235,6 +235,45 @@ pub(crate) fn with_returning_id(sql: &str) -> String {
     }
 }
 
+/// Redacts the password from a `postgres://`/`mysql://` connection URL so it
+/// is safe to embed in an error chain or log line.
+///
+/// A connection URL is `scheme://user:PASSWORD@host:port/db?…`, and the
+/// password is a long-lived database secret. Connection failures are logged
+/// with the URL as context (`connecting to postgres …`), so the raw form would
+/// leak the credential into the hub's logs. This replaces the password
+/// component with `***` while preserving every other part (user, host, port,
+/// database, query) so the redacted form remains diagnostically useful.
+///
+/// When the input does not parse as a URL — or carries no password — it is
+/// returned unchanged, since there is no credential to strip. The fallback is
+/// safe because a non-URL string never contains the `user:password@` userinfo
+/// shape this guards against.
+///
+/// # Examples
+///
+/// ```no_run
+/// # // Illustrative only; `redact_db_url` is crate-private.
+/// // redact_db_url("postgresql://app:s3cret@db.internal/hub")
+/// //   == "postgresql://app:***@db.internal/hub"
+/// ```
+#[cfg_attr(not(any(feature = "postgres", feature = "mysql")), allow(dead_code))]
+pub(crate) fn redact_db_url(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(mut parsed) if parsed.password().is_some() => {
+            // `set_password` only fails for URLs that cannot have credentials
+            // (e.g. those without a host); for those we fall through to the
+            // original string, which by construction carries no userinfo.
+            if parsed.set_password(Some("***")).is_ok() {
+                parsed.into()
+            } else {
+                url.to_string()
+            }
+        }
+        _ => url.to_string(),
+    }
+}
+
 /// Translates `sql` for `dialect` and returns `(translated_sql, ordered_params)`.
 ///
 /// Shared by every driver: it applies [`Dialect::translate`] and reorders the
@@ -261,4 +300,40 @@ pub(crate) fn prepare(
         Dialect::Sqlite | Dialect::Postgres => params.to_vec(),
     };
     Ok((translated.sql, ordered))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_db_url;
+
+    #[test]
+    fn redact_db_url_strips_password() {
+        let redacted = redact_db_url("postgresql://user:secret@host/db");
+        assert!(
+            !redacted.contains("secret"),
+            "password must not survive redaction: {redacted}"
+        );
+        assert_eq!(redacted, "postgresql://user:***@host/db");
+    }
+
+    #[test]
+    fn redact_db_url_preserves_non_secret_parts() {
+        let redacted = redact_db_url("mysql://app:p%40ss@db.internal:3306/hub?ssl-mode=required");
+        assert!(!redacted.contains("p%40ss") && !redacted.contains("p@ss"));
+        assert!(redacted.contains("app@") || redacted.contains("app:***@"));
+        assert!(redacted.contains("db.internal:3306"));
+        assert!(redacted.contains("hub"));
+        assert!(redacted.contains("ssl-mode=required"));
+    }
+
+    #[test]
+    fn redact_db_url_passes_through_without_password() {
+        // No userinfo password: nothing to strip, returned (parse-normalized)
+        // without inventing a credential.
+        let redacted = redact_db_url("postgres://host/db");
+        assert!(!redacted.contains("***"));
+        assert!(redacted.contains("host"));
+        // A non-URL string is returned verbatim (no credential shape).
+        assert_eq!(redact_db_url("not a url"), "not a url");
+    }
 }

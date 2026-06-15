@@ -240,6 +240,48 @@ async fn activate_shows_scope_and_approves_with_clamped_token() {
 }
 
 #[tokio::test]
+async fn activate_is_rate_limited_per_session_user() {
+    // L-4: the /activate approve surface keys a pending grant only on its
+    // user_code, with no ownership predicate, so a signed-in user must be
+    // throttled to stop them enumerating the code space to discover or hijack
+    // other users' in-flight device grants. A fresh session user is unaffected.
+    use aos_registry_hub::ratelimit::DEVICE_ACTIVATE;
+
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.find_or_create_user("enum@acme.com").unwrap();
+    db.find_or_create_user("other@acme.com").unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let cookie = login(&app, &db, "enum@acme.com").await;
+
+    // The first DEVICE_ACTIVATE GETs in the window are served (the rate-limit
+    // check runs before the user_code lookup, so a missing code still counts).
+    for i in 0..DEVICE_ACTIVATE {
+        let resp = send(&app, "GET", "/activate", Some(&cookie), None).await;
+        assert_eq!(resp.status, StatusCode::OK, "GET #{i}: {}", resp.body);
+    }
+    // The next over the budget is throttled with 429.
+    let resp = send(&app, "GET", "/activate", Some(&cookie), None).await;
+    assert_eq!(resp.status, StatusCode::TOO_MANY_REQUESTS, "{}", resp.body);
+
+    // The POST approve path shares the same per-user budget — already exhausted
+    // for this user — so a submit is throttled too (before CSRF is even read).
+    let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
+    let form = format!("csrf={csrf}&user_code=ZZZ-ZZZ&decision=approve");
+    let resp = send(&app, "POST", "/activate", Some(&cookie), Some(&form)).await;
+    assert_eq!(resp.status, StatusCode::TOO_MANY_REQUESTS, "{}", resp.body);
+
+    // A different session user has their own fresh budget.
+    let other_cookie = login(&app, &db, "other@acme.com").await;
+    let resp = send(&app, "GET", "/activate", Some(&other_cookie), None).await;
+    assert_eq!(
+        resp.status,
+        StatusCode::OK,
+        "fresh session user unaffected: {}",
+        resp.body
+    );
+}
+
+#[tokio::test]
 async fn post_without_csrf_is_forbidden() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     db.find_or_create_user("dev@acme.com").unwrap();
