@@ -1410,6 +1410,22 @@ pub struct SessionAuth {
     pub expires_at: i64,
 }
 
+impl SessionAuth {
+    /// Whether this session is currently sudo-capable at time `now`.
+    ///
+    /// True when the session was minted sudo (`auth_level == 1`) **and** the
+    /// last re-authentication is within
+    /// [`SUDO_WINDOW_SECS`](crate::auth::session::SUDO_WINDOW_SECS) of `now`.
+    /// Destructive operations gate on this so a long-lived but stale session
+    /// cannot perform them without the user re-authenticating.
+    #[must_use]
+    pub fn is_sudo(&self, now: i64) -> bool {
+        self.auth_level == 1
+            && now.saturating_sub(self.last_authenticated_at)
+                < crate::auth::session::SUDO_WINDOW_SECS
+    }
+}
+
 /// Index freshness state for one registry.
 #[derive(Debug, Clone)]
 pub struct IndexStatus {
@@ -5354,9 +5370,15 @@ impl Database {
 
     /// Create a session for `user_id`, returning the opaque cookie secret.
     ///
-    /// Only the SHA-256 hash of the secret is stored. The session expires
-    /// `ttl_secs` from now; `auth_level` is `1` for a sudo-capable session
-    /// (the user re-authenticated) and `0` otherwise.
+    /// Only the SHA-256 hash of the secret is stored. `ttl_secs` is the
+    /// session's **absolute** lifetime: `expires_at` is stamped to
+    /// `now + ttl_secs` (callers pass
+    /// [`ABSOLUTE_LIFETIME_SECS`](crate::auth::session::ABSOLUTE_LIFETIME_SECS)).
+    /// An independent idle timeout is enforced in
+    /// [`validate_session`](Self::validate_session) via `last_seen_at`.
+    /// `auth_level` is `1` for a sudo-capable session (the user
+    /// re-authenticated) and `0` otherwise; `last_authenticated_at` is stamped
+    /// to now so the sudo window is meaningful.
     ///
     /// # Errors
     ///
@@ -5377,37 +5399,59 @@ impl Database {
 
     /// Validate a session cookie secret, returning its [`SessionAuth`].
     ///
-    /// Accepts the secret when its hash is known and the session has not
-    /// expired, bumping `last_seen_at` to now. Returns `Ok(None)` for an
-    /// unknown or expired session.
+    /// Accepts the secret when its hash is known and the session is live under
+    /// all three lifetime bounds, then bumps `last_seen_at` to now (sliding
+    /// the idle window). Returns `Ok(None)` for an unknown session or one that
+    /// has crossed any bound:
+    ///
+    /// - **absolute deadline**: `now >= expires_at` (the
+    ///   [`ABSOLUTE_LIFETIME_SECS`](crate::auth::session::ABSOLUTE_LIFETIME_SECS)
+    ///   cap stamped at creation, also covered by `created_at`);
+    /// - **idle timeout**: `now - last_seen_at` exceeds
+    ///   [`IDLE_TIMEOUT_SECS`](crate::auth::session::IDLE_TIMEOUT_SECS);
+    /// - **absolute lifetime**: `now - created_at` exceeds
+    ///   [`ABSOLUTE_LIFETIME_SECS`](crate::auth::session::ABSOLUTE_LIFETIME_SECS).
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
     pub fn validate_session(&self, secret: &str) -> Result<Option<SessionAuth>> {
+        use crate::auth::session::{ABSOLUTE_LIFETIME_SECS, IDLE_TIMEOUT_SECS};
         let hash = crate::auth::token::sha256_hex(secret);
         let now = unix_now();
         let row = self
             .backend
             .query_opt(
-                "SELECT user_id, auth_level, last_authenticated_at, expires_at
+                "SELECT user_id, auth_level, last_authenticated_at, expires_at,
+                        created_at, last_seen_at
                  FROM sessions WHERE id_hash = ?1",
                 &vals![hash],
             )
             .context("loading session by hash")?
-            .map(|row| -> Result<SessionAuth> {
-                Ok(SessionAuth {
+            .map(|row| -> Result<(SessionAuth, i64, i64)> {
+                let auth = SessionAuth {
                     user_id: row.get(0)?,
                     auth_level: row.get(1)?,
                     last_authenticated_at: row.get(2)?,
                     expires_at: row.get(3)?,
-                })
+                };
+                let created_at: i64 = row.get(4)?;
+                let last_seen_at: i64 = row.get(5)?;
+                Ok((auth, created_at, last_seen_at))
             })
             .transpose()?;
-        let Some(session) = row else {
+        let Some((session, created_at, last_seen_at)) = row else {
             return Ok(None);
         };
-        if now >= session.expires_at {
+        // Absolute deadline (the stamped cap), idle timeout (no activity for
+        // too long), and the absolute lifetime from creation. A session that
+        // crosses any bound is dead; expire it so the row does not linger.
+        let dead = now >= session.expires_at
+            || now.saturating_sub(last_seen_at) > IDLE_TIMEOUT_SECS
+            || now.saturating_sub(created_at) > ABSOLUTE_LIFETIME_SECS;
+        if dead {
+            self.backend
+                .execute("DELETE FROM sessions WHERE id_hash = ?1", &vals![hash])?;
             return Ok(None);
         }
         self.backend.execute(
@@ -8203,6 +8247,87 @@ mod tests {
         db.revoke_all_user_sessions(user).unwrap();
         assert!(db.validate_session(&s1).unwrap().is_none());
         assert!(db.validate_session(&s2).unwrap().is_none());
+    }
+
+    #[test]
+    fn session_idle_and_absolute_timeouts_enforced() {
+        use crate::auth::session::{ABSOLUTE_LIFETIME_SECS, IDLE_TIMEOUT_SECS};
+        let db = Database::open_in_memory().unwrap();
+        let user = db.create_user("dev@acme.com", None).unwrap();
+        let now = unix_now();
+
+        // A fresh session validates.
+        let secret = db.create_session(user, ABSOLUTE_LIFETIME_SECS, 1).unwrap();
+        assert!(db.validate_session(&secret).unwrap().is_some());
+        let hash = crate::auth::token::sha256_hex(&secret);
+
+        // Backdate last_seen_at past the idle timeout: the session is rejected
+        // (and the dead row is deleted).
+        db.backend
+            .execute(
+                "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
+                &vals![hash, now - IDLE_TIMEOUT_SECS - 1],
+            )
+            .unwrap();
+        assert!(db.validate_session(&secret).unwrap().is_none(), "idle out");
+
+        // A fresh session whose created_at is older than the absolute cap is
+        // rejected even though it was just "seen".
+        let secret2 = db.create_session(user, ABSOLUTE_LIFETIME_SECS, 1).unwrap();
+        let hash2 = crate::auth::token::sha256_hex(&secret2);
+        db.backend
+            .execute(
+                "UPDATE sessions SET created_at = ?2, last_seen_at = ?3 WHERE id_hash = ?1",
+                &vals![hash2, now - ABSOLUTE_LIFETIME_SECS - 1, now],
+            )
+            .unwrap();
+        assert!(
+            db.validate_session(&secret2).unwrap().is_none(),
+            "absolute cap"
+        );
+
+        // Activity slides the idle window: a session seen just under the idle
+        // limit validates, and validation bumps last_seen_at to now.
+        let secret3 = db.create_session(user, ABSOLUTE_LIFETIME_SECS, 1).unwrap();
+        let hash3 = crate::auth::token::sha256_hex(&secret3);
+        db.backend
+            .execute(
+                "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
+                &vals![hash3, now - IDLE_TIMEOUT_SECS + 60],
+            )
+            .unwrap();
+        assert!(db.validate_session(&secret3).unwrap().is_some());
+        let seen: i64 = db
+            .backend
+            .query_opt(
+                "SELECT last_seen_at FROM sessions WHERE id_hash = ?1",
+                &vals![hash3],
+            )
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert!(seen >= now, "last_seen_at slid forward to now");
+    }
+
+    #[test]
+    fn session_is_sudo_window() {
+        use crate::auth::session::SUDO_WINDOW_SECS;
+        let db = Database::open_in_memory().unwrap();
+        let user = db.create_user("dev@acme.com", None).unwrap();
+
+        // A fresh auth_level=1 session is sudo.
+        let secret = db.create_session(user, 3600, 1).unwrap();
+        let session = db.validate_session(&secret).unwrap().unwrap();
+        let now = unix_now();
+        assert!(session.is_sudo(now));
+        // Past the window it is no longer sudo.
+        assert!(!session.is_sudo(now + SUDO_WINDOW_SECS + 1));
+
+        // An auth_level=0 session is never sudo.
+        let weak = db.create_session(user, 3600, 0).unwrap();
+        let weak = db.validate_session(&weak).unwrap().unwrap();
+        assert!(!weak.is_sudo(now));
     }
 
     #[test]

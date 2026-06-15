@@ -9,10 +9,25 @@
 //! it to the exact origin with no `Domain` attribute.
 //!
 //! Sessions carry an `auth_level`: `1` marks a **sudo-capable** session
-//! whose owner re-authenticated recently, gating destructive operations.
+//! whose owner re-authenticated recently. Sudo is *time-bounded*: a session
+//! counts as sudo only while `auth_level == 1` **and** the re-authentication
+//! is within [`SUDO_WINDOW_SECS`] of now (see
+//! [`crate::db::SessionAuth::is_sudo`]). The most destructive operations
+//! (password change, registry/org deletion) require a sudo session.
+//!
+//! Sessions also enforce two independent lifetime bounds, both checked in
+//! [`crate::db::Database::validate_session`]:
+//!
+//! - an **idle timeout** of [`IDLE_TIMEOUT_SECS`]: a session dies once
+//!   `now - last_seen_at` exceeds it. Each successful validation bumps
+//!   `last_seen_at`, so the idle window slides with activity.
+//! - an **absolute lifetime** of [`ABSOLUTE_LIFETIME_SECS`]: a session dies
+//!   once `now - created_at` exceeds it, regardless of activity. The
+//!   session row's `expires_at` is set to this absolute cap at creation.
+//!
 //! The session lifecycle (create, validate-and-bump, revoke, revoke-all,
 //! elevate) lives on [`crate::db::Database`]; this module owns only the
-//! secret format and the cookie name.
+//! secret format, the cookie name, and the lifetime/sudo constants.
 
 use rand::Rng;
 
@@ -20,11 +35,25 @@ use rand::Rng;
 /// exact origin (`Secure`, `Path=/`, no `Domain`).
 pub const COOKIE_NAME: &str = "__Host-aos_session";
 
-/// The default idle timeout for a session, in seconds (7 days).
+/// The idle timeout for a session, in seconds (7 days).
+///
+/// A session is rejected once `now - last_seen_at` exceeds this; each
+/// successful validation bumps `last_seen_at`, sliding the window forward.
 pub const IDLE_TIMEOUT_SECS: i64 = 7 * 24 * 60 * 60;
 
-/// The default absolute session lifetime, in seconds (30 days).
+/// The absolute session lifetime, in seconds (30 days).
+///
+/// A session is rejected once `now - created_at` exceeds this, regardless of
+/// activity. The session row's `expires_at` is stamped to this cap at
+/// creation.
 pub const ABSOLUTE_LIFETIME_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// The re-authentication (sudo) window, in seconds (15 minutes).
+///
+/// A sudo-capable session (`auth_level == 1`) only *counts* as sudo while its
+/// last re-authentication is within this window; past it, destructive
+/// operations require the user to re-authenticate.
+pub const SUDO_WINDOW_SECS: i64 = 15 * 60;
 
 /// Generates a fresh opaque session secret (256 bits as lowercase hex).
 ///
