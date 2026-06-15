@@ -149,6 +149,7 @@ class QemuMachine(Machine):
         self.swtpm_bin = swtpm_bin
         self.tpm_socket = str(self.tmpdir / f"{name}-tpm.sock") if tpm else None
         self.tpm_state_dir = str(self.tmpdir / f"{name}-tpm-state") if tpm else None
+        self.swtpm_log = str(self.tmpdir / f"{name}-swtpm.log")
 
         self.qemu_proc = None
         self.drain_proc = None
@@ -291,17 +292,25 @@ class QemuMachine(Machine):
         if not self.tpm:
             return
         if self.swtpm_proc is not None and self.swtpm_proc.poll() is None:
+            log.info("[%s] vTPM: reusing live swtpm (pid %s)",
+                     self.name, self.swtpm_proc.pid)
             return  # still alive — reuse it
         if self.swtpm_bin is None:
             raise RuntimeError(
                 f"[{self.name}] tpm requested but no swtpm_bin in manifest"
             )
+        # If a previous swtpm died, surface why before relaunching.
+        if self.swtpm_proc is not None:
+            log.warning("[%s] vTPM: previous swtpm exited (code %s); relaunching",
+                        self.name, self.swtpm_proc.returncode)
+            self._dump_swtpm_log()
         assert self.tpm_state_dir is not None and self.tpm_socket is not None
         os.makedirs(self.tpm_state_dir, exist_ok=True)
         # A stale socket file from a dead swtpm would block bind.
         if os.path.exists(self.tpm_socket):
             os.unlink(self.tpm_socket)
         log.info("  vTPM:     swtpm @ %s", self.tpm_socket)
+        swtpm_log_fd = open(self.swtpm_log, "ab")
         self.swtpm_proc = subprocess.Popen(
             [
                 self.swtpm_bin,
@@ -310,9 +319,10 @@ class QemuMachine(Machine):
                 f"--tpmstate=dir={self.tpm_state_dir}",
                 f"--ctrl=type=unixio,path={self.tpm_socket}",
                 "--flags=startup-clear",
+                "--log=level=5",
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=swtpm_log_fd,
+            stderr=swtpm_log_fd,
         )
         deadline = time.monotonic() + 5.0
         while not os.path.exists(self.tpm_socket):
@@ -422,8 +432,15 @@ class QemuMachine(Machine):
             "-netdev",
             f"socket,id=net0,mcast={MCAST_GROUP}:{MCAST_PORT},localaddr=127.0.0.1",
             "-device", f"virtio-net-pci,netdev=net0,mac={self.mac}",
-            "-no-reboot",
         ]
+        # `-no-reboot` makes a guest reboot exit QEMU (the relaunch reboot
+        # path, and the SB negative test's rejection signal). A vTPM
+        # machine must instead reset in place so QEMU keeps its swtpm
+        # connection alive — swtpm exits when QEMU disconnects, and a
+        # relaunched swtpm loading the prior boot's state wedges the
+        # measured-boot reboot. So omit -no-reboot when a TPM is attached.
+        if not self.tpm:
+            argv += ["-no-reboot"]
 
         log.info("[%s] qemu argv: %s", self.name, " ".join(argv))
         self._qemu_log_fd = open(self.qemu_log, "ab")
@@ -460,6 +477,25 @@ class QemuMachine(Machine):
         if self.qemu_proc is None:
             raise RuntimeError(f"[{self.name}] reboot before start()")
         deadline = time.monotonic() + timeout
+
+        # vTPM machines reset in place (no -no-reboot): QEMU keeps running
+        # and stays connected to swtpm, so the emulated TPM's state is
+        # continuous across the reboot (PCRs reset via the guest's
+        # TPM2_Startup, NV/keys persist). Just wait for the agent to
+        # answer again on the same QEMU agent socket — no QEMU relaunch.
+        if self.tpm:
+            log.info(
+                "==> Rebooting machine: %s (in-VM reset, vTPM preserved)",
+                self.name,
+            )
+            # Wait for the pre-reboot agent to go silent BEFORE waiting for
+            # the new boot — otherwise a PONG from the old boot (the
+            # `sleep 1; reboot` hasn't fired yet) is mistaken for the
+            # reboot completing.
+            self.agent.wait_down(time.monotonic() + 90)
+            self.agent.wait_ready(deadline)
+            return
+
         try:
             self.qemu_proc.wait(timeout=60)
         except subprocess.TimeoutExpired:
@@ -592,5 +628,17 @@ class QemuMachine(Machine):
         try:
             with open(self.qemu_log, "r", errors="replace") as f:
                 log.error("--- %s qemu log ---\n%s", self.name, f.read())
+        except OSError:
+            pass
+        self._dump_swtpm_log()
+
+    def _dump_swtpm_log(self) -> None:
+        """Emit the swtpm log tail — its TPM-command trace and any crash."""
+        if not self.tpm:
+            return
+        try:
+            with open(self.swtpm_log, "r", errors="replace") as f:
+                tail = f.read()[-4000:]
+            log.error("--- %s swtpm log (tail) ---\n%s", self.name, tail)
         except OSError:
             pass

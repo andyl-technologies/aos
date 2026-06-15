@@ -16,13 +16,26 @@ Without it, SB is load-time only and `/var` (every generation, apm state, the
 > LUKS2-formats `/var` and enrolls a TPM2 token sealed to the signed policy
 > (PCR 11) + pinned PCR 7 plus a recovery key. `checks.fleet.measured-boot`
 > verifies the **seal + recovery enrollment** end to end (LUKS2 `systemd-tpm2`
-> and `systemd-recovery` tokens present after the first enforcing boot). The
-> one piece **not yet green in CI** is the *unattended unlock on a subsequent
-> reboot*: the sealed-`/var` reboot hangs early in the initrd under the
-> emulated TPM. The remaining work is materializing the UKI's `.pcrsig`
-> signature where `systemd-cryptsetup` reads it at unlock and stabilizing the
-> relaunched-vTPM/udev interaction — the finicky last mile of systemd measured
-> boot. Tracked as a follow-up; phases 1, 2, and 4 are unaffected.
+> and `systemd-recovery` tokens present after the first enforcing boot — which
+> itself crosses a reboot, exercising the in-VM-reset vTPM-continuity harness).
+>
+> The one piece **not yet green in CI** is the *unattended unlock on a further
+> reboot* — i.e. booting with `/var` already sealed. Diagnosis from many
+> builder cycles: the vTPM is continuous (the driver resets the VM in place
+> rather than relaunching QEMU+swtpm, so the emulated TPM's NV/keys persist and
+> PCRs reset via TPM2_Startup), and the reboot is detected correctly
+> (`wait_down`/`wait_ready`). But on the boot where `/var` is already a LUKS2
+> device, **`aos-var-crypt` and `mount-var` are condition-skipped because
+> `/dev/disk/by-partlabel/var` is not ready when they evaluate** — the udev
+> worker is still processing the LUKS2 partition — so `/var` is never unlocked,
+> `ignition-files` (which needs `/var`) does not run, and the boot fails at
+> `switch_root` ("os-release missing"). `rd.luks=0` (disabling systemd's auto
+> LUKS handling) did not change this. The fix is an explicit ordering
+> dependency on the var `.device` unit (`BindsTo`/`After` the
+> `dev-disk-by\x2dpartlabel-var.device`, or a settle-wait loop) so the unlock
+> service runs only once the device is present, plus confirming the signed
+> `.pcrsig` is materialized at unlock. This is the finicky last mile of systemd
+> measured boot. Tracked as a follow-up; phases 1, 2, and 4 are unaffected.
 
 ## What's missing (all of it)
 

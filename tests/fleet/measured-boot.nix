@@ -169,16 +169,20 @@ in {
       # This test asserts the full measured-boot SEAL path: the firmware
       # measures into the vTPM, the UKI is PCR-policy-signed, and /var is
       # LUKS2-encrypted with its key sealed to the signed TPM2 policy
-      # (PCR 11) + pinned PCR 7, plus an escrowable recovery key.
+      # (PCR 11) + pinned PCR 7, plus an escrowable recovery key — verified
+      # on the first enforcing boot above (which itself crosses a reboot,
+      # exercising the in-VM-reset vTPM-continuity harness).
       #
-      # NOT YET asserted here: unattended TPM2 unlock on a *subsequent*
-      # reboot. The seal is created correctly (verified above), but the
-      # signed-policy unlock on the post-reboot boot does not yet come up
-      # cleanly under the emulated TPM in CI — the sealed-/var reboot hangs
-      # early in the initrd (a swtpm/sd-stub PCR-signature integration
-      # detail). Tracked as a follow-up; see RFC-0006 measured-boot.md.
-      # The download-time/registry path (phase 4) and SB enforcement
-      # (phase 1/2) are independently CI-gated and unaffected.
+      # NOT YET asserted: unattended TPM2 unlock on a *further* reboot
+      # (i.e. booting with /var already sealed). The seal/enroll is correct
+      # (verified above), but that reboot fails to unlock /var in CI under
+      # the emulated TPM: the LUKS2 var device is not ready when
+      # aos-var-crypt/mount-var evaluate, so /var is condition-skipped and
+      # the boot fails at switch_root (os-release missing). This is a
+      # device-readiness/ordering issue in the sealed-/var reboot path
+      # (needs an explicit wait on the var .device unit), tracked as a
+      # follow-up in RFC-0006 measured-boot.md. Phases 1/2/4 and the seal
+      # path here are unaffected.
       print("=== /var sealed to signed TPM2 policy + recovery key (verified) ===")
     '';
 }
