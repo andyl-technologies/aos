@@ -4181,35 +4181,56 @@ impl Database {
         principal_id: i64,
         scope: &str,
     ) -> Result<()> {
-        let scope_owned = scope.to_string();
-        self.backend.with_tx(&mut |tx| {
-            let owners_before: i64 = tx
-                .query_opt(
-                    "SELECT COUNT(*) FROM memberships
-                     WHERE scope = ?1 AND principal_kind = 'user' AND role = 'owner'",
-                    &vals![scope_owned],
-                )?
-                .context("owner count query returned no row")?
-                .get(0)?;
-            tx.execute(
-                "DELETE FROM memberships
-                 WHERE principal_kind = ?1 AND principal_id = ?2 AND scope = ?3",
-                &vals![principal_kind, principal_id, scope_owned],
-            )?;
-            let owners_after: i64 = tx
-                .query_opt(
-                    "SELECT COUNT(*) FROM memberships
-                     WHERE scope = ?1 AND principal_kind = 'user' AND role = 'owner'",
-                    &vals![scope_owned],
-                )?
-                .context("owner count query returned no row")?
-                .get(0)?;
-            if owners_before > 0 && owners_after == 0 {
-                // Roll back: refuse to orphan the org of its last owner.
-                return Err(anyhow::Error::new(LastOwnerError(scope_owned.clone())));
-            }
-            Ok(())
-        })
+        // Classify, then act: a revoke orphans the org only when the target is
+        // the scope's sole *user* owner. Read that fact, refuse if so, else
+        // delete. Replaces the count-write-recount interactive transaction with
+        // a single read + single write, so it runs on every backend including
+        // D1 (no interactive transaction). The delete is idempotent when the
+        // membership is absent.
+        let (owners, target_is_owner) = self.owner_membership_state(principal_kind, principal_id, scope)?;
+        if target_is_owner && owners <= 1 {
+            return Err(anyhow::Error::new(LastOwnerError(scope.to_string())));
+        }
+        self.backend.execute(
+            "DELETE FROM memberships
+             WHERE principal_kind = ?1 AND principal_id = ?2 AND scope = ?3",
+            &vals![principal_kind, principal_id, scope],
+        )?;
+        Ok(())
+    }
+
+    /// Owner-safety state for a principal at `scope`: `(user_owner_count,
+    /// target_is_user_owner)`.
+    ///
+    /// The count considers only `user` principals with the `owner` role (the
+    /// rule that an org must retain a human owner); `target_is_user_owner` is
+    /// true only when the principal is a `user` *and* currently an owner there,
+    /// so revoking or demoting a non-user or non-owner never trips the guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    fn owner_membership_state(
+        &self,
+        principal_kind: &str,
+        principal_id: i64,
+        scope: &str,
+    ) -> Result<(i64, bool)> {
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT
+                   (SELECT COUNT(*) FROM memberships
+                      WHERE scope = ?1 AND principal_kind = 'user' AND role = 'owner'),
+                   EXISTS(SELECT 1 FROM memberships
+                      WHERE scope = ?1 AND principal_kind = ?2 AND principal_id = ?3
+                        AND role = 'owner')",
+                &vals![scope, principal_kind, principal_id],
+            )?
+            .context("owner-state query returned no row")?;
+        let owners: i64 = row.get(0)?;
+        let target_owner: i64 = row.get(1)?;
+        Ok((owners, principal_kind == "user" && target_owner == 1))
     }
 
     /// Set a principal's role at a scope, refusing to orphan the org.
@@ -4240,39 +4261,28 @@ impl Database {
         if !crate::domain::Scope::is_canonical(scope) {
             bail!("refusing to grant membership at non-canonical scope '{scope}'");
         }
-        let scope_owned = scope.to_string();
         let now = unix_now();
-        self.backend.with_tx(&mut |tx| {
-            let owners_before: i64 = tx
-                .query_opt(
-                    "SELECT COUNT(*) FROM memberships
-                     WHERE scope = ?1 AND principal_kind = 'user' AND role = 'owner'",
-                    &vals![scope_owned],
-                )?
-                .context("owner count query returned no row")?
-                .get(0)?;
-            tx.execute(
-                "INSERT INTO memberships
-                 (principal_kind, principal_id, scope, role, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(principal_kind, principal_id, scope)
-                 DO UPDATE SET role = excluded.role",
-                &vals![principal_kind, principal_id, scope_owned, role, now],
-            )?;
-            let owners_after: i64 = tx
-                .query_opt(
-                    "SELECT COUNT(*) FROM memberships
-                     WHERE scope = ?1 AND principal_kind = 'user' AND role = 'owner'",
-                    &vals![scope_owned],
-                )?
-                .context("owner count query returned no row")?
-                .get(0)?;
-            if owners_before > 0 && owners_after == 0 {
-                // Roll back: refuse to demote the org's last owner.
-                return Err(anyhow::Error::new(LastOwnerError(scope_owned.clone())));
+        // A role change orphans the org only when it demotes the scope's sole
+        // user owner (to a non-owner role). Classify, refuse if so, else upsert
+        // — a single read + single write in place of the count-write-recount
+        // transaction, so it runs on D1 too. Promotions and changes to a
+        // non-owner or non-sole owner never trip the guard.
+        if role != "owner" {
+            let (owners, target_is_owner) =
+                self.owner_membership_state(principal_kind, principal_id, scope)?;
+            if target_is_owner && owners <= 1 {
+                return Err(anyhow::Error::new(LastOwnerError(scope.to_string())));
             }
-            Ok(())
-        })
+        }
+        self.backend.execute(
+            "INSERT INTO memberships
+             (principal_kind, principal_id, scope, role, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(principal_kind, principal_id, scope)
+             DO UPDATE SET role = excluded.role",
+            &vals![principal_kind, principal_id, scope, role, now],
+        )?;
+        Ok(())
     }
 
     /// List a principal's grants as `(scope, role)` strings, ordered by
