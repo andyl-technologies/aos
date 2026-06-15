@@ -1,6 +1,6 @@
 # RFC-0006: Full Secure Boot integration — sign, measure, attest
 
-- **Status:** Phases 1–4 implemented and CI-green (PR [#102](https://github.com/andyl-technologies/aos/pull/102)). Phase 3's TPM-sealed `/var` is verified end to end by `checks.fleet.measured-boot`, including unattended TPM2 unlock across a reboot
+- **Status:** Phases 1–4 implemented and CI-green (PR [#102](https://github.com/andyl-technologies/aos/pull/102)). Phase 3's TPM-sealed `/var` is verified end to end by `checks.fleet.measured-boot`, including unattended TPM2 unlock across a reboot. Phase 4's download-time catalog gate is verified end to end by `checks.fleet.registry-sb-catalog` (publish a signed UKI → refuse on unknown signer / SBAT floor → accept), which also cross-checks the recorded `expected_pcr11` against an independent `systemd-measure` recompute
 - **Date:** 2026-06-13
 - **PR:** [#102](https://github.com/andyl-technologies/aos/pull/102)
 - **Audience:** anyone working on `pkgs/boot/`, `pkgs/system/systemd.nix`,
@@ -270,11 +270,20 @@ the next implementer doesn't relearn it.
   hand-entered: `apr publish` runs `sbverify --list` + an in-Rust PE/PKCS#7
   walk to hash the signer *leaf* cert (selected by matching the SignerInfo
   issuer+serial, not blindly taking cert `[0]`), `objcopy` to dump `.sbat`, and
-  `systemd-measure` for the predicted PCR-11. It refuses to catalog an image
-  whose embedded signature doesn't verify against the declared db cert.
-- **`expected_pcr11` is recorded-and-displayed only, never compared** — it is
-  the UKI's own contribution, not the machine's full-phase PCR 11, and is
-  explicitly labeled so a verifier can't naively brick/false-accept on it.
+  `systemd-measure` over the UKI's PE *sections* for the predicted PCR-11. It
+  refuses to catalog an image whose embedded signature doesn't verify against
+  the declared db cert.
+- **`expected_pcr11` is the genuine sd-stub section measurement** — `objcopy`
+  dumps each measured section (`.linux`/`.osrel`/`.cmdline`/`.initrd`/`.uname`/
+  `.sbat`/…) and `systemd-measure calculate` reproduces what sd-stub extends
+  into PCR 11 (the same value `ukify` signs into `.pcrsig`). It is the
+  post-section, pre-phase value: a verifier comparing a live `systemd-analyze
+  pcrs` reading must still replay the boot-phase events on top. It is recorded
+  for attestation, not compared in the download-time gate; `checks.fleet.
+  registry-sb-catalog` cross-checks it against an independent recompute so the
+  value can't silently drift from the binary. (Feeding the whole UKI to
+  `systemd-measure --linux` — the original implementation — measured the binary
+  as a kernel image and was wrong; fixed.)
 - **The catalog must reach the validator.** The download-time gate reads
   `sb-certs.toml` from the same dir sync extracts registry-root files to
   (`registries_path()/<name>`) — an early version read a different dir and the
@@ -320,7 +329,9 @@ the next implementer doesn't relearn it.
   passphrase is stored (provisioning channel vs operator-key-sealed inventory)
   is a deployment decision; "escrowed off the machine, never on `/var`" is the
   hard requirement ([`measured-boot.md`](measured-boot.md)).
-- **Predicted vs measured PCR-11** — `expected_pcr11` from `systemd-measure`
-  over the UKI alone won't equal the machine's PCR 11 (which includes
-  sd-boot/stub phases); pin the prediction method before the catalog records
-  it ([`registry-catalog.md`](registry-catalog.md)).
+- **Predicted vs measured PCR-11** — resolved: `expected_pcr11` is now
+  `systemd-measure` over the UKI's PE *sections* (the sd-stub section
+  measurement), not the UKI-as-kernel. It is the post-section, pre-phase value;
+  a verifier comparing a live reading still replays the boot-phase events on
+  top. `checks.fleet.registry-sb-catalog` cross-checks the recorded value
+  against an independent recompute ([`registry-catalog.md`](registry-catalog.md)).
