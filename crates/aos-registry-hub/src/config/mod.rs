@@ -654,6 +654,25 @@ pub enum MembershipChange {
     Revoke,
 }
 
+/// Returns the highest role rank `actor` effectively holds over `scope`.
+///
+/// A grant inherits downward (a grant at an ancestor scope covers `scope`),
+/// so this scans every `(grant_scope, role)` the actor holds and takes the
+/// maximum [`Role::rank`] among those whose `grant_scope` contains `scope`.
+/// Returns `None` when the actor holds no covering grant.
+///
+/// # Errors
+///
+/// Returns an error on database failure.
+fn actor_max_rank(db: &Database, actor: &Principal, scope: &Scope) -> Result<Option<u8>> {
+    Ok(db
+        .effective_scopes(*actor)?
+        .into_iter()
+        .filter(|(grant_scope, _)| grant_scope.contains(scope))
+        .map(|(_, role)| role.rank())
+        .max())
+}
+
 /// Grants or revokes a membership through a one-revision change-set.
 ///
 /// Opens a draft, stages a `create`/`delete` revision snapshotting the
@@ -666,10 +685,24 @@ pub enum MembershipChange {
 /// [`revert`] of the revoke produces an *invitation* (the membership
 /// security exemption), never a silent re-grant.
 ///
+/// # Privilege ceiling
+///
+/// A `Grant` is refused (returns an error) when it would let `actor` confer
+/// authority it does not itself hold (H1, vertical privilege escalation).
+/// Concretely, over the target `scope`:
+///
+/// - the granted role's rank may not exceed the actor's own highest rank;
+/// - only an actor who is [`Role::Owner`] over the scope may create or modify
+///   an `Owner` grant (an instance-root owner qualifies via inheritance);
+/// - an actor may not **raise its own** role above its current rank
+///   (self-promotion), though lateral grants at or below its rank are allowed.
+///
+/// A `Revoke` is not subject to the ceiling.
+///
 /// # Errors
 ///
-/// Returns an error on database failure (the change-set is rolled back on a
-/// failed apply).
+/// Returns an error on database failure, on a privilege-ceiling violation, or
+/// if the change-set is rolled back on a failed apply.
 pub fn change_membership(
     db: &Database,
     actor: &Principal,
@@ -679,6 +712,32 @@ pub fn change_membership(
     scope: &Scope,
     role: Role,
 ) -> Result<ChangeId> {
+    if change == MembershipChange::Grant {
+        let actor_rank = actor_max_rank(db, actor, scope)?.unwrap_or(0);
+        // The granted role may not exceed the actor's own authority.
+        if role.rank() > actor_rank {
+            bail!(
+                "insufficient privilege to grant '{}' at scope '{}'",
+                role.as_str(),
+                scope.as_str()
+            );
+        }
+        // Owner grants are owner-only (an instance-root owner inherits in).
+        if role == Role::Owner && actor_rank < Role::Owner.rank() {
+            bail!(
+                "only an owner may grant 'owner' at scope '{}'",
+                scope.as_str()
+            );
+        }
+        // A principal may not raise its own role above what it already holds.
+        if actor == principal && role.rank() > actor_rank {
+            bail!(
+                "a principal may not promote itself to '{}' at scope '{}'",
+                role.as_str(),
+                scope.as_str()
+            );
+        }
+    }
     let object_id = format!(
         "{}:{}@{}",
         principal.kind.as_str(),

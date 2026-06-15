@@ -5934,14 +5934,29 @@ impl Database {
     /// Returns the generated `txt_challenge` value the org must publish as a
     /// TXT record at the domain to prove control; the domain starts
     /// **unverified** (`verified_at` NULL) until [`Database::verify_org_domain`]
-    /// stamps it. Re-claiming a domain rotates its challenge and resets it to
-    /// unverified.
+    /// stamps it. Re-claiming a domain *owned by the same org* rotates its
+    /// challenge and resets it to unverified.
+    ///
+    /// A domain is a global, uniquely-keyed routing key (it steers
+    /// domain-based SSO login), so it may belong to at most one org. Claiming
+    /// a domain already held by a **different** org is refused — without this
+    /// guard the `ON CONFLICT(domain)` upsert would silently re-point the row
+    /// at the caller's org and reset its verification, letting one org seize
+    /// another's verified domain (a cross-tenant claim theft / login DoS).
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error on database failure, or if the domain is already
+    /// claimed by a different organization.
     pub fn add_org_domain(&self, org_id: i64, domain: &str) -> Result<String> {
         let domain = domain.trim().to_lowercase();
+        // Refuse to overwrite a claim held by another org; re-claiming one's
+        // own domain (same org_id) still rotates the challenge below.
+        if let Some(existing) = self.org_domain(&domain)? {
+            if existing.org_id != org_id {
+                anyhow::bail!("domain '{domain}' is already claimed by another organization");
+            }
+        }
         let challenge = format!(
             "aos-domain-verify={}",
             crate::auth::session::new_session_secret()

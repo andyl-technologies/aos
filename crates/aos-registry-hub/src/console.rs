@@ -463,8 +463,14 @@ async fn login_password(
     }
     let (user_id, hash) = match state.db.user_for_password(&email) {
         Ok(Some(found)) => found,
-        // No such user, or no password set: fail with the same generic message.
-        Ok(None) => return invalid(),
+        // No such user, or no password set. Still spend an Argon2id verify
+        // against a fixed dummy hash before failing, so the wall-clock time of
+        // this miss matches that of an existing account — otherwise the
+        // short-circuit leaks account existence as a timing oracle (M10).
+        Ok(None) => {
+            crate::auth::password::spend_dummy_verify(&form.password);
+            return invalid();
+        }
         Err(err) => return internal(err),
     };
     if !crate::auth::password::verify_password(&form.password, &hash) {
@@ -1228,6 +1234,75 @@ async fn org_audit(
     }
 }
 
+/// Why a membership grant or role change was refused by a console handler.
+///
+/// Each variant maps to a distinct HTTP status so the caller sees the right
+/// failure: a privilege-ceiling violation is a `403`, the last-owner guard a
+/// `409`.
+enum MembershipReject {
+    /// The grant would exceed the actor's own authority (H1 escalation).
+    Forbidden(String),
+    /// Demoting the sole remaining owner would leave the org ownerless.
+    LastOwner,
+}
+
+impl IntoResponse for MembershipReject {
+    fn into_response(self) -> Response {
+        match self {
+            MembershipReject::Forbidden(msg) => (StatusCode::FORBIDDEN, msg).into_response(),
+            MembershipReject::LastOwner => (
+                StatusCode::CONFLICT,
+                "cannot demote the last owner of an organization",
+            )
+                .into_response(),
+        }
+    }
+}
+
+/// Checks the [`config::change_membership`] privilege ceiling for a grant.
+///
+/// Returns `Ok(Err(_))` with a [`MembershipReject::Forbidden`] when `actor`
+/// would grant `role` to `target` at `scope` beyond its own authority — the
+/// same rule the central guard enforces, surfaced here so the console returns
+/// a precise `403` rather than a generic `500`. Returns `Ok(Ok(()))` when the
+/// grant is within the actor's authority.
+///
+/// # Errors
+///
+/// Returns an error on database failure.
+fn membership_grant_allowed(
+    db: &Database,
+    actor: &Principal,
+    target: &Principal,
+    scope: &Scope,
+    role: Role,
+) -> anyhow::Result<Result<(), MembershipReject>> {
+    let actor_rank = db
+        .effective_scopes(*actor)?
+        .into_iter()
+        .filter(|(grant_scope, _)| grant_scope.contains(scope))
+        .map(|(_, r)| r.rank())
+        .max()
+        .unwrap_or(0);
+    if role.rank() > actor_rank {
+        return Ok(Err(MembershipReject::Forbidden(format!(
+            "insufficient privilege to grant '{}'",
+            role.as_str()
+        ))));
+    }
+    if role == Role::Owner && actor_rank < Role::Owner.rank() {
+        return Ok(Err(MembershipReject::Forbidden(
+            "only an owner may grant 'owner'".to_string(),
+        )));
+    }
+    if actor == target && role.rank() > actor_rank {
+        return Ok(Err(MembershipReject::Forbidden(
+            "a principal may not promote itself".to_string(),
+        )));
+    }
+    Ok(Ok(()))
+}
+
 /// `POST /-/org/{org}/members` form: invite an email at a role.
 #[derive(serde::Deserialize)]
 struct InviteForm {
@@ -1272,20 +1347,28 @@ async fn org_invite_member(
         // Record the invitation as a change-set so it audits, then create the
         // pending invitation row.
         let invitee = state.db.find_or_create_user(&email)?;
+        let target = Principal::user(invitee);
+        // Refuse an invitation at a role above the actor's own authority (H1).
+        if let Err(reject) =
+            membership_grant_allowed(&state.db, &session.principal(), &target, &scope, role)?
+        {
+            return Ok(Err(reject));
+        }
         config::change_membership(
             &state.db,
             &session.principal(),
             &session.email,
             MembershipChange::Grant,
-            &Principal::user(invitee),
+            &target,
             &scope,
             role,
         )?;
         let _ = org; // org id reserved for an invitation-table write later.
-        Ok::<_, anyhow::Error>(())
+        Ok::<Result<(), MembershipReject>, anyhow::Error>(Ok(()))
     })();
     match result {
-        Ok(()) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(Err(reject)) => reject.into_response(),
         Err(err) => internal(err),
     }
 }
@@ -1716,7 +1799,17 @@ async fn org_member_role(
     let Some(role) = Role::parse(&form.role) else {
         return (StatusCode::BAD_REQUEST, "unknown role").into_response();
     };
+    let target = Principal {
+        kind,
+        id: form.principal_id,
+    };
     let result = (|| {
+        // Refuse a grant that exceeds the actor's own authority (H1).
+        if let Err(reject) =
+            membership_grant_allowed(&state.db, &session.principal(), &target, &scope, role)?
+        {
+            return Ok(Err(reject));
+        }
         // Block demoting the last owner away from `owner`.
         let members = state.db.list_members_of_scope(&org_slug)?;
         let owners = members.iter().filter(|(_, _, r)| r == "owner").count();
@@ -1726,29 +1819,22 @@ async fn org_member_role(
                 k == &form.principal_kind && *id == form.principal_id && r == "owner"
             });
         if target_is_last_owner {
-            return Ok(Err(()));
+            return Ok(Err(MembershipReject::LastOwner));
         }
         config::change_membership(
             &state.db,
             &session.principal(),
             &session.email,
             MembershipChange::Grant,
-            &Principal {
-                kind,
-                id: form.principal_id,
-            },
+            &target,
             &scope,
             role,
         )?;
-        Ok::<Result<(), ()>, anyhow::Error>(Ok(()))
+        Ok::<Result<(), MembershipReject>, anyhow::Error>(Ok(()))
     })();
     match result {
         Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
-        Ok(Err(())) => (
-            StatusCode::CONFLICT,
-            "cannot demote the last owner of an organization",
-        )
-            .into_response(),
+        Ok(Err(reject)) => reject.into_response(),
         Err(err) => internal(err),
     }
 }
@@ -3779,6 +3865,21 @@ async fn org_sso_action(
             let domain = field("domain").trim().to_lowercase();
             if domain.is_empty() || !domain.contains('.') {
                 return (StatusCode::BAD_REQUEST, "a valid domain is required").into_response();
+            }
+            // A domain is a global SSO-routing key owned by at most one org;
+            // reject a cross-tenant claim with a 409 rather than letting the
+            // upsert silently seize another org's verified domain (H7). The
+            // `add_org_domain` call below re-checks this as defense-in-depth.
+            match state.db.org_domain(&domain) {
+                Ok(Some(existing)) if existing.org_id != org.id => {
+                    return (
+                        StatusCode::CONFLICT,
+                        format!("{domain} is already claimed by another organization"),
+                    )
+                        .into_response();
+                }
+                Ok(_) => {}
+                Err(err) => return internal(err),
             }
             let challenge = match state.db.add_org_domain(org.id, &domain) {
                 Ok(c) => c,
