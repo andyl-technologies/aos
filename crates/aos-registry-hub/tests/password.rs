@@ -13,7 +13,7 @@ use aos_registry_hub::auth::extract::{mint_csrf_token, AuthState};
 use aos_registry_hub::auth::jwt::JwtKeys;
 use aos_registry_hub::auth::password::{hash_password, verify_password};
 use aos_registry_hub::auth::session::COOKIE_NAME;
-use aos_registry_hub::db::Database;
+use aos_registry_hub::db::{Database, IdpConfigRecord};
 use aos_registry_hub::server::{router, AppState};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -422,5 +422,226 @@ async fn password_change_requires_sudo() {
     assert!(
         !db.user_has_password(user).unwrap(),
         "password unchanged by refused request"
+    );
+}
+
+// -- enforce_sso closes the local-credential bypass (H-4) -------------------
+
+/// Seed an org `slug` with an OIDC IdP config and `enforce_sso`, returning its
+/// id. The config is otherwise a minimal dev stub (it is never actually called
+/// in these tests — the redirect target is what we assert on).
+fn seed_sso_org(db: &Database, slug: &str, enforce_sso: bool) -> i64 {
+    let org_id = db.create_org(slug, slug).unwrap();
+    db.upsert_idp_config(&IdpConfigRecord {
+        org_id,
+        issuer: "https://idp.example".into(),
+        authorization_endpoint: "https://idp.example/authorize".into(),
+        token_endpoint: "https://idp.example/token".into(),
+        jwks_uri: "https://idp.example/jwks".into(),
+        client_id: "hub-client".into(),
+        client_secret_enc: None,
+        scopes: "openid email profile".into(),
+        groups_claim: None,
+        role_map_json: "{}".into(),
+        allow_jit: false,
+        enforce_sso,
+        default_role: "viewer".into(),
+    })
+    .unwrap();
+    org_id
+}
+
+/// A user whose **verified email domain** is captured by an SSO-enforcing org
+/// cannot log in with a password — the attempt redirects into the org's OIDC
+/// flow instead of minting a local session, even though the password is valid.
+#[tokio::test]
+async fn enforced_user_password_login_redirects_to_sso() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(app_state(Arc::clone(&db)));
+
+    let org_id = seed_sso_org(&db, "acme", true);
+    db.add_org_domain(org_id, "acme.com").unwrap();
+    db.verify_org_domain("acme.com").unwrap();
+
+    // The user has a real, working password (set before enforcement, say).
+    let user = db.create_user("dev@acme.com", None).unwrap();
+    db.set_user_password(user, &hash_password("hunter2").unwrap())
+        .unwrap();
+
+    let resp = send(
+        &app,
+        "POST",
+        "/login/password",
+        None,
+        Some("email=dev@acme.com&password=hunter2"),
+    )
+    .await;
+    // Redirected to SSO, no local session cookie issued.
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    assert_eq!(
+        resp.location.as_deref(),
+        Some("/auth/oidc/start?org=acme"),
+        "valid password is steered to the IdP, not a local session"
+    );
+    assert!(
+        resp.set_cookie.is_none(),
+        "no local session for an SSO-enforced user"
+    );
+}
+
+/// SSO enforcement also follows **membership**: a user whose email domain is
+/// *not* captured, but who is a member of an SSO-enforcing org, is likewise
+/// blocked from password login and redirected to that org's IdP.
+#[tokio::test]
+async fn enforced_via_membership_password_login_redirects_to_sso() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(app_state(Arc::clone(&db)));
+
+    seed_sso_org(&db, "acme", true);
+    // The user's email domain (other.example) is NOT captured by acme; the bind
+    // is purely the membership grant under the `acme` scope.
+    let user = db.create_user("contractor@other.example", None).unwrap();
+    db.set_user_password(user, &hash_password("hunter2").unwrap())
+        .unwrap();
+    db.grant_membership("user", user, "acme/cdn", "viewer")
+        .unwrap();
+
+    let resp = send(
+        &app,
+        "POST",
+        "/login/password",
+        None,
+        Some("email=contractor@other.example&password=hunter2"),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    assert_eq!(resp.location.as_deref(), Some("/auth/oidc/start?org=acme"));
+    assert!(resp.set_cookie.is_none());
+}
+
+/// An org with an IdP but `enforce_sso = false` does **not** block local
+/// credentials: password login still mints a session (regression — the fix
+/// must not break non-enforced users).
+#[tokio::test]
+async fn unenforced_user_password_login_still_works() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(app_state(Arc::clone(&db)));
+
+    let org_id = seed_sso_org(&db, "acme", false);
+    db.add_org_domain(org_id, "acme.com").unwrap();
+    db.verify_org_domain("acme.com").unwrap();
+
+    let user = db.create_user("dev@acme.com", None).unwrap();
+    db.set_user_password(user, &hash_password("hunter2").unwrap())
+        .unwrap();
+
+    let resp = send(
+        &app,
+        "POST",
+        "/login/password",
+        None,
+        Some("email=dev@acme.com&password=hunter2"),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    assert_eq!(resp.location.as_deref(), Some("/"), "{}", resp.body);
+    assert!(
+        resp.set_cookie.is_some(),
+        "non-enforced user still gets a local session"
+    );
+}
+
+/// A member of an SSO-enforced org cannot set a local password: the
+/// `POST /account/password` handler refuses with a `403`, leaving the account
+/// password-less (no standing bypass of IdP deprovisioning).
+#[tokio::test]
+async fn enforced_user_cannot_set_password() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(app_state(Arc::clone(&db)));
+
+    let org_id = seed_sso_org(&db, "acme", true);
+    db.add_org_domain(org_id, "acme.com").unwrap();
+    db.verify_org_domain("acme.com").unwrap();
+
+    // Sign in via magic link (fresh = sudo-capable, satisfying the sudo gate).
+    let secret = db.create_magic_link("dev@acme.com").unwrap();
+    let resp = send(
+        &app,
+        "GET",
+        &format!("/auth/magic?token={secret}"),
+        None,
+        None,
+    )
+    .await;
+    let cookie = format!(
+        "{COOKIE_NAME}={}",
+        cookie_value(&resp.set_cookie.expect("magic sets cookie"))
+    );
+    let user = db.user_by_email("dev@acme.com").unwrap().unwrap();
+
+    let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
+    let resp = send(
+        &app,
+        "POST",
+        "/account/password",
+        Some(&cookie),
+        Some(&format!("csrf={csrf}&password=brand-new-pass")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    assert!(
+        !db.user_has_password(user).unwrap(),
+        "SSO-enforced user cannot set a local password"
+    );
+}
+
+/// A member of an SSO-enforced org cannot enroll a passkey: the
+/// `POST /account/passkeys/finish` handler refuses with a `403` before any
+/// credential is persisted.
+#[tokio::test]
+async fn enforced_user_cannot_enroll_passkey() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(app_state(Arc::clone(&db)));
+
+    let org_id = seed_sso_org(&db, "acme", true);
+    db.add_org_domain(org_id, "acme.com").unwrap();
+    db.verify_org_domain("acme.com").unwrap();
+
+    let secret = db.create_magic_link("dev@acme.com").unwrap();
+    let resp = send(
+        &app,
+        "GET",
+        &format!("/auth/magic?token={secret}"),
+        None,
+        None,
+    )
+    .await;
+    let cookie = format!(
+        "{COOKIE_NAME}={}",
+        cookie_value(&resp.set_cookie.expect("magic sets cookie"))
+    );
+    let user = db.user_by_email("dev@acme.com").unwrap().unwrap();
+
+    // The finish handler refuses before parsing the WebAuthn payload, so a
+    // minimal JSON body (just a valid CSRF) suffices to prove the gate.
+    let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
+    let body = serde_json::json!({
+        "csrf": csrf,
+        "client_data_json": "",
+        "attestation_object": "",
+    })
+    .to_string();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/account/passkeys/finish")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(
+        db.list_user_credentials(user).unwrap().is_empty(),
+        "no passkey persisted for an SSO-enforced user"
     );
 }

@@ -279,6 +279,88 @@ fn sso_target(state: &AppState, email: &str) -> Option<(String, bool)> {
     Some((org.slug, config.enforce_sso))
 }
 
+/// Decide whether a user is **subject to SSO enforcement**, returning the org
+/// slug to redirect them into when they are.
+///
+/// A user is captured by an org two ways — and *either* binds them to the IdP:
+///
+/// 1. **Verified domain.** The org's verified email domain matches the user's
+///    address (the same rule [`sso_target`] uses for the magic-link path).
+/// 2. **Membership.** The user holds a membership grant under the org — the
+///    top-level segment of each membership scope is the org slug.
+///
+/// If *any* such org has `enforce_sso = true` on its OIDC IdP config, the user
+/// must authenticate through that IdP: this returns `Some(org_slug)`, the org
+/// to begin OIDC against (feed it to [`sso_start_path`]). Otherwise it returns
+/// `None` and the local credential paths (magic link, password, passkey) stay
+/// available.
+///
+/// This is the single source of truth shared by every credential path so the
+/// invariant holds uniformly: the users forced to SSO at the magic-link entry
+/// point are forced everywhere, and cannot mint a local credential that would
+/// outlive their IdP account (defeating deprovisioning / conditional access).
+///
+/// `user_id` is the membership anchor; pass `None` on the pre-auth email-only
+/// paths where the user row may not exist yet (the verified-domain rule still
+/// applies, and a brand-new user holds no memberships).
+///
+/// # Errors
+///
+/// Returns an error only on an unexpected database failure while listing the
+/// user's memberships; a missing org or IdP config is not an error (the org
+/// simply does not enforce SSO for this user).
+fn sso_enforced_for(
+    state: &AppState,
+    email: &str,
+    user_id: Option<i64>,
+) -> anyhow::Result<Option<String>> {
+    // Rule 1: the user's verified email domain captures an SSO-enforcing org.
+    if let Some((org_slug, true)) = sso_target(state, email) {
+        return Ok(Some(org_slug));
+    }
+    // Rule 2: any org the user is a member of enforces SSO. The org slug is the
+    // top-level segment of the membership scope (e.g. `acme` for `acme/cdn`).
+    if let Some(user_id) = user_id {
+        let principal = Principal::user(user_id);
+        let mut seen_slugs = std::collections::HashSet::new();
+        for (scope, _role) in state
+            .db
+            .list_memberships_for(principal.kind.as_str(), principal.id)?
+        {
+            let Some(org_slug) = Scope::parse(&scope)
+                .as_str()
+                .split('/')
+                .next()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            if !seen_slugs.insert(org_slug.clone()) {
+                continue;
+            }
+            let Some(org) = state.db.org_by_slug(&org_slug)? else {
+                continue;
+            };
+            if let Some(config) = state.db.idp_config(org.id)? {
+                if config.enforce_sso {
+                    return Ok(Some(org_slug));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The OIDC start path that redirects a browser into an org's IdP login.
+///
+/// This is the exact target the magic-link path ([`login_submit`]) sends an
+/// SSO-enforced user to; the password and passkey paths reuse it so an enforced
+/// user lands in the same IdP flow regardless of which credential they tried.
+fn sso_start_path(org_slug: &str) -> String {
+    format!("/auth/oidc/start?org={}", urlencode(org_slug))
+}
+
 /// `POST /login` — route to SSO or issue a magic link.
 ///
 /// Email-first routing (RFC-0004 "domain capture"): when the typed email's
@@ -326,7 +408,7 @@ async fn login_submit(
     }
     // Domain capture: route to the org's IdP when one is configured.
     if let Some((org_slug, enforce_sso)) = sso_target(&state, &email) {
-        let start = format!("/auth/oidc/start?org={}", urlencode(&org_slug));
+        let start = sso_start_path(&org_slug);
         if enforce_sso {
             return Redirect::to(&start).into_response();
         }
@@ -500,6 +582,18 @@ async fn login_password(
     };
     if !crate::auth::password::verify_password(&form.password, &hash) {
         return invalid();
+    }
+    // Even with a correct password, a user subject to `enforce_sso` must come
+    // through the IdP — a local password must not bypass IdP deprovisioning,
+    // MFA, or conditional access (H-4). The credential already verified, so the
+    // account is known to exist; redirecting to SSO leaks nothing a successful
+    // password login would not, and matches the magic-link path's UX. (Reaching
+    // here with the password verified means an SSO-enforced user had a password
+    // set before enforcement was turned on; refuse the local session anyway.)
+    match sso_enforced_for(&state, &email, Some(user_id)) {
+        Ok(Some(org_slug)) => return Redirect::to(&sso_start_path(&org_slug)).into_response(),
+        Ok(None) => {}
+        Err(err) => return internal(err),
     }
     // A correct password is a re-authentication: the session is sudo-capable.
     let cookie = match state.db.create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1) {
@@ -689,6 +783,39 @@ async fn account_set_password(
     }
     if let Err(resp) = require_sudo(&session) {
         return *resp;
+    }
+    // A member of an SSO-enforced org must authenticate only through the IdP, so
+    // they may not set a durable local password at all — otherwise it would be a
+    // standing bypass of IdP deprovisioning / MFA (H-4). Refuse with a `403` and
+    // a clear message on the account page.
+    match sso_enforced_for(&state, &session.email, Some(session.auth.user_id)) {
+        Ok(Some(_)) => {
+            let tokens = state
+                .db
+                .list_tokens_for(session.principal())
+                .unwrap_or_default();
+            let password_set = state
+                .db
+                .user_has_password(session.auth.user_id)
+                .unwrap_or(false);
+            return (
+                StatusCode::FORBIDDEN,
+                Html(console::account_page(
+                    &session.email,
+                    &session.csrf(),
+                    &tokens,
+                    password_set,
+                    Some(
+                        "Your organization requires single sign-on; \
+                         passwords cannot be set. Sign in through your identity provider.",
+                    ),
+                    Instant::now(),
+                )),
+            )
+                .into_response();
+        }
+        Ok(None) => {}
+        Err(err) => return internal(err),
     }
     // Bound the input: reject empties, and cap the length so a pathological
     // input cannot drive the (memory-hard) hasher into a denial of service.
@@ -881,6 +1008,20 @@ async fn passkeys_finish(
     if let Err(resp) = check_csrf(&session, &body.csrf) {
         return *resp;
     }
+    // A passkey is a local credential. A member of an SSO-enforced org must not
+    // enroll one, just as they may not set a password (H-4) — both would bypass
+    // IdP deprovisioning. Refuse enrollment with a `403`.
+    match sso_enforced_for(&state, &session.email, Some(session.auth.user_id)) {
+        Ok(Some(_)) => {
+            return (
+                StatusCode::FORBIDDEN,
+                "Your organization requires single sign-on; passkeys cannot be enrolled.",
+            )
+                .into_response();
+        }
+        Ok(None) => {}
+        Err(err) => return internal(err),
+    }
     let rp = match crate::auth::webauthn::relying_party(&state.external_url) {
         Ok(rp) => rp,
         Err(err) => return internal(err),
@@ -992,6 +1133,26 @@ async fn passkey_login_finish(
                 return (StatusCode::UNAUTHORIZED, "passkey sign-in failed").into_response();
             }
         };
+    // A passkey is a local credential: like a password, it must not let a user
+    // subject to `enforce_sso` bypass the IdP (H-4). The assertion verified, so
+    // we know which user it is; if any of their orgs enforces SSO, refuse to
+    // mint the local session and steer the login script to the IdP instead.
+    match state.db.user_email(user_id) {
+        Ok(Some(email)) => match sso_enforced_for(&state, &email, Some(user_id)) {
+            Ok(Some(org_slug)) => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({ "redirect": sso_start_path(&org_slug) })),
+                )
+                    .into_response();
+            }
+            Ok(None) => {}
+            Err(err) => return internal(err),
+        },
+        // No email row (a deleted user) — fall through to the normal failure.
+        Ok(None) => return (StatusCode::UNAUTHORIZED, "passkey sign-in failed").into_response(),
+        Err(err) => return internal(err),
+    }
     let cookie = match state.db.create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1) {
         Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
         Err(err) => return internal(err),
