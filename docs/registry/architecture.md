@@ -182,7 +182,7 @@ authoritative trusted-key set that clients pin on sync, with rotation and
 revocation published as new signed `keys.toml` versions and reaching machines
 in-band. The committed
 tree is therefore `registry.toml` + `keys.toml` + `packages/<x>/<name>.toml` +
-`closures/<hash>` + `.gitattributes`, distinct from the served object store. See
+`store/` realisation graph, distinct from the served object store. See
 [`repo-layout.md`](./repo-layout.md) for the full tree and the tree ↔ HTTP mapping.
 
 ### 3.4 The rollout overlay — `/channels/<name>/00..ff`
@@ -380,8 +380,8 @@ Full threat model in [`signing-and-trust.md`](./signing-and-trust.md).
   `info/refs` / `HEAD` / relative `info/alternates`, root-centralized loose
   `/objects/`, stock-git dumb-HTTP compatibility.
 - [`repo-layout.md`](./repo-layout.md) — the committed git **tree** content
-  (`registry.toml` `[[caches]]`, `keys.toml` trust roster, `packages/`, `closures/`,
-  `.gitattributes`), authenticated via the signed tag (tag → commit → tree → file),
+  (`registry.toml` `[[caches]]`, `keys.toml` trust roster, `packages/`, the
+  `store/` realisation graph), authenticated via the signed tag (tag → commit → tree → file),
   and the tree ↔ HTTP mapping.
 - [`versioning-and-channels.md`](./versioning-and-channels.md) — semver,
   channels-as-branches, frontier head, the 256-partition rollout, bucket selection,

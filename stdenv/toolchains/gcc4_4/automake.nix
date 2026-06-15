@@ -38,9 +38,20 @@ in
         # Touch autotools-generated files to prevent regeneration
         find . -type f -exec touch {} + 2>/dev/null || true
 
+        # --disable-maintainer-mode compiles out the am--refresh /
+        # autoreconf regeneration rules entirely. The touch hack and
+        # the ACLOCAL=true/AUTOCONF=true overrides below are not
+        # enough on their own: under any residual mtime skew, make
+        # fires the maintainer-mode rule, which runs `autoreconf`,
+        # and autoreconf invokes `aclocal-1.11 --force` *by name* —
+        # bypassing the ACLOCAL=true override and dying (the build
+        # is bootstrapping automake itself). Disabling maintainer
+        # mode removes the rules so a plain `make` (even -j) never
+        # tries to regenerate Makefile.in/aclocal.m4/configure.
         PERL="${perl}/bin/perl" \
         ./configure \
           --prefix="$out" \
+          --disable-maintainer-mode \
           --build=${hostPlatform.config} --host=${hostPlatform.config}
 
         # Prevent make from regenerating aclocal.m4 (needs not-yet-built aclocal)

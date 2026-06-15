@@ -17,12 +17,12 @@
 //!
 //! [versions.platforms.x86_64-linux]
 //! store_path = "/var/lib/store/h7j3k8l2m9n4-curl-8.5.0"
-//! nar_hash = "sha256:..."
-//! nar_size = 3145728
 //! closure_size = 52428800
 //! source_drv = "/var/lib/store/...-curl-8.5.0.drv"
 //! source_nar_hash = "sha256:..."
 //! references = ["r4q1m2kp8v3x"]
+//! # nar_hash/nar_size may appear in pre-RFC-0005 registries; newer ones
+//! # publish the output's content binding in the store/ graph instead.
 //! ```
 //!
 //! [`parse_registry`] walks the whole cache directory and flattens it into
@@ -94,8 +94,16 @@ struct PlatformEntry {
     /// Absolute store path of the built output.
     store_path: String,
     /// NAR hash of the output (`sha256:...`).
+    ///
+    /// Legacy (pre-RFC-0005) field: newer registries publish the hash in
+    /// the `store/` graph instead, and consumers backfill it from there.
+    #[serde(default)]
     nar_hash: String,
     /// Uncompressed NAR size in bytes.
+    ///
+    /// Legacy (pre-RFC-0005) field, superseded by the `store/` graph like
+    /// `nar_hash`.
+    #[serde(default)]
     nar_size: u64,
     /// Total uncompressed size of the runtime closure in bytes.
     closure_size: u64,

@@ -599,6 +599,14 @@ pub enum RegistryCommand {
         /// Image format for each --image (repeatable, paired with --image)
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
+        /// Bless additional content for paths already recorded with different
+        /// bits in the store/ graph instead of failing
+        #[arg(long)]
+        bless: bool,
+        /// Write input-addressed records only, even on a content-addressed
+        /// registry (skip computing CA realisations for this publish)
+        #[arg(long = "no-ca")]
+        no_ca: bool,
         /// Skip creating a git commit
         #[arg(long)]
         no_commit: bool,
@@ -786,6 +794,12 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: CacheCommand,
     },
+    /// Maintain the store/ realisation graph (blessed bytes + content addresses)
+    Store {
+        /// The realisation-graph operation to run
+        #[command(subcommand)]
+        command: StoreCommand,
+    },
     /// Static git-origin upload operations
     Origin {
         /// The origin operation to run
@@ -832,6 +846,10 @@ pub enum RegistryCommand {
         /// Image format for each --image (repeatable, paired with --image)
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
+        /// Bless additional content for paths already recorded with different
+        /// bits in the store/ graph when --store-path is used
+        #[arg(long)]
+        bless: bool,
         /// Custom publish commit message when --store-path is used
         #[arg(long)]
         message: Option<String>,
@@ -1203,6 +1221,85 @@ pub enum ChannelCommand {
     Status {
         /// Channel name
         channel: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// `store/` realisation-graph subcommands (RFC-0005).
+#[derive(Subcommand)]
+pub enum StoreCommand {
+    /// Bless a store path's local content (whole closure) into the graph
+    Bless {
+        /// Nix store path whose closure to record
+        store_path: String,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Custom commit message
+        #[arg(long)]
+        message: Option<String>,
+        /// Private key path used to sign the commit
+        #[arg(long)]
+        key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Revoke a blessed realisation (stops the bytes verifying on next sync)
+    Revoke {
+        /// Store path or bare store-path hash to revoke
+        store_path: String,
+        /// Specific CA realisation to revoke (all realisations if omitted)
+        #[arg(long)]
+        realisation: Option<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Custom commit message
+        #[arg(long)]
+        message: Option<String>,
+        /// Private key path used to sign the commit
+        #[arg(long)]
+        key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Check graph health and closure coverage
+    Verify {
+        /// Also recompute local store NAR hashes and require blessed matches
+        #[arg(long)]
+        deep: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Record every published closure from the local Nix store in one pass
+    Backfill {
+        /// Bless additional content for paths already recorded with different
+        /// bits instead of failing
+        #[arg(long)]
+        bless: bool,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Custom commit message
+        #[arg(long)]
+        message: Option<String>,
+        /// Private key path used to sign the commit
+        #[arg(long)]
+        key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1810,6 +1907,8 @@ async fn run_registry(
             source_drv,
             images,
             image_formats,
+            bless,
+            no_ca,
             no_commit,
             message,
             key,
@@ -1831,6 +1930,8 @@ async fn run_registry(
                 source_drv.as_deref(),
                 images,
                 image_formats,
+                *bless,
+                *no_ca,
                 *no_commit,
                 message.as_deref(),
                 key.as_deref(),
@@ -1983,6 +2084,9 @@ async fn run_registry(
         RegistryCommand::Cache { command } => {
             registry_ops::run_cache(config, command, printer).await
         }
+        RegistryCommand::Store { command } => {
+            registry_ops::run_store(config, command, printer).await
+        }
         RegistryCommand::Origin { command } => {
             registry_ops::run_origin(config, command, printer).await
         }
@@ -2000,6 +2104,7 @@ async fn run_registry(
             source_drv,
             images,
             image_formats,
+            bless,
             message,
             channel,
             init_channel,
@@ -2032,6 +2137,7 @@ async fn run_registry(
                 source_drv.as_deref(),
                 images,
                 image_formats,
+                *bless,
                 message.as_deref(),
                 channel.as_deref(),
                 *init_channel,

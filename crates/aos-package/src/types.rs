@@ -4,7 +4,7 @@
 //! writes, grouped by where they live on disk:
 //!
 //! - **Registry metadata** — [`PackageMeta`] (a package version entry from a
-//!   registry's package TOML), [`ClosureMeta`] (the `closures/{hash}`
+//!   registry's package TOML), the `store/` realisation graph (the `store/{hash}`
 //!   adjacency-list files), and [`SysrootImageEntry`].
 //! - **Registry configuration** — [`RegistryConfig`] / [`RegistryFile`]
 //!   (`registries.d/*.toml`), with [`TrackingMode`], [`Transport`],
@@ -483,90 +483,6 @@ pub struct PackageMeta {
     /// Pre-compiled images (only for sysroot packages).
     #[serde(default)]
     pub images: Vec<SysrootImageEntry>,
-}
-
-// ---------------------------------------------------------------------------
-// Closure metadata — parsed from `closures/{hash}` adjacency list files
-// ---------------------------------------------------------------------------
-
-/// Precomputed transitive closure for a store path.
-///
-/// Loaded from the registry's `closures/{hash}` file.  The file format is an
-/// adjacency list: one line per store path in the closure, with the first
-/// token being the node and remaining whitespace-separated tokens being its
-/// direct dependencies.  The first line is always the root.
-///
-/// ```text
-/// h7j3k8l2m9n4 r4q1m2kp8v3x xr5is7by89v3q
-/// r4q1m2kp8v3x
-/// xr5is7by89v3q q8mn2pv73w0x
-/// q8mn2pv73w0x
-/// ```
-#[derive(Debug, Clone)]
-pub struct ClosureMeta {
-    /// The store path hash this closure belongs to (filename).
-    pub root: String,
-    /// All store path hashes in the transitive closure (self-inclusive),
-    /// in the order they appear in the file.
-    pub members: Vec<String>,
-    /// Adjacency list: node → direct dependencies.
-    pub deps: std::collections::HashMap<String, Vec<String>>,
-}
-
-impl ClosureMeta {
-    /// Parse a closure file from its text content.
-    ///
-    /// Each non-empty line is `node [dep1 dep2 ...]`.  Blank lines and
-    /// lines starting with `#` are skipped.
-    pub fn parse(root_hash: &str, content: &str) -> Self {
-        let mut members = Vec::new();
-        let mut deps = std::collections::HashMap::new();
-
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let mut tokens = line.split_whitespace();
-            if let Some(node) = tokens.next() {
-                let node_deps: Vec<String> = tokens.map(|s| s.to_string()).collect();
-                members.push(node.to_string());
-                deps.insert(node.to_string(), node_deps);
-            }
-        }
-
-        Self {
-            root: root_hash.to_string(),
-            members,
-            deps,
-        }
-    }
-
-    /// Serialize the closure to the adjacency list text format.
-    pub fn serialize(&self) -> String {
-        let mut out = String::new();
-        for member in &self.members {
-            out.push_str(member);
-            if let Some(member_deps) = self.deps.get(member) {
-                for dep in member_deps {
-                    out.push(' ');
-                    out.push_str(dep);
-                }
-            }
-            out.push('\n');
-        }
-        out
-    }
-
-    /// Get the direct dependencies of a node in this closure.
-    pub fn direct_deps(&self, hash: &str) -> &[String] {
-        self.deps.get(hash).map(|v| v.as_slice()).unwrap_or(&[])
-    }
-
-    /// Check whether a store path hash is a member of this closure.
-    pub fn contains(&self, hash: &str) -> bool {
-        self.deps.contains_key(hash)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1261,6 +1177,17 @@ pub struct RegistryRootMeta {
     /// Optional human-readable description.
     #[serde(default)]
     pub description: Option<String>,
+    /// Whether the producer records content addresses in the `store/`
+    /// realisation graph (RFC-0005), so the registry serves both
+    /// input-addressed and content-addressed consumers. Default `true`;
+    /// set `false` for a pure input-addressed registry.
+    #[serde(default = "default_content_addressed")]
+    pub content_addressed: bool,
+}
+
+/// Serde default for [`RegistryRootMeta::content_addressed`].
+fn default_content_addressed() -> bool {
+    true
 }
 
 /// A binary cache entry in `registry.toml`.

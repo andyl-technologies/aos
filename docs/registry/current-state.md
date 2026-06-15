@@ -23,7 +23,7 @@ An AOS registry is a git repository of package metadata:
 - `packages/<letter>/<name>.toml` stores package metadata in the nested
   `[package]` / `[[versions]]` / `[versions.platforms.<platform>]` shape parsed
   by `registry/parse.rs`.
-- `closures/<hash>` stores precomputed dependency adjacency lists.
+- `store/<2-char>/<ia>` stores the realisation graph: blessed NAR bytes, dependency edges, and content addresses per store path (RFC-0005).
 
 The producer creates sha256 git repositories and refreshes the static object
 indexes needed by dumb HTTP. The consumer uses native git sync for both `git://`
@@ -155,7 +155,7 @@ Implemented producer behavior:
     - branch/tag/version/commit modes verify the commit signature when required;
     - channel mode verifies the signed partition tag, signed semver tag, and
       commit chain with name-binding.
-11. Extract `packages/` and `closures/` to the remote metadata cache.
+11. Extract `packages/` and `store/` to the remote metadata cache.
 12. Extract committed root `registry.toml`, `keys.toml`, and `.gitattributes`
     so `[[caches]]` are available to NAR mirror resolution and trust-roster
     helpers can read the authenticated tree after sync.
