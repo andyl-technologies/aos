@@ -6,7 +6,7 @@
 ##! key to a TPM2 token bound to that policy (PCR 11, signature-flexible)
 ##! plus PCR 7 (pinned by value). `tests/fleet/measured-boot.nix` boots
 ##! this image with a vTPM, enrolls SB keys, reboots into enforcing mode,
-##! and asserts /var unlocks unattended via the TPM2 token.
+##! and asserts /var unlocks unattended via the TPM2 token across a reboot.
 ##!
 ##! All keys are the throwaway `secure-boot-test-keys`; production points
 ##! pcrPrivateKey at a release-time offline key (RFC-0006 key-custody.md).
@@ -28,7 +28,5 @@
   # aos-var-crypt is the SOLE /var unlocker — disable the initrd's
   # automatic LUKS handling (systemd-cryptsetup-generator / gpt-auto) so
   # systemd doesn't race to auto-activate the sealed /var.
-  aos.boot.kernelParams = [
-    "rd.luks=0"
-  ];
+  aos.boot.kernelParams = ["rd.luks=0"];
 }

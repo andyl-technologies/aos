@@ -1,6 +1,6 @@
 # RFC-0006: Full Secure Boot integration — sign, measure, attest
 
-- **Status:** Phases 1–4 implemented (PR [#102](https://github.com/andyl-technologies/aos/pull/102)). Phase 3's TPM-sealed `/var` (seal + recovery enrollment) is CI-gated; the unattended TPM2 unlock on a *subsequent* reboot is implemented but not yet green under the emulated TPM (follow-up, see [`measured-boot.md`](measured-boot.md))
+- **Status:** Phases 1–4 implemented and CI-green (PR [#102](https://github.com/andyl-technologies/aos/pull/102)). Phase 3's TPM-sealed `/var` is verified end to end by `checks.fleet.measured-boot`, including unattended TPM2 unlock across a reboot
 - **Date:** 2026-06-13
 - **PR:** [#102](https://github.com/andyl-technologies/aos/pull/102)
 - **Audience:** anyone working on `pkgs/boot/`, `pkgs/system/systemd.nix`,
@@ -159,13 +159,12 @@ earlier ones.
 - **Phase 2 — Lockdown overlay. ✅ Implemented.** Kernel lockdown LSM + module
   signing as a *deployment overlay* (never the base), cmdline `lockdown=`, signed
   extra modules. ([`boot-chain.md`](boot-chain.md) §lockdown)
-- **Phase 3 — Measure & seal (TPM). ✅ Implemented (seal CI-gated; reboot
-  unlock follow-up).** TPM packaging (tpm2-tss, libtpms, swtpm + nettle/
-  gnutls/json-glib/libtasn1) + kernel TCG drivers + systemd `-Dtpm2`, signed
-  PCR policy in the UKI, TPM-sealed LUKS2 for `/var` with a recovery key, vTPM
-  in CI. The seal + recovery enrollment is proven by `checks.fleet.measured-boot`;
-  unattended TPM2 unlock on a later reboot is implemented but not yet green
-  under swtpm. ([`measured-boot.md`](measured-boot.md))
+- **Phase 3 — Measure & seal (TPM). ✅ Implemented.** TPM packaging (tpm2-tss,
+  libtpms, swtpm + nettle/gnutls/json-glib/libtasn1) + kernel TCG drivers +
+  systemd `-Dtpm2`, signed PCR policy in the UKI, TPM-sealed LUKS2 for `/var`
+  with a recovery key, vTPM in CI. `checks.fleet.measured-boot` proves the
+  whole flow end to end: enroll → enforcing seal → reboot → **unattended TPM2
+  unlock** of `/var`. ([`measured-boot.md`](measured-boot.md))
 - **Phase 4 — Catalog & revoke (registry). ✅ Implemented.** SB fields on
   `SysrootImageEntry`, an `sb-certs.toml` roster (active db-cert set + SBAT
   revocation floor) with `apr sb-certs` authoring, `apr publish` fact
@@ -253,16 +252,17 @@ the next implementer doesn't relearn it.
   disconnects, so the driver (re)launches it per QEMU launch against a
   persistent `--tpmstate` dir (NV/keys persist, PCRs reset — real-hardware
   semantics).
-- **Known follow-up:** the seal + recovery enrollment is verified
-  (`checks.fleet.measured-boot` asserts the LUKS2 `systemd-tpm2` + recovery
-  tokens after the first enforcing boot, which crosses a reboot). The
-  *unattended unlock on a further reboot* (booting with `/var` already sealed)
-  is not yet green under swtpm: `aos-var-crypt`/`mount-var` are condition-
-  skipped because `/dev/disk/by-partlabel/var` isn't ready when they evaluate
-  (udev still processing the LUKS2 partition), so `/var` isn't unlocked and the
-  boot fails at `switch_root`. Fix is an explicit var `.device`-unit ordering
-  dependency (the vTPM-continuity and reboot-detection harness needed for this
-  — in-VM reset + `wait_down` — already landed). Does not affect phases 1/2/4.
+- **The unattended unlock-on-reboot took the most work** and its lessons are
+  worth keeping (full detail in [`measured-boot.md`](measured-boot.md)):
+  vTPM continuity needs an *in-VM reset* (not QEMU relaunch) + `wait_down`
+  reboot detection; ignition must NOT own `/var`'s filesystem (it fails on the
+  now-`crypto_LUKS` partition and cascades into a stuck initrd); `aos-var-crypt`
+  polls for the late-surfacing LUKS2 device instead of a `ConditionPathExists`;
+  and — the crux — the systemd-tpm2 cryptsetup **token plugin** must be on
+  cryptsetup's external-tokens path (built `--with-luks2-external-tokens-path=
+  /run/cryptsetup/tokens`, symlinked to systemd's plugin dir at unlock) because
+  libcryptsetup dlopens it by absolute path, so the `LD_LIBRARY_PATH` wrapper
+  alone never found it.
 
 ### Phase 4 (registry catalog)
 

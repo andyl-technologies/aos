@@ -311,9 +311,13 @@ in {
         description = "Encrypt and TPM2-seal /var (measured boot)";
         wantedBy = ["initrd-fs.target"];
         before = ["mount-var.service" "initrd-fs.target"];
-        requires = ["ignition-disks.service"];
+        # Only ORDER after ignition-disks, don't Require it: on a reboot
+        # (var already provisioned) ignition-disks is condition-skipped, and
+        # Requires would not pull it in. No ConditionPathExists on the var
+        # device either — for a crypto_LUKS partition udev surfaces
+        # /dev/disk/by-partlabel/var late, which would condition-skip this
+        # whole unit on the unlock boot; the script waits for it instead.
         after = ["ignition-disks.service" "systemd-udev-settle.service"];
-        unitConfig.ConditionPathExists = "/dev/disk/by-partlabel/var";
         environment.PATH = lib.mkForce (lib.concatStringsSep ":" [
           "${pkgs.coreutils}/bin"
           "${pkgs.util-linux}/bin"
@@ -343,28 +347,37 @@ in {
           # initrd debug shell whose escape sequences corrupt the serial.
           klog() { echo "aos-var-crypt: $*" > /dev/kmsg 2>/dev/null || echo "aos-var-crypt: $*" >&2; }
 
+          # Make the systemd-tpm2 LUKS2 token plugin findable. cryptsetup
+          # dlopens external token plugins by absolute path from its
+          # configured tokens dir (/run/cryptsetup/tokens — see
+          # cryptsetup.nix), but the systemd-tpm2 plugin ships in systemd's
+          # store path. Symlink systemd's plugin dir into that search path
+          # so systemd-cryptsetup can use the TPM2 token to unlock /var.
+          mkdir -p /run/cryptsetup
+          ln -sfn ${pkgs.systemd}/lib/cryptsetup /run/cryptsetup/tokens
+
+          # Wait for the var partition to surface — udev is slow to process a
+          # crypto_LUKS partition on the unlock boot, and there is no
+          # ConditionPathExists guarding this unit, so poll (up to ~30s).
+          i=0
+          while [ ! -e "$dev" ] && [ "$i" -lt 60 ]; do i=$((i + 1)); sleep 0.5; done
           if [ ! -e "$dev" ]; then
-            klog "$dev absent; skipping"
+            klog "$dev absent after wait; skipping"
             exit 0
           fi
+          klog "device ready: isLuks=$("$cs" isLuks "$dev" && echo Y || echo N)"
 
           if "$cs" isLuks "$dev"; then
             # Already sealed: unlock via the signed TPM2 policy. A signed
             # (public-key) policy needs the PCR *signature* at unlock time;
-            # sd-stub exposes the UKI's .pcrsig in the synthetic initrd
-            # under /.extra/ and systemd also materializes it at
-            # /run/systemd/. Pass it explicitly so the policy can be
-            # satisfied. If the unseal fails (SB-state change → PCR 7
-            # mismatch, or an unsigned UKI), /var stays locked and recovery
-            # is required — the intended security property. `timeout` keeps
-            # a stuck unlock (e.g. an interactive passphrase fallback) from
-            # wedging the boot forever.
-            #
-            # NOTE (RFC-0006 follow-up): the unattended unlock on a reboot
-            # with /var already sealed is not yet green in CI under swtpm —
-            # the LUKS2 var device is not ready when this unit evaluates, so
-            # it gets condition-skipped before reaching this branch. See
-            # measured-boot.md.
+            # sd-stub materializes the UKI's .pcrsig at
+            # /run/systemd/tpm2-pcr-signature.json — pass it explicitly. If
+            # the unseal fails (SB-state change → PCR 7 mismatch, or an
+            # unsigned UKI), /var stays locked and recovery is required —
+            # the intended security property. `headless` makes
+            # systemd-cryptsetup FAIL rather than fall back to an
+            # interactive passphrase prompt (which would wedge the boot);
+            # `timeout` bounds it either way.
             if [ ! -e /dev/mapper/var ]; then
               sig=""
               for p in /run/systemd/tpm2-pcr-signature.json \
@@ -373,12 +386,12 @@ in {
                 if [ -r "$p" ]; then sig="$p"; break; fi
               done
               klog "unlocking /var via TPM2 (signature=''${sig:-<none>})"
-              if [ -n "$sig" ]; then
-                timeout 60 "$csetup" attach var "$dev" - "tpm2-device=auto,tpm2-signature=$sig" \
-                  || klog "TPM2 unlock failed (rc=$?)"
-              else
-                timeout 60 "$csetup" attach var "$dev" - tpm2-device=auto \
-                  || klog "TPM2 unlock failed (rc=$?)"
+              opts="tpm2-device=auto,headless"
+              [ -n "$sig" ] && opts="tpm2-device=auto,tpm2-signature=$sig,headless"
+              rc=0
+              timeout 60 "$csetup" attach var "$dev" - "$opts" || rc=$?
+              if [ "$rc" -ne 0 ]; then
+                klog "TPM2 unlock failed (rc=$rc) — /var stays sealed, recovery key required"
               fi
             fi
             exit 0
@@ -396,12 +409,16 @@ in {
           fi
 
           if [ "$sb" != "1" ]; then
-            # Pre-enrollment boot (Setup Mode): SB not enforcing yet, so do
-            # nothing — ignition formatted /var as plain ext4 and mount-var
-            # mounts the raw partition, letting the system reach multi-user
-            # so an operator/test can enroll PK/KEK/db. The first enforcing
-            # boot below replaces that plain /var with the sealed volume.
-            echo "aos-var-crypt: SB not enforcing yet — leaving plain /var (ignition ext4); will seal once enforcing" >&2
+            # Pre-enrollment boot (Setup Mode): SB not enforcing yet. Bring
+            # up a temporary PLAIN ext4 /var so the system reaches
+            # multi-user and an operator/test can enroll PK/KEK/db; the
+            # first enforcing boot below replaces it with the sealed volume.
+            # ignition does NOT format /var (that would make ignition-disks
+            # fail once /var becomes LUKS2), so create the filesystem here.
+            # -F forces past any stale signature in the freshly-carved
+            # partition.
+            klog "SB not enforcing yet — formatting plain ext4 /var (sealed once enforcing)"
+            "$mkfs" -qF -L var "$dev"
             exit 0
           fi
 

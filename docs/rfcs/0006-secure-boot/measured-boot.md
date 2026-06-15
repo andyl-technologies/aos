@@ -9,33 +9,49 @@ Without it, SB is load-time only and `/var` (every generation, apm state, the
 /nix overlay upper, user data) sits in cleartext on disk
 ([`current-state.md`](current-state.md) disk-encryption section).
 
-> **Implementation status (PR #102).** All bring-up steps below are
-> implemented: the TPM stack is packaged, the kernel has TCG drivers, systemd
-> is built `-Dtpm2=enabled`, the UKI carries a signed PCR policy, OVMF is built
+> **Implementation status (PR #102): fully implemented and CI-green.** The TPM
+> stack is packaged, the kernel has TCG drivers, systemd is built
+> `-Dtpm2=enabled`, the UKI carries a signed PCR policy, OVMF is built
 > `TPM2_ENABLE`, the CI harness attaches a swtpm vTPM, and `aos-var-crypt`
 > LUKS2-formats `/var` and enrolls a TPM2 token sealed to the signed policy
 > (PCR 11) + pinned PCR 7 plus a recovery key. `checks.fleet.measured-boot`
-> verifies the **seal + recovery enrollment** end to end (LUKS2 `systemd-tpm2`
-> and `systemd-recovery` tokens present after the first enforcing boot — which
-> itself crosses a reboot, exercising the in-VM-reset vTPM-continuity harness).
+> verifies the **whole flow end to end**: Setup-mode first boot → enroll →
+> enforcing seal (LUKS2 `systemd-tpm2` + `systemd-recovery` tokens) → reboot →
+> **unattended TPM2 unlock of `/var`** (no passphrase), across three reboots.
 >
-> The one piece **not yet green in CI** is the *unattended unlock on a further
-> reboot* — i.e. booting with `/var` already sealed. Diagnosis from many
-> builder cycles: the vTPM is continuous (the driver resets the VM in place
-> rather than relaunching QEMU+swtpm, so the emulated TPM's NV/keys persist and
-> PCRs reset via TPM2_Startup), and the reboot is detected correctly
-> (`wait_down`/`wait_ready`). But on the boot where `/var` is already a LUKS2
-> device, **`aos-var-crypt` and `mount-var` are condition-skipped because
-> `/dev/disk/by-partlabel/var` is not ready when they evaluate** — the udev
-> worker is still processing the LUKS2 partition — so `/var` is never unlocked,
-> `ignition-files` (which needs `/var`) does not run, and the boot fails at
-> `switch_root` ("os-release missing"). `rd.luks=0` (disabling systemd's auto
-> LUKS handling) did not change this. The fix is an explicit ordering
-> dependency on the var `.device` unit (`BindsTo`/`After` the
-> `dev-disk-by\x2dpartlabel-var.device`, or a settle-wait loop) so the unlock
-> service runs only once the device is present, plus confirming the signed
-> `.pcrsig` is materialized at unlock. This is the finicky last mile of systemd
-> measured boot. Tracked as a follow-up; phases 1, 2, and 4 are unaffected.
+> Getting the unlock green took unwinding several subtleties, recorded here so
+> they aren't relearned:
+>
+> - **vTPM continuity.** swtpm exits when QEMU disconnects, and a relaunched
+>   swtpm wedges the boot. The driver resets the VM **in place** for TPM
+>   machines (no `-no-reboot`), keeping QEMU+swtpm alive so the emulated TPM's
+>   NV/keys persist while PCRs reset via `TPM2_Startup` — real-hardware
+>   semantics. The reboot is detected with `wait_down` then `wait_ready` (the
+>   in-VM reset keeps the agent socket up, so a stale pre-reboot PONG must not
+>   be read as the reboot completing).
+> - **ignition must not own `/var`.** If ignition's `filesystems` config
+>   formats `/var` (`format=ext4`, `wipeFilesystem=false`), `ignition-disks`
+>   *fails* on the unlock boot — `/var` is then `crypto_LUKS`, not the ext4 it
+>   expects — and the failure cascades (units that `Requires=ignition-disks`)
+>   into a stuck initrd. `/var` is kept in `partitions` but out of
+>   `filesystems`; `aos-var-crypt` owns its filesystem (plain ext4 in Setup
+>   mode, LUKS2 once enforcing).
+> - **device readiness.** For a `crypto_LUKS` partition udev surfaces
+>   `/dev/disk/by-partlabel/var` late, so `aos-var-crypt` carries no
+>   `ConditionPathExists` (which would skip it) and instead polls for the
+>   device; it only orders after `ignition-disks` rather than requiring it.
+> - **the token plugin (the crux).** systemd's
+>   `libcryptsetup-token-systemd-tpm2.so` — needed to *read* the systemd-tpm2
+>   LUKS2 token at unlock — ships in systemd's store path, but libcryptsetup
+>   dlopens external token plugins by **absolute path** from cryptsetup's
+>   compiled tokens dir (an `LD_LIBRARY_PATH` wrapper does not help). cryptsetup
+>   is built `--with-luks2-external-tokens-path=/run/cryptsetup/tokens` and
+>   `aos-var-crypt` symlinks systemd's plugin dir there before unlocking.
+>   `systemd-cryptsetup … tpm2-device=auto,tpm2-signature=<sd-stub .pcrsig>,headless`
+>   then unseals against the signed policy.
+> - **slow stage-2.** The argon2 luksFormat (~1 GB, ~17 s) and stage-2 TPM
+>   PCR ops mean the agent answers before `multi-user.target`; the test polls
+>   with `wait_until_succeeds`.
 
 ## What's missing (all of it)
 
