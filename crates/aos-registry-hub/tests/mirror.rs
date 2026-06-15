@@ -409,6 +409,100 @@ async fn pull_through_refuses_tampered_narinfo_and_nar() {
 }
 
 #[tokio::test]
+async fn pull_through_rejects_narinfo_substitution() {
+    // M-5: a pull-through request for `<hashB>.narinfo` answered with a
+    // *validly-signed* narinfo whose StorePath hash is `hashA` is a
+    // substitution/downgrade — the signature attests A, not the requested B.
+    // The pull-through must REJECT it (the binding stock Nix enforces).
+    use sha2::Digest as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = dir.path().join("upstream");
+    std::fs::create_dir_all(upstream.join("nar")).unwrap();
+    let fixture = common::Fixture::new(&upstream);
+    let trusted = vec![fixture.trust_key.clone()];
+    let fetch = aos_registry_hub::fetch::LocalFsFetch::new(&upstream);
+
+    // A correctly-signed narinfo for store hash "aaaapkgone".
+    let nar_bytes = b"package-A-nar-bytes";
+    let hash = format!("sha256:{}", hex::encode(sha2::Sha256::digest(nar_bytes)));
+    let store_path = "/var/lib/store/aaaapkgone-pkg-a-1.0";
+    let nar_url = "nar/aaaapkgone-fixturehash.nar";
+    let narinfo = fixture.signed_narinfo(store_path, nar_url, &hash, nar_bytes.len() as u64, &[]);
+
+    // The honest path: served at its own `<hash>.narinfo`.
+    std::fs::write(upstream.join("aaaapkgone.narinfo"), &narinfo).unwrap();
+    std::fs::write(upstream.join(nar_url), nar_bytes).unwrap();
+    assert!(
+        fetch_through(&fetch, dir.path(), "aaaapkgone.narinfo", &trusted, true)
+            .await
+            .unwrap()
+            .is_some(),
+        "a narinfo served at its own hash is accepted"
+    );
+
+    // The attack: the SAME validly-signed narinfo served at a DIFFERENT
+    // requested hash. Internally consistent for A, a substitution for B.
+    std::fs::write(upstream.join("bbbbpkgtwo.narinfo"), &narinfo).unwrap();
+    let err = fetch_through(&fetch, dir.path(), "bbbbpkgtwo.narinfo", &trusted, true)
+        .await
+        .expect_err("a foreign signed narinfo at the requested hash must be rejected");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("does not match the requested hash") || msg.contains("substitution"),
+        "rejection should cite the hash binding, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn pull_through_rejects_nar_url_substitution() {
+    // M-5 (NAR arm): a request for `nar/X` answered with a (validly-signed)
+    // narinfo whose `URL:` names `nar/Y` is a substitution of the served bytes.
+    // The pull-through must REJECT it: a request for `nar/X` is only answered
+    // with the NAR its narinfo points at.
+    use sha2::Digest as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = dir.path().join("upstream");
+    std::fs::create_dir_all(upstream.join("nar")).unwrap();
+    let fixture = common::Fixture::new(&upstream);
+    let trusted = vec![fixture.trust_key.clone()];
+    let fetch = aos_registry_hub::fetch::LocalFsFetch::new(&upstream);
+
+    // A correctly-signed narinfo for store hash "ccccpkgthree" whose `URL:`
+    // names `nar/ccccpkgthree-otherhash.nar`, NOT the path requested below.
+    let nar_bytes = b"package-C-nar-bytes";
+    let hash = format!("sha256:{}", hex::encode(sha2::Sha256::digest(nar_bytes)));
+    let store_path = "/var/lib/store/ccccpkgthree-pkg-c-1.0";
+    let declared_url = "nar/ccccpkgthree-otherhash.nar";
+    let narinfo =
+        fixture.signed_narinfo(store_path, declared_url, &hash, nar_bytes.len() as u64, &[]);
+    std::fs::write(upstream.join("ccccpkgthree.narinfo"), &narinfo).unwrap();
+    std::fs::write(upstream.join(declared_url), nar_bytes).unwrap();
+    // The declared NAR is served correctly.
+    assert!(
+        fetch_through(&fetch, dir.path(), declared_url, &trusted, true)
+            .await
+            .unwrap()
+            .is_some(),
+        "the NAR named by its narinfo's URL is served"
+    );
+
+    // The attack: a DIFFERENT requested NAR path (same store hash, so the same
+    // governing narinfo is fetched) whose narinfo `URL:` does not name it.
+    let requested = "nar/ccccpkgthree-fixturehash.nar";
+    std::fs::write(upstream.join(requested), nar_bytes).unwrap();
+    let err = fetch_through(&fetch, dir.path(), requested, &trusted, true)
+        .await
+        .expect_err("a NAR whose governing narinfo URL differs must be rejected");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("does not") && msg.contains("URL") || msg.contains("substitution"),
+        "rejection should cite the URL binding, got: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn pull_through_accepts_valid_compressed_nar() {
     // CR-1 (legit path): a signed narinfo with `Compression: zstd` whose
     // DECOMPRESSED bytes hash to the signed `NarHash` must be ACCEPTED — we must

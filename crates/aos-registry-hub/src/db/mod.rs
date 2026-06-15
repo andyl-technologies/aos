@@ -518,8 +518,14 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE TABLE user_identities (
         user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        issuer      TEXT NOT NULL,                -- OIDC iss
-        subject     TEXT NOT NULL,                -- OIDC sub
+        -- IDTEXT: security-identity columns, binary-collated on mysql so the
+        -- composite PK and `identity_user` lookup match OIDC iss/sub byte-for-
+        -- byte. Without it, mysql's default case-insensitive collation would
+        -- collapse case-variant `sub` values onto one user_id and let an
+        -- attacker log in as the victim (sec M-6). sqlite/postgres are already
+        -- case-sensitive. Email is intentionally left case-insensitive (M-7).
+        issuer      IDTEXT NOT NULL,              -- OIDC iss
+        subject     IDTEXT NOT NULL,              -- OIDC sub
         email       TEXT,
         last_login  INTEGER,
         PRIMARY KEY (issuer, subject)

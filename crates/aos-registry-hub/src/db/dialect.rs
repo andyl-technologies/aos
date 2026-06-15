@@ -45,9 +45,20 @@
 //! INTEGER (bare column type)      BIGINT                    BIGINT
 //! TEXT                            TEXT                      VARCHAR(255) (see note)
 //! LONGTEXT                        TEXT                      LONGTEXT
+//! IDTEXT                          TEXT                      VARCHAR(255) COLLATE utf8mb4_bin
 //! BLOB                            BYTEA                     LONGBLOB
 //! AUTOINCREMENT (sqlite-only)     (removed)                 (removed)
 //! ```
+//!
+//! `IDTEXT` marks a **security-identity** string column — an OIDC `iss`/`sub`,
+//! or any value used as an equality auth key. On mysql its default collation is
+//! case-, accent-, and trailing-space-insensitive, which would collapse
+//! case-variant identities onto one row and enable an account-takeover (sec
+//! M-6); the explicit `utf8mb4_bin` collation forces byte-exact matching.
+//! sqlite and postgres `TEXT` are already case-sensitive, so `IDTEXT` is plain
+//! `TEXT` there. (EMAIL columns are deliberately *not* `IDTEXT`: emails are
+//! conventionally case-insensitive and binary-collating them without
+//! normalization would split one address across rows.)
 //!
 //! Note: mysql cannot index/PK a `TEXT` column without a prefix length, and
 //! several hub tables use a `TEXT PRIMARY KEY` (`tokens.id`, `sessions.id_hash`,
@@ -212,7 +223,12 @@ impl Dialect {
     /// mysql.
     fn rewrite_ddl_types(self, sql: &str) -> String {
         if self == Dialect::Sqlite {
-            return sql.to_string();
+            // sqlite is the source dialect; it keeps `LONGTEXT` verbatim (plain
+            // TEXT affinity). It does not know the `IDTEXT` security-identity
+            // marker (see the mysql/postgres branch), and its `TEXT` is already
+            // case-sensitive (byte-exact), so map `IDTEXT` to plain `TEXT` for a
+            // clean on-disk schema.
+            return sql.replace("IDTEXT", "TEXT");
         }
         // Order matters: the autoincrement PK must be matched before the bare
         // INTEGER rule, and AUTOINCREMENT removed regardless.
@@ -240,6 +256,28 @@ impl Dialect {
         // token (null can never appear in the source DDL).
         const LONGTEXT_SENTINEL: &str = "\u{0}LONG_UNBOUNDED\u{0}";
         s = s.replace("LONGTEXT", LONGTEXT_SENTINEL);
+        // `IDTEXT` is the source marker for a *security-identity* string column
+        // — an OIDC `iss`/`sub`, or any value used as an equality auth key. On
+        // mysql the default collation (`utf8mb4_general_ci` / `*_0900_ai_ci`) is
+        // case-, accent-, and trailing-space-insensitive, so `Alice`, `alice`,
+        // and `alice ` collapse to one key in a `WHERE issuer=? AND subject=?`
+        // lookup and the composite PK. OIDC `sub` is case-sensitive per spec and
+        // is never normalized here, so on mysql an attacker who can assert a
+        // case-variant `sub` from the same trusted IdP would resolve to a
+        // victim's `user_id` and log in as them (sec M-6). Declaring these
+        // columns with the byte-exact `utf8mb4_bin` collation forces
+        // exact-byte matching, restoring the case-sensitive behavior sqlite and
+        // postgres already have. Stash behind a sentinel (TEXT-free, null
+        // delimited) so the generic `TEXT -> VARCHAR(255)` narrowing below does
+        // not rewrite the `TEXT` *inside* `IDTEXT`.
+        //
+        // NOTE: do **not** apply binary collation to EMAIL columns — emails are
+        // conventionally case-insensitive and are not normalized consistently
+        // here; binary-collating them without normalizing would split a single
+        // address across rows. Email collation is tracked separately (M-7) and
+        // its takeover arm is gated by verified-domain checks.
+        const IDTEXT_SENTINEL: &str = "\u{0}ID_BINARY\u{0}";
+        s = s.replace("IDTEXT", IDTEXT_SENTINEL);
         let mut s = match self {
             Dialect::Postgres => s.replace("BLOB", "BYTEA"),
             // mysql: narrow only the *bounded, indexable* `TEXT` columns (hex
@@ -263,6 +301,15 @@ impl Dialect {
             Dialect::Sqlite => unreachable!(),
         };
         s = s.replace(LONGTEXT_SENTINEL, unbounded);
+        // Restore the security-identity text type. Only mysql needs an explicit
+        // collation; on postgres a plain (case-sensitive) `TEXT` is already
+        // byte-exact for these columns.
+        let identity = match self {
+            Dialect::Mysql => "VARCHAR(255) COLLATE utf8mb4_bin",
+            Dialect::Postgres => "TEXT",
+            Dialect::Sqlite => unreachable!(),
+        };
+        s = s.replace(IDTEXT_SENTINEL, identity);
         s
     }
 
@@ -550,6 +597,73 @@ mod tests {
             }
         }
         assert!(saw_secret_enc, "expected a secret_enc column in the schema");
+    }
+
+    #[test]
+    fn ddl_idtext_is_binary_collated_only_on_mysql() {
+        // M-6: a security-identity `IDTEXT` column (OIDC iss/sub) must be
+        // byte-exact. On mysql that means an explicit `utf8mb4_bin` collation,
+        // because the server-default collation is case-insensitive and would
+        // collapse case-variant identities onto one row (account takeover). On
+        // postgres/sqlite `TEXT` is already case-sensitive, so `IDTEXT` is plain
+        // `TEXT` with no collation clause.
+        let src = "CREATE TABLE t (issuer IDTEXT NOT NULL, subject IDTEXT NOT NULL)";
+
+        let my = Dialect::Mysql.translate(src).unwrap().sql;
+        assert!(
+            my.contains("issuer VARCHAR(255) COLLATE utf8mb4_bin NOT NULL"),
+            "issuer must be binary-collated on mysql: {my}"
+        );
+        assert!(
+            my.contains("subject VARCHAR(255) COLLATE utf8mb4_bin NOT NULL"),
+            "subject must be binary-collated on mysql: {my}"
+        );
+        // The marker must never leak into emitted SQL.
+        assert!(!my.contains("IDTEXT"), "IDTEXT marker leaked: {my}");
+
+        for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+            let out = dialect.translate(src).unwrap().sql;
+            assert!(
+                out.contains("issuer TEXT NOT NULL") && out.contains("subject TEXT NOT NULL"),
+                "{dialect:?}: identity columns are plain case-sensitive TEXT: {out}"
+            );
+            assert!(
+                !out.contains("COLLATE"),
+                "{dialect:?}: no collation clause: {out}"
+            );
+            assert!(!out.contains("IDTEXT"), "{dialect:?}: IDTEXT leaked: {out}");
+        }
+    }
+
+    #[test]
+    fn ddl_oidc_identity_columns_are_binary_collated_on_mysql() {
+        // Guard the actual `user_identities` migration: its `issuer`/`subject`
+        // OIDC columns must translate to a byte-exact mysql type so a
+        // case-variant `sub` cannot collapse onto a victim's user_id (sec M-6).
+        let mut saw_identity = false;
+        for migration in crate::db::MIGRATIONS {
+            for stmt in crate::db::backend::split_statements(migration) {
+                if !stmt.contains("CREATE TABLE user_identities") {
+                    continue;
+                }
+                saw_identity = true;
+                let my = Dialect::Mysql.translate(&stmt).unwrap().sql;
+                for col in ["issuer", "subject"] {
+                    let line = my
+                        .lines()
+                        .find(|l| l.trim_start().starts_with(col))
+                        .unwrap_or_else(|| panic!("no {col} column line in: {my}"));
+                    assert!(
+                        line.contains("COLLATE utf8mb4_bin"),
+                        "user_identities.{col} must be binary-collated on mysql: {line:?}"
+                    );
+                }
+            }
+        }
+        assert!(
+            saw_identity,
+            "expected the user_identities table in the schema"
+        );
     }
 
     #[test]

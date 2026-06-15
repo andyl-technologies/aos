@@ -410,21 +410,70 @@ async fn verify_surface(
     })
 }
 
+/// Maximum number of objects collected from one upstream tree closure before
+/// the full-mirror sync aborts.
+///
+/// [`collect_tree_objects`] walks the entire HEAD tree closure into an
+/// in-memory [`BTreeSet`] (plus the immutable copy list). The tree is
+/// attacker-controlled: an upstream an operator chose to full-mirror can fan
+/// millions of tiny objects out under arbitrary paths, and the sync runs in the
+/// web-server process — so an uncapped walk would let one hostile upstream OOM
+/// the hub. Mirrors [`MAX_PACKAGES`](crate::surface::load::MAX_PACKAGES) /
+/// [`MAX_CLOSURE_ENTRIES`](crate::surface::load::MAX_CLOSURE_ENTRIES): the sync
+/// **aborts** (the upstream is marked failed) rather than truncating, so a
+/// registry that overflows is never silently partially mirrored. Sized far
+/// above any realistic registry.
+pub const MAX_MIRROR_OBJECTS: usize = 2_000_000;
+
 /// Recursively collect every object oid reachable from a tree.
+///
+/// Caps the closure at [`MAX_MIRROR_OBJECTS`] objects.
+///
+/// # Errors
+///
+/// Returns an error on a transport or parse failure, or when the closure would
+/// exceed [`MAX_MIRROR_OBJECTS`] objects (a hostile upstream fanning out an
+/// unbounded object count) — the sync aborts rather than accumulate without
+/// bound.
 async fn collect_tree_objects(
     reader: &ObjectReader<'_>,
     tree_oid: Oid,
     out: &mut BTreeSet<Oid>,
 ) -> Result<()> {
+    collect_tree_objects_capped(reader, tree_oid, out, MAX_MIRROR_OBJECTS).await
+}
+
+/// Recursively collect every object oid reachable from a tree, aborting once
+/// `max` distinct oids have been collected.
+///
+/// Split out from [`collect_tree_objects`] so the cap can be exercised with a
+/// small bound in tests without materializing [`MAX_MIRROR_OBJECTS`] objects.
+///
+/// # Errors
+///
+/// Returns an error on a transport or parse failure, or when the closure would
+/// exceed `max` objects.
+async fn collect_tree_objects_capped(
+    reader: &ObjectReader<'_>,
+    tree_oid: Oid,
+    out: &mut BTreeSet<Oid>,
+    max: usize,
+) -> Result<()> {
     // Iterative DFS to avoid recursing through `async fn` (which would need
     // boxing on every level).
     let mut stack = vec![tree_oid];
     while let Some(oid) = stack.pop() {
+        if out.len() >= max {
+            bail!("upstream tree closure exceeds the {max}-object mirror cap; aborting sync");
+        }
         if !out.insert(oid) {
             continue;
         }
         let content = reader.read_kind(oid, ObjectKind::Tree).await?;
         for entry in crate::surface::object::parse_tree(&content)? {
+            if out.len() >= max {
+                bail!("upstream tree closure exceeds the {max}-object mirror cap; aborting sync");
+            }
             if entry.is_tree() {
                 stack.push(entry.oid);
             } else {
@@ -800,6 +849,14 @@ pub async fn fetch_through(
                     .with_context(|| format!("pulled narinfo {path} is not UTF-8"))?;
                 crate::validation::verify_narinfo_signature(text, trusted_keys)
                     .with_context(|| format!("verifying pulled narinfo {path}"))?;
+                // Bind the served narinfo to the REQUESTED `<hash>.narinfo` path
+                // (sec M-5): a valid-but-foreign signed narinfo (packageA's)
+                // answering a request for `<hashB>.narinfo` is internally
+                // consistent for A yet a substitution/downgrade for B. The
+                // signature only attests A; without this binding a hostile
+                // upstream could swap a request for one store path with a
+                // trusted-signed-but-different (older, vulnerable) store path.
+                assert_narinfo_matches_requested(path, text)?;
             }
             Ok(Some(PullResult {
                 bytes,
@@ -820,6 +877,14 @@ pub async fn fetch_through(
                     .with_context(|| format!("narinfo {narinfo_path} is not UTF-8"))?;
                 crate::validation::verify_narinfo_signature(narinfo, trusted_keys)
                     .with_context(|| format!("verifying narinfo {narinfo_path} for NAR {path}"))?;
+                // Bind the governing narinfo to the requested NAR path (sec
+                // M-5): a request for `nar/X` must only be answered with the NAR
+                // its narinfo's `URL:` actually names. Otherwise a hostile
+                // upstream could serve `nar/Y` (a trusted-signed but different,
+                // possibly older/vulnerable NAR) under the name `nar/X`. The
+                // narinfo derived above is `<store-hash>.narinfo`, so this also
+                // confirms the served NAR belongs to the requested store hash.
+                assert_nar_matches_requested(path, narinfo)?;
                 crate::validation::verify_nar_against_narinfo(narinfo, &bytes)
                     .with_context(|| format!("verifying pulled NAR {path}"))?;
             }
@@ -835,6 +900,67 @@ pub async fn fetch_through(
             persisted: false,
         })),
     }
+}
+
+/// Assert that a signature-verified narinfo's `StorePath` hash equals the
+/// `<hash>` named by the requested `<hash>.narinfo` path (sec M-5).
+///
+/// `verify_narinfo_signature` only attests that *some* trusted key signed the
+/// narinfo's own `StorePath`; it does not bind that store path to the path the
+/// client asked for. A hostile upstream can therefore answer a request for
+/// `<hashB>.narinfo` with packageA's genuinely-signed narinfo — a
+/// substitution/downgrade to an older, signed-but-vulnerable build. Stock Nix
+/// enforces this binding; the pull-through must too.
+///
+/// # Errors
+///
+/// Returns an error when `path` is not a `<hash>.narinfo` path, the narinfo
+/// cannot be parsed, or the store hash derived from its `StorePath` does not
+/// equal the requested hash.
+fn assert_narinfo_matches_requested(path: &str, narinfo: &str) -> Result<()> {
+    let requested = path
+        .strip_suffix(".narinfo")
+        .with_context(|| format!("narinfo path {path} does not end in .narinfo"))?;
+    let info = aos_core::nar::info::parse(narinfo)
+        .with_context(|| format!("parsing pulled narinfo {path} for hash binding"))?;
+    let store_hash = aos_core::nar::info::store_hash(&info.store_path);
+    if store_hash != requested {
+        bail!(
+            "pulled narinfo {path} declares StorePath {} (hash {store_hash}), \
+             which does not match the requested hash {requested}; refusing \
+             substitution",
+            info.store_path
+        );
+    }
+    Ok(())
+}
+
+/// Assert that the governing narinfo's `URL:` field names exactly the requested
+/// NAR `path` (sec M-5).
+///
+/// A request for `nar/X` must only be answered with the NAR its narinfo points
+/// at. Without this check a hostile upstream could serve a trusted-signed but
+/// *different* NAR (`nar/Y`) under the name `nar/X` — a substitution/downgrade
+/// of the served bytes. The narinfo is `<store-hash>.narinfo` (derived from the
+/// requested path), so matching its `URL:` binds the served NAR to the
+/// requested store hash.
+///
+/// # Errors
+///
+/// Returns an error when the narinfo cannot be parsed or its `URL:` does not
+/// equal the requested NAR path (after stripping any leading `/`).
+fn assert_nar_matches_requested(path: &str, narinfo: &str) -> Result<()> {
+    let info = aos_core::nar::info::parse(narinfo)
+        .with_context(|| format!("parsing governing narinfo for NAR {path}"))?;
+    let declared = info.url.trim_start_matches('/');
+    if declared != path {
+        bail!(
+            "governing narinfo for NAR {path} declares URL {}, which does not \
+             match the requested NAR path; refusing substitution",
+            info.url
+        );
+    }
+    Ok(())
 }
 
 /// Derive the `<hash>.narinfo` path for a `nar/<store-hash>-<…>` NAR path.
@@ -897,6 +1023,63 @@ mod tests {
         ] {
             assert_eq!(pull_class(pointer), PullClass::Pointer, "{pointer}");
         }
+    }
+
+    /// Write a loose object to `root` and return its oid.
+    #[cfg(test)]
+    fn put_loose(root: &std::path::Path, kind: ObjectKind, content: &[u8]) -> Oid {
+        use crate::surface::object::{encode_loose, hash_object};
+        let oid = hash_object(kind, content);
+        let path = root.join(oid.loose_path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, encode_loose(kind, content).unwrap()).unwrap();
+        oid
+    }
+
+    #[tokio::test]
+    async fn collect_tree_objects_aborts_over_the_cap() {
+        // L-2: a tree closure that exceeds the object cap aborts with the
+        // over-limit error rather than accumulating without bound. A closure
+        // that fits is collected fine.
+        use crate::fetch::LocalFsFetch;
+        use crate::surface::object::{encode_tree, TreeEntry};
+
+        let upstream = tempfile::tempdir().unwrap();
+        let root = upstream.path();
+
+        // Six distinct blobs under one tree => 1 tree + 6 blobs = 7 oids.
+        let mut entries = Vec::new();
+        for i in 0u8..6 {
+            let blob = put_loose(root, ObjectKind::Blob, &[b'x', i]);
+            entries.push(TreeEntry {
+                mode: "100644".to_string(),
+                name: format!("f{i}"),
+                oid: blob,
+            });
+        }
+        let tree_bytes = encode_tree(&entries);
+        let tree_oid = put_loose(root, ObjectKind::Tree, &tree_bytes);
+
+        let fetch = LocalFsFetch::new(root);
+        let reader = ObjectReader::new(&fetch);
+
+        // A generous cap collects every object (1 tree + 6 blobs).
+        let mut all = BTreeSet::new();
+        collect_tree_objects_capped(&reader, tree_oid, &mut all, 100)
+            .await
+            .expect("a closure under the cap is collected");
+        assert_eq!(all.len(), 7, "tree + six blobs");
+
+        // A cap of 3 aborts before the whole closure is walked.
+        let mut capped = BTreeSet::new();
+        let err = collect_tree_objects_capped(&reader, tree_oid, &mut capped, 3)
+            .await
+            .expect_err("a closure over the cap aborts");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("mirror cap") && msg.contains("aborting sync"),
+            "abort should cite the cap, got: {msg}"
+        );
     }
 
     #[tokio::test]
