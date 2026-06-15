@@ -268,6 +268,69 @@ Only a *tag miss* (a genuinely `Suspended` value) drops into the atomic protocol
 of §3.2. This keeps the parallel overhead off the path that dominates dynamic
 counts, which is why CAS-per-thunk is affordable: we pay it rarely.
 
+### 3.6 The memory-ordering audit plan (loom / Miri / TSan)
+
+The acquire/release discipline of §3.2 is *borrowed* from C++ Nix's
+`std::atomic` thunk protocol; re-deriving it correctly in Rust's atomics model is
+not optional folklore but a **committed, gated deliverable**. Per decision C-12
+the parallel tier (**P3.5** in [roadmap](17-roadmap-and-risks.md) §3) is promoted
+early, which makes the old "R-4, planned" memory-ordering item (§8) an **early
+gate**, not a post-hoc nicety. This subsection turns R-4 into a concrete plan.
+
+**Model the CAS protocol in loom.** loom is a concurrency permutation tester for
+Rust: it runs a test many times, exhaustively exploring the executions permitted
+under the C11 memory model — for every atomic operation it tries every value an
+acquire load may observe given the releases that happened-before it, using state
+reduction to avoid combinatorial blow-up. We model the
+`Suspended -> Pending -> Awaited -> Forced/Failed` machine (§3.1, §3.2) directly
+in loom's `Atomic*`/`UnsafeCell`/`thread::spawn` shims: a small harness spawns
+2-3 worker threads that race to `force` the *same* thunk (and a self-reentry case
+for the cycle path), and loom enumerates the interleavings. The protocol ships
+*only after loom is exhaustively green on this model*.
+
+**The invariants loom must prove.** The harness asserts each of the following as
+a loom-checked property across all explored interleavings:
+
+1. **No lost wakeup.** A thread that CASes `Pending -> Awaited` and parks is
+   *always* woken: the forcer's release-store of `Forced`/`Failed` happens-after
+   the waiter's registration, so a parker can never miss the publish and sleep
+   forever. loom explores the exact window where registration and publish race.
+2. **No double-force of an effectful primop.** At most one thread ever runs a
+   given thunk body, so `import` / `derivationStrict` (which write a `.drv`,
+   register a cache node — §3.3, §7) execute **exactly once per thunk**. The
+   single-winner CAS `Suspended -> Pending` is the mutual-exclusion proof loom
+   checks against every racing claimant.
+3. **No torn read of the thunk word.** The state discriminant (and the
+   worker-id it carries) is read and written only through the atomic word; loom
+   confirms no interleaving observes a half-published state.
+4. **No deadlock on a claimed thunk.** The wait-or-steal of §3.3 always makes
+   progress: a worker that cannot claim a thunk parks/steals but never blocks the
+   owner, and loom's deadlock detection must report none across the model.
+5. **Correct acquire/release pairing on the value publish.** Every thread that
+   observes `Forced` via an acquire load also observes the *fully constructed*
+   value the forcer release-stored — the value write happens-before the state
+   publish, with no reordering loom permits that exposes an uninitialized slot.
+
+**Complement loom with Miri and ThreadSanitizer.** loom proves the *protocol* but
+only over the small model it is given; two further tools cover what it cannot:
+
+- **Miri** runs the safe tree-walk oracle ([15](15-differential-testing-and-benchmarking.md)
+  §7) and small parallel harnesses under its UB checker and (data-race-aware)
+  interpreter, catching undefined behavior and some races in real code paths loom
+  does not model.
+- **ThreadSanitizer** runs the *actual* multithreaded binary (the real
+  work-stealing pool of §4, real thunks, real GC nurseries) under a dynamic
+  data-race detector, catching races in code outside the loom model — the
+  scheduler glue, the shared insert-or-get tables (§4.3), the fiber runtime
+  (§5.5).
+
+**This is the shipping gate for P3.5.** The parallel evaluator is **not trusted
+until loom is green** on the thunk-CAS model and Miri/TSan are clean on the
+parallel harness and binary. Until then the sequential tree-walk oracle (the
+differential ground truth) remains the only authoritative evaluator, exactly as
+the C-12 guardrails require. loom green is a *precondition* of the parallel tier
+shipping, not a follow-up to it.
+
 ## 4. L1: coarse top-level parallelism
 
 ### 4.1 Why this is the first target
@@ -636,16 +699,22 @@ L1 coarse pool.
    scheme. *Open.*
 2. **Load barrier on the thunk-state CAS.** Proving the relocate-then-CAS
    sequence is race-free under our exact memory model and tag layout needs the
-   formal-verification rigor applied to Chase-Lev deques under weak memory.
-   Until then, Stage B0 (stop-the-world) is the shipping answer. *Open.*
+   formal-verification rigor applied to Chase-Lev deques under weak memory. The
+   committed §3.6 audit (loom over the CAS protocol) is the methodology that would
+   extend to cover the load-barrier-then-CAS sequence once Stage B1 is on the
+   table; until then, Stage B0 (stop-the-world) is the shipping answer and no load
+   barrier exists to audit. *Open; audit methodology in §3.6.*
 3. **L1 load imbalance / the long tail.** A handful of giant derivations
    (the toolchain, `systemd`) can dominate the tail and starve L1 parallelism.
    The mitigation is L2 (force *within* a giant derivation in parallel), but the
    crossover point where L2's risk is worth its reward is a measurement, not a
    prediction. *Open, measure-first.*
-4. **Memory-ordering audit.** The acquire/release discipline (§3.2) is borrowed
-   from C++ Nix; re-deriving it in Rust's atomics model and validating it under
-   `loom`/Miri on the safe tree-walk oracle is required before L2 ships. *Planned.*
+4. **Memory-ordering audit (R-4).** The acquire/release discipline (§3.2) is
+   borrowed from C++ Nix; re-deriving it in Rust's atomics model and validating it
+   under loom/Miri/TSan is required before the parallel tier ships. Under decision
+   C-12 this is now an **early gate** for P3.5, not a deferred follow-up, and the
+   plan is **committed** — see §3.6 for the loom model, the enumerated invariants,
+   and the Miri/TSan complement. *Committed; gating, see §3.6.*
 5. **Cross-nursery sharing cost.** How often hash-consed values are genuinely
    touched by multiple workers (forcing shared-region access and, in Tier B,
    remembered-set churn) is unknown until measured on the real AOS closure.
@@ -689,6 +758,11 @@ hashing — and asserted by running the differential harness across thread count
 - Chase & Lev, *Dynamic Circular Work-Stealing Deque* (lock-free; basis for
   Rayon/crossbeam). Formal verification under weak memory:
   <https://arxiv.org/pdf/2309.03642>
+- tokio-rs/loom — concurrency permutation tester: runs a test "many times,
+  permuting the possible concurrent executions of that test under the C11 memory
+  model," trying every value an atomic load may observe, with state-reduction to
+  bound the explosion (§3.6 audit plan):
+  <https://github.com/tokio-rs/loom>, <https://docs.rs/loom/latest/loom/>
 - crossbeam / Chase-Lev deque in Rust.
   <https://docs.rs/crossbeam/0.3.2/crossbeam/sync/chase_lev/index.html>
 - JEP 333, *ZGC: A Scalable Low-Latency Garbage Collector* — colored pointers,

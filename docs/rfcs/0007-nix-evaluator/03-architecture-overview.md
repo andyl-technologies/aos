@@ -366,6 +366,64 @@ codegen) free to change without recompiling or re-reasoning about the substrate.
 It is the same discipline HotSpot uses to let C1, C2, and the interpreter share
 one object model and one GC.
 
+### 3.4 The unified demand graph: parser, compiler, and forcer are one model
+
+The deepest statement of this architecture is that **lexing, parsing, scope
+resolution, optimization passes, compilation, and thunk forcing are all the same
+kind of thing**: a memoized, content-addressed, suspendable unit of deferred work
+whose output is a pure function of its inputs' identities. We do not build a
+serial front-end that feeds a separate evaluator; we build **one demand-driven
+incremental dataflow graph** in which each stage is a *node kind*. This is the
+model Salsa (rust-analyzer) uses — lex/parse/name-resolution/type-inference are
+all queries in one incremental graph — and it is the full conclusion of the
+synthesis thesis (§1): *aos-nix is first a general incremental computation engine,
+and Nix evaluation — including its own front-end — is the top layer.*
+
+The payoff is that every cross-cutting concern is a property of **the graph
+engine**, implemented once, and every node kind inherits it:
+
+| Concern | How it is uniform across node kinds |
+|---|---|
+| Memoization / early cutoff | every node keyed by content hash; an unchanged output halts propagation ([12](12-incremental-evaluation-cache.md)) |
+| Parallelism | every node is a work item on the rayon work-stealing pool ([13](13-parallel-evaluation.md)) |
+| Suspend / resume | a node parks on I/O *or* on a dependency another worker is computing — one fiber scheduler ([13](13-parallel-evaluation.md) §5.5) |
+| Speculation | any *pure* node may be computed ahead of demand ([04](04-frontend-parser-and-ir.md) §9.6) |
+| Diagnostics | every node carries spans; errors render through one path ([24](24-observability-and-diagnostics.md)) |
+| Persistence | every cacheable node lands in the same content-addressed store ([12](12-incremental-evaluation-cache.md) §6.5) |
+
+So `import ./foo.nix` is not "call the parser then call the evaluator"; it is
+*demand a parse node, which a worker may already have computed speculatively,
+whose IR feeds a compile node, whose code feeds the thunk that produced the
+demand* — all in one graph, scheduled by one pool, cached in one store.
+
+**Two seams keep this honest** — the model is uniform in *shape*, but two
+per-node properties differ by kind:
+
+1. **Effect class.** Pure nodes (lex, parse, resolve, analyze, compile, and
+   *most* thunks) get the full treatment — freely memoized, speculated, re-run,
+   parallelized. **Effectful** nodes — `derivationStrict` (writes a `.drv`),
+   `import`/`readFile` (reads the filesystem), IFD (triggers a build) — are a
+   constrained subclass: at-most-once execution, **no speculation**, effects
+   keyed into the cache as explicit inputs. The scheduler reads a per-node effect
+   tag. This is the general form of the speculative-parse-error-quarantine rule
+   ([04](04-frontend-parser-and-ir.md) §9.6): *speculation and re-execution are
+   sound only for pure nodes.*
+
+2. **Two-tier granularity.** The *coarse* nodes — files (parse/compile),
+   whole-program analyses, derivations, heavy library bindings — live in the
+   durable, dependency-tracked query graph. The *fine* thunk forcing *within* a
+   node is plain in-memory laziness, **not** a tracked query, because a billion
+   micro-thunks each carrying a memo-probe and a dependency edge would cost more
+   than they save (the granularity policy, [12](12-incremental-evaluation-cache.md)
+   §3.3–§3.4). One node *model*, two instantiation tiers selected by a cost rule.
+
+With those two qualifiers — effect class (gates speculation/re-execution) and
+two-tier granularity (gates tracking overhead) — the front-end stops being a
+serial prelude and becomes a first-class citizen of the deferred-execution graph,
+and the whole evaluator is one incremental dataflow engine. See the
+[decision register](19-decision-register.md) (C-20) and
+[frontend](04-frontend-parser-and-ir.md) §9.6.
+
 ---
 
 ## 4. The tier model

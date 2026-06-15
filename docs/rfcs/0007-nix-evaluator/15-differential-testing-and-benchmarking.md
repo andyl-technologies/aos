@@ -212,7 +212,7 @@ The harness emits, per root divergence, a **self-contained reproduction**: the
 `(file, attr)`, both `.drv` paths, the structural-diff field localization, and
 the minimal input set — enough to re-run that one node without re-evaluating the
 closure (mirroring the divergence reports described in
-[integration with AOS](14-integration-with-aos.md) §10).
+[integration with AOS](14-integration-with-aos.md) §11).
 
 ### 2.5 Harness incarnations: a Rust test and an `aos` subcommand
 
@@ -458,7 +458,7 @@ aos-nix maintains its own statistics, deliberately **named to parallel
 `NIX_SHOW_STATS`** so a before/after comparison is a field-by-field diff rather
 than a translation exercise. They surface through `aos`'s stats output and the
 `tracing` counters described in
-[integration with AOS](14-integration-with-aos.md) §10 (native successes,
+[integration with AOS](14-integration-with-aos.md) §11 (native successes,
 fallbacks, shadow divergences). The aos-nix counters additionally expose what
 C++ Nix cannot, because those mechanisms do not exist in C++ Nix:
 
@@ -868,7 +868,7 @@ Flagged so the design record does not overstate certainty.
    `NIX_SHOW_STATS` schema — and parse stats defensively (tolerate added fields,
    match known fields by name, fail loudly only on a *renamed* field the harness
    reads). The pinned Nix version is the same rev the `nix-compat` pin must match
-   ([14](14-integration-with-aos.md) §12); bumping it is a deliberate,
+   ([14](14-integration-with-aos.md) §13); bumping it is a deliberate,
    harness-gated event, not an ambient float. A second-version forward-compat
    canary is an optional later add, not part of the first gate.
 

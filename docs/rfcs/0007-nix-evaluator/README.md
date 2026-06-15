@@ -88,6 +88,8 @@ sound here.
 | [20](20-nix-language-conformance.md) | Nix *language* conformance checklist: every syntax/semantic/edge-case rule to reproduce for parity (operators, attrsets, fixpoints, scoping, strings/contexts, coercions) |
 | [21](21-builtins-conformance.md) | Builtins conformance catalog: every `builtins.*` primop with signature, parity notes, edge cases, and the impure-builtin cache-keying table |
 | [22](22-implementation-checklist-all-phases.md) | Implementation checklist across all phases (P1–P8 + P3.5), with deliverables, conformance gates, decisions closed, and exit criteria |
+| [23](23-scope-platform-and-modes.md) | Scope, platform, and language modes: flakes out of scope; restricted/pure-eval + allowed-paths; multi-arch portability + `currentSystem`; `nixVersion`/`langVersion` spoofing |
+| [24](24-observability-and-diagnostics.md) | Observability and diagnostics: miette error reporting, presentation-vs-parity, `--show-trace`, the REPL, and tracing |
 
 ## Decision log
 
@@ -120,6 +122,10 @@ blocks Phase 1.
 | **Cache storage: mmap packfile + heed/LMDB** | Custom mmap'd append-only packfile for immutable content-addressed blobs (zero-copy); `heed`/LMDB for metadata + index. Advisory cache → relaxed sync. See [12](12-incremental-evaluation-cache.md) §6.5, [19](19-decision-register.md) C-13. |
 | **Out-of-core memory (the swap Nix lacks)** | The mmap'd value store spills cold values to disk, OS-paged, write-back-free; `madvise`/huge pages + a memory budget; hash-consing already beats vanilla Nix's live set. See [06](06-memory-management-and-gc.md), [12](12-incremental-evaluation-cache.md) §6.6, [19](19-decision-register.md) C-17. |
 | **Quantified cutover gate** | A single falsifiable bar (100% closure parity + fuzz CPU-hours + shadow-mode window, all at zero divergence) before `AOS_NIX_NATIVE` defaults on; `NixCli` retained. See [15](15-differential-testing-and-benchmarking.md) §8.1, [19](19-decision-register.md) C-18. |
+| **One unified, effect-classed demand graph** | Lex/parse/resolve/analyze/compile/force are all node kinds in one incremental dataflow graph; memoization, parallelism, suspend/resume, speculation, diagnostics are engine properties. Effect class gates speculation; two-tier granularity gates tracking overhead. See [03](03-architecture-overview.md) §3.4, [19](19-decision-register.md) C-19/C-20. |
+| **Pre-JIT GHC-style simplifier** | An IR-to-IR optimizer (inline/beta/constant-fold/case-of-known/DCE/CSE/float + list-fusion RULES) run to a fixpoint, tier-independent; sound by the same effect/error discipline. See [07](07-laziness-and-whole-program-analyses.md) §7.5, [19](19-decision-register.md) C-21. |
+| **Scope & platform boundaries** | Flakes out of scope; restricted/pure-eval + allowed-paths supported; multi-arch (host affects speed not output); `nixVersion` spoofed to the pinned Nix for parity. See [23](23-scope-platform-and-modes.md), [19](19-decision-register.md) C-22–C-25. |
+| **Diagnostics: miette; IFD handoff** | miette for error reporting (presentation ≠ parity); IFD realises builds through the AOS build path with the blocked fiber parked. See [24](24-observability-and-diagnostics.md), [14](14-integration-with-aos.md) §9, [19](19-decision-register.md) C-26/C-27. |
 
 ## Roadmap
 

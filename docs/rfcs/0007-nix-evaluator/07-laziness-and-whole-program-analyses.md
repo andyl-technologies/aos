@@ -519,6 +519,97 @@ Two GHC/HotSpot supporting transforms make scalar replacement pay off:
   to cross the merge. In CLIF these are simply block parameters on the merge
   block — Cranelift's SSA block arguments *are* join points.
 
+## 7.5 The IR-to-IR simplifier pipeline: iterating to a fixpoint (GHC Core-to-Core)
+
+The analyses of §§4–7 are not run once, in isolation. They are **passes in one
+IR-to-IR optimizer that runs them iteratively to a fixpoint**, exactly as GHC's
+Core-to-Core pipeline runs its *simplifier* interleaved with demand analysis,
+float-out, specialization, and CSE across several phases. This is **pre-JIT graph
+reduction**: it is pure IR-to-IR transformation, *independent of the execution
+tier*, so it improves the IR the tier-0 tree-walk oracle interprets **and** the IR
+Cranelift later compiles ([execution tiers](08-execution-tiers-and-cranelift.md)) —
+it pays off before a single line of JIT exists. In the unified-graph framing
+([architecture overview](03-architecture-overview.md) §3.4) the optimizer is just a
+**compile-node**, memoized by input-IR hash, so optimization results are cached
+across runs like everything else.
+
+### 7.5.1 The simplifier (the workhorse), iterated to a fixpoint
+
+Beyond the demand/cardinality/float/escape passes already described, the simplifier
+performs the *pure local reductions* that each expose further reductions — which is
+why it must iterate:
+
+- **Inlining + beta-reduction.** Inline small or used-once lambdas and `let`
+  bindings. Nix is higher-order and saturated with tiny `lib` functions; inlining
+  them removes call overhead *and* exposes constant folding, case-of-known, and
+  strictness at the call site. GHC-style heuristics (size threshold; used-once
+  always-inline from the cardinality analysis of §5).
+- **Constant folding.** Evaluate total, constant subexpressions at compile time:
+  `1 + 2 → 3`, `"a" + "b" → "ab"`, `builtins.length [ 1 2 3 ] → 3`.
+- **Case-of-known / select-of-known.** `{ a = 1; }.a → 1`; `if true then x else y →
+  x`; attribute selection on a statically-known attrset literal folds to the field.
+  (This is GHC's case-of-known-constructor, specialized to Nix attrsets and `if`.)
+- **Dead-binding elimination** (from §5.2 absence analysis), **common-subexpression
+  elimination**, and **eta-reduction/expansion**. CSE is *safe and desirable* here
+  precisely because values are immutable and we already maximally share via
+  hash-consing ([05](05-value-representation.md)) — GHC must be cautious about CSE
+  changing sharing/laziness; we are not.
+- **let-floating in and out** (§6) — floated as part of the same loop, not a
+  separate phase, so a hoist exposes an inline and vice-versa.
+
+These interleave with the analyses because each enables the others: inlining
+exposes strictness (§4); strictness enables worker/wrapper and unboxing; floating
+exposes constant folding; specialization (a `map f` with statically-known `f`)
+exposes more inlining. We run the simplifier in phases — gentle early passes, more
+aggressive later — to a fixpoint or a capped iteration count, exactly GHC's
+strategy.
+
+### 7.5.2 Rewrite rules: list fusion is the high-value Nix-specific one
+
+The pipeline supports **algebraic rewrite RULES** — semantics-preserving rewrites
+applied during simplification. The standout for Nix is **list fusion**, because
+`lib` chains `map`/`filter`/`concatMap` constantly, allocating intermediate lists:
+
+```text
+   map f (map g xs)        →  map (\x: f (g x)) xs      -- one traversal, no temp list
+   length (map f xs)       →  length xs                 -- f never runs
+   concatMap f [ x ]       →  f x
+   filter p (filter q xs)  →  filter (\x: q x && p x) xs
+```
+
+This is the same win GHC gets from foldr/build (and stream) fusion, applied to
+Nix's list builtins — eliminating intermediate-list allocation that neither C++ Nix
+nor Tvix removes.
+
+### 7.5.3 The soundness rule (the same effect/error discipline as everywhere)
+
+Every reduction must be **observably transparent** with respect to Nix semantics —
+the differential gate ([differential testing](15-differential-testing-and-benchmarking.md))
+catches any reduction that changes a `.drv` byte. Two sharp edges, both instances
+of the effect/error-quarantine rule that governs speculation
+([04](04-frontend-parser-and-ir.md) §9.6) and the unified graph
+([03](03-architecture-overview.md) §3.4):
+
+- **Never fold a *failing* subexpression eagerly.** `1 / 0`, `throw "x"`, `abort` —
+  if the original is lazy and un-demanded, constant-folding it must not fire the
+  error at compile time. Folding is restricted to **total** operations; a folded
+  error is stashed and re-raised only if the value is genuinely demanded.
+- **Strictness must be *proven*, never speculative.** Worker/wrapper may evaluate a
+  binding eagerly only where §4 *proves* it is always forced. Making a lazy binding
+  strict where it was not observably strict would change termination/error behavior
+  and the `.drv` — forbidden (§4.3).
+
+### 7.5.4 Phasing
+
+The *core simplifier* (inline, beta, constant-fold, case-of-known, DCE, CSE, eta)
+and its interleaving with the §§4–7 analyses are committed — they are cheap,
+tier-independent, and help even the oracle. The *aggressiveness* — inlining size
+thresholds, how many fixpoint iterations, which rewrite RULES (especially fusion)
+to enable — is **measure-gated**: over-inlining bloats IR and over-eager fusion can
+change sharing, so each is tuned against the harness and the
+`NIX_SHOW_STATS`-style counters ([15](15-differential-testing-and-benchmarking.md)),
+never assumed. See the [decision register](19-decision-register.md).
+
 ## 8. The whole-program advantage: why this works better in Nix than anywhere
 
 Every analysis above is, in the general functional-language setting,

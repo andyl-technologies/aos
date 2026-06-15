@@ -212,7 +212,7 @@ top. We deliberately do not, at the `aos-core` boundary, because:
   on the heavy `aos-nix` crate (Cranelift, the GC, the `unsafe` core) in its
   default build. The trait lives in `aos-core`; the `NixNative` impl lives in
   `aos-nix` and is wired in only when the feature/flag is enabled. `aos-core`
-  thus stays lightweight and `miri`-clean (see [§9](#9-the-unsafe-policy)).
+  thus stays lightweight and `miri`-clean (see [§10](#10-the-unsafe-policy)).
 
 ### 3.2 `eval_expr` is included but is the *easier* half
 
@@ -561,7 +561,118 @@ a correct, side-effect-compatible continuation of the fast path. Here, `NixCli`
 
 ---
 
-## 9. The `unsafe` policy
+## 9. Import-from-derivation (IFD) and the eval->build handoff
+
+The eval/build split of [§1](#1-what-we-are-and-are-not-replacing) draws a clean
+line: `aos-nix` evaluates to a `.drv`, real Nix builds. **Import-from-derivation
+(IFD) is the one place that line is crossed *during evaluation itself*.** It is
+worth its own section precisely because it couples the two phases the rest of
+this RFC works to keep separate.
+
+### 9.1 What IFD is
+
+IFD occurs when evaluation forces a value whose production requires a derivation
+to be **built first** — most often passing a store path that is itself a build
+output to a filesystem-reading builtin (`import`, `readFile`, `readDir`,
+`pathExists`) so that evaluation cannot proceed until that output physically
+exists. Quoting the Nix manual: "Passing an expression `expr` that evaluates to
+a store path to any built-in function which reads from the filesystem
+constitutes Import From Derivation (IFD)," and "When the store path needs to be
+accessed, evaluation will be paused, the corresponding store object realised,
+and then evaluation resumed." That pause is the defining property: IFD is the
+single point where eval blocks on the *builder* rather than on more eval.
+
+This is also why IFD is the canonical example of "genuinely blocking eval-time
+I/O" — the work the fiber model of [parallel evaluation](13-parallel-evaluation.md)
+§5.5 exists to absorb. Every other eval-time read in a from-source distro is a
+fast local syscall; IFD is the one that can block for *seconds to minutes* while
+a builder runs.
+
+### 9.2 The handoff: aos-nix detects, AOS builds, eval resumes
+
+`aos-nix` never builds anything itself — it only evaluates (see
+[§1](#1-what-we-are-and-are-not-replacing)). The IFD handoff is therefore an
+explicit hand-back to the AOS build path:
+
+```text
+   aos-nix eval ──force store-path-reading builtin
+        │
+        ├─ detect IFD demand: this value needs derivation D BUILT
+        │
+        ▼
+   realise D via the AOS build path  ── NOT aos-nix:
+        nix-store --realise  /  the `aos build` orchestrator
+        (NixCli::realise — the SAME build half §1 never replaces)
+        │
+        ▼  D's output now exists in the store
+   re-enter evaluation: read the built output's contents,
+   resume forcing where eval paused
+```
+
+Concretely: when the native evaluator forces a thunk that demands a not-yet-built
+output, it computes and writes that output's `.drv` (still pure eval), then
+**realises it through `NixCli::realise` / the `aos build` orchestrator** — the
+exact build boundary [§1](#1-what-we-are-and-are-not-replacing) and the
+[`NixEval`](#3-the-nixeval-trait) trait keep out of `aos-nix`. Eval blocks on
+that realisation, then resumes with the built output's bytes re-entering the
+evaluation as an ordinary value. The native evaluator is still doing *only* the
+eval arrow; the build arrow is delegated whole, mid-eval.
+
+### 9.3 Integration with the fiber model
+
+An IFD demand is exactly the blocking point the fiber runtime
+([parallel evaluation](13-parallel-evaluation.md) §5.5) is designed for. Rather
+than pinning an OS thread on `block_on(realise(D))` and starving the work-stealing
+pool, the **IFD-blocked fiber parks** — its whole synchronous recursive force
+stack is saved on the fiber stack — and its worker work-steals other ready graph
+nodes. The realisation runs as a subprocess driven via the tokio reactor; on
+build completion the fiber is rescheduled onto some worker and resumes. This
+unifies "waiting on a build" with "waiting on a peer's claimed thunk"
+([13](13-parallel-evaluation.md) §3.3) under one scheduler: both park-or-steal,
+neither spins, neither blocks a compute worker. IFD is the headline justification
+for the fiber layer existing at all — a from-source distro that minimizes IFD
+mostly needs the synchronous core, and the fiber layer's turn-on is measure-gated
+on real IFD/fetch concurrency ([13](13-parallel-evaluation.md) §5.5.5).
+
+### 9.4 Incremental cache and IFD
+
+An IFD result is keyed on the **content address of the built output**, not on the
+expression that triggered it: the bytes that re-enter evaluation are exactly the
+NAR contents of a realised store path. The incremental cache
+([incremental evaluation cache](12-incremental-evaluation-cache.md)) therefore
+stores the IFD node under that content hash, so a repeat evaluation whose IFD
+input realises to the same output **hits early cutoff** — the downstream eval is
+not re-forced, and, where the output is already in the store, the build is not
+re-run. IFD's cost (a blocking build mid-eval) is thus paid once and memoized
+like any other node, which matters because IFD is otherwise the most expensive
+single thing eval can do.
+
+### 9.5 Parity: IFD semantics must match C++ Nix exactly
+
+IFD is *behaviorally* part of evaluation: *when* a build is triggered, *which*
+output re-enters eval, and *what* its contents drive next are all observable in
+the resulting `.drv` graph. If `aos-nix` triggers an IFD build at a different
+point, or reads a different output, or orders the realisation differently in a
+way that changes what eval sees, the downstream `.drv` diverges — the one
+failure this whole integration is built to prevent ([§6.2](#62-divergence-failures-must-never-reach-production)).
+So IFD semantics are pinned to the C++ Nix oracle like everything else: the
+differential harness ([differential testing and benchmarking](15-differential-testing-and-benchmarking.md))
+must agree on IFD-bearing inputs, and `Shadow` mode ([§5.1](#51-why-shadow-mode-is-the-rollout-workhorse))
+diffs them against real traffic.
+
+IFD is widely *discouraged* in nixpkgs — the manual notes it forces realisation
+to interleave with evaluation, defeating the "evaluate fully, then build the whole
+plan" model and serializing builds the evaluator can only discover one path at a
+time. AOS minimizes IFD for the same reasons. But "discouraged" is not "absent":
+wherever AOS actually uses IFD, `aos-nix` **MUST support it** with byte-identical
+semantics, because a missing or divergent IFD is indistinguishable downstream from
+any other parity break. Where `aos-nix` cannot yet reproduce a given IFD form, it
+returns the typed `Unsupported` error and falls back to `NixCli`
+([§6.1](#61-capability-failures-fall-back-transparently)) — never a wrong answer.
+
+---
+
+## 10. The `unsafe` policy
 
 AOS's workspace rule (`CLAUDE.md`) is blunt: **"Avoid `unsafe` at all costs.
 Use it only for an explicit, justified performance need, and document the
@@ -588,7 +699,7 @@ because three of its core mechanisms are irreducibly `unsafe`:
 These are not gratuitous; they are the mechanisms by which `aos-nix` beats C++
 Nix at all. The policy that fences them is what makes the waiver responsible.
 
-### 9.1 The fence: a small, audited `unsafe` core
+### 10.1 The fence: a small, audited `unsafe` core
 
 ```text
    ┌──────────────────────────────────────────────────────────┐
@@ -615,7 +726,7 @@ Concretely:
   This is the *correctness* implementation of the evaluator (it is the in-process
   oracle the JIT tiers are validated against), and it must remain analyzable by
   `miri` and the address/UB sanitizers. CI runs the conformance suite under
-  `miri` against this tree (see [§9.3](#93-tooling-discipline)).
+  `miri` against this tree (see [§10.3](#103-tooling-discipline)).
 - The **`unsafe` mechanisms** (value bit-twiddling, JIT calls, GC) are isolated
   into dedicated modules. Those modules use `#![deny(unsafe_op_in_unsafe_fn)]`
   so that even inside an `unsafe fn` every `unsafe` operation is an explicit,
@@ -625,7 +736,7 @@ Concretely:
   exactly as everywhere else in the workspace; the `unsafe` waiver is *only*
   about memory/codegen primitives, not about error handling.
 
-### 9.2 Why the oracle being safe matters for the *waiver*
+### 10.2 Why the oracle being safe matters for the *waiver*
 
 The reason we can responsibly run `unsafe` JIT code in a build tool is that we
 never have to *trust* it for correctness — only for speed. Every native result
@@ -646,7 +757,7 @@ the trusted core and the JIT must match it or be discarded via deopt. In
 `unsafe` surface, while real, is never the *final* arbiter of a store path — the
 differential gate ([§7](#7-the-acceptance-gate-binds-the-seam)) is.
 
-### 9.3 Tooling discipline
+### 10.3 Tooling discipline
 
 The standing discipline that accompanies the waiver:
 
@@ -667,7 +778,7 @@ tested against that safe program.
 
 ---
 
-## 10. Observability and operator controls
+## 11. Observability and operator controls
 
 Because this is a risky swap behind a flag, the integration is instrumented so an
 operator can always answer "which evaluator produced this, and did they agree?"
@@ -692,7 +803,7 @@ operator can always answer "which evaluator produced this, and did they agree?"
 
 ---
 
-## 11. Summary of the contract
+## 12. Summary of the contract
 
 ```text
    ┌──────────────────────────────────────────────────────────────────┐
@@ -723,7 +834,7 @@ the more conservative the harness around it must be.
 
 ---
 
-## 12. Open questions
+## 13. Open questions
 
 - **Long-lived daemon vs per-invocation process.** **Decision (closed):
   per-invocation first.** The first cut is the per-invocation `aos` process
@@ -782,6 +893,13 @@ the more conservative the harness around it must be.
 - Nix store derivation / deriving-path reference (ATerm canonical encoding,
   store-path derivation):
   <https://nix.dev/manual/nix/2.34/store/derivation/>
+- Nix *Import From Derivation (IFD)* reference — definition ("an expression that
+  evaluates to a store path passed to a built-in that reads the filesystem"),
+  the pause/realise/resume rule ("evaluation will be paused, the corresponding
+  store object realised, and then evaluation resumed"), and why it is
+  discouraged (serializes realisation against the sequential evaluator):
+  <https://nix.dev/manual/nix/2.34/language/import-from-derivation>,
+  <https://jade.fyi/blog/nix-evaluation-blocking/>
 - Rust `unsafe` for JIT function pointers — `transmute` of code pointers,
   innate unsafety of calling JIT-produced fn pointers, no way to enforce calling
   convention; `// SAFETY:` comment convention:

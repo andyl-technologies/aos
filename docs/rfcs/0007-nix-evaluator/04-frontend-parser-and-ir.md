@@ -780,6 +780,86 @@ derivation results and for early cutoff. The mantra "the fastest evaluator is th
 one that does not evaluate" starts here, with "the fastest parser is the one that
 does not parse."
 
+### 9.6 Parse and compile as deferred, parallel, speculative graph nodes
+
+The frontend cache (§9.1–§9.5) treats a file's IR as a memoized, content-addressed
+artifact. The natural next step is to recognize that **parsing and compiling a file
+are themselves deferred units of work — graph nodes, exactly like thunks** — and to
+schedule them on the same demand-driven, parallel, speculative machinery the rest of
+the evaluator uses. A file's IR is a *pure function of its bytes* (the parse-cache
+key, §9.2), which makes this not just convenient but sound.
+
+This unifies three stages under one model:
+
+```text
+   file bytes ──parse-node──► AST/IR ──compile-node──► native code ──thunk──► value
+               (cheap, lazy,            (expensive,                 (the value-
+                parallel,               demand+hotness               level graph,
+                speculative)            driven)                      doc 12)
+```
+
+**Lazy — parse on demand, compile on heat.** Nix `import` is already lazy: an
+imported file's value is a thunk, parsed only when that thunk is first forced (a
+property C++ Nix shares via its file-parse cache). We extend the laziness *down a
+second level*: parsing to AST/IR happens on first `import` demand, but **native
+compilation of a file's functions is deferred until they are actually hot** — the
+same tiering logic [execution tiers](08-execution-tiers-and-cranelift.md) applies to
+thunks, applied to files. A file that is imported but whose functions never run hot
+is parsed (cheap) and never Cranelift-compiled (expensive). Parse and compile become
+two nodes with *different eagerness*: parse is cheap enough to do eagerly or
+speculatively; native compile stays demand- and profile-driven.
+
+**Parallel — independent files parse and compile concurrently.** Because a file's
+IR depends only on its content, parse/compile nodes for distinct files are
+independent and run on the rayon pool ([parallel evaluation](13-parallel-evaluation.md)):
+parsing the AOS package set (or nixpkgs) is embarrassingly parallel across files.
+Neither C++ Nix nor Tvix does this — both parse serially, on demand, on the
+evaluating thread. A parse/compile node is just another work item the work-stealing
+scheduler can run on any idle worker.
+
+**Speculative — prefetch along statically-known import edges.** The import graph is
+*partially statically knowable*: an `import ./foo.nix` with a literal path is a static
+edge discoverable from a file's AST without evaluating anything. Idle workers can
+**speculatively parse (and, less eagerly, pre-compile)** files reachable along those
+static edges, ahead of the demand that will force them, so the IR is already warm in
+the cache when the thunk forces. This is prefetching/prefaulting applied to the
+front-end, hiding parse latency behind CPU work the evaluator is doing anyway.
+
+**The non-negotiable guardrail: speculation must be side-effect-free and
+error-quarantined.** This is the same discipline as the incremental cache's purity
+requirement and CPU speculative execution: *a speculative parse/compile must never
+change observable behavior.* The sharp case is **parse errors**. In Nix, a syntax
+error in a file fires **only when that file is actually imported** (errors are lazy).
+If we speculatively parse a file that contains a syntax error but the real evaluation
+never imports it, surfacing that error would invent a divergence from C++ Nix. So:
+
+- A speculative parse/compile failure is **stashed against the node, not raised.** It
+  is re-raised *only if and when the file is genuinely demanded* by evaluation — at
+  which point it reproduces exactly the error C++ Nix would have produced at that
+  point.
+- Speculation does **no I/O beyond reading the candidate file** (which is itself a
+  pure, content-hashed read keyed into the cache, §9.2), performs no effects, and its
+  *only* observable output is a warm cache entry. Whether a file was speculated or
+  parsed on demand must be **unobservable** to evaluation.
+- Speculation is **bounded** — it runs only on otherwise-idle workers, prioritizes
+  static edges over guesses, and caps depth — so a mis-speculated file (parsed but
+  never imported) costs at most some idle-core time, never correctness.
+
+**Why this is sound here and rare elsewhere.** Treating parse/compile as pure,
+memoized, content-addressed graph nodes — lazy, parallel, and speculative — is the
+same synthesis thesis ([architecture overview](03-architecture-overview.md)) applied
+to the front-end: Nix's purity and the content-addressed parse cache make front-end
+work a first-class citizen of the deferred-execution graph rather than a serial
+prelude to it. The error-quarantine rule is what keeps speculation from leaking into
+the bug-for-bug `.drv` parity the whole RFC defends.
+
+**Phasing.** The *lazy* split (parse on import, native-compile on heat) and *parallel*
+parse across files are straightforward wins and ride the existing cache + rayon pool;
+they are committed. *Speculative* prefetch is the measure-gated part — its
+aggressiveness (how far down static edges, whether to pre-compile or only pre-parse)
+is tuned against profiles, because mis-speculation wastes cores. See the
+[decision register](19-decision-register.md).
+
 ## 10. Performance characteristics and measurement
 
 Per the **measure-first** discipline ([motivation and goals](01-motivation-and-goals.md),
