@@ -294,6 +294,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         db: Arc::clone(&state.db),
         jwt_keys: state.auth.jwt_keys.clone(),
         external_url: state.external_url.clone(),
+        ratelimit: Arc::clone(&state.ratelimit),
     });
     let connect_router = connectrpc::Router::new();
     let connect_router = RegistryServiceExt::register(Arc::clone(&rpc), connect_router);

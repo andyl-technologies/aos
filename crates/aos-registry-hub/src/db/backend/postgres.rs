@@ -17,10 +17,29 @@ use postgres::{Client, NoTls};
 
 use super::super::dialect::Dialect;
 use super::super::value::{Row, Value};
-use super::{prepare, split_statements, with_returning_id, Backend, Tx};
+use super::{prepare, redact_db_url, split_statements, with_returning_id, Backend, Tx};
 
 /// A [`Backend`] backed by one synchronous postgres `Client` behind a `Mutex`.
 pub struct PostgresBackend {
+    // SECURITY/TODO(transport): the connection is established with `NoTls`, so
+    // traffic to postgres — including the bearer of every query — is cleartext
+    // on the wire. For a high-assurance multi-tenant hub this should be TLS
+    // (verify-full) by default, opting out only for an explicit
+    // `sslmode=disable` (local dev). The sync `postgres` 0.19 crate has no
+    // built-in TLS connector; wiring it means adding a rustls-based connector
+    // (`tokio-postgres-rustls` driving `postgres`'s `MakeTlsConnect`) plus a
+    // root-cert source. That is a new workspace dependency and cert-config
+    // surface, deliberately deferred from this pass; only the credential leak
+    // (the password in connect-error logs) is fixed here.
+    //
+    // SECURITY/TODO(resilience): the single `Client` lives behind a `Mutex`
+    // with no reconnect or health-check. If the server drops the connection
+    // (restart, idle timeout, network blip) every subsequent query fails until
+    // the hub process is restarted — a permanent outage from a transient fault.
+    // The intended fix is a reconnect-and-retry wrapper around the query-exec
+    // path (detect a broken-connection error, re-establish under the lock, and
+    // retry the statement once) or a small connection pool. Deferred here to
+    // keep the existing query path stable; tracked as an availability item.
     client: Mutex<Client>,
 }
 
@@ -32,8 +51,12 @@ impl PostgresBackend {
     ///
     /// Returns an error if the connection cannot be established.
     pub fn connect(url: &str) -> Result<Self> {
-        let client =
-            Client::connect(url, NoTls).with_context(|| format!("connecting to postgres {url}"))?;
+        // Redact the password from the URL before it lands in any error chain:
+        // connection failures are logged with this context, and the raw URL
+        // carries the database password in its userinfo.
+        let redacted = redact_db_url(url);
+        let client = Client::connect(url, NoTls)
+            .with_context(|| format!("connecting to postgres {redacted}"))?;
         Ok(Self {
             client: Mutex::new(client),
         })

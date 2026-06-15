@@ -59,6 +59,13 @@ pub struct RegistryRpc {
     /// The externally reachable base URL, used to build the canonical upload
     /// URL returned by `MintUploadCredentials`.
     pub external_url: String,
+    /// Process-local rate limiter, shared with the HTTP handlers via
+    /// [`AppState`](crate::server::AppState).
+    ///
+    /// Used to bound abusive mutating RPCs that are otherwise reachable by any
+    /// authenticated principal — currently `CreateOrg`, keyed per JWT principal
+    /// under [`RateClass::CreateOrg`](crate::ratelimit::RateClass::CreateOrg).
+    pub ratelimit: Arc<crate::ratelimit::RateLimiter>,
 }
 
 fn internal(err: anyhow::Error) -> ConnectError {
@@ -637,9 +644,20 @@ impl OrgService for RegistryRpc {
     /// `Owner` role at the new org's scope so they can immediately configure
     /// it; a service-account caller creates the org without an auto-grant.
     ///
+    /// Because any authenticated principal may call this, it is bounded two
+    /// ways so a caller cannot loop to pollute the namespace (sec L-3): a
+    /// per-principal rate limit
+    /// ([`RateClass::CreateOrg`](crate::ratelimit::RateClass::CreateOrg))
+    /// caps the burst, and a per-owner total cap
+    /// ([`MAX_ORGS_PER_OWNER`](crate::ratelimit::MAX_ORGS_PER_OWNER)) caps the
+    /// steady-state number of orgs a single user may own.
+    ///
     /// # Errors
     ///
     /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `ResourceExhausted` when the caller exceeds the per-principal creation
+    /// rate or already owns
+    /// [`MAX_ORGS_PER_OWNER`](crate::ratelimit::MAX_ORGS_PER_OWNER) orgs,
     /// `InvalidArgument` for an empty name or a slug that fails
     /// [`iam::validate_org_slug`], `AlreadyExists` when the slug is taken,
     /// and `Internal` on database failure.
@@ -669,6 +687,44 @@ impl OrgService for RegistryRpc {
                 ErrorCode::PermissionDenied,
                 "org creation is invite-only on this instance",
             ));
+        }
+        // Bound the creation rate per authenticated principal. Keying on the
+        // JWT owner (kind + id) meters the *caller*, not an IP, so a single
+        // principal cannot loop to mint orgs regardless of source address. The
+        // check is placed after the cheap input/policy gates so a malformed or
+        // forbidden request does not consume the caller's creation budget — the
+        // limit meters genuine creation attempts, not validation failures.
+        let rl_key = format!("{}:{}", claims.owner_kind, claims.owner_id);
+        if let crate::ratelimit::RateDecision::Limited { retry_after } = self.ratelimit.check(
+            crate::ratelimit::RateClass::CreateOrg,
+            &rl_key,
+            crate::server::now_secs(),
+        ) {
+            return Err(ConnectError::new(
+                ErrorCode::ResourceExhausted,
+                format!("org creation rate limit exceeded; retry after {retry_after}s"),
+            ));
+        }
+        // Per-owner total cap: a user principal may own only so many orgs at
+        // once, so a slow loop cannot accumulate namespace pollution past the
+        // burst the rate limit already blunts. Service accounts get no
+        // auto-grant and so are not metered here.
+        if let Some(principal) = claims_principal(&claims) {
+            if principal.kind == PrincipalKind::User
+                && self
+                    .db
+                    .count_user_owned_orgs(principal.id)
+                    .map_err(internal)?
+                    >= crate::ratelimit::MAX_ORGS_PER_OWNER
+            {
+                return Err(ConnectError::new(
+                    ErrorCode::ResourceExhausted,
+                    format!(
+                        "owned-org limit reached ({} max); contact an instance admin",
+                        crate::ratelimit::MAX_ORGS_PER_OWNER
+                    ),
+                ));
+            }
         }
         let id = self
             .db

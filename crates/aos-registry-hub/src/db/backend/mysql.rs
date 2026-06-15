@@ -22,10 +22,25 @@ use mysql::{Conn, OptsBuilder, Value as MyValue};
 
 use super::super::dialect::Dialect;
 use super::super::value::{Row, Value};
-use super::{prepare, split_statements, Backend, Tx};
+use super::{prepare, redact_db_url, split_statements, Backend, Tx};
 
 /// A [`Backend`] backed by one synchronous mysql `Conn` behind a `Mutex`.
 pub struct MysqlBackend {
+    // SECURITY/TODO(transport): the connection is built from `Opts::from_url`
+    // without explicit `ssl_opts`, so transport security depends entirely on
+    // whatever `ssl-mode` the URL happens to carry — the hub does not *require*
+    // TLS. The `mysql` crate is compiled with the `default-rustls` feature, so
+    // a rustls `SslOpts` can be attached without a new dependency; the intended
+    // fix is to default to `SslOpts` with verification on (root CA from the
+    // platform store / a configured PEM), relaxing only for an explicit
+    // disable. Deferred here (cert-source config) in favor of the credential
+    // leak fix; the URL password is no longer logged in clear.
+    //
+    // SECURITY/TODO(resilience): the single `Conn` lives behind a `Mutex` with
+    // no reconnect or health-check, so a dropped connection is a permanent
+    // outage until restart. The intended fix is a reconnect-and-retry wrapper
+    // (detect a broken-connection error, re-establish under the lock, retry the
+    // statement once) or a pool. Deferred to keep the query path stable.
     conn: Mutex<Conn>,
 }
 
@@ -38,10 +53,14 @@ impl MysqlBackend {
     /// Returns an error if the URL cannot be parsed or the connection cannot
     /// be established.
     pub fn connect(url: &str) -> Result<Self> {
+        // Redact the password before the URL reaches any error context: both
+        // the parse and connect failures are logged with it, and the raw URL
+        // carries the database password in its userinfo.
+        let redacted = redact_db_url(url);
         let opts =
-            mysql::Opts::from_url(url).with_context(|| format!("parsing mysql url {url}"))?;
+            mysql::Opts::from_url(url).with_context(|| format!("parsing mysql url {redacted}"))?;
         let conn = Conn::new(OptsBuilder::from_opts(opts))
-            .with_context(|| format!("connecting to mysql {url}"))?;
+            .with_context(|| format!("connecting to mysql {redacted}"))?;
         Ok(Self {
             conn: Mutex::new(conn),
         })

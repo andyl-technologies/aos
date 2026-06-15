@@ -5218,6 +5218,31 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
+    /// The number of orgs a user currently *owns* (holds an `Owner`
+    /// membership on at an org-root scope).
+    ///
+    /// Used by the org-creation cap ([`MAX_ORGS_PER_OWNER`]) to bound namespace
+    /// pollution: an `Owner` membership's scope is the org slug (a single path
+    /// segment with no `/`), which is exactly what `CreateOrg` grants the
+    /// creator, so counting those rows counts the principal's owned orgs.
+    ///
+    /// [`MAX_ORGS_PER_OWNER`]: crate::ratelimit::MAX_ORGS_PER_OWNER
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub fn count_user_owned_orgs(&self, user_id: i64) -> Result<i64> {
+        self.backend
+            .query_opt(
+                "SELECT COUNT(*) FROM memberships
+                 WHERE principal_kind = 'user' AND principal_id = ?1
+                   AND role = 'owner' AND scope NOT LIKE '%/%'",
+                &vals![user_id],
+            )?
+            .context("owned-org count query returned no row")?
+            .get(0)
+    }
+
     pub fn user_has_any_membership(&self, user_id: i64) -> Result<bool> {
         let count: i64 = self
             .backend
