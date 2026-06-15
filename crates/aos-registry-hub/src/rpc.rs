@@ -249,6 +249,78 @@ impl RegistryRpc {
         }
     }
 
+    /// Read and verify an *optional* bearer JWT from the Connect context.
+    ///
+    /// Unlike [`Self::require_claims`], a missing `Authorization` header is not
+    /// an error — it yields `Ok(None)`, modelling an anonymous caller. A header
+    /// that is present but malformed or fails verification still errors, so a
+    /// bad token is never silently downgraded to anonymous.
+    ///
+    /// This is the read-path companion used by the list RPCs that filter
+    /// per-record by visibility (rather than gating the whole call): an
+    /// anonymous caller sees only the public slice, an authenticated one also
+    /// sees what their grants cover.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unauthenticated` when a header is present but not ASCII, not a
+    /// `Bearer` token, or fails JWT verification.
+    fn optional_claims(&self, ctx: &Context) -> Result<Option<Claims>, ConnectError> {
+        if ctx.header(&header::AUTHORIZATION).is_none() {
+            return Ok(None);
+        }
+        self.require_claims(ctx).map(Some)
+    }
+
+    /// Whether `claims` authorizes `perm` on `scope`, as a non-erroring filter.
+    ///
+    /// The boolean form of [`Self::require_permission`]: it applies the same
+    /// two-sided test — the token's own grant *and* the owner's live
+    /// memberships must both cover the action — but returns `false` instead of
+    /// a `PermissionDenied` error and `false` (fail-closed) on a database
+    /// failure or unknown principal. Anonymous callers (`None`) never pass.
+    ///
+    /// Used to drop, rather than reject, records a caller may not read when
+    /// filtering a listing (mirroring the HTML `can_read_registry`/`orgs`
+    /// filters), so a legitimate "list what I can see" call still succeeds.
+    fn claims_allow(&self, claims: Option<&Claims>, perm: Permission, scope: &Scope) -> bool {
+        let Some(claims) = claims else {
+            return false;
+        };
+        if !crate::auth::extract::token_allows(claims, perm, scope) {
+            return false;
+        }
+        let Some(principal) = claims_principal(claims) else {
+            return false;
+        };
+        match self.db.effective_scopes(principal) {
+            Ok(grants) => iam::allow(&grants, perm, scope),
+            Err(_) => false,
+        }
+    }
+
+    /// Whether the caller in `ctx` may read `registry`, as a non-erroring
+    /// filter for list responses.
+    ///
+    /// The boolean form of [`Self::require_read`], mirroring the HTML
+    /// `can_read_registry`: it applies the same access matrix — a registry
+    /// under a soft-deleted org is hidden, a `public` (or unowned phase-1)
+    /// registry reads anonymously, and an `internal`/`private` registry needs
+    /// the optional `claims` to grant [`Permission::Read`] on the registry
+    /// scope. Used to drop, rather than reject, records a caller may not read
+    /// so a `ListRegistries` call still returns the caller's visible slice.
+    fn can_read(&self, claims: Option<&Claims>, registry: &RegistryRecord) -> bool {
+        if let Some(org_id) = registry.org_id {
+            if !matches!(self.db.org_is_active(org_id), Ok(true)) {
+                return false;
+            }
+        }
+        if registry.visibility == "public" || registry.org_id.is_none() {
+            return true;
+        }
+        self.claims_allow(claims, Permission::Read, &Scope::parse(&registry.slug))
+    }
+
     /// Whether `claims`'s principal may create an org under `invite_only`.
     ///
     /// Permitted when the caller is an existing member of some org, holds a
@@ -366,20 +438,34 @@ fn org_message(org: &crate::db::OrgRecord) -> Org {
 }
 
 impl RegistryService for RegistryRpc {
-    /// `ListRegistries` — every registered registry with index status.
+    /// `ListRegistries` — the registries the caller may read, with index status.
+    ///
+    /// Visibility-filters every record through the same access matrix the
+    /// browse listing uses (`can_read_registry`): registries owned by a
+    /// soft-deleted org are excluded by [`crate::db::Database::list_registries`],
+    /// `public` (and unowned phase-1) registries list anonymously, and
+    /// `internal`/`private` registries appear only when the caller's bearer JWT
+    /// grants [`Permission::Read`] on the registry scope. Records the caller may
+    /// not read are dropped (not an error), so an anonymous caller sees the
+    /// public slice and a member additionally sees their org's registries.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidArgument` for a malformed `page_token` and
-    /// `Internal` on database failure.
+    /// Returns `Unauthenticated` for a present-but-invalid bearer JWT,
+    /// `InvalidArgument` for a malformed `page_token`, and `Internal` on
+    /// database failure.
     async fn list_registries(
         &self,
         ctx: Context,
         req: OwnedView<ListRegistriesRequestView<'static>>,
     ) -> Result<(ListRegistriesResponse, Context), ConnectError> {
+        let claims = self.optional_claims(&ctx)?;
         let records = self.db.list_registries().map_err(internal)?;
         let mut registries = Vec::with_capacity(records.len());
         for record in &records {
+            if !self.can_read(claims.as_ref(), record) {
+                continue;
+            }
             let status = self.db.index_status(record.id).map_err(internal)?;
             registries.push(self.registry_message(record, status)?);
         }
@@ -636,22 +722,35 @@ impl OrgService for RegistryRpc {
         ))
     }
 
-    /// `ListOrgs` — every organization, ordered by slug.
+    /// `ListOrgs` — the organizations the caller is a member of, ordered by slug.
+    ///
+    /// This is *not* a public directory: it mirrors the `/-/orgs` console page,
+    /// which requires a session and lists only the orgs the user can read. The
+    /// caller must present a bearer JWT, and each org is included only when that
+    /// caller holds [`Permission::Read`] covering its scope (soft-deleted orgs
+    /// are already excluded by [`crate::db::Database::list_orgs`]). Without this
+    /// filter, `ListOrgs` would be an anonymous enumeration primitive for every
+    /// tenant slug.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidArgument` for a malformed `page_token` and `Internal`
-    /// on database failure.
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
+    /// `InvalidArgument` for a malformed `page_token`, and `Internal` on
+    /// database failure.
     async fn list_orgs(
         &self,
         ctx: Context,
         req: OwnedView<ListOrgsRequestView<'static>>,
     ) -> Result<(ListOrgsResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
         let orgs: Vec<Org> = self
             .db
             .list_orgs()
             .map_err(internal)?
             .iter()
+            .filter(|org| {
+                self.claims_allow(Some(&claims), Permission::Read, &Scope::parse(&org.slug))
+            })
             .map(org_message)
             .collect();
         let (orgs, next_page_token) = paginate(orgs, req.page_size, req.page_token)?;
@@ -710,16 +809,25 @@ impl ProjectService for RegistryRpc {
 
     /// `ListProjects` — an org's projects, ordered by materialized path.
     ///
+    /// The project tree is org-internal: the caller must present a bearer JWT
+    /// granting [`Permission::Read`] on the org scope (the same membership the
+    /// console org dashboard requires to render the project list). An anonymous
+    /// or non-member caller is denied, so the project layout never leaks across
+    /// tenants.
+    ///
     /// # Errors
     ///
-    /// Returns `NotFound` for an unknown org and `Internal` on database
-    /// failure.
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT, `NotFound`
+    /// for an unknown org, `PermissionDenied` when the caller lacks `Read` on
+    /// the org scope, and `Internal` on database failure.
     async fn list_projects(
         &self,
         ctx: Context,
         req: OwnedView<ListProjectsRequestView<'static>>,
     ) -> Result<(ListProjectsResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
         let org = self.org_or_not_found(req.org_slug)?;
+        self.require_permission(&claims, Permission::Read, &Scope::parse(&org.slug))?;
         let projects: Vec<Project> = self
             .db
             .list_projects(org.id)
@@ -801,16 +909,33 @@ impl StorageService for RegistryRpc {
 
     /// `ListBindings` — an org's storage bindings, ordered by name.
     ///
+    /// The caller must present a bearer JWT granting [`Permission::Read`] on the
+    /// org scope (the membership the console dashboard requires to see the
+    /// bindings table). A binding's `root` is the on-disk path on the hub host,
+    /// so it is returned **only** to a caller who additionally holds
+    /// [`Permission::RegistryConfigure`] on the org — the admin+ right that can
+    /// create or delete bindings. A plain member sees each binding's name and
+    /// kind, but `root` is redacted to the empty string, never disclosing the
+    /// host filesystem layout to a non-admin.
+    ///
     /// # Errors
     ///
-    /// Returns `NotFound` for an unknown org and `Internal` on database
-    /// failure.
+    /// Returns `Unauthenticated` for a missing/invalid bearer JWT, `NotFound`
+    /// for an unknown org, `PermissionDenied` when the caller lacks `Read` on
+    /// the org scope, and `Internal` on database failure.
     async fn list_bindings(
         &self,
         ctx: Context,
         req: OwnedView<ListBindingsRequestView<'static>>,
     ) -> Result<(ListBindingsResponse, Context), ConnectError> {
+        let claims = self.require_claims(&ctx)?;
         let org = self.org_or_not_found(req.org_slug)?;
+        let scope = Scope::parse(&org.slug);
+        self.require_permission(&claims, Permission::Read, &scope)?;
+        // The `root` host path is an admin-only detail: only a caller who could
+        // create or delete bindings (RegistryConfigure) sees it. A plain member
+        // gets an empty `root` so the hub's filesystem layout never leaks.
+        let expose_root = self.claims_allow(Some(&claims), Permission::RegistryConfigure, &scope);
         let bindings: Vec<Binding> = self
             .db
             .list_storage_bindings(org.id)
@@ -820,7 +945,7 @@ impl StorageService for RegistryRpc {
                 org_slug: org.slug.clone(),
                 name: b.name,
                 kind: b.kind,
-                root: b.root,
+                root: if expose_root { b.root } else { String::new() },
                 ..Default::default()
             })
             .collect();
@@ -1106,16 +1231,24 @@ fn changeset_message(row: crate::db::ChangesetRow) -> Changeset {
 impl PackageService for RegistryRpc {
     /// `ListPackages` — package summaries with the newest version.
     ///
+    /// Reads follow registry visibility (and the owning org's lifecycle): a
+    /// private/internal registry requires `Read`, and a registry owned by a
+    /// soft-deleted org returns `NotFound`. A `public` registry's inventory
+    /// reads anonymously.
+    ///
     /// # Errors
     ///
-    /// Returns `NotFound` for an unknown slug, `InvalidArgument` for a
-    /// malformed `page_token`, and `Internal` on database failure.
+    /// Returns `NotFound` for an unknown slug or a soft-deleted owning org,
+    /// `Unauthenticated`/`PermissionDenied` when a non-public registry is read
+    /// without sufficient authority, `InvalidArgument` for a malformed
+    /// `page_token`, and `Internal` on database failure.
     async fn list_packages(
         &self,
         ctx: Context,
         req: OwnedView<ListPackagesRequestView<'static>>,
     ) -> Result<(ListPackagesResponse, Context), ConnectError> {
         let record = self.registry_or_not_found(req.slug)?;
+        self.require_read(&ctx, &record)?;
         let packages: Vec<PackageSummary> = self
             .db
             .list_packages(record.id)
@@ -1142,16 +1275,24 @@ impl PackageService for RegistryRpc {
 
     /// `GetPackage` — full version × platform detail for one package.
     ///
+    /// Reads follow registry visibility (and the owning org's lifecycle): a
+    /// private/internal registry requires `Read`, and a registry owned by a
+    /// soft-deleted org returns `NotFound`. A `public` registry reads
+    /// anonymously.
+    ///
     /// # Errors
     ///
-    /// Returns `NotFound` for an unknown slug or package name and
-    /// `Internal` on database failure.
+    /// Returns `NotFound` for an unknown slug, package name, or a soft-deleted
+    /// owning org, `Unauthenticated`/`PermissionDenied` when a non-public
+    /// registry is read without sufficient authority, and `Internal` on
+    /// database failure.
     async fn get_package(
         &self,
         ctx: Context,
         req: OwnedView<GetPackageRequestView<'static>>,
     ) -> Result<(GetPackageResponse, Context), ConnectError> {
         let record = self.registry_or_not_found(req.slug)?;
+        self.require_read(&ctx, &record)?;
         let detail = self
             .db
             .package_detail(record.id, req.name)
@@ -1200,16 +1341,24 @@ impl PackageService for RegistryRpc {
 impl ChannelService for RegistryRpc {
     /// `ListChannels` — channels with full partition maps.
     ///
+    /// Reads follow registry visibility (and the owning org's lifecycle): a
+    /// private/internal registry requires `Read`, and a registry owned by a
+    /// soft-deleted org returns `NotFound`. A `public` registry's channel maps
+    /// read anonymously.
+    ///
     /// # Errors
     ///
-    /// Returns `NotFound` for an unknown slug, `InvalidArgument` for a
-    /// malformed `page_token`, and `Internal` on database failure.
+    /// Returns `NotFound` for an unknown slug or a soft-deleted owning org,
+    /// `Unauthenticated`/`PermissionDenied` when a non-public registry is read
+    /// without sufficient authority, `InvalidArgument` for a malformed
+    /// `page_token`, and `Internal` on database failure.
     async fn list_channels(
         &self,
         ctx: Context,
         req: OwnedView<ListChannelsRequestView<'static>>,
     ) -> Result<(ListChannelsResponse, Context), ConnectError> {
         let record = self.registry_or_not_found(req.slug)?;
+        self.require_read(&ctx, &record)?;
         let channels: Vec<Channel> = self
             .db
             .list_channels(record.id)
@@ -1230,16 +1379,24 @@ impl ChannelService for RegistryRpc {
 
     /// `GetChannel` — one channel's partition map by name.
     ///
+    /// Reads follow registry visibility (and the owning org's lifecycle): a
+    /// private/internal registry requires `Read`, and a registry owned by a
+    /// soft-deleted org returns `NotFound`. A `public` registry reads
+    /// anonymously.
+    ///
     /// # Errors
     ///
-    /// Returns `NotFound` for an unknown slug or channel name and
-    /// `Internal` on database failure.
+    /// Returns `NotFound` for an unknown slug, channel name, or a soft-deleted
+    /// owning org, `Unauthenticated`/`PermissionDenied` when a non-public
+    /// registry is read without sufficient authority, and `Internal` on
+    /// database failure.
     async fn get_channel(
         &self,
         ctx: Context,
         req: OwnedView<GetChannelRequestView<'static>>,
     ) -> Result<(GetChannelResponse, Context), ConnectError> {
         let record = self.registry_or_not_found(req.slug)?;
+        self.require_read(&ctx, &record)?;
         let channel = self
             .db
             .list_channels(record.id)
