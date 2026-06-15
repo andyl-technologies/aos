@@ -1457,7 +1457,15 @@ async fn http_deep_ok(
     if response.status() != reqwest::StatusCode::OK {
         return DeepCheck::Missing;
     }
-    let Ok(text) = response.text().await else {
+    // Cap the narinfo read: a narinfo is a small pointer file, so the surface
+    // cap bounds a hostile cache that would otherwise stream an unbounded body.
+    let Ok(text) = crate::fetch::read_text_capped(
+        response,
+        crate::fetch::MAX_FETCH_BYTES,
+        &format!("GET {narinfo_url}"),
+    )
+    .await
+    else {
         return DeepCheck::Missing;
     };
     if !trusted_keys.is_empty() && verify_narinfo_signature(&text, trusted_keys).is_err() {
@@ -1477,7 +1485,15 @@ async fn http_deep_ok(
     if response.status() != reqwest::StatusCode::OK {
         return DeepCheck::Missing;
     }
-    let Ok(bytes) = response.bytes().await else {
+    // Cap the NAR read with the generous NAR cap: a legitimate large package is
+    // accepted while a runaway body is still bounded.
+    let Ok(bytes) = crate::fetch::read_body_capped(
+        response,
+        crate::fetch::MAX_NAR_BYTES,
+        &format!("GET {nar_url}"),
+    )
+    .await
+    else {
         return DeepCheck::Missing;
     };
     verify_nar_bytes(&text, &bytes)
@@ -1495,7 +1511,14 @@ async fn http_integrity_ok(
     if response.status() != reqwest::StatusCode::OK {
         return None;
     }
-    let text = response.text().await.ok()?;
+    // Cap the narinfo read (small pointer file) against a hostile cache.
+    let text = crate::fetch::read_text_capped(
+        response,
+        crate::fetch::MAX_FETCH_BYTES,
+        &format!("GET {narinfo_url}"),
+    )
+    .await
+    .ok()?;
     let Some(nar_rel) = narinfo_field(&text, "URL") else {
         // No URL field to follow; the narinfo itself is present.
         return Some(true);

@@ -69,6 +69,26 @@ use crate::domain::{Principal, Role, Scope};
 /// window in which a leaked authorization URL can be replayed.
 pub const FLOW_TTL_SECS: i64 = 10 * 60;
 
+/// Maximum size accepted for an OIDC token or JWKS response body (1 MiB).
+///
+/// A token response and a JWKS document are KB-scale by nature, so a 1 MiB cap
+/// is generous for any legitimate IdP while bounding a hostile or MITM'd
+/// endpoint (the `token_endpoint`/`jwks_uri` come from tenant-admin-controlled
+/// IdP config) that would otherwise stream a multi-GB body and OOM the
+/// multi-tenant hub. The body is read with [`crate::fetch::read_body_capped`]
+/// before deserialization, so the cap is enforced before any allocation past
+/// it.
+const MAX_OIDC_BODY_BYTES: u64 = 1024 * 1024;
+
+/// Maximum number of keys accepted from a JWKS document.
+///
+/// A legitimate JWKS holds a handful of signing keys (typically one or two,
+/// plus a rotated predecessor). A document advertising thousands of keys — or
+/// keys with absurd RSA moduli — is a verification-DoS vector, so the key set
+/// is rejected past this bound before any [`jsonwebtoken::DecodingKey`] is
+/// built.
+const MAX_JWKS_KEYS: usize = 32;
+
 /// An org's OIDC identity-provider configuration, with the client secret in
 /// whatever (possibly sealed) form the caller holds.
 ///
@@ -451,17 +471,22 @@ pub async fn complete_login(
             .context("unsealing OIDC client secret")?;
         form.push(("client_secret", secret));
     }
-    let token: TokenResponse = http
+    let token_response = http
         .post(&config.token_endpoint)
         .form(&form)
         .send()
         .await
         .context("OIDC token request failed")?
         .error_for_status()
-        .context("OIDC token endpoint returned an error status")?
-        .json()
-        .await
-        .context("decoding OIDC token response")?;
+        .context("OIDC token endpoint returned an error status")?;
+    // Cap the body before buffering it: `token_endpoint` is tenant-admin
+    // controlled, so a hostile endpoint must not be able to stream an unbounded
+    // body into memory and OOM the hub.
+    let token_bytes =
+        crate::fetch::read_body_capped(token_response, MAX_OIDC_BODY_BYTES, "OIDC token response")
+            .await?;
+    let token: TokenResponse =
+        serde_json::from_slice(&token_bytes).context("decoding OIDC token response")?;
     let _ = &token.access_token; // reserved for at_hash / userinfo later
 
     // 3/4. Verify the id_token against the JWKS and the flow's nonce.
@@ -520,16 +545,29 @@ async fn verify_id_token(
 
     let header = decode_header(id_token).context("id_token header is malformed")?;
 
-    let jwks: Jwks = http
+    let jwks_response = http
         .get(&config.jwks_uri)
         .send()
         .await
         .context("JWKS request failed")?
         .error_for_status()
-        .context("JWKS endpoint returned an error status")?
-        .json()
-        .await
-        .context("decoding JWKS document")?;
+        .context("JWKS endpoint returned an error status")?;
+    // Cap the body before buffering it: `jwks_uri` is tenant-admin controlled,
+    // so a hostile endpoint must not be able to stream an unbounded body into
+    // memory and OOM the hub.
+    let jwks_bytes =
+        crate::fetch::read_body_capped(jwks_response, MAX_OIDC_BODY_BYTES, "JWKS document").await?;
+    let jwks: Jwks = serde_json::from_slice(&jwks_bytes).context("decoding JWKS document")?;
+
+    // Reject an absurdly large key set before building any decoding key: a JWKS
+    // with thousands of keys (or keys with oversized RSA moduli) is an
+    // RSA-verify DoS vector.
+    if jwks.keys.len() > MAX_JWKS_KEYS {
+        bail!(
+            "JWKS document advertises {} keys, exceeding the {MAX_JWKS_KEYS}-key limit",
+            jwks.keys.len()
+        );
+    }
 
     // Select the RSA key: by kid when the header names one, else the lone RSA
     // key (a single-key JWKS is the common case).
@@ -698,5 +736,73 @@ mod tests {
         assert_eq!(map.get("acme-admins"), Some(&Role::Admin));
         assert_eq!(map.get("devs"), Some(&Role::Developer));
         assert!(!map.contains_key("ghosts"));
+    }
+
+    /// Minimal `header.payload.` JWT shell with a valid RS256 header so
+    /// `decode_header` succeeds and verification proceeds to the JWKS fetch.
+    /// The signature is irrelevant here: the key-count guard rejects the JWKS
+    /// before any signature is checked.
+    fn dummy_rs256_token() -> String {
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256"}"#);
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"sub":"x"}"#);
+        format!("{header}.{payload}.sig")
+    }
+
+    fn test_idp_config(base: &str) -> IdpConfig {
+        IdpConfig {
+            org_id: 1,
+            issuer: base.to_string(),
+            authorization_endpoint: format!("{base}/authorize"),
+            token_endpoint: format!("{base}/token"),
+            jwks_uri: format!("{base}/jwks"),
+            client_id: "hub-client".into(),
+            client_secret_enc: None,
+            scopes: "openid".into(),
+            groups_claim: None,
+            role_map: BTreeMap::new(),
+            allow_jit: true,
+            enforce_sso: false,
+            default_role: Role::Viewer,
+        }
+    }
+
+    /// A JWKS advertising more keys than [`MAX_JWKS_KEYS`] is rejected before
+    /// any decoding key is built — the RSA-verify DoS guard.
+    #[tokio::test]
+    async fn verify_id_token_rejects_oversized_jwks_key_set() {
+        use axum::routing::get;
+
+        async fn many_keys() -> axum::response::Response {
+            use axum::response::IntoResponse as _;
+            let keys: Vec<serde_json::Value> = (0..MAX_JWKS_KEYS + 1)
+                .map(|i| {
+                    serde_json::json!({
+                        "kty": "RSA",
+                        "kid": format!("k{i}"),
+                        "n": "abc",
+                        "e": "AQAB",
+                    })
+                })
+                .collect();
+            axum::Json(serde_json::json!({ "keys": keys })).into_response()
+        }
+        let app = axum::Router::new().route("/jwks", get(many_keys));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // A plain client (no validating resolver) so the 127.0.0.1 IdP is
+        // reachable in tests, matching the OIDC integration harness.
+        let http = reqwest::Client::new();
+        let config = test_idp_config(&base);
+        let err = verify_id_token(&http, &config, &dummy_rs256_token(), "nonce")
+            .await
+            .expect_err("an oversized JWKS must be rejected");
+        assert!(
+            err.to_string().contains("key limit"),
+            "expected a key-limit error, got: {err:#}"
+        );
     }
 }

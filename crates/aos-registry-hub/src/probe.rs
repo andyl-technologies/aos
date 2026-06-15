@@ -177,7 +177,15 @@ async fn probe_http(http: &reqwest::Client, base: &str) -> (ProbeStatus, bool) {
     if !response.status().is_success() {
         return (ProbeStatus::Unreachable, false);
     }
-    match response.bytes().await {
+    // `nix-cache-info` is a tiny pointer file; cap the read so a hostile or
+    // MITM'd cache cannot stream an unbounded body into memory.
+    match crate::fetch::read_body_capped(
+        response,
+        crate::fetch::MAX_FETCH_BYTES,
+        &format!("GET {url}"),
+    )
+    .await
+    {
         Ok(body) if !body.is_empty() => (ProbeStatus::Ok, true),
         _ => (ProbeStatus::Stale, false),
     }
@@ -314,7 +322,15 @@ async fn probe_frontend_surface(
     let refs_url = format!("{}/info/refs", base.trim_end_matches('/'));
     match http.get(&refs_url).send().await {
         Ok(response) if response.status().is_success() => {
-            if let Ok(body) = response.text().await {
+            // `info/refs` is a small advertisement; cap the read so a hostile
+            // or MITM'd frontend cannot stream an unbounded body into memory.
+            if let Ok(body) = crate::fetch::read_text_capped(
+                response,
+                crate::fetch::MAX_FETCH_BYTES,
+                &format!("GET {refs_url}"),
+            )
+            .await
+            {
                 if let Ok(refs) = parse_info_refs(&body) {
                     let semvers: Vec<semver::Version> = refs
                         .tags
@@ -337,10 +353,20 @@ async fn probe_frontend_surface(
     // cache-only frontend still reports reachability.
     let cache_url = format!("{}/nix-cache-info", base.trim_end_matches('/'));
     match http.get(&cache_url).send().await {
-        Ok(response) if response.status().is_success() => match response.bytes().await {
-            Ok(body) if !body.is_empty() => (ProbeStatus::Ok, None, None),
-            _ => (ProbeStatus::Stale, None, None),
-        },
+        // `nix-cache-info` is a tiny pointer file; cap the read against an
+        // unbounded body from a hostile or MITM'd cache.
+        Ok(response) if response.status().is_success() => {
+            match crate::fetch::read_body_capped(
+                response,
+                crate::fetch::MAX_FETCH_BYTES,
+                &format!("GET {cache_url}"),
+            )
+            .await
+            {
+                Ok(body) if !body.is_empty() => (ProbeStatus::Ok, None, None),
+                _ => (ProbeStatus::Stale, None, None),
+            }
+        }
         _ => (ProbeStatus::Unreachable, None, None),
     }
 }
