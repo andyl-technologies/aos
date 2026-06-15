@@ -118,7 +118,7 @@ async fn spawn_receiver(initial_status: u16) -> (String, Receiver) {
 }
 
 /// Build an [`AppState`] over `db` with deterministic JWT keys.
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -134,7 +134,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: aos_registry_hub::fetch::hardened_client(),
+        http: aos_registry_hub::fetch::hardened_client().await,
         mailer: Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: false,
     })
@@ -186,25 +186,28 @@ async fn rpc(
 
 // -- dispatch ---------------------------------------------------------------
 
-#[test]
-fn dispatch_enqueues_only_for_subscribed_active_hooks() {
+#[tokio::test]
+async fn dispatch_enqueues_only_for_subscribed_active_hooks() {
     let _remotes = remote_guard(true);
-    let db = Database::open_in_memory().unwrap();
-    let org = db.create_org("acme", "Acme").unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    let org = db.create_org("acme", "Acme").await.unwrap();
 
     // A hook subscribed to index.completed, one to channel.advanced, one to
     // all events, and a disabled one.
     let h_index = db
         .create_webhook(org, "http://a/", "s", &["index.completed".into()])
+        .await
         .unwrap();
     let _h_channel = db
         .create_webhook(org, "http://b/", "s", &["channel.advanced".into()])
+        .await
         .unwrap();
-    let h_all = db.create_webhook(org, "http://c/", "s", &[]).unwrap();
+    let h_all = db.create_webhook(org, "http://c/", "s", &[]).await.unwrap();
     let h_disabled = db
         .create_webhook(org, "http://d/", "s", &["index.completed".into()])
+        .await
         .unwrap();
-    db.set_webhook_active(h_disabled, false).unwrap();
+    db.set_webhook_active(h_disabled, false).await.unwrap();
 
     let event = WebhookEvent::IndexCompleted {
         registry: "acme/cdn".into(),
@@ -215,12 +218,12 @@ fn dispatch_enqueues_only_for_subscribed_active_hooks() {
         incremental: false,
         at: 1,
     };
-    let enqueued = webhook::dispatch(&db, org, &event).unwrap();
+    let enqueued = webhook::dispatch(&db, org, &event).await.unwrap();
     // h_index (subscribed) + h_all (all events); NOT the channel-only hook,
     // NOT the disabled one.
     assert_eq!(enqueued, 2);
 
-    let due = db.due_deliveries(i64::MAX).unwrap();
+    let due = db.due_deliveries(i64::MAX).await.unwrap();
     let hook_ids: Vec<i64> = due.iter().map(|d| d.webhook_id).collect();
     assert!(hook_ids.contains(&h_index));
     assert!(hook_ids.contains(&h_all));
@@ -233,19 +236,21 @@ fn dispatch_enqueues_only_for_subscribed_active_hooks() {
 async fn deliver_one_marks_delivered_and_signs_body_on_2xx() {
     let _remotes = remote_guard(true);
     let (url, rx) = spawn_receiver(200).await;
-    let db = Database::open_in_memory().unwrap();
-    let org = db.create_org("acme", "Acme").unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    let org = db.create_org("acme", "Acme").await.unwrap();
     let secret = "shhh";
     let hook = db
         .create_webhook(org, &url, secret, &["index.completed".into()])
+        .await
         .unwrap();
     let payload = r#"{"type":"index.completed","registry":"acme/cdn"}"#;
     db.enqueue_delivery(hook, "index.completed", payload)
+        .await
         .unwrap();
 
-    let due = db.due_deliveries(i64::MAX).unwrap();
+    let due = db.due_deliveries(i64::MAX).await.unwrap();
     assert_eq!(due.len(), 1);
-    let http = aos_registry_hub::fetch::hardened_client();
+    let http = aos_registry_hub::fetch::hardened_client().await;
     let ok = webhook::deliver_one(&http, &db, &due[0]).await.unwrap();
     assert!(ok, "2xx should mark delivered");
 
@@ -261,36 +266,38 @@ async fn deliver_one_marks_delivered_and_signs_body_on_2xx() {
     );
 
     // The delivery is now delivered and no longer due.
-    let (pending, delivered, failed) = db.delivery_status_counts().unwrap();
+    let (pending, delivered, failed) = db.delivery_status_counts().await.unwrap();
     assert_eq!((pending, delivered, failed), (0, 1, 0));
-    assert!(db.due_deliveries(i64::MAX).unwrap().is_empty());
+    assert!(db.due_deliveries(i64::MAX).await.unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn deliver_one_schedules_retry_with_incremented_attempts_on_500() {
     let _remotes = remote_guard(true);
     let (url, rx) = spawn_receiver(500).await;
-    let db = Database::open_in_memory().unwrap();
-    let org = db.create_org("acme", "Acme").unwrap();
-    let hook = db.create_webhook(org, &url, "s", &[]).unwrap();
-    db.enqueue_delivery(hook, "index.completed", "{}").unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    let org = db.create_org("acme", "Acme").await.unwrap();
+    let hook = db.create_webhook(org, &url, "s", &[]).await.unwrap();
+    db.enqueue_delivery(hook, "index.completed", "{}")
+        .await
+        .unwrap();
 
-    let due = db.due_deliveries(i64::MAX).unwrap();
-    let http = aos_registry_hub::fetch::hardened_client();
+    let due = db.due_deliveries(i64::MAX).await.unwrap();
+    let http = aos_registry_hub::fetch::hardened_client().await;
     let ok = webhook::deliver_one(&http, &db, &due[0]).await.unwrap();
     assert!(!ok, "500 must not mark delivered");
     assert_eq!(rx.captured.lock().unwrap().len(), 1);
 
     // Still pending (not failed yet), attempts incremented, and scheduled into
     // the future so it is not immediately due again.
-    let (pending, delivered, failed) = db.delivery_status_counts().unwrap();
+    let (pending, delivered, failed) = db.delivery_status_counts().await.unwrap();
     assert_eq!((pending, delivered, failed), (1, 0, 0));
     assert!(
-        db.due_deliveries(now()).unwrap().is_empty(),
+        db.due_deliveries(now()).await.unwrap().is_empty(),
         "a backed-off retry is not due now"
     );
     // Far in the future it is due again, with attempts == 1.
-    let later: Vec<DueDelivery> = db.due_deliveries(now() + 100_000).unwrap();
+    let later: Vec<DueDelivery> = db.due_deliveries(now() + 100_000).await.unwrap();
     assert_eq!(later.len(), 1);
     assert_eq!(later[0].attempts, 1);
 }
@@ -299,22 +306,24 @@ async fn deliver_one_schedules_retry_with_incremented_attempts_on_500() {
 async fn deliveries_fail_after_the_attempt_cap() {
     let _remotes = remote_guard(true);
     let (url, _rx) = spawn_receiver(500).await;
-    let db = Database::open_in_memory().unwrap();
-    let org = db.create_org("acme", "Acme").unwrap();
-    let hook = db.create_webhook(org, &url, "s", &[]).unwrap();
-    db.enqueue_delivery(hook, "index.completed", "{}").unwrap();
-    let http = aos_registry_hub::fetch::hardened_client();
+    let db = Database::open_in_memory().await.unwrap();
+    let org = db.create_org("acme", "Acme").await.unwrap();
+    let hook = db.create_webhook(org, &url, "s", &[]).await.unwrap();
+    db.enqueue_delivery(hook, "index.completed", "{}")
+        .await
+        .unwrap();
+    let http = aos_registry_hub::fetch::hardened_client().await;
 
     // Hammer the delivery past the attempt cap (querying with a far-future
     // `now` so the backoff never hides it).
     for _ in 0..(webhook::MAX_ATTEMPTS + 1) {
-        let due = db.due_deliveries(i64::MAX).unwrap();
+        let due = db.due_deliveries(i64::MAX).await.unwrap();
         if due.is_empty() {
             break;
         }
         webhook::deliver_one(&http, &db, &due[0]).await.unwrap();
     }
-    let (pending, _delivered, failed) = db.delivery_status_counts().unwrap();
+    let (pending, _delivered, failed) = db.delivery_status_counts().await.unwrap();
     assert_eq!(pending, 0, "no longer pending after the cap");
     assert_eq!(failed, 1, "marked failed after the attempt cap");
 }
@@ -331,11 +340,13 @@ async fn deliver_one_rejects_ssrf_url_without_posting() {
     let (url, rx) = spawn_receiver(200).await;
     let (delivery, db) = {
         let _remotes = remote_guard(true);
-        let db = Database::open_in_memory().unwrap();
-        let org = db.create_org("acme", "Acme").unwrap();
-        let hook = db.create_webhook(org, &url, "s", &[]).unwrap();
-        db.enqueue_delivery(hook, "index.completed", "{}").unwrap();
-        let mut due = db.due_deliveries(i64::MAX).unwrap();
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("acme", "Acme").await.unwrap();
+        let hook = db.create_webhook(org, &url, "s", &[]).await.unwrap();
+        db.enqueue_delivery(hook, "index.completed", "{}")
+            .await
+            .unwrap();
+        let mut due = db.due_deliveries(i64::MAX).await.unwrap();
         assert_eq!(due.len(), 1);
         // Repoint the queued row at an internal address, as a stale/poisoned row
         // would be; the row id stays valid so mark_delivery can update it.
@@ -345,7 +356,7 @@ async fn deliver_one_rejects_ssrf_url_without_posting() {
     };
 
     let _remotes = remote_guard(false);
-    let http = aos_registry_hub::fetch::hardened_client();
+    let http = aos_registry_hub::fetch::hardened_client().await;
     let ok = webhook::deliver_one(&http, &db, &delivery).await.unwrap();
     assert!(
         !ok,
@@ -358,7 +369,7 @@ async fn deliver_one_rejects_ssrf_url_without_posting() {
     );
     // It is marked failed (not retried): the rejection is structural, so retries
     // would never pass the guard.
-    let (pending, delivered, failed) = db.delivery_status_counts().unwrap();
+    let (pending, delivered, failed) = db.delivery_status_counts().await.unwrap();
     assert_eq!((pending, delivered, failed), (0, 0, 1));
 }
 
@@ -367,13 +378,15 @@ async fn deliver_one_rejects_ssrf_url_without_posting() {
 #[tokio::test]
 async fn webhook_rpc_create_list_delete_with_authz() {
     let _remotes = remote_guard(true);
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // An admin (members.manage on acme) may create.
     let admin = bearer(Principal::user(1), "acme", &[Permission::MembersManage]);
-    db.grant_membership("user", 1, "acme", "admin").unwrap();
+    db.grant_membership("user", 1, "acme", "admin")
+        .await
+        .unwrap();
 
     let (status, body) = rpc(
         &app,
@@ -409,7 +422,9 @@ async fn webhook_rpc_create_list_delete_with_authz() {
 
     // A non-admin (only read) is denied create.
     let viewer = bearer(Principal::user(2), "acme", &[Permission::Read]);
-    db.grant_membership("user", 2, "acme", "viewer").unwrap();
+    db.grant_membership("user", 2, "acme", "viewer")
+        .await
+        .unwrap();
     let (status, _body) = rpc(
         &app,
         "WebhookService/CreateWebhook",
@@ -433,7 +448,7 @@ async fn webhook_rpc_create_list_delete_with_authz() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["deleted"], true);
-    assert!(db.list_webhooks(1).unwrap().is_empty());
+    assert!(db.list_webhooks(1).await.unwrap().is_empty());
 }
 
 // -- metrics ----------------------------------------------------------------
@@ -441,13 +456,15 @@ async fn webhook_rpc_create_list_delete_with_authz() {
 #[tokio::test]
 async fn metrics_renders_counters() {
     let _remotes = remote_guard(true);
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
     // A queued (pending) delivery so the gauge is non-zero.
-    let hook = db.create_webhook(org, "http://x/", "s", &[]).unwrap();
-    db.enqueue_delivery(hook, "index.completed", "{}").unwrap();
+    let hook = db.create_webhook(org, "http://x/", "s", &[]).await.unwrap();
+    db.enqueue_delivery(hook, "index.completed", "{}")
+        .await
+        .unwrap();
 
-    let app = router(app_state(db));
+    let app = router(app_state(db).await).await;
     let resp = app
         .oneshot(
             Request::builder()

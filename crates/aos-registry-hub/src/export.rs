@@ -193,13 +193,15 @@ pub struct ExportManifest {
 /// # Errors
 ///
 /// Returns an error when no org has `org_slug`, or on database failure.
-pub fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest> {
+pub async fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest> {
     let org = db
-        .org_by_slug_including_deleted(org_slug)?
+        .org_by_slug_including_deleted(org_slug)
+        .await?
         .with_context(|| format!("no org '{org_slug}'"))?;
 
     let projects = db
-        .list_projects(org.id)?
+        .list_projects(org.id)
+        .await?
         .into_iter()
         .map(|p| ExportProject {
             path: p.path,
@@ -209,7 +211,8 @@ pub fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest> {
         .collect();
 
     let registries = db
-        .list_registries_including_org(org.id)?
+        .list_registries_including_org(org.id)
+        .await?
         .into_iter()
         .map(|r| ExportRegistry {
             slug: r.slug,
@@ -222,7 +225,8 @@ pub fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest> {
         .collect();
 
     let memberships = db
-        .list_memberships_under(&org.slug)?
+        .list_memberships_under(&org.slug)
+        .await?
         .into_iter()
         .map(
             |(principal_kind, principal_id, scope, role)| ExportMembership {
@@ -235,7 +239,8 @@ pub fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest> {
         .collect();
 
     let tokens = db
-        .export_org_token_metadata(org.id)?
+        .export_org_token_metadata(org.id)
+        .await?
         .into_iter()
         .map(
             |(
@@ -263,7 +268,8 @@ pub fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest> {
         .collect();
 
     let storage_bindings = db
-        .list_storage_bindings(org.id)?
+        .list_storage_bindings(org.id)
+        .await?
         .into_iter()
         .map(|b| ExportBinding {
             name: b.name,
@@ -273,7 +279,8 @@ pub fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest> {
         .collect();
 
     let audit = db
-        .list_audit(&org.slug)?
+        .list_audit(&org.slug)
+        .await?
         .into_iter()
         .map(|a| ExportAudit {
             actor_label: a.actor_label,
@@ -285,7 +292,8 @@ pub fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest> {
         .collect();
 
     let changesets = db
-        .list_changesets(&org.slug)?
+        .list_changesets(&org.slug)
+        .await?
         .into_iter()
         .map(|c| ExportChangeset {
             change_id: c.change_id,
@@ -326,8 +334,12 @@ pub fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest> {
 /// # Errors
 ///
 /// Returns an error on database failure or an IO failure while copying.
-pub fn export_registry_surface(db: &Database, registry_id: i64, dest_dir: &Path) -> Result<usize> {
-    let Some(root) = db.registry_surface_root(registry_id)? else {
+pub async fn export_registry_surface(
+    db: &Database,
+    registry_id: i64,
+    dest_dir: &Path,
+) -> Result<usize> {
+    let Some(root) = db.registry_surface_root(registry_id).await? else {
         return Ok(0);
     };
     if !root.exists() {
@@ -370,10 +382,10 @@ fn copy_tree(src: &Path, dest: &Path) -> Result<usize> {
 /// # Errors
 ///
 /// Returns an error on a database failure while listing purgeable orgs.
-pub fn purge_expired_orgs(db: &Database, now: i64) -> Result<Vec<String>> {
+pub async fn purge_expired_orgs(db: &Database, now: i64) -> Result<Vec<String>> {
     let mut purged = Vec::new();
-    for org in db.list_purgeable_orgs(now)? {
-        match db.hard_purge_org(org.id, now) {
+    for org in db.list_purgeable_orgs(now).await? {
+        match db.hard_purge_org(org.id, now).await {
             Ok(true) => purged.push(org.slug),
             Ok(false) => {}
             Err(err) => {

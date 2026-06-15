@@ -666,8 +666,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn v13_operations_migration_translates_for_every_dialect() {
+    #[tokio::test]
+    async fn v13_operations_migration_translates_for_every_dialect() {
         // The v13 operations migration must split and translate cleanly on
         // postgres and mysql (the dialect contract tests need a live server;
         // this is the offline translation-only smoke check).

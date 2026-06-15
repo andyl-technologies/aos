@@ -33,7 +33,7 @@ const EXTERNAL_URL: &str = "http://127.0.0.1:8420";
 const RP_ID: &str = "127.0.0.1";
 const ORIGIN: &str = "http://127.0.0.1:8420";
 
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -49,7 +49,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: aos_registry_hub::fetch::hardened_client(),
+        http: aos_registry_hub::fetch::hardened_client().await,
         mailer: Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: true,
     })
@@ -191,17 +191,27 @@ fn attestation_object(auth_data: &[u8], fmt: &str) -> Vec<u8> {
 
 // -- direct verifier round-trips (in-process) -------------------------------
 
-fn register_direct(db: &Database, user: i64, auth: &SoftAuthenticator) -> anyhow::Result<String> {
-    let challenge = webauthn::begin_registration(db, user, "u@x.com", RP_ID, "Hub")?.challenge;
+async fn register_direct(
+    db: &Database,
+    user: i64,
+    auth: &SoftAuthenticator,
+) -> anyhow::Result<String> {
+    let challenge = webauthn::begin_registration(db, user, "u@x.com", RP_ID, "Hub")
+        .await?
+        .challenge;
     let response = RegistrationResponse {
         client_data_json: client_data_json(TYPE_CREATE, &challenge, ORIGIN),
         attestation_object: attestation_object(&auth.authenticator_data(0, true), "none"),
     };
-    webauthn::finish_registration(db, user, RP_ID, ORIGIN, &response, Some("test"))
+    webauthn::finish_registration(db, user, RP_ID, ORIGIN, &response, Some("test")).await
 }
 
-fn assert_direct(db: &Database, auth: &SoftAuthenticator, sign_count: u32) -> anyhow::Result<i64> {
-    let challenge = webauthn::begin_assertion(db, RP_ID)?.challenge;
+async fn assert_direct(
+    db: &Database,
+    auth: &SoftAuthenticator,
+    sign_count: u32,
+) -> anyhow::Result<i64> {
+    let challenge = webauthn::begin_assertion(db, RP_ID).await?.challenge;
     let ad = auth.authenticator_data(sign_count, false);
     let cdj = client_data_json(TYPE_GET, &challenge, ORIGIN);
     let signature = auth.sign(&webauthn::signed_message(&ad, &cdj));
@@ -211,25 +221,25 @@ fn assert_direct(db: &Database, auth: &SoftAuthenticator, sign_count: u32) -> an
         authenticator_data: ad,
         signature,
     };
-    webauthn::finish_assertion(db, RP_ID, ORIGIN, &response)
+    webauthn::finish_assertion(db, RP_ID, ORIGIN, &response).await
 }
 
-#[test]
-fn ed25519_register_then_assert_direct() {
-    let db = Database::open_in_memory().unwrap();
-    let user = db.create_user("u@x.com", None).unwrap();
+#[tokio::test]
+async fn ed25519_register_then_assert_direct() {
+    let db = Database::open_in_memory().await.unwrap();
+    let user = db.create_user("u@x.com", None).await.unwrap();
     let auth = SoftAuthenticator::ed25519(b"ed-1");
-    register_direct(&db, user, &auth).unwrap();
-    assert_eq!(assert_direct(&db, &auth, 1).unwrap(), user);
+    register_direct(&db, user, &auth).await.unwrap();
+    assert_eq!(assert_direct(&db, &auth, 1).await.unwrap(), user);
 }
 
-#[test]
-fn es256_register_then_assert_direct() {
-    let db = Database::open_in_memory().unwrap();
-    let user = db.create_user("u@x.com", None).unwrap();
+#[tokio::test]
+async fn es256_register_then_assert_direct() {
+    let db = Database::open_in_memory().await.unwrap();
+    let user = db.create_user("u@x.com", None).await.unwrap();
     let auth = SoftAuthenticator::p256(b"p-1");
-    register_direct(&db, user, &auth).unwrap();
-    assert_eq!(assert_direct(&db, &auth, 1).unwrap(), user);
+    register_direct(&db, user, &auth).await.unwrap();
+    assert_eq!(assert_direct(&db, &auth, 1).await.unwrap(), user);
 }
 
 // -- HTTP ceremony round-trip (through the router) --------------------------
@@ -279,7 +289,7 @@ async fn send_json(
 }
 
 async fn login_session(app: &axum::Router, db: &Database, email: &str) -> String {
-    let secret = db.create_magic_link(email).unwrap();
+    let secret = db.create_magic_link(email).await.unwrap();
     let resp = send_json(
         app,
         "GET",
@@ -312,10 +322,10 @@ async fn http_register_then_login_es256() {
 /// Register a passkey through the session-authed HTTP endpoints, then sign a
 /// fresh, cookie-less session in through the pre-auth assertion endpoints.
 async fn http_register_then_login(auth: SoftAuthenticator) {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let user = db.create_user("u@x.com", None).unwrap();
-    let state = app_state(Arc::clone(&db));
-    let app = router(state);
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let user = db.create_user("u@x.com", None).await.unwrap();
+    let state = app_state(Arc::clone(&db)).await;
+    let app = router(state).await;
 
     let cookie = login_session(&app, &db, "u@x.com").await;
     let session_secret = cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap();
@@ -354,7 +364,7 @@ async fn http_register_then_login(auth: SoftAuthenticator) {
     .await;
     assert_eq!(finish.status, StatusCode::OK, "{}", finish.body);
 
-    assert_eq!(db.list_user_credentials(user).unwrap().len(), 1);
+    assert_eq!(db.list_user_credentials(user).await.unwrap().len(), 1);
 
     // 2. Login with the passkey (no cookie — usernameless assertion).
     let lbegin = send_json(&app, "POST", "/auth/passkey/begin", None, None, None).await;
@@ -391,7 +401,7 @@ async fn http_register_then_login(auth: SoftAuthenticator) {
         .split(';')
         .next()
         .unwrap();
-    let resolved = db.validate_session(value).unwrap().unwrap();
+    let resolved = db.validate_session(value).await.unwrap().unwrap();
     assert_eq!(resolved.user_id, user);
 }
 
@@ -402,13 +412,13 @@ async fn http_register_then_login(auth: SoftAuthenticator) {
 /// assertion itself is cryptographically valid.
 #[tokio::test]
 async fn enforced_user_passkey_login_refused_to_sso() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let user = db.create_user("dev@acme.com", None).unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let user = db.create_user("dev@acme.com", None).await.unwrap();
     let auth = SoftAuthenticator::ed25519(b"enforced");
-    register_direct(&db, user, &auth).unwrap();
+    register_direct(&db, user, &auth).await.unwrap();
 
     // Turn on SSO enforcement for the user's verified email domain.
-    let org_id = db.create_org("acme", "Acme").unwrap();
+    let org_id = db.create_org("acme", "Acme").await.unwrap();
     db.upsert_idp_config(&IdpConfigRecord {
         org_id,
         issuer: "https://idp.example".into(),
@@ -424,11 +434,12 @@ async fn enforced_user_passkey_login_refused_to_sso() {
         enforce_sso: true,
         default_role: "viewer".into(),
     })
+    .await
     .unwrap();
-    db.add_org_domain(org_id, "acme.com").unwrap();
-    db.verify_org_domain("acme.com").unwrap();
+    db.add_org_domain(org_id, "acme.com").await.unwrap();
+    db.verify_org_domain("acme.com").await.unwrap();
 
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // A genuine, valid assertion still gets refused.
     let lbegin = send_json(&app, "POST", "/auth/passkey/begin", None, None, None).await;
@@ -467,13 +478,16 @@ async fn enforced_user_passkey_login_refused_to_sso() {
 
 // -- negative cases ---------------------------------------------------------
 
-#[test]
-fn wrong_origin_rejected() {
-    let db = Database::open_in_memory().unwrap();
-    let user = db.create_user("u@x.com", None).unwrap();
+#[tokio::test]
+async fn wrong_origin_rejected() {
+    let db = Database::open_in_memory().await.unwrap();
+    let user = db.create_user("u@x.com", None).await.unwrap();
     let auth = SoftAuthenticator::ed25519(b"neg-origin");
-    register_direct(&db, user, &auth).unwrap();
-    let challenge = webauthn::begin_assertion(&db, RP_ID).unwrap().challenge;
+    register_direct(&db, user, &auth).await.unwrap();
+    let challenge = webauthn::begin_assertion(&db, RP_ID)
+        .await
+        .unwrap()
+        .challenge;
     let ad = auth.authenticator_data(1, false);
     let cdj = client_data_json(TYPE_GET, &challenge, "http://evil.example.com");
     let signature = auth.sign(&webauthn::signed_message(&ad, &cdj));
@@ -483,17 +497,19 @@ fn wrong_origin_rejected() {
         authenticator_data: ad,
         signature,
     };
-    assert!(webauthn::finish_assertion(&db, RP_ID, ORIGIN, &response).is_err());
+    assert!(webauthn::finish_assertion(&db, RP_ID, ORIGIN, &response)
+        .await
+        .is_err());
 }
 
-#[test]
-fn forged_challenge_rejected() {
-    let db = Database::open_in_memory().unwrap();
-    let user = db.create_user("u@x.com", None).unwrap();
+#[tokio::test]
+async fn forged_challenge_rejected() {
+    let db = Database::open_in_memory().await.unwrap();
+    let user = db.create_user("u@x.com", None).await.unwrap();
     let auth = SoftAuthenticator::ed25519(b"neg-chal");
-    register_direct(&db, user, &auth).unwrap();
+    register_direct(&db, user, &auth).await.unwrap();
     // Stage a real challenge, but present one that was never staged.
-    let _ = webauthn::begin_assertion(&db, RP_ID).unwrap();
+    let _ = webauthn::begin_assertion(&db, RP_ID).await.unwrap();
     let ad = auth.authenticator_data(1, false);
     let cdj = client_data_json(TYPE_GET, "forged-never-staged", ORIGIN);
     let signature = auth.sign(&webauthn::signed_message(&ad, &cdj));
@@ -503,16 +519,21 @@ fn forged_challenge_rejected() {
         authenticator_data: ad,
         signature,
     };
-    assert!(webauthn::finish_assertion(&db, RP_ID, ORIGIN, &response).is_err());
+    assert!(webauthn::finish_assertion(&db, RP_ID, ORIGIN, &response)
+        .await
+        .is_err());
 }
 
-#[test]
-fn bad_signature_rejected() {
-    let db = Database::open_in_memory().unwrap();
-    let user = db.create_user("u@x.com", None).unwrap();
+#[tokio::test]
+async fn bad_signature_rejected() {
+    let db = Database::open_in_memory().await.unwrap();
+    let user = db.create_user("u@x.com", None).await.unwrap();
     let auth = SoftAuthenticator::p256(b"neg-sig");
-    register_direct(&db, user, &auth).unwrap();
-    let challenge = webauthn::begin_assertion(&db, RP_ID).unwrap().challenge;
+    register_direct(&db, user, &auth).await.unwrap();
+    let challenge = webauthn::begin_assertion(&db, RP_ID)
+        .await
+        .unwrap()
+        .challenge;
     let ad = auth.authenticator_data(1, false);
     let cdj = client_data_json(TYPE_GET, &challenge, ORIGIN);
     let mut signature = auth.sign(&webauthn::signed_message(&ad, &cdj));
@@ -523,45 +544,55 @@ fn bad_signature_rejected() {
         authenticator_data: ad,
         signature,
     };
-    assert!(webauthn::finish_assertion(&db, RP_ID, ORIGIN, &response).is_err());
+    assert!(webauthn::finish_assertion(&db, RP_ID, ORIGIN, &response)
+        .await
+        .is_err());
 }
 
-#[test]
-fn non_none_attestation_rejected() {
-    let db = Database::open_in_memory().unwrap();
-    let user = db.create_user("u@x.com", None).unwrap();
+#[tokio::test]
+async fn non_none_attestation_rejected() {
+    let db = Database::open_in_memory().await.unwrap();
+    let user = db.create_user("u@x.com", None).await.unwrap();
     let auth = SoftAuthenticator::ed25519(b"neg-att");
     let challenge = webauthn::begin_registration(&db, user, "u@x.com", RP_ID, "Hub")
+        .await
         .unwrap()
         .challenge;
     let response = RegistrationResponse {
         client_data_json: client_data_json(TYPE_CREATE, &challenge, ORIGIN),
         attestation_object: attestation_object(&auth.authenticator_data(0, true), "packed"),
     };
-    assert!(webauthn::finish_registration(&db, user, RP_ID, ORIGIN, &response, None).is_err());
+    assert!(
+        webauthn::finish_registration(&db, user, RP_ID, ORIGIN, &response, None)
+            .await
+            .is_err()
+    );
 }
 
-#[test]
-fn sign_count_rollback_rejected() {
-    let db = Database::open_in_memory().unwrap();
-    let user = db.create_user("u@x.com", None).unwrap();
+#[tokio::test]
+async fn sign_count_rollback_rejected() {
+    let db = Database::open_in_memory().await.unwrap();
+    let user = db.create_user("u@x.com", None).await.unwrap();
     let auth = SoftAuthenticator::ed25519(b"neg-count");
-    register_direct(&db, user, &auth).unwrap();
-    assert_direct(&db, &auth, 9).unwrap();
-    assert!(assert_direct(&db, &auth, 4).is_err());
+    register_direct(&db, user, &auth).await.unwrap();
+    assert_direct(&db, &auth, 9).await.unwrap();
+    assert!(assert_direct(&db, &auth, 4).await.is_err());
 }
 
-#[test]
-fn challenge_single_use_consumed() {
-    let db = Database::open_in_memory().unwrap();
+#[tokio::test]
+async fn challenge_single_use_consumed() {
+    let db = Database::open_in_memory().await.unwrap();
     db.create_webauthn_challenge("xyz", None, KIND_ASSERTION, 300)
+        .await
         .unwrap();
     assert!(db
         .take_webauthn_challenge("xyz", KIND_ASSERTION)
+        .await
         .unwrap()
         .is_some());
     assert!(db
         .take_webauthn_challenge("xyz", KIND_ASSERTION)
+        .await
         .unwrap()
         .is_none());
 }

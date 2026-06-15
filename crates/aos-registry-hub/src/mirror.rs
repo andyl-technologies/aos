@@ -131,7 +131,8 @@ pub async fn sync_full_mirror(
     registry: &RegistryRecord,
 ) -> Result<MirrorSyncResult> {
     let source = db
-        .mirror_source(registry.id)?
+        .mirror_source(registry.id)
+        .await?
         .with_context(|| format!("registry '{}' is not a mirror", registry.slug))?;
     if source.mode != "full" {
         bail!(
@@ -140,12 +141,15 @@ pub async fn sync_full_mirror(
             source.mode
         );
     }
-    let root = db.registry_surface_root(registry.id)?.with_context(|| {
-        format!(
-            "mirror '{}' has no local binding to write into",
-            registry.slug
-        )
-    })?;
+    let root = db
+        .registry_surface_root(registry.id)
+        .await?
+        .with_context(|| {
+            format!(
+                "mirror '{}' has no local binding to write into",
+                registry.slug
+            )
+        })?;
 
     // Defense in depth: re-validate the upstream is a safe remote target before
     // fetching, even though creation already validated it (the row could have
@@ -156,7 +160,7 @@ pub async fn sync_full_mirror(
             registry.slug
         )
     })?;
-    let fetch = fetch_for_url(&source.upstream_url)?;
+    let fetch = fetch_for_url(&source.upstream_url).await?;
     let now = unix_now();
 
     // Verify the upstream surface up front. A failure records `failed` and is
@@ -165,7 +169,8 @@ pub async fn sync_full_mirror(
         Ok(verified) => verified,
         Err(err) => {
             let detail = format!("{err:#}");
-            db.update_mirror_sync(registry.id, now, "failed", Some(&detail), None)?;
+            db.update_mirror_sync(registry.id, now, "failed", Some(&detail), None)
+                .await?;
             return Err(err).with_context(|| {
                 format!(
                     "verifying upstream '{}' for mirror '{}'",
@@ -218,7 +223,8 @@ pub async fn sync_full_mirror(
         "ok",
         roster_note.as_deref(),
         verified.frontier.as_deref(),
-    )?;
+    )
+    .await?;
 
     Ok(MirrorSyncResult {
         commit: verified.commit,
@@ -602,8 +608,9 @@ async fn collect_nix_cache(
                     // signed fingerprint covers StorePath but the path it is
                     // served at is not part of any signature. Mirrors the
                     // pull-through NAR/Narinfo branches' requested-hash binding.
-                    let parsed = aos_core::nar::info::parse(narinfo)
-                        .with_context(|| format!("parsing narinfo {narinfo_path} for hash binding"))?;
+                    let parsed = aos_core::nar::info::parse(narinfo).with_context(|| {
+                        format!("parsing narinfo {narinfo_path} for hash binding")
+                    })?;
                     let declared_hash = aos_core::nar::info::store_hash(&parsed.store_path);
                     if declared_hash != hash {
                         bail!(
@@ -1261,8 +1268,9 @@ mod tests {
         assert_nar_matches_requested(requested_nar, foreign)
             .expect("URL binding passes for a URL-only substitution");
         // The StorePath-hash binding catches it: HASHY != requested HASHX.
-        let err = assert_nar_store_hash_matches_requested(requested_nar, foreign, requested_store_hash)
-            .expect_err("store-hash binding rejects the cross-hash substitution");
+        let err =
+            assert_nar_store_hash_matches_requested(requested_nar, foreign, requested_store_hash)
+                .expect_err("store-hash binding rejects the cross-hash substitution");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("HASHY") && msg.contains("HASHX") && msg.contains("refusing substitution"),

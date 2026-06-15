@@ -28,7 +28,7 @@ use tower::ServiceExt;
 const TEST_JWT_SECRET: &[u8] = b"manage-test-secret-32-byte-key!!!";
 
 /// Build an [`AppState`] over `db` in dev mode with deterministic JWT keys.
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -44,7 +44,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: aos_registry_hub::fetch::hardened_client(),
+        http: aos_registry_hub::fetch::hardened_client().await,
         mailer: Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: true,
     })
@@ -110,7 +110,7 @@ fn cookie_value(set_cookie: &str) -> String {
 /// Sign in `email` by minting + consuming a magic link; returns the cookie
 /// header value.
 async fn login(app: &axum::Router, db: &Database, email: &str) -> String {
-    let secret = db.create_magic_link(email).unwrap();
+    let secret = db.create_magic_link(email).await.unwrap();
     let resp = send(
         app,
         "GET",
@@ -174,11 +174,11 @@ fn remote_guard(allow: bool) -> RemoteGuard {
 
 #[tokio::test]
 async fn create_org_open_signup_auto_owners_the_creator() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.set_signup_policy(SignupPolicy::Open).unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.set_signup_policy(SignupPolicy::Open).await.unwrap();
     // A fresh user with no memberships.
-    db.find_or_create_user("founder@acme.com").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    db.find_or_create_user("founder@acme.com").await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "founder@acme.com").await;
     let csrf = csrf_for(&cookie);
 
@@ -204,15 +204,17 @@ async fn create_org_open_signup_auto_owners_the_creator() {
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     assert_eq!(resp.location.as_deref(), Some("/-/org/acme"));
 
-    assert!(db.org_by_slug("acme").unwrap().is_some());
-    let founder = db.user_by_email("founder@acme.com").unwrap().unwrap();
+    assert!(db.org_by_slug("acme").await.unwrap().is_some());
+    let founder = db.user_by_email("founder@acme.com").await.unwrap().unwrap();
     assert!(db
         .list_members_of_scope("acme")
+        .await
         .unwrap()
         .iter()
         .any(|(k, id, r)| k == "user" && *id == founder && r == "owner"));
     assert!(db
         .list_audit("acme")
+        .await
         .unwrap()
         .iter()
         .any(|a| a.action == "org.create"));
@@ -225,11 +227,11 @@ async fn create_org_open_signup_auto_owners_the_creator() {
 
 #[tokio::test]
 async fn create_org_invite_only_blocks_fresh_user_and_csrf_required() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     // Default policy is invite-only; a fresh, unaffiliated user.
-    assert_eq!(db.signup_policy().unwrap(), SignupPolicy::InviteOnly);
-    db.find_or_create_user("nobody@x.com").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    assert_eq!(db.signup_policy().await.unwrap(), SignupPolicy::InviteOnly);
+    db.find_or_create_user("nobody@x.com").await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "nobody@x.com").await;
     let csrf = csrf_for(&cookie);
 
@@ -247,7 +249,7 @@ async fn create_org_invite_only_blocks_fresh_user_and_csrf_required() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
-    assert!(db.org_by_slug("acme").unwrap().is_none());
+    assert!(db.org_by_slug("acme").await.unwrap().is_none());
 
     // A missing CSRF token is rejected before the policy check.
     let resp = send(
@@ -269,11 +271,13 @@ async fn admin_creates_project_binding_and_registry_then_browses() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let admin = db.find_or_create_user("admin@acme.com").unwrap();
-    db.grant_membership("user", admin, "acme", "admin").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let admin = db.find_or_create_user("admin@acme.com").await.unwrap();
+    db.grant_membership("user", admin, "acme", "admin")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "admin@acme.com").await;
     let csrf = csrf_for(&cookie);
 
@@ -287,9 +291,10 @@ async fn admin_creates_project_binding_and_registry_then_browses() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     assert!(db
         .list_projects(org_id)
+        .await
         .unwrap()
         .iter()
         .any(|p| p.path == "infra/prod"));
@@ -310,6 +315,7 @@ async fn admin_creates_project_binding_and_registry_then_browses() {
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     assert!(db
         .storage_binding_by_name(org_id, "primary")
+        .await
         .unwrap()
         .is_some());
 
@@ -344,17 +350,23 @@ async fn admin_creates_project_binding_and_registry_then_browses() {
     assert_eq!(resp.location.as_deref(), Some("/acme/infra/prod/cdn/"));
     let registry = db
         .registry_by_slug("acme/infra/prod/cdn")
+        .await
         .unwrap()
         .expect("registry created");
     assert_eq!(registry.visibility, "public");
     assert!(db
         .list_audit("acme")
+        .await
         .unwrap()
         .iter()
         .any(|a| a.action == "registry.create"));
 
     // registry_surface_root resolves to the bound surface; index it and browse.
-    let root = db.registry_surface_root(registry.id).unwrap().unwrap();
+    let root = db
+        .registry_surface_root(registry.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(root, surface);
     index_and_record(&db, &LocalFsFetch::new(&root), &registry)
         .await
@@ -366,15 +378,16 @@ async fn admin_creates_project_binding_and_registry_then_browses() {
 
 #[tokio::test]
 async fn create_under_org_authz_matrix() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
     // A viewer member (read, but no registry.configure / storage.manage).
-    let viewer = db.find_or_create_user("v@acme.com").unwrap();
+    let viewer = db.find_or_create_user("v@acme.com").await.unwrap();
     db.grant_membership("user", viewer, "acme", "viewer")
+        .await
         .unwrap();
     // A complete outsider.
-    db.find_or_create_user("out@x.com").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    db.find_or_create_user("out@x.com").await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     let v_cookie = login(&app, &db, "v@acme.com").await;
     let v_csrf = csrf_for(&v_cookie);
@@ -424,11 +437,13 @@ async fn create_under_org_authz_matrix() {
 
 #[tokio::test]
 async fn binding_root_must_be_absolute() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let admin = db.find_or_create_user("admin@acme.com").unwrap();
-    db.grant_membership("user", admin, "acme", "admin").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let admin = db.find_or_create_user("admin@acme.com").await.unwrap();
+    db.grant_membership("user", admin, "acme", "admin")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "admin@acme.com").await;
     let csrf = csrf_for(&cookie);
 
@@ -464,12 +479,13 @@ async fn serve_managed(
     fixture: &common::Fixture,
     visibility: &str,
 ) -> Arc<Database> {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme, Inc.").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
     let parent = surface.parent().unwrap().to_str().unwrap();
     let dir_name = surface.file_name().unwrap().to_str().unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", parent)
+        .await
         .unwrap();
     db.create_managed_registry(
         org,
@@ -481,8 +497,13 @@ async fn serve_managed(
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
-    let registry = db.registry_by_slug("acme/infra/prod/cdn").unwrap().unwrap();
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
     index_and_record(&db, &LocalFsFetch::new(surface), &registry)
         .await
         .unwrap();
@@ -496,10 +517,12 @@ async fn settings_page_renders_links_and_visibility_edit_audits() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
     let db = serve_managed(&surface, &fixture, "public").await;
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
+        .unwrap();
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = csrf_for(&cookie);
 
@@ -542,6 +565,7 @@ async fn settings_page_renders_links_and_visibility_edit_audits() {
     assert!(resp.body.contains("Visibility updated"), "{}", resp.body);
     assert_eq!(
         db.registry_by_slug("acme/infra/prod/cdn")
+            .await
             .unwrap()
             .unwrap()
             .visibility,
@@ -549,6 +573,7 @@ async fn settings_page_renders_links_and_visibility_edit_audits() {
     );
     assert!(db
         .list_audit("acme/infra/prod/cdn")
+        .await
         .unwrap()
         .iter()
         .any(|a| a.action == "registry.visibility"));
@@ -572,11 +597,12 @@ async fn settings_visibility_forbidden_for_developer() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
     let db = serve_managed(&surface, &fixture, "public").await;
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // A developer at the registry scope lacks registry.configure.
-    let dev = db.find_or_create_user("dev@acme.com").unwrap();
+    let dev = db.find_or_create_user("dev@acme.com").await.unwrap();
     db.grant_membership("user", dev, "acme/infra/prod/cdn", "developer")
+        .await
         .unwrap();
     let cookie = login(&app, &db, "dev@acme.com").await;
     let csrf = csrf_for(&cookie);
@@ -611,12 +637,14 @@ async fn registry_delete_requires_typed_confirmation_and_owner() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
     let db = serve_managed(&surface, &fixture, "public").await;
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // An admin holds registry.configure but NOT the owner-only iam.admin verb,
     // so delete is forbidden.
-    let admin = db.find_or_create_user("admin@acme.com").unwrap();
-    db.grant_membership("user", admin, "acme", "admin").unwrap();
+    let admin = db.find_or_create_user("admin@acme.com").await.unwrap();
+    db.grant_membership("user", admin, "acme", "admin")
+        .await
+        .unwrap();
     let a_cookie = login(&app, &db, "admin@acme.com").await;
     let a_csrf = csrf_for(&a_cookie);
     let resp = send(
@@ -630,12 +658,15 @@ async fn registry_delete_requires_typed_confirmation_and_owner() {
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
     assert!(db
         .registry_by_slug("acme/infra/prod/cdn")
+        .await
         .unwrap()
         .is_some());
 
     // An owner with the WRONG confirmation is rejected (typed-confirm gate).
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
+        .unwrap();
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = csrf_for(&cookie);
     let resp = send(
@@ -649,6 +680,7 @@ async fn registry_delete_requires_typed_confirmation_and_owner() {
     assert_eq!(resp.status, StatusCode::BAD_REQUEST, "{}", resp.body);
     assert!(db
         .registry_by_slug("acme/infra/prod/cdn")
+        .await
         .unwrap()
         .is_some());
 
@@ -666,10 +698,12 @@ async fn registry_delete_requires_typed_confirmation_and_owner() {
     assert_eq!(resp.location.as_deref(), Some("/-/org/acme"));
     assert!(db
         .registry_by_slug("acme/infra/prod/cdn")
+        .await
         .unwrap()
         .is_none());
     assert!(db
         .list_audit("acme")
+        .await
         .unwrap()
         .iter()
         .any(|a| a.action == "registry.delete"));
@@ -677,14 +711,18 @@ async fn registry_delete_requires_typed_confirmation_and_owner() {
 
 #[tokio::test]
 async fn org_delete_requires_typed_confirmation_and_owner() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
     // An admin (not owner) cannot delete the org.
-    let admin = db.find_or_create_user("admin@acme.com").unwrap();
-    db.grant_membership("user", admin, "acme", "admin").unwrap();
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let admin = db.find_or_create_user("admin@acme.com").await.unwrap();
+    db.grant_membership("user", admin, "acme", "admin")
+        .await
+        .unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     let a_cookie = login(&app, &db, "admin@acme.com").await;
     let a_csrf = csrf_for(&a_cookie);
@@ -697,7 +735,7 @@ async fn org_delete_requires_typed_confirmation_and_owner() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
-    assert!(db.org_by_slug("acme").unwrap().is_some());
+    assert!(db.org_by_slug("acme").await.unwrap().is_some());
 
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = csrf_for(&cookie);
@@ -711,7 +749,7 @@ async fn org_delete_requires_typed_confirmation_and_owner() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::BAD_REQUEST, "{}", resp.body);
-    assert!(db.org_by_slug("acme").unwrap().is_some());
+    assert!(db.org_by_slug("acme").await.unwrap().is_some());
 
     // Correct confirmation soft-deletes (org_by_slug excludes deleted) + audits.
     let resp = send(
@@ -724,10 +762,15 @@ async fn org_delete_requires_typed_confirmation_and_owner() {
     .await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     assert_eq!(resp.location.as_deref(), Some("/-/orgs"));
-    assert!(db.org_by_slug("acme").unwrap().is_none());
-    assert!(db.org_by_slug_including_deleted("acme").unwrap().is_some());
+    assert!(db.org_by_slug("acme").await.unwrap().is_none());
+    assert!(db
+        .org_by_slug_including_deleted("acme")
+        .await
+        .unwrap()
+        .is_some());
     assert!(db
         .list_audit("acme")
+        .await
         .unwrap()
         .iter()
         .any(|a| a.action == "org.delete"));
@@ -738,14 +781,16 @@ async fn admin_creates_and_deletes_a_webhook() {
     // create_webhook runs the SSRF guard on the URL; the `.test` hosts below do
     // not resolve, so allow local/unresolvable remotes for this happy path.
     let _remotes = remote_guard(true);
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = csrf_for(&cookie);
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
 
     // Create with two events; the hub-generated secret is shown once.
     let resp = send(
@@ -761,7 +806,7 @@ async fn admin_creates_and_deletes_a_webhook() {
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("Webhook created"), "{}", resp.body);
-    let hooks = db.list_webhooks(org_id).unwrap();
+    let hooks = db.list_webhooks(org_id).await.unwrap();
     assert_eq!(hooks.len(), 1);
     assert_eq!(hooks[0].url, "https://ci.test/hook");
     assert_eq!(
@@ -797,9 +842,10 @@ async fn admin_creates_and_deletes_a_webhook() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    assert!(db.list_webhooks(org_id).unwrap().is_empty());
+    assert!(db.list_webhooks(org_id).await.unwrap().is_empty());
     assert!(db
         .list_audit("acme")
+        .await
         .unwrap()
         .iter()
         .any(|a| a.action == "webhook.delete"));
@@ -823,14 +869,16 @@ async fn webhook_create_rejects_ssrf_url() {
     // to it from inside the hub network (finding H4). Deny local remotes so the
     // guard is enforced regardless of any parallel test's env state.
     let _remotes = remote_guard(false);
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = csrf_for(&cookie);
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
 
     // The cloud-metadata link-local address is rejected without any DNS.
     let resp = send(
@@ -855,20 +903,21 @@ async fn webhook_create_rejects_ssrf_url() {
         Some(&format!(
             "csrf={csrf}&op=create&url=http%3A%2F%2F127.0.0.1%3A8500%2Fv1%2F&events=release.published"
         )),
-    )
-    .await;
+    ).await
+    ;
     assert_eq!(resp.status, StatusCode::BAD_REQUEST, "{}", resp.body);
-    assert!(db.list_webhooks(org_id).unwrap().is_empty());
+    assert!(db.list_webhooks(org_id).await.unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn non_admin_member_cannot_manage_webhooks() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let member = db.find_or_create_user("viewer@acme.com").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let member = db.find_or_create_user("viewer@acme.com").await.unwrap();
     db.grant_membership("user", member, "acme", "viewer")
+        .await
         .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "viewer@acme.com").await;
     let csrf = csrf_for(&cookie);
 
@@ -888,14 +937,16 @@ async fn non_admin_member_cannot_manage_webhooks() {
 
 #[tokio::test]
 async fn owner_configures_sso_and_captures_domain() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = csrf_for(&cookie);
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
 
     // Configure the IdP with a client secret.
     let resp = send(
@@ -912,7 +963,11 @@ async fn owner_configures_sso_and_captures_domain() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    let cfg = db.idp_config(org_id).unwrap().expect("idp configured");
+    let cfg = db
+        .idp_config(org_id)
+        .await
+        .unwrap()
+        .expect("idp configured");
     assert_eq!(cfg.issuer, "https://idp.test");
     assert_eq!(cfg.client_id, "cid");
     let sealed = cfg.client_secret_enc.clone().expect("secret sealed");
@@ -933,7 +988,7 @@ async fn owner_configures_sso_and_captures_domain() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    let cfg = db.idp_config(org_id).unwrap().unwrap();
+    let cfg = db.idp_config(org_id).await.unwrap().unwrap();
     assert_eq!(cfg.client_id, "cid2");
     assert_eq!(
         cfg.client_secret_enc.as_deref(),
@@ -953,6 +1008,7 @@ async fn owner_configures_sso_and_captures_domain() {
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(db
         .org_domain("acme.com")
+        .await
         .unwrap()
         .unwrap()
         .verified_at
@@ -970,6 +1026,7 @@ async fn owner_configures_sso_and_captures_domain() {
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
     assert!(db
         .org_domain("acme.com")
+        .await
         .unwrap()
         .unwrap()
         .verified_at
@@ -978,17 +1035,21 @@ async fn owner_configures_sso_and_captures_domain() {
 
 #[tokio::test]
 async fn instance_admin_verifies_a_captured_domain() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let admin = db.find_or_create_user("root@hub").unwrap();
-    db.grant_membership("user", admin, "acme", "owner").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let admin = db.find_or_create_user("root@hub").await.unwrap();
+    db.grant_membership("user", admin, "acme", "owner")
+        .await
+        .unwrap();
     // Instance admin: owner at the root scope "".
-    db.grant_membership("user", admin, "", "owner").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    db.grant_membership("user", admin, "", "owner")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "root@hub").await;
     let csrf = csrf_for(&cookie);
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
-    db.add_org_domain(org_id, "acme.com").unwrap();
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
+    db.add_org_domain(org_id, "acme.com").await.unwrap();
 
     let resp = send(
         &app,
@@ -1001,12 +1062,14 @@ async fn instance_admin_verifies_a_captured_domain() {
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(db
         .org_domain("acme.com")
+        .await
         .unwrap()
         .unwrap()
         .verified_at
         .is_some());
     assert!(db
         .list_audit("acme")
+        .await
         .unwrap()
         .iter()
         .any(|a| a.action == "domain.verify"));
@@ -1015,23 +1078,24 @@ async fn instance_admin_verifies_a_captured_domain() {
 /// H7: an admin of one org cannot seize a domain already claimed by another.
 #[tokio::test]
 async fn add_domain_rejects_cross_org_claim_theft() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    db.create_org("globex", "Globex").unwrap();
-    let acme_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    db.create_org("globex", "Globex").await.unwrap();
+    let acme_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
 
     // Acme claims and an instance admin verifies acme.com.
-    db.add_org_domain(acme_id, "acme.com").unwrap();
-    db.verify_org_domain("acme.com").unwrap();
-    let before = db.org_domain("acme.com").unwrap().unwrap();
+    db.add_org_domain(acme_id, "acme.com").await.unwrap();
+    db.verify_org_domain("acme.com").await.unwrap();
+    let before = db.org_domain("acme.com").await.unwrap().unwrap();
     assert_eq!(before.org_id, acme_id);
     assert!(before.verified_at.is_some());
 
     // An owner of Globex tries to claim acme.com through the console.
-    let attacker = db.find_or_create_user("attacker@globex.com").unwrap();
+    let attacker = db.find_or_create_user("attacker@globex.com").await.unwrap();
     db.grant_membership("user", attacker, "globex", "owner")
+        .await
         .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "attacker@globex.com").await;
     let csrf = csrf_for(&cookie);
     let resp = send(
@@ -1045,7 +1109,7 @@ async fn add_domain_rejects_cross_org_claim_theft() {
     assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
 
     // Acme's row is untouched: still owned by Acme and still verified.
-    let after = db.org_domain("acme.com").unwrap().unwrap();
+    let after = db.org_domain("acme.com").await.unwrap().unwrap();
     assert_eq!(after.org_id, acme_id, "ownership unchanged");
     assert_eq!(
         after.verified_at, before.verified_at,
@@ -1057,8 +1121,8 @@ async fn add_domain_rejects_cross_org_claim_theft() {
     );
 
     // The owning org CAN re-claim its own domain (re-issues the challenge).
-    let challenge = db.add_org_domain(acme_id, "acme.com").unwrap();
-    let reclaimed = db.org_domain("acme.com").unwrap().unwrap();
+    let challenge = db.add_org_domain(acme_id, "acme.com").await.unwrap();
+    let reclaimed = db.org_domain("acme.com").await.unwrap().unwrap();
     assert_eq!(reclaimed.org_id, acme_id);
     assert!(
         reclaimed.verified_at.is_none(),
@@ -1073,24 +1137,24 @@ async fn add_domain_rejects_cross_org_claim_theft() {
 /// can always re-claim its own domain.
 #[tokio::test]
 async fn add_org_domain_is_atomically_cross_org_safe() {
-    let db = Database::open_in_memory().unwrap();
-    let acme = db.create_org("acme", "Acme").unwrap();
-    let globex = db.create_org("globex", "Globex").unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    let acme = db.create_org("acme", "Acme").await.unwrap();
+    let globex = db.create_org("globex", "Globex").await.unwrap();
 
     // Acme claims and verifies the domain.
-    db.add_org_domain(acme, "acme.com").unwrap();
-    db.verify_org_domain("acme.com").unwrap();
-    let before = db.org_domain("acme.com").unwrap().unwrap();
+    db.add_org_domain(acme, "acme.com").await.unwrap();
+    db.verify_org_domain("acme.com").await.unwrap();
+    let before = db.org_domain("acme.com").await.unwrap().unwrap();
     assert!(before.verified_at.is_some());
 
     // Globex cannot re-point it: the call errors and the row is untouched.
-    let err = db.add_org_domain(globex, "acme.com").unwrap_err();
+    let err = db.add_org_domain(globex, "acme.com").await.unwrap_err();
     assert!(
         err.to_string()
             .contains("already claimed by another organization"),
         "got: {err:#}"
     );
-    let after = db.org_domain("acme.com").unwrap().unwrap();
+    let after = db.org_domain("acme.com").await.unwrap().unwrap();
     assert_eq!(after.org_id, acme, "org_id unchanged");
     assert_eq!(
         after.verified_at, before.verified_at,
@@ -1099,8 +1163,8 @@ async fn add_org_domain_is_atomically_cross_org_safe() {
 
     // The owning org can re-claim, rotating the challenge and resetting to
     // unverified.
-    let challenge = db.add_org_domain(acme, "acme.com").unwrap();
-    let reclaimed = db.org_domain("acme.com").unwrap().unwrap();
+    let challenge = db.add_org_domain(acme, "acme.com").await.unwrap();
+    let reclaimed = db.org_domain("acme.com").await.unwrap().unwrap();
     assert_eq!(reclaimed.org_id, acme);
     assert!(reclaimed.verified_at.is_none());
     assert_eq!(reclaimed.txt_challenge, challenge);
@@ -1108,19 +1172,24 @@ async fn add_org_domain_is_atomically_cross_org_safe() {
 
 #[tokio::test]
 async fn project_and_binding_delete_with_in_use_guard() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = csrf_for(&cookie);
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
 
     // An unused project deletes cleanly.
-    db.create_project(org_id, "infra/prod", "Prod").unwrap();
+    db.create_project(org_id, "infra/prod", "Prod")
+        .await
+        .unwrap();
     let pid = db
         .list_projects(org_id)
+        .await
         .unwrap()
         .into_iter()
         .find(|p| p.path == "infra/prod")
@@ -1137,19 +1206,23 @@ async fn project_and_binding_delete_with_in_use_guard() {
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     assert!(db
         .list_projects(org_id)
+        .await
         .unwrap()
         .iter()
         .all(|p| p.id != pid));
 
     // A binding still referenced by a registry is guarded from deletion.
     db.create_storage_binding(org_id, "primary", "local_fs", "/srv/acme")
+        .await
         .unwrap();
     let bid = db
         .storage_binding_by_name(org_id, "primary")
+        .await
         .unwrap()
         .unwrap()
         .id;
     db.create_managed_registry(org_id, "", "cdn", "public", Some(bid), "cdn", &[], false)
+        .await
         .unwrap();
     let resp = send(
         &app,
@@ -1162,20 +1235,24 @@ async fn project_and_binding_delete_with_in_use_guard() {
     assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
     assert!(db
         .storage_binding_by_name(org_id, "primary")
+        .await
         .unwrap()
         .is_some());
 }
 
 #[tokio::test]
 async fn member_role_change_and_last_owner_guard() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
-    let dev = db.find_or_create_user("dev@acme.com").unwrap();
-    db.grant_membership("user", dev, "acme", "developer")
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
         .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let dev = db.find_or_create_user("dev@acme.com").await.unwrap();
+    db.grant_membership("user", dev, "acme", "developer")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = csrf_for(&cookie);
 
@@ -1191,7 +1268,7 @@ async fn member_role_change_and_last_owner_guard() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
-    let members = db.list_members_of_scope("acme").unwrap();
+    let members = db.list_members_of_scope("acme").await.unwrap();
     assert!(members
         .iter()
         .any(|(k, id, r)| k == "user" && *id == dev && r == "admin"));
@@ -1210,6 +1287,7 @@ async fn member_role_change_and_last_owner_guard() {
     assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
     assert!(db
         .list_members_of_scope("acme")
+        .await
         .unwrap()
         .iter()
         .any(|(k, id, r)| k == "user" && *id == owner && r == "owner"));
@@ -1219,16 +1297,21 @@ async fn member_role_change_and_last_owner_guard() {
 /// neither to a peer nor to itself — and the rejected grant never lands.
 #[tokio::test]
 async fn admin_cannot_escalate_to_owner() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
-    let admin = db.find_or_create_user("admin@acme.com").unwrap();
-    db.grant_membership("user", admin, "acme", "admin").unwrap();
-    let victim = db.find_or_create_user("victim@acme.com").unwrap();
-    db.grant_membership("user", victim, "acme", "viewer")
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
         .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let admin = db.find_or_create_user("admin@acme.com").await.unwrap();
+    db.grant_membership("user", admin, "acme", "admin")
+        .await
+        .unwrap();
+    let victim = db.find_or_create_user("victim@acme.com").await.unwrap();
+    db.grant_membership("user", victim, "acme", "viewer")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "admin@acme.com").await;
     let csrf = csrf_for(&cookie);
 
@@ -1247,6 +1330,7 @@ async fn admin_cannot_escalate_to_owner() {
     // The victim's role is unchanged.
     assert!(db
         .list_members_of_scope("acme")
+        .await
         .unwrap()
         .iter()
         .any(|(k, id, r)| k == "user" && *id == victim && r == "viewer"));
@@ -1265,6 +1349,7 @@ async fn admin_cannot_escalate_to_owner() {
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
     assert!(db
         .list_members_of_scope("acme")
+        .await
         .unwrap()
         .iter()
         .any(|(k, id, r)| k == "user" && *id == admin && r == "admin"));
@@ -1283,6 +1368,7 @@ async fn admin_cannot_escalate_to_owner() {
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     assert!(db
         .list_members_of_scope("acme")
+        .await
         .unwrap()
         .iter()
         .any(|(k, id, r)| k == "user" && *id == victim && r == "developer"));
@@ -1290,14 +1376,17 @@ async fn admin_cannot_escalate_to_owner() {
 
 #[tokio::test]
 async fn instance_settings_signup_policy_admin_only() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let member = db.find_or_create_user("member@acme.com").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let member = db.find_or_create_user("member@acme.com").await.unwrap();
     db.grant_membership("user", member, "acme", "owner")
+        .await
         .unwrap();
-    let admin = db.find_or_create_user("root@hub").unwrap();
-    db.grant_membership("user", admin, "", "owner").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let admin = db.find_or_create_user("root@hub").await.unwrap();
+    db.grant_membership("user", admin, "", "owner")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // An org owner who is not an instance admin is forbidden.
     let member_cookie = login(&app, &db, "member@acme.com").await;
@@ -1317,7 +1406,7 @@ async fn instance_settings_signup_policy_admin_only() {
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(matches!(
-        db.signup_policy().unwrap(),
+        db.signup_policy().await.unwrap(),
         aos_registry_hub::db::SignupPolicy::Open
     ));
 }
@@ -1327,30 +1416,36 @@ async fn admin_manages_frontends_and_mirror() {
     // The SSRF guard resolves the frontend/mirror host; opt into loopback so
     // the test can use 127.0.0.1 without real DNS.
     let _remotes = remote_guard(true);
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
+        .unwrap();
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     db.create_storage_binding(org_id, "primary", "local_fs", "/srv/acme")
+        .await
         .unwrap();
     let bid = db
         .storage_binding_by_name(org_id, "primary")
+        .await
         .unwrap()
         .unwrap()
         .id;
     let reg_id = db
         .create_managed_registry(org_id, "", "cdn", "public", Some(bid), "cdn", &[], false)
+        .await
         .unwrap();
     let slug = db
         .list_registries()
+        .await
         .unwrap()
         .into_iter()
         .find(|r| r.id == reg_id)
         .unwrap()
         .slug;
 
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = csrf_for(&cookie);
     let path = format!("/{slug}/-/settings/serving");
@@ -1368,10 +1463,10 @@ async fn admin_manages_frontends_and_mirror() {
         Some(&format!(
             "csrf={csrf}&op=add-frontend&domain=127.0.0.1&mode=direct&serves_web=1&consumer_priority=100"
         )),
-    )
-    .await;
+    ).await
+    ;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    let frontends = db.list_frontends(reg_id).unwrap();
+    let frontends = db.list_frontends(reg_id).await.unwrap();
     assert_eq!(frontends.len(), 1);
     assert_eq!(frontends[0].domain, "127.0.0.1");
 
@@ -1384,10 +1479,10 @@ async fn admin_manages_frontends_and_mirror() {
         Some(&format!(
             "csrf={csrf}&op=set-mirror&upstream_url=http%3A%2F%2F127.0.0.1%2Fup&mode=pullthrough&verify=1&schedule_secs=900"
         )),
-    )
-    .await;
+    ).await
+    ;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    assert!(db.is_mirror(reg_id).unwrap());
+    assert!(db.is_mirror(reg_id).await.unwrap());
 
     let resp = send(
         &app,
@@ -1398,10 +1493,10 @@ async fn admin_manages_frontends_and_mirror() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    assert!(!db.is_mirror(reg_id).unwrap());
+    assert!(!db.is_mirror(reg_id).await.unwrap());
 
     // Delete the frontend.
-    let fid = db.list_frontends(reg_id).unwrap()[0].id;
+    let fid = db.list_frontends(reg_id).await.unwrap()[0].id;
     let resp = send(
         &app,
         "POST",
@@ -1411,11 +1506,12 @@ async fn admin_manages_frontends_and_mirror() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    assert!(db.list_frontends(reg_id).unwrap().is_empty());
+    assert!(db.list_frontends(reg_id).await.unwrap().is_empty());
 
     // A non-configurer member is forbidden.
-    let viewer = db.find_or_create_user("v@acme.com").unwrap();
+    let viewer = db.find_or_create_user("v@acme.com").await.unwrap();
     db.grant_membership("user", viewer, "acme", "viewer")
+        .await
         .unwrap();
     let v_cookie = login(&app, &db, "v@acme.com").await;
     let resp = send(&app, "GET", &path, Some(&v_cookie), None).await;
@@ -1424,10 +1520,10 @@ async fn admin_manages_frontends_and_mirror() {
 
 /// Build a **non-sudo** session cookie for `user` (auth_level 0), standing in
 /// for a stale, long-lived session that fell out of the sudo window.
-fn stale_cookie(db: &Database, user: i64) -> String {
+async fn stale_cookie(db: &Database, user: i64) -> String {
     format!(
         "{COOKIE_NAME}={}",
-        db.create_session(user, 30 * 24 * 60 * 60, 0).unwrap()
+        db.create_session(user, 30 * 24 * 60 * 60, 0).await.unwrap()
     )
 }
 
@@ -1437,18 +1533,22 @@ fn stale_cookie(db: &Database, user: i64) -> String {
 /// hosted-key enroll.
 #[tokio::test]
 async fn trust_ops_require_sudo() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
+        .unwrap();
     // A second owner exists so role/remove ops are not blocked by the
     // last-owner guard (we are testing the sudo gate, not that guard).
-    let co = db.find_or_create_user("co@acme.com").unwrap();
-    db.grant_membership("user", co, "acme", "owner").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let co = db.find_or_create_user("co@acme.com").await.unwrap();
+    db.grant_membership("user", co, "acme", "owner")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // A stale (non-sudo) session for the owner.
-    let stale = stale_cookie(&db, owner);
+    let stale = stale_cookie(&db, owner).await;
     let s_csrf = csrf_for(&stale);
 
     // invite-member: 403 stale.
@@ -1541,9 +1641,10 @@ async fn trust_ops_require_sudo() {
     );
 
     // Nothing was mutated by any refused request.
-    assert!(db.user_by_email("new@acme.com").unwrap().is_none());
+    assert!(db.user_by_email("new@acme.com").await.unwrap().is_none());
     assert_eq!(
         db.list_members_of_scope("acme")
+            .await
             .unwrap()
             .iter()
             .filter(|(k, _, r)| k == "user" && r == "owner")
@@ -1552,7 +1653,8 @@ async fn trust_ops_require_sudo() {
         "both owners intact"
     );
     assert!(db
-        .idp_config(db.org_by_slug("acme").unwrap().unwrap().id)
+        .idp_config(db.org_by_slug("acme").await.unwrap().unwrap().id)
+        .await
         .unwrap()
         .is_none());
 
@@ -1574,7 +1676,7 @@ async fn trust_ops_require_sudo() {
         "invite fresh: {}",
         resp.body
     );
-    assert!(db.user_by_email("new@acme.com").unwrap().is_some());
+    assert!(db.user_by_email("new@acme.com").await.unwrap().is_some());
 
     let resp = send(
         &app,
@@ -1591,7 +1693,8 @@ async fn trust_ops_require_sudo() {
     .await;
     assert_eq!(resp.status, StatusCode::OK, "set-idp fresh: {}", resp.body);
     assert!(db
-        .idp_config(db.org_by_slug("acme").unwrap().unwrap().id)
+        .idp_config(db.org_by_slug("acme").await.unwrap().unwrap().id)
+        .await
         .unwrap()
         .is_some());
 

@@ -96,31 +96,32 @@ fn run_execute(conn: &Connection, sql: &str, params: &[Value]) -> Result<u64> {
     Ok(n as u64)
 }
 
+#[async_trait::async_trait]
 impl Backend for SqliteBackend {
     fn dialect(&self) -> Dialect {
         Dialect::Sqlite
     }
 
-    fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
+    async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
         let (sql, params) = prepare(Dialect::Sqlite, sql, params)?;
         let conn = self.lock();
         run_execute(&conn, &sql, &params)
     }
 
-    fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64> {
+    async fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64> {
         let (sql, params) = prepare(Dialect::Sqlite, sql, params)?;
         let conn = self.lock();
         run_execute(&conn, &sql, &params)?;
         Ok(conn.last_insert_rowid())
     }
 
-    fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
+    async fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
         let (sql, params) = prepare(Dialect::Sqlite, sql, params)?;
         let conn = self.lock();
         run_query(&conn, &sql, &params)
     }
 
-    fn execute_batch(&self, sql: &str) -> Result<()> {
+    async fn execute_batch(&self, sql: &str) -> Result<()> {
         let conn = self.lock();
         // sqlite translation is the identity, so the original batch runs
         // verbatim; execute_batch handles the multi-statement script directly.
@@ -129,7 +130,10 @@ impl Backend for SqliteBackend {
         Ok(())
     }
 
-    fn with_tx(&self, f: &mut dyn FnMut(&mut dyn Tx) -> Result<()>) -> Result<()> {
+    async fn with_tx(
+        &self,
+        f: &mut (dyn for<'t> FnMut(&'t mut (dyn Tx + 't)) -> Result<()> + Send),
+    ) -> Result<()> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         {

@@ -163,7 +163,7 @@ fn fetch_err(message: impl Into<String>) -> anyhow::Error {
 /// local/internal target uniformly regardless of whether the host is a name or
 /// an IP. The [`AOS_HUB_ALLOW_LOCAL_REMOTES`](allow_local_remotes) debug hatch
 /// relaxes both consistently.
-pub fn hardened_client() -> reqwest::Client {
+pub async fn hardened_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
@@ -312,10 +312,10 @@ pub struct HttpFetch {
 
 impl HttpFetch {
     /// Create a fetcher for a registry base URL.
-    pub fn new(base: impl Into<String>) -> Self {
+    pub async fn new(base: impl Into<String>) -> Self {
         Self {
             base: base.into().trim_end_matches('/').to_string(),
-            client: hardened_client(),
+            client: hardened_client().await,
         }
     }
 }
@@ -365,7 +365,7 @@ impl SurfaceFetch for HttpFetch {
 /// # Errors
 ///
 /// Returns an error for unsupported URL schemes.
-pub fn fetch_for_url(source_url: &str) -> Result<Box<dyn SurfaceFetch>> {
+pub async fn fetch_for_url(source_url: &str) -> Result<Box<dyn SurfaceFetch>> {
     if let Some(path) = source_url.strip_prefix("file://") {
         return Ok(Box::new(LocalFsFetch::new(path)));
     }
@@ -373,7 +373,7 @@ pub fn fetch_for_url(source_url: &str) -> Result<Box<dyn SurfaceFetch>> {
         return Ok(Box::new(LocalFsFetch::new(source_url)));
     }
     if source_url.starts_with("http://") || source_url.starts_with("https://") {
-        return Ok(Box::new(HttpFetch::new(source_url)));
+        return Ok(Box::new(HttpFetch::new(source_url).await));
     }
     bail!(
         "unsupported registry source URL '{source_url}' (expected file://, /path, or http(s)://)"
@@ -834,12 +834,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fetch_for_url_dispatches_schemes() {
-        assert!(fetch_for_url("file:///srv/reg").is_ok());
-        assert!(fetch_for_url("/srv/reg").is_ok());
-        assert!(fetch_for_url("https://cdn.example.com/reg").is_ok());
-        assert!(fetch_for_url("s3://bucket/prefix").is_err());
+    #[tokio::test]
+    async fn fetch_for_url_dispatches_schemes() {
+        assert!(fetch_for_url("file:///srv/reg").await.is_ok());
+        assert!(fetch_for_url("/srv/reg").await.is_ok());
+        assert!(fetch_for_url("https://cdn.example.com/reg").await.is_ok());
+        assert!(fetch_for_url("s3://bucket/prefix").await.is_err());
     }
 
     #[tokio::test]
@@ -860,7 +860,7 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let client = hardened_client();
+        let client = hardened_client().await;
         let response = client.get(&url).send().await.unwrap();
         let cap = 1024;
         let err = read_body_capped(response, cap, "test fetch")
@@ -986,7 +986,7 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let client = hardened_client();
+        let client = hardened_client().await;
         let response = client.get(&url).send().await.unwrap();
         // The 3xx is returned verbatim — the client stopped at the redirect
         // rather than following it to the internal target.
@@ -1008,7 +1008,7 @@ mod tests {
         // check runs at connect time, not only in `is_safe_remote_url`.
         assert!(std::env::var_os("AOS_HUB_ALLOW_LOCAL_REMOTES").is_none());
 
-        let client = hardened_client();
+        let client = hardened_client().await;
         let err = client
             .get("http://localhost:80/")
             .send()

@@ -174,12 +174,13 @@ pub async fn advance_channel(
         )
     })?;
     let root = db
-        .registry_surface_root(registry.id)?
+        .registry_surface_root(registry.id)
+        .await?
         .with_context(|| format!("registry '{}' has no writable surface root", registry.slug))?;
 
     // Anti-rollback: never advance below the recorded floor.
     if let (Some(floor), Ok(target)) = (
-        db.channel_floor(registry.id, channel_name)?,
+        db.channel_floor(registry.id, channel_name).await?,
         semver::Version::parse(target_semver),
     ) {
         if let Ok(floor_v) = semver::Version::parse(&floor) {
@@ -196,7 +197,8 @@ pub async fn advance_channel(
     // indexed release row carries the tag oid the (already published) release
     // tag object hashes to.
     let release = db
-        .list_releases(registry.id)?
+        .list_releases(registry.id)
+        .await?
         .into_iter()
         .find(|r| r.semver == target_semver)
         .with_context(|| {
@@ -208,13 +210,14 @@ pub async fn advance_channel(
         })?;
     let release_tag_oid = release.tag_oid;
 
-    let (key_id, signing_key, _public) = db.load_hosted_signing_key(sealer, hosted_key_id)?;
+    let (key_id, signing_key, _public) = db.load_hosted_signing_key(sealer, hosted_key_id).await?;
 
     // Which buckets already point at the target, and which are candidates to
     // move. The indexed `ChannelSummary` carries the resolved semver per
     // bucket (an empty vec when the channel has not been indexed yet).
     let current: Vec<Option<String>> = db
-        .list_channels(registry.id)?
+        .list_channels(registry.id)
+        .await?
         .into_iter()
         .find(|c| c.name == channel_name)
         .map(|c| c.partitions)
@@ -268,7 +271,8 @@ pub async fn advance_channel(
         Some(&outcome.commit),
         None,
         Some(&detail),
-    )?;
+    )
+    .await?;
 
     // Notify subscribers of the advance. Additive and non-fatal: a webhook
     // failure never undoes the partitions just written.
@@ -282,7 +286,7 @@ pub async fn advance_channel(
             rollout_percent,
             at: when,
         };
-        if let Err(err) = crate::webhook::dispatch(db, org_id, &event) {
+        if let Err(err) = crate::webhook::dispatch(db, org_id, &event).await {
             tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "dispatching channel.advanced webhook");
         }
     }
@@ -328,9 +332,10 @@ pub async fn resign_tag(
         )
     })?;
     let root = db
-        .registry_surface_root(registry.id)?
+        .registry_surface_root(registry.id)
+        .await?
         .with_context(|| format!("registry '{}' has no writable surface root", registry.slug))?;
-    let (key_id, signing_key, _public) = db.load_hosted_signing_key(sealer, hosted_key_id)?;
+    let (key_id, signing_key, _public) = db.load_hosted_signing_key(sealer, hosted_key_id).await?;
 
     let signed = sign_release_tag(&signing_key, semver, commit_oid, when)?;
     let target = safe_join(&root, &signed.oid.loose_path())
@@ -347,7 +352,8 @@ pub async fn resign_tag(
         Some(commit_oid),
         Some(&signed.oid.to_hex()),
         Some(semver),
-    )?;
+    )
+    .await?;
     Ok(signed.oid)
 }
 

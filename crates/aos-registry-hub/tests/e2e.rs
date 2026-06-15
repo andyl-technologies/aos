@@ -40,15 +40,16 @@ async fn fixture_surface_indexes_and_serves() {
     let fixture = common::standard_registry(&surface);
 
     // Register fail-closed with the fixture's trust anchor and index.
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.register_registry(
         "demo",
         surface.to_str().unwrap(),
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     let fetch = LocalFsFetch::new(&surface);
     let outcome = index_and_record(&db, &fetch, &registry).await.unwrap();
     assert_eq!(outcome.packages, 1);
@@ -56,25 +57,25 @@ async fn fixture_surface_indexes_and_serves() {
     assert_eq!(outcome.channels, 1);
 
     // The index reflects the verified surface.
-    let status = db.index_status(registry.id).unwrap().unwrap();
+    let status = db.index_status(registry.id).await.unwrap().unwrap();
     assert_eq!(status.state, "fresh");
     assert_eq!(status.name.as_deref(), Some("demo"));
-    let packages = db.list_packages(registry.id).unwrap();
+    let packages = db.list_packages(registry.id).await.unwrap();
     assert_eq!(packages[0].name, "curl");
-    let channels = db.list_channels(registry.id).unwrap();
+    let channels = db.list_channels(registry.id).await.unwrap();
     assert_eq!(channels[0].frontier.as_deref(), Some("1.0.0"));
     assert_eq!(channels[0].partitions.iter().flatten().count(), 256);
-    let releases = db.list_releases(registry.id).unwrap();
+    let releases = db.list_releases(registry.id).await.unwrap();
     assert!(
         releases[0].signer.is_some(),
         "release must record its signer"
     );
 
     // Serve and exercise every audience.
-    let app = router(Arc::new(AppState::new(
-        Arc::clone(&db),
-        "http://127.0.0.1:8420".into(),
-    )));
+    let app = router(Arc::new(
+        AppState::new(Arc::clone(&db), "http://127.0.0.1:8420".into()).await,
+    ))
+    .await;
 
     // Machine surface: byte-faithful with the right header classes.
     let (status, headers, body) = get(&app, "/demo/HEAD").await;
@@ -172,19 +173,20 @@ async fn tampered_partition_fails_closed() {
     payload[8] = if payload[8] == b'f' { b'0' } else { b'f' };
     std::fs::write(&partition, payload).unwrap();
 
-    let db = Database::open_in_memory().unwrap();
+    let db = Database::open_in_memory().await.unwrap();
     db.register_registry(
         "demo",
         surface.to_str().unwrap(),
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     let fetch = LocalFsFetch::new(&surface);
     let err = index_and_record(&db, &fetch, &registry).await.unwrap_err();
     assert!(format!("{err:#}").contains("channels/stable/07"));
-    let status = db.index_status(registry.id).unwrap().unwrap();
+    let status = db.index_status(registry.id).await.unwrap().unwrap();
     assert_eq!(status.state, "failed");
 }
 
@@ -202,10 +204,11 @@ async fn untrusted_key_fails_closed() {
     let wrong_anchor =
         aos_registry_hub::surface::sshsig::trusted_key_line("demo", &other.verifying_key());
 
-    let db = Database::open_in_memory().unwrap();
+    let db = Database::open_in_memory().await.unwrap();
     db.register_registry("demo", surface.to_str().unwrap(), &[wrong_anchor], true)
+        .await
         .unwrap();
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     let fetch = LocalFsFetch::new(&surface);
     let err = index_and_record(&db, &fetch, &registry).await.unwrap_err();
     assert!(format!("{err:#}").contains("not trusted"), "got: {err:#}");
@@ -218,20 +221,24 @@ async fn connectrpc_read_path_serves_index() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.register_registry(
         "demo",
         surface.to_str().unwrap(),
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
         .await
         .unwrap();
 
-    let app = router(Arc::new(AppState::new(db, "http://127.0.0.1:8420".into())));
+    let app = router(Arc::new(
+        AppState::new(db, "http://127.0.0.1:8420".into()).await,
+    ))
+    .await;
 
     let post = |uri: &'static str, body: &'static str| {
         let app = app.clone();
@@ -301,8 +308,11 @@ async fn connectrpc_read_path_serves_index() {
 async fn rpc_inbound_body_cap_rejects_oversized_request() {
     use aos_registry_hub::server::RPC_MAX_BODY_BYTES;
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(Arc::new(AppState::new(db, "http://127.0.0.1:8420".into())));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(Arc::new(
+        AppState::new(db, "http://127.0.0.1:8420".into()).await,
+    ))
+    .await;
 
     let post = |body: Vec<u8>| {
         let app = app.clone();

@@ -90,7 +90,7 @@ pub async fn probe_caches(
     http: &reqwest::Client,
     registry: &RegistryRecord,
 ) -> Result<Vec<CacheProbe>> {
-    let cache_urls = committed_cache_urls(db, registry.id)?;
+    let cache_urls = committed_cache_urls(db, registry.id).await?;
     let mut probes = Vec::with_capacity(cache_urls.len());
     for cache_url in cache_urls {
         let probe = probe_one(http, &cache_url).await;
@@ -101,19 +101,21 @@ pub async fn probe_caches(
             probe.observed_nix_cache_info,
             probe.latency_ms,
             probe.checked_at,
-        )?;
+        )
+        .await?;
         probes.push(probe);
     }
     Ok(probes)
 }
 
 /// The committed cache URLs for a registry: stack endpoints, else flat list.
-fn committed_cache_urls(db: &Database, registry_id: i64) -> Result<Vec<String>> {
-    let stack = db.registry_cache_stack(registry_id)?;
+async fn committed_cache_urls(db: &Database, registry_id: i64) -> Result<Vec<String>> {
+    let stack = db.registry_cache_stack(registry_id).await?;
     Ok(match stack {
         Some(node) => StackNode::endpoints(&node),
         None => db
-            .list_caches(registry_id)?
+            .list_caches(registry_id)
+            .await?
             .into_iter()
             .map(|(url, _)| url)
             .collect(),
@@ -243,13 +245,13 @@ pub async fn probe_frontends(
     http: &reqwest::Client,
     registry: &RegistryRecord,
 ) -> Result<Vec<FrontendProbe>> {
-    let frontends = db.list_frontends(registry.id)?;
+    let frontends = db.list_frontends(registry.id).await?;
     if frontends.is_empty() {
         return Ok(Vec::new());
     }
     // The local index's release set bounds lag: a frontend that advertises
     // fewer release tags than the local index is behind by the difference.
-    let local_releases = db.list_releases(registry.id)?.len() as i64;
+    let local_releases = db.list_releases(registry.id).await?.len() as i64;
 
     let mut probes = Vec::with_capacity(frontends.len());
     for frontend in &frontends {
@@ -261,7 +263,8 @@ pub async fn probe_frontends(
             probe.lag_releases,
             probe.latency_ms,
             probe.checked_at,
-        )?;
+        )
+        .await?;
         probes.push(probe);
     }
     Ok(probes)
@@ -441,7 +444,7 @@ mod tests {
     /// pre-check, so this test issues no live network request.
     #[tokio::test]
     async fn probe_one_rejects_literal_internal_ip_cache() {
-        let http = crate::fetch::hardened_client();
+        let http = crate::fetch::hardened_client().await;
         let probe = probe_one(&http, "http://169.254.169.254/").await;
         assert_eq!(probe.status, ProbeStatus::Unreachable);
         assert!(!probe.observed_nix_cache_info);

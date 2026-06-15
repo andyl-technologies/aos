@@ -16,8 +16,8 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
 /// Builds an `AuthState` with deterministic JWT keys and a seeded token.
-fn seed() -> (Arc<AuthState>, String) {
-    let db = Arc::new(Database::open_in_memory().unwrap());
+async fn seed() -> (Arc<AuthState>, String) {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     let (_id, secret) = db
         .create_token(
             Principal::user(42),
@@ -26,6 +26,7 @@ fn seed() -> (Arc<AuthState>, String) {
             Some("ci"),
             None,
         )
+        .await
         .unwrap();
     let state = Arc::new(AuthState {
         db,
@@ -39,7 +40,7 @@ fn seed() -> (Arc<AuthState>, String) {
 
 #[tokio::test]
 async fn oauth2_exchange_happy_path_decodes_to_claims() {
-    let (state, secret) = seed();
+    let (state, secret) = seed().await;
     let keys = state.jwt_keys.clone();
     let app = oauth2_router().with_state(state);
 
@@ -73,7 +74,7 @@ async fn oauth2_exchange_happy_path_decodes_to_claims() {
 
 #[tokio::test]
 async fn oauth2_exchange_rejects_bad_secret() {
-    let (state, _secret) = seed();
+    let (state, _secret) = seed().await;
     let app = oauth2_router().with_state(state);
 
     let resp = app
@@ -92,7 +93,7 @@ async fn oauth2_exchange_rejects_bad_secret() {
 
 #[tokio::test]
 async fn oauth2_exchange_rejects_missing_header() {
-    let (state, _secret) = seed();
+    let (state, _secret) = seed().await;
     let app = oauth2_router().with_state(state);
 
     let resp = app

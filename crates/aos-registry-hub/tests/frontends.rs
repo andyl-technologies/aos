@@ -53,7 +53,7 @@ async fn frontend_probe_records_status_and_health_page_renders_it() {
     });
 
     // Register and index the registry so its local frontier is known.
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     let upstream_url = format!("http://{addr}");
     db.register_registry(
         "demo",
@@ -61,9 +61,10 @@ async fn frontend_probe_records_status_and_health_page_renders_it() {
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
-    let fetch = HttpFetch::new(&upstream_url);
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
+    let fetch = HttpFetch::new(&upstream_url).await;
     index_and_record(&db, &fetch, &registry).await.unwrap();
 
     // A frontend whose domain carries an explicit http:// scheme so the probe
@@ -81,12 +82,13 @@ async fn frontend_probe_records_status_and_health_page_renders_it() {
             100,
             true,
         )
+        .await
         .unwrap();
 
     // The probe reads the frontend's info/refs, reports `ok`, observes the
     // frontier, and records zero lag (the frontend serves the same surface the
     // local index was built from).
-    let probes = probe_frontends(&db, &hardened_client(), &registry)
+    let probes = probe_frontends(&db, &hardened_client().await, &registry)
         .await
         .unwrap();
     assert_eq!(probes.len(), 1);
@@ -94,13 +96,13 @@ async fn frontend_probe_records_status_and_health_page_renders_it() {
     assert_eq!(probes[0].status.as_str(), "ok");
     assert_eq!(probes[0].observed_frontier.as_deref(), Some("1.0.0"));
     assert_eq!(probes[0].lag_releases, Some(0));
-    let rows = db.list_frontend_probes(registry.id).unwrap();
+    let rows = db.list_frontend_probes(registry.id).await.unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].status.as_deref(), Some("ok"));
 
     // The health page renders the frontend table with the domain and mode.
-    let state = Arc::new(AppState::new(Arc::clone(&db), upstream_url.clone()));
-    let app = router(state);
+    let state = Arc::new(AppState::new(Arc::clone(&db), upstream_url.clone()).await);
+    let app = router(state).await;
     let response = app
         .oneshot(
             Request::builder()

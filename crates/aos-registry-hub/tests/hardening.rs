@@ -59,13 +59,14 @@ fn registry_with_caches(root: &Path, caches: &[(&str, u32)]) -> common::Fixture 
     fixture
 }
 
-fn register(db: &Database, fixture: &common::Fixture, surface: &Path) {
+async fn register(db: &Database, fixture: &common::Fixture, surface: &Path) {
     db.register_registry(
         "demo",
         surface.to_str().unwrap(),
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
 }
 
@@ -99,14 +100,17 @@ async fn channel_rollback_fails_closed() {
     let surface_a = dir.path().join("a");
     std::fs::create_dir_all(&surface_a).unwrap();
     let fixture_a = common::standard_registry_versioned(&surface_a, "1.0.0");
-    let db = Database::open_in_memory().unwrap();
-    register(&db, &fixture_a, &surface_a);
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    register(&db, &fixture_a, &surface_a).await;
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     index_and_record(&db, &LocalFsFetch::new(&surface_a), &registry)
         .await
         .unwrap();
     assert_eq!(
-        db.channel_floor(registry.id, "stable").unwrap().as_deref(),
+        db.channel_floor(registry.id, "stable")
+            .await
+            .unwrap()
+            .as_deref(),
         Some("1.0.0")
     );
 
@@ -115,36 +119,40 @@ async fn channel_rollback_fails_closed() {
     let surface_b = dir.path().join("b");
     std::fs::create_dir_all(&surface_b).unwrap();
     let fixture_b = common::standard_registry_versioned(&surface_b, "0.9.0");
-    register(&db, &fixture_b, &surface_b);
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    register(&db, &fixture_b, &surface_b).await;
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     let err = index_and_record(&db, &LocalFsFetch::new(&surface_b), &registry)
         .await
         .unwrap_err();
     assert!(format!("{err:#}").contains("rollback"), "got: {err:#}");
 
-    let status = db.index_status(registry.id).unwrap().unwrap();
+    let status = db.index_status(registry.id).await.unwrap().unwrap();
     assert_eq!(status.state, "failed");
     // The floor never lowers.
     assert_eq!(
-        db.channel_floor(registry.id, "stable").unwrap().as_deref(),
+        db.channel_floor(registry.id, "stable")
+            .await
+            .unwrap()
+            .as_deref(),
         Some("1.0.0")
     );
 }
 
 #[tokio::test]
 async fn unreachable_source_marks_stale_not_failed() {
-    let db = Database::open_in_memory().unwrap();
+    let db = Database::open_in_memory().await.unwrap();
     // Port 1 is essentially never bound; connection is refused immediately.
     db.register_registry("demo", "http://127.0.0.1:1", &[], true)
+        .await
         .unwrap();
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
-    let fetch = fetch_for_url(&registry.source_url).unwrap();
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
+    let fetch = fetch_for_url(&registry.source_url).await.unwrap();
 
     let err = index_and_record(&db, fetch.as_ref(), &registry)
         .await
         .unwrap_err();
     assert!(is_fetch_error(&err), "got: {err:#}");
-    let status = db.index_status(registry.id).unwrap().unwrap();
+    let status = db.index_status(registry.id).await.unwrap().unwrap();
     assert_eq!(status.state, "stale");
     assert!(status.error.is_some());
 }
@@ -163,15 +171,15 @@ async fn unchanged_refs_take_incremental_path() {
     )
     .unwrap();
 
-    let db = Database::open_in_memory().unwrap();
-    register(&db, &fixture, &surface);
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    register(&db, &fixture, &surface).await;
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     let fetch = LocalFsFetch::new(&surface);
 
     let first = index_and_record(&db, &fetch, &registry).await.unwrap();
     assert!(!first.incremental, "first index must do the full walk");
     assert!(
-        db.list_releases(registry.id).unwrap()[0].pack_present,
+        db.list_releases(registry.id).await.unwrap()[0].pack_present,
         "full walk records pack presence"
     );
 
@@ -186,9 +194,9 @@ async fn unchanged_refs_take_incremental_path() {
     assert_eq!(second.channels, 1);
 
     // The index is still fresh and the channels still correct.
-    let status = db.index_status(registry.id).unwrap().unwrap();
+    let status = db.index_status(registry.id).await.unwrap().unwrap();
     assert_eq!(status.state, "fresh");
-    let channels = db.list_channels(registry.id).unwrap();
+    let channels = db.list_channels(registry.id).await.unwrap();
     assert_eq!(channels[0].frontier.as_deref(), Some("1.0.0"));
     assert_eq!(channels[0].partitions.iter().flatten().count(), 256);
 }
@@ -222,9 +230,9 @@ async fn presence_validation_records_coverage_and_findings() {
         ],
     );
 
-    let db = Database::open_in_memory().unwrap();
-    register(&db, &fixture, &surface);
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    register(&db, &fixture, &surface).await;
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
         .await
         .unwrap();
@@ -252,12 +260,12 @@ async fn presence_validation_records_coverage_and_findings() {
     assert_eq!(dead.checked, 0);
 
     // Runs and findings are persisted.
-    let runs = db.latest_validation_runs(registry.id).unwrap();
+    let runs = db.latest_validation_runs(registry.id).await.unwrap();
     assert_eq!(runs.len(), 3);
     let bad_run = runs.iter().find(|r| r.cache_url == bad_url).unwrap();
     assert_eq!(bad_run.missing, 1);
     assert_eq!(
-        db.validation_missing(bad_run.id).unwrap(),
+        db.validation_missing(bad_run.id).await.unwrap(),
         vec!["h7j3k8l2m9n4".to_string()]
     );
     let dead_run = runs

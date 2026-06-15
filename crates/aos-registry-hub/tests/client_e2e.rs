@@ -74,7 +74,7 @@ impl RunningHub {
 }
 
 /// Build an [`AppState`] over `db` with the deterministic test JWT keys.
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -90,7 +90,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: aos_registry_hub::fetch::hardened_client(),
+        http: aos_registry_hub::fetch::hardened_client().await,
         mailer: std::sync::Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: false,
     })
@@ -101,10 +101,11 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
 /// ephemeral TCP port. Returns the [`RunningHub`] handle.
 async fn spawn_hub(visibility: &str) -> RunningHub {
     let root = tempfile::tempdir().unwrap().keep();
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme, Inc.").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", root.to_str().unwrap())
+        .await
         .unwrap();
     db.create_managed_registry(
         org,
@@ -116,9 +117,10 @@ async fn spawn_hub(visibility: &str) -> RunningHub {
         &[],
         false, // fixture is signed, but trust keys are not pinned for this test
     )
+    .await
     .unwrap();
 
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move {
@@ -149,6 +151,7 @@ async fn mint_jwt(hub: &RunningHub, perms: &[Permission]) -> String {
             Some("client-e2e"),
             None,
         )
+        .await
         .unwrap();
 
     let resp = reqwest::Client::new()
@@ -275,8 +278,8 @@ async fn real_backend_publishes_and_reads_back() {
     );
 
     // The hub indexed the registry: the package is queryable in its DB.
-    let registry = hub.db.registry_by_slug(&hub.slug).unwrap().unwrap();
-    let packages = hub.db.list_packages(registry.id).unwrap();
+    let registry = hub.db.registry_by_slug(&hub.slug).await.unwrap().unwrap();
+    let packages = hub.db.list_packages(registry.id).await.unwrap();
     assert!(
         packages.iter().any(|p| p.name == "curl"),
         "hub should have indexed the `curl` package, got {:?}",

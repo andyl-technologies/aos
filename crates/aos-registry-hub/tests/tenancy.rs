@@ -26,7 +26,7 @@ use tower::ServiceExt;
 const TEST_JWT_SECRET: &[u8] = b"tenancy-test-secret-32byte-key!!";
 
 /// Build an [`AppState`] over `db` with deterministic JWT keys.
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -42,7 +42,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: aos_registry_hub::fetch::hardened_client(),
+        http: aos_registry_hub::fetch::hardened_client().await,
         mailer: std::sync::Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: false,
     })
@@ -126,14 +126,15 @@ async fn serve_managed(
     fixture: &common::Fixture,
     visibility: &str,
 ) -> Arc<Database> {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme, Inc.").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
     // The binding roots at the surface's parent; prefix is the surface dir
     // name, so {root}/{prefix} == surface.
     let parent = surface.parent().unwrap().to_str().unwrap();
     let dir_name = surface.file_name().unwrap().to_str().unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", parent)
+        .await
         .unwrap();
     let id = db
         .create_managed_registry(
@@ -146,8 +147,13 @@ async fn serve_managed(
             std::slice::from_ref(&fixture.trust_key),
             true,
         )
+        .await
         .unwrap();
-    let registry = db.registry_by_slug("acme/infra/prod/cdn").unwrap().unwrap();
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(registry.id, id);
     index_and_record(&db, &LocalFsFetch::new(surface), &registry)
         .await
@@ -162,7 +168,7 @@ async fn nested_registry_home_packages_and_machine_path_resolve() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
     let db = serve_managed(&surface, &fixture, "public").await;
-    let app = router(app_state(db));
+    let app = router(app_state(db).await).await;
 
     // Nested registry home renders the registry page.
     let (status, body) = get(&app, "/acme/infra/prod/cdn/", None, None).await;
@@ -194,19 +200,20 @@ async fn flat_phase1_slug_still_resolves() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.register_registry(
         "demo",
         surface.to_str().unwrap(),
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
         .await
         .unwrap();
-    let app = router(app_state(db));
+    let app = router(app_state(db).await).await;
 
     let (status, body) = get(&app, "/demo/", None, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -224,7 +231,7 @@ async fn static_routes_still_resolve_alongside_catch_all() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
     let db = serve_managed(&surface, &fixture, "public").await;
-    let app = router(app_state(db));
+    let app = router(app_state(db).await).await;
 
     // healthz, assets, and the RPC method paths win over the catch-all.
     let (status, body) = get(&app, "/healthz", None, None).await;
@@ -268,12 +275,13 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
     let db = serve_managed(&surface, &fixture, "private").await;
 
     // A member user with Read on the org.
-    let user = db.create_user("dev@acme.com", None).unwrap();
+    let user = db.create_user("dev@acme.com", None).await.unwrap();
     db.grant_membership("user", user, "acme", Role::Developer.as_str())
+        .await
         .unwrap();
-    let session = db.create_session(user, 3600, 0).unwrap();
+    let session = db.create_session(user, 3600, 0).await.unwrap();
 
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Anonymous: 404 (existence is not disclosed), on home, page, and
     // machine path alike.
@@ -311,15 +319,16 @@ async fn internal_registry_requires_org_membership() {
     let db = serve_managed(&surface, &fixture, "internal").await;
 
     // A non-member user (no grant in acme).
-    let outsider = db.create_user("ext@other.com", None).unwrap();
-    let outsider_session = db.create_session(outsider, 3600, 0).unwrap();
+    let outsider = db.create_user("ext@other.com", None).await.unwrap();
+    let outsider_session = db.create_session(outsider, 3600, 0).await.unwrap();
     // A member user.
-    let member = db.create_user("dev@acme.com", None).unwrap();
+    let member = db.create_user("dev@acme.com", None).await.unwrap();
     db.grant_membership("user", member, "acme", Role::Viewer.as_str())
+        .await
         .unwrap();
-    let member_session = db.create_session(member, 3600, 0).unwrap();
+    let member_session = db.create_session(member, 3600, 0).await.unwrap();
 
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     let (status, _) = get(&app, "/acme/infra/prod/cdn/", None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "anon hidden");
@@ -335,21 +344,26 @@ async fn internal_registry_requires_org_membership() {
 
 #[tokio::test]
 async fn instance_home_lists_only_visible_registries() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme, Inc.").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
 
     // One registry per visibility level, all under acme. No binding/surface is
     // needed: the instance home only lists records and their index state.
     let mk = |project: &str, name: &str, vis: &str| {
-        db.create_managed_registry(org, project, name, vis, None, "", &[], false)
-            .unwrap();
-        format!("acme/{project}/{name}")
+        let (project, name, vis) = (project.to_string(), name.to_string(), vis.to_string());
+        let db = &db;
+        async move {
+            db.create_managed_registry(org, &project, &name, &vis, None, "", &[], false)
+                .await
+                .unwrap();
+            format!("acme/{project}/{name}")
+        }
     };
-    let public = mk("p", "pub", "public");
-    let internal = mk("i", "int", "internal");
-    let private = mk("s", "sec", "private");
+    let public = mk("p", "pub", "public").await;
+    let internal = mk("i", "int", "internal").await;
+    let private = mk("s", "sec", "private").await;
 
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Anonymous: only the public registry's slug appears in the listing.
     let (status, body) = get(&app, "/", None, None).await;
@@ -373,8 +387,8 @@ async fn instance_home_lists_only_visible_registries() {
 
     // An outsider with no acme grant: still only the public registry, same as
     // an anonymous caller (a valid session does not by itself reveal anything).
-    let outsider = db.create_user("ext@other.com", None).unwrap();
-    let outsider_session = db.create_session(outsider, 3600, 0).unwrap();
+    let outsider = db.create_user("ext@other.com", None).await.unwrap();
+    let outsider_session = db.create_session(outsider, 3600, 0).await.unwrap();
     let outsider_cookie = format!("__Host-aos_session={outsider_session}");
     let (status, body) = get(&app, "/", Some(&outsider_cookie), None).await;
     assert_eq!(status, StatusCode::OK);
@@ -387,10 +401,11 @@ async fn instance_home_lists_only_visible_registries() {
 
     // A member of acme (org Viewer grant): the org-scoped Read covers internal
     // and the private registry's sub-scope alike, so all three are listed.
-    let member = db.create_user("dev@acme.com", None).unwrap();
+    let member = db.create_user("dev@acme.com", None).await.unwrap();
     db.grant_membership("user", member, "acme", Role::Viewer.as_str())
+        .await
         .unwrap();
-    let session = db.create_session(member, 3600, 0).unwrap();
+    let session = db.create_session(member, 3600, 0).await.unwrap();
     let cookie = format!("__Host-aos_session={session}");
     let (status, body) = get(&app, "/", Some(&cookie), None).await;
     assert_eq!(status, StatusCode::OK);
@@ -413,15 +428,16 @@ async fn instance_home_lists_only_visible_registries() {
 
 #[tokio::test]
 async fn rpc_create_org_project_binding_registry_happy_path() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     // Open signup so a fresh, unaffiliated founder may bootstrap the org.
     // (The default instance policy is invite-only; the operations test suite
     // covers the gating.)
     db.set_signup_policy(aos_registry_hub::db::SignupPolicy::Open)
+        .await
         .unwrap();
     // A user principal to act as the org bootstrapper.
-    let user = db.create_user("founder@acme.com", None).unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let user = db.create_user("founder@acme.com", None).await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // CreateOrg with any authenticated principal; the caller becomes Owner.
     let token = bearer(Principal::user(user), "", &[]);
@@ -435,7 +451,7 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     assert_eq!(status, StatusCode::OK, "{value}");
     assert_eq!(value["org"]["slug"], "acme");
     // The auto-grant made the founder an Owner of acme.
-    let grants = db.effective_scopes(Principal::user(user)).unwrap();
+    let grants = db.effective_scopes(Principal::user(user)).await.unwrap();
     assert!(grants
         .iter()
         .any(|(s, r)| s.as_str() == "acme" && *r == Role::Owner));
@@ -465,8 +481,8 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
         "StorageService/CreateBinding",
         serde_json::json!({"orgSlug": "acme", "name": "primary", "kind": "local_fs", "root": "/srv/aos-hub"}),
         Some(&owner_token),
-    )
-    .await;
+    ).await
+    ;
     assert_eq!(status, StatusCode::OK, "{value}");
     assert_eq!(value["binding"]["root"], "/srv/aos-hub");
 
@@ -490,7 +506,11 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     assert_eq!(value["registry"]["slug"], "acme/infra/prod/cdn");
 
     // The registry exists with the right ownership and storage binding.
-    let record = db.registry_by_slug("acme/infra/prod/cdn").unwrap().unwrap();
+    let record = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(record.visibility, "private");
     assert!(record.storage_binding_id.is_some());
     assert_eq!(record.prefix, "infra/prod/cdn");
@@ -503,13 +523,14 @@ async fn rpc_create_org_rejects_scope_smuggling_slugs() {
     // an org row nor any membership grant. Without the validator, "/"
     // normalizes to the all-containing ROOT scope and "/victimorg" to the
     // victim org's scope, each handing the caller Owner there.
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.set_signup_policy(aos_registry_hub::db::SignupPolicy::Open)
+        .await
         .unwrap();
     // A pre-existing victim org the attacker must not gain Owner over.
-    db.create_org("victimorg", "Victim Org").unwrap();
-    let attacker = db.create_user("attacker@evil.com", None).unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    db.create_org("victimorg", "Victim Org").await.unwrap();
+    let attacker = db.create_user("attacker@evil.com", None).await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(Principal::user(attacker), "", &[]);
 
     for bad in [
@@ -533,20 +554,27 @@ async fn rpc_create_org_rejects_scope_smuggling_slugs() {
     }
 
     // No org was created for any of the smuggling attempts.
-    assert!(db.org_by_slug("/").unwrap().is_none());
-    assert!(db.org_by_slug("/victimorg").unwrap().is_none());
-    assert!(db.org_by_slug("foo/bar").unwrap().is_none());
+    assert!(db.org_by_slug("/").await.unwrap().is_none());
+    assert!(db.org_by_slug("/victimorg").await.unwrap().is_none());
+    assert!(db.org_by_slug("foo/bar").await.unwrap().is_none());
 
     // Crucially, the attacker holds NO grant anywhere — not at the root
     // scope, not over the victim org.
-    let grants = db.effective_scopes(Principal::user(attacker)).unwrap();
+    let grants = db
+        .effective_scopes(Principal::user(attacker))
+        .await
+        .unwrap();
     assert!(
         grants.is_empty(),
         "attacker must hold no grant after rejected creates: {grants:?}"
     );
     // And the victim org's roster gained no Owner.
-    assert!(db.list_members_of_scope("victimorg").unwrap().is_empty());
-    assert!(db.list_members_of_scope("").unwrap().is_empty());
+    assert!(db
+        .list_members_of_scope("victimorg")
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(db.list_members_of_scope("").await.unwrap().is_empty());
 
     // Regression: a normal slug still creates the org and grants Owner at
     // exactly that org's scope.
@@ -559,7 +587,10 @@ async fn rpc_create_org_rejects_scope_smuggling_slugs() {
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
     assert_eq!(value["org"]["slug"], "acme");
-    let grants = db.effective_scopes(Principal::user(attacker)).unwrap();
+    let grants = db
+        .effective_scopes(Principal::user(attacker))
+        .await
+        .unwrap();
     assert_eq!(grants.len(), 1);
     assert!(grants
         .iter()
@@ -573,11 +604,12 @@ async fn rpc_create_org_is_rate_limited_per_principal() {
     // burst; a fresh principal is unaffected.
     use aos_registry_hub::ratelimit::CREATE_ORG_PER_OWNER;
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.set_signup_policy(aos_registry_hub::db::SignupPolicy::Open)
+        .await
         .unwrap();
-    let founder = db.create_user("founder@acme.com", None).unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let founder = db.create_user("founder@acme.com", None).await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(Principal::user(founder), "", &[]);
 
     // The first CREATE_ORG_PER_OWNER creations in the window succeed.
@@ -602,10 +634,10 @@ async fn rpc_create_org_is_rate_limited_per_principal() {
     )
     .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{value}");
-    assert!(db.org_by_slug("acme-over").unwrap().is_none());
+    assert!(db.org_by_slug("acme-over").await.unwrap().is_none());
 
     // A *different* principal is unaffected — the limit is per-caller.
-    let other = db.create_user("other@acme.com", None).unwrap();
+    let other = db.create_user("other@acme.com", None).await.unwrap();
     let other_token = bearer(Principal::user(other), "", &[]);
     let (status, value) = rpc(
         &app,
@@ -629,7 +661,7 @@ async fn soft_deleted_org_registry_is_not_found_over_rpc() {
     let fixture = common::standard_registry(&surface);
     // A public registry so the read would otherwise succeed anonymously.
     let db = serve_managed(&surface, &fixture, "public").await;
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // While the org is live, GetRegistry/ListReleases serve.
     let (status, value) = rpc(
@@ -650,8 +682,8 @@ async fn soft_deleted_org_registry_is_not_found_over_rpc() {
     assert_eq!(status, StatusCode::OK);
 
     // Soft-delete the owning org.
-    let org = db.org_by_slug("acme").unwrap().unwrap();
-    assert!(db.soft_delete_org(org.id, 86_400).unwrap());
+    let org = db.org_by_slug("acme").await.unwrap().unwrap();
+    assert!(db.soft_delete_org(org.id, 86_400).await.unwrap());
 
     // Both reads now report the registry as gone (NotFound -> HTTP 404).
     let (status, value) = rpc(
@@ -679,7 +711,7 @@ async fn private_registry_list_releases_requires_read() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
     let db = serve_managed(&surface, &fixture, "private").await;
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Anonymous ListReleases of a private registry is rejected (no leak).
     let (status, _) = rpc(
@@ -703,8 +735,9 @@ async fn private_registry_list_releases_requires_read() {
 
     // A member with Read, carrying a bearer scoped to the registry, sees the
     // releases (the permission is intersected with the owner's live grants).
-    let user = db.create_user("dev@acme.com", None).unwrap();
+    let user = db.create_user("dev@acme.com", None).await.unwrap();
     db.grant_membership("user", user, "acme", Role::Developer.as_str())
+        .await
         .unwrap();
     let token = bearer(
         Principal::user(user),
@@ -723,9 +756,9 @@ async fn private_registry_list_releases_requires_read() {
 
 #[tokio::test]
 async fn rpc_mutations_reject_unauthenticated_and_unauthorized() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // No bearer at all: unauthenticated.
     let (status, _) = rpc(

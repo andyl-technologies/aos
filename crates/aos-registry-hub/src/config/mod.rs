@@ -284,7 +284,7 @@ fn principal_actor(principal: &Principal) -> (&'static str, Option<i64>) {
 ///
 /// Returns an error on database failure (including a change-id collision,
 /// which is astronomically unlikely for a UUID v4).
-pub fn open_draft(
+pub async fn open_draft(
     db: &Database,
     actor: &Principal,
     actor_label: &str,
@@ -300,7 +300,8 @@ pub fn open_draft(
         actor_label,
         scope.as_str(),
         Some(summary),
-    )?;
+    )
+    .await?;
     Ok(change_id)
 }
 
@@ -314,7 +315,7 @@ pub fn open_draft(
 ///
 /// Returns an error on database failure, including a foreign-key violation
 /// when `change_id` does not name an existing change-set.
-pub fn stage(
+pub async fn stage(
     db: &Database,
     change_id: &ChangeId,
     object_type: &str,
@@ -332,7 +333,8 @@ pub fn stage(
         op.as_str(),
         old_json.as_deref(),
         new_json.as_deref(),
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -345,8 +347,11 @@ pub fn stage(
 /// # Errors
 ///
 /// Returns an error on database failure.
-pub fn review(db: &Database, change_id: &ChangeId) -> Result<Vec<(Revision, Vec<FieldDiff>)>> {
-    let rows = db.list_revisions(change_id.as_str())?;
+pub async fn review(
+    db: &Database,
+    change_id: &ChangeId,
+) -> Result<Vec<(Revision, Vec<FieldDiff>)>> {
+    let rows = db.list_revisions(change_id.as_str()).await?;
     Ok(rows
         .iter()
         .map(|row| {
@@ -374,17 +379,25 @@ pub fn review(db: &Database, change_id: &ChangeId) -> Result<Vec<(Revision, Vec<
 ///
 /// Returns an error if the change-set is unknown, if any `apply_fn` call
 /// fails (the transaction rolls back), or on database failure.
-pub fn apply<F>(db: &Database, change_id: &ChangeId, action: &str, mut apply_fn: F) -> Result<()>
+pub async fn apply<F, Fut>(
+    db: &Database,
+    change_id: &ChangeId,
+    action: &str,
+    mut apply_fn: F,
+) -> Result<()>
 where
-    F: FnMut(&Revision) -> Result<()>,
+    F: FnMut(&Revision) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
 {
     let summary = db
-        .changeset(change_id.as_str())?
+        .changeset(change_id.as_str())
+        .await?
         .with_context(|| format!("no change-set {change_id}"))?;
-    db.apply_changeset(change_id.as_str(), |row| {
-        let revision = Revision::from_row(row);
-        apply_fn(&revision)
-    })?;
+    for row in db.list_revisions(change_id.as_str()).await? {
+        let revision = Revision::from_row(&row);
+        apply_fn(&revision).await?;
+    }
+    db.mark_changeset_applied(change_id.as_str()).await?;
     db.record_audit(
         &summary.actor_kind,
         summary.actor_id,
@@ -395,7 +408,8 @@ where
         None,
         None,
         summary.summary.as_deref(),
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -436,7 +450,7 @@ pub struct RevertDraft {
 /// # Errors
 ///
 /// Returns an error when `change_id` is unknown, and on database failure.
-pub fn revert<S>(
+pub async fn revert<S, Fut>(
     db: &Database,
     original: &ChangeId,
     actor: &Principal,
@@ -444,19 +458,21 @@ pub fn revert<S>(
     mut live_state: S,
 ) -> Result<RevertDraft>
 where
-    S: FnMut(&str, &str) -> Option<Value>,
+    S: FnMut(&str, &str) -> Fut,
+    Fut: std::future::Future<Output = Option<Value>>,
 {
     let original_cs = db
-        .changeset(original.as_str())?
+        .changeset(original.as_str())
+        .await?
         .with_context(|| format!("no change-set {original}"))?;
-    let rows = db.list_revisions(original.as_str())?;
+    let rows = db.list_revisions(original.as_str()).await?;
     if rows.is_empty() {
         bail!("change-set {original} has no revisions to revert");
     }
 
     let scope = Scope::parse(&original_cs.scope);
     let summary = format!("revert of {original}");
-    let revert_id = open_draft(db, actor, actor_label, &scope, &summary)?;
+    let revert_id = open_draft(db, actor, actor_label, &scope, &summary).await?;
 
     let mut conflicts = Vec::new();
     for row in &rows {
@@ -466,7 +482,7 @@ where
         // original change-set last wrote (its new_json). A divergence means
         // someone changed the object since; flag it.
         if let Some(recorded_new) = &revision.new_json {
-            let live = live_state(&revision.object_type, &revision.object_id);
+            let live = live_state(&revision.object_type, &revision.object_id).await;
             let matches = match &live {
                 Some(live) => live == recorded_new,
                 // A delete revision recorded new_json = None; for non-delete
@@ -498,7 +514,8 @@ where
                     ConfigOp::Create,
                     None,
                     Some(note),
-                )?;
+                )
+                .await?;
             }
             // Security exemption: a membership removal reverts to an
             // *invitation*, not a silent re-admit (RFC-0004).
@@ -512,7 +529,8 @@ where
                     ConfigOp::Create,
                     None,
                     Some(invite),
-                )?;
+                )
+                .await?;
             }
             // General case: forward-revert by swapping snapshots and op.
             _ => {
@@ -533,7 +551,8 @@ where
                     op,
                     old,
                     new,
-                )?;
+                )
+                .await?;
             }
         }
     }
@@ -544,7 +563,8 @@ where
         "reverted",
         None,
         Some(revert_id.as_str()),
-    )?;
+    )
+    .await?;
 
     Ok(RevertDraft {
         change_id: revert_id,
@@ -595,7 +615,7 @@ fn invitation_from_membership(old: Option<&Value>) -> Value {
 ///
 /// Returns an error when `registry_id` names no registry, and on database
 /// failure (the change-set is rolled back on a failed apply).
-pub fn change_registry_visibility(
+pub async fn change_registry_visibility(
     db: &Database,
     actor: &Principal,
     actor_label: &str,
@@ -604,14 +624,14 @@ pub fn change_registry_visibility(
 ) -> Result<ChangeId> {
     // Resolve the registry to read its slug (the object id / scope) and old
     // visibility.
-    let record = registry_record(db, registry_id)?;
+    let record = registry_record(db, registry_id).await?;
     let old_visibility = record.visibility.clone();
     let scope = Scope::parse(&record.slug);
     let summary = format!(
         "set {} visibility {old_visibility} -> {new_visibility}",
         record.slug
     );
-    let change_id = open_draft(db, actor, actor_label, &scope, &summary)?;
+    let change_id = open_draft(db, actor, actor_label, &scope, &summary).await?;
     stage(
         db,
         &change_id,
@@ -620,10 +640,13 @@ pub fn change_registry_visibility(
         ConfigOp::Update,
         Some(serde_json::json!({ "visibility": old_visibility.clone() })),
         Some(serde_json::json!({ "visibility": new_visibility })),
-    )?;
-    apply(db, &change_id, "registry.visibility", |_rev| {
+    )
+    .await?;
+    apply(db, &change_id, "registry.visibility", |_rev| async move {
         db.set_registry_visibility(registry_id, new_visibility)
-    })?;
+            .await
+    })
+    .await?;
 
     // Notify subscribers of the visibility flip. Additive and non-fatal: the
     // change is already applied and audited; a webhook failure must not undo it.
@@ -638,7 +661,7 @@ pub fn change_registry_visibility(
             new: new_visibility.to_string(),
             at: now,
         };
-        if let Err(err) = crate::webhook::dispatch(db, org_id, &event) {
+        if let Err(err) = crate::webhook::dispatch(db, org_id, &event).await {
             tracing::warn!(slug = %record.slug, error = %format!("{err:#}"), "dispatching registry.visibility_changed webhook");
         }
     }
@@ -664,9 +687,10 @@ pub enum MembershipChange {
 /// # Errors
 ///
 /// Returns an error on database failure.
-fn actor_max_rank(db: &Database, actor: &Principal, scope: &Scope) -> Result<Option<u8>> {
+async fn actor_max_rank(db: &Database, actor: &Principal, scope: &Scope) -> Result<Option<u8>> {
     Ok(db
-        .effective_scopes(*actor)?
+        .effective_scopes(*actor)
+        .await?
         .into_iter()
         .filter(|(grant_scope, _)| grant_scope.contains(scope))
         .map(|(_, role)| role.rank())
@@ -703,7 +727,7 @@ fn actor_max_rank(db: &Database, actor: &Principal, scope: &Scope) -> Result<Opt
 ///
 /// Returns an error on database failure, on a privilege-ceiling violation, or
 /// if the change-set is rolled back on a failed apply.
-pub fn change_membership(
+pub async fn change_membership(
     db: &Database,
     actor: &Principal,
     actor_label: &str,
@@ -713,7 +737,7 @@ pub fn change_membership(
     role: Role,
 ) -> Result<ChangeId> {
     if change == MembershipChange::Grant {
-        let actor_rank = actor_max_rank(db, actor, scope)?.unwrap_or(0);
+        let actor_rank = actor_max_rank(db, actor, scope).await?.unwrap_or(0);
         // The granted role may not exceed the actor's own authority.
         if role.rank() > actor_rank {
             bail!(
@@ -773,8 +797,8 @@ pub fn change_membership(
         principal.id,
         scope.as_str()
     );
-    let change_id = open_draft(db, actor, actor_label, scope, &summary)?;
-    stage(db, &change_id, "membership", &object_id, op, old, new)?;
+    let change_id = open_draft(db, actor, actor_label, scope, &summary).await?;
+    stage(db, &change_id, "membership", &object_id, op, old, new).await?;
 
     let principal = *principal;
     let scope_str = scope.as_str().to_string();
@@ -785,17 +809,32 @@ pub fn change_membership(
     // `LastOwnerError`, closing the check-then-act race the handler's
     // pre-check alone cannot (the pre-check still runs to render a friendly
     // 409 on the common, uncontended path).
-    apply(db, &change_id, action, move |_rev| match change {
-        MembershipChange::Grant => db.set_membership_role_owner_safe(
-            principal.kind.as_str(),
-            principal.id,
-            &scope_str,
-            &role_str,
-        ),
-        MembershipChange::Revoke => {
-            db.revoke_membership_owner_safe(principal.kind.as_str(), principal.id, &scope_str)
+    apply(db, &change_id, action, move |_rev| {
+        let scope_str = scope_str.clone();
+        let role_str = role_str.clone();
+        async move {
+            match change {
+                MembershipChange::Grant => {
+                    db.set_membership_role_owner_safe(
+                        principal.kind.as_str(),
+                        principal.id,
+                        &scope_str,
+                        &role_str,
+                    )
+                    .await
+                }
+                MembershipChange::Revoke => {
+                    db.revoke_membership_owner_safe(
+                        principal.kind.as_str(),
+                        principal.id,
+                        &scope_str,
+                    )
+                    .await
+                }
+            }
         }
-    })?;
+    })
+    .await?;
     Ok(change_id)
 }
 
@@ -815,7 +854,7 @@ pub fn change_membership(
 /// # Errors
 ///
 /// Returns an error on database failure.
-pub fn prepare_channel_advance(
+pub async fn prepare_channel_advance(
     db: &Database,
     actor: &Principal,
     actor_label: &str,
@@ -826,7 +865,7 @@ pub fn prepare_channel_advance(
 ) -> Result<ChangeId> {
     let scope = Scope::parse(registry_slug);
     let summary = format!("advance {channel} to {release} ({partitions} partitions)");
-    let change_id = open_draft(db, actor, actor_label, &scope, &summary)?;
+    let change_id = open_draft(db, actor, actor_label, &scope, &summary).await?;
     let object_id = format!("{registry_slug}:{channel}");
     let intent = serde_json::json!({
         "registry": registry_slug,
@@ -842,7 +881,8 @@ pub fn prepare_channel_advance(
         ConfigOp::Create,
         None,
         Some(intent),
-    )?;
+    )
+    .await?;
     // Audit the preparation directly: there is no live mutation to apply
     // (signing is client-side), so this does not flow through `apply`.
     let (kind, id) = principal_actor(actor);
@@ -856,7 +896,8 @@ pub fn prepare_channel_advance(
         None,
         None,
         Some(&summary),
-    )?;
+    )
+    .await?;
     Ok(change_id)
 }
 
@@ -874,8 +915,8 @@ pub fn advance_command(registry_url: &str, change_id: &ChangeId) -> String {
 
 /// Resolves a registry record by id (slug + visibility), or an error when
 /// absent.
-fn registry_record(db: &Database, registry_id: i64) -> Result<crate::db::RegistryRecord> {
-    for record in db.list_registries()? {
+async fn registry_record(db: &Database, registry_id: i64) -> Result<crate::db::RegistryRecord> {
+    for record in db.list_registries().await? {
         if record.id == registry_id {
             return Ok(record);
         }

@@ -52,7 +52,7 @@ use base64::Engine as _;
 use crate::auth::extract::{connect_or_csrf_ok, mint_csrf_token};
 use crate::auth::session::{set_cookie_header, ABSOLUTE_LIFETIME_SECS, COOKIE_NAME};
 use crate::config::{self, MembershipChange};
-use crate::db::{Database, RegistryRecord, SessionAuth as DbSession};
+use crate::db::{Database, OrgRecord, RegistryRecord, SessionAuth as DbSession};
 use crate::domain::{iam, Permission, Principal, Role, Scope};
 use crate::server::{
     authorize_registry_read, internal, resolve_by_prefix, session_secret_from_cookies, AppState,
@@ -157,16 +157,16 @@ struct Session {
 /// The producer console is human-only; an anonymous or invalid cookie is
 /// bounced to the login page rather than 401'd, so a logged-out click lands
 /// somewhere useful.
-fn require_session(state: &AppState, headers: &HeaderMap) -> Result<Session, Box<Response>> {
+async fn require_session(state: &AppState, headers: &HeaderMap) -> Result<Session, Box<Response>> {
     let Some(secret) = session_secret_from_cookies(headers) else {
         return Err(Box::new(Redirect::to("/login").into_response()));
     };
-    let auth = match state.db.validate_session(&secret) {
+    let auth = match state.db.validate_session(&secret).await {
         Ok(Some(auth)) => auth,
         Ok(None) => return Err(Box::new(Redirect::to("/login").into_response())),
         Err(err) => return Err(Box::new(internal(err))),
     };
-    let email = match state.db.user_email(auth.user_id) {
+    let email = match state.db.user_email(auth.user_id).await {
         Ok(Some(email)) => email,
         Ok(None) => return Err(Box::new(Redirect::to("/login").into_response())),
         Err(err) => return Err(Box::new(internal(err))),
@@ -185,13 +185,13 @@ impl Session {
     }
 
     /// The session's current effective grants.
-    fn grants(&self, db: &Database) -> anyhow::Result<Vec<(Scope, Role)>> {
-        db.effective_scopes(self.principal())
+    async fn grants(&self, db: &Database) -> anyhow::Result<Vec<(Scope, Role)>> {
+        db.effective_scopes(self.principal()).await
     }
 
     /// Whether this session may `perm` at `scope` under its current grants.
-    fn allows(&self, db: &Database, perm: Permission, scope: &Scope) -> bool {
-        match self.grants(db) {
+    async fn allows(&self, db: &Database, perm: Permission, scope: &Scope) -> bool {
+        match self.grants(db).await {
             Ok(grants) => iam::allow(&grants, perm, scope),
             Err(_) => false,
         }
@@ -271,11 +271,11 @@ struct LoginForm {
 /// Returns `(org_slug, enforce_sso)` when the email's domain is captured by an
 /// org *and* that org has an IdP; `None` otherwise (no capture, or a captured
 /// domain whose org has no IdP — which falls back to magic links).
-fn sso_target(state: &AppState, email: &str) -> Option<(String, bool)> {
+async fn sso_target(state: &AppState, email: &str) -> Option<(String, bool)> {
     let domain = email.rsplit_once('@').map(|(_, d)| d.to_lowercase())?;
-    let org_id = state.db.org_for_domain(&domain).ok().flatten()?;
-    let config = state.db.idp_config(org_id).ok().flatten()?;
-    let org = state.db.org_by_id(org_id).ok().flatten()?;
+    let org_id = state.db.org_for_domain(&domain).await.ok().flatten()?;
+    let config = state.db.idp_config(org_id).await.ok().flatten()?;
+    let org = state.db.org_by_id(org_id).await.ok().flatten()?;
     Some((org.slug, config.enforce_sso))
 }
 
@@ -309,13 +309,13 @@ fn sso_target(state: &AppState, email: &str) -> Option<(String, bool)> {
 /// Returns an error only on an unexpected database failure while listing the
 /// user's memberships; a missing org or IdP config is not an error (the org
 /// simply does not enforce SSO for this user).
-fn sso_enforced_for(
+async fn sso_enforced_for(
     state: &AppState,
     email: &str,
     user_id: Option<i64>,
 ) -> anyhow::Result<Option<String>> {
     // Rule 1: the user's verified email domain captures an SSO-enforcing org.
-    if let Some((org_slug, true)) = sso_target(state, email) {
+    if let Some((org_slug, true)) = sso_target(state, email).await {
         return Ok(Some(org_slug));
     }
     // Rule 2: any org the user is a member of enforces SSO. The org slug is the
@@ -325,7 +325,8 @@ fn sso_enforced_for(
         let mut seen_slugs = std::collections::HashSet::new();
         for (scope, _role) in state
             .db
-            .list_memberships_for(principal.kind.as_str(), principal.id)?
+            .list_memberships_for(principal.kind.as_str(), principal.id)
+            .await?
         {
             let Some(org_slug) = Scope::parse(&scope)
                 .as_str()
@@ -339,10 +340,10 @@ fn sso_enforced_for(
             if !seen_slugs.insert(org_slug.clone()) {
                 continue;
             }
-            let Some(org) = state.db.org_by_slug(&org_slug)? else {
+            let Some(org) = state.db.org_by_slug(&org_slug).await? else {
                 continue;
             };
-            if let Some(config) = state.db.idp_config(org.id)? {
+            if let Some(config) = state.db.idp_config(org.id).await? {
                 if config.enforce_sso {
                     return Ok(Some(org_slug));
                 }
@@ -407,7 +408,7 @@ async fn login_submit(
         }
     }
     // Domain capture: route to the org's IdP when one is configured.
-    if let Some((org_slug, enforce_sso)) = sso_target(&state, &email) {
+    if let Some((org_slug, enforce_sso)) = sso_target(&state, &email).await {
         let start = sso_start_path(&org_slug);
         if enforce_sso {
             return Redirect::to(&start).into_response();
@@ -420,7 +421,7 @@ async fn login_submit(
         ))
         .into_response();
     }
-    let secret = match state.db.create_magic_link(&email) {
+    let secret = match state.db.create_magic_link(&email).await {
         Ok(secret) => secret,
         Err(err) => return internal(err),
     };
@@ -483,7 +484,7 @@ async fn magic_consume(
     State(state): State<Arc<AppState>>,
     Query(query): Query<MagicQuery>,
 ) -> Response {
-    let email = match state.db.consume_magic_link(&query.token) {
+    let email = match state.db.consume_magic_link(&query.token).await {
         Ok(Some(email)) => email,
         Ok(None) => {
             return Html(console::login_page(
@@ -495,13 +496,17 @@ async fn magic_consume(
         }
         Err(err) => return internal(err),
     };
-    let user_id = match state.db.find_or_create_user(&email) {
+    let user_id = match state.db.find_or_create_user(&email).await {
         Ok(id) => id,
         Err(err) => return internal(err),
     };
     // A fresh magic-link sign-in is a re-authentication, so the session is
     // sudo-capable (auth_level 1).
-    let cookie = match state.db.create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1) {
+    let cookie = match state
+        .db
+        .create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1)
+        .await
+    {
         Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
         Err(err) => return internal(err),
     };
@@ -568,7 +573,7 @@ async fn login_password(
             return crate::server::too_many_requests(retry_after);
         }
     }
-    let (user_id, hash) = match state.db.user_for_password(&email) {
+    let (user_id, hash) = match state.db.user_for_password(&email).await {
         Ok(Some(found)) => found,
         // No such user, or no password set. Still spend an Argon2id verify
         // against a fixed dummy hash before failing, so the wall-clock time of
@@ -590,13 +595,17 @@ async fn login_password(
     // password login would not, and matches the magic-link path's UX. (Reaching
     // here with the password verified means an SSO-enforced user had a password
     // set before enforcement was turned on; refuse the local session anyway.)
-    match sso_enforced_for(&state, &email, Some(user_id)) {
+    match sso_enforced_for(&state, &email, Some(user_id)).await {
         Ok(Some(org_slug)) => return Redirect::to(&sso_start_path(&org_slug)).into_response(),
         Ok(None) => {}
         Err(err) => return internal(err),
     }
     // A correct password is a re-authentication: the session is sudo-capable.
-    let cookie = match state.db.create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1) {
+    let cookie = match state
+        .db
+        .create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1)
+        .await
+    {
         Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
         Err(err) => return internal(err),
     };
@@ -642,12 +651,12 @@ async fn oidc_start(
 
 /// Shared "begin OIDC login" helper for the `GET` and `POST` entry points.
 async fn begin_oidc(state: &AppState, org_slug: &str, next: Option<&str>) -> Response {
-    let org = match state.db.org_by_slug(org_slug) {
+    let org = match state.db.org_by_slug(org_slug).await {
         Ok(Some(org)) => org,
         Ok(None) => return sso_error("That organization does not exist."),
         Err(err) => return internal(err),
     };
-    match crate::auth::oidc::begin_login(&state.db, &state.external_url, org.id, next) {
+    match crate::auth::oidc::begin_login(&state.db, &state.external_url, org.id, next).await {
         Ok(redirect) => Redirect::to(&redirect.url).into_response(),
         Err(err) => {
             tracing::warn!(error = %format!("{err:#}"), org = %org_slug, "oidc begin failed");
@@ -685,6 +694,7 @@ async fn oidc_callback(
     let cookie = match state
         .db
         .create_session(login.user_id, ABSOLUTE_LIFETIME_SECS, 1)
+        .await
     {
         Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
         Err(err) => return internal(err),
@@ -710,7 +720,7 @@ fn sso_error(message: &str) -> Response {
 /// state-changing operation worth CSRF-protecting.
 async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if let Some(secret) = session_secret_from_cookies(&headers) {
-        if let Err(err) = state.db.revoke_session(&secret) {
+        if let Err(err) = state.db.revoke_session(&secret).await {
             return internal(err);
         }
     }
@@ -723,15 +733,15 @@ async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
 
 /// `GET /account` — the profile page (email, sessions, tokens, passkeys).
 async fn account(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let tokens = match state.db.list_tokens_for(session.principal()) {
+    let tokens = match state.db.list_tokens_for(session.principal()).await {
         Ok(tokens) => tokens,
         Err(err) => return internal(err),
     };
-    let password_set = match state.db.user_has_password(session.auth.user_id) {
+    let password_set = match state.db.user_has_password(session.auth.user_id).await {
         Ok(set) => set,
         Err(err) => return internal(err),
     };
@@ -774,7 +784,7 @@ async fn account_set_password(
     headers: HeaderMap,
     Form(form): Form<SetPasswordForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -788,15 +798,17 @@ async fn account_set_password(
     // they may not set a durable local password at all — otherwise it would be a
     // standing bypass of IdP deprovisioning / MFA (H-4). Refuse with a `403` and
     // a clear message on the account page.
-    match sso_enforced_for(&state, &session.email, Some(session.auth.user_id)) {
+    match sso_enforced_for(&state, &session.email, Some(session.auth.user_id)).await {
         Ok(Some(_)) => {
             let tokens = state
                 .db
                 .list_tokens_for(session.principal())
+                .await
                 .unwrap_or_default();
             let password_set = state
                 .db
                 .user_has_password(session.auth.user_id)
+                .await
                 .unwrap_or(false);
             return (
                 StatusCode::FORBIDDEN,
@@ -823,10 +835,12 @@ async fn account_set_password(
         let tokens = state
             .db
             .list_tokens_for(session.principal())
+            .await
             .unwrap_or_default();
         let password_set = state
             .db
             .user_has_password(session.auth.user_id)
+            .await
             .unwrap_or(false);
         return Html(console::account_page(
             &session.email,
@@ -842,18 +856,27 @@ async fn account_set_password(
         Ok(hash) => hash,
         Err(err) => return internal(err),
     };
-    if let Err(err) = state.db.set_user_password(session.auth.user_id, &hash) {
+    if let Err(err) = state
+        .db
+        .set_user_password(session.auth.user_id, &hash)
+        .await
+    {
         return internal(err);
     }
     // Evict every session (including this one and any stolen sibling), then
     // re-issue a fresh sudo session for the current browser so the user who
     // just changed their password stays signed in.
-    if let Err(err) = state.db.revoke_all_user_sessions(session.auth.user_id) {
+    if let Err(err) = state
+        .db
+        .revoke_all_user_sessions(session.auth.user_id)
+        .await
+    {
         return internal(err);
     }
     let cookie = match state
         .db
         .create_session(session.auth.user_id, ABSOLUTE_LIFETIME_SECS, 1)
+        .await
     {
         Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
         Err(err) => return internal(err),
@@ -867,14 +890,18 @@ async fn account_revoke_all_sessions(
     headers: HeaderMap,
     Form(form): Form<CsrfForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    if let Err(err) = state.db.revoke_all_user_sessions(session.auth.user_id) {
+    if let Err(err) = state
+        .db
+        .revoke_all_user_sessions(session.auth.user_id)
+        .await
+    {
         return internal(err);
     }
     let cleared = format!("{COOKIE_NAME}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
@@ -905,11 +932,11 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 /// Session-authed. Renders the per-request CSP nonce into both the response
 /// header (`script-src 'nonce-…'`) and the inline registration script.
 async fn passkeys(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let creds = match state.db.list_user_credentials(session.auth.user_id) {
+    let creds = match state.db.list_user_credentials(session.auth.user_id).await {
         Ok(c) => c,
         Err(err) => return internal(err),
     };
@@ -952,7 +979,7 @@ async fn passkeys_begin(
     headers: HeaderMap,
     Form(form): Form<PasskeyBeginForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -973,7 +1000,9 @@ async fn passkeys_begin(
         &session.email,
         &rp.id,
         rp_name,
-    ) {
+    )
+    .await
+    {
         Ok(challenge) => Json(challenge).into_response(),
         Err(err) => internal(err),
     }
@@ -1001,7 +1030,7 @@ async fn passkeys_finish(
     headers: HeaderMap,
     Json(body): Json<PasskeyFinishBody>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -1011,7 +1040,7 @@ async fn passkeys_finish(
     // A passkey is a local credential. A member of an SSO-enforced org must not
     // enroll one, just as they may not set a password (H-4) — both would bypass
     // IdP deprovisioning. Refuse enrollment with a `403`.
-    match sso_enforced_for(&state, &session.email, Some(session.auth.user_id)) {
+    match sso_enforced_for(&state, &session.email, Some(session.auth.user_id)).await {
         Ok(Some(_)) => {
             return (
                 StatusCode::FORBIDDEN,
@@ -1045,7 +1074,9 @@ async fn passkeys_finish(
         &rp.origin,
         &response,
         label,
-    ) {
+    )
+    .await
+    {
         Ok(credential_id) => {
             Json(serde_json::json!({ "credential_id": credential_id })).into_response()
         }
@@ -1081,7 +1112,7 @@ async fn passkey_login_begin(
         Ok(rp) => rp,
         Err(err) => return internal(err),
     };
-    match crate::auth::webauthn::begin_assertion(&state.db, &rp.id) {
+    match crate::auth::webauthn::begin_assertion(&state.db, &rp.id).await {
         Ok(challenge) => Json(challenge).into_response(),
         Err(err) => internal(err),
     }
@@ -1126,7 +1157,9 @@ async fn passkey_login_finish(
         signature,
     };
     let user_id =
-        match crate::auth::webauthn::finish_assertion(&state.db, &rp.id, &rp.origin, &response) {
+        match crate::auth::webauthn::finish_assertion(&state.db, &rp.id, &rp.origin, &response)
+            .await
+        {
             Ok(id) => id,
             Err(err) => {
                 tracing::warn!(error = %format!("{err:#}"), "passkey assertion rejected");
@@ -1137,8 +1170,8 @@ async fn passkey_login_finish(
     // subject to `enforce_sso` bypass the IdP (H-4). The assertion verified, so
     // we know which user it is; if any of their orgs enforces SSO, refuse to
     // mint the local session and steer the login script to the IdP instead.
-    match state.db.user_email(user_id) {
-        Ok(Some(email)) => match sso_enforced_for(&state, &email, Some(user_id)) {
+    match state.db.user_email(user_id).await {
+        Ok(Some(email)) => match sso_enforced_for(&state, &email, Some(user_id)).await {
             Ok(Some(org_slug)) => {
                 return (
                     StatusCode::FORBIDDEN,
@@ -1153,7 +1186,11 @@ async fn passkey_login_finish(
         Ok(None) => return (StatusCode::UNAUTHORIZED, "passkey sign-in failed").into_response(),
         Err(err) => return internal(err),
     }
-    let cookie = match state.db.create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1) {
+    let cookie = match state
+        .db
+        .create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1)
+        .await
+    {
         Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
         Err(err) => return internal(err),
     };
@@ -1215,7 +1252,7 @@ async fn activate_form(
     headers: HeaderMap,
     Query(query): Query<ActivateQuery>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -1226,7 +1263,7 @@ async fn activate_form(
     let request = if user_code.is_empty() {
         None
     } else {
-        match state.db.pending_device_request(&user_code) {
+        match state.db.pending_device_request(&user_code).await {
             Ok(req) => req,
             Err(err) => return internal(err),
         }
@@ -1263,7 +1300,7 @@ async fn activate_submit(
     headers: HeaderMap,
     Form(form): Form<ActivateForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -1274,20 +1311,21 @@ async fn activate_submit(
         return *resp;
     }
     let message = if form.decision == "approve" {
-        let grants = match session.grants(&state.db) {
+        let grants = match session.grants(&state.db).await {
             Ok(grants) => grants,
             Err(err) => return internal(err),
         };
         match state
             .db
             .approve_device(&form.user_code, session.principal(), &grants)
+            .await
         {
             Ok(true) => "Approved. Return to your terminal — the CLI will continue.",
             Ok(false) => "That code is unknown, already resolved, or expired.",
             Err(err) => return internal(err),
         }
     } else {
-        match state.db.deny_device(&form.user_code) {
+        match state.db.deny_device(&form.user_code).await {
             Ok(_) => "Denied.",
             Err(err) => return internal(err),
         }
@@ -1303,25 +1341,26 @@ async fn orgs(
     headers: HeaderMap,
     Query(params): Query<PageQuery>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let result = (|| {
-        let grants = session.grants(&state.db)?;
+    let result = async {
+        let grants = session.grants(&state.db).await?;
         let mut orgs = Vec::new();
-        for org in state.db.list_orgs()? {
+        for org in state.db.list_orgs().await? {
             // Show an org if the user has any read grant covering it.
             if iam::allow(&grants, Permission::Read, &Scope::parse(&org.slug)) {
                 orgs.push(org);
             }
         }
-        let can_create = may_create_org(&state.db, &session)?;
+        let can_create = may_create_org(&state.db, &session).await?;
         // An instance admin (iam.admin at the root scope) sees the
         // instance-settings link.
         let is_instance_admin = iam::allow(&grants, Permission::IamAdmin, &Scope::parse(""));
         Ok::<_, anyhow::Error>((orgs, can_create, is_instance_admin))
-    })();
+    }
+    .await;
     match result {
         Ok((orgs, can_create, is_instance_admin)) => Html(console::orgs_page(
             &session.email,
@@ -1347,19 +1386,19 @@ async fn orgs(
 /// # Errors
 ///
 /// Returns an error on database failure.
-fn may_create_org(db: &Database, session: &Session) -> anyhow::Result<bool> {
-    if db.signup_policy()? == crate::db::SignupPolicy::Open {
+async fn may_create_org(db: &Database, session: &Session) -> anyhow::Result<bool> {
+    if db.signup_policy().await? == crate::db::SignupPolicy::Open {
         return Ok(true);
     }
     let user_id = session.auth.user_id;
-    if db.user_has_any_membership(user_id)? {
+    if db.user_has_any_membership(user_id).await? {
         return Ok(true);
     }
-    let grants = session.grants(db)?;
+    let grants = session.grants(db).await?;
     if iam::allow(&grants, Permission::IamAdmin, &Scope::root()) {
         return Ok(true);
     }
-    if db.has_pending_invitation(&session.email)? {
+    if db.has_pending_invitation(&session.email).await? {
         return Ok(true);
     }
     Ok(false)
@@ -1372,37 +1411,46 @@ async fn org_dashboard(
     Path(org_slug): Path<String>,
     Query(pages): Query<DashboardPages>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
     let scope = Scope::parse(&org_slug);
     // A non-member must not learn the org exists: 404 a private dashboard.
-    if !session.allows(&state.db, Permission::Read, &scope) {
+    if !session.allows(&state.db, Permission::Read, &scope).await {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let result = (|| {
-        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+    let result = async {
+        let Some(org) = state.db.org_by_slug(&org_slug).await? else {
             return Ok(None);
         };
-        let projects = state.db.list_projects(org.id)?;
-        let bindings = state.db.list_storage_bindings(org.id)?;
+        let projects = state.db.list_projects(org.id).await?;
+        let bindings = state.db.list_storage_bindings(org.id).await?;
         let registries: Vec<RegistryRecord> = state
             .db
-            .list_registries()?
+            .list_registries()
+            .await?
             .into_iter()
             .filter(|r| r.org_id == Some(org.id))
             .collect();
-        let members = load_members(&state.db, &org_slug)?;
+        let members = load_members(&state.db, &org_slug).await?;
         let owner_count = members.iter().filter(|m| m.role == "owner").count();
-        let can_manage = session.allows(&state.db, Permission::MembersManage, &scope);
-        let can_audit = session.allows(&state.db, Permission::AuditRead, &scope);
+        let can_manage = session
+            .allows(&state.db, Permission::MembersManage, &scope)
+            .await;
+        let can_audit = session
+            .allows(&state.db, Permission::AuditRead, &scope)
+            .await;
         // RegistryConfigure gates project/registry creation; StorageManage gates
         // binding creation. Both belong to admin+, so a single "can configure"
         // flag drives every create affordance on the dashboard.
-        let can_configure = session.allows(&state.db, Permission::RegistryConfigure, &scope);
+        let can_configure = session
+            .allows(&state.db, Permission::RegistryConfigure, &scope)
+            .await;
         // Org deletion is owner-only (it needs the owner-exclusive iam.admin).
-        let can_delete = session.allows(&state.db, Permission::IamAdmin, &scope);
+        let can_delete = session
+            .allows(&state.db, Permission::IamAdmin, &scope)
+            .await;
         Ok::<_, anyhow::Error>(Some(console::org_dashboard(
             &session.email,
             &org,
@@ -1420,7 +1468,8 @@ async fn org_dashboard(
             pages.members(),
             Instant::now(),
         )))
-    })();
+    }
+    .await;
     match result {
         Ok(Some(html)) => Html(html).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -1429,11 +1478,13 @@ async fn org_dashboard(
 }
 
 /// Load an org's direct members as console rows (resolving user emails).
-fn load_members(db: &Database, org_slug: &str) -> anyhow::Result<Vec<console::MemberRow>> {
+async fn load_members(db: &Database, org_slug: &str) -> anyhow::Result<Vec<console::MemberRow>> {
     let mut rows = Vec::new();
-    for (kind, id, role) in db.list_members_of_scope(org_slug)? {
+    for (kind, id, role) in db.list_members_of_scope(org_slug).await? {
         let label = if kind == "user" {
-            db.user_email(id)?.unwrap_or_else(|| format!("user:{id}"))
+            db.user_email(id)
+                .await?
+                .unwrap_or_else(|| format!("user:{id}"))
         } else {
             format!("{kind}:{id}")
         };
@@ -1454,24 +1505,27 @@ async fn org_audit(
     Path(org_slug): Path<String>,
     Query(params): Query<PageQuery>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
     let scope = Scope::parse(&org_slug);
-    if !session.allows(&state.db, Permission::AuditRead, &scope) {
+    if !session
+        .allows(&state.db, Permission::AuditRead, &scope)
+        .await
+    {
         // A member without audit.read gets 403 (the org is known to them);
         // a non-member gets 404 (existence undisclosed).
-        if session.allows(&state.db, Permission::Read, &scope) {
+        if session.allows(&state.db, Permission::Read, &scope).await {
             return (StatusCode::FORBIDDEN, "audit read requires admin").into_response();
         }
         return StatusCode::NOT_FOUND.into_response();
     }
-    let result = (|| {
-        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+    let result = async {
+        let Some(org) = state.db.org_by_slug(&org_slug).await? else {
             return Ok(None);
         };
-        let rows = state.db.list_audit(&org_slug)?;
+        let rows = state.db.list_audit(&org_slug).await?;
         Ok::<_, anyhow::Error>(Some(console::audit_page(
             &session.email,
             &org,
@@ -1479,7 +1533,8 @@ async fn org_audit(
             params.page(),
             Instant::now(),
         )))
-    })();
+    }
+    .await;
     match result {
         Ok(Some(html)) => Html(html).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -1523,7 +1578,7 @@ impl IntoResponse for MembershipReject {
 /// # Errors
 ///
 /// Returns an error on database failure.
-fn membership_grant_allowed(
+async fn membership_grant_allowed(
     db: &Database,
     actor: &Principal,
     target: &Principal,
@@ -1531,7 +1586,8 @@ fn membership_grant_allowed(
     role: Role,
 ) -> anyhow::Result<Result<(), MembershipReject>> {
     let actor_rank = db
-        .effective_scopes(*actor)?
+        .effective_scopes(*actor)
+        .await?
         .into_iter()
         .filter(|(grant_scope, _)| grant_scope.contains(scope))
         .map(|(_, r)| r.rank())
@@ -1575,7 +1631,7 @@ async fn org_invite_member(
     Path(org_slug): Path<String>,
     Form(form): Form<InviteForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -1588,7 +1644,10 @@ async fn org_invite_member(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if !session.allows(&state.db, Permission::MembersManage, &scope) {
+    if !session
+        .allows(&state.db, Permission::MembersManage, &scope)
+        .await
+    {
         return (StatusCode::FORBIDDEN, "members.manage required").into_response();
     }
     let Some(role) = Role::parse(&form.role) else {
@@ -1598,17 +1657,17 @@ async fn org_invite_member(
     if email.is_empty() || !email.contains('@') {
         return (StatusCode::BAD_REQUEST, "invalid email").into_response();
     }
-    let result = (|| {
-        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+    let result = async {
+        let Some(org) = state.db.org_by_slug(&org_slug).await? else {
             anyhow::bail!("no org");
         };
         // Record the invitation as a change-set so it audits, then create the
         // pending invitation row.
-        let invitee = state.db.find_or_create_user(&email)?;
+        let invitee = state.db.find_or_create_user(&email).await?;
         let target = Principal::user(invitee);
         // Refuse an invitation at a role above the actor's own authority (H1).
         if let Err(reject) =
-            membership_grant_allowed(&state.db, &session.principal(), &target, &scope, role)?
+            membership_grant_allowed(&state.db, &session.principal(), &target, &scope, role).await?
         {
             return Ok(Err(reject));
         }
@@ -1620,10 +1679,12 @@ async fn org_invite_member(
             &target,
             &scope,
             role,
-        )?;
+        )
+        .await?;
         let _ = org; // org id reserved for an invitation-table write later.
         Ok::<Result<(), MembershipReject>, anyhow::Error>(Ok(()))
-    })();
+    }
+    .await;
     match result {
         Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
         Ok(Err(reject)) => reject.into_response(),
@@ -1650,7 +1711,7 @@ async fn org_remove_member(
     Path(org_slug): Path<String>,
     Form(form): Form<RemoveForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -1658,7 +1719,10 @@ async fn org_remove_member(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if !session.allows(&state.db, Permission::MembersManage, &scope) {
+    if !session
+        .allows(&state.db, Permission::MembersManage, &scope)
+        .await
+    {
         return (StatusCode::FORBIDDEN, "members.manage required").into_response();
     }
     // Revoking a membership changes who is trusted in the org, so it gates on
@@ -1669,9 +1733,9 @@ async fn org_remove_member(
     let Some(kind) = crate::domain::PrincipalKind::parse(&form.principal_kind) else {
         return (StatusCode::BAD_REQUEST, "unknown principal kind").into_response();
     };
-    let result = (|| {
+    let result = async {
         // Hard-block removing the last owner.
-        let members = state.db.list_members_of_scope(&org_slug)?;
+        let members = state.db.list_members_of_scope(&org_slug).await?;
         let owners: Vec<_> = members.iter().filter(|(_, _, r)| r == "owner").collect();
         let target_is_owner = members.iter().any(|(k, id, r)| {
             k == &form.principal_kind && *id == form.principal_id && r == "owner"
@@ -1690,9 +1754,11 @@ async fn org_remove_member(
             },
             &scope,
             Role::Viewer,
-        )?;
+        )
+        .await?;
         Ok::<Result<(), ()>, anyhow::Error>(Ok(()))
-    })();
+    }
+    .await;
     match result {
         Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
         Ok(Err(())) => (
@@ -1721,11 +1787,11 @@ async fn org_remove_member(
 /// form replaced by an explanatory `403`, mirroring [`crate::rpc`]'s
 /// `CreateOrg` policy.
 async fn new_org_form(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    match may_create_org(&state.db, &session) {
+    match may_create_org(&state.db, &session).await {
         Ok(true) => Html(console::new_org_page(
             &session.email,
             &session.csrf(),
@@ -1763,14 +1829,14 @@ async fn new_org_submit(
     headers: HeaderMap,
     Form(form): Form<NewOrgForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    match may_create_org(&state.db, &session) {
+    match may_create_org(&state.db, &session).await {
         Ok(true) => {}
         Ok(false) => {
             return (
@@ -1834,7 +1900,7 @@ async fn new_org_submit(
     // the rate limit blunts. The RPC rejects this with `ResourceExhausted`; the
     // console's nearest equivalent rejection is the same `403` it uses for the
     // invite-only policy gate above.
-    match state.db.count_user_owned_orgs(principal.id) {
+    match state.db.count_user_owned_orgs(principal.id).await {
         Ok(owned) if owned >= crate::ratelimit::MAX_ORGS_PER_OWNER => {
             return (
                 StatusCode::FORBIDDEN,
@@ -1848,28 +1914,38 @@ async fn new_org_submit(
         Ok(_) => {}
         Err(err) => return internal(err),
     }
-    let result = (|| {
-        if state.db.org_by_slug_including_deleted(slug)?.is_some() {
+    let result = async {
+        if state
+            .db
+            .org_by_slug_including_deleted(slug)
+            .await?
+            .is_some()
+        {
             return Ok(Err("That slug is already taken."));
         }
-        state.db.create_org(slug, name)?;
+        state.db.create_org(slug, name).await?;
         // Auto-grant the creator Owner (mirrors CreateOrg's bootstrap grant).
         state
             .db
-            .grant_membership("user", session.auth.user_id, slug, Role::Owner.as_str())?;
-        state.db.record_audit(
-            "user",
-            Some(session.auth.user_id),
-            &session.email,
-            "org.create",
-            slug,
-            None,
-            None,
-            None,
-            Some(name),
-        )?;
+            .grant_membership("user", session.auth.user_id, slug, Role::Owner.as_str())
+            .await?;
+        state
+            .db
+            .record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "org.create",
+                slug,
+                None,
+                None,
+                None,
+                Some(name),
+            )
+            .await?;
         Ok::<Result<(), &str>, anyhow::Error>(Ok(()))
-    })();
+    }
+    .await;
     match result {
         Ok(Ok(())) => Redirect::to(&format!("/-/org/{slug}")).into_response(),
         Ok(Err(message)) => reject(message),
@@ -1899,7 +1975,7 @@ async fn org_create_project(
     Path(org_slug): Path<String>,
     Form(form): Form<NewProjectForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -1907,7 +1983,9 @@ async fn org_create_project(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::RegistryConfigure) {
+    if let Some(deny) =
+        require_org_perm(&state, &session, &scope, Permission::RegistryConfigure).await
+    {
         return *deny;
     }
     let name = form.name.trim();
@@ -1915,24 +1993,28 @@ async fn org_create_project(
         return (StatusCode::BAD_REQUEST, "project name is required").into_response();
     }
     let path = form.path.trim().trim_matches('/');
-    let result = (|| {
-        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+    let result = async {
+        let Some(org) = state.db.org_by_slug(&org_slug).await? else {
             return Ok(false);
         };
-        state.db.create_project(org.id, path, name)?;
-        state.db.record_audit(
-            "user",
-            Some(session.auth.user_id),
-            &session.email,
-            "project.create",
-            &org_slug,
-            None,
-            None,
-            None,
-            Some(name),
-        )?;
+        state.db.create_project(org.id, path, name).await?;
+        state
+            .db
+            .record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "project.create",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(name),
+            )
+            .await?;
         Ok::<_, anyhow::Error>(true)
-    })();
+    }
+    .await;
     match result {
         Ok(true) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
@@ -1960,7 +2042,7 @@ async fn org_delete_project(
     Path(org_slug): Path<String>,
     Form(form): Form<DeleteByIdForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -1968,16 +2050,19 @@ async fn org_delete_project(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::RegistryConfigure) {
+    if let Some(deny) =
+        require_org_perm(&state, &session, &scope, Permission::RegistryConfigure).await
+    {
         return *deny;
     }
-    let result = (|| {
-        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+    let result = async {
+        let Some(org) = state.db.org_by_slug(&org_slug).await? else {
             return Ok(None);
         };
         let Some(project) = state
             .db
-            .list_projects(org.id)?
+            .list_projects(org.id)
+            .await?
             .into_iter()
             .find(|p| p.id == form.id)
         else {
@@ -1986,26 +2071,31 @@ async fn org_delete_project(
         // In-use guard: a registry nested under this project blocks removal.
         let in_use = state
             .db
-            .list_registries()?
+            .list_registries()
+            .await?
             .into_iter()
             .any(|r| r.org_id == Some(org.id) && r.project_path == project.path);
         if in_use {
             return Ok(Some(Err("project still has registries")));
         }
-        state.db.delete_project(org.id, project.id)?;
-        state.db.record_audit(
-            "user",
-            Some(session.auth.user_id),
-            &session.email,
-            "project.delete",
-            &org_slug,
-            None,
-            None,
-            None,
-            Some(&project.path),
-        )?;
+        state.db.delete_project(org.id, project.id).await?;
+        state
+            .db
+            .record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "project.delete",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(&project.path),
+            )
+            .await?;
         Ok::<_, anyhow::Error>(Some(Ok(())))
-    })();
+    }
+    .await;
     match result {
         Ok(Some(Ok(()))) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
         Ok(Some(Err(msg))) => (StatusCode::CONFLICT, msg).into_response(),
@@ -2024,7 +2114,7 @@ async fn org_delete_binding(
     Path(org_slug): Path<String>,
     Form(form): Form<DeleteByIdForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -2032,16 +2122,18 @@ async fn org_delete_binding(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::StorageManage) {
+    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::StorageManage).await
+    {
         return *deny;
     }
-    let result = (|| {
-        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+    let result = async {
+        let Some(org) = state.db.org_by_slug(&org_slug).await? else {
             return Ok(None);
         };
         let Some(binding) = state
             .db
-            .list_storage_bindings(org.id)?
+            .list_storage_bindings(org.id)
+            .await?
             .into_iter()
             .find(|b| b.id == form.id)
         else {
@@ -2049,26 +2141,31 @@ async fn org_delete_binding(
         };
         let in_use = state
             .db
-            .list_registries()?
+            .list_registries()
+            .await?
             .into_iter()
             .any(|r| r.storage_binding_id == Some(binding.id));
         if in_use {
             return Ok(Some(Err("binding still in use by a registry")));
         }
-        state.db.delete_storage_binding(org.id, binding.id)?;
-        state.db.record_audit(
-            "user",
-            Some(session.auth.user_id),
-            &session.email,
-            "binding.delete",
-            &org_slug,
-            None,
-            None,
-            None,
-            Some(&binding.name),
-        )?;
+        state.db.delete_storage_binding(org.id, binding.id).await?;
+        state
+            .db
+            .record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "binding.delete",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(&binding.name),
+            )
+            .await?;
         Ok::<_, anyhow::Error>(Some(Ok(())))
-    })();
+    }
+    .await;
     match result {
         Ok(Some(Ok(()))) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
         Ok(Some(Err(msg))) => (StatusCode::CONFLICT, msg).into_response(),
@@ -2098,7 +2195,7 @@ async fn org_member_role(
     Path(org_slug): Path<String>,
     Form(form): Form<RoleForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -2106,7 +2203,10 @@ async fn org_member_role(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if !session.allows(&state.db, Permission::MembersManage, &scope) {
+    if !session
+        .allows(&state.db, Permission::MembersManage, &scope)
+        .await
+    {
         return (StatusCode::FORBIDDEN, "members.manage required").into_response();
     }
     // Changing a member's role changes who/what is trusted in the org, so it
@@ -2124,15 +2224,15 @@ async fn org_member_role(
         kind,
         id: form.principal_id,
     };
-    let result = (|| {
+    let result = async {
         // Refuse a grant that exceeds the actor's own authority (H1).
         if let Err(reject) =
-            membership_grant_allowed(&state.db, &session.principal(), &target, &scope, role)?
+            membership_grant_allowed(&state.db, &session.principal(), &target, &scope, role).await?
         {
             return Ok(Err(reject));
         }
         // Block demoting the last owner away from `owner`.
-        let members = state.db.list_members_of_scope(&org_slug)?;
+        let members = state.db.list_members_of_scope(&org_slug).await?;
         let owners = members.iter().filter(|(_, _, r)| r == "owner").count();
         let target_is_last_owner = role != Role::Owner
             && owners <= 1
@@ -2150,9 +2250,11 @@ async fn org_member_role(
             &target,
             &scope,
             role,
-        )?;
+        )
+        .await?;
         Ok::<Result<(), MembershipReject>, anyhow::Error>(Ok(()))
-    })();
+    }
+    .await;
     match result {
         Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
         Ok(Err(reject)) => reject.into_response(),
@@ -2168,20 +2270,27 @@ async fn org_member_role(
 
 /// `GET /-/instance` — the instance-settings page (instance admins only).
 async fn instance_settings(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    render_instance_settings(&state, &session, None)
+    render_instance_settings(&state, &session, None).await
 }
 
 /// Render the instance-settings page; instance-admin (`iam.admin` at the root
 /// scope) only.
-fn render_instance_settings(state: &AppState, session: &Session, notice: Option<&str>) -> Response {
-    if !session.allows(&state.db, Permission::IamAdmin, &Scope::parse("")) {
+async fn render_instance_settings(
+    state: &AppState,
+    session: &Session,
+    notice: Option<&str>,
+) -> Response {
+    if !session
+        .allows(&state.db, Permission::IamAdmin, &Scope::parse(""))
+        .await
+    {
         return (StatusCode::FORBIDDEN, "instance admin required").into_response();
     }
-    let policy = match state.db.signup_policy() {
+    let policy = match state.db.signup_policy().await {
         Ok(p) => p,
         Err(err) => return internal(err),
     };
@@ -2209,34 +2318,41 @@ async fn instance_settings_action(
     headers: HeaderMap,
     Form(form): Form<InstanceSettingsForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    if !session.allows(&state.db, Permission::IamAdmin, &Scope::parse("")) {
+    if !session
+        .allows(&state.db, Permission::IamAdmin, &Scope::parse(""))
+        .await
+    {
         return (StatusCode::FORBIDDEN, "instance admin required").into_response();
     }
     let policy = crate::db::SignupPolicy::parse(&form.signup_policy);
-    if let Err(err) = state.db.set_signup_policy(policy) {
+    if let Err(err) = state.db.set_signup_policy(policy).await {
         return internal(err);
     }
-    if let Err(err) = state.db.record_audit(
-        "user",
-        Some(session.auth.user_id),
-        &session.email,
-        "instance.signup_policy",
-        "",
-        None,
-        None,
-        None,
-        Some(policy.as_str()),
-    ) {
+    if let Err(err) = state
+        .db
+        .record_audit(
+            "user",
+            Some(session.auth.user_id),
+            &session.email,
+            "instance.signup_policy",
+            "",
+            None,
+            None,
+            None,
+            Some(policy.as_str()),
+        )
+        .await
+    {
         return internal(err);
     }
-    render_instance_settings(&state, &session, Some("Signup policy saved."))
+    render_instance_settings(&state, &session, Some("Signup policy saved.")).await
 }
 
 /// `POST /-/org/{org}/bindings` form: a name and an absolute root path.
@@ -2260,7 +2376,7 @@ async fn org_create_binding(
     Path(org_slug): Path<String>,
     Form(form): Form<NewBindingForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -2268,7 +2384,8 @@ async fn org_create_binding(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::StorageManage) {
+    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::StorageManage).await
+    {
         return *deny;
     }
     let name = form.name.trim();
@@ -2293,26 +2410,31 @@ async fn org_create_binding(
         )
             .into_response();
     }
-    let result = (|| {
-        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+    let result = async {
+        let Some(org) = state.db.org_by_slug(&org_slug).await? else {
             return Ok(false);
         };
         state
             .db
-            .create_storage_binding(org.id, name, "local_fs", root)?;
-        state.db.record_audit(
-            "user",
-            Some(session.auth.user_id),
-            &session.email,
-            "binding.create",
-            &org_slug,
-            None,
-            None,
-            None,
-            Some(name),
-        )?;
+            .create_storage_binding(org.id, name, "local_fs", root)
+            .await?;
+        state
+            .db
+            .record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "binding.create",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(name),
+            )
+            .await?;
         Ok::<_, anyhow::Error>(true)
-    })();
+    }
+    .await;
     match result {
         Ok(true) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
@@ -2331,20 +2453,22 @@ async fn org_new_registry_form(
     headers: HeaderMap,
     Path(org_slug): Path<String>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::RegistryConfigure) {
+    if let Some(deny) =
+        require_org_perm(&state, &session, &scope, Permission::RegistryConfigure).await
+    {
         return *deny;
     }
-    let result = (|| {
-        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+    let result = async {
+        let Some(org) = state.db.org_by_slug(&org_slug).await? else {
             return Ok(None);
         };
-        let projects = state.db.list_projects(org.id)?;
-        let bindings = state.db.list_storage_bindings(org.id)?;
+        let projects = state.db.list_projects(org.id).await?;
+        let bindings = state.db.list_storage_bindings(org.id).await?;
         Ok::<_, anyhow::Error>(Some(console::new_registry_page(
             &session.email,
             &org,
@@ -2354,7 +2478,8 @@ async fn org_new_registry_form(
             None,
             Instant::now(),
         )))
-    })();
+    }
+    .await;
     match result {
         Ok(Some(html)) => Html(html).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -2395,7 +2520,7 @@ async fn org_create_registry(
     Path(org_slug): Path<String>,
     Form(form): Form<NewRegistryForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -2403,22 +2528,33 @@ async fn org_create_registry(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::RegistryConfigure) {
+    if let Some(deny) =
+        require_org_perm(&state, &session, &scope, Permission::RegistryConfigure).await
+    {
         return *deny;
     }
-    let Some(org) = (match state.db.org_by_slug(&org_slug) {
+    let Some(org) = (match state.db.org_by_slug(&org_slug).await {
         Ok(org) => org,
         Err(err) => return internal(err),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    let reject = |state: &AppState, message: &str| {
-        let projects = state.db.list_projects(org.id).unwrap_or_default();
-        let bindings = state.db.list_storage_bindings(org.id).unwrap_or_default();
+    async fn reject(
+        state: &AppState,
+        org: &OrgRecord,
+        session: &Session,
+        message: &str,
+    ) -> Response {
+        let projects = state.db.list_projects(org.id).await.unwrap_or_default();
+        let bindings = state
+            .db
+            .list_storage_bindings(org.id)
+            .await
+            .unwrap_or_default();
         Html(console::new_registry_page(
             &session.email,
-            &org,
+            org,
             &session.csrf(),
             &projects,
             &bindings,
@@ -2426,24 +2562,25 @@ async fn org_create_registry(
             Instant::now(),
         ))
         .into_response()
-    };
+    }
 
     let name = form.name.trim();
     if name.is_empty() {
-        return reject(&state, "Registry name is required.");
+        return reject(&state, &org, &session, "Registry name is required.").await;
     }
     let visibility = match form.visibility.trim() {
         "" => "private",
         v @ ("public" | "internal" | "private") => v,
-        _ => return reject(&state, "Invalid visibility."),
+        _ => return reject(&state, &org, &session, "Invalid visibility.").await,
     };
     // Resolve the storage binding by name within the org.
     let binding_id = match state
         .db
         .storage_binding_by_name(org.id, form.binding.trim())
+        .await
     {
         Ok(Some(b)) => b.id,
-        Ok(None) => return reject(&state, "Choose a storage binding."),
+        Ok(None) => return reject(&state, &org, &session, "Choose a storage binding.").await,
         Err(err) => return internal(err),
     };
     let project_path = form.project_path.trim().trim_matches('/');
@@ -2458,36 +2595,47 @@ async fn org_create_registry(
         .collect();
     let require_signatures = form.require_signatures.is_some();
 
-    let created = state.db.create_managed_registry(
-        org.id,
-        project_path,
-        name,
-        visibility,
-        Some(binding_id),
-        prefix,
-        &trust_keys,
-        require_signatures,
-    );
+    let created = state
+        .db
+        .create_managed_registry(
+            org.id,
+            project_path,
+            name,
+            visibility,
+            Some(binding_id),
+            prefix,
+            &trust_keys,
+            require_signatures,
+        )
+        .await;
     match created {
         Ok(_) => {}
-        Err(err) => return reject(&state, &format!("{err:#}")),
+        Err(err) => return reject(&state, &org, &session, &format!("{err:#}")).await,
     }
-    let canonical = match state.db.registry_by_scope(&org.slug, project_path, name) {
+    let canonical = match state
+        .db
+        .registry_by_scope(&org.slug, project_path, name)
+        .await
+    {
         Ok(Some(reg)) => reg.slug,
         Ok(None) => return internal(anyhow::anyhow!("registry vanished after creation")),
         Err(err) => return internal(err),
     };
-    if let Err(err) = state.db.record_audit(
-        "user",
-        Some(session.auth.user_id),
-        &session.email,
-        "registry.create",
-        &canonical,
-        None,
-        None,
-        None,
-        Some(visibility),
-    ) {
+    if let Err(err) = state
+        .db
+        .record_audit(
+            "user",
+            Some(session.auth.user_id),
+            &session.email,
+            "registry.create",
+            &canonical,
+            None,
+            None,
+            None,
+            Some(visibility),
+        )
+        .await
+    {
         return internal(err);
     }
     Redirect::to(&format!("/{canonical}/")).into_response()
@@ -2517,7 +2665,7 @@ async fn org_delete(
     Path(org_slug): Path<String>,
     Form(form): Form<OrgDeleteForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -2528,7 +2676,7 @@ async fn org_delete(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::IamAdmin) {
+    if let Some(deny) = require_org_perm(&state, &session, &scope, Permission::IamAdmin).await {
         return *deny;
     }
     if form.confirm.trim() != org_slug {
@@ -2538,26 +2686,33 @@ async fn org_delete(
         )
             .into_response();
     }
-    let result = (|| {
-        let Some(org) = state.db.org_by_slug(&org_slug)? else {
+    let result = async {
+        let Some(org) = state.db.org_by_slug(&org_slug).await? else {
             return Ok(false);
         };
-        let deleted = state.db.soft_delete_org(org.id, ORG_DELETE_GRACE_SECS)?;
+        let deleted = state
+            .db
+            .soft_delete_org(org.id, ORG_DELETE_GRACE_SECS)
+            .await?;
         if deleted {
-            state.db.record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "org.delete",
-                &org_slug,
-                None,
-                None,
-                None,
-                None,
-            )?;
+            state
+                .db
+                .record_audit(
+                    "user",
+                    Some(session.auth.user_id),
+                    &session.email,
+                    "org.delete",
+                    &org_slug,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
         }
         Ok::<_, anyhow::Error>(deleted)
-    })();
+    }
+    .await;
     match result {
         Ok(_) => Redirect::to("/-/orgs").into_response(),
         Err(err) => internal(err),
@@ -2569,16 +2724,16 @@ async fn org_delete(
 ///
 /// The shared authz shape for the org-scoped create/delete handlers, matching
 /// the `404`-private / `403`-forbidden discipline the read pages use.
-fn require_org_perm(
+async fn require_org_perm(
     state: &AppState,
     session: &Session,
     scope: &Scope,
     perm: Permission,
 ) -> Option<Box<Response>> {
-    if session.allows(&state.db, perm, scope) {
+    if session.allows(&state.db, perm, scope).await {
         return None;
     }
-    if session.allows(&state.db, Permission::Read, scope) {
+    if session.allows(&state.db, Permission::Read, scope).await {
         Some(Box::new(
             (StatusCode::FORBIDDEN, "insufficient permission").into_response(),
         ))
@@ -2596,17 +2751,17 @@ async fn registry_settings(
     uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    registry_settings_view(&state, &session, &registry, None)
+    registry_settings_view(&state, &session, &registry, None).await
 }
 
 /// Render the registry settings landing page, optionally echoing a
@@ -2614,27 +2769,32 @@ async fn registry_settings(
 ///
 /// `RegistryConfigure`-gated: a member without it gets `403`, a non-member of a
 /// private registry's org gets `404`.
-fn registry_settings_view(
+async fn registry_settings_view(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
     result: Option<&str>,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
-    if let Some(deny) = require_org_perm(state, session, &scope, Permission::RegistryConfigure) {
+    if let Some(deny) =
+        require_org_perm(state, session, &scope, Permission::RegistryConfigure).await
+    {
         return *deny;
     }
-    let result_outcome = (|| {
+    let result_outcome = async {
         // Resolve the storage binding (name, root, prefix) when bound.
         let binding = match registry.storage_binding_id {
             Some(id) => state
                 .db
-                .storage_binding(id)?
+                .storage_binding(id)
+                .await?
                 .map(|b| (b.name, b.root, registry.prefix.clone())),
             None => None,
         };
         // Deletion is owner-only (the iam.admin verb).
-        let can_delete = session.allows(&state.db, Permission::IamAdmin, &scope);
+        let can_delete = session
+            .allows(&state.db, Permission::IamAdmin, &scope)
+            .await;
         let binding_ref = binding
             .as_ref()
             .map(|(n, r, p)| (n.as_str(), r.as_str(), p.as_str()));
@@ -2647,7 +2807,8 @@ fn registry_settings_view(
             result,
             Instant::now(),
         ))
-    })();
+    }
+    .await;
     match result_outcome {
         Ok(html) => Html(html).into_response(),
         Err(err) => internal(err),
@@ -2670,23 +2831,23 @@ async fn registry_visibility(
     Path(slug): Path<String>,
     Form(form): Form<VisibilityForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    registry_visibility_action(&state, &session, &registry, &form.csrf, &form.visibility)
+    registry_visibility_action(&state, &session, &registry, &form.csrf, &form.visibility).await
 }
 
 /// The visibility-change action: CSRF + `RegistryConfigure` gate, then route
 /// the flip through the audited change-set engine and re-render the settings
 /// page with the new change id.
-fn registry_visibility_action(
+async fn registry_visibility_action(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
@@ -2697,7 +2858,9 @@ fn registry_visibility_action(
         return *resp;
     }
     let scope = Scope::parse(&registry.slug);
-    if let Some(deny) = require_org_perm(state, session, &scope, Permission::RegistryConfigure) {
+    if let Some(deny) =
+        require_org_perm(state, session, &scope, Permission::RegistryConfigure).await
+    {
         return *deny;
     }
     let visibility = match visibility.trim() {
@@ -2710,17 +2873,19 @@ fn registry_visibility_action(
         &session.email,
         registry.id,
         visibility,
-    ) {
+    )
+    .await
+    {
         Ok(id) => id,
         Err(err) => return internal(err),
     };
     // Re-read so the page shows the new visibility.
-    let updated = match state.db.registry_by_slug(&registry.slug) {
+    let updated = match state.db.registry_by_slug(&registry.slug).await {
         Ok(Some(reg)) => reg,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => return internal(err),
     };
-    registry_settings_view(state, session, &updated, Some(change_id.0.as_str()))
+    registry_settings_view(state, session, &updated, Some(change_id.0.as_str())).await
 }
 
 /// `POST /{slug}/-/settings/delete` form: the typed-confirmation name.
@@ -2739,17 +2904,17 @@ async fn registry_delete(
     Path(slug): Path<String>,
     Form(form): Form<RegistryDeleteForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    registry_delete_action(&state, &session, &registry, &form.csrf, &form.confirm)
+    registry_delete_action(&state, &session, &registry, &form.csrf, &form.confirm).await
 }
 
 /// The registry-delete action: CSRF + sudo + owner/admin (`IamAdmin`) gate and
@@ -2763,7 +2928,7 @@ async fn registry_delete(
 /// `registries` row (cascading its rebuildable index; surface content on the
 /// binding is left in place), audits it, and redirects to the owning org's
 /// dashboard (or `/` for an unowned registry).
-fn registry_delete_action(
+async fn registry_delete_action(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
@@ -2777,37 +2942,41 @@ fn registry_delete_action(
         return *resp;
     }
     let scope = Scope::parse(&registry.slug);
-    if let Some(deny) = require_org_perm(state, session, &scope, Permission::IamAdmin) {
+    if let Some(deny) = require_org_perm(state, session, &scope, Permission::IamAdmin).await {
         return *deny;
     }
     if confirm.trim() != registry.slug {
         return (StatusCode::BAD_REQUEST, "type the registry name to confirm").into_response();
     }
-    let result = (|| {
-        let removed = state.db.delete_registry(registry.id)?;
+    let result = async {
+        let removed = state.db.delete_registry(registry.id).await?;
         if removed {
-            state.db.record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "registry.delete",
-                &registry.slug,
-                None,
-                None,
-                None,
-                None,
-            )?;
+            state
+                .db
+                .record_audit(
+                    "user",
+                    Some(session.auth.user_id),
+                    &session.email,
+                    "registry.delete",
+                    &registry.slug,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
         }
         // Redirect to the owning org's dashboard when known.
         let target = match registry.org_id {
-            Some(org_id) => match state.db.org_by_id(org_id)? {
+            Some(org_id) => match state.db.org_by_id(org_id).await? {
                 Some(org) => format!("/-/org/{}", org.slug),
                 None => "/".to_string(),
             },
             None => "/".to_string(),
         };
         Ok::<_, anyhow::Error>(target)
-    })();
+    }
+    .await;
     match result {
         Ok(target) => Redirect::to(&target).into_response(),
         Err(err) => internal(err),
@@ -2888,7 +3057,7 @@ pub(crate) async fn dispatch_nested(
     if !is_console_path(right, is_post) {
         return None;
     }
-    let registry = match resolve_by_prefix(state, left.trim_end_matches('/')) {
+    let registry = match resolve_by_prefix(state, left.trim_end_matches('/')).await {
         Ok(Some((reg, tail))) if tail.is_empty() => reg,
         Ok(_) => return None,
         Err(err) => return Some(internal(err)),
@@ -2896,7 +3065,7 @@ pub(crate) async fn dispatch_nested(
 
     // Console pages are human-only: require a session now that the path is
     // known to be a console page.
-    let session = match require_session(state, headers) {
+    let session = match require_session(state, headers).await {
         Ok(s) => s,
         Err(resp) => return Some(*resp),
     };
@@ -2916,31 +3085,42 @@ pub(crate) async fn dispatch_nested(
 
     let fields = parse_form(&form_str);
     let response = match (right, is_post) {
-        ("settings/tokens", false) => tokens_view(state, &session, &registry, headers, page_number),
-        ("settings/tokens", true) => tokens_create_action(
-            state,
-            &session,
-            &registry,
-            field(&fields, "csrf"),
-            fields.contains_key("perm_read"),
-            fields.contains_key("perm_publish"),
-        ),
-        ("settings/tokens/revoke", true) => tokens_modify_action(
-            state,
-            &session,
-            &registry,
-            field(&fields, "csrf"),
-            field(&fields, "token_id"),
-            false,
-        ),
-        ("settings/tokens/rotate", true) => tokens_modify_action(
-            state,
-            &session,
-            &registry,
-            field(&fields, "csrf"),
-            field(&fields, "token_id"),
-            true,
-        ),
+        ("settings/tokens", false) => {
+            tokens_view(state, &session, &registry, headers, page_number).await
+        }
+        ("settings/tokens", true) => {
+            tokens_create_action(
+                state,
+                &session,
+                &registry,
+                field(&fields, "csrf"),
+                fields.contains_key("perm_read"),
+                fields.contains_key("perm_publish"),
+            )
+            .await
+        }
+        ("settings/tokens/revoke", true) => {
+            tokens_modify_action(
+                state,
+                &session,
+                &registry,
+                field(&fields, "csrf"),
+                field(&fields, "token_id"),
+                false,
+            )
+            .await
+        }
+        ("settings/tokens/rotate", true) => {
+            tokens_modify_action(
+                state,
+                &session,
+                &registry,
+                field(&fields, "csrf"),
+                field(&fields, "token_id"),
+                true,
+            )
+            .await
+        }
         ("settings/config", false) => config_edit_view(state, &session, &registry, None).await,
         ("settings/config", true) => {
             config_submit_action(
@@ -2952,27 +3132,33 @@ pub(crate) async fn dispatch_nested(
             )
             .await
         }
-        ("settings/serving", false) => serving_view(state, &session, &registry, None),
-        ("settings/serving", true) => serving_action(state, &session, &registry, &fields),
-        ("settings", false) => registry_settings_view(state, &session, &registry, None),
-        ("settings/visibility", true) => registry_visibility_action(
-            state,
-            &session,
-            &registry,
-            field(&fields, "csrf"),
-            field(&fields, "visibility"),
-        ),
-        ("settings/delete", true) => registry_delete_action(
-            state,
-            &session,
-            &registry,
-            field(&fields, "csrf"),
-            field(&fields, "confirm"),
-        ),
-        ("changes", false) => changes_view(state, &session, &registry),
-        ("keys", false) => keys_view(state, &session, &registry, headers, page_number),
-        ("keys/rotate", false) => keys_rotate_view(state, &session, &registry, headers),
-        ("publishes", false) => publishes_view(state, &session, &registry, headers),
+        ("settings/serving", false) => serving_view(state, &session, &registry, None).await,
+        ("settings/serving", true) => serving_action(state, &session, &registry, &fields).await,
+        ("settings", false) => registry_settings_view(state, &session, &registry, None).await,
+        ("settings/visibility", true) => {
+            registry_visibility_action(
+                state,
+                &session,
+                &registry,
+                field(&fields, "csrf"),
+                field(&fields, "visibility"),
+            )
+            .await
+        }
+        ("settings/delete", true) => {
+            registry_delete_action(
+                state,
+                &session,
+                &registry,
+                field(&fields, "csrf"),
+                field(&fields, "confirm"),
+            )
+            .await
+        }
+        ("changes", false) => changes_view(state, &session, &registry).await,
+        ("keys", false) => keys_view(state, &session, &registry, headers, page_number).await,
+        ("keys/rotate", false) => keys_rotate_view(state, &session, &registry, headers).await,
+        ("publishes", false) => publishes_view(state, &session, &registry, headers).await,
         (other, true) if other.ends_with("/advance") => {
             // channels/{name}/advance (POST): the direct hosted-key advance.
             // `is_console_path` already proved this matches.
@@ -3012,10 +3198,10 @@ pub(crate) async fn dispatch_nested(
                 )
                 .await
             } else {
-                if let Err(deny) = authorize_registry_read(state, &registry, headers) {
+                if let Err(deny) = authorize_registry_read(state, &registry, headers).await {
                     return Some(*deny);
                 }
-                render_channel_console(state, &session, &registry, &name, None, None)
+                render_channel_console(state, &session, &registry, &name, None, None).await
             }
         }
     };
@@ -3042,18 +3228,18 @@ fn field<'a>(fields: &'a std::collections::HashMap<String, String>, key: &str) -
 /// The flat `/{slug}/...` routes capture only the first segment, so a nested
 /// registry's settings page must reconstruct the canonical prefix from the
 /// request URI.
-fn resolve_registry(
+async fn resolve_registry(
     state: &AppState,
     slug: &str,
     uri: &axum::http::Uri,
 ) -> anyhow::Result<Option<RegistryRecord>> {
-    if let Some(reg) = state.db.registry_by_slug(slug)? {
+    if let Some(reg) = state.db.registry_by_slug(slug).await? {
         return Ok(Some(reg));
     }
     // Nested: strip the trailing `/-/...` marker and resolve by prefix.
     let path = uri.path().trim_start_matches('/');
     let head = path.split("/-/").next().unwrap_or(path);
-    match resolve_by_prefix(state, head.trim_end_matches('/'))? {
+    match resolve_by_prefix(state, head.trim_end_matches('/')).await? {
         Some((reg, _)) => Ok(Some(reg)),
         None => Ok(None),
     }
@@ -3069,21 +3255,21 @@ async fn tokens(
     Path(slug): Path<String>,
     Query(page): Query<PageQuery>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    tokens_view(&state, &session, &registry, &headers, page.page())
+    tokens_view(&state, &session, &registry, &headers, page.page()).await
 }
 
 /// Render the tokens page (read path): visibility-gated, no result banner.
-fn tokens_view(
+async fn tokens_view(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
@@ -3091,14 +3277,14 @@ fn tokens_view(
     page_number: usize,
 ) -> Response {
     // Reads follow registry visibility (404 a hidden registry).
-    if let Err(deny) = authorize_registry_read(state, registry, headers) {
+    if let Err(deny) = authorize_registry_read(state, registry, headers).await {
         return *deny;
     }
-    render_tokens(state, session, registry, None, page_number)
+    render_tokens(state, session, registry, None, page_number).await
 }
 
 /// The token-create action: CSRF + TokensSelf gate, mint, show secret once.
-fn tokens_create_action(
+async fn tokens_create_action(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
@@ -3115,7 +3301,10 @@ fn tokens_create_action(
         return *resp;
     }
     let scope = Scope::parse(&registry.slug);
-    if !session.allows(&state.db, Permission::TokensSelf, &scope) {
+    if !session
+        .allows(&state.db, Permission::TokensSelf, &scope)
+        .await
+    {
         return (StatusCode::FORBIDDEN, "tokens.self required").into_response();
     }
     let mut perms = Vec::new();
@@ -3127,18 +3316,22 @@ fn tokens_create_action(
     }
     // A token may never exceed the owner's own grants: keep only requested
     // permissions the user actually holds at the scope.
-    let grants = match session.grants(&state.db) {
+    let grants = match session.grants(&state.db).await {
         Ok(grants) => grants,
         Err(err) => return internal(err),
     };
     perms.retain(|p| iam::allow(&grants, *p, &scope));
-    let (_, secret) = match state.db.create_token(
-        session.principal(),
-        scope.as_str(),
-        &perms,
-        Some("created via console"),
-        None,
-    ) {
+    let (_, secret) = match state
+        .db
+        .create_token(
+            session.principal(),
+            scope.as_str(),
+            &perms,
+            Some("created via console"),
+            None,
+        )
+        .await
+    {
         Ok(pair) => pair,
         Err(err) => return internal(err),
     };
@@ -3149,12 +3342,13 @@ fn tokens_create_action(
         Some(("New token created", &secret)),
         1,
     )
+    .await
 }
 
 /// The token revoke/rotate action: CSRF + ownership gate, then mutate.
 ///
 /// `rotate = true` rotates (showing the new secret once); `false` revokes.
-fn tokens_modify_action(
+async fn tokens_modify_action(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
@@ -3165,7 +3359,7 @@ fn tokens_modify_action(
     if let Err(resp) = check_csrf(session, csrf) {
         return *resp;
     }
-    if let Err(resp) = ensure_owns_token(state, session, token_id) {
+    if let Err(resp) = ensure_owns_token(state, session, token_id).await {
         return *resp;
     }
     // Rotation mints a fresh secret (a new credential), so it gates on sudo;
@@ -3174,21 +3368,24 @@ fn tokens_modify_action(
         if let Err(resp) = require_sudo(session) {
             return *resp;
         }
-        match state.db.rotate_token(token_id) {
-            Ok(Some((_, secret))) => render_tokens(
-                state,
-                session,
-                registry,
-                Some(("Token rotated", &secret)),
-                1,
-            ),
+        match state.db.rotate_token(token_id).await {
+            Ok(Some((_, secret))) => {
+                render_tokens(
+                    state,
+                    session,
+                    registry,
+                    Some(("Token rotated", &secret)),
+                    1,
+                )
+                .await
+            }
             Ok(None) => {
                 Redirect::to(&format!("/{}/-/settings/tokens", registry.slug)).into_response()
             }
             Err(err) => internal(err),
         }
     } else {
-        match state.db.revoke_token(token_id) {
+        match state.db.revoke_token(token_id).await {
             Ok(()) => {
                 Redirect::to(&format!("/{}/-/settings/tokens", registry.slug)).into_response()
             }
@@ -3198,7 +3395,7 @@ fn tokens_modify_action(
 }
 
 /// Render the tokens page, optionally with a one-time secret result.
-fn render_tokens(
+async fn render_tokens(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
@@ -3206,9 +3403,11 @@ fn render_tokens(
     page_number: usize,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
-    let can_create = session.allows(&state.db, Permission::TokensSelf, &scope);
+    let can_create = session
+        .allows(&state.db, Permission::TokensSelf, &scope)
+        .await;
     // List the caller's own tokens; filter to this registry scope.
-    let all = match state.db.list_tokens_for(session.principal()) {
+    let all = match state.db.list_tokens_for(session.principal()).await {
         Ok(tokens) => tokens,
         Err(err) => return internal(err),
     };
@@ -3251,11 +3450,11 @@ async fn tokens_create(
     Path(slug): Path<String>,
     Form(form): Form<TokenCreateForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
@@ -3269,6 +3468,7 @@ async fn tokens_create(
         form.perm_read.is_some(),
         form.perm_publish.is_some(),
     )
+    .await
 }
 
 /// `POST` token revoke/rotate form: the target token id.
@@ -3287,11 +3487,11 @@ async fn tokens_revoke(
     Path(slug): Path<String>,
     Form(form): Form<TokenIdForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
@@ -3305,6 +3505,7 @@ async fn tokens_revoke(
         &form.token_id,
         false,
     )
+    .await
 }
 
 /// `POST /{slug}/-/settings/tokens/rotate` — rotate one of the caller's tokens.
@@ -3317,11 +3518,11 @@ async fn tokens_rotate(
     Path(slug): Path<String>,
     Form(form): Form<TokenIdForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
@@ -3335,10 +3536,11 @@ async fn tokens_rotate(
         &form.token_id,
         true,
     )
+    .await
 }
 
 /// Verify the session user owns the token being revoked/rotated, else 403.
-fn ensure_owns_token(
+async fn ensure_owns_token(
     state: &AppState,
     session: &Session,
     token_id: &str,
@@ -3346,6 +3548,7 @@ fn ensure_owns_token(
     let owned = state
         .db
         .list_tokens_for(session.principal())
+        .await
         .map(|tokens| tokens.iter().any(|(id, _, _)| id == token_id))
         .unwrap_or(false);
     if owned {
@@ -3366,20 +3569,20 @@ async fn channel_console(
     uri: axum::http::Uri,
     Path((slug, name)): Path<(String, String)>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if let Err(deny) = authorize_registry_read(&state, &registry, &headers) {
+    if let Err(deny) = authorize_registry_read(&state, &registry, &headers).await {
         return *deny;
     }
-    render_channel_console(&state, &session, &registry, &name, None, None)
+    render_channel_console(&state, &session, &registry, &name, None, None).await
 }
 
 /// Render the channel console.
@@ -3388,7 +3591,7 @@ async fn channel_console(
 /// echo; `advanced` carries a hosted-key direct-advance success message. The
 /// page renders a real (hosted-key) advance form when the registry has a
 /// hosted key bound, and the prepared-operation form otherwise.
-fn render_channel_console(
+async fn render_channel_console(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
@@ -3396,16 +3599,18 @@ fn render_channel_console(
     prepared: Option<(&str, &str)>,
     advanced: Option<&str>,
 ) -> Response {
-    let result = (|| {
-        let status = state.db.index_status(registry.id)?;
-        let channels = state.db.list_channels(registry.id)?;
+    let result = async {
+        let status = state.db.index_status(registry.id).await?;
+        let channels = state.db.list_channels(registry.id).await?;
         let Some(channel) = channels.into_iter().find(|c| c.name == name) else {
             return Ok(None);
         };
         let scope = Scope::parse(&registry.slug);
-        let can_advance = session.allows(&state.db, Permission::ChannelAdvance, &scope);
+        let can_advance = session
+            .allows(&state.db, Permission::ChannelAdvance, &scope)
+            .await;
         let hosted_key = match registry.hosted_key_id {
-            Some(id) => state.db.hosted_key(id)?.map(|k| k.key_id),
+            Some(id) => state.db.hosted_key(id).await?.map(|k| k.key_id),
             None => None,
         };
         Ok::<_, anyhow::Error>(Some(console::channel_console(
@@ -3420,7 +3625,8 @@ fn render_channel_console(
             advanced,
             Instant::now(),
         )))
-    })();
+    }
+    .await;
     match result {
         Ok(Some(html)) => Html(html).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -3449,11 +3655,11 @@ async fn channel_advance(
     Path((slug, name)): Path<(String, String)>,
     Form(form): Form<AdvanceForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
@@ -3486,7 +3692,10 @@ async fn channel_advance_action(
         return *resp;
     }
     let scope = Scope::parse(&registry.slug);
-    if !session.allows(&state.db, Permission::ChannelAdvance, &scope) {
+    if !session
+        .allows(&state.db, Permission::ChannelAdvance, &scope)
+        .await
+    {
         return (StatusCode::FORBIDDEN, "channel.advance required").into_response();
     }
     let release = release.trim();
@@ -3505,7 +3714,9 @@ async fn channel_advance_action(
         name,
         release,
         partitions,
-    ) {
+    )
+    .await
+    {
         Ok(id) => id,
         Err(err) => return internal(err),
     };
@@ -3523,6 +3734,7 @@ async fn channel_advance_action(
         Some((change_id.as_str(), &command)),
         None,
     )
+    .await
 }
 
 /// `POST /{slug}/-/channels/{name}/advance` — directly advance a hosted-key
@@ -3539,11 +3751,11 @@ async fn channel_advance_direct(
     Path((slug, name)): Path<(String, String)>,
     Form(form): Form<AdvanceForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
@@ -3577,7 +3789,10 @@ async fn advance_direct_action(
         return *resp;
     }
     let scope = Scope::parse(&registry.slug);
-    if !session.allows(&state.db, Permission::ChannelAdvance, &scope) {
+    if !session
+        .allows(&state.db, Permission::ChannelAdvance, &scope)
+        .await
+    {
         return (StatusCode::FORBIDDEN, "channel.advance required").into_response();
     }
     // No hosted key bound: fall back to recording a prepared operation.
@@ -3613,7 +3828,7 @@ async fn advance_direct_action(
                 "Advanced {} to {} · {} partition(s) moved · {}% rolled out",
                 outcome.channel, outcome.release, outcome.moved, outcome.rollout_percent,
             );
-            render_channel_console(state, session, registry, name, None, Some(&message))
+            render_channel_console(state, session, registry, name, None, Some(&message)).await
         }
         Err(err) => {
             // A failed advance (e.g. unknown release, below floor) is a
@@ -3634,36 +3849,40 @@ async fn org_keys(
     headers: HeaderMap,
     Path(org_slug): Path<String>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    render_org_keys(&state, &session, &org_slug, None)
+    render_org_keys(&state, &session, &org_slug, None).await
 }
 
 /// Render the org hosted-keys page, optionally echoing a just-created key's
 /// public trusted-key line.
-fn render_org_keys(
+async fn render_org_keys(
     state: &AppState,
     session: &Session,
     org_slug: &str,
     created: Option<&str>,
 ) -> Response {
     let scope = Scope::parse(org_slug);
-    if !session.allows(&state.db, Permission::KeysManage, &scope) {
-        if session.allows(&state.db, Permission::Read, &scope) {
+    if !session
+        .allows(&state.db, Permission::KeysManage, &scope)
+        .await
+    {
+        if session.allows(&state.db, Permission::Read, &scope).await {
             return (StatusCode::FORBIDDEN, "keys.manage required").into_response();
         }
         return StatusCode::NOT_FOUND.into_response();
     }
-    let result = (|| {
-        let Some(org) = state.db.org_by_slug(org_slug)? else {
+    let result = async {
+        let Some(org) = state.db.org_by_slug(org_slug).await? else {
             return Ok(None);
         };
-        let keys = state.db.list_hosted_keys(org.id)?;
+        let keys = state.db.list_hosted_keys(org.id).await?;
         let registries: Vec<RegistryRecord> = state
             .db
-            .list_registries()?
+            .list_registries()
+            .await?
             .into_iter()
             .filter(|r| r.org_id == Some(org.id))
             .collect();
@@ -3676,7 +3895,8 @@ fn render_org_keys(
             created,
             Instant::now(),
         )))
-    })();
+    }
+    .await;
     match result {
         Ok(Some(html)) => Html(html).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -3713,7 +3933,7 @@ async fn org_keys_action(
     Path(org_slug): Path<String>,
     Form(form): Form<OrgKeysForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -3726,13 +3946,16 @@ async fn org_keys_action(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if !session.allows(&state.db, Permission::KeysManage, &scope) {
-        if session.allows(&state.db, Permission::Read, &scope) {
+    if !session
+        .allows(&state.db, Permission::KeysManage, &scope)
+        .await
+    {
+        if session.allows(&state.db, Permission::Read, &scope).await {
             return (StatusCode::FORBIDDEN, "keys.manage required").into_response();
         }
         return StatusCode::NOT_FOUND.into_response();
     }
-    let Some(org) = (match state.db.org_by_slug(&org_slug) {
+    let Some(org) = (match state.db.org_by_slug(&org_slug).await {
         Ok(org) => org,
         Err(err) => return internal(err),
     }) else {
@@ -3748,6 +3971,7 @@ async fn org_keys_action(
             let public = match state
                 .db
                 .create_hosted_key(state.sealer.as_ref(), org.id, key_id)
+                .await
             {
                 Ok(line) => line,
                 Err(err) => {
@@ -3755,23 +3979,27 @@ async fn org_keys_action(
                         .into_response()
                 }
             };
-            if let Err(err) = state.db.record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "hosted_key.create",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(key_id),
-            ) {
+            if let Err(err) = state
+                .db
+                .record_audit(
+                    "user",
+                    Some(session.auth.user_id),
+                    &session.email,
+                    "hosted_key.create",
+                    &org_slug,
+                    None,
+                    None,
+                    None,
+                    Some(key_id),
+                )
+                .await
+            {
                 return internal(err);
             }
-            render_org_keys(&state, &session, &org_slug, Some(&public))
+            render_org_keys(&state, &session, &org_slug, Some(&public)).await
         }
         "attach" => {
-            let Some(registry) = (match state.db.registry_by_slug(form.registry.trim()) {
+            let Some(registry) = (match state.db.registry_by_slug(form.registry.trim()).await {
                 Ok(reg) => reg,
                 Err(err) => return internal(err),
             }) else {
@@ -3791,7 +4019,7 @@ async fn org_keys_action(
             };
             // A non-empty key must exist and belong to this org.
             if let Some(id) = hosted_key_id {
-                match state.db.hosted_key(id) {
+                match state.db.hosted_key(id).await {
                     Ok(Some(k)) if k.org_id == org.id => {}
                     Ok(_) => {
                         return (StatusCode::BAD_REQUEST, "no such hosted key in this org")
@@ -3800,24 +4028,32 @@ async fn org_keys_action(
                     Err(err) => return internal(err),
                 }
             }
-            if let Err(err) = state.db.set_registry_hosted_key(registry.id, hosted_key_id) {
+            if let Err(err) = state
+                .db
+                .set_registry_hosted_key(registry.id, hosted_key_id)
+                .await
+            {
                 return internal(err);
             }
             let detail = serde_json::json!({ "hosted_key_id": hosted_key_id }).to_string();
-            if let Err(err) = state.db.record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "hosted_key.attach",
-                &registry.slug,
-                None,
-                None,
-                None,
-                Some(&detail),
-            ) {
+            if let Err(err) = state
+                .db
+                .record_audit(
+                    "user",
+                    Some(session.auth.user_id),
+                    &session.email,
+                    "hosted_key.attach",
+                    &registry.slug,
+                    None,
+                    None,
+                    None,
+                    Some(&detail),
+                )
+                .await
+            {
                 return internal(err);
             }
-            render_org_keys(&state, &session, &org_slug, None)
+            render_org_keys(&state, &session, &org_slug, None).await
         }
         _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
     }
@@ -3831,32 +4067,35 @@ async fn org_webhooks(
     headers: HeaderMap,
     Path(org_slug): Path<String>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    render_org_webhooks(&state, &session, &org_slug, None)
+    render_org_webhooks(&state, &session, &org_slug, None).await
 }
 
 /// Render the org webhooks page, optionally echoing a just-created secret once.
-fn render_org_webhooks(
+async fn render_org_webhooks(
     state: &AppState,
     session: &Session,
     org_slug: &str,
     created_secret: Option<&str>,
 ) -> Response {
     let scope = Scope::parse(org_slug);
-    if !session.allows(&state.db, Permission::MembersManage, &scope) {
-        if session.allows(&state.db, Permission::Read, &scope) {
+    if !session
+        .allows(&state.db, Permission::MembersManage, &scope)
+        .await
+    {
+        if session.allows(&state.db, Permission::Read, &scope).await {
             return (StatusCode::FORBIDDEN, "members.manage required").into_response();
         }
         return StatusCode::NOT_FOUND.into_response();
     }
-    let result = (|| {
-        let Some(org) = state.db.org_by_slug(org_slug)? else {
+    let result = async {
+        let Some(org) = state.db.org_by_slug(org_slug).await? else {
             return Ok(None);
         };
-        let webhooks = state.db.list_webhooks(org.id)?;
+        let webhooks = state.db.list_webhooks(org.id).await?;
         Ok::<_, anyhow::Error>(Some(console::org_webhooks_page(
             &session.email,
             &org,
@@ -3865,7 +4104,8 @@ fn render_org_webhooks(
             created_secret,
             Instant::now(),
         )))
-    })();
+    }
+    .await;
     match result {
         Ok(Some(html)) => Html(html).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -3884,7 +4124,7 @@ async fn org_webhooks_action(
     Path(org_slug): Path<String>,
     body: axum::body::Bytes,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -3909,13 +4149,16 @@ async fn org_webhooks_action(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if !session.allows(&state.db, Permission::MembersManage, &scope) {
-        if session.allows(&state.db, Permission::Read, &scope) {
+    if !session
+        .allows(&state.db, Permission::MembersManage, &scope)
+        .await
+    {
+        if session.allows(&state.db, Permission::Read, &scope).await {
             return (StatusCode::FORBIDDEN, "members.manage required").into_response();
         }
         return StatusCode::NOT_FOUND.into_response();
     }
-    let Some(org) = (match state.db.org_by_slug(&org_slug) {
+    let Some(org) = (match state.db.org_by_slug(&org_slug).await {
         Ok(org) => org,
         Err(err) => return internal(err),
     }) else {
@@ -3954,22 +4197,26 @@ async fn org_webhooks_action(
             } else {
                 provided
             };
-            let id = match state.db.create_webhook(org.id, url, &secret, &events) {
+            let id = match state.db.create_webhook(org.id, url, &secret, &events).await {
                 Ok(id) => id,
                 Err(err) => return internal(err),
             };
             let detail = serde_json::json!({ "id": id, "url": url, "events": events }).to_string();
-            if let Err(err) = state.db.record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "webhook.create",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(&detail),
-            ) {
+            if let Err(err) = state
+                .db
+                .record_audit(
+                    "user",
+                    Some(session.auth.user_id),
+                    &session.email,
+                    "webhook.create",
+                    &org_slug,
+                    None,
+                    None,
+                    None,
+                    Some(&detail),
+                )
+                .await
+            {
                 return internal(err);
             }
             // Only reveal a secret the hub generated; a provided one is known.
@@ -3979,35 +4226,40 @@ async fn org_webhooks_action(
                 &org_slug,
                 generated.then_some(secret.as_str()),
             )
+            .await
         }
         "delete" => {
             let Ok(webhook_id) = field("webhook_id").parse::<i64>() else {
                 return (StatusCode::BAD_REQUEST, "bad webhook id").into_response();
             };
             // The webhook must belong to this org (no cross-org deletion).
-            match state.db.webhook(webhook_id) {
+            match state.db.webhook(webhook_id).await {
                 Ok(Some(w)) if w.org_id == org.id => {}
                 Ok(_) => return (StatusCode::NOT_FOUND, "no such webhook").into_response(),
                 Err(err) => return internal(err),
             }
-            if let Err(err) = state.db.delete_webhook(webhook_id) {
+            if let Err(err) = state.db.delete_webhook(webhook_id).await {
                 return internal(err);
             }
             let detail = serde_json::json!({ "id": webhook_id }).to_string();
-            if let Err(err) = state.db.record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "webhook.delete",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(&detail),
-            ) {
+            if let Err(err) = state
+                .db
+                .record_audit(
+                    "user",
+                    Some(session.auth.user_id),
+                    &session.email,
+                    "webhook.delete",
+                    &org_slug,
+                    None,
+                    None,
+                    None,
+                    Some(&detail),
+                )
+                .await
+            {
                 return internal(err);
             }
-            render_org_webhooks(&state, &session, &org_slug, None)
+            render_org_webhooks(&state, &session, &org_slug, None).await
         }
         _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
     }
@@ -4021,23 +4273,25 @@ async fn org_sso(
     headers: HeaderMap,
     Path(org_slug): Path<String>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    render_org_sso(&state, &session, &org_slug, None)
+    render_org_sso(&state, &session, &org_slug, None).await
 }
 
 /// Whether `session` may verify captured domains: an *instance* admin only
 /// (`iam.admin` at the root scope). Verifying a domain routes other users'
 /// logins, so it is a trusted-operator action, never org self-service.
-fn can_verify_domains(state: &AppState, session: &Session) -> bool {
-    session.allows(&state.db, Permission::IamAdmin, &Scope::parse(""))
+async fn can_verify_domains(state: &AppState, session: &Session) -> bool {
+    session
+        .allows(&state.db, Permission::IamAdmin, &Scope::parse(""))
+        .await
 }
 
 /// Render the org SSO page, optionally with a one-line notice (e.g. a domain's
 /// freshly minted DNS-TXT challenge).
-fn render_org_sso(
+async fn render_org_sso(
     state: &AppState,
     session: &Session,
     org_slug: &str,
@@ -4045,29 +4299,33 @@ fn render_org_sso(
 ) -> Response {
     let scope = Scope::parse(org_slug);
     // SSO config is org-owner-level (it shapes how the org authenticates).
-    if !session.allows(&state.db, Permission::IamAdmin, &scope) {
-        if session.allows(&state.db, Permission::Read, &scope) {
+    if !session
+        .allows(&state.db, Permission::IamAdmin, &scope)
+        .await
+    {
+        if session.allows(&state.db, Permission::Read, &scope).await {
             return (StatusCode::FORBIDDEN, "iam.admin required").into_response();
         }
         return StatusCode::NOT_FOUND.into_response();
     }
-    let result = (|| {
-        let Some(org) = state.db.org_by_slug(org_slug)? else {
+    let result = async {
+        let Some(org) = state.db.org_by_slug(org_slug).await? else {
             return Ok(None);
         };
-        let idp = state.db.idp_config(org.id)?;
-        let domains = state.db.list_org_domains(org.id)?;
+        let idp = state.db.idp_config(org.id).await?;
+        let domains = state.db.list_org_domains(org.id).await?;
         Ok::<_, anyhow::Error>(Some(console::org_sso_page(
             &session.email,
             &org,
             &session.csrf(),
             idp.as_ref(),
             &domains,
-            can_verify_domains(state, session),
+            can_verify_domains(state, session).await,
             notice,
             Instant::now(),
         )))
-    })();
+    }
+    .await;
     match result {
         Ok(Some(html)) => Html(html).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -4086,7 +4344,7 @@ async fn org_sso_action(
     Path(org_slug): Path<String>,
     body: axum::body::Bytes,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
@@ -4103,13 +4361,16 @@ async fn org_sso_action(
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
-    if !session.allows(&state.db, Permission::IamAdmin, &scope) {
-        if session.allows(&state.db, Permission::Read, &scope) {
+    if !session
+        .allows(&state.db, Permission::IamAdmin, &scope)
+        .await
+    {
+        if session.allows(&state.db, Permission::Read, &scope).await {
             return (StatusCode::FORBIDDEN, "iam.admin required").into_response();
         }
         return StatusCode::NOT_FOUND.into_response();
     }
-    let Some(org) = (match state.db.org_by_slug(&org_slug) {
+    let Some(org) = (match state.db.org_by_slug(&org_slug).await {
         Ok(org) => org,
         Err(err) => return internal(err),
     }) else {
@@ -4130,7 +4391,7 @@ async fn org_sso_action(
             // The client secret is write-only: a new value is sealed; a blank
             // one keeps any existing sealed secret (so editing other fields
             // does not wipe it).
-            let existing = match state.db.idp_config(org.id) {
+            let existing = match state.db.idp_config(org.id).await {
                 Ok(cfg) => cfg,
                 Err(err) => return internal(err),
             };
@@ -4171,20 +4432,24 @@ async fn org_sso_action(
                 return (StatusCode::BAD_REQUEST, "issuer and client id are required")
                     .into_response();
             }
-            if let Err(err) = state.db.upsert_idp_config(&config) {
+            if let Err(err) = state.db.upsert_idp_config(&config).await {
                 return internal(err);
             }
-            if let Err(err) = state.db.record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "idp.set",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(&config.issuer),
-            ) {
+            if let Err(err) = state
+                .db
+                .record_audit(
+                    "user",
+                    Some(session.auth.user_id),
+                    &session.email,
+                    "idp.set",
+                    &org_slug,
+                    None,
+                    None,
+                    None,
+                    Some(&config.issuer),
+                )
+                .await
+            {
                 return internal(err);
             }
             render_org_sso(
@@ -4193,22 +4458,27 @@ async fn org_sso_action(
                 &org_slug,
                 Some("Identity provider saved."),
             )
+            .await
         }
         "remove-idp" => {
-            if let Err(err) = state.db.delete_idp_config(org.id) {
+            if let Err(err) = state.db.delete_idp_config(org.id).await {
                 return internal(err);
             }
-            if let Err(err) = state.db.record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "idp.remove",
-                &org_slug,
-                None,
-                None,
-                None,
-                None,
-            ) {
+            if let Err(err) = state
+                .db
+                .record_audit(
+                    "user",
+                    Some(session.auth.user_id),
+                    &session.email,
+                    "idp.remove",
+                    &org_slug,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+            {
                 return internal(err);
             }
             render_org_sso(
@@ -4217,6 +4487,7 @@ async fn org_sso_action(
                 &org_slug,
                 Some("Identity provider removed."),
             )
+            .await
         }
         "add-domain" => {
             let domain = field("domain").trim().to_lowercase();
@@ -4227,7 +4498,7 @@ async fn org_sso_action(
             // reject a cross-tenant claim with a 409 rather than letting the
             // upsert silently seize another org's verified domain (H7). The
             // `add_org_domain` call below re-checks this as defense-in-depth.
-            match state.db.org_domain(&domain) {
+            match state.db.org_domain(&domain).await {
                 Ok(Some(existing)) if existing.org_id != org.id => {
                     return (
                         StatusCode::CONFLICT,
@@ -4238,21 +4509,25 @@ async fn org_sso_action(
                 Ok(_) => {}
                 Err(err) => return internal(err),
             }
-            let challenge = match state.db.add_org_domain(org.id, &domain) {
+            let challenge = match state.db.add_org_domain(org.id, &domain).await {
                 Ok(c) => c,
                 Err(err) => return internal(err),
             };
-            if let Err(err) = state.db.record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "domain.capture",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(&domain),
-            ) {
+            if let Err(err) = state
+                .db
+                .record_audit(
+                    "user",
+                    Some(session.auth.user_id),
+                    &session.email,
+                    "domain.capture",
+                    &org_slug,
+                    None,
+                    None,
+                    None,
+                    Some(&domain),
+                )
+                .await
+            {
                 return internal(err);
             }
             render_org_sso(
@@ -4263,12 +4538,13 @@ async fn org_sso_action(
                     "Captured {domain} (unverified). Publish this TXT record: {challenge}"
                 )),
             )
+            .await
         }
         "verify-domain" => {
             // The trust boundary: only an instance operator verifies (it routes
             // other people's logins). The challenge is published in DNS; the
             // operator is trusted to have confirmed it.
-            if !can_verify_domains(&state, &session) {
+            if !can_verify_domains(&state, &session).await {
                 return (
                     StatusCode::FORBIDDEN,
                     "domain verification is an instance-operator action",
@@ -4277,7 +4553,7 @@ async fn org_sso_action(
             }
             let domain = field("domain").trim().to_lowercase();
             // The domain must be claimed by *this* org before verification.
-            match state.db.org_domain(&domain) {
+            match state.db.org_domain(&domain).await {
                 Ok(Some(d)) if d.org_id == org.id => {}
                 Ok(_) => {
                     return (StatusCode::NOT_FOUND, "domain not claimed by this org")
@@ -4285,20 +4561,24 @@ async fn org_sso_action(
                 }
                 Err(err) => return internal(err),
             }
-            if let Err(err) = state.db.verify_org_domain(&domain) {
+            if let Err(err) = state.db.verify_org_domain(&domain).await {
                 return internal(err);
             }
-            if let Err(err) = state.db.record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "domain.verify",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(&domain),
-            ) {
+            if let Err(err) = state
+                .db
+                .record_audit(
+                    "user",
+                    Some(session.auth.user_id),
+                    &session.email,
+                    "domain.verify",
+                    &org_slug,
+                    None,
+                    None,
+                    None,
+                    Some(&domain),
+                )
+                .await
+            {
                 return internal(err);
             }
             render_org_sso(
@@ -4307,23 +4587,28 @@ async fn org_sso_action(
                 &org_slug,
                 Some(&format!("Verified {domain}.")),
             )
+            .await
         }
         "remove-domain" => {
             let domain = field("domain").trim().to_lowercase();
-            if let Err(err) = state.db.delete_org_domain(org.id, &domain) {
+            if let Err(err) = state.db.delete_org_domain(org.id, &domain).await {
                 return internal(err);
             }
-            if let Err(err) = state.db.record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "domain.remove",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(&domain),
-            ) {
+            if let Err(err) = state
+                .db
+                .record_audit(
+                    "user",
+                    Some(session.auth.user_id),
+                    &session.email,
+                    "domain.remove",
+                    &org_slug,
+                    None,
+                    None,
+                    None,
+                    Some(&domain),
+                )
+                .await
+            {
                 return internal(err);
             }
             render_org_sso(
@@ -4332,6 +4617,7 @@ async fn org_sso_action(
                 &org_slug,
                 Some(&format!("Removed {domain}.")),
             )
+            .await
         }
         _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
     }
@@ -4346,37 +4632,40 @@ async fn serving(
     uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    serving_view(&state, &session, &registry, None)
+    serving_view(&state, &session, &registry, None).await
 }
 
 /// Render the serving & mirror page; `RegistryConfigure`-gated at the registry
 /// scope (a reader without it gets 403, a non-member 404 via visibility).
-fn serving_view(
+async fn serving_view(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
     notice: Option<&str>,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
-    if !session.allows(&state.db, Permission::RegistryConfigure, &scope) {
-        if let Err(deny) = authorize_registry_read(state, registry, &HeaderMap::new()) {
+    if !session
+        .allows(&state.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
+        if let Err(deny) = authorize_registry_read(state, registry, &HeaderMap::new()).await {
             return *deny;
         }
         return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
     }
-    let result = (|| {
-        let frontends = state.db.list_frontends(registry.id)?;
-        let mirror = state.db.mirror_source(registry.id)?;
+    let result = async {
+        let frontends = state.db.list_frontends(registry.id).await?;
+        let mirror = state.db.mirror_source(registry.id).await?;
         Ok::<_, anyhow::Error>(console::serving_page(
             &session.email,
             registry,
@@ -4386,7 +4675,8 @@ fn serving_view(
             notice,
             Instant::now(),
         ))
-    })();
+    }
+    .await;
     match result {
         Ok(html) => Html(html).into_response(),
         Err(err) => internal(err),
@@ -4402,24 +4692,24 @@ async fn serving_post(
     Path(slug): Path<String>,
     body: axum::body::Bytes,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let fields = parse_form(&String::from_utf8_lossy(&body));
-    serving_action(&state, &session, &registry, &fields)
+    serving_action(&state, &session, &registry, &fields).await
 }
 
 /// Apply a serving/mirror mutation. Shared by the flat route and the
 /// nested-canonical [`dispatch_nested`] path; `RegistryConfigure`-gated and
 /// CSRF-checked; every op is audited.
-fn serving_action(
+async fn serving_action(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
@@ -4430,22 +4720,34 @@ fn serving_action(
         return *resp;
     }
     let scope = Scope::parse(&registry.slug);
-    if !session.allows(&state.db, Permission::RegistryConfigure, &scope) {
+    if !session
+        .allows(&state.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
         return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
     }
-    let audit = |action: &str, detail: &str| {
-        state.db.record_audit(
-            "user",
-            Some(session.auth.user_id),
-            &session.email,
-            action,
-            &registry.slug,
-            None,
-            None,
-            None,
-            Some(detail),
-        )
-    };
+    async fn audit(
+        state: &AppState,
+        session: &Session,
+        registry: &RegistryRecord,
+        action: &str,
+        detail: &str,
+    ) -> anyhow::Result<i64> {
+        state
+            .db
+            .record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                action,
+                &registry.slug,
+                None,
+                None,
+                None,
+                Some(detail),
+            )
+            .await
+    }
 
     match field("op") {
         "add-frontend" => {
@@ -4455,46 +4757,51 @@ fn serving_action(
             }
             let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
             // create_frontend validates the mode and rejects unsafe domains.
-            let created = state.db.create_frontend(
-                registry.id,
-                domain,
-                field("base_path").trim(),
-                match field("mode") {
-                    "proxied" => "proxied",
-                    _ => "direct",
-                },
-                field("serves_git") == "1",
-                field("serves_cache") == "1",
-                field("serves_web") == "1",
-                priority,
-                field("advertised") == "1",
-            );
+            let created = state
+                .db
+                .create_frontend(
+                    registry.id,
+                    domain,
+                    field("base_path").trim(),
+                    match field("mode") {
+                        "proxied" => "proxied",
+                        _ => "direct",
+                    },
+                    field("serves_git") == "1",
+                    field("serves_cache") == "1",
+                    field("serves_web") == "1",
+                    priority,
+                    field("advertised") == "1",
+                )
+                .await;
             match created {
                 Ok(_) => {}
                 Err(err) => return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
             }
-            if let Err(err) = audit("frontend.add", domain) {
+            if let Err(err) = audit(state, session, registry, "frontend.add", domain).await {
                 return internal(err);
             }
-            serving_view(state, session, registry, Some("Frontend added."))
+            serving_view(state, session, registry, Some("Frontend added.")).await
         }
         "delete-frontend" => {
             let Ok(id) = field("id").parse::<i64>() else {
                 return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
             };
             // The frontend must belong to this registry.
-            match state.db.list_frontends(registry.id) {
+            match state.db.list_frontends(registry.id).await {
                 Ok(list) if list.iter().any(|f| f.id == id) => {}
                 Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
                 Err(err) => return internal(err),
             }
-            if let Err(err) = state.db.delete_frontend(id) {
+            if let Err(err) = state.db.delete_frontend(id).await {
                 return internal(err);
             }
-            if let Err(err) = audit("frontend.delete", &id.to_string()) {
+            if let Err(err) =
+                audit(state, session, registry, "frontend.delete", &id.to_string()).await
+            {
                 return internal(err);
             }
-            serving_view(state, session, registry, Some("Frontend deleted."))
+            serving_view(state, session, registry, Some("Frontend deleted.")).await
         }
         "set-mirror" => {
             let upstream = field("upstream_url").trim();
@@ -4503,20 +4810,23 @@ fn serving_action(
             }
             let secs: i64 = field("schedule_secs").trim().parse().unwrap_or(3600);
             // create_mirror_source validates the mode and rejects SSRF targets.
-            let r = state.db.create_mirror_source(
-                registry.id,
-                upstream,
-                match field("mode") {
-                    "pullthrough" => "pullthrough",
-                    _ => "full",
-                },
-                field("verify") == "1",
-                secs,
-            );
+            let r = state
+                .db
+                .create_mirror_source(
+                    registry.id,
+                    upstream,
+                    match field("mode") {
+                        "pullthrough" => "pullthrough",
+                        _ => "full",
+                    },
+                    field("verify") == "1",
+                    secs,
+                )
+                .await;
             if let Err(err) = r {
                 return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response();
             }
-            if let Err(err) = audit("mirror.set", upstream) {
+            if let Err(err) = audit(state, session, registry, "mirror.set", upstream).await {
                 return internal(err);
             }
             serving_view(
@@ -4525,15 +4835,17 @@ fn serving_action(
                 registry,
                 Some("Mirror configuration saved."),
             )
+            .await
         }
         "remove-mirror" => {
-            if let Err(err) = state.db.delete_mirror_source(registry.id) {
+            if let Err(err) = state.db.delete_mirror_source(registry.id).await {
                 return internal(err);
             }
-            if let Err(err) = audit("mirror.remove", &registry.slug) {
+            if let Err(err) = audit(state, session, registry, "mirror.remove", &registry.slug).await
+            {
                 return internal(err);
             }
-            serving_view(state, session, registry, Some("Stopped mirroring."))
+            serving_view(state, session, registry, Some("Stopped mirroring.")).await
         }
         _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
     }
@@ -4549,40 +4861,42 @@ async fn keys(
     Path(slug): Path<String>,
     Query(page): Query<PageQuery>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    keys_view(&state, &session, &registry, &headers, page.page())
+    keys_view(&state, &session, &registry, &headers, page.page()).await
 }
 
 /// Render the key roster page: visibility-gated, KeysManage reveals the
 /// rotation wizard link.
-fn keys_view(
+async fn keys_view(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
     headers: &HeaderMap,
     page_number: usize,
 ) -> Response {
-    if let Err(deny) = authorize_registry_read(state, registry, headers) {
+    if let Err(deny) = authorize_registry_read(state, registry, headers).await {
         return *deny;
     }
-    let roster = match state.db.list_roster(registry.id) {
+    let roster = match state.db.list_roster(registry.id).await {
         Ok(roster) => roster,
         Err(err) => return internal(err),
     };
-    let can_manage = session.allows(
-        &state.db,
-        Permission::KeysManage,
-        &Scope::parse(&registry.slug),
-    );
+    let can_manage = session
+        .allows(
+            &state.db,
+            Permission::KeysManage,
+            &Scope::parse(&registry.slug),
+        )
+        .await;
     Html(console::keys_page(
         &session.email,
         registry,
@@ -4601,27 +4915,27 @@ async fn keys_rotate(
     uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    keys_rotate_view(&state, &session, &registry, &headers)
+    keys_rotate_view(&state, &session, &registry, &headers).await
 }
 
 /// Render the rotation wizard: visibility-gated.
-fn keys_rotate_view(
+async fn keys_rotate_view(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
     headers: &HeaderMap,
 ) -> Response {
-    if let Err(deny) = authorize_registry_read(state, registry, headers) {
+    if let Err(deny) = authorize_registry_read(state, registry, headers).await {
         return *deny;
     }
     Html(console::keys_rotate_page(
@@ -4641,36 +4955,37 @@ async fn publishes(
     uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    publishes_view(&state, &session, &registry, &headers)
+    publishes_view(&state, &session, &registry, &headers).await
 }
 
 /// Render the publish-pipeline view: visibility-gated.
-fn publishes_view(
+async fn publishes_view(
     state: &AppState,
     session: &Session,
     registry: &RegistryRecord,
     headers: &HeaderMap,
 ) -> Response {
-    if let Err(deny) = authorize_registry_read(state, registry, headers) {
+    if let Err(deny) = authorize_registry_read(state, registry, headers).await {
         return *deny;
     }
-    let result = (|| {
-        let status = state.db.index_status(registry.id)?;
-        let releases = state.db.list_releases(registry.id)?;
+    let result = async {
+        let status = state.db.index_status(registry.id).await?;
+        let releases = state.db.list_releases(registry.id).await?;
         // Recent publish/index activity, filtered to this registry scope.
         let audit: Vec<_> = state
             .db
-            .list_audit(&registry.slug)?
+            .list_audit(&registry.slug)
+            .await?
             .into_iter()
             .filter(|a| {
                 a.action.contains("publish")
@@ -4687,7 +5002,8 @@ fn publishes_view(
             &audit,
             Instant::now(),
         ))
-    })();
+    }
+    .await;
     match result {
         Ok(html) => Html(html).into_response(),
         Err(err) => internal(err),
@@ -4706,11 +5022,11 @@ async fn config_edit(
     uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
@@ -4728,7 +5044,9 @@ async fn config_edit_view(
     result: Option<(&str, &str)>,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
-    let can_edit = session.allows(&state.db, Permission::RegistryConfigure, &scope);
+    let can_edit = session
+        .allows(&state.db, Permission::RegistryConfigure, &scope)
+        .await;
     let current = match current_registry_toml(state, registry).await {
         Ok(toml) => toml,
         Err(err) => return internal(err),
@@ -4753,13 +5071,14 @@ async fn current_registry_toml(
 ) -> anyhow::Result<String> {
     let Some(head_hex) = state
         .db
-        .index_status(registry.id)?
+        .index_status(registry.id)
+        .await?
         .and_then(|s| s.last_indexed_commit)
     else {
         return Ok(String::new());
     };
     let head = crate::surface::object::Oid::from_hex(&head_hex)?;
-    let fetch = crate::gitwrite::fetcher_for_registry(&state.db, registry)?;
+    let fetch = crate::gitwrite::fetcher_for_registry(&state.db, registry).await?;
     Ok(
         crate::gitwrite::load_committed_file(fetch.as_ref(), head, "registry.toml")
             .await?
@@ -4788,11 +5107,11 @@ async fn config_submit(
     Path(slug): Path<String>,
     Form(form): Form<ConfigForm>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
@@ -4817,7 +5136,10 @@ async fn config_submit_action(
         return *resp;
     }
     let scope = Scope::parse(&registry.slug);
-    if !session.allows(&state.db, Permission::RegistryConfigure, &scope) {
+    if !session
+        .allows(&state.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
         return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
     }
     let proposed = crate::gitwrite::propose_config_change(
@@ -4863,80 +5185,79 @@ async fn changes(
     uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> Response {
-    let session = match require_session(&state, &headers) {
+    let session = match require_session(&state, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri) {
+    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
         Ok(reg) => reg,
         Err(err) => return internal(err),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    changes_view(&state, &session, &registry)
+    changes_view(&state, &session, &registry).await
 }
 
 /// Render the change-request list page for a resolved registry.
 ///
 /// Gated to `audit.read` (admin+). Each draft renders its file diffs (computed
 /// from the recorded old/new file contents) and the promotion command.
-fn changes_view(state: &AppState, session: &Session, registry: &RegistryRecord) -> Response {
+async fn changes_view(state: &AppState, session: &Session, registry: &RegistryRecord) -> Response {
     let scope = Scope::parse(&registry.slug);
-    if !session.allows(&state.db, Permission::AuditRead, &scope) {
+    if !session
+        .allows(&state.db, Permission::AuditRead, &scope)
+        .await
+    {
         return (StatusCode::FORBIDDEN, "audit.read required").into_response();
     }
 
-    let result = (|| {
+    let result = async {
         let merge_url = format!(
             "{}/{}",
             state.external_url.trim_end_matches('/'),
             registry.slug
         );
-        let requests: Vec<console::ChangeRequestView> = state
-            .db
-            .list_changesets(&registry.slug)?
-            .into_iter()
-            .filter(|cs| cs.git_ref.is_some())
-            .map(|cs| {
-                let file_diffs = state
-                    .db
-                    .list_revisions(&cs.change_id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|r| r.object_type == "registry_file")
-                    .map(|r| {
-                        (
-                            r.object_id.clone(),
-                            crate::gitwrite::unified_diff(
-                                &r.object_id,
-                                r.old_json.as_deref().unwrap_or_default(),
-                                r.new_json.as_deref().unwrap_or_default(),
-                            ),
-                        )
-                    })
-                    .collect();
-                let merge_command = crate::gitwrite::merge_command(
-                    &merge_url,
-                    &config::ChangeId(cs.change_id.clone()),
-                );
-                console::ChangeRequestView {
-                    change_id: cs.change_id,
-                    status: cs.status,
-                    summary: cs.summary.unwrap_or_default(),
-                    actor_label: cs.actor_label,
-                    git_commit: cs.git_commit.unwrap_or_default(),
-                    file_diffs,
-                    merge_command,
-                }
-            })
-            .collect();
+        let changesets = state.db.list_changesets(&registry.slug).await?;
+        let mut requests: Vec<console::ChangeRequestView> = Vec::new();
+        for cs in changesets.into_iter().filter(|cs| cs.git_ref.is_some()) {
+            let file_diffs = state
+                .db
+                .list_revisions(&cs.change_id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| r.object_type == "registry_file")
+                .map(|r| {
+                    (
+                        r.object_id.clone(),
+                        crate::gitwrite::unified_diff(
+                            &r.object_id,
+                            r.old_json.as_deref().unwrap_or_default(),
+                            r.new_json.as_deref().unwrap_or_default(),
+                        ),
+                    )
+                })
+                .collect();
+            let merge_command =
+                crate::gitwrite::merge_command(&merge_url, &config::ChangeId(cs.change_id.clone()));
+            requests.push(console::ChangeRequestView {
+                change_id: cs.change_id,
+                status: cs.status,
+                summary: cs.summary.unwrap_or_default(),
+                actor_label: cs.actor_label,
+                git_commit: cs.git_commit.unwrap_or_default(),
+                file_diffs,
+                merge_command,
+            });
+        }
         Ok::<_, anyhow::Error>(console::changes_page(
             &session.email,
             registry,
             &requests,
             Instant::now(),
         ))
-    })();
+    }
+    .await;
     match result {
         Ok(html) => Html(html).into_response(),
         Err(err) => internal(err),

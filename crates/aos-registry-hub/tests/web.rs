@@ -45,22 +45,23 @@ async fn get_with_accept(
 
 /// Register and index a fixture surface, returning the served app + db.
 async fn serve_fixture(surface: &Path, fixture: &common::Fixture) -> (axum::Router, Arc<Database>) {
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.register_registry(
         "demo",
         surface.to_str().unwrap(),
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     index_and_record(&db, &LocalFsFetch::new(surface), &registry)
         .await
         .unwrap();
-    let app = router(Arc::new(AppState::new(
-        Arc::clone(&db),
-        "http://127.0.0.1:8420".into(),
-    )));
+    let app = router(Arc::new(
+        AppState::new(Arc::clone(&db), "http://127.0.0.1:8420".into()).await,
+    ))
+    .await;
     (app, db)
 }
 
@@ -184,7 +185,7 @@ async fn health_page_shows_unreachable_cache_after_validation() {
 
     // The fixture's committed cache (https://cache.example.com) does not
     // resolve, so presence validation records it unreachable.
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     validate_presence(&db, &registry).await.unwrap();
 
     let (status, _, body) = get(&app, "/demo/-/health").await;
@@ -264,7 +265,7 @@ async fn anonymous_browse_is_rate_limited_on_flat_and_nested_paths() {
     // One app, two registries indexed from the same surface: a flat slug and a
     // nested (org-scoped) slug that reaches the browser through the nested
     // resolver rather than the flat route.
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     for slug in ["demo", "acme/infra"] {
         db.register_registry(
             slug,
@@ -272,16 +273,17 @@ async fn anonymous_browse_is_rate_limited_on_flat_and_nested_paths() {
             std::slice::from_ref(&fixture.trust_key),
             true,
         )
+        .await
         .unwrap();
-        let registry = db.registry_by_slug(slug).unwrap().unwrap();
+        let registry = db.registry_by_slug(slug).await.unwrap().unwrap();
         index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
             .await
             .unwrap();
     }
-    let app = router(Arc::new(AppState::new(
-        Arc::clone(&db),
-        "http://127.0.0.1:8420".into(),
-    )));
+    let app = router(Arc::new(
+        AppState::new(Arc::clone(&db), "http://127.0.0.1:8420".into()).await,
+    ))
+    .await;
 
     // Tests share one process-wide-free limiter per AppState; with no
     // ConnectInfo every request keys on the same (empty) IP, so the per-IP

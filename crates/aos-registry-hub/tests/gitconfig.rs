@@ -26,7 +26,7 @@ use tower::ServiceExt;
 
 const TEST_JWT_SECRET: &[u8] = b"gitconfig-test-secret-32-byte!!!";
 
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -42,7 +42,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: aos_registry_hub::fetch::hardened_client(),
+        http: aos_registry_hub::fetch::hardened_client().await,
         mailer: std::sync::Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: false,
     })
@@ -98,10 +98,11 @@ async fn managed_indexed(message: &str) -> (Arc<Database>, tempfile::TempDir, Re
     let surface = dir.path().join("cdn");
     let fixture = common::standard_registry_with_commit_message(&surface, "1.0.0", message);
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
+        .await
         .unwrap();
     db.create_managed_registry(
         org,
@@ -113,8 +114,9 @@ async fn managed_indexed(message: &str) -> (Arc<Database>, tempfile::TempDir, Re
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
-    let registry = db.registry_by_slug("acme/cdn").unwrap().unwrap();
+    let registry = db.registry_by_slug("acme/cdn").await.unwrap().unwrap();
 
     let fetch = LocalFsFetch::new(&surface);
     indexer::index_and_record(&db, &fetch, &registry)
@@ -147,13 +149,20 @@ async fn propose_writes_signed_draft_commit_ref_and_records() {
     .unwrap();
 
     // The change-set is recorded as a git-backed draft with the ref + commit.
-    let cs = db.changeset(proposed.change_id.as_str()).unwrap().unwrap();
+    let cs = db
+        .changeset(proposed.change_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(cs.status, "draft");
     assert_eq!(cs.git_ref.as_deref(), Some(proposed.git_ref.as_str()));
     assert_eq!(cs.git_commit.as_deref(), Some(proposed.commit_oid.as_str()));
 
     // The revision carries the old and new file contents.
-    let revisions = db.list_revisions(proposed.change_id.as_str()).unwrap();
+    let revisions = db
+        .list_revisions(proposed.change_id.as_str())
+        .await
+        .unwrap();
     assert_eq!(revisions.len(), 1);
     assert_eq!(revisions[0].object_type, "registry_file");
     assert_eq!(revisions[0].object_id, "registry.toml");
@@ -165,7 +174,7 @@ async fn propose_writes_signed_draft_commit_ref_and_records() {
         .contains("Fixture registry"));
 
     // An audit row ties the change request to the draft commit.
-    let audit = db.list_audit("acme").unwrap();
+    let audit = db.list_audit("acme").await.unwrap();
     let cr = audit
         .iter()
         .find(|r| r.action == "config.change_request")
@@ -197,7 +206,10 @@ async fn propose_writes_signed_draft_commit_ref_and_records() {
     let trailer = gitwrite::extract_change_id_trailer(&message);
     assert_eq!(trailer.as_deref(), Some(proposed.change_id.as_str()));
 
-    let (_signing_key, draft_line) = db.get_or_create_draft_signing_key(sealer.as_ref()).unwrap();
+    let (_signing_key, draft_line) = db
+        .get_or_create_draft_signing_key(sealer.as_ref())
+        .await
+        .unwrap();
     let signature = commit.signature.expect("draft commit is signed");
     aos_registry_hub::surface::sshsig::verify_armored(
         &signature,
@@ -228,10 +240,11 @@ async fn indexer_trailer_marks_known_change_request_applied() {
     let surface = dir.path().join("cdn");
     let fixture = common::standard_registry_with_commit_message(&surface, "1.0.0", &message);
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
+        .await
         .unwrap();
     db.create_managed_registry(
         org,
@@ -243,6 +256,7 @@ async fn indexer_trailer_marks_known_change_request_applied() {
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
     db.create_git_changeset(
         change_id,
@@ -254,16 +268,17 @@ async fn indexer_trailer_marks_known_change_request_applied() {
         &format!("refs/hub/changes/{change_id}"),
         "draftoid",
     )
+    .await
     .unwrap();
 
-    let registry = db.registry_by_slug("acme/cdn").unwrap().unwrap();
+    let registry = db.registry_by_slug("acme/cdn").await.unwrap().unwrap();
     let fetch = LocalFsFetch::new(&surface);
     let outcome = indexer::index_and_record(&db, &fetch, &registry)
         .await
         .unwrap();
 
     // The trailer matched the draft, marking it applied and linking the commit.
-    let cs = db.changeset(change_id).unwrap().unwrap();
+    let cs = db.changeset(change_id).await.unwrap().unwrap();
     assert_eq!(cs.status, "applied");
     assert!(cs.applied_at.is_some());
     assert_eq!(cs.git_commit.as_deref(), Some(outcome.commit.as_str()));
@@ -271,6 +286,7 @@ async fn indexer_trailer_marks_known_change_request_applied() {
     // No external-commit audit row is synthesized when a trailer matched.
     assert!(!db
         .audit_exists_for_commit("index.external_commit", &outcome.commit)
+        .await
         .unwrap());
 }
 
@@ -287,10 +303,11 @@ async fn indexer_ignores_change_id_scoped_to_another_registry() {
     let surface = dir.path().join("cdn");
     let fixture = common::standard_registry_with_commit_message(&surface, "1.0.0", &message);
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
+        .await
         .unwrap();
     db.create_managed_registry(
         org,
@@ -302,6 +319,7 @@ async fn indexer_ignores_change_id_scoped_to_another_registry() {
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
     // The change-set targets registry A (acme/other), not the registry being
     // indexed. A commit on B must not mark A's change request applied.
@@ -315,16 +333,17 @@ async fn indexer_ignores_change_id_scoped_to_another_registry() {
         &format!("refs/hub/changes/{change_id}"),
         "draftoid",
     )
+    .await
     .unwrap();
 
-    let registry = db.registry_by_slug("acme/cdn").unwrap().unwrap();
+    let registry = db.registry_by_slug("acme/cdn").await.unwrap().unwrap();
     let fetch = LocalFsFetch::new(&surface);
     let outcome = indexer::index_and_record(&db, &fetch, &registry)
         .await
         .unwrap();
 
     // The foreign-scoped change-set is left untouched (still a draft).
-    let cs = db.changeset(change_id).unwrap().unwrap();
+    let cs = db.changeset(change_id).await.unwrap().unwrap();
     assert_eq!(
         cs.status, "draft",
         "foreign change request must not be applied"
@@ -335,6 +354,7 @@ async fn indexer_ignores_change_id_scoped_to_another_registry() {
     // The commit is instead treated as external (an audit row is synthesized).
     assert!(db
         .audit_exists_for_commit("index.external_commit", &outcome.commit)
+        .await
         .unwrap());
 }
 
@@ -347,6 +367,7 @@ async fn indexer_synthesizes_external_audit_once() {
 
     let commit = db
         .index_status(registry.id)
+        .await
         .unwrap()
         .unwrap()
         .last_indexed_commit
@@ -355,6 +376,7 @@ async fn indexer_synthesizes_external_audit_once() {
     // The first index synthesized exactly one external-commit audit row.
     let externals = db
         .list_audit("acme")
+        .await
         .unwrap()
         .into_iter()
         .filter(|r| {
@@ -366,6 +388,7 @@ async fn indexer_synthesizes_external_audit_once() {
     // The actor resolves to the fixture's roster id (the commit signer).
     let row = db
         .list_audit("acme")
+        .await
         .unwrap()
         .into_iter()
         .find(|r| r.action == "index.external_commit")
@@ -375,7 +398,9 @@ async fn indexer_synthesizes_external_audit_once() {
     // Re-indexing the same surface must NOT duplicate the row. Force a full
     // re-walk by clearing the refs digest so the incremental fast path is
     // skipped (a no-op surface change would otherwise short-circuit).
-    db.mark_index_failed(registry.id, "force re-walk").unwrap();
+    db.mark_index_failed(registry.id, "force re-walk")
+        .await
+        .unwrap();
     let fetch = LocalFsFetch::new(&surface);
     indexer::index_and_record(&db, &fetch, &registry)
         .await
@@ -383,6 +408,7 @@ async fn indexer_synthesizes_external_audit_once() {
 
     let externals = db
         .list_audit("acme")
+        .await
         .unwrap()
         .into_iter()
         .filter(|r| {
@@ -418,7 +444,7 @@ async fn git_service_log_diff_and_change_requests() {
     .await
     .unwrap();
 
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // GitLog (public registry → anonymous read): the committed history.
     let (status, value) = rpc(
@@ -439,6 +465,7 @@ async fn git_service_log_diff_and_change_requests() {
     // GitDiff between the base HEAD and the draft commit shows the edit.
     let head = db
         .index_status(registry.id)
+        .await
         .unwrap()
         .unwrap()
         .last_indexed_commit
@@ -465,13 +492,14 @@ async fn git_service_log_diff_and_change_requests() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // With audit.read (intersected with a live Owner grant), it lists the draft.
-    let user = db.create_user("alice@acme.com", None).unwrap();
+    let user = db.create_user("alice@acme.com", None).await.unwrap();
     db.grant_membership(
         "user",
         user,
         "acme",
         aos_registry_hub::domain::Role::Owner.as_str(),
     )
+    .await
     .unwrap();
     let token = bearer(Principal::user(user), "acme/cdn", &[Permission::AuditRead]);
     let (status, value) = rpc(

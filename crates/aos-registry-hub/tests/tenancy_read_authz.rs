@@ -30,7 +30,7 @@ use tower::ServiceExt;
 const TEST_JWT_SECRET: &[u8] = b"tenancy-test-secret-32byte-key!!";
 
 /// Build an [`AppState`] over `db` with deterministic JWT keys.
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -46,7 +46,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: aos_registry_hub::fetch::hardened_client(),
+        http: aos_registry_hub::fetch::hardened_client().await,
         mailer: Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: false,
     })
@@ -98,7 +98,7 @@ async fn rpc(
 
 /// Seed one package and one channel into `registry_id` so a successful read
 /// returns observable data (and a denied read can be proven to return none).
-fn seed_inventory(db: &Database, registry_id: i64) {
+async fn seed_inventory(db: &Database, registry_id: i64) {
     let package: aos_package::registry::parse::PackageToml = toml::from_str(
         r#"
         [package]
@@ -135,7 +135,7 @@ fn seed_inventory(db: &Database, registry_id: i64) {
         refs_digest: None,
         cache_stack: None,
     };
-    db.apply_snapshot(registry_id, &snapshot).unwrap();
+    db.apply_snapshot(registry_id, &snapshot).await.unwrap();
 }
 
 /// Connect maps `PermissionDenied`/`Unauthenticated` to 403/401 and `NotFound`
@@ -151,10 +151,11 @@ fn is_denied(status: StatusCode) -> bool {
 
 #[tokio::test]
 async fn private_registry_inventory_is_denied_to_anonymous() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("victim", "Victim").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("victim", "Victim").await.unwrap();
     let binding = db
         .create_storage_binding(org, "b", "local_fs", "/var/lib/aos/storage/victim")
+        .await
         .unwrap();
     let id = db
         .create_managed_registry(
@@ -167,10 +168,11 @@ async fn private_registry_inventory_is_denied_to_anonymous() {
             &[],
             false,
         )
+        .await
         .unwrap();
-    seed_inventory(&db, id);
-    let slug = db.registry_by_id(id).unwrap().unwrap().slug;
-    let app = router(app_state(Arc::clone(&db)));
+    seed_inventory(&db, id).await;
+    let slug = db.registry_by_id(id).await.unwrap().unwrap().slug;
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Every package/channel/registry read of the private registry is denied,
     // and no inventory leaks in the body.
@@ -217,7 +219,9 @@ async fn private_registry_inventory_is_denied_to_anonymous() {
     assert!(is_denied(status), "GetChannel anon denied, got {status}");
 
     // A member with Read on the registry's org scope CAN read it.
-    db.grant_membership("user", 7, "victim", "viewer").unwrap();
+    db.grant_membership("user", 7, "victim", "viewer")
+        .await
+        .unwrap();
     let member = bearer(Principal::user(7), "victim", &[Permission::Read]);
     let (status, resp) = rpc(
         &app,
@@ -232,14 +236,15 @@ async fn private_registry_inventory_is_denied_to_anonymous() {
 
 #[tokio::test]
 async fn public_registry_inventory_reads_anonymously() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
     let id = db
         .create_managed_registry(org, "", "cdn", "public", None, "", &[], false)
+        .await
         .unwrap();
-    seed_inventory(&db, id);
-    let slug = db.registry_by_id(id).unwrap().unwrap().slug;
-    let app = router(app_state(Arc::clone(&db)));
+    seed_inventory(&db, id).await;
+    let slug = db.registry_by_id(id).await.unwrap().unwrap().slug;
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Anonymous public reads still work and return the data.
     let (status, resp) = rpc(
@@ -274,19 +279,22 @@ async fn public_registry_inventory_reads_anonymously() {
 
 #[tokio::test]
 async fn list_registries_filters_private_and_soft_deleted() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
     db.create_managed_registry(org, "", "cdn", "public", None, "", &[], false)
+        .await
         .unwrap();
     db.create_managed_registry(org, "", "secret", "private", None, "", &[], false)
+        .await
         .unwrap();
     // A second org whose registry is hidden once the org is soft-deleted.
-    let gone = db.create_org("gone", "Gone").unwrap();
+    let gone = db.create_org("gone", "Gone").await.unwrap();
     db.create_managed_registry(gone, "", "pub", "public", None, "", &[], false)
+        .await
         .unwrap();
-    db.soft_delete_org(gone, 30 * 86_400).unwrap();
+    db.soft_delete_org(gone, 30 * 86_400).await.unwrap();
 
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Anonymous: only the live public registry is listed.
     let (status, resp) = rpc(
@@ -307,7 +315,9 @@ async fn list_registries_filters_private_and_soft_deleted() {
 
     // A member of acme additionally sees acme's private registry, but never the
     // soft-deleted org's registry.
-    db.grant_membership("user", 1, "acme", "viewer").unwrap();
+    db.grant_membership("user", 1, "acme", "viewer")
+        .await
+        .unwrap();
     let member = bearer(Principal::user(1), "acme", &[Permission::Read]);
     let (status, resp) = rpc(
         &app,
@@ -335,10 +345,10 @@ async fn list_registries_filters_private_and_soft_deleted() {
 
 #[tokio::test]
 async fn list_orgs_requires_membership_and_filters() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    db.create_org("globex", "Globex").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    db.create_org("globex", "Globex").await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Anonymous enumeration is denied (was the per-slug harvest primitive).
     let (status, _resp) = rpc(&app, "OrgService/ListOrgs", serde_json::json!({}), None).await;
@@ -349,7 +359,9 @@ async fn list_orgs_requires_membership_and_filters() {
     );
 
     // A member of acme sees only acme, never globex.
-    db.grant_membership("user", 1, "acme", "viewer").unwrap();
+    db.grant_membership("user", 1, "acme", "viewer")
+        .await
+        .unwrap();
     let member = bearer(Principal::user(1), "acme", &[Permission::Read]);
     let (status, resp) = rpc(
         &app,
@@ -370,10 +382,10 @@ async fn list_orgs_requires_membership_and_filters() {
 
 #[tokio::test]
 async fn list_projects_requires_membership() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme").unwrap();
-    db.create_project(org, "team", "team").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
+    db.create_project(org, "team", "team").await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Anonymous is denied — the project tree never leaks.
     let (status, resp) = rpc(
@@ -390,7 +402,9 @@ async fn list_projects_requires_membership() {
     );
 
     // A member sees the org's projects.
-    db.grant_membership("user", 1, "acme", "viewer").unwrap();
+    db.grant_membership("user", 1, "acme", "viewer")
+        .await
+        .unwrap();
     let member = bearer(Principal::user(1), "acme", &[Permission::Read]);
     let (status, resp) = rpc(
         &app,
@@ -405,11 +419,12 @@ async fn list_projects_requires_membership() {
 
 #[tokio::test]
 async fn list_bindings_requires_membership_and_redacts_root_for_non_admin() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
     db.create_storage_binding(org, "primary", "local_fs", "/var/lib/aos/storage/acme")
+        .await
         .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Anonymous is denied — the host path never leaks.
     let (status, resp) = rpc(
@@ -427,7 +442,9 @@ async fn list_bindings_requires_membership_and_redacts_root_for_non_admin() {
 
     // A non-admin member may list bindings (name/kind) but the host `root` is
     // redacted — proto3 JSON omits an empty string field entirely.
-    db.grant_membership("user", 2, "acme", "viewer").unwrap();
+    db.grant_membership("user", 2, "acme", "viewer")
+        .await
+        .unwrap();
     let member = bearer(Principal::user(2), "acme", &[Permission::Read]);
     let (status, resp) = rpc(
         &app,
@@ -450,7 +467,9 @@ async fn list_bindings_requires_membership_and_redacts_root_for_non_admin() {
 
     // An admin (registry.configure, plus read as every admin token carries)
     // sees the real host path.
-    db.grant_membership("user", 3, "acme", "admin").unwrap();
+    db.grant_membership("user", 3, "acme", "admin")
+        .await
+        .unwrap();
     let admin = bearer(
         Principal::user(3),
         "acme",

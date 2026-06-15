@@ -31,7 +31,7 @@ const TEST_JWT_SECRET: &[u8] = b"operations-test-secret-32byte!!!";
 
 /// Build an [`AppState`] over `db` with deterministic JWT keys and a shared
 /// rate limiter.
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -47,7 +47,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: aos_registry_hub::fetch::hardened_client(),
+        http: aos_registry_hub::fetch::hardened_client().await,
         mailer: std::sync::Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: false,
     })
@@ -71,12 +71,13 @@ fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
 /// Create org "acme", a `local_fs` binding over an empty dir, and a managed
 /// registry at `acme/infra/prod/cdn` bound to it (prefix `cdn`). Returns
 /// `(db, surface_root)`.
-fn empty_managed() -> (Arc<Database>, PathBuf) {
+async fn empty_managed() -> (Arc<Database>, PathBuf) {
     let root = tempfile::tempdir().unwrap().keep();
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme, Inc.").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", root.to_str().unwrap())
+        .await
         .unwrap();
     db.create_managed_registry(
         org,
@@ -88,6 +89,7 @@ fn empty_managed() -> (Arc<Database>, PathBuf) {
         &[],
         false,
     )
+    .await
     .unwrap();
     (db, root.join("cdn"))
 }
@@ -172,8 +174,8 @@ async fn rpc(
 
 #[tokio::test]
 async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
-    let (db, _surface) = empty_managed();
-    let org = db.org_by_slug("acme").unwrap().unwrap();
+    let (db, _surface) = empty_managed().await;
+    let org = db.org_by_slug("acme").await.unwrap().unwrap();
     // A tiny byte budget: 10 bytes.
     db.set_org_quota(
         org.id,
@@ -182,8 +184,9 @@ async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
             ..Default::default()
         },
     )
+    .await
     .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
         Principal::service_account(1),
         "acme/infra/prod/cdn",
@@ -199,8 +202,8 @@ async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
     )
     .await;
     assert!(status.is_success(), "{status}");
-    assert_eq!(db.org_usage(org.id).unwrap().used_bytes, 4);
-    assert_eq!(db.org_usage(org.id).unwrap().object_count, 1);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 
     // A second object pushing past 10 bytes is rejected 507; usage unchanged.
     let (status, _) = put(
@@ -211,14 +214,14 @@ async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
     )
     .await;
     assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
-    assert_eq!(db.org_usage(org.id).unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
 }
 
 #[tokio::test]
 async fn overwrite_with_larger_payload_charges_the_delta() {
-    let (db, _surface) = empty_managed();
-    let org = db.org_by_slug("acme").unwrap().unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let (db, _surface) = empty_managed().await;
+    let org = db.org_by_slug("acme").await.unwrap().unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
         Principal::service_account(1),
         "acme/infra/prod/cdn",
@@ -234,8 +237,8 @@ async fn overwrite_with_larger_payload_charges_the_delta() {
     )
     .await;
     assert!(status.is_success(), "{status}");
-    assert_eq!(db.org_usage(org.id).unwrap().used_bytes, 4);
-    assert_eq!(db.org_usage(org.id).unwrap().object_count, 1);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 
     // Overwrite the same path with a larger 10-byte payload: usage grows by the
     // 6-byte delta (not the full 10), and the object count is unchanged.
@@ -247,8 +250,8 @@ async fn overwrite_with_larger_payload_charges_the_delta() {
     )
     .await;
     assert!(status.is_success(), "{status}");
-    assert_eq!(db.org_usage(org.id).unwrap().used_bytes, 10);
-    assert_eq!(db.org_usage(org.id).unwrap().object_count, 1);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 10);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 
     // A shrinking overwrite back to 4 bytes subtracts the delta.
     let (status, _) = put(
@@ -259,14 +262,14 @@ async fn overwrite_with_larger_payload_charges_the_delta() {
     )
     .await;
     assert!(status.is_success(), "{status}");
-    assert_eq!(db.org_usage(org.id).unwrap().used_bytes, 4);
-    assert_eq!(db.org_usage(org.id).unwrap().object_count, 1);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 }
 
 #[tokio::test]
 async fn magic_link_issuance_is_rate_limited_per_email() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(db));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(db).await).await;
     let body = "email=victim%40acme.com";
     // The first MAGIC_LINK_PER_EMAIL requests succeed (200 "check your email").
     for _ in 0..aos_registry_hub::ratelimit::MAGIC_LINK_PER_EMAIL {
@@ -281,8 +284,8 @@ async fn magic_link_issuance_is_rate_limited_per_email() {
 
 #[tokio::test]
 async fn device_authorization_is_rate_limited_per_ip() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(db));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(db).await).await;
     let ip = "198.51.100.4";
     for _ in 0..aos_registry_hub::ratelimit::DEVICE_AUTH_PER_IP {
         let (status, _) = post_form(&app, "/oauth2/device_authorization", "", Some(ip)).await;
@@ -295,10 +298,10 @@ async fn device_authorization_is_rate_limited_per_ip() {
 
 #[tokio::test]
 async fn signup_policy_gates_create_org() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     // Default policy is invite-only.
-    let fresh = db.create_user("nobody@acme.com", None).unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let fresh = db.create_user("nobody@acme.com", None).await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(Principal::user(fresh), "", &[]);
 
     // invite_only blocks a fresh, unaffiliated user.
@@ -312,7 +315,7 @@ async fn signup_policy_gates_create_org() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     // Switch to open: the same user may now create an org.
-    db.set_signup_policy(SignupPolicy::Open).unwrap();
+    db.set_signup_policy(SignupPolicy::Open).await.unwrap();
     let (status, value) = rpc(
         &app,
         "OrgService/CreateOrg",
@@ -325,15 +328,16 @@ async fn signup_policy_gates_create_org() {
 
 #[tokio::test]
 async fn invite_only_allows_existing_member() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     // A user who is already a member of *some* org may create another, even
     // under invite-only.
-    let member = db.create_user("dev@acme.com", None).unwrap();
-    let existing = db.create_org("existing", "Existing").unwrap();
+    let member = db.create_user("dev@acme.com", None).await.unwrap();
+    let existing = db.create_org("existing", "Existing").await.unwrap();
     let _ = existing;
     db.grant_membership("user", member, "existing", "developer")
+        .await
         .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(Principal::user(member), "", &[]);
     let (status, value) = rpc(
         &app,
@@ -347,12 +351,17 @@ async fn invite_only_allows_existing_member() {
 
 #[tokio::test]
 async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
-    let (db, surface) = empty_managed();
-    let org = db.org_by_slug("acme").unwrap().unwrap();
+    let (db, surface) = empty_managed().await;
+    let org = db.org_by_slug("acme").await.unwrap().unwrap();
     // Members and a token (its hash must never appear in the export).
-    let alice = db.create_user("alice@acme.com", None).unwrap();
-    db.grant_membership("user", alice, "acme", "owner").unwrap();
-    let sa = db.create_service_account(org.id, "publisher").unwrap();
+    let alice = db.create_user("alice@acme.com", None).await.unwrap();
+    db.grant_membership("user", alice, "acme", "owner")
+        .await
+        .unwrap();
+    let sa = db
+        .create_service_account(org.id, "publisher")
+        .await
+        .unwrap();
     let (_id, secret) = db
         .create_token(
             Principal::service_account(sa),
@@ -361,10 +370,11 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
             Some("ci"),
             None,
         )
+        .await
         .unwrap();
 
     // Upload a surface so the surface copy has something to round-trip.
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
         Principal::service_account(sa),
         "acme/infra/prod/cdn",
@@ -382,7 +392,9 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
 
     // The manifest carries the registry + members + token metadata, but no
     // hash/secret.
-    let manifest = aos_registry_hub::export::export_org(&db, "acme").unwrap();
+    let manifest = aos_registry_hub::export::export_org(&db, "acme")
+        .await
+        .unwrap();
     let json = serde_json::to_string(&manifest).unwrap();
     assert!(manifest
         .registries
@@ -401,9 +413,14 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
 
     // The surface copy round-trips the uploaded object byte-for-byte.
     let dest = tempfile::tempdir().unwrap();
-    let registry = db.registry_by_slug("acme/infra/prod/cdn").unwrap().unwrap();
-    let copied =
-        aos_registry_hub::export::export_registry_surface(&db, registry.id, dest.path()).unwrap();
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
+    let copied = aos_registry_hub::export::export_registry_surface(&db, registry.id, dest.path())
+        .await
+        .unwrap();
     assert!(copied >= 1);
     assert_eq!(
         std::fs::read(dest.path().join("objects/ab/cd")).unwrap(),
@@ -418,14 +435,16 @@ async fn soft_deleted_org_stops_serving_and_purges_after_grace() {
     let fixture = common::standard_registry(&surface);
     let _ = &fixture;
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
+        .await
         .unwrap();
     db.create_managed_registry(org, "", "cdn", "public", Some(binding), "cdn", &[], false)
+        .await
         .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Before deletion the registry home serves.
     let resp = app
@@ -441,7 +460,7 @@ async fn soft_deleted_org_stops_serving_and_purges_after_grace() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Soft-delete: the registry now 404s (tombstoned, non-disclosing).
-    assert!(db.soft_delete_org(org, 100).unwrap());
+    assert!(db.soft_delete_org(org, 100).await.unwrap());
     let resp = app
         .clone()
         .oneshot(
@@ -455,7 +474,7 @@ async fn soft_deleted_org_stops_serving_and_purges_after_grace() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     // Restore brings it back.
-    assert!(db.restore_org(org).unwrap());
+    assert!(db.restore_org(org).await.unwrap());
     let resp = app
         .clone()
         .oneshot(
@@ -469,18 +488,25 @@ async fn soft_deleted_org_stops_serving_and_purges_after_grace() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Re-delete and purge past the grace window.
-    assert!(db.soft_delete_org(org, 100).unwrap());
+    assert!(db.soft_delete_org(org, 100).await.unwrap());
     let now = unix_now();
     assert!(
         aos_registry_hub::export::purge_expired_orgs(&db, now)
+            .await
             .unwrap()
             .is_empty(),
         "not purgeable inside the grace window"
     );
-    let purged = aos_registry_hub::export::purge_expired_orgs(&db, now + 200).unwrap();
+    let purged = aos_registry_hub::export::purge_expired_orgs(&db, now + 200)
+        .await
+        .unwrap();
     assert_eq!(purged, vec!["acme".to_string()]);
     // The org (and its cascade) are gone.
-    assert!(db.org_by_slug_including_deleted("acme").unwrap().is_none());
+    assert!(db
+        .org_by_slug_including_deleted("acme")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// Current Unix time in seconds.

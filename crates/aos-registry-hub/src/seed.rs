@@ -131,21 +131,21 @@ impl SeedReport {
 /// generated surface did not verify — a bug, surfaced loudly).
 pub async fn seed_dev(db: &Database, root: &Path) -> Result<SeedOutcome> {
     // Idempotency gate: a prior run leaves the `demo` org behind.
-    if db.org_by_slug(DEMO_ORG)?.is_some() {
+    if db.org_by_slug(DEMO_ORG).await?.is_some() {
         return Ok(SeedOutcome::AlreadySeeded);
     }
 
     // Open signups so the demo user can create orgs from the console.
-    db.set_signup_policy(SignupPolicy::Open)?;
+    db.set_signup_policy(SignupPolicy::Open).await?;
 
     // Demo user with a known (hashed) password.
-    let user_id = db.find_or_create_user(DEMO_EMAIL)?;
+    let user_id = db.find_or_create_user(DEMO_EMAIL).await?;
     let hash = crate::auth::password::hash_password(DEMO_PASSWORD)?;
-    db.set_user_password(user_id, &hash)?;
+    db.set_user_password(user_id, &hash).await?;
 
     // Org + org-root project, with the demo user as Owner.
-    let org_id = db.create_org(DEMO_ORG, "Demo Org")?;
-    db.create_project(org_id, "", "Demo Org root")?;
+    let org_id = db.create_org(DEMO_ORG, "Demo Org").await?;
+    db.create_project(org_id, "", "Demo Org root").await?;
     let principal = Principal::user(user_id);
     // The org scope is just the org slug (see Scope::parse).
     db.grant_membership(
@@ -153,14 +153,16 @@ pub async fn seed_dev(db: &Database, root: &Path) -> Result<SeedOutcome> {
         principal.id,
         Scope::parse(DEMO_ORG).as_str(),
         Role::Owner.as_str(),
-    )?;
+    )
+    .await?;
 
     // local_fs storage binding rooted under the hub state dir.
     let bucket = root.join("seed-bucket");
     std::fs::create_dir_all(&bucket)
         .with_context(|| format!("creating seed bucket {}", bucket.display()))?;
-    let binding_id =
-        db.create_storage_binding(org_id, "local", "local_fs", &bucket.to_string_lossy())?;
+    let binding_id = db
+        .create_storage_binding(org_id, "local", "local_fs", &bucket.to_string_lossy())
+        .await?;
 
     // Generate the maintainer key + write the signed surface into the binding
     // root under the registry's prefix (`cdn`).
@@ -172,18 +174,21 @@ pub async fn seed_dev(db: &Database, root: &Path) -> Result<SeedOutcome> {
 
     // Register the managed registry, pinning the maintainer trust key with
     // signature verification on, then index it from the binding root.
-    let registry_id = db.create_managed_registry(
-        org_id,
-        "",
-        DEMO_REGISTRY,
-        "public",
-        Some(binding_id),
-        DEMO_REGISTRY,
-        std::slice::from_ref(&trust_key),
-        true,
-    )?;
+    let registry_id = db
+        .create_managed_registry(
+            org_id,
+            "",
+            DEMO_REGISTRY,
+            "public",
+            Some(binding_id),
+            DEMO_REGISTRY,
+            std::slice::from_ref(&trust_key),
+            true,
+        )
+        .await?;
     let registry = db
-        .registry_by_id(registry_id)?
+        .registry_by_id(registry_id)
+        .await?
         .context("loading seeded registry after creation")?;
     let fetch = LocalFsFetch::new(&surface_root);
     crate::indexer::index_and_record(db, &fetch, &registry)
@@ -191,13 +196,15 @@ pub async fn seed_dev(db: &Database, root: &Path) -> Result<SeedOutcome> {
         .context("indexing seeded registry (the generated surface must verify)")?;
 
     // Mint a sample publish token scoped to the registry.
-    let (token_id, token_secret) = db.create_token(
-        principal,
-        &registry.slug,
-        &[Permission::Read, Permission::Publish],
-        Some("seed demo publish token"),
-        None,
-    )?;
+    let (token_id, token_secret) = db
+        .create_token(
+            principal,
+            &registry.slug,
+            &[Permission::Read, Permission::Publish],
+            Some("seed demo publish token"),
+            None,
+        )
+        .await?;
 
     let report = SeedReport {
         browse_url: format!("/{}/", registry.slug),

@@ -209,8 +209,14 @@ async fn spawn_idp() -> (String, IdpState) {
 }
 
 /// Seed an org with an IdP config pointing at `idp_base`, returning `org_id`.
-fn seed_org(db: &Database, idp_base: &str, enforce_sso: bool, allow_jit: bool, role_map: &str) {
-    let org_id = db.create_org("acme", "Acme").unwrap();
+async fn seed_org(
+    db: &Database,
+    idp_base: &str,
+    enforce_sso: bool,
+    allow_jit: bool,
+    role_map: &str,
+) {
+    let org_id = db.create_org("acme", "Acme").await.unwrap();
     db.upsert_idp_config(&IdpConfigRecord {
         org_id,
         issuer: idp_base.to_string(),
@@ -226,6 +232,7 @@ fn seed_org(db: &Database, idp_base: &str, enforce_sso: bool, allow_jit: bool, r
         enforce_sso,
         default_role: "viewer".into(),
     })
+    .await
     .unwrap();
 }
 
@@ -236,7 +243,7 @@ async fn run_flow(
     external_url: &str,
     org_id: i64,
 ) -> anyhow::Result<aos_registry_hub::auth::oidc::OidcLogin> {
-    let redirect = begin_login(db, external_url, org_id, Some("/account"))?;
+    let redirect = begin_login(db, external_url, org_id, Some("/account")).await?;
     // Hit the IdP authorize endpoint *without following redirects*: it 302s
     // back to the hub callback (which is not a real server here), so we read
     // the Location to recover the code + state the hub would have received.
@@ -274,9 +281,9 @@ async fn run_flow(
 #[tokio::test]
 async fn jit_creates_user_and_identity_keyed_on_iss_sub() {
     let (idp_base, _idp) = spawn_idp().await;
-    let db = Database::open_in_memory().unwrap();
-    seed_org(&db, &idp_base, false, true, "{}");
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     let http = reqwest::Client::new();
 
     let login = run_flow(&db, &http, "http://hub.example.com", org_id)
@@ -286,16 +293,16 @@ async fn jit_creates_user_and_identity_keyed_on_iss_sub() {
     assert_eq!(login.email.as_deref(), Some("alice@acme.com"));
 
     // The identity is keyed on (iss, sub).
-    let user = db.identity_user(&idp_base, "idp-subject-1").unwrap();
+    let user = db.identity_user(&idp_base, "idp-subject-1").await.unwrap();
     assert_eq!(user, Some(login.user_id));
 }
 
 #[tokio::test]
 async fn second_login_same_iss_sub_does_not_create_new_user() {
     let (idp_base, idp) = spawn_idp().await;
-    let db = Database::open_in_memory().unwrap();
-    seed_org(&db, &idp_base, false, true, "{}");
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     let http = reqwest::Client::new();
 
     let first = run_flow(&db, &http, "http://hub.example.com", org_id)
@@ -319,9 +326,9 @@ async fn second_login_same_iss_sub_does_not_create_new_user() {
 #[tokio::test]
 async fn group_claim_maps_to_role_at_org_scope() {
     let (idp_base, idp) = spawn_idp().await;
-    let db = Database::open_in_memory().unwrap();
-    seed_org(&db, &idp_base, false, true, r#"{"acme-admins":"admin"}"#);
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, r#"{"acme-admins":"admin"}"#).await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     *idp.groups.lock().unwrap() = vec!["acme-admins".into()];
     let http = reqwest::Client::new();
 
@@ -329,7 +336,10 @@ async fn group_claim_maps_to_role_at_org_scope() {
         .await
         .unwrap();
 
-    let grants = db.effective_scopes(Principal::user(login.user_id)).unwrap();
+    let grants = db
+        .effective_scopes(Principal::user(login.user_id))
+        .await
+        .unwrap();
     assert!(
         grants
             .iter()
@@ -341,15 +351,18 @@ async fn group_claim_maps_to_role_at_org_scope() {
 #[tokio::test]
 async fn default_role_granted_when_no_group_maps() {
     let (idp_base, _idp) = spawn_idp().await;
-    let db = Database::open_in_memory().unwrap();
-    seed_org(&db, &idp_base, false, true, r#"{"acme-admins":"admin"}"#);
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, r#"{"acme-admins":"admin"}"#).await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     let http = reqwest::Client::new();
 
     let login = run_flow(&db, &http, "http://hub.example.com", org_id)
         .await
         .unwrap();
-    let grants = db.effective_scopes(Principal::user(login.user_id)).unwrap();
+    let grants = db
+        .effective_scopes(Principal::user(login.user_id))
+        .await
+        .unwrap();
     assert!(grants
         .iter()
         .any(|(scope, role)| *scope == Scope::parse("acme") && *role == Role::Viewer));
@@ -358,9 +371,9 @@ async fn default_role_granted_when_no_group_maps() {
 #[tokio::test]
 async fn forged_or_replayed_state_is_rejected() {
     let (idp_base, _idp) = spawn_idp().await;
-    let db = Database::open_in_memory().unwrap();
-    seed_org(&db, &idp_base, false, true, "{}");
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     let http = reqwest::Client::new();
 
     // A callback with a state that was never staged.
@@ -378,7 +391,9 @@ async fn forged_or_replayed_state_is_rejected() {
     assert!(err.is_err());
 
     // A staged-then-consumed state cannot be replayed.
-    let redirect = begin_login(&db, "http://hub.example.com", org_id, None).unwrap();
+    let redirect = begin_login(&db, "http://hub.example.com", org_id, None)
+        .await
+        .unwrap();
     let parsed = url::Url::parse(&redirect.url).unwrap();
     let state = parsed
         .query_pairs()
@@ -404,25 +419,28 @@ async fn forged_or_replayed_state_is_rejected() {
 
 #[tokio::test]
 async fn expired_flow_is_rejected() {
-    let db = Database::open_in_memory().unwrap();
-    let org_id = db.create_org("acme", "Acme").unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db.create_org("acme", "Acme").await.unwrap();
     // Stage a flow that is already expired (negative TTL).
     db.create_oidc_flow("st", org_id, "nn", "verifier", None, -1)
+        .await
         .unwrap();
-    assert!(db.take_oidc_flow("st").unwrap().is_none());
+    assert!(db.take_oidc_flow("st").await.unwrap().is_none());
 }
 
 #[tokio::test]
 async fn bad_nonce_is_rejected() {
     let (idp_base, idp) = spawn_idp().await;
-    let db = Database::open_in_memory().unwrap();
-    seed_org(&db, &idp_base, false, true, "{}");
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     let http = reqwest::Client::new();
 
     // Begin a real flow to capture a valid state, but force the IdP to mint a
     // token with a nonce that does not match the staged one.
-    let redirect = begin_login(&db, "http://hub.example.com", org_id, None).unwrap();
+    let redirect = begin_login(&db, "http://hub.example.com", org_id, None)
+        .await
+        .unwrap();
     let parsed = url::Url::parse(&redirect.url).unwrap();
     let state = parsed
         .query_pairs()
@@ -449,9 +467,9 @@ async fn bad_nonce_is_rejected() {
 #[tokio::test]
 async fn aud_mismatch_is_rejected() {
     let (idp_base, idp) = spawn_idp().await;
-    let db = Database::open_in_memory().unwrap();
-    seed_org(&db, &idp_base, false, true, "{}");
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     *idp.aud_override.lock().unwrap() = Some("someone-else".into());
     let http = reqwest::Client::new();
     let err = run_flow(&db, &http, "http://hub.example.com", org_id).await;
@@ -461,9 +479,9 @@ async fn aud_mismatch_is_rejected() {
 #[tokio::test]
 async fn iss_mismatch_is_rejected() {
     let (idp_base, idp) = spawn_idp().await;
-    let db = Database::open_in_memory().unwrap();
-    seed_org(&db, &idp_base, false, true, "{}");
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     *idp.iss_override.lock().unwrap() = Some("https://evil.example".into());
     let http = reqwest::Client::new();
     let err = run_flow(&db, &http, "http://hub.example.com", org_id).await;
@@ -473,9 +491,9 @@ async fn iss_mismatch_is_rejected() {
 #[tokio::test]
 async fn tampered_signature_is_rejected() {
     let (idp_base, idp) = spawn_idp().await;
-    let db = Database::open_in_memory().unwrap();
-    seed_org(&db, &idp_base, false, true, "{}");
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     *idp.tamper.lock().unwrap() = true;
     let http = reqwest::Client::new();
     let err = run_flow(&db, &http, "http://hub.example.com", org_id).await;
@@ -488,9 +506,9 @@ async fn tampered_signature_is_rejected() {
 #[tokio::test]
 async fn jit_disabled_rejects_unknown_identity() {
     let (idp_base, _idp) = spawn_idp().await;
-    let db = Database::open_in_memory().unwrap();
-    seed_org(&db, &idp_base, false, false, "{}"); // allow_jit = false
-    let org_id = db.org_by_slug("acme").unwrap().unwrap().id;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, false, "{}").await; // allow_jit = false
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     let http = reqwest::Client::new();
     let err = run_flow(&db, &http, "http://hub.example.com", org_id).await;
     assert!(
@@ -501,23 +519,23 @@ async fn jit_disabled_rejects_unknown_identity() {
 
 #[tokio::test]
 async fn domain_capture_routes_only_verified_domains() {
-    let db = Database::open_in_memory().unwrap();
-    let org_id = db.create_org("acme", "Acme").unwrap();
-    let _challenge = db.add_org_domain(org_id, "acme.com").unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db.create_org("acme", "Acme").await.unwrap();
+    let _challenge = db.add_org_domain(org_id, "acme.com").await.unwrap();
     // Unverified: org_for_domain returns nothing.
-    assert_eq!(db.org_for_domain("acme.com").unwrap(), None);
+    assert_eq!(db.org_for_domain("acme.com").await.unwrap(), None);
     // After verification it routes.
-    assert!(db.verify_org_domain("acme.com").unwrap());
-    assert_eq!(db.org_for_domain("acme.com").unwrap(), Some(org_id));
+    assert!(db.verify_org_domain("acme.com").await.unwrap());
+    assert_eq!(db.org_for_domain("acme.com").await.unwrap(), Some(org_id));
     // Verification matches the published challenge value.
-    let record = db.org_domain("acme.com").unwrap().unwrap();
+    let record = db.org_domain("acme.com").await.unwrap().unwrap();
     assert!(record.txt_challenge.starts_with("aos-domain-verify="));
 }
 
 #[tokio::test]
 async fn begin_login_sets_pkce_s256_and_records_flow() {
-    let db = Database::open_in_memory().unwrap();
-    let org_id = db.create_org("acme", "Acme").unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db.create_org("acme", "Acme").await.unwrap();
     db.upsert_idp_config(&IdpConfigRecord {
         org_id,
         issuer: "https://idp.example".into(),
@@ -533,9 +551,12 @@ async fn begin_login_sets_pkce_s256_and_records_flow() {
         enforce_sso: false,
         default_role: "viewer".into(),
     })
+    .await
     .unwrap();
 
-    let redirect = begin_login(&db, "http://hub.example.com", org_id, None).unwrap();
+    let redirect = begin_login(&db, "http://hub.example.com", org_id, None)
+        .await
+        .unwrap();
     let parsed = url::Url::parse(&redirect.url).unwrap();
     let q: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
     assert_eq!(q.get("response_type").map(String::as_str), Some("code"));
@@ -545,7 +566,7 @@ async fn begin_login_sets_pkce_s256_and_records_flow() {
     );
     let state = q.get("state").unwrap();
     // The recorded flow's verifier hashes to the sent challenge.
-    let flow = db.take_oidc_flow(state).unwrap().unwrap();
+    let flow = db.take_oidc_flow(state).await.unwrap().unwrap();
     assert_eq!(
         &code_challenge_s256(&flow.code_verifier),
         q.get("code_challenge").unwrap()
@@ -580,13 +601,13 @@ fn idp_config_from_record_parses_role_map() {
 async fn identity_link_existing_then_link_paths() {
     // (iss, sub) keying: existing identity wins; verified email on a captured
     // domain links to an existing user; otherwise JIT.
-    let db = Database::open_in_memory().unwrap();
-    let org_id = db.create_org("acme", "Acme").unwrap();
-    db.add_org_domain(org_id, "acme.com").unwrap();
-    db.verify_org_domain("acme.com").unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db.create_org("acme", "Acme").await.unwrap();
+    db.add_org_domain(org_id, "acme.com").await.unwrap();
+    db.verify_org_domain("acme.com").await.unwrap();
 
     // Pre-existing user with the captured email but no identity.
-    let existing = db.create_user("bob@acme.com", None).unwrap();
+    let existing = db.create_user("bob@acme.com", None).await.unwrap();
     let link = db
         .link_or_create_identity(
             "https://idp",
@@ -596,6 +617,7 @@ async fn identity_link_existing_then_link_paths() {
             org_id,
             true,
         )
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(link, IdentityLink::Linked(existing));
@@ -610,6 +632,7 @@ async fn identity_link_existing_then_link_paths() {
             org_id,
             true,
         )
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(again, IdentityLink::Existing(existing));
@@ -625,6 +648,7 @@ async fn identity_link_existing_then_link_paths() {
             org_id,
             false,
         )
+        .await
         .unwrap();
     assert_eq!(none, None);
 
@@ -639,22 +663,24 @@ async fn jit_refuses_to_graft_onto_existing_account_by_email() {
     // domain) do not apply — the attacker's org never captured the victim's
     // domain — so JIT is reached. JIT must REFUSE rather than reconcile onto
     // the victim's pre-existing user row by email.
-    let db = Database::open_in_memory().unwrap();
-    let attacker_org = db.create_org("attacker", "Attacker Inc").unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    let attacker_org = db.create_org("attacker", "Attacker Inc").await.unwrap();
 
     // Victim user already exists (e.g. created via a different org's SSO).
-    let victim = db.create_user("ceo@othercorp.com", None).unwrap();
+    let victim = db.create_user("ceo@othercorp.com", None).await.unwrap();
 
-    let denied = db.link_or_create_identity(
-        "https://attacker-idp",
-        "sub-attacker",
-        Some("ceo@othercorp.com"),
-        // Even a *claimed*-verified email must not link: the attacker controls
-        // the IdP and the email_verified flag, and never captured othercorp.com.
-        true,
-        attacker_org,
-        true, // allow_jit on
-    );
+    let denied = db
+        .link_or_create_identity(
+            "https://attacker-idp",
+            "sub-attacker",
+            Some("ceo@othercorp.com"),
+            // Even a *claimed*-verified email must not link: the attacker controls
+            // the IdP and the email_verified flag, and never captured othercorp.com.
+            true,
+            attacker_org,
+            true, // allow_jit on
+        )
+        .await;
 
     assert!(
         denied.is_err(),
@@ -664,22 +690,26 @@ async fn jit_refuses_to_graft_onto_existing_account_by_email() {
     // returned — no session could have been minted as them.
     assert_eq!(
         db.identity_user("https://attacker-idp", "sub-attacker")
+            .await
             .unwrap(),
         None,
         "a denied JIT must not create an (iss, sub) identity row"
     );
     // The victim's account is untouched and still resolves only by its email.
-    assert_eq!(db.user_by_email("ceo@othercorp.com").unwrap(), Some(victim));
+    assert_eq!(
+        db.user_by_email("ceo@othercorp.com").await.unwrap(),
+        Some(victim)
+    );
 }
 
 #[tokio::test]
 async fn jit_provisions_a_fresh_user_for_a_new_email() {
     // Regression: a genuinely new SSO user (no pre-existing account) still
     // provisions a fresh user + identity when allow_jit is on.
-    let db = Database::open_in_memory().unwrap();
-    let org_id = db.create_org("acme", "Acme").unwrap();
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db.create_org("acme", "Acme").await.unwrap();
 
-    assert_eq!(db.user_by_email("dana@newcomer.com").unwrap(), None);
+    assert_eq!(db.user_by_email("dana@newcomer.com").await.unwrap(), None);
     let link = db
         .link_or_create_identity(
             "https://idp",
@@ -689,6 +719,7 @@ async fn jit_provisions_a_fresh_user_for_a_new_email() {
             org_id,
             true,
         )
+        .await
         .unwrap()
         .unwrap();
     let new_user = match link {
@@ -697,11 +728,11 @@ async fn jit_provisions_a_fresh_user_for_a_new_email() {
     };
     // The fresh user and its (iss, sub) identity both exist.
     assert_eq!(
-        db.user_by_email("dana@newcomer.com").unwrap(),
+        db.user_by_email("dana@newcomer.com").await.unwrap(),
         Some(new_user)
     );
     assert_eq!(
-        db.identity_user("https://idp", "sub-dana").unwrap(),
+        db.identity_user("https://idp", "sub-dana").await.unwrap(),
         Some(new_user)
     );
 }

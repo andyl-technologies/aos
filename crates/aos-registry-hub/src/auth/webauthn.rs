@@ -631,7 +631,7 @@ pub struct RegistrationResponse {
 ///
 /// Returns an error on database failure while staging the challenge or loading
 /// the user's existing credentials.
-pub fn begin_registration(
+pub async fn begin_registration(
     db: &Database,
     user_id: i64,
     user_name: &str,
@@ -644,9 +644,11 @@ pub fn begin_registration(
         Some(user_id),
         KIND_REGISTRATION,
         CHALLENGE_TTL_SECS,
-    )?;
+    )
+    .await?;
     let exclude_credentials = db
-        .list_user_credentials(user_id)?
+        .list_user_credentials(user_id)
+        .await?
         .into_iter()
         .map(|c| c.credential_id)
         .collect();
@@ -695,7 +697,7 @@ struct AttestationObject {
 /// challenge was not staged for this user, `fmt != "none"`, any `clientDataJSON`
 /// or `authenticatorData` check fails, the attested credential data is absent,
 /// or the credential cannot be persisted.
-pub fn finish_registration(
+pub async fn finish_registration(
     db: &Database,
     user_id: i64,
     rp_id: &str,
@@ -708,7 +710,8 @@ pub fn finish_registration(
 
     // 1. Consume the staged challenge (single-use; expiry + kind enforced).
     let staged = db
-        .take_webauthn_challenge(&client_data.challenge, KIND_REGISTRATION)?
+        .take_webauthn_challenge(&client_data.challenge, KIND_REGISTRATION)
+        .await?
         .ok_or_else(|| anyhow!("unknown, expired, or replayed registration challenge"))?;
     if staged.user_id != Some(user_id) {
         bail!("registration challenge was not staged for this user");
@@ -750,7 +753,8 @@ pub fn finish_registration(
         i64::from(auth_data.sign_count),
         None,
         label,
-    )?;
+    )
+    .await?;
     Ok(credential_id)
 }
 
@@ -796,9 +800,10 @@ pub struct AssertionResponse {
 /// # Errors
 ///
 /// Returns an error on database failure while staging the challenge.
-pub fn begin_assertion(db: &Database, rp_id: &str) -> Result<AssertionChallenge> {
+pub async fn begin_assertion(db: &Database, rp_id: &str) -> Result<AssertionChallenge> {
     let challenge = new_challenge();
-    db.create_webauthn_challenge(&challenge, None, KIND_ASSERTION, CHALLENGE_TTL_SECS)?;
+    db.create_webauthn_challenge(&challenge, None, KIND_ASSERTION, CHALLENGE_TTL_SECS)
+        .await?;
     Ok(AssertionChallenge {
         challenge,
         rp_id: rp_id.to_string(),
@@ -830,7 +835,7 @@ pub fn begin_assertion(db: &Database, rp_id: &str) -> Result<AssertionChallenge>
 /// Returns an error when the credential is unknown, the challenge is
 /// unknown/expired/replayed, any `clientDataJSON`/`authenticatorData` check
 /// fails, the signature is invalid, or the counter regressed (clone detection).
-pub fn finish_assertion(
+pub async fn finish_assertion(
     db: &Database,
     rp_id: &str,
     expected_origin: &str,
@@ -838,13 +843,15 @@ pub fn finish_assertion(
 ) -> Result<i64> {
     // 1. Resolve the credential (also yields the user — usernameless).
     let credential = db
-        .webauthn_credential_by_id(&response.credential_id)?
+        .webauthn_credential_by_id(&response.credential_id)
+        .await?
         .ok_or_else(|| anyhow!("no passkey registered with that credential id"))?;
 
     // 2. Parse + consume the staged challenge.
     let client_data = parse_client_data(&response.client_data_json)?;
     let staged = db
-        .take_webauthn_challenge(&client_data.challenge, KIND_ASSERTION)?
+        .take_webauthn_challenge(&client_data.challenge, KIND_ASSERTION)
+        .await?
         .ok_or_else(|| anyhow!("unknown, expired, or replayed assertion challenge"))?;
 
     // 3. Verify clientDataJSON.
@@ -872,8 +879,9 @@ pub fn finish_assertion(
     }
 
     // 7. Advance the counter + stamp last_used.
-    db.update_credential_sign_count(credential.id, asserted)?;
-    db.touch_credential(credential.id)?;
+    db.update_credential_sign_count(credential.id, asserted)
+        .await?;
+    db.touch_credential(credential.id).await?;
 
     Ok(credential.user_id)
 }
@@ -1063,18 +1071,20 @@ mod tests {
     const RP_ID: &str = "hub.example.com";
     const ORIGIN: &str = "https://hub.example.com";
 
-    fn register(db: &Database, user: i64, auth: &SoftAuthenticator) -> Result<String> {
-        let challenge = begin_registration(db, user, "u@x.com", RP_ID, "Hub")?.challenge;
+    async fn register(db: &Database, user: i64, auth: &SoftAuthenticator) -> Result<String> {
+        let challenge = begin_registration(db, user, "u@x.com", RP_ID, "Hub")
+            .await?
+            .challenge;
         let auth_data = auth.authenticator_data(RP_ID, 0, true);
         let cdj = client_data_json(TYPE_CREATE, &challenge, ORIGIN);
         let response = RegistrationResponse {
             client_data_json: cdj,
             attestation_object: attestation_object(&auth_data, "none"),
         };
-        finish_registration(db, user, RP_ID, ORIGIN, &response, Some("yubikey"))
+        finish_registration(db, user, RP_ID, ORIGIN, &response, Some("yubikey")).await
     }
 
-    fn assert_login(
+    async fn assert_login(
         db: &Database,
         auth: &SoftAuthenticator,
         sign_count: u32,
@@ -1082,7 +1092,7 @@ mod tests {
         tamper_challenge: Option<&str>,
         tamper_sig: bool,
     ) -> Result<i64> {
-        let challenge = begin_assertion(db, RP_ID)?.challenge;
+        let challenge = begin_assertion(db, RP_ID).await?.challenge;
         let used_challenge = tamper_challenge.map_or(challenge, str::to_string);
         let auth_data = auth.authenticator_data(RP_ID, sign_count, false);
         let cdj = client_data_json(TYPE_GET, &used_challenge, origin);
@@ -1097,67 +1107,72 @@ mod tests {
             authenticator_data: auth_data,
             signature,
         };
-        finish_assertion(db, RP_ID, ORIGIN, &response)
+        finish_assertion(db, RP_ID, ORIGIN, &response).await
     }
 
-    #[test]
-    fn ed25519_register_then_assert_roundtrip() {
-        let db = Database::open_in_memory().unwrap();
-        let user = db.create_user("u@x.com", None).unwrap();
+    #[tokio::test]
+    async fn ed25519_register_then_assert_roundtrip() {
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db.create_user("u@x.com", None).await.unwrap();
         let auth = SoftAuthenticator::ed25519(b"ed-cred-1");
-        let cred_id = register(&db, user, &auth).unwrap();
+        let cred_id = register(&db, user, &auth).await.unwrap();
         assert!(!cred_id.is_empty());
-        let got = assert_login(&db, &auth, 1, ORIGIN, None, false).unwrap();
+        let got = assert_login(&db, &auth, 1, ORIGIN, None, false)
+            .await
+            .unwrap();
         assert_eq!(got, user);
     }
 
-    #[test]
-    fn es256_register_then_assert_roundtrip() {
-        let db = Database::open_in_memory().unwrap();
-        let user = db.create_user("u@x.com", None).unwrap();
+    #[tokio::test]
+    async fn es256_register_then_assert_roundtrip() {
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db.create_user("u@x.com", None).await.unwrap();
         let auth = SoftAuthenticator::p256(b"p256-cred-1");
-        register(&db, user, &auth).unwrap();
-        let got = assert_login(&db, &auth, 1, ORIGIN, None, false).unwrap();
+        register(&db, user, &auth).await.unwrap();
+        let got = assert_login(&db, &auth, 1, ORIGIN, None, false)
+            .await
+            .unwrap();
         assert_eq!(got, user);
     }
 
-    #[test]
-    fn wrong_origin_rejected() {
-        let db = Database::open_in_memory().unwrap();
-        let user = db.create_user("u@x.com", None).unwrap();
+    #[tokio::test]
+    async fn wrong_origin_rejected() {
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db.create_user("u@x.com", None).await.unwrap();
         let auth = SoftAuthenticator::ed25519(b"ed-cred-2");
-        register(&db, user, &auth).unwrap();
-        let err = assert_login(&db, &auth, 1, "https://evil.example.com", None, false);
+        register(&db, user, &auth).await.unwrap();
+        let err = assert_login(&db, &auth, 1, "https://evil.example.com", None, false).await;
         assert!(err.is_err());
     }
 
-    #[test]
-    fn wrong_challenge_rejected() {
-        let db = Database::open_in_memory().unwrap();
-        let user = db.create_user("u@x.com", None).unwrap();
+    #[tokio::test]
+    async fn wrong_challenge_rejected() {
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db.create_user("u@x.com", None).await.unwrap();
         let auth = SoftAuthenticator::ed25519(b"ed-cred-3");
-        register(&db, user, &auth).unwrap();
+        register(&db, user, &auth).await.unwrap();
         // Present a different challenge than the one staged (and signed).
-        let err = assert_login(&db, &auth, 1, ORIGIN, Some("bogus-challenge"), false);
+        let err = assert_login(&db, &auth, 1, ORIGIN, Some("bogus-challenge"), false).await;
         assert!(err.is_err());
     }
 
-    #[test]
-    fn bad_signature_rejected() {
-        let db = Database::open_in_memory().unwrap();
-        let user = db.create_user("u@x.com", None).unwrap();
+    #[tokio::test]
+    async fn bad_signature_rejected() {
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db.create_user("u@x.com", None).await.unwrap();
         let auth = SoftAuthenticator::p256(b"p256-cred-2");
-        register(&db, user, &auth).unwrap();
-        let err = assert_login(&db, &auth, 1, ORIGIN, None, true);
+        register(&db, user, &auth).await.unwrap();
+        let err = assert_login(&db, &auth, 1, ORIGIN, None, true).await;
         assert!(err.is_err());
     }
 
-    #[test]
-    fn non_none_attestation_rejected() {
-        let db = Database::open_in_memory().unwrap();
-        let user = db.create_user("u@x.com", None).unwrap();
+    #[tokio::test]
+    async fn non_none_attestation_rejected() {
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db.create_user("u@x.com", None).await.unwrap();
         let auth = SoftAuthenticator::ed25519(b"ed-cred-4");
         let challenge = begin_registration(&db, user, "u@x.com", RP_ID, "Hub")
+            .await
             .unwrap()
             .challenge;
         let auth_data = auth.authenticator_data(RP_ID, 0, true);
@@ -1166,44 +1181,49 @@ mod tests {
             client_data_json: cdj,
             attestation_object: attestation_object(&auth_data, "packed"),
         };
-        let err = finish_registration(&db, user, RP_ID, ORIGIN, &response, None);
+        let err = finish_registration(&db, user, RP_ID, ORIGIN, &response, None).await;
         assert!(err.is_err());
     }
 
-    #[test]
-    fn sign_count_rollback_rejected() {
-        let db = Database::open_in_memory().unwrap();
-        let user = db.create_user("u@x.com", None).unwrap();
+    #[tokio::test]
+    async fn sign_count_rollback_rejected() {
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db.create_user("u@x.com", None).await.unwrap();
         let auth = SoftAuthenticator::ed25519(b"ed-cred-5");
-        register(&db, user, &auth).unwrap();
+        register(&db, user, &auth).await.unwrap();
         // First assertion advances the stored counter to 5.
-        assert_login(&db, &auth, 5, ORIGIN, None, false).unwrap();
+        assert_login(&db, &auth, 5, ORIGIN, None, false)
+            .await
+            .unwrap();
         // A later assertion at counter 3 is a regression -> cloned authenticator.
-        let err = assert_login(&db, &auth, 3, ORIGIN, None, false);
+        let err = assert_login(&db, &auth, 3, ORIGIN, None, false).await;
         assert!(err.is_err());
     }
 
-    #[test]
-    fn challenge_is_single_use() {
-        let db = Database::open_in_memory().unwrap();
+    #[tokio::test]
+    async fn challenge_is_single_use() {
+        let db = Database::open_in_memory().await.unwrap();
         db.create_webauthn_challenge("abc", None, KIND_ASSERTION, CHALLENGE_TTL_SECS)
+            .await
             .unwrap();
         assert!(db
             .take_webauthn_challenge("abc", KIND_ASSERTION)
+            .await
             .unwrap()
             .is_some());
         // Replay finds nothing.
         assert!(db
             .take_webauthn_challenge("abc", KIND_ASSERTION)
+            .await
             .unwrap()
             .is_none());
     }
 
-    #[test]
-    fn unknown_credential_rejected() {
-        let db = Database::open_in_memory().unwrap();
+    #[tokio::test]
+    async fn unknown_credential_rejected() {
+        let db = Database::open_in_memory().await.unwrap();
         let auth = SoftAuthenticator::ed25519(b"never-registered");
-        let err = assert_login(&db, &auth, 1, ORIGIN, None, false);
+        let err = assert_login(&db, &auth, 1, ORIGIN, None, false).await;
         assert!(err.is_err());
     }
 
@@ -1285,14 +1305,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn register_rejects_inconsistent_alg_credential() {
+    #[tokio::test]
+    async fn register_rejects_inconsistent_alg_credential() {
         // A full registration whose attested COSE key carries an inconsistent
         // alg must be refused at finish_registration, not just at decode.
-        let db = Database::open_in_memory().unwrap();
-        let user = db.create_user("u@x.com", None).unwrap();
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db.create_user("u@x.com", None).await.unwrap();
         let auth = SoftAuthenticator::p256(b"p256-badalg");
         let challenge = begin_registration(&db, user, "u@x.com", RP_ID, "Hub")
+            .await
             .unwrap()
             .challenge;
         // Build attested authenticatorData, then rewrite the embedded COSE key's
@@ -1309,7 +1330,7 @@ mod tests {
             client_data_json: cdj,
             attestation_object: attestation_object(&tampered, "none"),
         };
-        let err = finish_registration(&db, user, RP_ID, ORIGIN, &response, None);
+        let err = finish_registration(&db, user, RP_ID, ORIGIN, &response, None).await;
         assert!(
             err.is_err(),
             "inconsistent-alg registration must be refused"
