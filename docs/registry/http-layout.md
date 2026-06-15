@@ -181,7 +181,7 @@ HTTP GETs. Packs (§4.4) are a pure efficiency layer *on top of* the loose store
 a replacement for it.
 
 > **What lives inside these objects.** The registry's committed git **tree**
-> (`registry.toml`, `keys.toml`, `packages/<x>/<name>.toml`, `closures/<hash>`,
+> (`registry.toml`, `keys.toml`, `packages/<x>/<name>.toml`, `store/<2-char>/<ia>`,
 > `.gitattributes`) is **not** served at literal HTTP paths — it is **encoded inside
 > the `/objects` store** (as blob/tree/commit objects, loose and/or packed). A consumer
 > resolves a channel bucket → semver tag → commit, reconstructs the commit's tree from

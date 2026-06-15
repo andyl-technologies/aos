@@ -30,7 +30,7 @@
   };
 
   isl-src = builtins.fetchTarball {
-    url = "https://libisl.sourceforge.io/isl-0.24.tar.bz2";
+    url = "https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.24.tar.bz2";
     sha256 = "05rkpcwxm1cq0pp10vzkaadppyqylkx79p306js2xm869pibjfl9";
   };
 in

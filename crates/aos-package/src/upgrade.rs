@@ -33,7 +33,7 @@ use super::resolve::resolve_closure;
 use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
-use super::verify::{verify_download_hash, verify_nar_hash};
+use super::verify::verify_downloads;
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
 
@@ -182,6 +182,18 @@ pub async fn run(
         }
     }
 
+    // Trust-graph totality (RFC-0005 §2.6): seed from the WHOLE graph closure
+    // of each upgraded root, so the check covers every reachable member
+    // (including anonymous non-package paths) over the whole closure, not just
+    // the missing subset - a stripped/partial graph fails even when the gap is
+    // on an already-local member (the common case on upgrades).
+    let trust_roots: Vec<(&str, &str)> = to_upgrade
+        .iter()
+        .map(|c| (c.registry.as_str(), store_path_hash(&c.new_meta.store_path)))
+        .collect();
+    let trust_ctx = registries.trust_context_for_roots(&trust_roots);
+    trust_ctx.enforce_totality()?;
+
     // Filter to only missing store paths.
     let store_paths: Vec<String> = all_new_metas.iter().map(|m| m.store_path.clone()).collect();
     let missing = filter_missing(&store_paths).await?;
@@ -245,14 +257,10 @@ pub async fn run(
         .await?;
         downloaded_count = results.len();
 
-        // Verify downloads.
+        // Verify downloads against each path's source-registry store/ graph
+        // (RFC-0005); totality was already enforced above.
         printer.step(5, 7, "Verifying downloads...");
-        for result in &results {
-            verify_download_hash(&result.local_path, &result.download_hash)
-                .with_context(|| format!("verifying download for {}", result.store_path))?;
-            verify_nar_hash(&result.local_path, &result.nar_hash)
-                .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
-        }
+        verify_downloads(&results, &trust_ctx, printer)?;
 
         // Import NARs into the store.
         printer.step(5, 7, "Importing packages...");
