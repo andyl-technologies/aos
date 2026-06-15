@@ -497,6 +497,76 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
 }
 
 #[tokio::test]
+async fn rpc_create_org_rejects_scope_smuggling_slugs() {
+    // CR-2: a slug that `Scope::parse` would normalize into an unintended
+    // ancestor scope must be rejected with InvalidArgument, creating neither
+    // an org row nor any membership grant. Without the validator, "/"
+    // normalizes to the all-containing ROOT scope and "/victimorg" to the
+    // victim org's scope, each handing the caller Owner there.
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.set_signup_policy(aos_registry_hub::db::SignupPolicy::Open)
+        .unwrap();
+    // A pre-existing victim org the attacker must not gain Owner over.
+    db.create_org("victimorg", "Victim Org").unwrap();
+    let attacker = db.create_user("attacker@evil.com", None).unwrap();
+    let app = router(app_state(Arc::clone(&db)));
+    let token = bearer(Principal::user(attacker), "", &[]);
+
+    for bad in [
+        "/",
+        "/victimorg",
+        "foo/bar",
+        "foo ",
+        " foo",
+        "Acme",
+        "victimorg/",
+    ] {
+        let (status, value) = rpc(
+            &app,
+            "OrgService/CreateOrg",
+            serde_json::json!({"slug": bad, "name": "Anything"}),
+            Some(&token),
+        )
+        .await;
+        // Connect maps InvalidArgument to HTTP 400.
+        assert_eq!(status, StatusCode::BAD_REQUEST, "slug {bad:?}: {value}");
+    }
+
+    // No org was created for any of the smuggling attempts.
+    assert!(db.org_by_slug("/").unwrap().is_none());
+    assert!(db.org_by_slug("/victimorg").unwrap().is_none());
+    assert!(db.org_by_slug("foo/bar").unwrap().is_none());
+
+    // Crucially, the attacker holds NO grant anywhere — not at the root
+    // scope, not over the victim org.
+    let grants = db.effective_scopes(Principal::user(attacker)).unwrap();
+    assert!(
+        grants.is_empty(),
+        "attacker must hold no grant after rejected creates: {grants:?}"
+    );
+    // And the victim org's roster gained no Owner.
+    assert!(db.list_members_of_scope("victimorg").unwrap().is_empty());
+    assert!(db.list_members_of_scope("").unwrap().is_empty());
+
+    // Regression: a normal slug still creates the org and grants Owner at
+    // exactly that org's scope.
+    let (status, value) = rpc(
+        &app,
+        "OrgService/CreateOrg",
+        serde_json::json!({"slug": "acme", "name": "Acme, Inc."}),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(value["org"]["slug"], "acme");
+    let grants = db.effective_scopes(Principal::user(attacker)).unwrap();
+    assert_eq!(grants.len(), 1);
+    assert!(grants
+        .iter()
+        .any(|(s, r)| s.as_str() == "acme" && *r == Role::Owner));
+}
+
+#[tokio::test]
 async fn soft_deleted_org_registry_is_not_found_over_rpc() {
     let dir = tempfile::tempdir().unwrap();
     let surface = dir.path().join("surface");

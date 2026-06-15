@@ -255,6 +255,26 @@ impl Scope {
         self.0.is_empty()
     }
 
+    /// Returns `true` if `raw` is already in canonical scope form.
+    ///
+    /// A scope is canonical when its raw string equals its segments rejoined
+    /// by single `/` — no leading, trailing, or doubled slash. [`Scope::parse`]
+    /// trims surrounding `/` and the segment iterator drops empty segments, so
+    /// distinct raw strings such as `"/"`, `"/foo"`, `"foo/"`, and `"foo//bar"`
+    /// all normalize onto a shorter canonical path. Such
+    /// "normalization-surprise" inputs are **not** canonical: storing one would
+    /// silently grant authority at an unintended ancestor (e.g. `"/"` collapses
+    /// to the all-containing root scope, and `"/victimorg"` to a victim org's
+    /// scope). A legitimately formed scope — `""` (root), `"acme"`,
+    /// `"acme/cdn"` — is canonical. This is the check the persistence layer
+    /// runs before writing a membership scope.
+    #[must_use]
+    pub fn is_canonical(raw: &str) -> bool {
+        let scope = Scope::parse(raw);
+        let rejoined = scope.segments().collect::<Vec<_>>().join("/");
+        rejoined == raw
+    }
+
     /// Returns this scope's segments, left to right.
     ///
     /// The root scope yields an empty iterator.
@@ -319,6 +339,103 @@ pub fn allow(grants: &[(Scope, Role)], permission: Permission, target: &Scope) -
     grants
         .iter()
         .any(|(scope, role)| scope.contains(target) && role_grants(*role).contains(&permission))
+}
+
+/// Top-level slugs reserved for routes and the `/-/` namespace.
+///
+/// An org (or registry) may not take one of these names, since the slug
+/// becomes a top-level URL path segment and would otherwise shadow a built-in
+/// route or the management namespace.
+const RESERVED_SLUGS: &[&str] = &[
+    "_assets", "healthz", "metrics", "-", "login", "activate", "account", "new", "oauth2", "api",
+];
+
+/// Why a candidate org/registry slug was rejected by [`validate_org_slug`].
+///
+/// Carries no owned data; the offending slug is the caller's to format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlugError {
+    /// The slug was the empty string.
+    Empty,
+    /// The slug collides with a reserved top-level route or the `/-/`
+    /// namespace (see [`RESERVED_SLUGS`]).
+    Reserved,
+    /// The slug contained a character outside the allowed
+    /// `[a-z0-9_-]` set — including any `/`, whitespace, control, or
+    /// uppercase character.
+    BadChar,
+}
+
+impl SlugError {
+    /// Returns a human-readable explanation of this rejection.
+    #[must_use]
+    pub fn message(self) -> &'static str {
+        match self {
+            SlugError::Empty => "slug must not be empty",
+            SlugError::Reserved => "slug is a reserved name",
+            SlugError::BadChar => {
+                "slug may contain only lowercase ASCII letters, digits, '-', and '_'"
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for SlugError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for SlugError {}
+
+/// Validates an organization (or registry) slug against the canonical
+/// single-segment ruleset.
+///
+/// A slug becomes both a `memberships.scope` segment and a top-level URL path
+/// segment, so it is constrained to a conservative, single-segment,
+/// URL-safe charset. This is the **one** authoritative ruleset shared by the
+/// Connect RPC `CreateOrg`, the web console's new-org form, and the `aos`
+/// CLI, so the three surfaces can never drift apart.
+///
+/// A valid slug is non-empty, is not a [reserved name](RESERVED_SLUGS), and
+/// consists only of lowercase ASCII letters, ASCII digits, `-`, and `_`.
+/// Crucially it contains **no** `/`, so it cannot smuggle a multi-segment or
+/// leading-slash path (such as `"/"` or `"/victimorg"`) that
+/// [`Scope::parse`] would normalize into an unintended ancestor scope.
+///
+/// # Errors
+///
+/// Returns [`SlugError::Empty`] for the empty string,
+/// [`SlugError::Reserved`] for a reserved name, and [`SlugError::BadChar`]
+/// for any character outside `[a-z0-9_-]` (including `/`, whitespace,
+/// control, and uppercase characters).
+///
+/// # Examples
+///
+/// ```
+/// use aos_registry_hub::domain::iam::{validate_org_slug, SlugError};
+///
+/// assert!(validate_org_slug("acme").is_ok());
+/// assert!(validate_org_slug("cdn-edge_2").is_ok());
+/// assert_eq!(validate_org_slug(""), Err(SlugError::Empty));
+/// assert_eq!(validate_org_slug("/victimorg"), Err(SlugError::BadChar));
+/// assert_eq!(validate_org_slug("Acme"), Err(SlugError::BadChar));
+/// assert_eq!(validate_org_slug("api"), Err(SlugError::Reserved));
+/// ```
+pub fn validate_org_slug(slug: &str) -> Result<(), SlugError> {
+    if slug.is_empty() {
+        return Err(SlugError::Empty);
+    }
+    if RESERVED_SLUGS.contains(&slug) {
+        return Err(SlugError::Reserved);
+    }
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    {
+        return Err(SlugError::BadChar);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -435,6 +552,45 @@ mod tests {
         assert!(Scope::parse("/").is_root());
         assert_eq!(Scope::parse("/acme/").as_str(), "acme");
         assert_eq!(Scope::parse("acme/infra"), Scope::parse("/acme/infra/"));
+    }
+
+    #[test]
+    fn scope_is_canonical_blocks_normalization_surprises() {
+        // Canonical scopes round-trip and are accepted.
+        for good in ["", "acme", "acme/cdn", "acme/infra/prod/cdn"] {
+            assert!(Scope::is_canonical(good), "{good:?} should be canonical");
+        }
+        // Normalization-surprise inputs are rejected (CR-2).
+        for bad in ["/", "/foo", "foo/", "foo//bar", "/foo/", "//", "/victimorg"] {
+            assert!(!Scope::is_canonical(bad), "{bad:?} should be non-canonical");
+        }
+    }
+
+    #[test]
+    fn validate_org_slug_enforces_single_segment_charset() {
+        for good in ["acme", "a", "cdn-edge_2", "x9"] {
+            assert!(validate_org_slug(good).is_ok(), "{good:?} should be valid");
+        }
+        assert_eq!(validate_org_slug(""), Err(SlugError::Empty));
+        assert_eq!(validate_org_slug("api"), Err(SlugError::Reserved));
+        assert_eq!(validate_org_slug("-"), Err(SlugError::Reserved));
+        // Anything that would smuggle a path or out-of-charset char.
+        for bad in [
+            "/",
+            "/victimorg",
+            "foo/bar",
+            "foo/",
+            "Acme",
+            "foo ",
+            " foo",
+            "föo",
+        ] {
+            assert_eq!(
+                validate_org_slug(bad),
+                Err(SlugError::BadChar),
+                "{bad:?} should be a bad char"
+            );
+        }
     }
 
     #[test]

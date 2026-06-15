@@ -554,17 +554,25 @@ impl OrgService for RegistryRpc {
     /// # Errors
     ///
     /// Returns `Unauthenticated` for a missing/invalid bearer JWT,
-    /// `InvalidArgument` for an empty slug or name, `AlreadyExists` when the
-    /// slug is taken, and `Internal` on database failure.
+    /// `InvalidArgument` for an empty name or a slug that fails
+    /// [`iam::validate_org_slug`], `AlreadyExists` when the slug is taken,
+    /// and `Internal` on database failure.
     async fn create_org(
         &self,
         ctx: Context,
         req: OwnedView<CreateOrgRequestView<'static>>,
     ) -> Result<(CreateOrgResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
-        if req.slug.is_empty() || req.name.is_empty() {
-            return Err(invalid("org slug and name are required"));
+        if req.name.is_empty() {
+            return Err(invalid("org name is required"));
         }
+        // The slug becomes both a URL path segment and a membership scope
+        // segment, so validate it against the canonical single-segment
+        // ruleset *before* creating the org or granting any membership.
+        // Skipping this would let a slug like "/" or "/victimorg" normalize
+        // (via `Scope::parse`) into an unintended ancestor scope and hand the
+        // caller Owner over the instance root or a victim org. See sec CR-2.
+        iam::validate_org_slug(req.slug).map_err(|e| invalid(format!("org slug: {e}")))?;
         // Instance signup policy: `open` lets any authenticated principal
         // create an org; `invite_only` requires the caller to already be a
         // member, hold a live invitation, or be an instance admin.
