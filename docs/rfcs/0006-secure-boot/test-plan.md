@@ -101,7 +101,8 @@ server-secureboot sysroot + its UKI, asserts the derived facts, and drives
 *sections* (not the UKI-as-kernel); the test cross-checks the recorded value
 against an independent `objcopy` + `systemd-measure` recompute rather than a
 post-reboot machine reading (that equality remains attestation-side future
-work — the recorded value is the pre-phase base a verifier extends).
+work — the recorded value is the `enter-initrd`-phase digest, where `/var`
+unseals).
 
 ## Cost / sequencing notes
 

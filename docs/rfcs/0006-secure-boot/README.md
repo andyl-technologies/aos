@@ -276,12 +276,14 @@ the next implementer doesn't relearn it.
 - **`expected_pcr11` is the genuine sd-stub section measurement** — `objcopy`
   dumps each measured section (`.linux`/`.osrel`/`.cmdline`/`.initrd`/`.uname`/
   `.sbat`/…) and `systemd-measure calculate` reproduces what sd-stub extends
-  into PCR 11 (the same value `ukify` signs into `.pcrsig`). It is the
-  post-section, pre-phase value: a verifier comparing a live `systemd-analyze
-  pcrs` reading must still replay the boot-phase events on top. It is recorded
-  for attestation, not compared in the download-time gate; `checks.fleet.
-  registry-sb-catalog` cross-checks it against an independent recompute so the
-  value can't silently drift from the binary. (Feeding the whole UKI to
+  into PCR 11 (the same value `ukify` signs into `.pcrsig`). `systemd-measure`
+  emits one value per boot phase; the recorded one is the **`enter-initrd`**
+  phase, where `systemd-cryptsetup` unseals `/var`. A verifier comparing a live
+  `systemd-analyze pcrs` reading must account for the phase the quote was taken
+  at. It is recorded for attestation, not compared in the download-time gate;
+  `checks.fleet.registry-sb-catalog` cross-checks it against an independent
+  recompute so the value can't silently drift from the binary. (Feeding the
+  whole UKI to
   `systemd-measure --linux` — the original implementation — measured the binary
   as a kernel image and was wrong; fixed.)
 - **The catalog must reach the validator.** The download-time gate reads
@@ -331,7 +333,7 @@ the next implementer doesn't relearn it.
   hard requirement ([`measured-boot.md`](measured-boot.md)).
 - **Predicted vs measured PCR-11** — resolved: `expected_pcr11` is now
   `systemd-measure` over the UKI's PE *sections* (the sd-stub section
-  measurement), not the UKI-as-kernel. It is the post-section, pre-phase value;
-  a verifier comparing a live reading still replays the boot-phase events on
-  top. `checks.fleet.registry-sb-catalog` cross-checks the recorded value
+  measurement), not the UKI-as-kernel, recorded at the `enter-initrd` boot
+  phase (where `/var` unseals); a verifier comparing a live reading must
+  account for the quote's phase. `checks.fleet.registry-sb-catalog` cross-checks the recorded value
   against an independent recompute ([`registry-catalog.md`](registry-catalog.md)).
