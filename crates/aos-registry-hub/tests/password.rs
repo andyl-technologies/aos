@@ -276,7 +276,8 @@ async fn account_set_password_flow() {
     let page = send(&app, "GET", "/account", Some(&cookie), None).await;
     assert!(page.body.contains("set password"), "{}", page.body);
 
-    // Set a password (CSRF-protected).
+    // Set a password (CSRF-protected). The magic-link session is fresh, so it
+    // is within the sudo window and the change is allowed.
     let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
     let resp = send(
         &app,
@@ -296,14 +297,130 @@ async fn account_set_password_flow() {
         &db.user_for_password("dev@acme.com").unwrap().unwrap().1
     ));
 
-    // A bad CSRF token is rejected.
+    // The change revokes every session and re-issues a fresh cookie for this
+    // browser: the OLD cookie no longer validates, the NEW one does.
+    let new_cookie = format!(
+        "{COOKIE_NAME}={}",
+        cookie_value(&resp.set_cookie.expect("password change re-issues a cookie"))
+    );
+    assert_ne!(new_cookie, cookie, "a fresh cookie is minted");
+    let old = send(&app, "GET", "/account", Some(&cookie), None).await;
+    assert_eq!(
+        old.status,
+        StatusCode::SEE_OTHER,
+        "old session is revoked, bounced to /login"
+    );
+    let fresh = send(&app, "GET", "/account", Some(&new_cookie), None).await;
+    assert_eq!(fresh.status, StatusCode::OK, "new session is live");
+
+    // A bad CSRF token is rejected (using the live, re-issued cookie).
+    let resp = send(
+        &app,
+        "POST",
+        "/account/password",
+        Some(&new_cookie),
+        Some("csrf=bogus&password=whatever"),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN);
+}
+
+/// Changing the password evicts every *other* session (M4b): a user with two
+/// live sessions who changes their password from one browser locks the other
+/// (e.g. a stolen) session out, while the changing browser stays signed in via
+/// a freshly minted cookie.
+#[tokio::test]
+async fn password_change_evicts_sibling_sessions() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(app_state(Arc::clone(&db)));
+    let user = db.create_user("dev@acme.com", None).unwrap();
+
+    // Two live sudo sessions (as if signed in from two browsers).
+    let a = format!(
+        "{COOKIE_NAME}={}",
+        db.create_session(user, 30 * 24 * 60 * 60, 1).unwrap()
+    );
+    let b = format!(
+        "{COOKIE_NAME}={}",
+        db.create_session(user, 30 * 24 * 60 * 60, 1).unwrap()
+    );
+    assert_eq!(
+        send(&app, "GET", "/account", Some(&b), None).await.status,
+        StatusCode::OK,
+        "sibling session starts live"
+    );
+
+    // Change the password from browser A.
+    let csrf = mint_csrf_token(a.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
+    let resp = send(
+        &app,
+        "POST",
+        "/account/password",
+        Some(&a),
+        Some(&format!("csrf={csrf}&password=fresh-secret-pass")),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    let a_new = format!(
+        "{COOKIE_NAME}={}",
+        cookie_value(&resp.set_cookie.expect("change re-issues a cookie"))
+    );
+
+    // Browser B (the sibling) is now evicted.
+    assert_eq!(
+        send(&app, "GET", "/account", Some(&b), None).await.status,
+        StatusCode::SEE_OTHER,
+        "sibling session evicted"
+    );
+    // The original A cookie is dead too; the re-issued one is live.
+    assert_eq!(
+        send(&app, "GET", "/account", Some(&a), None).await.status,
+        StatusCode::SEE_OTHER,
+        "old A cookie evicted"
+    );
+    assert_eq!(
+        send(&app, "GET", "/account", Some(&a_new), None)
+            .await
+            .status,
+        StatusCode::OK,
+        "re-issued cookie live"
+    );
+}
+
+/// A non-sudo session (one that is not recently re-authenticated) cannot change
+/// the password (M4): the sudo gate refuses it with a `403`. An `auth_level=0`
+/// session is never sudo, so it stands in for a stale, long-lived session.
+#[tokio::test]
+async fn password_change_requires_sudo() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let app = router(app_state(Arc::clone(&db)));
+    let user = db.create_user("dev@acme.com", None).unwrap();
+
+    // A live but non-sudo session (auth_level 0).
+    let cookie = format!(
+        "{COOKIE_NAME}={}",
+        db.create_session(user, 30 * 24 * 60 * 60, 0).unwrap()
+    );
+    // It is authenticated enough to view the account page...
+    assert_eq!(
+        send(&app, "GET", "/account", Some(&cookie), None)
+            .await
+            .status,
+        StatusCode::OK,
+    );
+    // ...but not to change the password.
+    let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
     let resp = send(
         &app,
         "POST",
         "/account/password",
         Some(&cookie),
-        Some("csrf=bogus&password=whatever"),
+        Some(&format!("csrf={csrf}&password=should-be-refused")),
     )
     .await;
-    assert_eq!(resp.status, StatusCode::FORBIDDEN);
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    assert!(
+        !db.user_has_password(user).unwrap(),
+        "password unchanged by refused request"
+    );
 }

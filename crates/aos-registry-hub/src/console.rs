@@ -50,7 +50,7 @@ use axum::{Json, Router};
 use base64::Engine as _;
 
 use crate::auth::extract::{connect_or_csrf_ok, mint_csrf_token};
-use crate::auth::session::{set_cookie_header, COOKIE_NAME, IDLE_TIMEOUT_SECS};
+use crate::auth::session::{set_cookie_header, ABSOLUTE_LIFETIME_SECS, COOKIE_NAME};
 use crate::config::{self, MembershipChange};
 use crate::db::{Database, RegistryRecord, SessionAuth as DbSession};
 use crate::domain::{iam, Permission, Principal, Role, Scope};
@@ -217,6 +217,31 @@ fn check_csrf(session: &Session, csrf: &str) -> Result<(), Box<Response>> {
     } else {
         Err(Box::new(
             (StatusCode::FORBIDDEN, "bad or missing CSRF token").into_response(),
+        ))
+    }
+}
+
+/// Require that the session is **sudo** (recently re-authenticated).
+///
+/// The most destructive operations (password change, registry/org deletion)
+/// gate on this: a session is sudo only when it was minted from a strong
+/// re-authentication and that authentication is within
+/// [`SUDO_WINDOW_SECS`](crate::auth::session::SUDO_WINDOW_SECS) of now (see
+/// [`SessionAuth::is_sudo`](crate::db::SessionAuth::is_sudo)). A session that
+/// has fallen out of the window is refused with a `403` and a message asking
+/// the user to sign in again; the no-JS console has no in-place re-auth modal,
+/// so re-running the login flow (which mints a fresh sudo session) is the path
+/// back in.
+fn require_sudo(session: &Session) -> Result<(), Box<Response>> {
+    if session.auth.is_sudo(crate::server::now_secs()) {
+        Ok(())
+    } else {
+        Err(Box::new(
+            (
+                StatusCode::FORBIDDEN,
+                "Re-authenticate to perform this action: sign in again, then retry.",
+            )
+                .into_response(),
         ))
     }
 }
@@ -394,8 +419,8 @@ async fn magic_consume(
     };
     // A fresh magic-link sign-in is a re-authentication, so the session is
     // sudo-capable (auth_level 1).
-    let cookie = match state.db.create_session(user_id, IDLE_TIMEOUT_SECS, 1) {
-        Ok(secret) => set_cookie_header(&secret, IDLE_TIMEOUT_SECS),
+    let cookie = match state.db.create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1) {
+        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
         Err(err) => return internal(err),
     };
     ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
@@ -477,8 +502,8 @@ async fn login_password(
         return invalid();
     }
     // A correct password is a re-authentication: the session is sudo-capable.
-    let cookie = match state.db.create_session(user_id, IDLE_TIMEOUT_SECS, 1) {
-        Ok(secret) => set_cookie_header(&secret, IDLE_TIMEOUT_SECS),
+    let cookie = match state.db.create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1) {
+        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
         Err(err) => return internal(err),
     };
     ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
@@ -563,8 +588,11 @@ async fn oidc_callback(
         }
     };
     // A fresh SSO sign-in is a re-authentication: the session is sudo-capable.
-    let cookie = match state.db.create_session(login.user_id, IDLE_TIMEOUT_SECS, 1) {
-        Ok(secret) => set_cookie_header(&secret, IDLE_TIMEOUT_SECS),
+    let cookie = match state
+        .db
+        .create_session(login.user_id, ABSOLUTE_LIFETIME_SECS, 1)
+    {
+        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
         Err(err) => return internal(err),
     };
     // Honor the staged redirect only for same-origin relative paths (a leading
@@ -634,11 +662,19 @@ struct SetPasswordForm {
 
 /// `POST /account/password` — set or change the logged-in user's password.
 ///
-/// Session-authed and CSRF-protected (a cookie-authenticated mutation). Hashes
-/// the submitted password with Argon2id ([`crate::auth::password::hash_password`])
-/// and stores the PHC string for the session's user, then redirects back to
-/// `/account`. An empty password is rejected with the account page re-rendered;
-/// an over-long password is rejected to bound the hashing cost.
+/// Session-authed, CSRF-protected, and **sudo-gated** (a fresh
+/// re-authentication is required — see [`require_sudo`]): the password is a
+/// durable login path, so a stale or stolen ordinary session cannot set it.
+/// Hashes the submitted password with Argon2id
+/// ([`crate::auth::password::hash_password`]) and stores the PHC string for the
+/// session's user.
+///
+/// On success the change **revokes every session** the user holds (so a stolen
+/// sibling session is evicted and a victim recovering their account locks the
+/// attacker out), then mints a fresh sudo session for *this* browser and sets
+/// the new `__Host-` cookie — the current user stays signed in, everyone else
+/// is logged out. An empty or over-long password is rejected with the account
+/// page re-rendered (the latter bounds the hashing cost).
 async fn account_set_password(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -649,6 +685,9 @@ async fn account_set_password(
         Err(resp) => return *resp,
     };
     if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    if let Err(resp) = require_sudo(&session) {
         return *resp;
     }
     // Bound the input: reject empties, and cap the length so a pathological
@@ -679,7 +718,20 @@ async fn account_set_password(
     if let Err(err) = state.db.set_user_password(session.auth.user_id, &hash) {
         return internal(err);
     }
-    Redirect::to("/account").into_response()
+    // Evict every session (including this one and any stolen sibling), then
+    // re-issue a fresh sudo session for the current browser so the user who
+    // just changed their password stays signed in.
+    if let Err(err) = state.db.revoke_all_user_sessions(session.auth.user_id) {
+        return internal(err);
+    }
+    let cookie = match state
+        .db
+        .create_session(session.auth.user_id, ABSOLUTE_LIFETIME_SECS, 1)
+    {
+        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
+        Err(err) => return internal(err),
+    };
+    ([(header::SET_COOKIE, cookie)], Redirect::to("/account")).into_response()
 }
 
 /// `POST /account/sessions/revoke-all` — sign out of every browser.
@@ -940,8 +992,8 @@ async fn passkey_login_finish(
                 return (StatusCode::UNAUTHORIZED, "passkey sign-in failed").into_response();
             }
         };
-    let cookie = match state.db.create_session(user_id, IDLE_TIMEOUT_SECS, 1) {
-        Ok(secret) => set_cookie_header(&secret, IDLE_TIMEOUT_SECS),
+    let cookie = match state.db.create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1) {
+        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
         Err(err) => return internal(err),
     };
     (
@@ -2179,7 +2231,8 @@ const ORG_DELETE_GRACE_SECS: i64 = 30 * 24 * 60 * 60;
 
 /// `POST /-/org/{org}/delete` — soft-delete an org behind a typed confirmation.
 ///
-/// Owner-only (`IamAdmin` at the org scope) and CSRF-checked. The `confirm`
+/// Owner-only (`IamAdmin` at the org scope), CSRF-checked, and **sudo-gated**
+/// (a fresh re-authentication — see [`require_sudo`]). The `confirm`
 /// field must exactly equal the org slug. Calls the existing
 /// [`crate::db::Database::soft_delete_org`] (a 30-day grace window), audits the
 /// deletion, and redirects to `/-/orgs`.
@@ -2194,6 +2247,9 @@ async fn org_delete(
         Err(resp) => return *resp,
     };
     if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    if let Err(resp) = require_sudo(&session) {
         return *resp;
     }
     let scope = Scope::parse(&org_slug);
@@ -2421,9 +2477,11 @@ async fn registry_delete(
     registry_delete_action(&state, &session, &registry, &form.csrf, &form.confirm)
 }
 
-/// The registry-delete action: CSRF + owner/admin (`IamAdmin`) gate and a
-/// typed-confirmation match on the registry slug, then remove the row.
+/// The registry-delete action: CSRF + sudo + owner/admin (`IamAdmin`) gate and
+/// a typed-confirmation match on the registry slug, then remove the row.
 ///
+/// Deletion requires a sudo session (a fresh re-authentication — see
+/// [`require_sudo`]) in addition to the authorization check below.
 /// Deletion is owner/admin-level: it requires `IamAdmin` at the registry's
 /// canonical scope (an org owner holds it everywhere beneath the org). The
 /// `confirm` field must exactly equal the registry slug. Removes the
@@ -2438,6 +2496,9 @@ fn registry_delete_action(
     confirm: &str,
 ) -> Response {
     if let Err(resp) = check_csrf(session, csrf) {
+        return *resp;
+    }
+    if let Err(resp) = require_sudo(session) {
         return *resp;
     }
     let scope = Scope::parse(&registry.slug);
