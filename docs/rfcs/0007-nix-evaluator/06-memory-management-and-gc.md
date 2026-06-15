@@ -102,6 +102,44 @@ advantage the incumbent cannot retrofit: C++ Nix cannot become precise without
 rewriting its value representation, because BDW-GC's whole premise is *not*
 knowing the layout.
 
+### 1.3 The hash-consing advantage: a strictly smaller live set
+
+There is a second, independent reason `aos-nix` uses less memory than C++ Nix,
+and it is *not* about the collector at all — it is about how much gets allocated
+in the first place. **C++ Nix is a memory hog partly because it does not
+maximally share: structurally-equal values are duplicated.** Every time an
+expression produces an attrset, a list, or a string that is value-equal to one
+already on the heap, C++ Nix allocates it again. In a `nixpkgs`-scale evaluation
+the duplication is enormous: the same store-path strings, the same `meta`
+attrsets, the same `stdenv`/`lib` fragments recur across tens of thousands of
+derivations, each materialized fresh.
+
+`aos-nix` **hash-conses** its value graph (see
+[value representation](05-value-representation.md)): structurally-equal attrsets,
+lists, and — critically — the constantly-recurring store-path and option strings
+collapse to a *single* allocation, looked up through a dedup table and returned
+by pointer. The store path `"/nix/store/…-stdenv-linux"` that appears in a
+million places is one heap object referenced a million times, not a million
+copies. Maximal sharing turns structural equality into pointer equality and, as
+a side effect, makes the *live set itself smaller* — there is simply less
+distinct data alive at peak.
+
+The consequence is a memory **advantage**, not mere parity. For the same
+evaluation, before any reclamation or spill happens at all:
+
+```text
+   live_set(aos-nix)  =  distinct values  (hash-consed, one copy each)
+   live_set(C++ Nix)  =  distinct values  +  all the duplicates
+   ⇒  live_set(aos-nix)  <  live_set(C++ Nix)        (strictly, on shared-heavy input)
+```
+
+This frames everything that follows. The spill-to-disk story (§3.4), the OS
+paging cooperation (§3.5), and the budget-driven escalation (§3.6) all operate on
+a working set that is *already* smaller than the incumbent's. Hash-consing
+shrinks the live set; spill + `madvise` then bound the *peak*. The two are
+complementary: sharing reduces what must be alive, and out-of-core spill bounds
+what must be resident.
+
 ---
 
 ## 2. The `alloc-via-symbols` contract
@@ -238,7 +276,137 @@ preference:
    makes this a pointer swap on the allocator vtable, not a recompile). This is
    a safety valve, not the common path.
 
-### 3.4 When Tier A is correct
+These three are not the whole story, though. "Flip to a collector" still assumes
+the live set must fit in RAM. The next three subsections add the part vanilla Nix
+structurally lacks: an **out-of-core** path (§3.4) that lets cold values live on
+disk, **OS page-level cooperation** (§3.5) that lets the kernel manage the
+resident working set, and a **single configurable budget** (§3.6) that drives all
+of these — eviction, paging hints, and the collector flip — as escalating
+responses to one knob.
+
+### 3.4 Out-of-core spill: the mmap'd CAS as a swap-to-disk mechanism
+
+The mitigations above keep everything in RAM. But `aos-nix` has a resource
+vanilla Nix does not: the **content-addressed value store** of the incremental
+evaluation cache (see
+[incremental evaluation cache](12-incremental-evaluation-cache.md)). That store
+is an `mmap`'d, content-addressed, on-disk arena of hash-consed values — and it
+**doubles as a swap-to-disk mechanism for the evaluator's own heap.** This
+converts the peak-memory objection from "the live set must fit in RAM" to "the
+live set must fit in RAM + disk, with the OS managing which part is resident."
+
+The mechanism has three properties that make it unusually clean, each a direct
+consequence of the value representation:
+
+- **Cold values are evicted to the CAS and rematerialized on demand.** A
+  hash-consed value that has not been touched recently can be dropped from the
+  in-RAM arena, leaving behind only its content hash (a small, fixed-size
+  handle). When some later access dereferences that handle, the value is
+  rematerialized by reading it back from the on-disk store. The in-memory
+  footprint of a cold value collapses to one hash.
+- **Because the store is `mmap`'d, the OS pages it in and out.** We do not write
+  our own pager. The CAS is a memory-mapped file; the kernel's virtual-memory
+  system brings pages of cold values into physical RAM on fault and evicts them
+  under pressure via the standard page-cache machinery. The evaluator addresses
+  the whole content-addressed store as if it were memory, and the working-set
+  management is the OS's job — exactly the leverage `madvise` (§3.5) lets us
+  steer.
+- **Eviction is write-back-free, because the hash *is* the address.** This is
+  the crucial difference from a conventional swap file. In a content-addressed,
+  immutable store, a value's on-disk location is determined by its content hash;
+  the value is never mutated after creation. So evicting a cold value requires
+  **no write-back**: either the value is already present in the CAS (it was
+  hash-consed there on creation) and eviction is a pure drop of the RAM copy, or
+  it is written once and is thereafter immutable. There is no dirty-page
+  write-out on the eviction path, no coherence problem between the RAM copy and
+  the disk copy — immutability plus content-addressing guarantee they are the
+  same bytes. Rematerialization is a pure read keyed by hash.
+
+The net effect is that the "allocate forever, never free" discipline of Tier A no
+longer implies "everything stays resident." Cumulative allocation can exceed
+physical RAM as long as the *resident working set* fits, with the cold tail
+spilled to the CAS and faulted back only when touched. This is precisely the
+out-of-core capability C++ Nix's BDW-GC heap cannot offer: a conservative,
+in-RAM, non-content-addressed heap has no notion of "the disk copy is
+authoritative, drop the RAM copy for free."
+
+### 3.5 OS page-level cooperation (`madvise`)
+
+Vanilla Nix does not collaborate with the operating system's pager: its heap is
+opaque RAM, and the kernel must guess the working set from raw access patterns.
+`aos-nix` instead tells the kernel what it knows, using `madvise(2)` to steer
+which pages stay resident. Because the evaluator understands its own liveness and
+temperature (which arena chunks are dead, which cached values are cold), it can
+hand the kernel advice no access-pattern heuristic could infer. The semantics
+below are verified against the Linux man page ([madvise(2)][madvise]); all of
+them are **advisory hints**, **Linux-specific**, and therefore gated behind a
+portability shim that compiles to a no-op on non-Linux hosts.
+
+| Advice | What we use it for | Verified semantics |
+|---|---|---|
+| `MADV_DONTNEED` | Return *dead* arena pages to the OS after a region pop (§5) or a worker-arena drop, when we want the RSS reclaimed immediately and the contents are genuinely garbage. | Destructive: subsequent access re-faults to zero-fill (anon) or re-reads the file. Immediate RSS reduction. Original Linux; Huge-TLB support added 5.18. |
+| `MADV_FREE` | Return *probably-dead* arena pages cheaply, letting the kernel keep them if there is no memory pressure (lazy reclaim) and reuse them on a write. | Lazy: the kernel may free under pressure or on next write; non-destructive until then. Private anonymous pages only. Linux 4.5+. |
+| `MADV_COLD` | Demote *cold* cache/value pages — hash-consed values not recently touched — to make them preferred reclaim targets *without* forcing them out. | Non-destructive deactivation: marks pages as reclaim candidates; a hint only, does not force reclaim. Linux 5.4+. |
+| `MADV_PAGEOUT` | Actively evict cold CAS/value pages to swap (or write back, for file-backed) when we want to *force* the demotion, e.g. when approaching the budget (§3.6). | Forced reclaim: anonymous pages are swapped out, dirty file-backed pages written; data preserved, pages removed from RAM now. Linux 5.4+. |
+| `MADV_HUGEPAGE` | Back the **cache-resident nursery** (and the hot CAS region) with transparent huge pages to cut TLB miss pressure on the allocation hot path. | Enables Transparent Huge Pages for the range; the kernel collapses/scans to huge pages. Optimization hint, non-destructive. Linux 2.6.38+ (needs `CONFIG_TRANSPARENT_HUGEPAGE`). |
+
+The distinction between the pairs is deliberate and load-bearing:
+
+- **`MADV_DONTNEED` vs. `MADV_FREE`.** We use `MADV_DONTNEED` only where the
+  contents are *known dead* and we want the RSS back now (popped region, dropped
+  arena); `MADV_FREE` where pages are *probably* dead but cheap to keep — we let
+  the kernel decide based on pressure, and a subsequent write silently reclaims
+  the page for reuse. `MADV_DONTNEED` is destructive on next read; `MADV_FREE` is
+  not, until the kernel actually reclaims.
+- **`MADV_COLD` vs. `MADV_PAGEOUT`.** `MADV_COLD` is the gentle hint — "these
+  cold value pages are good reclaim candidates, take them if you need them";
+  `MADV_PAGEOUT` is the forceful version — "evict these now." Under the budget
+  (§3.6) we escalate from the former to the latter as pressure rises.
+
+The portability shim matters: `MADV_PAGEOUT`/`MADV_COLD` need Linux 5.4,
+`MADV_FREE` needs 4.5, and none of these flags exist on macOS or the BSDs with
+the same semantics. The shim presents one internal API
+(`advise_dead`, `advise_cold`, `advise_evict`, `advise_huge`) and lowers each to
+the best available primitive per platform, falling back to no-ops where the
+kernel is too old or the OS differs. Correctness never depends on the advice
+being honored — these only affect *when* the OS reclaims, never *what* the
+evaluator observes (cf. §8: GC and paging are observationally invisible).
+
+### 3.6 The configurable memory budget: one knob, three escalating responses
+
+The user- and CI-settable piece tying §3.3, §3.4, and §3.5 together is a single
+**high-water memory budget** (e.g. `--max-rss`, or an environment variable, or a
+daemon config field). It is not three separate thresholds; it is one budget that
+drives three *escalating* responses as the resident set climbs toward it:
+
+```text
+   resident set vs. budget          response
+   ────────────────────────         ─────────────────────────────────────────
+   well under budget          (1)   never-free, fully in-RAM Tier A bump arena
+                                     (the common, fastest path — §3.1)
+
+   approaching budget         (2)   spill cold hash-consed values to the mmap'd
+                                     CAS (§3.4); MADV_COLD / MADV_PAGEOUT the
+                                     cold value pages and MADV_FREE dead arena
+                                     pages (§3.5) — keep the resident set under
+                                     the budget without ever tracing the heap
+
+   still over after spilling  (3)   install the generational collector for the
+                                     remainder of the run (the §3.3.3 flip) — a
+                                     true tracing reclaim, the last resort
+```
+
+The ordering is deliberate: each response is cheaper and less disruptive than the
+next. Step (1) costs nothing. Step (2) is out-of-core paging with no tracing —
+the OS moves bytes between RAM and disk, and we only pay for values we actually
+touch again. Step (3), installing a tracing collector mid-run, is the genuinely
+expensive escalation (it must root-scan and may relocate; see §3.7 and open
+question §10.5), so it fires only when out-of-core spill *plus* page eviction
+still cannot hold the line — which, given the strictly-smaller hash-consed live
+set (§1.3), is rare for real `nixpkgs`-shaped input. One knob; three responses,
+escalating only as far as the workload forces.
+
+### 3.7 When Tier A is correct
 
 Tier A is correct **whenever the process is single-shot and the peak live +
 retained set fits the memory budget.** That is the default for `aos-nix eval`
@@ -678,6 +846,11 @@ Memory-management and collector prior art verified for this document:
 - Cranelift JIT (`cranelift-jit`) — symbol table, memory allocation, and
   relocation management used to register `aos_alloc_*` and primops.
   <https://github.com/bytecodealliance/wasmtime/tree/HEAD/cranelift/jit>
+- `madvise(2)` — Linux manual page; verified semantics of `MADV_DONTNEED`,
+  `MADV_FREE`, `MADV_COLD`, `MADV_PAGEOUT`, and `MADV_HUGEPAGE` used for the
+  OS page-level cooperation in §3.5 (advisory hints, Linux-specific, kernel
+  version gates).
+  <https://man7.org/linux/man-pages/man2/madvise.2.html>
 
 [bdwgc-paper]: http://shiftleft.com/mirrors/www.hpl.hp.com/personal/Hans_Boehm/spe_gc_paper/preprint.pdf
 [bdwgc-repo]: https://github.com/bdwgc/bdwgc
@@ -688,3 +861,4 @@ Memory-management and collector prior art verified for this document:
 [jep-439]: https://openjdk.org/jeps/439
 [zgc-toplas]: https://dl.acm.org/doi/full/10.1145/3538532
 [cranelift-jit]: https://github.com/bytecodealliance/wasmtime/tree/HEAD/cranelift/jit
+[madvise]: https://man7.org/linux/man-pages/man2/madvise.2.html

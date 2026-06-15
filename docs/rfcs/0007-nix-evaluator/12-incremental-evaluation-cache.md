@@ -265,6 +265,99 @@ where profiling says it pays. The promotion signal here is *cross-run reuse
 frequency and value-hash cost*, recorded in the persistent cache's metadata so
 later runs cache the right grain.
 
+### 3.4 The materialization threshold: when a memoized result hits disk
+
+§3.3 decides *what grain* to cache; this subsection answers the orthogonal
+question of *when a cached result is written to the durable packfile* (§6), and
+the two are not the same decision. Memoization and materialization are **two
+tiers**:
+
+- **RAM-tier (memoization).** A node may be entered in the in-process memo table
+  (the `nodes` map) cheaply — it is just a pointer to an already-interned value
+  ([05](05-value-representation.md)) plus its dependency edges. This is free
+  enough that the §3.3 "conditionally cache" set lives here: within a run, a
+  used-many thunk earns a RAM memo entry the moment its second demand arrives.
+- **Disk-tier (materialization).** Writing a node and its value to the durable
+  CAS (§6) is *not* free: it costs a blake3 value-hash, a canonical
+  serialization of the WHNF value, and an append to the memory-mapped packfile.
+  A node is materialized to disk **only when**
+
+  ```text
+     eval_cost(node)  >  hash_cost(value) + serialize_cost(value) + io_cost
+                      AND
+     likely_redemanded_across_runs(node)
+  ```
+
+  Both conjuncts must hold. The first is the **cost inequality** that prevents
+  persisting tiny units of work: a literal, a small arithmetic node, or a thunk
+  that forces in nanoseconds can never repay the bytes it would cost to hash,
+  serialize, and store — its `eval_cost` is below the floor set by the write
+  itself, so it stays RAM-only or is not cached at all. The second conjunct
+  guards against persisting work that is expensive but single-shot: a node demanded
+  once and never again across runs is, on disk, pure overhead (the §8.2 mantra —
+  caching a node never re-demanded is a net loss — applies to the *durable* tier
+  specifically).
+
+In practice this collapses to a clean default that matches §3.3's grain:
+
+- **Never materialize:** trivial nodes (the §3.3 "never cache" set) — they fail
+  the cost inequality by construction.
+- **Always materialize:** `derivationStrict` results, `import`/`files/` IR, and
+  large-library attribute bindings (`pkgs.<name>`). These dominate `eval_cost`
+  (a `derivationStrict` drags ATerm serialization and SHA-256 hashing behind it;
+  an `import` drags a whole parse+compile), and they are the canonical cross-run
+  reuse boundaries, so both conjuncts hold trivially.
+- **Materialize on promotion:** conditionally-cached used-many thunks graduate
+  from RAM-tier to disk-tier when the persistent metadata's reuse counter (§3.3)
+  shows them re-demanded across runs *and* their measured `eval_cost` clears the
+  write floor.
+
+The two-tier split is why the durable store stays small (§8.2): the billions of
+cheap thunk activations never reach it, the millions of conditionally-memoized
+nodes touch it only if they prove their cross-run worth, and the disk holds
+roughly the set of nodes whose recomputation is genuinely expensive and
+genuinely recurring.
+
+### 3.5 The deduplication story: three layers, and why thunks are not all hashed
+
+Deduplication in aos-nix is split across three layers that operate at different
+times and granularities. They are easy to conflate, so we name them explicitly
+and state the boundary between them.
+
+1. **Compile-time thunk sharing** (full-laziness / let-floating / CSE,
+   [07](07-laziness-and-whole-program-analyses.md)). Identical *thunk
+   allocations* are shared **statically**, before any value exists: floating a
+   loop-invariant subexpression out so it is allocated once, or common-
+   subexpression-eliminating two syntactically identical thunks into one. This is
+   structural sharing of *code and closures*, decided by the compiler with **no
+   runtime hashing at all**.
+2. **Runtime coarse memoization** (xxh3 cache keys, this document, §3). At the
+   granularity of §3.3 — *not every thunk* — a forced result is memoized under
+   `H(expr ⊕ env)` so a second demand for the same computation is a table hit.
+   This dedups *work*, and it deliberately covers only the coarse grain the
+   §3.3/§3.4 policy selects.
+3. **Post-force value hash-consing** ([05](05-value-representation.md)).
+   Once a thunk is forced to WHNF, structurally-equal *values* are interned:
+   xxh3-keyed in-process for O(1) pointer equality, blake3-keyed in the durable
+   CAS (§6). Hash-consing is what makes the store-path strings and identical
+   derivation env attrsets that recur across the package set collapse to one
+   allocation in RAM and one entry on disk, and it is what supplies the
+   already-computed value-hashes that §3.2's keys and §4's early cutoff read as a
+   field load rather than a tree-walk.
+
+The deliberate gap in the picture: **we do not hash unforced thunks.** It is
+tempting to imagine deduplicating thunks by the value they will produce, but that
+is unsound. A thunk's value is unknown without forcing it, and forcing-to-hash
+would (a) destroy laziness — the entire point of the evaluator — by evaluating
+thunks no observer demanded, and (b) be non-terminating or error-raising in
+general, because un-demanded thunks may denote infinite structures
+(`let xs = [1] ++ xs`) or carry errors (`throw`/`abort`) that a correct lazy
+evaluator must never trigger. Layer 1 therefore keys thunk identity on
+*expression identity* (§3.2), and layer 2's cache key mixes in *only the
+value-hashes of already-forced free variables* — never "the value the thunk will
+become." A thunk's value-hash enters the system exactly once: at layer 3, *after*
+it has been legitimately forced on demand.
+
 ## 4. Early cutoff
 
 Early cutoff is the mechanism that turns "one file changed" into "almost nothing
@@ -488,6 +581,109 @@ defenses:
    (`andyl-os` eval-cache), separate from the build-output cache, with the same
    signing/auth posture AOS already applies to build artifacts.
 
+### 6.5 Storage engine: two engines for two data natures
+
+The `nodes/`, `values/`, and `files/` layout of §6.1 is a logical schema; this
+subsection records the on-disk engine that backs it. **Decision (closed):** the
+durable cache uses *two* storage engines, chosen by the nature of the data each
+holds, not one general-purpose database for everything.
+
+**Immutable content-addressed blobs (`values/`, `files/`) — a custom
+memory-mapped append-only packfile.** The serialized WHNF values and compiled IR
+are content-addressed and never mutate. We store them in a single packfile in the
+style of a git object store or an Attic chunk store:
+
+- **Content-addressed.** The blake3 value-hash (or file-hash) *is* the lookup
+  key; the index (below) maps it to a byte offset in the pack.
+- **Zero-copy mmap reads.** The packfile is `mmap`'d; a lookup returns a pointer
+  (a `&[u8]`) directly into the mapped page, with no copy and no deserialization
+  step on the hot read path. Because Nix values are immutable, the borrow is
+  sound for as long as the mapping lives.
+- **Append-only writes.** New blobs are appended; existing bytes are never
+  rewritten. GC is **repack** — copy live blobs to a fresh pack and swap it in —
+  exactly the §6.2 layered collection, never an in-place delete.
+- **Immutability removes the hard parts.** With no in-place update there is no
+  page-rewrite torn-write window, no MVCC-over-mutable-data, no write-ahead log
+  for the blob store. The classically difficult parts of a storage engine simply
+  do not arise, because content-addressed data is write-once.
+
+**Mutable metadata + the offset index (`nodes/`, blake3 → packfile-offset) —
+`heed` (LMDB).** The verifying-trace node records and the hash→offset index *do*
+change as nodes are recomputed, so they go in `heed`, the maintained Rust wrapper
+over LMDB (the same one Meilisearch uses):
+
+- **mmap'd B+tree with zero-copy MVCC reads.** LMDB memory-maps a single-file
+  B+tree; reads return pointers into the map (zero-copy, via `heed`'s typed
+  zerocopy layer), and its MVCC/copy-on-write design means **readers never block
+  and never block writers** — many parallel forcing workers
+  ([13](13-parallel-evaluation.md)) can read the index lock-free.
+- **Single writer, batched — and that is fine.** LMDB serializes writers (one
+  write transaction at a time). For us the write path is the *cold* path (a node
+  is materialized once and read many times), and because every materialization is
+  content-addressed it is **idempotent** — concurrent misses on the same key
+  collapse to the same bytes, so batching writes behind a single writer costs
+  nothing in correctness and little in throughput.
+- **Crash-safe, tiny hermetic dependency.** LMDB is a small, self-contained C
+  library that builds cleanly from source under the AOS hermetic-build rules; it
+  needs no server process. Its `mapsize` (max map / DB size, set to a multiple of
+  the OS page size) is sized generously up front for the package-set's metadata.
+
+**Why this split, versus the alternatives:**
+
+| Engine | Pros | Cons / verdict |
+|--------|------|----------------|
+| **Custom mmap packfile** (chosen for `values/`/`files/`) | Zero-copy reads (pointer into the page); append-only writes are trivial given immutability; GC-by-repack; no engine complexity for write-once data | We own the format (versioning is on us, §8.4) — acceptable for a write-once blob store |
+| **heed / LMDB** (chosen for `nodes/` + index) | Zero-copy MVCC reads, lock-free for many readers; crash-safe; tiny hermetic C lib; battle-tested (Meilisearch) | Single writer (a non-issue on our cold, idempotent write path) |
+| **SQLite** | Already a workspace dependency, and C++ Nix itself uses SQLite for both its store DB and its flake eval-cache, so the model is proven for *this exact problem* | **Not zero-copy** — blob reads copy out through the SQL/row layer, defeating the mmap pointer-return we want for `values/`; a full relational engine where we only need a hash→bytes map. Kept in mind as a fallback if the two-engine split proves not worth its complexity |
+| **redb** (pure-Rust LMDB-alike) | No C dependency at all — strictly better for hermeticity than LMDB | Younger and less battle-tested than LMDB; noted as the **drop-in option** if the LMDB C dependency ever becomes a hermetic-build friction point |
+| **RocksDB** | LSM write throughput | Heavy C++ build, large dependency surface, anti-hermetic under the AOS source-build rules — **rejected** |
+
+**The enabling property behind all of this: the cache is advisory, not a source
+of truth.** Per §5.2 and §8.3, a lost or corrupt cache entry can only ever cause
+a *recompute*, never a wrong `.drv` — the differential harness
+([15](15-differential-testing-and-benchmarking.md)) is truth. That lets us trade
+durability for speed: LMDB runs with relaxed sync (`MDB_NOSYNC` / `MDB_MAPASYNC`),
+giving crash-*safety* (the B+tree is never left structurally corrupt) without
+crash-*durability* (the last few writes may be lost on power failure). Losing
+those writes is harmless — the affected nodes are simply recomputed on the next
+demand — so we keep the fsync off the hot path entirely.
+
+### 6.6 Out-of-core evaluation: the mmap'd value store is the spill-to-disk Nix lacks
+
+Vanilla C++ Nix has no swap-to-disk mechanism for the value heap: a sufficiently
+large evaluation (a full `nixpkgs` instantiation, or the whole AOS closure) holds
+every live value in RAM until GC reclaims it, and peak resident set is bounded
+only by how much the GC can free, not by any cooperation with the OS. The
+content-addressed value store (§6.1, §6.5) gives aos-nix the spill mechanism Nix
+is missing — see [memory and GC](06-memory-management-and-gc.md) for the
+in-process heap and collector this complements.
+
+The mechanism is **eviction to the CAS with rematerialization on demand**:
+
+- **Cold values evict from the heap.** A hash-consed value
+  ([05](05-value-representation.md)) that has not been touched recently can be
+  dropped from the in-memory value arena; future demands rematerialize it from
+  the packfile by its value-hash (a zero-copy mmap read, §6.5).
+- **The OS does the paging.** Because the value store is `mmap`'d, eviction and
+  reload are *page-level* cooperation with the kernel: the OS pages cold value
+  bytes out under memory pressure and pages them back in on access, a knob C++
+  Nix's bespoke heap has no equivalent for. We get demand paging of the value
+  closure for free from the mapping.
+- **Eviction is write-back-free.** This is the property that makes spilling cheap.
+  Because values are immutable and content-addressed, the blake3 hash *is* the
+  address: if a value's bytes are already in the packfile (and any value that was
+  materialized per §3.4 already is), "spilling" it is simply **dropping the
+  in-RAM copy** — there is nothing to write back, no dirty page, no flush. A clean
+  immutable value is reduced to a (hash → offset) reference that re-reads on
+  demand.
+
+The result is that peak RAM for a huge evaluation is bounded by the *working set*
+of values demanded close together in time, not by the full set of live values —
+the out-of-core property that lets aos-nix evaluate closures larger than memory
+where vanilla Nix would OOM. The in-process GC ([06](06-memory-management-and-gc.md))
+and this spill path are the two halves of the memory story: GC reclaims dead
+values, eviction parks live-but-cold values on disk.
+
 ## 7. Worked example: a one-line version bump
 
 To make the asymptotics concrete, trace what happens when a developer bumps
@@ -657,3 +853,11 @@ tree-walk oracle independent of interpreter speed, and the differential harness
   xxh3-hot / blake3-durable split):
   <https://mojoauth.com/compare-hashing-algorithms/xxhash-vs-blake3> and
   <https://devtoolspro.org/articles/sha256-alternatives-faster-hash-functions-2025/>
+- heed, the maintained typed Rust wrapper over LMDB (zero-copy reads, MVCC
+  readers-never-block-writers, single writer, `mapsize`): <https://docs.rs/heed>
+  and the LMDB design <https://dbdb.io/db/lmdb>
+- redb, pure-Rust embedded key-value store (LMDB-alike, no C dependency) — the
+  hermetic drop-in alternative: <https://github.com/cberner/redb>
+- C++ Nix's use of SQLite for the store database (alongside `/nix/store`) and the
+  flake evaluation cache (motivating the SQLite pros/cons in §6.5):
+  <https://www.tweag.io/blog/2020-06-25-eval-cache/>

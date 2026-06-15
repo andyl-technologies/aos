@@ -116,6 +116,10 @@ blocks Phase 1.
 | **Measure-first** | Confirm eval, not build, is the bottleneck before optimizing; quantify against the harness. See [15](15-differential-testing-and-benchmarking.md). |
 | **Content-addressed derivations are first-class** | CA is in the first acceptance gate (not deferred); AOS's store model is content-addressed (RFC-0005). See [11](11-derivation-and-store-compatibility.md), [19](19-decision-register.md) C-11. |
 | **Parallel graph evaluation is promoted early** | Lock-free CAS thunks + work-stealing forcing as an early phase (P3.5), not a rank-5 tail; sequential oracle stays ground truth, `loom`/Miri-gated. Concurrent *moving* GC stays deferred. See [13](13-parallel-evaluation.md), [19](19-decision-register.md) C-12. |
+| **Concurrency runtime: rayon + tokio + fibers** | rayon for CPU graph forcing; tokio reactor for blocking eval-time I/O; stackful **fibers** so I/O-blocked nodes park without async-coloring the recursive hot path. Full async-coloring rejected. See [13](13-parallel-evaluation.md) §5.5, [19](19-decision-register.md) C-16. |
+| **Cache storage: mmap packfile + heed/LMDB** | Custom mmap'd append-only packfile for immutable content-addressed blobs (zero-copy); `heed`/LMDB for metadata + index. Advisory cache → relaxed sync. See [12](12-incremental-evaluation-cache.md) §6.5, [19](19-decision-register.md) C-13. |
+| **Out-of-core memory (the swap Nix lacks)** | The mmap'd value store spills cold values to disk, OS-paged, write-back-free; `madvise`/huge pages + a memory budget; hash-consing already beats vanilla Nix's live set. See [06](06-memory-management-and-gc.md), [12](12-incremental-evaluation-cache.md) §6.6, [19](19-decision-register.md) C-17. |
+| **Quantified cutover gate** | A single falsifiable bar (100% closure parity + fuzz CPU-hours + shadow-mode window, all at zero divergence) before `AOS_NIX_NATIVE` defaults on; `NixCli` retained. See [15](15-differential-testing-and-benchmarking.md) §8.1, [19](19-decision-register.md) C-18. |
 
 ## Roadmap
 

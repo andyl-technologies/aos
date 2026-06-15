@@ -655,6 +655,15 @@ None of these are theoretical; each corresponds to a real C++ Nix behavior that
   edges exactly right is the boundary between this layer and doc 12, and is
   marked research-grade there.
 
+- **I/O primops and the concurrency runtime.** The *blocking* I/O primops —
+  chiefly IFD (an `outPath` access that forces a derivation to build) and
+  eval-time network fetchers — are the suspension points for the fiber-based
+  concurrency model ([parallel evaluation](13-parallel-evaluation.md) §5.5):
+  hitting one parks the fiber (freeing its worker) while the tokio reactor drives
+  the I/O. The fast local reads in the table above (`readFile`/`readDir`/
+  `pathExists`/local `findFile`) stay **synchronous** — a microsecond syscall is
+  cheaper than a fiber suspend/resume.
+
 ---
 
 ## 10. Summary

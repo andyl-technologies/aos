@@ -665,16 +665,107 @@ optimized tiers are validated against the safe oracle, which is validated agains
 C++ Nix. The unsafe surface is never the final arbiter of a store path — the
 `.drv`-diff gate is.
 
-### 7.1 Fuzzing the differential
+### 7.1 The internal differential fuzzer (optimized tier vs the oracle)
 
-Beyond the enumerated corpus, aos-nix fuzzes the differential: a generator emits
-random (but valid) Nix expressions, both the optimized tier and the oracle
-evaluate them, and any disagreement is a bug. The same generator feeds the
-`cargo fuzz` targets named in
+Beyond the enumerated corpus, aos-nix fuzzes the **internal** differential: a
+generator emits random (but valid) Nix expressions, both the optimized tier and
+the tree-walk oracle evaluate them, and any disagreement is a bug. The same
+generator feeds the `cargo fuzz` targets named in
 [integration with AOS](14-integration-with-aos.md) §9.3 (value decode, GC, ATerm
-round-trip). Fuzzing is how we attack the long tail that the enumerated corpus
-and even shadow mode cannot reach — expressions AOS does not yet contain but the
-language permits.
+round-trip). The oracle here is *internal* (tier-0 tree-walk), so this fuzzer's
+findings are by construction JIT-tier or whole-program-analysis bugs — the same
+class §7's trust gradient localizes — never serialization or string-context
+bugs, which only the §2 gate's external oracle can surface. Fuzzing is how we
+attack the long tail that the enumerated corpus and even shadow mode cannot reach
+— expressions AOS does not yet contain but the language permits.
+
+### 7.2 The parity fuzzer (aos-nix vs C++ Nix)
+
+The §7.1 fuzzer cannot catch a bug that is present in *both* aos-nix tiers — if
+the optimized tier and the oracle agree with each other but both diverge from
+C++ Nix, the internal differential is silent. The high-value fuzzer therefore
+uses C++ Nix itself as the oracle: a **differential parity fuzzer** of aos-nix
+against `nix-instantiate`. It is the fuzzing analogue of the §2 `.drv`-diff gate
+— same external oracle, same byte-equality assertion — but driven by *generated*
+expressions rather than the AOS corpus, so it explores language constructs AOS
+happens never to write.
+
+```text
+   internal differential (§7.1)  ──  optimized tier   vs  tree-walk oracle
+                                     (finds JIT / analysis bugs)
+
+   PARITY fuzzer        (§7.2)  ──  aos-nix (whole)   vs  C++ nix-instantiate
+                                     (finds bugs SHARED by both aos-nix tiers:
+                                      serialization, context, ordering, FOD hash)
+
+   the two oracles are different on purpose — neither subsumes the other.
+```
+
+Four properties make the parity fuzzer find real bugs instead of burning CPU on
+inputs C++ Nix and aos-nix both reject at the parser:
+
+- **Structure-aware generation.** The fuzzer does *not* feed pseudorandom bytes
+  (which a Nix parser rejects almost immediately, exploring nothing). Instead an
+  `Arbitrary`-derived (or grammar-based) generator emits *valid* Nix ASTs —
+  attrsets, `rec`, `let`/`with`, fixpoints, function patterns (`@`-binds,
+  defaults, ellipses), string interpolation and the **string contexts** it
+  produces, and the full operator set (`//`, `++`, `?`, `==`, arithmetic). The
+  generator works through the `arbitrary` crate's `Unstructured` wrapper, the
+  thin layer the rust-fuzz ecosystem uses to turn a fuzzer's raw byte buffer
+  into a typed, well-formed value — so coverage feedback still drives generation
+  while every emitted expression is syntactically legal. Emitting valid ASTs is
+  what lets the fuzzer go *deep* (into evaluation and `.drv` emission) rather
+  than *shallow* (bouncing off the parser).
+- **Coverage-guided.** The fuzzer is run under `cargo-fuzz`/libFuzzer (LLVM's
+  coverage-guided engine, the rust-fuzz default) — and optionally AFL++ via
+  `afl.rs` — so it preferentially mutates toward inputs that reach *new
+  evaluator code paths* (a primop branch, a coercion edge, an attrset
+  hidden-class transition) rather than re-treading covered ground. Coverage is
+  measured over the aos-nix evaluator, so "new coverage" means "a corner of the
+  evaluator the AOS corpus never forced."
+- **Seeded by the real corpus.** The seed corpus is the §2.7 derived corpus —
+  the nixpkgs-shaped AOS package-set expressions plus the conformance corpus
+  (§3). Mutation starts from real, idiomatic Nix and walks outward, so the
+  fuzzer spends its budget near the language as actually written rather than in
+  the pathological-but-irrelevant fringe.
+- **Automatic test-case reduction.** Any divergence is reduced to a *minimal*
+  reproducer before it reaches a human: libFuzzer's built-in minimization
+  (`-minimize_crash`) or AFL++'s `afl-tmin` shrinks the failing expression to the
+  smallest input that still diverges. Whether byte-level minimization suffices or
+  a Nix-aware (AST-level) reducer is needed is decision **R-13** in
+  [decision register](19-decision-register.md) and open question 5 below — the
+  AST generator already gives us the structure a smarter reducer would exploit.
+
+A parity-fuzzer divergence feeds the *same* structural-diff localization (§2.3)
+and root-vs-contaminated bisection (§2.4) as a corpus divergence: it is a `.drv`
+byte mismatch like any other, just discovered by a generator instead of the
+package set.
+
+### 7.3 Property-based tests for the slippery invariants
+
+Fuzzing finds *divergences*; property-based tests pin *invariants* — the
+properties that must hold of aos-nix's output regardless of the generated input,
+several of which are too subtle to catch by eyeballing a `.drv` diff. These run
+under `proptest` (Strategy-based generation with automatic shrinking; chosen over
+`quickcheck` for its per-value strategies and stronger shrinking, which matter
+when a counterexample is a whole Nix expression). Each invariant below is stated
+as a property checked across `proptest`-generated inputs:
+
+| Invariant | Property (holds for all generated inputs) |
+|---|---|
+| **String-context propagation** | for any expression `e` and any context-preserving operation `op` (`substring`, `++`, interpolation, `replaceStrings`), `context(op(e)) == context_cpp(op(e))` — the store-path reference set carried by the string matches C++ Nix exactly (the [doc 02 §5.3](02-compatibility-constraints.md) bug class the `.drv` gate exists to catch) |
+| **Attribute collation / iteration order** | for any set of attribute names, aos-nix's iteration order (which fixes `env`-block and `builtins.attrNames` order) equals C++ Nix's symbol collation — the [doc 09](09-attribute-sets-hidden-classes-and-inline-caches.md) ordering the structural diff blames on `env`-block mismatches |
+| **Hash determinism** | for any derivation expression, two independent aos-nix evaluations produce byte-identical store paths and `.drv` bytes (no map-iteration or allocation-address nondeterminism leaks into output) |
+| **Derivation-env ordering** | for any `derivation` arg attrset, the emitted ATerm `env` entries are ordered identically to C++ Nix — a stronger, derivation-specific case of the collation property, since `env` order is a Merkle input (see [doc 11](11-derivation-and-store-compatibility.md)) |
+| **`//` update semantics** | for any two attrsets `a`, `b`, `a // b` has exactly `b`'s value on shared keys, `a`'s elsewhere, the union of keys, and the correct merged context — right-bias and key-union as C++ Nix defines them |
+| **`++` concat semantics** | for any two lists, `xs ++ ys` preserves order, length (`len xs + len ys`), and element identity/context with no thunk-forcing side effect the spec does not require |
+
+The property tests run against the tree-walk oracle (the `miri`-clean program of
+§7, so the properties are checkable under sanitizers) and, where the property
+references C++ Nix behavior, against `nix-instantiate` as in §7.2. They occupy
+the rung between the enumerated conformance suite (§3, fixed inputs) and the
+parity fuzzer (§7.2, unbounded inputs): *bounded* generation aimed at *named*
+invariants, with shrinking that hands back a minimal counterexample for free.
 
 ---
 
@@ -716,6 +807,53 @@ gate *correctness* rollout, but it gates *perf regressions* — a commit that
 keeps the gate green but slows eval is blocked just as firmly, because a native
 evaluator that is correct but slower than C++ Nix has failed its premise.
 
+### 8.1 The cutover gate: one falsifiable bar for flipping default-on
+
+The phase mapping above describes the *staging*; this subsection names the
+single, **falsifiable** bar that must hold before `AOS_NIX_NATIVE` flips from
+default-*off* to default-*on*. It is the operational form of success criterion
+**C1** and the decision in [integration with AOS](14-integration-with-aos.md) §7:
+a checklist whose every item is a measurable harness result, not a judgment call.
+The cutover is permitted **iff all** of the following are simultaneously true:
+
+- [ ] **Full-closure byte parity.** 100% of the §2.7 auto-derived corpus is
+      `.drv`-byte-green against C++ Nix on the **full closure** — every package,
+      every `systems/` toplevel, and the entire toolchain ladder (source
+      bootstrap, `gcc3_4`→`gcc14`, mrustc→rustc, JDK 8→25, Bazel, LLVM). Zero
+      divergent root nodes (§2.4). This is C1 stated as a number: not "98%," but
+      every node in every closure.
+- [ ] **Conformance green.** The reused C++ Nix language suite (§3) passes in all
+      four categories (`eval-okay`/`eval-fail`/`parse-okay`/`parse-fail`) for the
+      AOS subset, with every exclusion a *documented, intentional* `skip` entry
+      (§3.4, criterion **C2**) — no silent omissions.
+- [ ] **Fuzzing quiescent.** At least **1,000 CPU-hours** of parity fuzzing (§7.2)
+      against C++ Nix have accumulated since the last evaluator-affecting change
+      with **zero** new divergences, *and* the internal differential fuzzer (§7.1)
+      and property tests (§7.3) are green. "Zero new divergences" resets the clock
+      on any evaluator change — a late fix re-arms the fuzzing budget.
+- [ ] **Shadow mode silent.** At least **4 weeks** of shadow mode (§2.6) across at
+      least **10,000** real CI evaluations with **zero** divergences reported —
+      real traffic, not the enumerated corpus, so it covers the configurations the
+      corpus never thought to name.
+- [ ] **Benchmark premise met.** The per-commit benchmark (§5) shows aos-nix at or
+      below C++ Nix wall-clock on the real AOS workloads (the project's premise:
+      correct *and* faster). A correct-but-slower evaluator does not cut over.
+- [ ] **Fallback retained permanently.** `NixCli` remains a wired, exercised
+      fallback path **after** cutover — not removed, not bit-rotted — with the
+      `AOS_NIX_NATIVE_VERIFY` sampling canary (§8, D→E) kept on. The cutover flips
+      the *default*; it never deletes the escape hatch.
+
+The thresholds are deliberately illustrative — 1,000 CPU-hours, 4 weeks, 10,000
+evals are tunable knobs the team sets against observed flakiness and fleet size.
+**The commitment is the *shape* of the gate, not the specific numbers:** byte
+parity on the full closure, conformance, a fuzzing budget at zero divergence, a
+shadow-mode soak at zero divergence, the performance premise, and a permanent
+fallback — every one a falsifiable harness result. Any single unchecked box keeps
+the default off. There is no override and no "ship it anyway," for the same
+reason the gate is binary (§2.2): one foundational divergence is a full
+from-source distribution rebuild (see
+[compatibility constraints](02-compatibility-constraints.md) §3).
+
 ---
 
 ## 9. Open questions
@@ -752,11 +890,12 @@ Flagged so the design record does not overstate certainty.
    that contain them can flip to native. *Open: the enumeration (shared with
    [compatibility constraints](02-compatibility-constraints.md) §8 Q4).*
 
-5. **Fuzzer reduction quality.** When the differential fuzzer (§7.1) finds a
+5. **Fuzzer reduction quality.** When the differential fuzzers (§7.1, §7.2) find a
    disagreement, the minimal reproducing expression must be small enough to
-   debug. Whether `cargo fuzz`'s built-in minimization suffices for Nix
-   expressions, or we need a Nix-aware reducer, is unsettled. *Open until the
-   fuzzer is producing real findings.*
+   debug. Whether libFuzzer's `-minimize_crash` / AFL++'s `afl-tmin` byte-level
+   minimization suffices for Nix expressions, or we need a Nix-aware (AST-level)
+   reducer, is decision **R-13** in [decision register](19-decision-register.md)
+   and remains unsettled. *Open until the fuzzers are producing real findings.*
 
 ---
 
@@ -776,8 +915,16 @@ off in `glibc.drv`" into a localized, bisected, reproducible finding. The
 C++ Nix language **conformance suite** (reused as Tvix/Snix does, in its four
 `eval-okay`/`eval-fail`/`parse-okay`/`parse-fail` categories) guards the
 *language*; the `.drv`-diff gate guards the *output*; the tree-walk **oracle**
-and a differential **fuzzer** catch optimized-tier bugs before they reach the
-`.drv` boundary.
+and an **internal differential fuzzer** catch optimized-tier bugs before they
+reach the `.drv` boundary, while a **parity fuzzer** (structure-aware,
+coverage-guided, corpus-seeded, auto-reducing) and **property tests** over the
+slippery invariants (string context, attr collation, hash determinism, `//`/`++`
+semantics) catch the bugs *both* aos-nix tiers share by diffing against C++ Nix
+on generated inputs. All of it converges on **one falsifiable cutover gate**
+(§8.1): full-closure byte parity, conformance green, a fuzzing budget at zero
+divergence, a shadow-mode soak at zero divergence, the performance premise met,
+and `NixCli` retained as a permanent fallback — every box a harness result, any
+single unchecked box keeping `AOS_NIX_NATIVE` default-off.
 
 **Performance — the defended budget.** `NIX_SHOW_STATS`/`NIX_SHOW_STATS_PATH`
 supply the baseline phase-attribution that the **measure-first** gate demands,
@@ -835,3 +982,20 @@ External claims in this document were verified against the following sources.
 - `nix-instantiate` (the oracle the gate diffs against) and `--eval` semantics:
   - Nix Reference Manual — `nix-instantiate` —
     <https://nix.dev/manual/nix/2.34/command-ref/nix-instantiate>
+- Coverage-guided + structure-aware fuzzing in Rust (the §7.2 parity fuzzer:
+  `cargo-fuzz`/libFuzzer, the `arbitrary` crate's `Unstructured`, AFL++/`afl.rs`,
+  and crash minimization via `-minimize_crash` / `afl-tmin`):
+  - Rust Fuzz Book — Structure-Aware Fuzzing —
+    <https://rust-fuzz.github.io/book/cargo-fuzz/structure-aware-fuzzing.html>
+  - "Announcing Better Support for Fuzzing with Structured Inputs in Rust"
+    (the `arbitrary` + `Unstructured` design) —
+    <https://fitzgen.com/2020/01/16/better-support-for-fuzzing-structured-inputs-in-rust.html>
+  - `arbitrary` crate — <https://docs.rs/arbitrary/>
+  - `cargo-fuzz` — <https://github.com/rust-fuzz/cargo-fuzz>
+  - AFL++ — Fuzzing in Depth (corpus/test-case minimization, `afl-tmin`) —
+    <https://aflplus.plus/docs/fuzzing_in_depth/>
+- Property-based testing in Rust (the §7.3 invariant tests):
+  - `proptest` crate (Strategy-based generation + shrinking) —
+    <https://docs.rs/proptest/>
+  - `proptest` vs `quickcheck` (per-value strategies, shrinking) —
+    <https://altsysrq.github.io/rustdoc/proptest/0.8.7/proptest/>

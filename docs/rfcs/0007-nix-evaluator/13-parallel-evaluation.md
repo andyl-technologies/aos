@@ -485,6 +485,106 @@ maintain is reduced to the genuinely shared, hash-consed, long-lived values —
 which are few. Purity makes escape analysis far more effective here than on the
 JVM, and that effectiveness directly buys down the hardest part of §5.3.
 
+## 5.5 The concurrency runtime: rayon, fibers, and tokio I/O
+
+The layers above describe *what* runs in parallel (independent derivations at L1,
+shared thunks at L2) and how the GC interacts. This section pins *which runtime
+machinery* schedules it — and resolves a common misconception about combining
+CPU and I/O concurrency in Rust.
+
+### 5.5.1 Three concerns, three tools
+
+The evaluator mixes three kinds of work, and each wants a different mechanism:
+
+| Work | Nature | Tool |
+|---|---|---|
+| Graph forcing (L1 + L2) | CPU-bound, deeply recursive | **rayon** work-stealing (crossbeam Chase-Lev deques) |
+| Eval-time blocking I/O (IFD waiting on a build; eval-time network fetchers) | I/O-bound, may block for seconds | **tokio** reactor on its own I/O threads |
+| Suspending an I/O-blocked eval node so its worker frees up | scheduling glue | **stackful fibers** (green threads) |
+
+The decisive fact: **`force` is CPU-bound deep recursion, and that is the program's
+hot path.** Parallelism for it is a *CPU* concern (rayon), not an *I/O* concern
+(tokio). The two are different problems and the standard mistake is to reach for
+one tool for both.
+
+### 5.5.2 Why not "just make rayon and tokio collaborate"
+
+There is no built-in co-scheduler between rayon and tokio. **tokio** alone does
+M:N collaborative scheduling — *of async tasks* (suspend on `.await`, the worker
+grabs another task). **rayon** alone does work-stealing — *of CPU fork-join
+tasks*, which run to completion on their worker with no I/O-suspension notion.
+But a rayon task cannot transparently yield into tokio and have its rayon worker
+pick up other rayon work; the bridging crates only *offload* across the two
+pools, they do not *co-schedule*. So the appealing mental model — "rayon workers
+that hand off to tokio on I/O and resume another green thread" — is not something
+either runtime provides off the shelf.
+
+### 5.5.3 The obstacle, and why fibers solve it
+
+The goal is real: with hundreds of eval nodes potentially blocked on I/O (chiefly
+**IFD** — eval forcing a derivation that must *build* — and eval-time network
+fetchers) but only ~`ncpu` workers, a blocked node should **park and free its
+worker**, not pin an OS thread. The obstacle is that the blockable point is *deep
+inside the synchronous recursion* (`force → force → … → an I/O primop`); to
+suspend there you must save the whole call stack. Two ways to do that:
+
+1. **Async-color the evaluator** (`async fn force` everywhere, run on tokio).
+   This works, but async recursion requires `Box::pin` per frame — heap + poll
+   overhead on the single hottest path, 99.9% of which never touches I/O. We
+   **reject** this: the coloring tax is paid everywhere to benefit a tiny I/O
+   surface.
+2. **Stackful coroutines (fibers)** — Go's model, and the **chosen** mechanism.
+   Each eval node runs on a fiber. When it hits a suspendable I/O primop, the
+   *entire synchronous recursive stack parks*; the worker work-steals another
+   ready fiber (more CPU graph work); the tokio reactor drives the I/O; on
+   completion the fiber is rescheduled onto some worker. This delivers the M:N
+   "few OS threads service many I/O-blocked nodes" behavior **without coloring
+   `force` async** — the recursive hot path stays plain synchronous Rust.
+
+```text
+   worker thread (one of ~ncpu)
+   ───────────────────────────
+     run fiber A ──force──► IFD primop ──park fiber A──┐
+       (sync recursive stack saved on A's fiber stack) │
+     steal fiber B ──force──► CPU work … ──────────────┼─► tokio reactor builds
+     steal fiber C ──force──► … ──────────────────────┘   the IFD derivation
+                                       … on completion: reschedule fiber A
+```
+
+Fibers cost a parkable stack per in-flight blocked node (growable/segmented) and
+some `unsafe` stack-switch machinery (crates such as `corosensei` / `may`
+implement exactly this); the work-stealer is crossbeam-deque, the I/O reactor is
+tokio. The `unsafe` is confined to the fiber runtime and SAFETY-commented; the
+sequential tree-walk oracle ([15](15-differential-testing-and-benchmarking.md)
+§7) stays single-threaded synchronous and is the `miri`-checked ground truth, so
+the fiber scheduler is validated *against* it, never trusted on its own.
+
+### 5.5.4 The rules that keep it correct and fast
+
+- **Local fast reads stay synchronous.** `readFile`/`readDir`/`pathExists`/local
+  `import` are microsecond syscalls; a fiber suspend/resume costs more than the
+  read. Only *genuinely blocking* I/O (IFD, network fetch) suspends a fiber.
+- **Never block a compute worker on I/O.** A naked `block_on` on a rayon/fiber
+  worker starves the pool — avoiding exactly that is the entire reason fibers +
+  the tokio reactor exist. I/O always runs on tokio's threads with the fiber
+  parked.
+- **A fiber blocked on a *claimed thunk* (§3.3) yields the same way** — it
+  work-steals or parks rather than spinning, unifying "waiting on I/O" and
+  "waiting on another worker's force" under one scheduler.
+- **Scheduling nondeterminism never reaches output.** Fiber/worker ordering is
+  nondeterministic; the `.drv` is not (§4.4). Purity guarantees the same result
+  regardless of how fibers interleave.
+
+### 5.5.5 Measure-gated turn-on
+
+The fiber I/O layer pays off **only when eval-time blocking-I/O concurrency is
+real** — principally IFD-heavy or fetch-heavy evaluation. A from-source distro
+that minimizes IFD has mostly fast local reads, where the synchronous core
+suffices. So the build order is: **sync core + rayon (CPU) + tokio reactor for
+the few genuinely-blocking primops first**; introduce fiber-based suspension when
+profiling shows concurrent eval-time I/O is a bottleneck. Full async-coloring
+remains the documented-but-rejected alternative.
+
 ## 6. Failure, exceptions, and cancellation
 
 Nix evaluation can abort: `builtins.throw`, `assert` failure, type errors, or
