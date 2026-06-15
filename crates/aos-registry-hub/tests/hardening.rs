@@ -267,3 +267,67 @@ async fn presence_validation_records_coverage_and_findings() {
     assert!(!dead_run.reachable);
     assert_eq!(dead_run.checked, 0);
 }
+
+#[tokio::test]
+async fn closure_cap_aborts_oversized_index() {
+    use aos_registry_hub::surface::load::{load_registry_tree, MAX_CLOSURE_ENTRIES};
+    use aos_registry_hub::surface::object::ObjectKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("surface");
+    std::fs::create_dir_all(&surface).unwrap();
+    let fixture = common::Fixture::new(&surface);
+
+    // A minimal but valid tree whose single closures file carries more
+    // adjacency lines than the cap. Each line is a distinct head hash so it
+    // contributes one map entry; the loader must abort before reading them all.
+    let registry_toml =
+        fixture.put_blob("[registry]\nname = \"demo\"\ndescription = \"Fixture\"\n");
+    let mut closure_text = String::with_capacity((MAX_CLOSURE_ENTRIES + 1) * 9);
+    for i in 0..=MAX_CLOSURE_ENTRIES {
+        closure_text.push_str(&format!("h{i:08x}\n"));
+    }
+    let closure_blob = fixture.put_object(ObjectKind::Blob, closure_text.as_bytes());
+    let closures = fixture.put_tree(&[("100644", "all", closure_blob)]);
+    let root_tree = fixture.put_tree(&[
+        ("100644", "registry.toml", registry_toml),
+        ("40000", "closures", closures),
+    ]);
+    let commit = fixture.put_signed_commit(root_tree, "oversized closures");
+
+    let err = load_registry_tree(&LocalFsFetch::new(&surface), commit)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("closure cap"),
+        "must abort over the closure cap, got: {err:#}"
+    );
+
+    // A small tree well under the caps still loads cleanly.
+    let ok_surface = dir.path().join("ok");
+    std::fs::create_dir_all(&ok_surface).unwrap();
+    let ok = common::Fixture::new(&ok_surface);
+    let ok_registry = ok.put_blob("[registry]\nname = \"demo\"\ndescription = \"Fixture\"\n");
+    let ok_curl = ok.put_blob(
+        "[package]\nname = \"curl\"\ndescription = \"URL transfers\"\nlicense = \"MIT\"\n\
+         maintainer = \"aos\"\n\n[[versions]]\nversion = \"8.5.0\"\n\n\
+         [versions.platforms.x86_64-linux]\nstore_path = \"/var/lib/store/h7j3k8l2m9n4-curl-8.5.0\"\n\
+         nar_hash = \"sha256:aa\"\nnar_size = 10\nclosure_size = 20\n\
+         source_drv = \"/var/lib/store/h7j3k8l2m9n4-curl-8.5.0.drv\"\n\
+         source_nar_hash = \"sha256:bb\"\nreferences = []\n",
+    );
+    let ok_bucket = ok.put_tree(&[("100644", "curl.toml", ok_curl)]);
+    let ok_packages = ok.put_tree(&[("40000", "c", ok_bucket)]);
+    let ok_closure = ok.put_blob("h7j3k8l2m9n4\n");
+    let ok_closures = ok.put_tree(&[("100644", "h7j3k8l2m9n4", ok_closure)]);
+    let ok_root = ok.put_tree(&[
+        ("100644", "registry.toml", ok_registry),
+        ("40000", "closures", ok_closures),
+        ("40000", "packages", ok_packages),
+    ]);
+    let ok_commit = ok.put_signed_commit(ok_root, "small tree");
+    let tree = load_registry_tree(&LocalFsFetch::new(&ok_surface), ok_commit)
+        .await
+        .unwrap();
+    assert_eq!(tree.packages.len(), 1, "small tree loads its packages");
+}

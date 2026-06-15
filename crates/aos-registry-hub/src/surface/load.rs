@@ -17,6 +17,25 @@ use aos_package::types::RegistryRootConfig;
 use super::object::{self, Commit, ObjectKind, Oid};
 use crate::fetch::SurfaceFetch;
 
+/// Maximum package TOMLs loaded from one registry tree before the index aborts.
+///
+/// The tree is attacker-controlled: a hostile producer can publish a registry
+/// of millions of tiny valid package files across nested buckets, and the
+/// background re-index runs in the web-server process — so an uncapped walk
+/// would let one tenant OOM the hub for all of them. Mirrors the indexer's
+/// [`MAX_SEMVER_TAGS`](crate::indexer::MAX_SEMVER_TAGS) /
+/// [`MAX_BRANCHES`](crate::indexer::MAX_BRANCHES) caps, but aborts (rather than
+/// truncating) so a registry that overflows is marked failed instead of being
+/// silently partially indexed. Sized far above any realistic registry.
+pub const MAX_PACKAGES: usize = 50_000;
+
+/// Maximum closure adjacency entries loaded from one registry tree.
+///
+/// Each `closures/` line contributes one map entry (store-path hash → direct
+/// references); a hostile tree can pad these without bound. Capped for the same
+/// reason as [`MAX_PACKAGES`], and likewise aborts the index when exceeded.
+pub const MAX_CLOSURE_ENTRIES: usize = 1_000_000;
+
 /// Reads loose objects through a [`SurfaceFetch`], verifying each object's
 /// content hash against the oid it was requested by.
 pub struct ObjectReader<'a> {
@@ -124,6 +143,12 @@ pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Re
         for bucket in buckets.values().filter(|e| e.is_tree()) {
             let files = object::tree_map(&reader.read_kind(bucket.oid, ObjectKind::Tree).await?)?;
             for file in files.values().filter(|e| e.name.ends_with(".toml")) {
+                if packages.len() >= MAX_PACKAGES {
+                    bail!(
+                        "registry tree exceeds the {MAX_PACKAGES}-package index cap; \
+                         aborting index"
+                    );
+                }
                 let content = read_utf8_blob(&reader, file.oid, &file.name).await?;
                 let package = parse_package_file(&content)
                     .with_context(|| format!("parsing committed packages/…/{}", file.name))?;
@@ -144,6 +169,12 @@ pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Re
             // Adjacency list: every line is "<hash> [<dep-hash>…]"; the file
             // is named after its root hash but carries the whole closure.
             for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                if closures.len() >= MAX_CLOSURE_ENTRIES {
+                    bail!(
+                        "registry tree exceeds the {MAX_CLOSURE_ENTRIES}-entry closure \
+                         cap; aborting index"
+                    );
+                }
                 let mut parts = line.split_whitespace().map(str::to_string);
                 if let Some(head) = parts.next() {
                     closures.entry(head).or_insert_with(|| parts.collect());
