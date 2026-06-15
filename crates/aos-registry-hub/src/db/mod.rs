@@ -5001,11 +5001,16 @@ impl Database {
         delta_bytes: i64,
         delta_objects: i64,
     ) -> Result<bool> {
+        // Optimistic concurrency in place of the interactive transaction (so
+        // this runs on D1): read caps + current usage, check the cap in Rust
+        // (kept out of SQL to stay dialect-portable — no GREATEST/MAX scalar),
+        // then write the new totals behind a compare-and-set guard. A
+        // concurrent reservation that moved usage since the read fails the CAS
+        // (0 rows) and we re-read and retry, so the quota cannot be oversold.
+        const MAX_ATTEMPTS: usize = 8;
         let now = unix_now();
-        let mut fit = false;
-        self.backend.with_tx(&mut |tx| {
-            // Read caps and current usage inside the transaction.
-            let caps = tx.query_opt(
+        for _ in 0..MAX_ATTEMPTS {
+            let caps = self.backend.query_opt(
                 "SELECT max_bytes, max_objects FROM org_quotas WHERE org_id = ?1",
                 &vals![org_id],
             )?;
@@ -5013,45 +5018,45 @@ impl Database {
                 Some(row) => (row.get(0)?, row.get(1)?),
                 None => (None, None),
             };
-            let usage = tx.query_opt(
+            let usage = self.backend.query_opt(
                 "SELECT used_bytes, object_count FROM org_usage WHERE org_id = ?1",
                 &vals![org_id],
             )?;
-            let (used_bytes, object_count): (i64, i64) = match usage {
-                Some(row) => (row.get(0)?, row.get(1)?),
-                None => (0, 0),
+            let (used_bytes, object_count, row_exists): (i64, i64, bool) = match usage {
+                Some(row) => (row.get(0)?, row.get(1)?, true),
+                None => (0, 0, false),
             };
 
             let new_bytes = used_bytes.saturating_add(delta_bytes).max(0);
             let new_objects = object_count.saturating_add(delta_objects).max(0);
 
-            if let Some(max) = max_bytes {
-                if new_bytes > max {
-                    fit = false;
-                    return Ok(());
-                }
-            }
-            if let Some(max) = max_objects {
-                if new_objects > max {
-                    fit = false;
-                    return Ok(());
-                }
+            if max_bytes.is_some_and(|max| new_bytes > max)
+                || max_objects.is_some_and(|max| new_objects > max)
+            {
+                return Ok(false);
             }
 
-            // It fits: reserve by writing the new absolute totals.
-            tx.execute(
-                "INSERT INTO org_usage (org_id, used_bytes, object_count, updated_at)
-                 VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(org_id) DO UPDATE SET
-                     used_bytes = ?2,
-                     object_count = ?3,
-                     updated_at = ?4",
-                &vals![org_id, new_bytes, new_objects, now],
-            )?;
-            fit = true;
-            Ok(())
-        })?;
-        Ok(fit)
+            // It fits: reserve, but only if usage is unchanged since the read.
+            let affected = if row_exists {
+                self.backend.execute(
+                    "UPDATE org_usage SET used_bytes = ?2, object_count = ?3, updated_at = ?4
+                     WHERE org_id = ?1 AND used_bytes = ?5 AND object_count = ?6",
+                    &vals![org_id, new_bytes, new_objects, now, used_bytes, object_count],
+                )?
+            } else {
+                self.backend.execute(
+                    "INSERT INTO org_usage (org_id, used_bytes, object_count, updated_at)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(org_id) DO NOTHING",
+                    &vals![org_id, new_bytes, new_objects, now],
+                )?
+            };
+            if affected == 1 {
+                return Ok(true);
+            }
+            // Raced with a concurrent reservation; re-read and retry.
+        }
+        bail!("reserve_org_usage: too much write contention on org {org_id}")
     }
 
     /// Read an instance-config value by key.
@@ -5991,64 +5996,71 @@ impl Database {
     /// any org, or on database failure.
     pub fn delete_user(&self, user_id: i64) -> Result<bool> {
         let now = unix_now();
-        let mut deleted = false;
-        // The sole-owner check and the soft-delete must share a transaction:
-        // a check-then-act split lets a concurrent demote/transfer drop an
-        // org's *other* owner between the standalone `sole_owned_orgs` read
-        // and the delete, slipping a user through who was, by commit time, the
-        // org's last owner. Re-derive the sole-owned orgs *inside* the tx (the
-        // user's still-live owner grants whose scope has no other owner) and
-        // roll back with the same blocking error when any remain.
-        self.backend.with_tx(&mut |tx| {
-            let owner_scopes = tx.query(
+        // Derive the orgs the user solely owns in one query (an owner grant at a
+        // non-deleted org with no *other* user owner) and refuse the delete when
+        // any remain. The race a concurrent demote could open — dropping an
+        // org's other owner between this read and the delete — is closed not by
+        // a transaction (D1 has none) but by repeating the same NOT EXISTS guard
+        // in the soft-delete's WHERE, so the user can never be deleted while
+        // sole owner of any org.
+        let blocking: Vec<String> = self
+            .backend
+            .query(
                 "SELECT o.slug FROM orgs o
                  JOIN memberships m
-                   ON m.scope = o.slug
-                  AND m.principal_kind = 'user'
-                  AND m.principal_id = ?1
-                  AND m.role = 'owner'
-                 WHERE o.deleted_at IS NULL",
+                   ON m.scope = o.slug AND m.principal_kind = 'user'
+                  AND m.principal_id = ?1 AND m.role = 'owner'
+                 WHERE o.deleted_at IS NULL
+                   AND NOT EXISTS (
+                     SELECT 1 FROM memberships m2
+                     WHERE m2.scope = o.slug AND m2.principal_kind = 'user'
+                       AND m2.role = 'owner' AND m2.principal_id <> ?1)",
                 &vals![user_id],
-            )?;
-            let mut blocking = Vec::new();
-            for row in &owner_scopes {
-                let slug: String = row.get(0)?;
-                let other_owners: i64 = tx
-                    .query_opt(
-                        "SELECT COUNT(*) FROM memberships
-                         WHERE scope = ?1 AND principal_kind = 'user' AND role = 'owner'
-                           AND principal_id <> ?2",
-                        &vals![slug, user_id],
-                    )?
-                    .context("owner count query returned no row")?
-                    .get(0)?;
-                if other_owners == 0 {
-                    blocking.push(slug);
-                }
-            }
-            if !blocking.is_empty() {
-                bail!(
-                    "user {user_id} is the sole owner of: {} — transfer ownership before deleting",
-                    blocking.join(", ")
-                );
-            }
-            let n = tx.execute(
-                "UPDATE users SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
-                &vals![user_id, now],
-            )?;
-            if n == 0 {
-                return Ok(());
-            }
-            deleted = true;
-            tx.execute("DELETE FROM sessions WHERE user_id = ?1", &vals![user_id])?;
-            tx.execute(
+            )?
+            .iter()
+            .map(|row| row.get(0))
+            .collect::<Result<_>>()?;
+        if !blocking.is_empty() {
+            bail!(
+                "user {user_id} is the sole owner of: {} — transfer ownership before deleting",
+                blocking.join(", ")
+            );
+        }
+        // Guarded soft-delete: applies only if the user still owns no org solely
+        // (re-evaluated atomically here), and only if not already deleted.
+        let deleted = self.backend.execute(
+            "UPDATE users SET deleted_at = ?2
+             WHERE id = ?1 AND deleted_at IS NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM orgs o
+                 JOIN memberships m
+                   ON m.scope = o.slug AND m.principal_kind = 'user'
+                  AND m.principal_id = ?1 AND m.role = 'owner'
+                 WHERE o.deleted_at IS NULL
+                   AND NOT EXISTS (
+                     SELECT 1 FROM memberships m2
+                     WHERE m2.scope = o.slug AND m2.principal_kind = 'user'
+                       AND m2.role = 'owner' AND m2.principal_id <> ?1))",
+            &vals![user_id, now],
+        )?;
+        if deleted == 0 {
+            // Already deleted/unknown, or a concurrent change just made the user
+            // a sole owner (the guard held): make no further change.
+            return Ok(false);
+        }
+        // The user is deadened; revoke their live credentials together.
+        self.backend.batch(&[
+            Statement::new(
+                "DELETE FROM sessions WHERE user_id = ?1",
+                vals![user_id].to_vec(),
+            ),
+            Statement::new(
                 "UPDATE tokens SET revoked_at = ?2
                  WHERE owner_kind = 'user' AND owner_id = ?1 AND revoked_at IS NULL",
-                &vals![user_id, now],
-            )?;
-            Ok(())
-        })?;
-        Ok(deleted)
+                vals![user_id, now].to_vec(),
+            ),
+        ])?;
+        Ok(true)
     }
 
     /// Elevate a session to sudo: set `auth_level = 1` and stamp
@@ -6145,48 +6157,51 @@ impl Database {
         approver_grants: &[(crate::domain::Scope, crate::domain::Role)],
     ) -> Result<bool> {
         let now = unix_now();
-        let mut approved = false;
-        self.backend.with_tx(&mut |tx| {
-            // Atomically CLAIM the grant: the conditional update is the
-            // single-approval gate. A second concurrent approval finds the
-            // row already stamped and matches zero rows.
-            let claimed = tx.execute(
-                "UPDATE device_codes SET approved_by_user = ?2
-                 WHERE user_code = ?1 AND approved_by_user IS NULL AND denied = 0
-                   AND expires_at > ?3",
-                &vals![user_code, approver.id, now],
-            )?;
-            if claimed == 0 {
-                // Unknown, already approved/denied, or expired: do NOT mint.
-                return Ok(());
-            }
-            let row = tx
-                .query_opt(
-                    "SELECT scope, permissions FROM device_codes WHERE user_code = ?1",
-                    &vals![user_code],
-                )?
-                .context("device code vanished after claim")?;
-            let scope: String = row.get(0)?;
-            let perms_json: String = row.get(1)?;
-            let requested_scope = crate::domain::Scope::parse(&scope);
-            let requested = parse_permission_names(&perms_json);
-            // Clamp: keep only requested permissions the approver may actually
-            // grant at the requested scope (downward inheritance via `allow`).
-            let granted: Vec<crate::domain::Permission> = requested
-                .into_iter()
-                .filter(|perm| crate::domain::iam::allow(approver_grants, *perm, &requested_scope))
-                .collect();
-            // Mint the token inside the same transaction so claim + mint + the
-            // write of the minted secret are all-or-nothing.
-            let (secret, hash) = crate::auth::token::generate_token();
-            let token_id = uuid::Uuid::new_v4().to_string();
-            let perms_out = serde_json::to_string(&permission_names(&granted))?;
-            tx.execute(
+        // Atomically CLAIM the grant with a conditional update — the
+        // single-approval gate. A second concurrent approval finds the row
+        // already stamped and matches zero rows. Once we hold the claim
+        // (claimed == 1) the row is ours, so the follow-up read is race-free; no
+        // interactive transaction is needed (D1-safe).
+        let claimed = self.backend.execute(
+            "UPDATE device_codes SET approved_by_user = ?2
+             WHERE user_code = ?1 AND approved_by_user IS NULL AND denied = 0
+               AND expires_at > ?3",
+            &vals![user_code, approver.id, now],
+        )?;
+        if claimed == 0 {
+            // Unknown, already approved/denied, or expired: do NOT mint.
+            return Ok(false);
+        }
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT scope, permissions FROM device_codes WHERE user_code = ?1",
+                &vals![user_code],
+            )?
+            .context("device code vanished after claim")?;
+        let scope: String = row.get(0)?;
+        let perms_json: String = row.get(1)?;
+        let requested_scope = crate::domain::Scope::parse(&scope);
+        let requested = parse_permission_names(&perms_json);
+        // Clamp: keep only requested permissions the approver may actually
+        // grant at the requested scope (downward inheritance via `allow`).
+        let granted: Vec<crate::domain::Permission> = requested
+            .into_iter()
+            .filter(|perm| crate::domain::iam::allow(approver_grants, *perm, &requested_scope))
+            .collect();
+        let (secret, hash) = crate::auth::token::generate_token();
+        let token_id = uuid::Uuid::new_v4().to_string();
+        let perms_out = serde_json::to_string(&permission_names(&granted))?;
+        // Mint the token and stow its one-time secret together, atomically. The
+        // secret is delivered exactly once to the polling CLI by `poll_device`,
+        // never persisted in the clear where a human session can read it.
+        self.backend.batch(&[
+            Statement::new(
                 "INSERT INTO tokens
                  (id, hash, owner_kind, owner_id, scope, permissions, comment, created_at,
                   expires_at, revoked_at, last_used_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL, NULL, NULL)",
-                &vals![
+                vals![
                     token_id,
                     hash,
                     approver.kind.as_str(),
@@ -6194,21 +6209,17 @@ impl Database {
                     requested_scope.as_str(),
                     perms_out,
                     now,
-                ],
-            )?;
-            // Stow the minted secret on the device row: it is delivered exactly
-            // once to the polling CLI by `poll_device`, never persisted in the
-            // clear anywhere a human session can read it.
-            tx.execute(
+                ]
+                .to_vec(),
+            ),
+            Statement::new(
                 "UPDATE device_codes
                  SET issued_token_id = ?2, issued_token_secret = ?3
                  WHERE user_code = ?1",
-                &vals![user_code, token_id, secret],
-            )?;
-            approved = true;
-            Ok(())
-        })?;
-        Ok(approved)
+                vals![user_code, token_id, secret].to_vec(),
+            ),
+        ])?;
+        Ok(true)
     }
 
     /// Deny a device grant by its `user_code`.
@@ -6465,31 +6476,53 @@ impl Database {
         // split lets two org admins racing the same domain both read "no
         // conflict" and both upsert, the last writer re-pointing `org_id` and
         // wiping the victim's `verified_at` (a cross-tenant domain login-DoS).
-        // Inside one transaction, re-read ownership and refuse to overwrite a
-        // claim held by a *different* org; re-claiming one's own domain (same
-        // org_id) still rotates the challenge and resets to unverified.
-        self.backend.with_tx(&mut |tx| {
-            let existing = tx.query_opt(
-                "SELECT org_id FROM org_domains WHERE domain = ?1",
-                &vals![domain],
-            )?;
-            if let Some(row) = existing {
-                let owner_org: i64 = row.get(0)?;
-                if owner_org != org_id {
-                    anyhow::bail!("domain '{domain}' is already claimed by another organization");
+        // sqlite/postgres/D1 do it in one guarded upsert (the `DO UPDATE …
+        // WHERE` only fires when the row is already ours); mysql lacks a WHERE
+        // on `ON DUPLICATE KEY UPDATE`, so it keeps the interactive transaction
+        // (mysql is never the D1 target).
+        if self.dialect() == Dialect::Mysql {
+            self.backend.with_tx(&mut |tx| {
+                let existing = tx.query_opt(
+                    "SELECT org_id FROM org_domains WHERE domain = ?1",
+                    &vals![domain],
+                )?;
+                if let Some(row) = existing {
+                    let owner_org: i64 = row.get(0)?;
+                    if owner_org != org_id {
+                        anyhow::bail!(
+                            "domain '{domain}' is already claimed by another organization"
+                        );
+                    }
                 }
-            }
-            tx.execute(
+                tx.execute(
+                    "INSERT INTO org_domains (domain, org_id, txt_challenge, verified_at)
+                     VALUES (?1, ?2, ?3, NULL)
+                     ON CONFLICT(domain) DO UPDATE SET
+                         org_id = excluded.org_id,
+                         txt_challenge = excluded.txt_challenge,
+                         verified_at = NULL",
+                    &vals![domain, org_id, challenge],
+                )?;
+                Ok(())
+            })?;
+        } else {
+            // The `WHERE org_domains.org_id = excluded.org_id` guard makes the
+            // upsert a no-op (0 rows) when a *different* org holds the claim, so
+            // a single statement enforces the invariant atomically.
+            let affected = self.backend.execute(
                 "INSERT INTO org_domains (domain, org_id, txt_challenge, verified_at)
                  VALUES (?1, ?2, ?3, NULL)
                  ON CONFLICT(domain) DO UPDATE SET
                      org_id = excluded.org_id,
                      txt_challenge = excluded.txt_challenge,
-                     verified_at = NULL",
+                     verified_at = NULL
+                 WHERE org_domains.org_id = excluded.org_id",
                 &vals![domain, org_id, challenge],
             )?;
-            Ok(())
-        })?;
+            if affected == 0 {
+                anyhow::bail!("domain '{domain}' is already claimed by another organization");
+            }
+        }
         Ok(challenge)
     }
 
