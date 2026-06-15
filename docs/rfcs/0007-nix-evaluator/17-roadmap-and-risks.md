@@ -196,9 +196,9 @@ hypothesis to be confirmed against AOS traces before it lands (C6 in
 [01](01-motivation-and-goals.md) §6).
 
 > **Promoted out of rank 5 (decision C-11/C-12).** **Content-addressed
-> derivations** and **parallel graph evaluation** are no longer deferred
+> derivations** and **parallel thunk-graph evaluation** are no longer deferred
 > follow-ups — they are first-class. CA is built into the Phase-1 compatibility
-> core (it is on AOS's critical path via RFC-0005); parallel graph evaluation
+> core (it is on AOS's critical path via RFC-0005); parallel thunk-graph evaluation
 > (lock-free CAS thunks + work-stealing forcing, [13](13-parallel-evaluation.md))
 > is its own early phase (P3.5 below). Two guardrails make "right away" safe
 > rather than reckless: the **sequential** tree-walk oracle remains the
@@ -223,8 +223,8 @@ hypothesis to be confirmed against AOS traces before it lands (C6 in
                                                                  helps the oracle directly
    4    hidden classes + PIC, then Cranelift tiering   P2, P4    constant-factor on the
         + deopt                                                  residue the cache can't elide
-  3.5   parallel graph evaluation (CAS thunks +        ‖         first-class (C-12); uses all
-        work-stealing forcing)                                   cores; oracle stays ground truth
+  3.5   parallel thunk-graph evaluation (CAS thunks    ‖         first-class (C-12); uses all
+        + work-stealing forcing)                                 cores; oracle stays ground truth
    5    pointer tagging, NaN-box, full-laziness,       P1/P3/P4  measured follow-ups; ship
         region inference, concurrent moving GC         + ‖       only on a measured delta
 ```
@@ -259,7 +259,7 @@ in the last column).
 | **P1.5** | Measure-first decision | Documented determination, from P1 data, that eval (not build/I/O) is the dominant AOS cost. If not → **STOP/re-scope** ([01](01-motivation-and-goals.md) §5.2). | **S** | P1 |
 | **P2** | Incremental cache + hash-consing (rank 1) | A semantically-irrelevant edit (comment/whitespace/leaf-package) recomputes a *bounded, small* fraction of the closure and emits unchanged `.drv` downstream (C4 in [01](01-motivation-and-goals.md) §6); `AOS_NIX_CACHE=0` and cached runs agree byte-for-byte on the harness. | **L** | P1.5 |
 | **P3** | Bump-arena + precise generational GC (rank 2) | One-shot CLI eval allocates through `aos_alloc_*`, frees nothing, drops at exit; measured allocation/GC time on the oracle is materially below the Boehm baseline from P1; precise GC passes `miri`/ASan on the safe tree. | **M** | P2 |
-| **P3.5** | Parallel graph evaluation (rank 3.5, C-12): L1 work-stealing pool + L2 lock-free CAS thunk forcing ([13](13-parallel-evaluation.md)) | The parallel evaluator is differentially identical to the **sequential** oracle across the full closure (output determinism under nondeterministic scheduling); the `loom`/Miri memory-ordering audit (R-4) is green; measured multi-core speedup over the serial baseline on the AOS closure. **No data races, ever.** | **L** | P3 |
+| **P3.5** | Parallel thunk-graph evaluation (rank 3.5, C-12): L1 work-stealing pool + L2 lock-free CAS thunk forcing ([13](13-parallel-evaluation.md)) | The parallel evaluator is differentially identical to the **sequential** oracle across the full closure (output determinism under nondeterministic scheduling); the `loom`/Miri memory-ordering audit (R-4) is green; measured multi-core speedup over the serial baseline on the AOS closure. **No data races, ever.** | **L** | P3 |
 | **P4** | Strictness + escape analysis (rank 3) | Annotated IR compiles provably-strict bindings eagerly (measured drop in thunk-allocation count vs P1 `NIX_SHOW_STATS`); harness stays byte-green; analysis is sound (no eager forcing of a binding the oracle leaves unforced); single-entry-thunk downgrade restricted to frame-local thunks (C-8), keeping it sound under P3.5 parallelism. | **M** | P3 |
 | **P5** | Hidden classes + PIC (rank 4a) | `select` sites resolve via shape-check + constant-offset load with a polymorphic inline cache; attr iteration order remains byte-identical to C++ Nix (the ordering invariant of [09](09-attribute-sets-hidden-classes-and-inline-caches.md)); harness byte-green. | **M** | P4 |
 | **P6** | Cranelift baseline JIT (rank 4b, tier 1) | Hot thunks compile per-expression once via Cranelift; tier-1 output is differentially identical to the tier-0 oracle across the closure; warmup cost measured against one-shot CLI workload. | **L** | P5 |

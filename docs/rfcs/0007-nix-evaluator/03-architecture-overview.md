@@ -261,7 +261,7 @@ Nix.
   │      scope resolution -> static env slot indices (de Bruijn-style)     │
   │      lowered to IR; parse artifacts cached content-addressed by hash   │
   └───────────────────────────────┬───────────────────────────────────────┘
-                                  │  evaluated graph reaches a derivation
+                                  │  forcing reaches a derivation node
   ┌───────────────────────────────▼───────────────────────────────────────┐
   │  L1  DERIVATION / STORE BACKEND (HARD COMPAT)                          │
   │      derivationStrict -> nix-compat Derivation -> ATerm .drv           │
@@ -317,6 +317,9 @@ struct Thunk {
     slot:  Value,       // result, valid once state == Forced
 }
 
+// The serial thunk-state machine (the serial subset of the parallel superset
+// `Suspended -> Pending -> Awaited -> Forced/Failed` in doc 13). Single-threaded
+// forcing only ever visits these three states.
 enum ThunkState {
     Suspended,   // not yet forced
     Blackhole,   // forcing in progress -> infinite-recursion detection

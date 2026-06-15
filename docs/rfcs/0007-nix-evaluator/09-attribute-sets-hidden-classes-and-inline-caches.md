@@ -151,10 +151,12 @@ a lock-free append structure.
 
 ### 4.1 The factoring
 
-A hidden class — called a *map* in the original Self work (Chambers, Ungar &
-Lee, 1989), a *shape* or *structure* in V8, and a *hidden class* in the common
-vocabulary — is the descriptor that an attribute set's instance points to
-instead of carrying its own keys. We use **shape** as the primary term.
+A **hidden class** (V8's term, and the primary term in this RFC) — called a
+*map* in the original Self work (Chambers, Ungar & Lee, 1989) and a *shape* or
+*structure* in V8 — is the descriptor that an attribute set's instance points to
+instead of carrying its own keys. We use **hidden class** as the canonical
+concept name and **shape** interchangeably as its short alias (and as the
+`Shape` type name in code), the two denoting one thing.
 
 ```text
   Without shapes (C++ Nix Bindings):          With shapes (aos-nix):

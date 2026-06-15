@@ -232,7 +232,8 @@ All allocation flows through runtime symbols (`aos_alloc_*`) so the GC strategy
 can swap without touching JIT-emitted code. For the one-shot CLI case, a
 **bump-pointer arena that never frees** and is dropped wholesale at process
 exit — the fastest possible allocator for a batch job. For the long-lived
-daemon case, a **precise generational copying collector** with a
+daemon case, a **precise generational copying collector** (generational GC in the
+GHC/HotSpot tradition) with a
 cache-resident nursery (the generational hypothesis is extreme here:
 intermediate thunks die instantly), *precise* rather than Boehm-conservative to
 eliminate false retention, with concurrent low-pause collection
@@ -263,13 +264,14 @@ nature (see §4 and [execution tiers](08-execution-tiers-and-cranelift.md)).
 
 ### G7 — Sound parallel evaluation
 
-A pure language makes parallel evaluation *sound*, but the thunk graph is shared
-mutable state (forcing mutates a thunk). The low-risk first cut evaluates
-independent top-level derivations on a work-stealing pool, each with its own
-nursery, sharing only immutable parsed-IR / symbol / hash-cons tables. The
-aggressive version uses **lock-free CAS thunks** (claim-to-force, work-steal or
-help on blackhole) in the spirit of GHC's spark model and Determinate Systems'
-parallel Nix eval. See [parallel evaluation](13-parallel-evaluation.md).
+A pure language makes parallel evaluation *sound*, but the runtime heap graph of
+thunks is shared mutable state (forcing mutates a thunk). The low-risk first cut
+evaluates independent top-level derivations on a work-stealing (Chase-Lev) pool,
+each with its own nursery, sharing only immutable parsed-IR / symbol / hash-cons
+tables. The aggressive version uses **lock-free compare-and-swap (CAS) thunks**
+(claim-to-force, work-steal or help on blackhole) in the spirit of GHC's spark
+model and Determinate Systems' parallel Nix eval. See
+[parallel evaluation](13-parallel-evaluation.md).
 
 ### G8 — Clean, gated integration with a permanent fallback
 

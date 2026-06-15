@@ -370,7 +370,8 @@ After let-floating outward:
 
 A `prefix` that interpolates a store path (forcing a whole sub-derivation) being
 recomputed for every element of `names` is the difference between O(1) and O(n)
-derivation-graph traversals. `genList (i: let table = expensiveConstant; in ...)`
+traversals of the derivation graph (the `.drv` output DAG).
+`genList (i: let table = expensiveConstant; in ...)`
 is the same story.
 
 ### 6.2 The float-inward direction
@@ -524,14 +525,16 @@ Two GHC/HotSpot supporting transforms make scalar replacement pay off:
 The analyses of §§4–7 are not run once, in isolation. They are **passes in one
 IR-to-IR optimizer that runs them iteratively to a fixpoint**, exactly as GHC's
 Core-to-Core pipeline runs its *simplifier* interleaved with demand analysis,
-float-out, specialization, and CSE across several phases. This is **pre-JIT graph
-reduction**: it is pure IR-to-IR transformation, *independent of the execution
-tier*, so it improves the IR the tier-0 tree-walk oracle interprets **and** the IR
-Cranelift later compiles ([execution tiers](08-execution-tiers-and-cranelift.md)) —
-it pays off before a single line of JIT exists. In the unified-graph framing
+float-out, specialization, and CSE across several phases. This is **pre-JIT IR
+simplification** (the simplifier, GHC Core-to-Core — not graph reduction, which in
+this RFC names only the lazy *evaluation* technique of §3): it is pure IR-to-IR
+transformation, *independent of the execution tier*, so it improves the IR the
+tier-0 tree-walk oracle interprets **and** the IR Cranelift later compiles
+([execution tiers](08-execution-tiers-and-cranelift.md)) — it pays off before a
+single line of JIT exists. In the unified-demand-graph framing
 ([architecture overview](03-architecture-overview.md) §3.4) the optimizer is just a
-**compile-node**, memoized by input-IR hash, so optimization results are cached
-across runs like everything else.
+pure (effect-class) **compile-node**, a graph node memoized by input-IR hash, so
+optimization results are cached across runs like everything else.
 
 ### 7.5.1 The simplifier (the workhorse), iterated to a fixpoint
 

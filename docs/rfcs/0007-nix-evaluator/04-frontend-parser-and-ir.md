@@ -780,14 +780,18 @@ derivation results and for early cutoff. The mantra "the fastest evaluator is th
 one that does not evaluate" starts here, with "the fastest parser is the one that
 does not parse."
 
-### 9.6 Parse and compile as deferred, parallel, speculative graph nodes
+### 9.6 Parse and compile as deferred, parallel, speculative demand-graph nodes
 
 The frontend cache (§9.1–§9.5) treats a file's IR as a memoized, content-addressed
 artifact. The natural next step is to recognize that **parsing and compiling a file
-are themselves deferred units of work — graph nodes, exactly like thunks** — and to
-schedule them on the same demand-driven, parallel, speculative machinery the rest of
-the evaluator uses. A file's IR is a *pure function of its bytes* (the parse-cache
-key, §9.2), which makes this not just convenient but sound.
+are themselves deferred units of work — graph nodes in the unified demand graph,
+exactly like thunks** — and to schedule them on the same demand-driven, parallel,
+speculative machinery the rest of the evaluator uses. This is the
+unified-demand-graph framing of [architecture overview](03-architecture-overview.md)
+§3.4: parse, compile, and force are all *node kinds* in one demand-driven
+incremental dataflow graph (the Adapton/Salsa model), differing only in effect
+class and granularity. A file's IR is a *pure function of its bytes* (the
+parse-cache key, §9.2), which makes this not just convenient but sound.
 
 This unifies three stages under one model:
 
@@ -810,12 +814,13 @@ two nodes with *different eagerness*: parse is cheap enough to do eagerly or
 speculatively; native compile stays demand- and profile-driven.
 
 **Parallel — independent files parse and compile concurrently.** Because a file's
-IR depends only on its content, parse/compile nodes for distinct files are
-independent and run on the rayon pool ([parallel evaluation](13-parallel-evaluation.md)):
+IR depends only on its content, parse/compile demand-graph nodes for distinct files
+are independent and run on the rayon work-stealing pool
+([parallel evaluation](13-parallel-evaluation.md)):
 parsing the AOS package set (or nixpkgs) is embarrassingly parallel across files.
 Neither C++ Nix nor Tvix does this — both parse serially, on demand, on the
 evaluating thread. A parse/compile node is just another work item the work-stealing
-scheduler can run on any idle worker.
+(Chase-Lev) scheduler can run on any idle worker.
 
 **Speculative — prefetch along statically-known import edges.** The import graph is
 *partially statically knowable*: an `import ./foo.nix` with a literal path is a static
@@ -828,7 +833,10 @@ front-end, hiding parse latency behind CPU work the evaluator is doing anyway.
 **The non-negotiable guardrail: speculation must be side-effect-free and
 error-quarantined.** This is the same discipline as the incremental cache's purity
 requirement and CPU speculative execution: *a speculative parse/compile must never
-change observable behavior.* The sharp case is **parse errors**. In Nix, a syntax
+change observable behavior.* This is the **error quarantine** rule (the general
+**effect class** discipline of [architecture overview](03-architecture-overview.md)
+§3.4: speculation and re-execution are sound only for *pure* nodes). The sharp
+case is **parse errors**. In Nix, a syntax
 error in a file fires **only when that file is actually imported** (errors are lazy).
 If we speculatively parse a file that contains a syntax error but the real evaluation
 never imports it, surfacing that error would invent a divergence from C++ Nix. So:
@@ -846,8 +854,8 @@ never imports it, surfacing that error would invent a divergence from C++ Nix. S
   never imported) costs at most some idle-core time, never correctness.
 
 **Why this is sound here and rare elsewhere.** Treating parse/compile as pure,
-memoized, content-addressed graph nodes — lazy, parallel, and speculative — is the
-same synthesis thesis ([architecture overview](03-architecture-overview.md)) applied
+memoized, content-addressed demand-graph nodes — lazy, parallel, and speculative — is
+the same synthesis thesis ([architecture overview](03-architecture-overview.md)) applied
 to the front-end: Nix's purity and the content-addressed parse cache make front-end
 work a first-class citizen of the deferred-execution graph rather than a serial
 prelude to it. The error-quarantine rule is what keeps speculation from leaking into

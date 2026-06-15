@@ -93,7 +93,7 @@ is one of the named wins of the whole project.
 | Sorted `Bindings`, observable order | adopted + shape-modeled | [09](09-attribute-sets-hidden-classes-and-inline-caches.md) |
 | String contexts | adopted (drv contract) | [11](11-derivation-and-store-compatibility.md) |
 | `bindVars`/`StaticEnv` scope resolution | adopted as slot indices | [04](04-frontend-parser-and-ir.md) |
-| Flake SQLite eval cache | superseded by fine-grained CAS cache | [12](12-incremental-evaluation-cache.md) |
+| Flake SQLite eval cache | superseded by fine-grained CA value store | [12](12-incremental-evaluation-cache.md) |
 | CA derivations early cutoff | mirrored at eval layer | [12](12-incremental-evaluation-cache.md) |
 | Boehm conservative GC | **replaced** by precise GC | [06](06-memory-management-and-gc.md) |
 | Tree-walking interpreter | matched by tier-0 oracle, beaten by JIT | [08](08-execution-tiers-and-cranelift.md) |
@@ -688,17 +688,35 @@ figure is **23.70s -> 5.77s on 12 threads, a 4.1x speedup** — gated by an
 
 > **What we take.** Confirmation that **Nix evaluation parallelizes in practice**
 > and the engineering pattern for it. aos-nix makes the only mutable runtime
-> state — the thunk-update protocol — monotonic and idempotent
-> (`Suspended -> Blackhole -> Forced`), so a thread can `CAS` `Suspended ->
-> Blackhole` to claim a thunk and a losing thread can work-steal elsewhere
+> state — the thunk-update protocol — monotonic and idempotent. The serial
+> oracle's `Suspended -> Blackhole -> Forced` state machine becomes, under
+> parallelism, the superset `Suspended -> Pending -> Awaited -> Forced/Failed`
+> ([13 §3.1](13-parallel-evaluation.md)): a thread claims a thunk with a
+> compare-and-swap (CAS) of `Suspended -> Pending`, a losing thread work-steals
+> elsewhere, and same-thread re-entry remains the genuine `Blackhole` cycle error
 > ([03 §3.2](03-architecture-overview.md), [13](13-parallel-evaluation.md)). This
 > is the GHC spark model and the same monotonic-claim discipline Determinate
 > Systems' parallel evaluator validates at production scale.
 
+The scheduler underneath that claim discipline is a **Chase-Lev work-stealing
+deque** (Chase & Lev, SPAA 2005) — the lock-free deque that underlies Rayon and
+crossbeam, and the structure GHC uses to load-balance sparks. aos-nix's L1
+work-stealing pool ([13 §4.2](13-parallel-evaluation.md)) is built directly on
+it: each worker owns a deque, pushes/pops LIFO, and idle peers steal FIFO from
+the oldest end. The fiber I/O layer's region-confinement of non-escaping thunks
+([13 §5.4](13-parallel-evaluation.md)) in turn rests on **Tofte-Talpin region
+inference** (Tofte & Talpin, 1994), the prior art behind aos-nix's
+escape-analysis-driven nursery confinement.
+
 Source: "Parallel evaluation comes to Determinate Nix" (3.11.1, eval-cores,
 `builtins.parallel`) — <https://determinate.systems/blog/changelog-determinate-nix-3111/>;
 "Parallel Nix evaluation" (23.70s -> 5.77s, 12 threads, 4.1x) —
-<https://determinate.systems/blog/parallel-nix-eval/>.
+<https://determinate.systems/blog/parallel-nix-eval/>; Chase & Lev, "Dynamic
+Circular Work-Stealing Deque" (SPAA 2005; basis for Rayon/crossbeam) —
+<https://www.dre.vanderbilt.edu/~schmidt/PDF/work-stealing-dequeue.pdf>;
+Tofte & Talpin, "Implementation of the Typed Call-by-Value Lambda-Calculus using
+a Stack of Regions" (POPL 1994; region inference) —
+<https://dl.acm.org/doi/10.1145/174675.177855>.
 
 ---
 
@@ -731,6 +749,8 @@ guarded" to "total and sound."
 | Pure-Rust JIT, host symbols, user stack maps | Cranelift / Wasmtime | [08](08-execution-tiers-and-cranelift.md) | Trusted in-process code: no sandbox tax |
 | Copy-and-patch stencils | Xu & Kjolstad / CPython 3.13 | [08](08-execution-tiers-and-cranelift.md) | (deferred tier-1 hedge for CLI warmup) |
 | Monotonic-claim parallel forcing | GHC sparks / Determinate Nix | [13](13-parallel-evaluation.md) | Only mutable state is monotonic thunk update |
+| Work-stealing deque (lock-free) | Chase-Lev / Rayon / crossbeam | [13](13-parallel-evaluation.md) | CPU-bound forcing fork-joins; pure values share no mutable state |
+| Region inference / escape-confined nurseries | Tofte-Talpin | [07](07-laziness-and-whole-program-analyses.md), [13](13-parallel-evaluation.md) | Immutable values: most thunks provably never escape their derivation |
 | Symbol interning, sorted bindings, string contexts, CA derivations | C++ Nix | [05](05-value-representation.md), [09](09-attribute-sets-hidden-classes-and-inline-caches.md), [11](11-derivation-and-store-compatibility.md), [12](12-incremental-evaluation-cache.md) | baseline to reproduce/beat |
 | `nix-compat` formats, conformance suite | Snix (ex-Tvix) | [11](11-derivation-and-store-compatibility.md), [15](15-differential-testing-and-benchmarking.md) | dependency; `.drv` parity is *our* added gate |
 

@@ -90,6 +90,8 @@ sound here.
 | [22](22-implementation-checklist-all-phases.md) | Implementation checklist across all phases (P1–P8 + P3.5), with deliverables, conformance gates, decisions closed, and exit criteria |
 | [23](23-scope-platform-and-modes.md) | Scope, platform, and language modes: flakes out of scope; restricted/pure-eval + allowed-paths; multi-arch portability + `currentSystem`; `nixVersion`/`langVersion` spoofing |
 | [24](24-observability-and-diagnostics.md) | Observability and diagnostics: miette error reporting, presentation-vs-parity, `--show-trace`, the REPL, and tracing |
+| [25](25-intermediate-representation.md) | The intermediate representation (IR) contract: node taxonomy, scope-resolved de Bruijn form, thunk/closure/attrset/primop/string-context encoding, effect-class annotation, demand-graph relationship, and serialization for the parse/compile cache |
+| [26](26-optimization-pass-catalog.md) | The optimization pass catalog: the simplifier specified pass-by-pass over the IR (matched node kinds, before→after rewrite, preconditions, fixpoint phase order, committed vs measure-gated) |
 
 ## Decision log
 
@@ -117,7 +119,7 @@ blocks Phase 1.
 | **`unsafe` is the justified exception here** | NaN-boxing, JIT fn-ptr calls, and a raw heap require it; mitigated with SAFETY comments and miri/sanitizer CI on the safe tier. See [14](14-integration-with-aos.md). |
 | **Measure-first** | Confirm eval, not build, is the bottleneck before optimizing; quantify against the harness. See [15](15-differential-testing-and-benchmarking.md). |
 | **Content-addressed derivations are first-class** | CA is in the first acceptance gate (not deferred); AOS's store model is content-addressed (RFC-0005). See [11](11-derivation-and-store-compatibility.md), [19](19-decision-register.md) C-11. |
-| **Parallel graph evaluation is promoted early** | Lock-free CAS thunks + work-stealing forcing as an early phase (P3.5), not a rank-5 tail; sequential oracle stays ground truth, `loom`/Miri-gated. Concurrent *moving* GC stays deferred. See [13](13-parallel-evaluation.md), [19](19-decision-register.md) C-12. |
+| **Parallel thunk-graph evaluation is promoted early** | Lock-free compare-and-swap (CAS) thunks + work-stealing forcing as an early phase (P3.5), not a rank-5 tail; sequential oracle stays ground truth, `loom`/Miri-gated. Concurrent *moving* GC stays deferred. See [13](13-parallel-evaluation.md), [19](19-decision-register.md) C-12. |
 | **Concurrency runtime: rayon + tokio + fibers** | rayon for CPU graph forcing; tokio reactor for blocking eval-time I/O; stackful **fibers** so I/O-blocked nodes park without async-coloring the recursive hot path. Full async-coloring rejected. See [13](13-parallel-evaluation.md) §5.5, [19](19-decision-register.md) C-16. |
 | **Cache storage: mmap packfile + heed/LMDB** | Custom mmap'd append-only packfile for immutable content-addressed blobs (zero-copy); `heed`/LMDB for metadata + index. Advisory cache → relaxed sync. See [12](12-incremental-evaluation-cache.md) §6.5, [19](19-decision-register.md) C-13. |
 | **Out-of-core memory (the swap Nix lacks)** | The mmap'd value store spills cold values to disk, OS-paged, write-back-free; `madvise`/huge pages + a memory budget; hash-consing already beats vanilla Nix's live set. See [06](06-memory-management-and-gc.md), [12](12-incremental-evaluation-cache.md) §6.6, [19](19-decision-register.md) C-17. |

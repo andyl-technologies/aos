@@ -9,7 +9,7 @@
 > [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md),
 > and [the incremental evaluation cache](12-incremental-evaluation-cache.md).
 
-> **Status (decision C-12): first-class, promoted early.** Parallel graph
+> **Status (decision C-12): first-class, promoted early.** Parallel thunk-graph
 > evaluation is no longer a rank-5 "measured follow-up" — it is a committed early
 > phase (**P3.5** in [roadmap](17-roadmap-and-risks.md) §3): the L1 work-stealing
 > pool (§4) and the L2 lock-free CAS thunk protocol (§3). Two guardrails make
@@ -116,10 +116,14 @@ cross-derivation sharing safe.
 
 In the serial design (see [value representation](05-value-representation.md)) a
 thunk is `(code_ptr, captured_env, state)` and `state` is a plain enum mutated
-by the forcing thread. For L2 we promote the discriminant to an **atomic word**
-and force every transition through compare-and-swap. We follow the exact state
-set that C++ Nix's multithreaded evaluator settled on, because it is the minimal
-set that preserves blackhole semantics under contention:
+by the forcing thread, cycling through the serial subset
+`Suspended -> Blackhole -> Forced`. The parallel state machine is a **superset**
+of that serial subset: for L2 we promote the discriminant to an **atomic word**
+and force every transition through compare-and-swap (CAS). The serial
+`Suspended -> Blackhole -> Forced` lifecycle is exactly the uncontended,
+single-thread projection of the diagram below — one model, two regimes. We follow
+the exact state set that C++ Nix's multithreaded evaluator settled on, because it
+is the minimal set that preserves blackhole semantics under contention:
 
 ```text
   Suspended ──CAS──► Pending ──────► Forced     (uncontended fast path)
@@ -561,7 +565,7 @@ The evaluator mixes three kinds of work, and each wants a different mechanism:
 
 | Work | Nature | Tool |
 |---|---|---|
-| Graph forcing (L1 + L2) | CPU-bound, deeply recursive | **rayon** work-stealing (crossbeam Chase-Lev deques) |
+| Thunk-graph forcing (L1 + L2) | CPU-bound, deeply recursive | **rayon** work-stealing (crossbeam Chase-Lev deques) |
 | Eval-time blocking I/O (IFD waiting on a build; eval-time network fetchers) | I/O-bound, may block for seconds | **tokio** reactor on its own I/O threads |
 | Suspending an I/O-blocked eval node so its worker frees up | scheduling glue | **stackful fibers** (green threads) |
 
@@ -599,7 +603,7 @@ suspend there you must save the whole call stack. Two ways to do that:
 2. **Stackful coroutines (fibers)** — Go's model, and the **chosen** mechanism.
    Each eval node runs on a fiber. When it hits a suspendable I/O primop, the
    *entire synchronous recursive stack parks*; the worker work-steals another
-   ready fiber (more CPU graph work); the tokio reactor drives the I/O; on
+   ready fiber (more CPU-bound thunk-graph forcing); the tokio reactor drives the I/O; on
    completion the fiber is rescheduled onto some worker. This delivers the M:N
    "few OS threads service many I/O-blocked nodes" behavior **without coloring
    `force` async** — the recursive hot path stays plain synchronous Rust.

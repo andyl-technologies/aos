@@ -45,8 +45,9 @@ their *ratio*, not their absolute values, is what the design leans on.
   source files change.
 - The number of *thunk activations* — each time a suspended computation is forced
   during a single evaluation — is in the **billions**. A `genList` over a large
-  range, a `foldl'` over an attrset, an `import` that fans out across the package
-  graph: each multiplies activations without adding expressions.
+  range, a `foldl'` over an attrset, an `import` that fans out across the
+  package-set expression closure: each multiplies activations without adding
+  expressions.
 
 This ratio is the single most important number in the design. It says: **compile
 per-expression, exactly once; never compile per-activation.** A thunk activation is

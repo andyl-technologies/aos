@@ -117,7 +117,7 @@ table, a single wrong byte is a release blocker.
 | Observable artifact | Definition | Hash / format | Frozen because |
 |---|---|---|---|
 | Output store path | `/nix/store/<32-char-b32>-<name>` for each derivation output | trunc-160 of SHA-256, custom base-32 | Any change -> cache miss -> rebuild |
-| `.drv` store path | store path of the derivation file itself | "text" content-addressing: SHA-256 of ATerm | Names every node in the graph |
+| `.drv` store path | store path of the derivation file itself | "text" content-addressing: SHA-256 of ATerm | Names every node in the derivation graph |
 | `.drv` file contents | the ATerm-serialized `Derivation` | exact ATerm bytes | Hashed to produce the `.drv` path |
 | Input-derivation refs | `inputDrvs` map: drv path -> output names | embedded in ATerm | Wrong refs -> wrong drv hash |
 | Fixed-output hashes | `outputHash`, `outputHashAlgo`, `outputHashMode` | as written by the expression | Defines FOD identity |

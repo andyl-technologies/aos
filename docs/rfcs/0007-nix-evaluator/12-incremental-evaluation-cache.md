@@ -78,9 +78,14 @@ it can be in the systems we are stealing from.
 ## 2. Evaluation as a demand-driven incremental computation graph
 
 We model an evaluation not as a tree-walk that happens to memoize, but as the
-incremental maintenance of a **dependency graph of cached computations** — the
+incremental maintenance of **the demand graph** (the Salsa/Adapton lineage) — a
+dependency graph of cached computations whose units we call **graph nodes**, the
 same abstraction Salsa calls a query graph and Adapton calls a *demanded
-computation graph (DCG)*.
+computation graph (DCG)*. Throughout this document "node" denotes a graph node
+of this demand graph (each corresponding to a forced thunk or a derivation, §3.1),
+distinct from the AST/IR nodes of [the frontend](04-frontend-parser-and-ir.md)
+and from the derivation graph (the `.drv` output DAG) of
+[derivation and store compatibility](11-derivation-and-store-compatibility.md).
 
 ```text
         inputs (leaves)                 derived nodes (memoized)
@@ -277,8 +282,8 @@ tiers**:
   ([05](05-value-representation.md)) plus its dependency edges. This is free
   enough that the §3.3 "conditionally cache" set lives here: within a run, a
   used-many thunk earns a RAM memo entry the moment its second demand arrives.
-- **Disk-tier (materialization).** Writing a node and its value to the durable
-  CAS (§6) is *not* free: it costs a blake3 value-hash, a canonical
+- **Disk-tier (materialization).** Writing a graph node and its value to the
+  durable CA store (§6) is *not* free: it costs a blake3 value-hash, a canonical
   serialization of the WHNF value, and an append to the memory-mapped packfile.
   A node is materialized to disk **only when**
 
@@ -339,7 +344,7 @@ and state the boundary between them.
 3. **Post-force value hash-consing** ([05](05-value-representation.md)).
    Once a thunk is forced to WHNF, structurally-equal *values* are interned:
    xxh3-keyed in-process for O(1) pointer equality, blake3-keyed in the durable
-   CAS (§6). Hash-consing is what makes the store-path strings and identical
+   CA store (§6). Hash-consing is what makes the store-path strings and identical
    derivation env attrsets that recur across the package set collapse to one
    allocation in RAM and one entry on disk, and it is what supplies the
    already-computed value-hashes that §3.2's keys and §4's early cutoff read as a
@@ -443,7 +448,7 @@ invariant, not a convenience.
 | Hash      | Where                                   | Why this one                                                        |
 |-----------|-----------------------------------------|---------------------------------------------------------------------|
 | **xxh3**  | in-process keys (§3.2), hot probes      | Non-cryptographic, fastest portable hash (multi-GB/s); collisions are tolerable because keys are checked against an in-process table we control and a collision only risks a *recompute*, never a wrong answer. |
-| **blake3**| durable value-hashes (§4), persistent CAS keys (§6) | Cryptographic and collision-safe at fleet scale; parallel/SIMD-friendly tree hash; a blake3 collision is what we'd need to fear when a *wrong* cached value could silently flow into a `.drv`, so the durable, shared, cross-machine layer must be cryptographic. |
+| **blake3**| durable value-hashes (§4), persistent CA-store keys (§6) | Cryptographic and collision-safe at fleet scale; parallel/SIMD-friendly tree hash; a blake3 collision is what we'd need to fear when a *wrong* cached value could silently flow into a `.drv`, so the durable, shared, cross-machine layer must be cryptographic. |
 | **SHA-256** | *only* Nix-observed `.drv` and store-path hashing | Non-negotiable: it is the Nix on-disk format ([02](02-compatibility-constraints.md), [11](11-derivation-and-store-compatibility.md)). Any other choice changes store paths. |
 
 ### 5.1 Why not one hash everywhere
@@ -454,7 +459,7 @@ invariant, not a convenience.
   *forces* it.
 - **Why not xxh3 for the durable store?** xxh3 is not collision-resistant
   against adversarial or even merely large-scale accidental inputs. The durable
-  CAS is shared across CI machines and persists for the life of the project; a
+  CA store is shared across CI machines and persists for the life of the project; a
   silent collision there could substitute one cached value for another and, if
   that value feeds `derivationStrict`, corrupt a `.drv`. blake3's cryptographic
   strength is the price of letting cache entries cross the trust boundary between
@@ -465,7 +470,7 @@ invariant, not a convenience.
 - **Why blake3 specifically over blake2/SHA-3?** It is the fastest of the
   cryptographic options on commodity x86-64, it is a tree hash (parallelizable,
   which matters once parallel forcing lands — see [13](13-parallel-evaluation.md)),
-  and it produces a flat 256-bit digest convenient as a CAS key.
+  and it produces a flat 256-bit digest convenient as a CA-store key.
 
 ### 5.2 The leak invariant
 
@@ -493,7 +498,8 @@ content-addressed sharing from build outputs to **eval outputs**.
 
 ### 6.1 The persistent value store
 
-The durable cache is a content-addressed store (CAS) keyed by blake3:
+The durable cache is a content-addressed store (the CA store, or value store)
+keyed by blake3:
 
 ```text
    eval-cache/
@@ -513,7 +519,7 @@ The durable cache is a content-addressed store (CAS) keyed by blake3:
   it. Because values are hash-consed and immutable
   ([05](05-value-representation.md)), structurally identical attrsets and strings
   — store-path strings and identical derivation env attrsets recur constantly
-  across the package set — deduplicate to a single CAS entry, exactly as Attic
+  across the package set — deduplicate to a single CA-store entry, exactly as Attic
   globally deduplicates NARs and chunks.
 - `files/` is the parse/compile cache from
   ([04](04-frontend-parser-and-ir.md)) made durable: the whole package set is
@@ -534,7 +540,7 @@ out for NARs:
    coherence protocol, no invalidation messages — a content-addressed entry is
    immutable by construction.
 3. **Safe garbage collection.** Mirroring Attic's three-level GC (local cache
-   mapping → global NAR store → global chunk store), the eval CAS GCs in layers:
+   mapping → global NAR store → global chunk store), the eval CA store GCs in layers:
    prune `nodes/` entries older than a retention window, then collect `values/`
    entries no surviving node references, then collect `files/` IR no surviving
    node imports. Orphan collection is sound because references are explicit in the
@@ -658,7 +664,7 @@ content-addressed value store (§6.1, §6.5) gives aos-nix the spill mechanism N
 is missing — see [memory and GC](06-memory-management-and-gc.md) for the
 in-process heap and collector this complements.
 
-The mechanism is **eviction to the CAS with rematerialization on demand**:
+The mechanism is **eviction to the CA store with rematerialization on demand**:
 
 - **Cold values evict from the heap.** A hash-consed value
   ([05](05-value-representation.md)) that has not been touched recently can be
@@ -692,7 +698,7 @@ To make the asymptotics concrete, trace what happens when a developer bumps
 
 ```text
    Run N (cold or warmed):       parse+eval whole closure feeding curl & git.
-                                 Populate nodes/ values/ files/ in the CAS.
+                                 Populate nodes/ values/ files/ in the CA store.
 
    Edit pkgs/curl.nix version + hash.
 
@@ -797,8 +803,9 @@ order of strength:
   schema-version field and a "discard on mismatch" policy.
 - **Parallel-cache interaction:** concurrent forcing
   ([13](13-parallel-evaluation.md)) means multiple threads may miss on the same
-  key simultaneously. The insert path must be a CAS/single-flight on the node
-  table so duplicate work collapses; the design is sketched in
+  key simultaneously. The insert path must be a compare-and-swap (CAS)
+  single-flight on the node table so duplicate work collapses; the design is
+  sketched in
   [parallel evaluation](13-parallel-evaluation.md) but the single-flight
   protocol for the *persistent* store (two machines, not two threads) is an open
   question.
@@ -816,7 +823,7 @@ keyed on `H(expression ⊕ environment)`, propagates change with **early cutoff*
 and persists results in a content-addressed value store shared across machines
 through AOS's existing Attic infrastructure — extending Attic from build outputs
 to eval outputs. The hashing policy is strict: xxh3 for hot in-process keys,
-blake3 for the durable cryptographic CAS, and SHA-256 *only* where the Nix
+blake3 for the durable cryptographic CA store, and SHA-256 *only* where the Nix
 on-disk format demands it, with a hard invariant that no internal hash may leak
 into a Nix-observed store path. Nix's purity, value immutability, and batch
 whole-program nature make this caching layer *exact* where the same techniques

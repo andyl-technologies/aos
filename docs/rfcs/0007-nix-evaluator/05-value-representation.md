@@ -540,8 +540,13 @@ pub struct Thunk {
 }
 ```
 
-The state machine, identical in shape to GHC's thunk update and to Snix/Tvix's
-thunk discipline ([tvix-eval Thunk](https://docs.tvix.dev/rust/tvix_eval/value/thunk/struct.Thunk.html)):
+The state machine here is the **serial** model, identical in shape to GHC's
+thunk update and to Snix/Tvix's thunk discipline
+([tvix-eval Thunk](https://docs.tvix.dev/rust/tvix_eval/value/thunk/struct.Thunk.html)).
+It is the serial *subset* of the parallel superset
+`Suspended → Pending → Awaited → Forced/Failed` that
+[parallel evaluation](13-parallel-evaluation.md) introduces; single-threaded
+forcing only ever visits `Suspended → Blackhole → Forced`. One model, two regimes:
 
 ```text
         force()                 evaluation completes

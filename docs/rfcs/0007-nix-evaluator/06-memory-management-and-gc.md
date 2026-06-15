@@ -284,11 +284,11 @@ resident working set, and a **single configurable budget** (§3.6) that drives a
 of these — eviction, paging hints, and the collector flip — as escalating
 responses to one knob.
 
-### 3.4 Out-of-core spill: the mmap'd CAS as a swap-to-disk mechanism
+### 3.4 Out-of-core spill: the mmap'd CA store as a swap-to-disk mechanism
 
 The mitigations above keep everything in RAM. But `aos-nix` has a resource
-vanilla Nix does not: the **content-addressed value store** of the incremental
-evaluation cache (see
+vanilla Nix does not: the **content-addressed value store** (the **CA store**)
+of the incremental evaluation cache (see
 [incremental evaluation cache](12-incremental-evaluation-cache.md)). That store
 is an `mmap`'d, content-addressed, on-disk arena of hash-consed values — and it
 **doubles as a swap-to-disk mechanism for the evaluator's own heap.** This
@@ -298,14 +298,14 @@ live set must fit in RAM + disk, with the OS managing which part is resident."
 The mechanism has three properties that make it unusually clean, each a direct
 consequence of the value representation:
 
-- **Cold values are evicted to the CAS and rematerialized on demand.** A
+- **Cold values are evicted to the CA store and rematerialized on demand.** A
   hash-consed value that has not been touched recently can be dropped from the
   in-RAM arena, leaving behind only its content hash (a small, fixed-size
   handle). When some later access dereferences that handle, the value is
   rematerialized by reading it back from the on-disk store. The in-memory
   footprint of a cold value collapses to one hash.
 - **Because the store is `mmap`'d, the OS pages it in and out.** We do not write
-  our own pager. The CAS is a memory-mapped file; the kernel's virtual-memory
+  our own pager. The CA store is a memory-mapped file; the kernel's virtual-memory
   system brings pages of cold values into physical RAM on fault and evicts them
   under pressure via the standard page-cache machinery. The evaluator addresses
   the whole content-addressed store as if it were memory, and the working-set
@@ -315,7 +315,7 @@ consequence of the value representation:
   the crucial difference from a conventional swap file. In a content-addressed,
   immutable store, a value's on-disk location is determined by its content hash;
   the value is never mutated after creation. So evicting a cold value requires
-  **no write-back**: either the value is already present in the CAS (it was
+  **no write-back**: either the value is already present in the CA store (it was
   hash-consed there on creation) and eviction is a pure drop of the RAM copy, or
   it is written once and is thereafter immutable. There is no dirty-page
   write-out on the eviction path, no coherence problem between the RAM copy and
@@ -325,7 +325,7 @@ consequence of the value representation:
 The net effect is that the "allocate forever, never free" discipline of Tier A no
 longer implies "everything stays resident." Cumulative allocation can exceed
 physical RAM as long as the *resident working set* fits, with the cold tail
-spilled to the CAS and faulted back only when touched. This is precisely the
+spilled to the CA store and faulted back only when touched. This is precisely the
 out-of-core capability C++ Nix's BDW-GC heap cannot offer: a conservative,
 in-RAM, non-content-addressed heap has no notion of "the disk copy is
 authoritative, drop the RAM copy for free."
@@ -347,8 +347,8 @@ portability shim that compiles to a no-op on non-Linux hosts.
 | `MADV_DONTNEED` | Return *dead* arena pages to the OS after a region pop (§5) or a worker-arena drop, when we want the RSS reclaimed immediately and the contents are genuinely garbage. | Destructive: subsequent access re-faults to zero-fill (anon) or re-reads the file. Immediate RSS reduction. Original Linux; Huge-TLB support added 5.18. |
 | `MADV_FREE` | Return *probably-dead* arena pages cheaply, letting the kernel keep them if there is no memory pressure (lazy reclaim) and reuse them on a write. | Lazy: the kernel may free under pressure or on next write; non-destructive until then. Private anonymous pages only. Linux 4.5+. |
 | `MADV_COLD` | Demote *cold* cache/value pages — hash-consed values not recently touched — to make them preferred reclaim targets *without* forcing them out. | Non-destructive deactivation: marks pages as reclaim candidates; a hint only, does not force reclaim. Linux 5.4+. |
-| `MADV_PAGEOUT` | Actively evict cold CAS/value pages to swap (or write back, for file-backed) when we want to *force* the demotion, e.g. when approaching the budget (§3.6). | Forced reclaim: anonymous pages are swapped out, dirty file-backed pages written; data preserved, pages removed from RAM now. Linux 5.4+. |
-| `MADV_HUGEPAGE` | Back the **cache-resident nursery** (and the hot CAS region) with transparent huge pages to cut TLB miss pressure on the allocation hot path. | Enables Transparent Huge Pages for the range; the kernel collapses/scans to huge pages. Optimization hint, non-destructive. Linux 2.6.38+ (needs `CONFIG_TRANSPARENT_HUGEPAGE`). |
+| `MADV_PAGEOUT` | Actively evict cold CA-store/value pages to swap (or write back, for file-backed) when we want to *force* the demotion, e.g. when approaching the budget (§3.6). | Forced reclaim: anonymous pages are swapped out, dirty file-backed pages written; data preserved, pages removed from RAM now. Linux 5.4+. |
+| `MADV_HUGEPAGE` | Back the **cache-resident nursery** (and the hot CA-store region) with transparent huge pages to cut TLB miss pressure on the allocation hot path. | Enables Transparent Huge Pages for the range; the kernel collapses/scans to huge pages. Optimization hint, non-destructive. Linux 2.6.38+ (needs `CONFIG_TRANSPARENT_HUGEPAGE`). |
 
 The distinction between the pairs is deliberate and load-bearing:
 
@@ -386,7 +386,7 @@ drives three *escalating* responses as the resident set climbs toward it:
                                      (the common, fastest path — §3.1)
 
    approaching budget         (2)   spill cold hash-consed values to the mmap'd
-                                     CAS (§3.4); MADV_COLD / MADV_PAGEOUT the
+                                     CA store (§3.4); MADV_COLD / MADV_PAGEOUT the
                                      cold value pages and MADV_FREE dead arena
                                      pages (§3.5) — keep the resident set under
                                      the budget without ever tracing the heap
@@ -459,8 +459,10 @@ immutable, garbage-collected functional language. GHC allocates *everything*
 | Block-structured heap, per-block bump | Same | Lets workers allocate lock-free from private blocks. |
 
 The one place Nix is *harder* than idealized immutable data is **thunk update**:
-forcing a thunk overwrites its `state` from `Suspended` to `Blackhole` to
-`Forced(value)`. That is the *only* mutation in the value graph, and it is the
+forcing a thunk overwrites its `state` along the serial `Suspended → Blackhole →
+Forced` machine (the serial subset of the parallel superset in
+[value representation](05-value-representation.md) §6 / [parallel evaluation](13-parallel-evaluation.md)).
+That is the *only* mutation in the value graph, and it is the
 source of the single write barrier the generational and concurrent collectors
 need (§4.5, §6.4). Compared to Java — where every field of every object can be
 mutated at any time and the GC must assume so — Nix's mutation surface is a

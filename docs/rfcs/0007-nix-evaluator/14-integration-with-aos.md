@@ -624,7 +624,7 @@ An IFD demand is exactly the blocking point the fiber runtime
 ([parallel evaluation](13-parallel-evaluation.md) §5.5) is designed for. Rather
 than pinning an OS thread on `block_on(realise(D))` and starving the work-stealing
 pool, the **IFD-blocked fiber parks** — its whole synchronous recursive force
-stack is saved on the fiber stack — and its worker work-steals other ready graph
+stack is saved on the fiber stack — and its worker work-steals other ready eval
 nodes. The realisation runs as a subprocess driven via the tokio reactor; on
 build completion the fiber is rescheduled onto some worker and resumes. This
 unifies "waiting on a build" with "waiting on a peer's claimed thunk"
