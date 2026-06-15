@@ -585,7 +585,7 @@ async fn main() -> Result<()> {
             reindex_interval,
         } => {
             let root = resolve_root(cli.root, dev)?;
-            let db = Arc::new(Database::open(&root.join("hub.db"))?);
+            let db = Arc::new(Database::open(&root.join("hub.db")).await?);
             // Optional one-shot demo seed: populate an empty instance so the
             // server comes up with something to browse. seed_dev is idempotent
             // (it no-ops when the demo org already exists), so leaving --seed on
@@ -616,7 +616,7 @@ async fn main() -> Result<()> {
                         // upstream surface and copy it into the local binding.
                         sync_due_mirrors(&db, now_secs()).await;
                         // Offboarding: hard-purge orgs past their grace window.
-                        match aos_registry_hub::export::purge_expired_orgs(&db, now_secs()) {
+                        match aos_registry_hub::export::purge_expired_orgs(&db, now_secs()).await {
                             Ok(purged) => {
                                 for slug in &purged {
                                     tracing::info!(org = %slug, "purged expired org");
@@ -629,7 +629,7 @@ async fn main() -> Result<()> {
                         // Retention: prune repair-job history past the window so
                         // the append-only audit table cannot grow without bound.
                         let cutoff = now_secs() - REPAIR_JOB_RETENTION_SECS;
-                        match db.prune_repair_jobs(cutoff) {
+                        match db.prune_repair_jobs(cutoff).await {
                             Ok(pruned) if pruned > 0 => {
                                 tracing::info!(pruned, "pruned old repair jobs");
                             }
@@ -648,11 +648,11 @@ async fn main() -> Result<()> {
             // Drain the outbound-webhook delivery queue in the background.
             tokio::spawn(aos_registry_hub::webhook::run_delivery_worker(
                 Arc::clone(&db),
-                aos_registry_hub::fetch::hardened_client(),
+                aos_registry_hub::fetch::hardened_client().await,
             ));
 
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen}"));
-            let mut app_state = AppState::new(db, external_url);
+            let mut app_state = AppState::new(db, external_url).await;
             // In dev mode the "check your email" page shows the magic link
             // inline (the default LogMailer logs rather than sends).
             app_state.dev = dev;
@@ -668,7 +668,7 @@ async fn main() -> Result<()> {
             // masthead then shows only the page crumbs).
             let brand = match brand {
                 Some(brand) => brand,
-                None => state_brand(&app_state)?,
+                None => state_brand(&app_state).await?,
             };
             aos_registry_hub::ui::render::set_brand(brand);
             let state = Arc::new(app_state);
@@ -681,13 +681,15 @@ async fn main() -> Result<()> {
             // the real client when no trusted proxy fronts the hub.
             axum::serve(
                 listener,
-                router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                router(state)
+                    .await
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
             .await?;
         }
         Command::Registry { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
+            let db = Database::open(&root.join("hub.db")).await?;
             match command {
                 RegistryCommand::Add {
                     slug,
@@ -696,11 +698,14 @@ async fn main() -> Result<()> {
                     no_verify,
                 } => {
                     validate_slug(&slug)?;
-                    let id = db.register_registry(&slug, &source_url, &trust_keys, !no_verify)?;
+                    let id = db
+                        .register_registry(&slug, &source_url, &trust_keys, !no_verify)
+                        .await?;
                     let registry = db
-                        .registry_by_slug(&slug)?
+                        .registry_by_slug(&slug)
+                        .await?
                         .context("registry vanished after registration")?;
-                    let fetch = fetch_for_url(&source_url)?;
+                    let fetch = fetch_for_url(&source_url).await?;
                     match index_and_record(&db, fetch.as_ref(), &registry).await {
                         Ok(outcome) => {
                             println!(
@@ -723,11 +728,13 @@ async fn main() -> Result<()> {
                 } => {
                     let (org_slug, project_path, name) = parse_canonical_path(&path)?;
                     let org = db
-                        .org_by_slug(org_slug)?
+                        .org_by_slug(org_slug)
+                        .await?
                         .with_context(|| format!("no org '{org_slug}'"))?;
                     let binding_id = match &binding {
                         Some(name) => Some(
-                            db.storage_binding_by_name(org.id, name)?
+                            db.storage_binding_by_name(org.id, name)
+                                .await?
                                 .with_context(|| {
                                     format!("no storage binding '{name}' in org '{org_slug}'")
                                 })?
@@ -735,18 +742,21 @@ async fn main() -> Result<()> {
                         ),
                         None => None,
                     };
-                    let id = db.create_managed_registry(
-                        org.id,
-                        project_path,
-                        name,
-                        &visibility,
-                        binding_id,
-                        &prefix,
-                        &trust_keys,
-                        true,
-                    )?;
+                    let id = db
+                        .create_managed_registry(
+                            org.id,
+                            project_path,
+                            name,
+                            &visibility,
+                            binding_id,
+                            &prefix,
+                            &trust_keys,
+                            true,
+                        )
+                        .await?;
                     let registry = db
-                        .registry_by_scope(org_slug, project_path, name)?
+                        .registry_by_scope(org_slug, project_path, name)
+                        .await?
                         .context("registry vanished after creation")?;
                     println!(
                         "created managed registry '{}' (id {id}, {visibility})",
@@ -763,7 +773,8 @@ async fn main() -> Result<()> {
                         );
                     }
                     let registry = db
-                        .registry_by_slug(&canonical)?
+                        .registry_by_slug(&canonical)
+                        .await?
                         .with_context(|| format!("no registry '{canonical}'"))?;
                     // The CLI actor is the local operator: an out-of-band
                     // `system` principal (no IAM check on the local path).
@@ -774,15 +785,17 @@ async fn main() -> Result<()> {
                         "system",
                         registry.id,
                         &visibility,
-                    )?;
+                    )
+                    .await?;
                     println!(
                         "set '{canonical}' visibility to {visibility} (change-set {change_id})"
                     );
                 }
                 RegistryCommand::List => {
-                    for registry in db.list_registries()? {
+                    for registry in db.list_registries().await? {
                         let state = db
-                            .index_status(registry.id)?
+                            .index_status(registry.id)
+                            .await?
                             .map(|s| s.state)
                             .unwrap_or_else(|| "unknown".into());
                         println!("{}\t{}\t{}", registry.slug, registry.source_url, state);
@@ -792,15 +805,15 @@ async fn main() -> Result<()> {
         }
         Command::Org { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
+            let db = Database::open(&root.join("hub.db")).await?;
             match command {
                 OrgCommand::Add { slug, name } => {
                     validate_slug(&slug)?;
-                    let id = db.create_org(&slug, &name)?;
+                    let id = db.create_org(&slug, &name).await?;
                     println!("created org '{slug}' (id {id})");
                 }
                 OrgCommand::List => {
-                    for org in db.list_orgs()? {
+                    for org in db.list_orgs().await? {
                         println!("{}\t{}", org.slug, org.name);
                     }
                 }
@@ -812,7 +825,8 @@ async fn main() -> Result<()> {
                     max_tokens,
                 } => {
                     let org_record = db
-                        .org_by_slug(&org)?
+                        .org_by_slug(&org)
+                        .await?
                         .with_context(|| format!("no org '{org}'"))?;
                     db.set_org_quota(
                         org_record.id,
@@ -822,18 +836,20 @@ async fn main() -> Result<()> {
                             max_registries,
                             max_tokens,
                         },
-                    )?;
+                    )
+                    .await?;
                     println!("set quota for org '{org}'");
                 }
                 OrgCommand::Export { org, output } => {
-                    run_org_export(&db, &org, &output)?;
+                    run_org_export(&db, &org, &output).await?;
                 }
                 OrgCommand::Delete { org, grace_days } => {
                     let org_record = db
-                        .org_by_slug_including_deleted(&org)?
+                        .org_by_slug_including_deleted(&org)
+                        .await?
                         .with_context(|| format!("no org '{org}'"))?;
                     let grace_secs = grace_days.max(0) * 86_400;
-                    if db.soft_delete_org(org_record.id, grace_secs)? {
+                    if db.soft_delete_org(org_record.id, grace_secs).await? {
                         println!(
                             "soft-deleted org '{org}' (grace {grace_days}d); it stops serving now \
                              and is purgeable after the grace window. Run `org export` first to \
@@ -845,16 +861,18 @@ async fn main() -> Result<()> {
                 }
                 OrgCommand::Restore { org } => {
                     let org_record = db
-                        .org_by_slug_including_deleted(&org)?
+                        .org_by_slug_including_deleted(&org)
+                        .await?
                         .with_context(|| format!("no org '{org}'"))?;
-                    if db.restore_org(org_record.id)? {
+                    if db.restore_org(org_record.id).await? {
                         println!("restored org '{org}'");
                     } else {
                         println!("org '{org}' was not soft-deleted");
                     }
                 }
                 OrgCommand::Purge => {
-                    let purged = aos_registry_hub::export::purge_expired_orgs(&db, now_secs())?;
+                    let purged =
+                        aos_registry_hub::export::purge_expired_orgs(&db, now_secs()).await?;
                     if purged.is_empty() {
                         println!("no orgs past their grace window");
                     } else {
@@ -867,7 +885,7 @@ async fn main() -> Result<()> {
         }
         Command::User { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
+            let db = Database::open(&root.join("hub.db")).await?;
             match command {
                 UserCommand::SetPassword { email, password } => {
                     let email = email.trim().to_lowercase();
@@ -888,16 +906,16 @@ async fn main() -> Result<()> {
                         anyhow::bail!("password must not be empty");
                     }
                     // Create the user if absent (ops bootstrap convenience).
-                    let user_id = db.find_or_create_user(&email)?;
+                    let user_id = db.find_or_create_user(&email).await?;
                     let hash = aos_registry_hub::auth::password::hash_password(&plaintext)?;
-                    db.set_user_password(user_id, &hash)?;
+                    db.set_user_password(user_id, &hash).await?;
                     println!("set password for '{email}' (user id {user_id})");
                 }
             }
         }
         Command::Seed => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
+            let db = Database::open(&root.join("hub.db")).await?;
             match aos_registry_hub::seed::seed_dev(&db, &root).await? {
                 aos_registry_hub::seed::SeedOutcome::Seeded(report) => report.print(),
                 aos_registry_hub::seed::SeedOutcome::AlreadySeeded => {
@@ -907,7 +925,7 @@ async fn main() -> Result<()> {
         }
         Command::Instance { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
+            let db = Database::open(&root.join("hub.db")).await?;
             match command {
                 InstanceCommand::SetSignupPolicy { policy } => {
                     let parsed = match policy.as_str() {
@@ -917,14 +935,14 @@ async fn main() -> Result<()> {
                             anyhow::bail!("invalid policy '{other}': open or invite_only")
                         }
                     };
-                    db.set_signup_policy(parsed)?;
+                    db.set_signup_policy(parsed).await?;
                     println!("signup policy set to {}", parsed.as_str());
                 }
                 InstanceCommand::ShowSignupPolicy => {
-                    println!("{}", db.signup_policy()?.as_str());
+                    println!("{}", db.signup_policy().await?.as_str());
                 }
                 InstanceCommand::SetBrand { brand } => {
-                    db.instance_config_set("brand", &brand)?;
+                    db.instance_config_set("brand", &brand).await?;
                     if brand.is_empty() {
                         println!("brand cleared");
                     } else {
@@ -932,17 +950,21 @@ async fn main() -> Result<()> {
                     }
                 }
                 InstanceCommand::ShowBrand => {
-                    println!("{}", db.instance_config_get("brand")?.unwrap_or_default());
+                    println!(
+                        "{}",
+                        db.instance_config_get("brand").await?.unwrap_or_default()
+                    );
                 }
             }
         }
         Command::Validate { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
+            let db = Database::open(&root.join("hub.db")).await?;
             match command {
                 ValidateCommand::Run { canonical, depth } => {
                     let registry = db
-                        .registry_by_slug(&canonical)?
+                        .registry_by_slug(&canonical)
+                        .await?
                         .with_context(|| format!("no registry '{canonical}'"))?;
                     let depth = parse_depth(&depth)?;
                     let summaries =
@@ -965,7 +987,8 @@ async fn main() -> Result<()> {
                     external_url,
                 } => {
                     let registry = db
-                        .registry_by_slug(&canonical)?
+                        .registry_by_slug(&canonical)
+                        .await?
                         .with_context(|| format!("no registry '{canonical}'"))?;
                     // Validate presence first so the repair plan reflects the
                     // current cache state.
@@ -978,7 +1001,7 @@ async fn main() -> Result<()> {
                         aos_registry_hub::auth::jwt::JwtKeys::random(),
                         external_url,
                     );
-                    let client = aos_registry_hub::fetch::hardened_client();
+                    let client = aos_registry_hub::fetch::hardened_client().await;
                     let summary = aos_registry_hub::validation::run_repairs(
                         &db,
                         &client,
@@ -995,20 +1018,22 @@ async fn main() -> Result<()> {
         }
         Command::Project { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
+            let db = Database::open(&root.join("hub.db")).await?;
             match command {
                 ProjectCommand::Add { org, path, name } => {
                     let org_record = db
-                        .org_by_slug(&org)?
+                        .org_by_slug(&org)
+                        .await?
                         .with_context(|| format!("no org '{org}'"))?;
-                    let id = db.create_project(org_record.id, &path, &name)?;
+                    let id = db.create_project(org_record.id, &path, &name).await?;
                     println!("created project '{org}/{path}' (id {id})");
                 }
                 ProjectCommand::List { org } => {
                     let org_record = db
-                        .org_by_slug(&org)?
+                        .org_by_slug(&org)
+                        .await?
                         .with_context(|| format!("no org '{org}'"))?;
-                    for project in db.list_projects(org_record.id)? {
+                    for project in db.list_projects(org_record.id).await? {
                         println!("{}\t{}", project.path, project.name);
                     }
                 }
@@ -1016,7 +1041,7 @@ async fn main() -> Result<()> {
         }
         Command::Binding { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
+            let db = Database::open(&root.join("hub.db")).await?;
             match command {
                 BindingCommand::Add {
                     org,
@@ -1024,17 +1049,20 @@ async fn main() -> Result<()> {
                     root: binding_root,
                 } => {
                     let org_record = db
-                        .org_by_slug(&org)?
+                        .org_by_slug(&org)
+                        .await?
                         .with_context(|| format!("no org '{org}'"))?;
-                    let id =
-                        db.create_storage_binding(org_record.id, &name, "local_fs", &binding_root)?;
+                    let id = db
+                        .create_storage_binding(org_record.id, &name, "local_fs", &binding_root)
+                        .await?;
                     println!("created binding '{org}/{name}' (id {id}) -> {binding_root}");
                 }
                 BindingCommand::List { org } => {
                     let org_record = db
-                        .org_by_slug(&org)?
+                        .org_by_slug(&org)
+                        .await?
                         .with_context(|| format!("no org '{org}'"))?;
-                    for binding in db.list_storage_bindings(org_record.id)? {
+                    for binding in db.list_storage_bindings(org_record.id).await? {
                         println!("{}\t{}\t{}", binding.name, binding.kind, binding.root);
                     }
                 }
@@ -1042,15 +1070,16 @@ async fn main() -> Result<()> {
         }
         Command::Index { slug } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
+            let db = Database::open(&root.join("hub.db")).await?;
             let registries = match slug {
                 Some(slug) => vec![db
-                    .registry_by_slug(&slug)?
+                    .registry_by_slug(&slug)
+                    .await?
                     .with_context(|| format!("no registry '{slug}'"))?],
-                None => db.list_registries()?,
+                None => db.list_registries().await?,
             };
             for registry in registries {
-                let fetch = fetch_for_registry(&db, &registry)?;
+                let fetch = fetch_for_registry(&db, &registry).await?;
                 match index_and_record(&db, fetch.as_ref(), &registry).await {
                     Ok(outcome) => {
                         println!(
@@ -1069,20 +1098,20 @@ async fn main() -> Result<()> {
         }
         Command::Token { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
+            let db = Database::open(&root.join("hub.db")).await?;
             match command {
                 TokenCommand::Mint {
                     path,
                     permissions,
                     expires_days,
                     owner,
-                } => mint_token(&db, &path, &permissions, expires_days, &owner)?,
+                } => mint_token(&db, &path, &permissions, expires_days, &owner).await?,
             }
         }
         Command::Audit { scope } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
-            for entry in db.list_audit(&scope)? {
+            let db = Database::open(&root.join("hub.db")).await?;
+            for entry in db.list_audit(&scope).await? {
                 println!(
                     "{}\t{}\t{}\t{}\t{}",
                     entry.created_at,
@@ -1095,38 +1124,38 @@ async fn main() -> Result<()> {
         }
         Command::Idp { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
-            run_idp_command(&db, &root, command)?;
+            let db = Database::open(&root.join("hub.db")).await?;
+            run_idp_command(&db, &root, command).await?;
         }
         Command::Domain { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
-            run_domain_command(&db, command)?;
+            let db = Database::open(&root.join("hub.db")).await?;
+            run_domain_command(&db, command).await?;
         }
         Command::HostedKey { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
-            run_hosted_key_command(&db, &root, command)?;
+            let db = Database::open(&root.join("hub.db")).await?;
+            run_hosted_key_command(&db, &root, command).await?;
         }
         Command::Channel { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
+            let db = Database::open(&root.join("hub.db")).await?;
             run_channel_command(&db, &root, command).await?;
         }
         Command::Webhook { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
-            run_webhook_command(&db, command)?;
+            let db = Database::open(&root.join("hub.db")).await?;
+            run_webhook_command(&db, command).await?;
         }
         Command::Mirror { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
+            let db = Database::open(&root.join("hub.db")).await?;
             run_mirror_command(&db, command).await?;
         }
         Command::Frontend { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db"))?;
-            run_frontend_command(&db, command)?;
+            let db = Database::open(&root.join("hub.db")).await?;
+            run_frontend_command(&db, command).await?;
         }
     }
     Ok(())
@@ -1153,9 +1182,11 @@ async fn run_mirror_command(db: &Database, command: MirrorCommand) -> Result<()>
                 );
             }
             let registry = db
-                .registry_by_slug(&canonical)?
+                .registry_by_slug(&canonical)
+                .await?
                 .with_context(|| format!("no registry '{canonical}'"))?;
-            db.create_mirror_source(registry.id, &upstream_url, &mode, true, schedule_secs)?;
+            db.create_mirror_source(registry.id, &upstream_url, &mode, true, schedule_secs)
+                .await?;
             println!(
                 "registry '{}' is now a {mode} mirror of {upstream_url}",
                 registry.slug
@@ -1169,7 +1200,8 @@ async fn run_mirror_command(db: &Database, command: MirrorCommand) -> Result<()>
         }
         MirrorCommand::Sync { canonical } => {
             let registry = db
-                .registry_by_slug(&canonical)?
+                .registry_by_slug(&canonical)
+                .await?
                 .with_context(|| format!("no registry '{canonical}'"))?;
             let result = aos_registry_hub::mirror::sync_full_mirror(db, &registry).await?;
             println!(
@@ -1184,9 +1216,10 @@ async fn run_mirror_command(db: &Database, command: MirrorCommand) -> Result<()>
         }
         MirrorCommand::Status { canonical } => {
             let registry = db
-                .registry_by_slug(&canonical)?
+                .registry_by_slug(&canonical)
+                .await?
                 .with_context(|| format!("no registry '{canonical}'"))?;
-            match db.mirror_source(registry.id)? {
+            match db.mirror_source(registry.id).await? {
                 Some(source) => {
                     println!("upstream:   {}", source.upstream_url);
                     println!("mode:       {}", source.mode);
@@ -1216,7 +1249,7 @@ async fn run_mirror_command(db: &Database, command: MirrorCommand) -> Result<()>
 }
 
 /// Handle the `frontend add`/`list` subcommands.
-fn run_frontend_command(db: &Database, command: FrontendCommand) -> Result<()> {
+async fn run_frontend_command(db: &Database, command: FrontendCommand) -> Result<()> {
     match command {
         FrontendCommand::Add {
             canonical,
@@ -1226,19 +1259,22 @@ fn run_frontend_command(db: &Database, command: FrontendCommand) -> Result<()> {
             priority,
         } => {
             let registry = db
-                .registry_by_slug(&canonical)?
+                .registry_by_slug(&canonical)
+                .await?
                 .with_context(|| format!("no registry '{canonical}'"))?;
-            let id = db.create_frontend(
-                registry.id,
-                &domain,
-                &base_path,
-                &mode,
-                true,
-                true,
-                true,
-                priority,
-                true,
-            )?;
+            let id = db
+                .create_frontend(
+                    registry.id,
+                    &domain,
+                    &base_path,
+                    &mode,
+                    true,
+                    true,
+                    true,
+                    priority,
+                    true,
+                )
+                .await?;
             println!(
                 "added {mode} frontend {id} for '{}': {domain}{base_path} (priority {priority})",
                 registry.slug
@@ -1246,9 +1282,10 @@ fn run_frontend_command(db: &Database, command: FrontendCommand) -> Result<()> {
         }
         FrontendCommand::List { canonical } => {
             let registry = db
-                .registry_by_slug(&canonical)?
+                .registry_by_slug(&canonical)
+                .await?
                 .with_context(|| format!("no registry '{canonical}'"))?;
-            for frontend in db.list_frontends(registry.id)? {
+            for frontend in db.list_frontends(registry.id).await? {
                 println!(
                     "{}\t{}{}\t{}\tpriority={}\tadvertised={}",
                     frontend.id,
@@ -1269,7 +1306,7 @@ fn run_frontend_command(db: &Database, command: FrontendCommand) -> Result<()> {
 /// `add` creates a subscription (generating a random HMAC secret when none is
 /// supplied) and prints the secret exactly once; `list` shows an org's hooks
 /// without their secrets; `rm` deletes one by id.
-fn run_webhook_command(db: &Database, command: WebhookCommand) -> Result<()> {
+async fn run_webhook_command(db: &Database, command: WebhookCommand) -> Result<()> {
     match command {
         WebhookCommand::Add {
             org,
@@ -1278,11 +1315,14 @@ fn run_webhook_command(db: &Database, command: WebhookCommand) -> Result<()> {
             secret,
         } => {
             let org_record = db
-                .org_by_slug(&org)?
+                .org_by_slug(&org)
+                .await?
                 .with_context(|| format!("no org '{org}'"))?;
             let secret =
                 secret.unwrap_or_else(|| aos_registry_hub::auth::token::generate_token().0);
-            let id = db.create_webhook(org_record.id, &url, &secret, &events)?;
+            let id = db
+                .create_webhook(org_record.id, &url, &secret, &events)
+                .await?;
             let subscribed = if events.is_empty() {
                 "all events".to_string()
             } else {
@@ -1293,9 +1333,10 @@ fn run_webhook_command(db: &Database, command: WebhookCommand) -> Result<()> {
         }
         WebhookCommand::List { org } => {
             let org_record = db
-                .org_by_slug(&org)?
+                .org_by_slug(&org)
+                .await?
                 .with_context(|| format!("no org '{org}'"))?;
-            for hook in db.list_webhooks(org_record.id)? {
+            for hook in db.list_webhooks(org_record.id).await? {
                 let events = if hook.events.is_empty() {
                     "*".to_string()
                 } else {
@@ -1306,7 +1347,7 @@ fn run_webhook_command(db: &Database, command: WebhookCommand) -> Result<()> {
             }
         }
         WebhookCommand::Rm { id } => {
-            if db.delete_webhook(id)? {
+            if db.delete_webhook(id).await? {
                 println!("removed webhook {id}");
             } else {
                 anyhow::bail!("no webhook with id {id}");
@@ -1323,30 +1364,40 @@ fn run_webhook_command(db: &Database, command: WebhookCommand) -> Result<()> {
 /// registry; `list` shows an org's keys. The seed is sealed with the same
 /// [`instance_sealer`](aos_registry_hub::auth::seal::instance_sealer) the
 /// server uses, so the seed round-trips between this CLI and `serve`.
-fn run_hosted_key_command(db: &Database, root: &Path, command: HostedKeyCommand) -> Result<()> {
+async fn run_hosted_key_command(
+    db: &Database,
+    root: &Path,
+    command: HostedKeyCommand,
+) -> Result<()> {
     use aos_registry_hub::auth::seal::instance_sealer;
     match command {
         HostedKeyCommand::Create { org, key_id } => {
             let org_record = db
-                .org_by_slug(&org)?
+                .org_by_slug(&org)
+                .await?
                 .with_context(|| format!("no org '{org}'"))?;
             let sealer = instance_sealer(root)?;
-            let public = db.create_hosted_key(sealer.as_ref(), org_record.id, &key_id)?;
+            let public = db
+                .create_hosted_key(sealer.as_ref(), org_record.id, &key_id)
+                .await?;
             println!("enrolled hosted key '{key_id}' in org '{org}'");
             println!("pin this trusted-key line as a registry anchor:");
             println!("{public}");
         }
         HostedKeyCommand::Attach { canonical, key_id } => {
             let registry = db
-                .registry_by_slug(&canonical)?
+                .registry_by_slug(&canonical)
+                .await?
                 .with_context(|| format!("no registry '{canonical}'"))?;
             let org_id = registry
                 .org_id
                 .with_context(|| format!("registry '{canonical}' is not org-owned"))?;
             let key = db
-                .hosted_key_by_name(org_id, &key_id)?
+                .hosted_key_by_name(org_id, &key_id)
+                .await?
                 .with_context(|| format!("no hosted key '{key_id}' in the registry's org"))?;
-            db.set_registry_hosted_key(registry.id, Some(key.id))?;
+            db.set_registry_hosted_key(registry.id, Some(key.id))
+                .await?;
             println!(
                 "attached hosted key '{key_id}' to registry '{}'",
                 registry.slug
@@ -1354,9 +1405,10 @@ fn run_hosted_key_command(db: &Database, root: &Path, command: HostedKeyCommand)
         }
         HostedKeyCommand::List { org } => {
             let org_record = db
-                .org_by_slug(&org)?
+                .org_by_slug(&org)
+                .await?
                 .with_context(|| format!("no org '{org}'"))?;
-            for key in db.list_hosted_keys(org_record.id)? {
+            for key in db.list_hosted_keys(org_record.id).await? {
                 println!("{}\t{}", key.key_id, key.public_key);
             }
         }
@@ -1378,7 +1430,8 @@ async fn run_channel_command(db: &Database, root: &Path, command: ChannelCommand
             count,
         } => {
             let registry = db
-                .registry_by_slug(&canonical)?
+                .registry_by_slug(&canonical)
+                .await?
                 .with_context(|| format!("no registry '{canonical}'"))?;
             if registry.hosted_key_id.is_none() {
                 anyhow::bail!(
@@ -1421,7 +1474,7 @@ async fn run_channel_command(db: &Database, root: &Path, command: ChannelCommand
 /// [`instance_sealer`](aos_registry_hub::auth::seal::instance_sealer) the
 /// server uses before storing it, so the secret round-trips to `serve`;
 /// `show` prints the configuration with the secret redacted.
-fn run_idp_command(db: &Database, root: &Path, command: IdpCommand) -> Result<()> {
+async fn run_idp_command(db: &Database, root: &Path, command: IdpCommand) -> Result<()> {
     use aos_registry_hub::auth::seal::instance_sealer;
     use aos_registry_hub::db::IdpConfigRecord;
     match command {
@@ -1442,7 +1495,8 @@ fn run_idp_command(db: &Database, root: &Path, command: IdpCommand) -> Result<()
                 default_role,
             } = *args;
             let org_record = db
-                .org_by_slug(&org)?
+                .org_by_slug(&org)
+                .await?
                 .with_context(|| format!("no org '{org}'"))?;
             // Validate the role map and default role parse before storing.
             let _: serde_json::Value = serde_json::from_str(&role_map)
@@ -1469,14 +1523,16 @@ fn run_idp_command(db: &Database, root: &Path, command: IdpCommand) -> Result<()
                 allow_jit: !no_jit,
                 enforce_sso,
                 default_role,
-            })?;
+            })
+            .await?;
             println!("configured OIDC IdP for org '{org}'");
         }
         IdpCommand::Show { org } => {
             let org_record = db
-                .org_by_slug(&org)?
+                .org_by_slug(&org)
+                .await?
                 .with_context(|| format!("no org '{org}'"))?;
-            match db.idp_config(org_record.id)? {
+            match db.idp_config(org_record.id).await? {
                 Some(config) => {
                     println!("issuer:        {}", config.issuer);
                     println!("authorize:     {}", config.authorization_endpoint);
@@ -1509,20 +1565,22 @@ fn run_idp_command(db: &Database, root: &Path, command: IdpCommand) -> Result<()
 }
 
 /// Handle the `domain add`/`domain verify` subcommands.
-fn run_domain_command(db: &Database, command: DomainCommand) -> Result<()> {
+async fn run_domain_command(db: &Database, command: DomainCommand) -> Result<()> {
     match command {
         DomainCommand::Add { org, domain } => {
             let org_record = db
-                .org_by_slug(&org)?
+                .org_by_slug(&org)
+                .await?
                 .with_context(|| format!("no org '{org}'"))?;
-            let challenge = db.add_org_domain(org_record.id, &domain)?;
+            let challenge = db.add_org_domain(org_record.id, &domain).await?;
             println!("claimed '{domain}' for org '{org}' (unverified)");
             println!("publish this TXT record at the domain, then run `domain verify`:");
             println!("  {challenge}");
         }
         DomainCommand::Verify { domain, txt } => {
             let record = db
-                .org_domain(&domain)?
+                .org_domain(&domain)
+                .await?
                 .with_context(|| format!("domain '{domain}' is not claimed by any org"))?;
             if let Some(txt) = &txt {
                 if txt.trim() != record.txt_challenge {
@@ -1532,7 +1590,7 @@ fn run_domain_command(db: &Database, command: DomainCommand) -> Result<()> {
                     );
                 }
             }
-            if db.verify_org_domain(&domain)? {
+            if db.verify_org_domain(&domain).await? {
                 println!("verified '{domain}'");
             } else {
                 println!("domain '{domain}' is not claimed");
@@ -1549,7 +1607,7 @@ fn run_domain_command(db: &Database, command: DomainCommand) -> Result<()> {
 /// registry scope (so the JWT it exchanges for authorizes the upload
 /// facade), and is also recorded as a membership of the service account at
 /// that scope. The secret is printed exactly once.
-fn mint_token(
+async fn mint_token(
     db: &Database,
     path: &str,
     permissions: &[String],
@@ -1558,7 +1616,8 @@ fn mint_token(
 ) -> Result<()> {
     let (org_slug, project_path, name) = parse_canonical_path(path)?;
     let org = db
-        .org_by_slug(org_slug)?
+        .org_by_slug(org_slug)
+        .await?
         .with_context(|| format!("no org '{org_slug}'"))?;
     let canonical = if project_path.is_empty() {
         format!("{org_slug}/{name}")
@@ -1574,16 +1633,16 @@ fn mint_token(
     }
 
     // Per-org active-token quota (NULL/unset = unlimited).
-    if let Some(max_tokens) = db.org_quota(org.id)?.max_tokens {
-        if db.org_active_token_count(org.id)? >= max_tokens {
+    if let Some(max_tokens) = db.org_quota(org.id).await?.max_tokens {
+        if db.org_active_token_count(org.id).await? >= max_tokens {
             anyhow::bail!("org active-token quota of {max_tokens} reached");
         }
     }
 
     // Find or create the owning service account.
-    let sa_id = match db.service_account_by_name(org.id, owner)? {
+    let sa_id = match db.service_account_by_name(org.id, owner).await? {
         Some(id) => id,
-        None => db.create_service_account(org.id, owner)?,
+        None => db.create_service_account(org.id, owner).await?,
     };
     let principal = aos_registry_hub::domain::Principal::service_account(sa_id);
 
@@ -1594,16 +1653,19 @@ fn mint_token(
         sa_id,
         &canonical,
         aos_registry_hub::domain::Role::Maintainer.as_str(),
-    )?;
+    )
+    .await?;
 
     let expires_at = expires_days.map(|days| now_secs() + days * 86_400);
-    let (token_id, secret) = db.create_token(
-        principal,
-        &canonical,
-        &perms,
-        Some(&format!("publisher token for {canonical}")),
-        expires_at,
-    )?;
+    let (token_id, secret) = db
+        .create_token(
+            principal,
+            &canonical,
+            &perms,
+            Some(&format!("publisher token for {canonical}")),
+            expires_at,
+        )
+        .await?;
 
     println!("minted token {token_id} for '{canonical}' (owner service account '{owner}')");
     println!("scope: {canonical}");
@@ -1646,18 +1708,22 @@ fn now_secs() -> i64 {
 ///
 /// Returns an error when the registry has neither a local surface nor a
 /// usable source URL.
-fn fetch_for_registry(db: &Database, registry: &RegistryRecord) -> Result<Box<dyn SurfaceFetch>> {
-    if let Some(root) = db.registry_surface_root(registry.id)? {
+async fn fetch_for_registry(
+    db: &Database,
+    registry: &RegistryRecord,
+) -> Result<Box<dyn SurfaceFetch>> {
+    if let Some(root) = db.registry_surface_root(registry.id).await? {
         return Ok(Box::new(LocalFsFetch::new(root)));
     }
-    fetch_for_url(&registry.source_url)
+    fetch_for_url(&registry.source_url).await
 }
 
 /// The persisted masthead brand (`instance_config['brand']`), or empty.
-fn state_brand(app_state: &AppState) -> Result<String> {
+async fn state_brand(app_state: &AppState) -> Result<String> {
     Ok(app_state
         .db
-        .instance_config_get("brand")?
+        .instance_config_get("brand")
+        .await?
         .unwrap_or_default())
 }
 
@@ -1666,12 +1732,12 @@ fn state_brand(app_state: &AppState) -> Result<String> {
 /// Writes `output/manifest.json` (the redacted SQL system of record) plus one
 /// directory per registry under `output/registries/<slug-with-slashes>/`,
 /// each a portable, re-servable surface copy.
-fn run_org_export(db: &Database, org: &str, output: &Path) -> Result<()> {
+async fn run_org_export(db: &Database, org: &str, output: &Path) -> Result<()> {
     use aos_registry_hub::export::{export_org, export_registry_surface};
 
     std::fs::create_dir_all(output)
         .with_context(|| format!("creating export dir {}", output.display()))?;
-    let manifest = export_org(db, org)?;
+    let manifest = export_org(db, org).await?;
     let manifest_path = output.join("manifest.json");
     std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
         .with_context(|| format!("writing {}", manifest_path.display()))?;
@@ -1679,13 +1745,14 @@ fn run_org_export(db: &Database, org: &str, output: &Path) -> Result<()> {
 
     // Copy each registry's surface (resolved through its storage binding).
     let org_record = db
-        .org_by_slug_including_deleted(org)?
+        .org_by_slug_including_deleted(org)
+        .await?
         .with_context(|| format!("no org '{org}'"))?;
-    for registry in db.list_registries_including_org(org_record.id)? {
+    for registry in db.list_registries_including_org(org_record.id).await? {
         let dest = output
             .join("registries")
             .join(registry.slug.replace('/', "_"));
-        let copied = export_registry_surface(db, registry.id, &dest)?;
+        let copied = export_registry_surface(db, registry.id, &dest).await?;
         if copied > 0 {
             println!(
                 "copied {copied} surface files for '{}' -> {}",
@@ -1701,7 +1768,7 @@ fn run_org_export(db: &Database, org: &str, output: &Path) -> Result<()> {
 /// each successful index is followed by presence validation of the
 /// registry's committed caches.
 async fn index_all(db: &Database) {
-    let registries = match db.list_registries() {
+    let registries = match db.list_registries().await {
         Ok(regs) => regs,
         Err(err) => {
             tracing::error!(error = %format!("{err:#}"), "listing registries");
@@ -1709,7 +1776,7 @@ async fn index_all(db: &Database) {
         }
     };
     for registry in registries {
-        let fetch = match fetch_for_registry(db, &registry) {
+        let fetch = match fetch_for_registry(db, &registry).await {
             Ok(fetch) => fetch,
             Err(err) => {
                 tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "bad source url");
@@ -1736,7 +1803,7 @@ async fn index_all(db: &Database) {
 /// copies it into the local binding; a verification failure is recorded and
 /// logged, never fatal to the loop.
 async fn sync_due_mirrors(db: &Database, now: i64) {
-    let sources = match db.list_mirror_sources() {
+    let sources = match db.list_mirror_sources().await {
         Ok(sources) => sources,
         Err(err) => {
             tracing::warn!(error = %format!("{err:#}"), "listing mirror sources");
@@ -1754,7 +1821,7 @@ async fn sync_due_mirrors(db: &Database, now: i64) {
         if !due {
             continue;
         }
-        let registry = match db.registry_by_id(registry_id) {
+        let registry = match db.registry_by_id(registry_id).await {
             Ok(Some(registry)) => registry,
             Ok(None) => continue,
             Err(err) => {
@@ -1781,7 +1848,7 @@ async fn sync_due_mirrors(db: &Database, now: i64) {
 /// Probe each configured frontend's freshness for one registry, logging a
 /// one-line summary per frontend; probe failures are logged, never fatal.
 async fn run_frontend_probes(db: &Database, registry: &RegistryRecord) {
-    let http = aos_registry_hub::fetch::hardened_client();
+    let http = aos_registry_hub::fetch::hardened_client().await;
     match aos_registry_hub::probe::probe_frontends(db, &http, registry).await {
         Ok(probes) => {
             for probe in &probes {
@@ -1804,7 +1871,7 @@ async fn run_frontend_probes(db: &Database, registry: &RegistryRecord) {
 /// Probe each committed cache's freshness for one registry, logging a one-line
 /// summary per cache; probe failures are logged, never fatal.
 async fn run_cache_probes(db: &Database, registry: &RegistryRecord) {
-    let http = aos_registry_hub::fetch::hardened_client();
+    let http = aos_registry_hub::fetch::hardened_client().await;
     match aos_registry_hub::probe::probe_caches(db, &http, registry).await {
         Ok(probes) => {
             for probe in &probes {

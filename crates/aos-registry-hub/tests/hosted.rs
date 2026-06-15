@@ -35,7 +35,7 @@ use tower::ServiceExt;
 const TEST_JWT_SECRET: &[u8] = b"hosted--test-secret-32-byte-key!!";
 
 /// Build a dev-mode [`AppState`] over `db` with deterministic JWT keys.
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -51,7 +51,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: dev_sealer(),
-        http: aos_registry_hub::fetch::hardened_client(),
+        http: aos_registry_hub::fetch::hardened_client().await,
         mailer: Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: true,
     })
@@ -95,7 +95,7 @@ async fn send(
 
 /// Sign in `email` via a minted magic link; returns the session cookie header.
 async fn login(app: &axum::Router, db: &Database, email: &str) -> String {
-    let secret = db.create_magic_link(email).unwrap();
+    let secret = db.create_magic_link(email).await.unwrap();
     let resp = app
         .clone()
         .oneshot(
@@ -196,18 +196,20 @@ async fn serve_hosted(
     surface: &Path,
     fixture: &common::Fixture,
 ) -> (Arc<Database>, RegistryRecord) {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme, Inc.").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
     let parent = surface.parent().unwrap().to_str().unwrap();
     let dir_name = surface.file_name().unwrap().to_str().unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", parent)
+        .await
         .unwrap();
 
     // Enroll the hosted key and pin its public line: the hub's re-signed
     // partitions must verify against a registry trust anchor.
     let hosted_public = db
         .create_hosted_key(dev_sealer().as_ref(), org, "acme-release")
+        .await
         .unwrap();
     let trust = vec![fixture.trust_key.clone(), hosted_public];
 
@@ -221,26 +223,41 @@ async fn serve_hosted(
         &trust,
         true,
     )
+    .await
     .unwrap();
-    let registry = db.registry_by_slug("acme/infra/prod/cdn").unwrap().unwrap();
-    let key = db.hosted_key_by_name(org, "acme-release").unwrap().unwrap();
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
+    let key = db
+        .hosted_key_by_name(org, "acme-release")
+        .await
+        .unwrap()
+        .unwrap();
     db.set_registry_hosted_key(registry.id, Some(key.id))
+        .await
         .unwrap();
 
     index_and_record(&db, &LocalFsFetch::new(surface), &registry)
         .await
         .unwrap();
     // Reload to pick up hosted_key_id.
-    let registry = db.registry_by_slug("acme/infra/prod/cdn").unwrap().unwrap();
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
     (db, registry)
 }
 
-#[test]
-fn enrollment_returns_a_valid_trusted_key_line_and_audits() {
-    let db = Database::open_in_memory().unwrap();
-    let org = db.create_org("acme", "Acme").unwrap();
+#[tokio::test]
+async fn enrollment_returns_a_valid_trusted_key_line_and_audits() {
+    let db = Database::open_in_memory().await.unwrap();
+    let org = db.create_org("acme", "Acme").await.unwrap();
     let line = db
         .create_hosted_key(dev_sealer().as_ref(), org, "acme-release")
+        .await
         .unwrap();
 
     // A valid registry trusted-key line: name:Ed25519:<ssh-blob-base64>.
@@ -252,9 +269,14 @@ fn enrollment_returns_a_valid_trusted_key_line_and_audits() {
     );
 
     // The key loads back to a signing key whose public line matches.
-    let key = db.hosted_key_by_name(org, "acme-release").unwrap().unwrap();
+    let key = db
+        .hosted_key_by_name(org, "acme-release")
+        .await
+        .unwrap()
+        .unwrap();
     let (key_id, signing, public) = db
         .load_hosted_signing_key(dev_sealer().as_ref(), key.id)
+        .await
         .unwrap();
     assert_eq!(key_id, "acme-release");
     assert_eq!(public, line);
@@ -268,6 +290,7 @@ fn enrollment_returns_a_valid_trusted_key_line_and_audits() {
     // A duplicate key id in the same org is rejected.
     assert!(db
         .create_hosted_key(dev_sealer().as_ref(), org, "acme-release")
+        .await
         .is_err());
 }
 
@@ -280,9 +303,9 @@ async fn hosted_advance_signs_writes_and_reindexes_verifiably() {
     let (db, registry) = serve_hosted(&surface, &fixture).await;
 
     // Both releases indexed; channel `stable` starts fully at 1.0.0.
-    let releases = db.list_releases(registry.id).unwrap();
+    let releases = db.list_releases(registry.id).await.unwrap();
     assert!(releases.iter().any(|r| r.semver == "1.1.0"));
-    let before = db.list_channels(registry.id).unwrap();
+    let before = db.list_channels(registry.id).await.unwrap();
     let stable = before.iter().find(|c| c.name == "stable").unwrap();
     assert_eq!(stable.frontier.as_deref(), Some("1.0.0"));
     assert_eq!(
@@ -312,7 +335,7 @@ async fn hosted_advance_signs_writes_and_reindexes_verifiably() {
 
     // The index reflects the advance: 10 buckets now point at 1.1.0, the
     // frontier is 1.1.0, and the rest still at 1.0.0.
-    let after = db.list_channels(registry.id).unwrap();
+    let after = db.list_channels(registry.id).await.unwrap();
     let stable = after.iter().find(|c| c.name == "stable").unwrap();
     assert_eq!(stable.frontier.as_deref(), Some("1.1.0"));
     let at_110 = stable
@@ -342,7 +365,7 @@ async fn hosted_advance_signs_writes_and_reindexes_verifiably() {
     assert_eq!(verified_hub_signed, 10, "10 freshly hub-signed partitions");
 
     // An audit row records the hosted-key advance.
-    let audit = db.list_audit("acme/infra/prod/cdn").unwrap();
+    let audit = db.list_audit("acme/infra/prod/cdn").await.unwrap();
     assert!(
         audit
             .iter()
@@ -362,6 +385,7 @@ async fn advance_below_the_floor_is_refused() {
     // The indexer raised the `stable` floor to 1.0.0. Advancing to a *lower*
     // release than the floor is refused (anti-rollback).
     db.set_channel_floor(registry.id, "stable", "1.0.5")
+        .await
         .unwrap();
     let err = signing::advance_channel(
         &db,
@@ -411,10 +435,11 @@ async fn console_shows_hosted_form_and_advances_directly() {
     let (db, _registry) = serve_hosted(&surface, &fixture).await;
 
     // A maintainer at the registry scope (has ChannelAdvance).
-    let user = db.find_or_create_user("maint@acme.com").unwrap();
+    let user = db.find_or_create_user("maint@acme.com").await.unwrap();
     db.grant_membership("user", user, "acme/infra/prod/cdn", "maintainer")
+        .await
         .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "maint@acme.com").await;
     let csrf = csrf_for(&cookie);
 
@@ -449,7 +474,7 @@ async fn console_shows_hosted_form_and_advances_directly() {
         resp.body
     );
 
-    let after = db.list_channels(_registry.id).unwrap();
+    let after = db.list_channels(_registry.id).await.unwrap();
     let stable = after.iter().find(|c| c.name == "stable").unwrap();
     assert_eq!(
         stable
@@ -471,9 +496,11 @@ async fn console_advance_without_permission_is_forbidden() {
     let (db, _registry) = serve_hosted(&surface, &fixture).await;
 
     // A read-only viewer at the org scope: no ChannelAdvance.
-    let user = db.find_or_create_user("viewer@acme.com").unwrap();
-    db.grant_membership("user", user, "acme", "viewer").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let user = db.find_or_create_user("viewer@acme.com").await.unwrap();
+    db.grant_membership("user", user, "acme", "viewer")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "viewer@acme.com").await;
     let csrf = csrf_for(&cookie);
 
@@ -498,12 +525,13 @@ async fn byo_key_console_shows_prepared_op_not_the_direct_form() {
 
     // Detach the hosted key: the registry reverts to BYO-key (prepared-op)
     // behavior even though the org still has a key enrolled.
-    db.set_registry_hosted_key(registry.id, None).unwrap();
+    db.set_registry_hosted_key(registry.id, None).await.unwrap();
 
-    let user = db.find_or_create_user("maint@acme.com").unwrap();
+    let user = db.find_or_create_user("maint@acme.com").await.unwrap();
     db.grant_membership("user", user, "acme/infra/prod/cdn", "maintainer")
+        .await
         .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "maint@acme.com").await;
     let csrf = csrf_for(&cookie);
 
@@ -544,7 +572,7 @@ async fn byo_key_console_shows_prepared_op_not_the_direct_form() {
         "prepared apr command: {}",
         resp.body
     );
-    let after = db.list_channels(registry.id).unwrap();
+    let after = db.list_channels(registry.id).await.unwrap();
     let stable = after.iter().find(|c| c.name == "stable").unwrap();
     assert_eq!(
         stable
@@ -566,12 +594,14 @@ async fn org_keys_enrollment_page_creates_and_attaches() {
     let fixture = two_release_surface(&surface);
     let (db, registry) = serve_hosted(&surface, &fixture).await;
     // Detach so the attach form has work to do.
-    db.set_registry_hosted_key(registry.id, None).unwrap();
+    db.set_registry_hosted_key(registry.id, None).await.unwrap();
 
     // An org owner has KeysManage.
-    let user = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", user, "acme", "owner").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let user = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", user, "acme", "owner")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = csrf_for(&cookie);
 
@@ -590,7 +620,7 @@ async fn org_keys_enrollment_page_creates_and_attaches() {
         "shows the new public line: {}",
         resp.body
     );
-    let edge = db.hosted_key_by_name(1, "acme-edge").unwrap();
+    let edge = db.hosted_key_by_name(1, "acme-edge").await.unwrap();
     assert!(edge.is_some(), "key persisted");
     let edge = edge.unwrap();
 
@@ -607,11 +637,15 @@ async fn org_keys_enrollment_page_creates_and_attaches() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    let reloaded = db.registry_by_slug("acme/infra/prod/cdn").unwrap().unwrap();
+    let reloaded = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(reloaded.hosted_key_id, Some(edge.id));
 
     // Both create and attach are audited.
-    let audit = db.list_audit("acme").unwrap();
+    let audit = db.list_audit("acme").await.unwrap();
     assert!(audit.iter().any(|a| a.action == "hosted_key.create"));
     assert!(audit.iter().any(|a| a.action == "hosted_key.attach"));
 }
@@ -625,15 +659,17 @@ async fn org_keys_page_requires_keys_manage() {
     let (db, _registry) = serve_hosted(&surface, &fixture).await;
 
     // A bare viewer is a member but lacks KeysManage: 403 (org is known).
-    let user = db.find_or_create_user("viewer@acme.com").unwrap();
-    db.grant_membership("user", user, "acme", "viewer").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let user = db.find_or_create_user("viewer@acme.com").await.unwrap();
+    db.grant_membership("user", user, "acme", "viewer")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "viewer@acme.com").await;
     let resp = send(&app, "GET", "/-/org/acme/keys", Some(&cookie), None).await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
 
     // A non-member gets 404 (existence undisclosed).
-    let outsider = db.find_or_create_user("nobody@example.com").unwrap();
+    let outsider = db.find_or_create_user("nobody@example.com").await.unwrap();
     let _ = outsider;
     let cookie = login(&app, &db, "nobody@example.com").await;
     let resp = send(&app, "GET", "/-/org/acme/keys", Some(&cookie), None).await;

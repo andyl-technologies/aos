@@ -219,11 +219,11 @@ fn triggers_reindex(path: &str) -> bool {
 /// are **not** writable through the facade — a `PUT` to one is
 /// `405 Method Not Allowed` (the resource exists but the verb is
 /// unsupported), and a missing slug is `404`.
-fn resolve_writable(
+async fn resolve_writable(
     state: &AppState,
     slug: &str,
 ) -> Result<(RegistryRecord, std::path::PathBuf), Box<Response>> {
-    let registry = match state.db.registry_by_slug(slug) {
+    let registry = match state.db.registry_by_slug(slug).await {
         Ok(Some(registry)) => registry,
         Ok(None) => return Err(Box::new(StatusCode::NOT_FOUND.into_response())),
         Err(err) => return Err(Box::new(internal(err))),
@@ -232,7 +232,7 @@ fn resolve_writable(
     // not accept uploads: a deleted org's registry is indistinguishable from one
     // that never existed (`404`), the same contract the read facade enforces.
     if let Some(org_id) = registry.org_id {
-        match state.db.org_is_active(org_id) {
+        match state.db.org_is_active(org_id).await {
             Ok(true) => {}
             Ok(false) => return Err(Box::new(StatusCode::NOT_FOUND.into_response())),
             Err(err) => return Err(Box::new(internal(err))),
@@ -249,7 +249,7 @@ fn resolve_writable(
                 .into_response(),
         ));
     }
-    match state.db.registry_surface_root(registry.id) {
+    match state.db.registry_surface_root(registry.id).await {
         Ok(Some(root)) => Ok((registry, root)),
         Ok(None) => Err(Box::new(
             (
@@ -325,7 +325,7 @@ pub async fn put_machine_path(
     headers: &HeaderMap,
     body: Bytes,
 ) -> Response {
-    let (registry, root) = match resolve_writable(state, slug) {
+    let (registry, root) = match resolve_writable(state, slug).await {
         Ok(pair) => pair,
         Err(deny) => return *deny,
     };
@@ -386,6 +386,7 @@ pub async fn put_machine_path(
         match state
             .db
             .reserve_org_usage(org_id, delta_bytes, delta_objects)
+            .await
         {
             Ok(true) => {}
             Ok(false) => {
@@ -416,7 +417,7 @@ pub async fn put_machine_path(
         if let Err(holder) = state.leases.acquire(registry.id, &token_id, unix_now()) {
             // Release the reservation we just made: this write is rejected, so
             // its bytes never land.
-            release_reservation(state, &registry, delta_bytes, delta_objects);
+            release_reservation(state, &registry, delta_bytes, delta_objects).await;
             tracing::warn!(
                 slug = %registry.slug,
                 %path,
@@ -434,7 +435,7 @@ pub async fn put_machine_path(
     if let Err(err) = write_atomic(&target, &body).await {
         // The write failed after reserving; give the reservation back so a
         // failed upload does not permanently consume quota.
-        release_reservation(state, &registry, delta_bytes, delta_objects);
+        release_reservation(state, &registry, delta_bytes, delta_objects).await;
         return internal(err);
     }
 
@@ -477,7 +478,7 @@ pub async fn head_machine_path(
     path: &str,
     headers: &HeaderMap,
 ) -> Response {
-    let (registry, root) = match resolve_writable(state, slug) {
+    let (registry, root) = match resolve_writable(state, slug).await {
         Ok(pair) => pair,
         Err(deny) => return *deny,
     };
@@ -510,17 +511,20 @@ async fn reindex(
     // audit feed) reflects the inline reindex a managed publish triggers. The
     // actor is the hub itself (`system`); the resulting commit cross-
     // references the cryptographic history.
-    state.db.record_audit(
-        "system",
-        None,
-        "system",
-        "index",
-        &registry.slug,
-        None,
-        Some(&outcome.commit),
-        None,
-        None,
-    )?;
+    state
+        .db
+        .record_audit(
+            "system",
+            None,
+            "system",
+            "index",
+            &registry.slug,
+            None,
+            Some(&outcome.commit),
+            None,
+            None,
+        )
+        .await?;
     Ok(())
 }
 
@@ -553,7 +557,7 @@ async fn write_atomic(target: &std::path::Path, bytes: &[u8]) -> anyhow::Result<
 /// permanently consume an org's quota. Applies the inverse of the reservation
 /// deltas; a failure is logged, not fatal (usage is approximate and reconciled
 /// by re-index/GC). No-op for an unowned registry (`org_id` is `None`).
-fn release_reservation(
+async fn release_reservation(
     state: &AppState,
     registry: &RegistryRecord,
     delta_bytes: i64,
@@ -565,6 +569,7 @@ fn release_reservation(
     if let Err(err) = state
         .db
         .reserve_org_usage(org_id, -delta_bytes, -delta_objects)
+        .await
     {
         tracing::warn!(
             slug = %registry.slug,

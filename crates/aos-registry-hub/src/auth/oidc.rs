@@ -23,14 +23,14 @@
 //! # The flow
 //!
 //! ```text
-//! begin_login(org)                         complete_login(code, state)
+//! begin_login(org).await                         complete_login(code, state).await
 //! ─────────────────                        ───────────────────────────
-//! 1. load org IdP config                   1. take_oidc_flow(state)  ← single-use
+//! 1. load org IdP config                   1. take_oidc_flow(state).await  ← single-use
 //! 2. verifier = random 43..128 chars          (validates + consumes; expiry)
 //!    challenge = b64url(sha256(verifier))   2. POST token_endpoint:
 //!    state, nonce = random                       grant_type=authorization_code
 //! 3. create_oidc_flow(state, nonce,             code, redirect_uri, client_id,
-//!                     verifier)                  client_secret (unsealed),
+//!                     verifier).await                  client_secret (unsealed),
 //! 4. redirect to authorization_endpoint?         code_verifier   ← PKCE proof
 //!      response_type=code                    3. fetch JWKS, find kid
 //!      client_id, redirect_uri, scope        4. verify id_token (RS256):
@@ -39,7 +39,7 @@
 //!      code_challenge_method=S256                nonce == flow.nonce
 //!                                            5. extract sub, email[_verified],
 //!         user───approves at IdP───►            groups
-//!         IdP redirects to                   6. link_or_create_identity(iss,sub)
+//!         IdP redirects to                   6. link_or_create_identity(iss,sub).await
 //!         /auth/oidc/callback?code=&state=   7. map groups → roles, grant
 //! ```
 //!
@@ -322,14 +322,15 @@ pub fn redirect_uri(external_url: &str) -> String {
 ///
 /// Returns an error when the org has no IdP configured, when persisting the
 /// flow fails, or on database failure.
-pub fn begin_login(
+pub async fn begin_login(
     db: &Database,
     external_url: &str,
     org_id: i64,
     redirect_after: Option<&str>,
 ) -> Result<AuthRedirect> {
     let config = db
-        .idp_config(org_id)?
+        .idp_config(org_id)
+        .await?
         .map(IdpConfig::from_record)
         .with_context(|| format!("org {org_id} has no OIDC identity provider configured"))?;
 
@@ -345,7 +346,8 @@ pub fn begin_login(
         &verifier,
         redirect_after,
         FLOW_TTL_SECS,
-    )?;
+    )
+    .await?;
 
     let mut url = url::Url::parse(&config.authorization_endpoint)
         .context("IdP authorization_endpoint is not a valid URL")?;
@@ -449,11 +451,13 @@ pub async fn complete_login(
 ) -> Result<OidcLogin> {
     // 1. Consume the flow (single-use, expiry-checked).
     let flow = db
-        .take_oidc_flow(&params.state)?
+        .take_oidc_flow(&params.state)
+        .await?
         .ok_or_else(|| anyhow!("unknown, expired, or replayed login state"))?;
 
     let config = db
-        .idp_config(flow.org_id)?
+        .idp_config(flow.org_id)
+        .await?
         .map(IdpConfig::from_record)
         .with_context(|| format!("org {} has no OIDC identity provider", flow.org_id))?;
 
@@ -503,7 +507,8 @@ pub async fn complete_login(
             email_verified,
             config.org_id,
             config.allow_jit,
-        )?
+        )
+        .await?
         .ok_or_else(|| {
             anyhow!("just-in-time provisioning is disabled and this identity is unknown")
         })?;
@@ -513,7 +518,7 @@ pub async fn complete_login(
     // on every login; full deprovisioning/sync (revoking SSO-granted roles no
     // longer mapped) is a later phase — here we ensure the mapped roles are
     // granted, plus the default role so a JIT user is never left with nothing.
-    grant_mapped_roles(db, &config, &claims)?;
+    grant_mapped_roles(db, &config, &claims).await?;
 
     Ok(OidcLogin {
         user_id,
@@ -627,13 +632,19 @@ async fn verify_id_token(
 /// # Errors
 ///
 /// Returns an error on database failure while granting memberships.
-fn grant_mapped_roles(db: &Database, config: &IdpConfig, claims: &IdTokenClaims) -> Result<()> {
+async fn grant_mapped_roles(
+    db: &Database,
+    config: &IdpConfig,
+    claims: &IdTokenClaims,
+) -> Result<()> {
     let org = db
-        .org_by_id(config.org_id)?
+        .org_by_id(config.org_id)
+        .await?
         .with_context(|| format!("org {} vanished mid-login", config.org_id))?;
     let scope = Scope::parse(&org.slug);
     let user_id = db
-        .identity_user(&config.issuer, &claims.sub)?
+        .identity_user(&config.issuer, &claims.sub)
+        .await?
         .with_context(|| "identity vanished mid-login")?;
     let principal = Principal::user(user_id);
 
@@ -659,7 +670,8 @@ fn grant_mapped_roles(db: &Database, config: &IdpConfig, claims: &IdTokenClaims)
             principal.id,
             scope.as_str(),
             role.as_str(),
-        )?;
+        )
+        .await?;
     }
     Ok(())
 }

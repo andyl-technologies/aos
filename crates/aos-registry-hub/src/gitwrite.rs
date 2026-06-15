@@ -171,10 +171,12 @@ pub async fn propose_config_change(
         bail!("only top-level committed files may be edited as change requests, got '{file_path}'");
     }
     let root = db
-        .registry_surface_root(registry.id)?
+        .registry_surface_root(registry.id)
+        .await?
         .with_context(|| format!("registry '{}' has no writable surface root", registry.slug))?;
     let base_commit_hex = db
-        .index_status(registry.id)?
+        .index_status(registry.id)
+        .await?
         .and_then(|status| status.last_indexed_commit)
         .with_context(|| {
             format!(
@@ -198,7 +200,7 @@ pub async fn propose_config_change(
     let old_contents = String::from_utf8(reader.read_kind(old_entry.oid, ObjectKind::Blob).await?)
         .with_context(|| format!("committed file '{file_path}' is not UTF-8"))?;
 
-    let (signing_key, _public) = db.get_or_create_draft_signing_key(sealer)?;
+    let (signing_key, _public) = db.get_or_create_draft_signing_key(sealer).await?;
     let change_id = ChangeId::new();
 
     // Write the new blob and replace it in the root tree.
@@ -244,7 +246,8 @@ pub async fn propose_config_change(
         Some(&summary),
         &git_ref,
         &commit_oid.to_hex(),
-    )?;
+    )
+    .await?;
     db.add_revision(
         change_id.as_str(),
         "registry_file",
@@ -252,7 +255,8 @@ pub async fn propose_config_change(
         crate::config::ConfigOp::Update.as_str(),
         Some(&old_contents),
         Some(new_contents),
-    )?;
+    )
+    .await?;
     db.record_audit(
         actor_kind,
         actor_id,
@@ -263,7 +267,8 @@ pub async fn propose_config_change(
         Some(&commit_oid.to_hex()),
         None,
         Some(&summary),
-    )?;
+    )
+    .await?;
 
     Ok(ProposedChange {
         change_id,
@@ -282,14 +287,14 @@ pub async fn propose_config_change(
 ///
 /// Returns an error on database failure resolving the surface root, or for an
 /// unsupported `source_url` scheme.
-pub fn fetcher_for_registry(
+pub async fn fetcher_for_registry(
     db: &Database,
     registry: &RegistryRecord,
 ) -> Result<Box<dyn crate::fetch::SurfaceFetch>> {
-    if let Some(root) = db.registry_surface_root(registry.id)? {
+    if let Some(root) = db.registry_surface_root(registry.id).await? {
         return Ok(Box::new(LocalFsFetch::new(root)));
     }
-    crate::fetch::fetch_for_url(&registry.source_url)
+    crate::fetch::fetch_for_url(&registry.source_url).await
 }
 
 /// Walk a registry's committed history from `head`, newest first, capped.

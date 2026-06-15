@@ -1828,8 +1828,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn channel_grid_is_16_by_16() {
+    #[tokio::test]
+    async fn channel_grid_is_16_by_16() {
         let channel = ChannelSummary {
             name: "stable".into(),
             frontier: Some("1.2.0".into()),
@@ -1857,8 +1857,8 @@ mod tests {
         assert!(html.contains("frontier <strong>1.2.0</strong>"));
     }
 
-    #[test]
-    fn channel_calculator_resolves_hex_and_decimal_buckets() {
+    #[tokio::test]
+    async fn channel_calculator_resolves_hex_and_decimal_buckets() {
         let channel = ChannelSummary {
             name: "stable".into(),
             frontier: Some("1.2.0".into()),
@@ -1895,8 +1895,8 @@ mod tests {
         assert!(!html.contains("<strong class=\"hit\">"));
     }
 
-    #[test]
-    fn registry_home_escapes_and_links() {
+    #[tokio::test]
+    async fn registry_home_escapes_and_links() {
         let html = registry_home(
             &registry(),
             None,
@@ -1937,8 +1937,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn package_homepage_requires_http_scheme() {
+    #[tokio::test]
+    async fn package_homepage_requires_http_scheme() {
         let mut detail = PackageDetail {
             name: "curl".into(),
             description: "URL transfers".into(),
@@ -1975,8 +1975,8 @@ mod tests {
         assert!(html.contains("<a href=\"https://curl.se\">"));
     }
 
-    #[test]
-    fn package_page_is_data_rich() {
+    #[tokio::test]
+    async fn package_page_is_data_rich() {
         let detail = PackageDetail {
             name: "curl".into(),
             description: "URL transfers".into(),
@@ -2045,8 +2045,8 @@ mod tests {
         assert!(html.contains("<summary>Raw metadata</summary>"));
     }
 
-    #[test]
-    fn package_page_escapes_html_in_name_and_description() {
+    #[tokio::test]
+    async fn package_page_escapes_html_in_name_and_description() {
         let detail = PackageDetail {
             name: "<script>x</script>".into(),
             description: "<img src=x onerror=1>".into(),
@@ -2070,8 +2070,8 @@ mod tests {
         assert!(html.contains("&lt;img src=x onerror=1&gt;"));
     }
 
-    #[test]
-    fn releases_sort_by_semver_with_pack_column() {
+    #[tokio::test]
+    async fn releases_sort_by_semver_with_pack_column() {
         let release = |semver: &str, tagged_at: i64, pack: bool| ReleaseRow {
             semver: semver.into(),
             tag_oid: "t".repeat(64),
@@ -2096,8 +2096,8 @@ mod tests {
         assert!(html.contains("(unix 100)"));
     }
 
-    #[test]
-    fn short_commit_oids_do_not_panic() {
+    #[tokio::test]
+    async fn short_commit_oids_do_not_panic() {
         let releases = vec![ReleaseRow {
             semver: "1.0.0".into(),
             tag_oid: "t".into(),
@@ -2110,8 +2110,8 @@ mod tests {
         assert!(html.contains("<code>abc</code>"));
     }
 
-    #[test]
-    fn instance_home_filters_and_escapes_state() {
+    #[tokio::test]
+    async fn instance_home_filters_and_escapes_state() {
         let rows = vec![(
             registry(),
             Some(IndexStatus {
@@ -2135,8 +2135,8 @@ mod tests {
         assert!(html.contains("No registries match."));
     }
 
-    #[test]
-    fn package_index_paginates_and_counts() {
+    #[tokio::test]
+    async fn package_index_paginates_and_counts() {
         let rows: Vec<PackageRow> = (0..3)
             .map(|i| PackageRow {
                 name: format!("pkg{i}"),
@@ -2263,8 +2263,8 @@ mod tests {
         assert!(html.contains("filter error:"));
     }
 
-    #[test]
-    fn health_page_caps_missing_drilldown() {
+    #[tokio::test]
+    async fn health_page_caps_missing_drilldown() {
         let run = ValidationRunRow {
             id: 1,
             cache_url: "https://cache.example".into(),
@@ -2294,8 +2294,8 @@ mod tests {
         assert!(html.contains("⚠ 150 missing"));
     }
 
-    #[test]
-    fn health_page_renders_stack_tree_and_mirror_shortfall() {
+    #[tokio::test]
+    async fn health_page_renders_stack_tree_and_mirror_shortfall() {
         let runs = vec![
             (
                 ValidationRunRow {
@@ -2373,8 +2373,8 @@ mod tests {
         assert!(html.contains("unreachable"));
     }
 
-    #[test]
-    fn health_page_flags_corruption_and_repair_history() {
+    #[tokio::test]
+    async fn health_page_flags_corruption_and_repair_history() {
         let run = ValidationRunRow {
             id: 1,
             cache_url: "https://cache.example".into(),

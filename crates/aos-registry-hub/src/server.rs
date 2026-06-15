@@ -116,7 +116,7 @@ impl AppState {
     ///
     /// [`LogMailer`]: crate::auth::magic::LogMailer
     #[must_use]
-    pub fn new(db: Arc<Database>, external_url: String) -> AppState {
+    pub async fn new(db: Arc<Database>, external_url: String) -> AppState {
         let ratelimit = Arc::new(crate::ratelimit::RateLimiter::new());
         let auth = Arc::new(AuthState {
             db: Arc::clone(&db),
@@ -135,7 +135,7 @@ impl AppState {
             // A deterministic placeholder sealer for dev/tests; production
             // supplies a real one via the struct literal.
             sealer: crate::auth::oidc::dev_sealer(),
-            http: crate::fetch::hardened_client(),
+            http: crate::fetch::hardened_client().await,
             ratelimit,
             trusted_proxy: false,
         }
@@ -173,8 +173,9 @@ impl HubRepairAuthorizer {
     }
 }
 
+#[async_trait::async_trait]
 impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
-    fn credential_for(
+    async fn credential_for(
         &self,
         target_cache_url: &str,
     ) -> anyhow::Result<Option<crate::validation::RepairCredential>> {
@@ -186,7 +187,7 @@ impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
             return Ok(None);
         };
         // The registry must exist and be writable (have a storage binding).
-        let Some(registry) = self.db.registry_by_slug(slug)? else {
+        let Some(registry) = self.db.registry_by_slug(slug).await? else {
             return Ok(None);
         };
         if registry.storage_binding_id.is_none() {
@@ -284,7 +285,7 @@ impl SearchParams {
 /// routes (`/aos.registry.v1.RegistryService/ListRegistries`), so axum's
 /// static-over-dynamic precedence keeps them from being shadowed by the
 /// `/{slug}/{*path}` facade wildcard.
-pub fn router(state: Arc<AppState>) -> Router {
+pub async fn router(state: Arc<AppState>) -> Router {
     use aos_proto::aos::registry::v1::{
         AuditServiceExt, ChannelServiceExt, ConfigServiceExt, GitServiceExt, OrgServiceExt,
         PackageServiceExt, ProjectServiceExt, PublishServiceExt, RegistryServiceExt,
@@ -418,8 +419,10 @@ async fn resolve_session(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let email = session_secret_from_cookies(request.headers())
-        .and_then(|secret| state.db.session_email(&secret).ok().flatten());
+    let email = match session_secret_from_cookies(request.headers()) {
+        Some(secret) => state.db.session_email(&secret).await.ok().flatten(),
+        None => None,
+    };
     crate::ui::render::with_session_email(email, next.run(request)).await
 }
 
@@ -548,19 +551,19 @@ pub(crate) fn client_ip_for(
     crate::ratelimit::client_ip(xff, &peer, trusted_proxy)
 }
 
-pub(crate) fn load_registry(
+pub(crate) async fn load_registry(
     state: &AppState,
     slug: &str,
 ) -> Result<Option<(RegistryRecord, Option<IndexStatus>)>, anyhow::Error> {
-    let Some(registry) = state.db.registry_by_slug(slug)? else {
+    let Some(registry) = state.db.registry_by_slug(slug).await? else {
         return Ok(None);
     };
-    let status = state.db.index_status(registry.id)?;
+    let status = state.db.index_status(registry.id).await?;
     Ok(Some((registry, status)))
 }
 
 async fn healthz(State(state): State<Arc<AppState>>) -> Response {
-    match state.db.list_registries() {
+    match state.db.list_registries().await {
         Ok(regs) => (StatusCode::OK, format!("ok ({} registries)\n", regs.len())).into_response(),
         Err(err) => internal(err),
     }
@@ -608,7 +611,7 @@ async fn device_authorization(
             .filter_map(|p| crate::auth::permission_from_str(p))
             .collect()
     };
-    match state.db.start_device_authorization(&scope, &perms) {
+    match state.db.start_device_authorization(&scope, &perms).await {
         Ok((device_code, user_code, expires_in)) => {
             let verification_uri = format!("{}/activate", state.external_url.trim_end_matches('/'));
             let verification_uri_complete = format!("{verification_uri}?user_code={user_code}");
@@ -636,7 +639,7 @@ async fn device_authorization(
 ///
 /// [exposition format]: https://prometheus.io/docs/instrumenting/exposition_formats/
 async fn metrics(State(state): State<Arc<AppState>>) -> Response {
-    let body = match render_metrics(&state) {
+    let body = match render_metrics(&state).await {
         Ok(body) => body,
         Err(err) => return internal(err),
     };
@@ -655,21 +658,22 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
 /// # Errors
 ///
 /// Returns an error on database failure.
-fn render_metrics(state: &AppState) -> Result<String, anyhow::Error> {
+async fn render_metrics(state: &AppState) -> Result<String, anyhow::Error> {
     use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
-    let registries = state.db.list_registries()?;
+    let registries = state.db.list_registries().await?;
     let mut by_state: BTreeMap<String, u64> = BTreeMap::new();
     for registry in &registries {
         let label = state
             .db
-            .index_status(registry.id)?
+            .index_status(registry.id)
+            .await?
             .map(|s| s.state)
             .unwrap_or_else(|| "indexing".to_string());
         *by_state.entry(label).or_default() += 1;
     }
-    let (pending, delivered, failed) = state.db.delivery_status_counts()?;
+    let (pending, delivered, failed) = state.db.delivery_status_counts().await?;
 
     let mut out = String::new();
     let _ = writeln!(
@@ -782,20 +786,21 @@ async fn instance_home(
         return limited;
     }
     let started = Instant::now();
-    let result = (|| {
+    let result = async {
         let mut rows = Vec::new();
-        for registry in state.db.list_registries()? {
+        for registry in state.db.list_registries().await? {
             // Non-disclosure: only list registries this caller could open.
             // Anonymous callers see public only; a session/token member sees
             // their org's internal and any granted private registries too.
-            if !can_read_registry(&state, &registry, &headers) {
+            if !can_read_registry(&state, &registry, &headers).await {
                 continue;
             }
-            let status = state.db.index_status(registry.id)?;
+            let status = state.db.index_status(registry.id).await?;
             rows.push((registry, status));
         }
         Ok::<_, anyhow::Error>(rows)
-    })();
+    }
+    .await;
     match result {
         Ok(rows) => Html(pages::instance_home(
             &rows,
@@ -837,7 +842,7 @@ async fn registry_home(
     // machine surface's `index.html` (the on-CDN web-surface pointer),
     // or 406 when the source ships none.
     if !accepts_html(&headers) {
-        return match state.db.registry_by_slug(&slug) {
+        return match state.db.registry_by_slug(&slug).await {
             Ok(Some(registry)) => {
                 let response = compat::serve_machine_path(&registry, "index.html").await;
                 if response.status() == StatusCode::NOT_FOUND {
@@ -851,17 +856,17 @@ async fn registry_home(
         };
     }
 
-    let result = (|| {
-        let Some((registry, status)) = load_registry(&state, &slug)? else {
+    let result = async {
+        let Some((registry, status)) = load_registry(&state, &slug).await? else {
             return Ok(None);
         };
-        let channels = state.db.list_channels(registry.id)?;
-        let packages = state.db.list_packages(registry.id)?;
-        let caches = state.db.list_caches(registry.id)?;
-        let roster = state.db.list_roster(registry.id)?;
-        let validations = state.db.latest_validation_runs(registry.id)?;
+        let channels = state.db.list_channels(registry.id).await?;
+        let packages = state.db.list_packages(registry.id).await?;
+        let caches = state.db.list_caches(registry.id).await?;
+        let roster = state.db.list_roster(registry.id).await?;
+        let validations = state.db.latest_validation_runs(registry.id).await?;
         let external = format!("{}/{slug}", state.external_url.trim_end_matches('/'));
-        let manage_link = registry_manage_link(&state, &registry, &headers);
+        let manage_link = registry_manage_link(&state, &registry, &headers).await;
         Ok::<_, anyhow::Error>(Some(pages::registry_home(
             &registry,
             status.as_ref(),
@@ -874,7 +879,8 @@ async fn registry_home(
             manage_link,
             started,
         )))
-    })();
+    }
+    .await;
     respond_page(result)
 }
 
@@ -906,7 +912,7 @@ const MAX_BROWSE_PACKAGES: usize = 10_000;
 /// Returns an error if loading the registry's package list fails. A malformed
 /// filter expression is *not* an error: the page renders the unfiltered list
 /// with the parse error surfaced inline.
-fn package_index_html(
+async fn package_index_html(
     state: &AppState,
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -917,7 +923,8 @@ fn package_index_html(
 
     let (all, truncated) = state
         .db
-        .list_packages_capped(registry.id, MAX_BROWSE_PACKAGES)?;
+        .list_packages_capped(registry.id, MAX_BROWSE_PACKAGES)
+        .await?;
     let total_all = all.len();
     let filter_text = params.filter();
 
@@ -1026,18 +1033,15 @@ async fn package_index(
         return limited;
     }
     let started = Instant::now();
-    let result = (|| {
-        let Some((registry, status)) = load_registry(&state, &slug)? else {
+    let result = async {
+        let Some((registry, status)) = load_registry(&state, &slug).await? else {
             return Ok(None);
         };
-        Ok::<_, anyhow::Error>(Some(package_index_html(
-            &state,
-            &registry,
-            status.as_ref(),
-            &params,
-            started,
-        )?))
-    })();
+        Ok::<_, anyhow::Error>(Some(
+            package_index_html(&state, &registry, status.as_ref(), &params, started).await?,
+        ))
+    }
+    .await;
     respond_page(result)
 }
 
@@ -1046,14 +1050,14 @@ async fn package_page(
     Path((slug, name)): Path<(String, String)>,
 ) -> Response {
     let started = Instant::now();
-    let result = (|| {
-        let Some((registry, status)) = load_registry(&state, &slug)? else {
+    let result = async {
+        let Some((registry, status)) = load_registry(&state, &slug).await? else {
             return Ok(None);
         };
-        let Some(detail) = state.db.package_detail(registry.id, &name)? else {
+        let Some(detail) = state.db.package_detail(registry.id, &name).await? else {
             return Ok(None);
         };
-        let closure = resolve_package_closure(&state.db, registry.id, &name, &detail)?;
+        let closure = resolve_package_closure(&state.db, registry.id, &name, &detail).await?;
         Ok::<_, anyhow::Error>(Some(pages::package_page(
             &registry,
             status.as_ref(),
@@ -1062,7 +1066,8 @@ async fn package_page(
             &state.external_url,
             started,
         )))
-    })();
+    }
+    .await;
     respond_page(result)
 }
 
@@ -1081,7 +1086,7 @@ const REVERSE_DEP_CAP: usize = 100;
 /// # Errors
 ///
 /// Returns an error on database failure.
-fn resolve_package_closure(
+async fn resolve_package_closure(
     db: &Database,
     registry_id: i64,
     name: &str,
@@ -1092,7 +1097,9 @@ fn resolve_package_closure(
     let mut closure = pages::PackageClosure::default();
     if let Some(platform) = primary {
         closure.platform = Some(platform.platform.clone());
-        let resolved = db.resolve_reference_names(registry_id, &platform.refs)?;
+        let resolved = db
+            .resolve_reference_names(registry_id, &platform.refs)
+            .await?;
         closure.dependencies = resolved
             .into_iter()
             .map(|(hash, name, version)| pages::ResolvedDependency {
@@ -1105,8 +1112,8 @@ fn resolve_package_closure(
 
     // Reverse deps: who references this package's primary store hash.
     let platform = primary.map(|p| p.platform.as_str()).unwrap_or("");
-    if let Some(store_hash) = db.primary_store_hash(registry_id, name, platform)? {
-        let mut reverse = db.reverse_dependencies(registry_id, &store_hash)?;
+    if let Some(store_hash) = db.primary_store_hash(registry_id, name, platform).await? {
+        let mut reverse = db.reverse_dependencies(registry_id, &store_hash).await?;
         closure.reverse_total = reverse.len();
         reverse.truncate(REVERSE_DEP_CAP);
         closure.reverse = reverse;
@@ -1120,11 +1127,11 @@ async fn channels_index(
     Query(params): Query<SearchParams>,
 ) -> Response {
     let started = Instant::now();
-    let result = (|| {
-        let Some((registry, status)) = load_registry(&state, &slug)? else {
+    let result = async {
+        let Some((registry, status)) = load_registry(&state, &slug).await? else {
             return Ok(None);
         };
-        let channels = state.db.list_channels(registry.id)?;
+        let channels = state.db.list_channels(registry.id).await?;
         Ok::<_, anyhow::Error>(Some(pages::channels_index(
             &registry,
             status.as_ref(),
@@ -1132,7 +1139,8 @@ async fn channels_index(
             params.page_number(),
             started,
         )))
-    })();
+    }
+    .await;
     respond_page(result)
 }
 
@@ -1142,15 +1150,15 @@ async fn channel_page(
     Query(params): Query<BucketParams>,
 ) -> Response {
     let started = Instant::now();
-    let result = (|| {
-        let Some((registry, status)) = load_registry(&state, &slug)? else {
+    let result = async {
+        let Some((registry, status)) = load_registry(&state, &slug).await? else {
             return Ok(None);
         };
-        let channels = state.db.list_channels(registry.id)?;
+        let channels = state.db.list_channels(registry.id).await?;
         let Some(channel) = channels.into_iter().find(|c| c.name == name) else {
             return Ok(None);
         };
-        let floor = state.db.channel_floor(registry.id, &name)?;
+        let floor = state.db.channel_floor(registry.id, &name).await?;
         Ok::<_, anyhow::Error>(Some(pages::channel_page(
             &registry,
             status.as_ref(),
@@ -1159,7 +1167,8 @@ async fn channel_page(
             params.bucket.as_deref(),
             started,
         )))
-    })();
+    }
+    .await;
     respond_page(result)
 }
 
@@ -1169,11 +1178,11 @@ async fn releases_page(
     Query(params): Query<SearchParams>,
 ) -> Response {
     let started = Instant::now();
-    let result = (|| {
-        let Some((registry, status)) = load_registry(&state, &slug)? else {
+    let result = async {
+        let Some((registry, status)) = load_registry(&state, &slug).await? else {
             return Ok(None);
         };
-        let releases = state.db.list_releases(registry.id)?;
+        let releases = state.db.list_releases(registry.id).await?;
         Ok::<_, anyhow::Error>(Some(pages::releases_page(
             &registry,
             status.as_ref(),
@@ -1181,39 +1190,41 @@ async fn releases_page(
             params.page_number(),
             started,
         )))
-    })();
+    }
+    .await;
     respond_page(result)
 }
 
 async fn health_page(State(state): State<Arc<AppState>>, Path(slug): Path<String>) -> Response {
     let started = Instant::now();
-    let result = (|| {
-        let Some((registry, status)) = load_registry(&state, &slug)? else {
+    let result = async {
+        let Some((registry, status)) = load_registry(&state, &slug).await? else {
             return Ok(None);
         };
         let mut runs = Vec::new();
-        for run in state.db.latest_validation_runs(registry.id)? {
+        for run in state.db.latest_validation_runs(registry.id).await? {
             let missing = if run.missing > 0 {
-                state.db.validation_missing(run.id)?
+                state.db.validation_missing(run.id).await?
             } else {
                 Vec::new()
             };
             // Deep runs can also carry `corrupt` findings; load them so the
             // page flags corruption distinctly from absence.
             let corrupt = if run.missing > 0 {
-                state.db.validation_corrupt(run.id)?
+                state.db.validation_corrupt(run.id).await?
             } else {
                 Vec::new()
             };
             runs.push((run, missing, corrupt));
         }
-        let stack = state.db.registry_cache_stack(registry.id)?;
-        let probes = state.db.list_cache_probes(registry.id)?;
+        let stack = state.db.registry_cache_stack(registry.id).await?;
+        let probes = state.db.list_cache_probes(registry.id).await?;
         let repair_jobs = state
             .db
-            .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)?;
-        let frontends = state.db.list_frontends(registry.id)?;
-        let frontend_probes = state.db.list_frontend_probes(registry.id)?;
+            .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)
+            .await?;
+        let frontends = state.db.list_frontends(registry.id).await?;
+        let frontend_probes = state.db.list_frontend_probes(registry.id).await?;
         Ok::<_, anyhow::Error>(Some(pages::health_page(
             &registry,
             status.as_ref(),
@@ -1225,7 +1236,8 @@ async fn health_page(State(state): State<Arc<AppState>>, Path(slug): Path<String
             &frontend_probes,
             started,
         )))
-    })();
+    }
+    .await;
     respond_page(result)
 }
 
@@ -1245,9 +1257,9 @@ async fn machine_path(
     uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
-    match state.db.registry_by_slug(&slug) {
+    match state.db.registry_by_slug(&slug).await {
         Ok(Some(registry)) => {
-            if let Err(deny) = authorize_registry_read(&state, &registry, &headers) {
+            if let Err(deny) = authorize_registry_read(&state, &registry, &headers).await {
                 return *deny;
             }
             serve_registry_machine_path(&state, &registry, &path).await
@@ -1310,7 +1322,7 @@ async fn put_machine_path(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    match resolve_write_target(&state, &slug, &path) {
+    match resolve_write_target(&state, &slug, &path).await {
         Ok(Some((registry_slug, tail))) => {
             crate::facade::put_machine_path(&state, &registry_slug, &tail, &headers, body).await
         }
@@ -1326,7 +1338,7 @@ async fn head_machine_path(
     Path((slug, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    match resolve_write_target(&state, &slug, &path) {
+    match resolve_write_target(&state, &slug, &path).await {
         Ok(Some((registry_slug, tail))) => {
             crate::facade::head_machine_path(&state, &registry_slug, &tail, &headers).await
         }
@@ -1346,17 +1358,17 @@ async fn head_machine_path(
 /// # Errors
 ///
 /// Returns an error on database failure.
-fn resolve_write_target(
+async fn resolve_write_target(
     state: &AppState,
     slug: &str,
     path: &str,
 ) -> Result<Option<(String, String)>, anyhow::Error> {
-    if state.db.registry_by_slug(slug)?.is_some() {
+    if state.db.registry_by_slug(slug).await?.is_some() {
         return Ok(Some((slug.to_string(), path.to_string())));
     }
     let full = format!("{slug}/{path}");
     let decoded = percent_decode(&full);
-    match resolve_by_prefix(state, decoded.trim_end_matches('/'))? {
+    match resolve_by_prefix(state, decoded.trim_end_matches('/')).await? {
         Some((registry, tail)) if !tail.is_empty() => Ok(Some((registry.slug, tail))),
         _ => Ok(None),
     }
@@ -1380,7 +1392,7 @@ async fn serve_registry_machine_path(
     if !registry.source_url.is_empty() {
         return compat::serve_machine_path(registry, path).await;
     }
-    match state.db.registry_surface_root(registry.id) {
+    match state.db.registry_surface_root(registry.id).await {
         Ok(Some(root)) => {
             let mut resolved = registry.clone();
             resolved.source_url = root.to_string_lossy().into_owned();
@@ -1423,7 +1435,7 @@ async fn pull_through_machine_path(
     if !compat::is_machine_path(path) {
         return None;
     }
-    let source = match state.db.mirror_source(registry.id) {
+    let source = match state.db.mirror_source(registry.id).await {
         Ok(Some(source)) if source.mode == "pullthrough" => source,
         Ok(_) => return None,
         Err(err) => return Some(internal(err)),
@@ -1434,7 +1446,7 @@ async fn pull_through_machine_path(
     if let Err(err) = crate::fetch::is_safe_remote_url(&source.upstream_url) {
         return Some(internal(err));
     }
-    let fetch = match crate::fetch::fetch_for_url(&source.upstream_url) {
+    let fetch = match crate::fetch::fetch_for_url(&source.upstream_url).await {
         Ok(fetch) => fetch,
         Err(err) => return Some(internal(err)),
     };
@@ -1539,7 +1551,7 @@ async fn resolve_nested_write(
     body: axum::body::Bytes,
 ) -> Response {
     let decoded = percent_decode(uri.path().trim_start_matches('/'));
-    let target = match resolve_by_prefix(state, decoded.trim_end_matches('/')) {
+    let target = match resolve_by_prefix(state, decoded.trim_end_matches('/')).await {
         Ok(Some((registry, tail))) if !tail.is_empty() => (registry.slug, tail),
         Ok(_) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => return internal(err),
@@ -1578,9 +1590,9 @@ async fn resolve_nested(
         // extractor, so the package index's search/filter/sort/page controls
         // would otherwise be silently dropped on org-scoped registry URLs.
         let params = SearchParams::from_query(uri.query());
-        return match state.db.registry_by_slug(slug) {
+        return match state.db.registry_by_slug(slug).await {
             Ok(Some(registry)) => {
-                if let Err(deny) = authorize_registry_read(state, &registry, headers) {
+                if let Err(deny) = authorize_registry_read(state, &registry, headers).await {
                     return *deny;
                 }
                 render_page(state, &registry, page, &params, headers, peer, started).await
@@ -1593,9 +1605,9 @@ async fn resolve_nested(
     // No `/-/`: either a registry home (exact slug, trailing slash trimmed)
     // or a machine path (slug + remainder). Resolve by longest slug prefix.
     let trimmed = decoded.trim_end_matches('/');
-    match resolve_by_prefix(state, trimmed) {
+    match resolve_by_prefix(state, trimmed).await {
         Ok(Some((registry, tail))) => {
-            if let Err(deny) = authorize_registry_read(state, &registry, headers) {
+            if let Err(deny) = authorize_registry_read(state, &registry, headers).await {
                 return *deny;
             }
             if tail.is_empty() {
@@ -1646,13 +1658,13 @@ fn parse_page(rest: &str) -> Option<PageKind> {
 /// `acme/infra/prod/cdn` with tail `objects/ab`; an exact match yields an
 /// empty tail (the registry home). Matching is on `/` boundaries, so
 /// `acme/infra/prod/cdn-staging` never resolves to `acme/infra/prod/cdn`.
-pub(crate) fn resolve_by_prefix(
+pub(crate) async fn resolve_by_prefix(
     state: &AppState,
     path: &str,
 ) -> Result<Option<(RegistryRecord, String)>, anyhow::Error> {
     let mut candidate = path;
     loop {
-        if let Some(registry) = state.db.registry_by_slug(candidate)? {
+        if let Some(registry) = state.db.registry_by_slug(candidate).await? {
             let tail = path[candidate.len()..].trim_start_matches('/').to_string();
             return Ok(Some((registry, tail)));
         }
@@ -1685,29 +1697,22 @@ async fn render_page(
             return limited;
         }
     }
-    let status = match state.db.index_status(registry.id) {
+    let status = match state.db.index_status(registry.id).await {
         Ok(status) => status,
         Err(err) => return internal(err),
     };
-    let result = (|| {
+    let result = async {
         Ok::<_, anyhow::Error>(match &page {
-            PageKind::Home => Some(render_home(
-                state,
-                registry,
-                status.as_ref(),
-                headers,
-                started,
-            )?),
-            PageKind::Packages => Some(package_index_html(
-                state,
-                registry,
-                status.as_ref(),
-                params,
-                started,
-            )?),
-            PageKind::Package(name) => match state.db.package_detail(registry.id, name)? {
+            PageKind::Home => {
+                Some(render_home(state, registry, status.as_ref(), headers, started).await?)
+            }
+            PageKind::Packages => {
+                Some(package_index_html(state, registry, status.as_ref(), params, started).await?)
+            }
+            PageKind::Package(name) => match state.db.package_detail(registry.id, name).await? {
                 Some(detail) => {
-                    let closure = resolve_package_closure(&state.db, registry.id, name, &detail)?;
+                    let closure =
+                        resolve_package_closure(&state.db, registry.id, name, &detail).await?;
                     Some(pages::package_page(
                         registry,
                         status.as_ref(),
@@ -1720,7 +1725,7 @@ async fn render_page(
                 None => None,
             },
             PageKind::Channels => {
-                let channels = state.db.list_channels(registry.id)?;
+                let channels = state.db.list_channels(registry.id).await?;
                 Some(pages::channels_index(
                     registry,
                     status.as_ref(),
@@ -1730,10 +1735,10 @@ async fn render_page(
                 ))
             }
             PageKind::Channel(name) => {
-                let channels = state.db.list_channels(registry.id)?;
+                let channels = state.db.list_channels(registry.id).await?;
                 match channels.into_iter().find(|c| &c.name == name) {
                     Some(channel) => {
-                        let floor = state.db.channel_floor(registry.id, name)?;
+                        let floor = state.db.channel_floor(registry.id, name).await?;
                         Some(pages::channel_page(
                             registry,
                             status.as_ref(),
@@ -1747,7 +1752,7 @@ async fn render_page(
                 }
             }
             PageKind::Releases => {
-                let releases = state.db.list_releases(registry.id)?;
+                let releases = state.db.list_releases(registry.id).await?;
                 Some(pages::releases_page(
                     registry,
                     status.as_ref(),
@@ -1758,26 +1763,27 @@ async fn render_page(
             }
             PageKind::Health => {
                 let mut runs = Vec::new();
-                for run in state.db.latest_validation_runs(registry.id)? {
+                for run in state.db.latest_validation_runs(registry.id).await? {
                     let missing = if run.missing > 0 {
-                        state.db.validation_missing(run.id)?
+                        state.db.validation_missing(run.id).await?
                     } else {
                         Vec::new()
                     };
                     let corrupt = if run.missing > 0 {
-                        state.db.validation_corrupt(run.id)?
+                        state.db.validation_corrupt(run.id).await?
                     } else {
                         Vec::new()
                     };
                     runs.push((run, missing, corrupt));
                 }
-                let stack = state.db.registry_cache_stack(registry.id)?;
-                let probes = state.db.list_cache_probes(registry.id)?;
+                let stack = state.db.registry_cache_stack(registry.id).await?;
+                let probes = state.db.list_cache_probes(registry.id).await?;
                 let repair_jobs = state
                     .db
-                    .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)?;
-                let frontends = state.db.list_frontends(registry.id)?;
-                let frontend_probes = state.db.list_frontend_probes(registry.id)?;
+                    .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)
+                    .await?;
+                let frontends = state.db.list_frontends(registry.id).await?;
+                let frontend_probes = state.db.list_frontend_probes(registry.id).await?;
                 Some(pages::health_page(
                     registry,
                     status.as_ref(),
@@ -1791,24 +1797,25 @@ async fn render_page(
                 ))
             }
         })
-    })();
+    }
+    .await;
     let _ = headers;
     respond_page(result)
 }
 
 /// Render a registry home page (shared by flat and nested routes).
-fn render_home(
+async fn render_home(
     state: &AppState,
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     headers: &HeaderMap,
     started: Instant,
 ) -> Result<String, anyhow::Error> {
-    let channels = state.db.list_channels(registry.id)?;
-    let packages = state.db.list_packages(registry.id)?;
-    let caches = state.db.list_caches(registry.id)?;
-    let roster = state.db.list_roster(registry.id)?;
-    let validations = state.db.latest_validation_runs(registry.id)?;
+    let channels = state.db.list_channels(registry.id).await?;
+    let packages = state.db.list_packages(registry.id).await?;
+    let caches = state.db.list_caches(registry.id).await?;
+    let roster = state.db.list_roster(registry.id).await?;
+    let validations = state.db.latest_validation_runs(registry.id).await?;
     let external = format!(
         "{}/{}",
         state.external_url.trim_end_matches('/'),
@@ -1823,7 +1830,7 @@ fn render_home(
         &roster,
         &validations,
         &external,
-        registry_manage_link(state, registry, headers),
+        registry_manage_link(state, registry, headers).await,
         started,
     ))
 }
@@ -1834,16 +1841,21 @@ fn render_home(
 ///
 /// Returns `false` for an anonymous request or any database error: the link is
 /// a pure discoverability affordance, so a lookup failure quietly hides it.
-fn registry_manage_link(state: &AppState, registry: &RegistryRecord, headers: &HeaderMap) -> bool {
+async fn registry_manage_link(
+    state: &AppState,
+    registry: &RegistryRecord,
+    headers: &HeaderMap,
+) -> bool {
     let Some(secret) = session_secret_from_cookies(headers) else {
         return false;
     };
-    let Ok(Some(session)) = state.db.validate_session(&secret) else {
+    let Ok(Some(session)) = state.db.validate_session(&secret).await else {
         return false;
     };
     let Ok(grants) = state
         .db
         .effective_scopes(crate::domain::Principal::user(session.user_id))
+        .await
     else {
         return false;
     };
@@ -1873,7 +1885,7 @@ fn registry_manage_link(state: &AppState, registry: &RegistryRecord, headers: &H
 /// Returns the denial [`Response`] (a 404) in the `Err` arm when the read is
 /// not authorized; `Ok(())` means the caller may proceed. The denial is
 /// boxed to keep the common `Ok` path small.
-pub(crate) fn authorize_registry_read(
+pub(crate) async fn authorize_registry_read(
     state: &AppState,
     registry: &RegistryRecord,
     headers: &HeaderMap,
@@ -1882,7 +1894,7 @@ pub(crate) fn authorize_registry_read(
     // A registry owned by a soft-deleted org stops serving entirely (RFC-0004
     // offboarding): 404, never disclosing that it once existed.
     if let Some(org_id) = registry.org_id {
-        if !matches!(state.db.org_is_active(org_id), Ok(true)) {
+        if !matches!(state.db.org_is_active(org_id).await, Ok(true)) {
             return Err(denied());
         }
     }
@@ -1893,7 +1905,7 @@ pub(crate) fn authorize_registry_read(
             let Some(org_id) = registry.org_id else {
                 return Ok(());
             };
-            if session_is_org_member(state, headers, org_id) {
+            if session_is_org_member(state, headers, org_id).await {
                 Ok(())
             } else {
                 Err(denied())
@@ -1903,7 +1915,7 @@ pub(crate) fn authorize_registry_read(
         // the registry scope from a session or a bearer token.
         _ => {
             let scope = Scope::parse(&registry.slug);
-            if session_allows_read(state, headers, &scope)
+            if session_allows_read(state, headers, &scope).await
                 || bearer_allows_read(state, headers, &scope)
             {
                 Ok(())
@@ -1930,33 +1942,36 @@ pub(crate) fn authorize_registry_read(
 /// [`authorize_registry_read`] guarantees a registry shown in a listing is one
 /// the caller can actually open, and one hidden from the listing 404s on its
 /// page — preserving the non-disclosure rule end to end.
-pub(crate) fn can_read_registry(
+pub(crate) async fn can_read_registry(
     state: &AppState,
     registry: &RegistryRecord,
     headers: &HeaderMap,
 ) -> bool {
-    authorize_registry_read(state, registry, headers).is_ok()
+    authorize_registry_read(state, registry, headers)
+        .await
+        .is_ok()
 }
 
 /// Whether the request's session user holds any membership covering `org_id`.
-fn session_is_org_member(state: &AppState, headers: &HeaderMap, org_id: i64) -> bool {
-    let Some(org) = state.db.org_by_id(org_id).ok().flatten() else {
+async fn session_is_org_member(state: &AppState, headers: &HeaderMap, org_id: i64) -> bool {
+    let Some(org) = state.db.org_by_id(org_id).await.ok().flatten() else {
         return false;
     };
     let scope = Scope::parse(&org.slug);
-    session_allows_read(state, headers, &scope)
+    session_allows_read(state, headers, &scope).await
 }
 
 /// Whether the request's session user may `Read` at `scope` under their
 /// current memberships.
-fn session_allows_read(state: &AppState, headers: &HeaderMap, scope: &Scope) -> bool {
+async fn session_allows_read(state: &AppState, headers: &HeaderMap, scope: &Scope) -> bool {
     let Some(secret) = session_secret_from_cookies(headers) else {
         return false;
     };
-    let Ok(Some(session)) = state.db.validate_session(&secret) else {
+    let Ok(Some(session)) = state.db.validate_session(&secret).await else {
         return false;
     };
     crate::auth::extract::session_allows(&state.db, &session, Permission::Read, scope)
+        .await
         .unwrap_or(false)
 }
 

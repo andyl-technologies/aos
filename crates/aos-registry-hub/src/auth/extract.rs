@@ -144,7 +144,7 @@ impl FromRequestParts<Arc<AuthState>> for SessionAuth {
     ) -> Result<Self, Self::Rejection> {
         let secret = session_secret_from_cookies(&parts.headers)
             .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing session cookie").into_response())?;
-        match state.db.validate_session(&secret) {
+        match state.db.validate_session(&secret).await {
             Ok(Some(session)) => Ok(SessionAuth(session)),
             Ok(None) => Err((StatusCode::UNAUTHORIZED, "invalid session").into_response()),
             Err(e) => {
@@ -173,7 +173,7 @@ impl FromRequestParts<Arc<AuthState>> for MaybeSession {
         let Some(secret) = session_secret_from_cookies(&parts.headers) else {
             return Ok(MaybeSession(None));
         };
-        match state.db.validate_session(&secret) {
+        match state.db.validate_session(&secret).await {
             Ok(session) => Ok(MaybeSession(session)),
             Err(e) => {
                 tracing::error!(error = %e, "session validation error");
@@ -211,13 +211,15 @@ pub fn token_allows(claims: &Claims, perm: Permission, target: &Scope) -> bool {
 /// # Errors
 ///
 /// Returns an error on database failure while loading the user's grants.
-pub fn session_allows(
+pub async fn session_allows(
     db: &Database,
     session: &DbSessionAuth,
     perm: Permission,
     target: &Scope,
 ) -> anyhow::Result<bool> {
-    let grants = db.effective_scopes(crate::domain::Principal::user(session.user_id))?;
+    let grants = db
+        .effective_scopes(crate::domain::Principal::user(session.user_id))
+        .await?;
     Ok(iam::allow(&grants, perm, target))
 }
 
@@ -371,7 +373,7 @@ pub async fn oauth2_token_handler(State(state): State<Arc<AuthState>>, parts: Pa
                 .into_response()
         }
     };
-    let auth = match state.db.validate_token(secret) {
+    let auth = match state.db.validate_token(secret).await {
         Ok(Some(auth)) => auth,
         Ok(None) => {
             tracing::warn!("oauth2 exchange failed: invalid provisioning secret");
@@ -444,8 +446,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn require_permission_maps_to_403() {
+    #[tokio::test]
+    async fn require_permission_maps_to_403() {
         let claims = Claims {
             sub: "t".into(),
             owner_kind: "user".into(),
@@ -460,11 +462,12 @@ mod tests {
         assert!(err.is_err());
     }
 
-    #[test]
-    fn session_allows_uses_current_grants() {
-        let db = Database::open_in_memory().unwrap();
-        let user = db.create_user("dev@acme.com", None).unwrap();
+    #[tokio::test]
+    async fn session_allows_uses_current_grants() {
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db.create_user("dev@acme.com", None).await.unwrap();
         db.grant_membership("user", user, "acme", "maintainer")
+            .await
             .unwrap();
         let session = DbSessionAuth {
             user_id: user,
@@ -478,6 +481,7 @@ mod tests {
             Permission::Publish,
             &Scope::parse("acme/infra")
         )
+        .await
         .unwrap());
         // A maintainer cannot manage members.
         assert!(!session_allows(
@@ -486,6 +490,7 @@ mod tests {
             Permission::MembersManage,
             &Scope::parse("acme")
         )
+        .await
         .unwrap());
     }
 

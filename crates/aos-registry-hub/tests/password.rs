@@ -22,7 +22,7 @@ use tower::ServiceExt;
 const TEST_JWT_SECRET: &[u8] = b"password-test-secret-32-byte-key";
 
 /// Build an [`AppState`] over `db` with deterministic JWT keys.
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -38,7 +38,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: aos_registry_hub::fetch::hardened_client(),
+        http: aos_registry_hub::fetch::hardened_client().await,
         mailer: Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: true,
     })
@@ -122,14 +122,15 @@ fn hash_verify_roundtrip_and_tamper() {
 
 #[tokio::test]
 async fn set_password_then_login_creates_session() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Provision a user with a password directly.
-    let user = db.create_user("dev@acme.com", None).unwrap();
+    let user = db.create_user("dev@acme.com", None).await.unwrap();
     db.set_user_password(user, &hash_password("hunter2").unwrap())
+        .await
         .unwrap();
-    assert!(db.user_has_password(user).unwrap());
+    assert!(db.user_has_password(user).await.unwrap());
 
     // Correct password logs in: 303 redirect to / with a session cookie.
     let resp = send(
@@ -155,11 +156,12 @@ async fn set_password_then_login_creates_session() {
 
 #[tokio::test]
 async fn wrong_password_re_renders_without_leaking_existence() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
-    let user = db.create_user("real@acme.com", None).unwrap();
+    let user = db.create_user("real@acme.com", None).await.unwrap();
     db.set_user_password(user, &hash_password("correct").unwrap())
+        .await
         .unwrap();
 
     // Wrong password for a real account.
@@ -196,13 +198,17 @@ async fn wrong_password_re_renders_without_leaking_existence() {
 
 #[tokio::test]
 async fn user_without_password_cannot_log_in_by_password() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // A user exists but never set a password.
-    let user = db.create_user("nopass@acme.com", None).unwrap();
-    assert!(!db.user_has_password(user).unwrap());
-    assert!(db.user_for_password("nopass@acme.com").unwrap().is_none());
+    let user = db.create_user("nopass@acme.com", None).await.unwrap();
+    assert!(!db.user_has_password(user).await.unwrap());
+    assert!(db
+        .user_for_password("nopass@acme.com")
+        .await
+        .unwrap()
+        .is_none());
 
     let resp = send(
         &app,
@@ -222,11 +228,12 @@ async fn user_without_password_cannot_log_in_by_password() {
 
 #[tokio::test]
 async fn repeated_password_attempts_are_rate_limited() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
-    let user = db.create_user("victim@acme.com", None).unwrap();
+    let user = db.create_user("victim@acme.com", None).await.unwrap();
     db.set_user_password(user, &hash_password("secret").unwrap())
+        .await
         .unwrap();
 
     // PASSWORD_PER_EMAIL is 5 per window; the 6th wrong attempt is throttled.
@@ -252,11 +259,11 @@ async fn repeated_password_attempts_are_rate_limited() {
 
 #[tokio::test]
 async fn account_set_password_flow() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Log the user in via a magic link (no password yet).
-    let secret = db.create_magic_link("dev@acme.com").unwrap();
+    let secret = db.create_magic_link("dev@acme.com").await.unwrap();
     let resp = send(
         &app,
         "GET",
@@ -269,8 +276,11 @@ async fn account_set_password_flow() {
         "{COOKIE_NAME}={}",
         cookie_value(&resp.set_cookie.expect("magic sets cookie"))
     );
-    let user = db.user_by_email("dev@acme.com").unwrap().unwrap();
-    assert!(!db.user_has_password(user).unwrap(), "no password yet");
+    let user = db.user_by_email("dev@acme.com").await.unwrap().unwrap();
+    assert!(
+        !db.user_has_password(user).await.unwrap(),
+        "no password yet"
+    );
 
     // The account page shows the "set password" affordance.
     let page = send(&app, "GET", "/account", Some(&cookie), None).await;
@@ -289,12 +299,19 @@ async fn account_set_password_flow() {
     .await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     assert_eq!(resp.location.as_deref(), Some("/account"));
-    assert!(db.user_has_password(user).unwrap(), "password now set");
+    assert!(
+        db.user_has_password(user).await.unwrap(),
+        "password now set"
+    );
 
     // The new password actually authenticates.
     assert!(verify_password(
         "brand-new-pass",
-        &db.user_for_password("dev@acme.com").unwrap().unwrap().1
+        &db.user_for_password("dev@acme.com")
+            .await
+            .unwrap()
+            .unwrap()
+            .1
     ));
 
     // The change revokes every session and re-issues a fresh cookie for this
@@ -331,18 +348,18 @@ async fn account_set_password_flow() {
 /// a freshly minted cookie.
 #[tokio::test]
 async fn password_change_evicts_sibling_sessions() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
-    let user = db.create_user("dev@acme.com", None).unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let user = db.create_user("dev@acme.com", None).await.unwrap();
 
     // Two live sudo sessions (as if signed in from two browsers).
     let a = format!(
         "{COOKIE_NAME}={}",
-        db.create_session(user, 30 * 24 * 60 * 60, 1).unwrap()
+        db.create_session(user, 30 * 24 * 60 * 60, 1).await.unwrap()
     );
     let b = format!(
         "{COOKIE_NAME}={}",
-        db.create_session(user, 30 * 24 * 60 * 60, 1).unwrap()
+        db.create_session(user, 30 * 24 * 60 * 60, 1).await.unwrap()
     );
     assert_eq!(
         send(&app, "GET", "/account", Some(&b), None).await.status,
@@ -392,14 +409,14 @@ async fn password_change_evicts_sibling_sessions() {
 /// session is never sudo, so it stands in for a stale, long-lived session.
 #[tokio::test]
 async fn password_change_requires_sudo() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
-    let user = db.create_user("dev@acme.com", None).unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let user = db.create_user("dev@acme.com", None).await.unwrap();
 
     // A live but non-sudo session (auth_level 0).
     let cookie = format!(
         "{COOKIE_NAME}={}",
-        db.create_session(user, 30 * 24 * 60 * 60, 0).unwrap()
+        db.create_session(user, 30 * 24 * 60 * 60, 0).await.unwrap()
     );
     // It is authenticated enough to view the account page...
     assert_eq!(
@@ -420,7 +437,7 @@ async fn password_change_requires_sudo() {
     .await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
     assert!(
-        !db.user_has_password(user).unwrap(),
+        !db.user_has_password(user).await.unwrap(),
         "password unchanged by refused request"
     );
 }
@@ -430,8 +447,8 @@ async fn password_change_requires_sudo() {
 /// Seed an org `slug` with an OIDC IdP config and `enforce_sso`, returning its
 /// id. The config is otherwise a minimal dev stub (it is never actually called
 /// in these tests — the redirect target is what we assert on).
-fn seed_sso_org(db: &Database, slug: &str, enforce_sso: bool) -> i64 {
-    let org_id = db.create_org(slug, slug).unwrap();
+async fn seed_sso_org(db: &Database, slug: &str, enforce_sso: bool) -> i64 {
+    let org_id = db.create_org(slug, slug).await.unwrap();
     db.upsert_idp_config(&IdpConfigRecord {
         org_id,
         issuer: "https://idp.example".into(),
@@ -447,6 +464,7 @@ fn seed_sso_org(db: &Database, slug: &str, enforce_sso: bool) -> i64 {
         enforce_sso,
         default_role: "viewer".into(),
     })
+    .await
     .unwrap();
     org_id
 }
@@ -456,16 +474,17 @@ fn seed_sso_org(db: &Database, slug: &str, enforce_sso: bool) -> i64 {
 /// flow instead of minting a local session, even though the password is valid.
 #[tokio::test]
 async fn enforced_user_password_login_redirects_to_sso() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
-    let org_id = seed_sso_org(&db, "acme", true);
-    db.add_org_domain(org_id, "acme.com").unwrap();
-    db.verify_org_domain("acme.com").unwrap();
+    let org_id = seed_sso_org(&db, "acme", true).await;
+    db.add_org_domain(org_id, "acme.com").await.unwrap();
+    db.verify_org_domain("acme.com").await.unwrap();
 
     // The user has a real, working password (set before enforcement, say).
-    let user = db.create_user("dev@acme.com", None).unwrap();
+    let user = db.create_user("dev@acme.com", None).await.unwrap();
     db.set_user_password(user, &hash_password("hunter2").unwrap())
+        .await
         .unwrap();
 
     let resp = send(
@@ -494,16 +513,21 @@ async fn enforced_user_password_login_redirects_to_sso() {
 /// blocked from password login and redirected to that org's IdP.
 #[tokio::test]
 async fn enforced_via_membership_password_login_redirects_to_sso() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
-    seed_sso_org(&db, "acme", true);
+    seed_sso_org(&db, "acme", true).await;
     // The user's email domain (other.example) is NOT captured by acme; the bind
     // is purely the membership grant under the `acme` scope.
-    let user = db.create_user("contractor@other.example", None).unwrap();
+    let user = db
+        .create_user("contractor@other.example", None)
+        .await
+        .unwrap();
     db.set_user_password(user, &hash_password("hunter2").unwrap())
+        .await
         .unwrap();
     db.grant_membership("user", user, "acme/cdn", "viewer")
+        .await
         .unwrap();
 
     let resp = send(
@@ -524,15 +548,16 @@ async fn enforced_via_membership_password_login_redirects_to_sso() {
 /// must not break non-enforced users).
 #[tokio::test]
 async fn unenforced_user_password_login_still_works() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
-    let org_id = seed_sso_org(&db, "acme", false);
-    db.add_org_domain(org_id, "acme.com").unwrap();
-    db.verify_org_domain("acme.com").unwrap();
+    let org_id = seed_sso_org(&db, "acme", false).await;
+    db.add_org_domain(org_id, "acme.com").await.unwrap();
+    db.verify_org_domain("acme.com").await.unwrap();
 
-    let user = db.create_user("dev@acme.com", None).unwrap();
+    let user = db.create_user("dev@acme.com", None).await.unwrap();
     db.set_user_password(user, &hash_password("hunter2").unwrap())
+        .await
         .unwrap();
 
     let resp = send(
@@ -556,15 +581,15 @@ async fn unenforced_user_password_login_still_works() {
 /// password-less (no standing bypass of IdP deprovisioning).
 #[tokio::test]
 async fn enforced_user_cannot_set_password() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
-    let org_id = seed_sso_org(&db, "acme", true);
-    db.add_org_domain(org_id, "acme.com").unwrap();
-    db.verify_org_domain("acme.com").unwrap();
+    let org_id = seed_sso_org(&db, "acme", true).await;
+    db.add_org_domain(org_id, "acme.com").await.unwrap();
+    db.verify_org_domain("acme.com").await.unwrap();
 
     // Sign in via magic link (fresh = sudo-capable, satisfying the sudo gate).
-    let secret = db.create_magic_link("dev@acme.com").unwrap();
+    let secret = db.create_magic_link("dev@acme.com").await.unwrap();
     let resp = send(
         &app,
         "GET",
@@ -577,7 +602,7 @@ async fn enforced_user_cannot_set_password() {
         "{COOKIE_NAME}={}",
         cookie_value(&resp.set_cookie.expect("magic sets cookie"))
     );
-    let user = db.user_by_email("dev@acme.com").unwrap().unwrap();
+    let user = db.user_by_email("dev@acme.com").await.unwrap().unwrap();
 
     let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
     let resp = send(
@@ -590,7 +615,7 @@ async fn enforced_user_cannot_set_password() {
     .await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
     assert!(
-        !db.user_has_password(user).unwrap(),
+        !db.user_has_password(user).await.unwrap(),
         "SSO-enforced user cannot set a local password"
     );
 }
@@ -600,14 +625,14 @@ async fn enforced_user_cannot_set_password() {
 /// credential is persisted.
 #[tokio::test]
 async fn enforced_user_cannot_enroll_passkey() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
-    let org_id = seed_sso_org(&db, "acme", true);
-    db.add_org_domain(org_id, "acme.com").unwrap();
-    db.verify_org_domain("acme.com").unwrap();
+    let org_id = seed_sso_org(&db, "acme", true).await;
+    db.add_org_domain(org_id, "acme.com").await.unwrap();
+    db.verify_org_domain("acme.com").await.unwrap();
 
-    let secret = db.create_magic_link("dev@acme.com").unwrap();
+    let secret = db.create_magic_link("dev@acme.com").await.unwrap();
     let resp = send(
         &app,
         "GET",
@@ -620,7 +645,7 @@ async fn enforced_user_cannot_enroll_passkey() {
         "{COOKIE_NAME}={}",
         cookie_value(&resp.set_cookie.expect("magic sets cookie"))
     );
-    let user = db.user_by_email("dev@acme.com").unwrap().unwrap();
+    let user = db.user_by_email("dev@acme.com").await.unwrap().unwrap();
 
     // The finish handler refuses before parsing the WebAuthn payload, so a
     // minimal JSON body (just a valid CSRF) suffices to prove the gate.
@@ -641,7 +666,7 @@ async fn enforced_user_cannot_enroll_passkey() {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert!(
-        db.list_user_credentials(user).unwrap().is_empty(),
+        db.list_user_credentials(user).await.unwrap().is_empty(),
         "no passkey persisted for an SSO-enforced user"
     );
 }

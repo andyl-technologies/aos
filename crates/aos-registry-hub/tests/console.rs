@@ -28,7 +28,7 @@ const TEST_JWT_SECRET: &[u8] = b"console-test-secret-32-byte-key!!";
 
 /// Build an [`AppState`] over `db` in dev mode (so the login page shows the
 /// magic link inline) with deterministic JWT keys.
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -44,7 +44,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: aos_registry_hub::fetch::hardened_client(),
+        http: aos_registry_hub::fetch::hardened_client().await,
         mailer: Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: true,
     })
@@ -111,7 +111,7 @@ fn cookie_value(set_cookie: &str) -> String {
 /// Sign in `email` by minting a magic link in the db and consuming it through
 /// `/auth/magic`; returns the `__Host-aos_session` cookie header value.
 async fn login(app: &axum::Router, db: &Database, email: &str) -> String {
-    let secret = db.create_magic_link(email).unwrap();
+    let secret = db.create_magic_link(email).await.unwrap();
     let resp = send(
         app,
         "GET",
@@ -132,12 +132,13 @@ async fn serve_managed(
     fixture: &common::Fixture,
     visibility: &str,
 ) -> Arc<Database> {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme, Inc.").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
     let parent = surface.parent().unwrap().to_str().unwrap();
     let dir_name = surface.file_name().unwrap().to_str().unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", parent)
+        .await
         .unwrap();
     db.create_managed_registry(
         org,
@@ -149,8 +150,13 @@ async fn serve_managed(
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
-    let registry = db.registry_by_slug("acme/infra/prod/cdn").unwrap().unwrap();
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
     index_and_record(&db, &LocalFsFetch::new(surface), &registry)
         .await
         .unwrap();
@@ -159,8 +165,8 @@ async fn serve_managed(
 
 #[tokio::test]
 async fn login_flow_creates_user_session_and_logout_revokes() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // POST /login issues a magic link (captured via the db) and shows the
     // dev link inline.
@@ -175,7 +181,7 @@ async fn login_flow_creates_user_session_and_logout_revokes() {
 
     // GET /auth/magic sets a cookie, creates the user, and redirects.
     let cookie = login(&app, &db, "dev@acme.com").await;
-    assert!(db.user_by_email("dev@acme.com").unwrap().is_some());
+    assert!(db.user_by_email("dev@acme.com").await.unwrap().is_some());
 
     // /account renders for the session.
     let resp = send(&app, "GET", "/account", Some(&cookie), None).await;
@@ -193,17 +199,19 @@ async fn login_flow_creates_user_session_and_logout_revokes() {
 
 #[tokio::test]
 async fn activate_shows_scope_and_approves_with_clamped_token() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     // The approving user is a maintainer at acme/infra.
-    let user = db.find_or_create_user("maint@acme.com").unwrap();
+    let user = db.find_or_create_user("maint@acme.com").await.unwrap();
     db.grant_membership("user", user, "acme/infra", "maintainer")
+        .await
         .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "maint@acme.com").await;
 
     // A CLI starts a device grant requesting read+publish at acme/infra/prod.
     let (device_code, user_code, _ttl) = db
         .start_device_authorization("acme/infra/prod", &[Permission::Read, Permission::Publish])
+        .await
         .unwrap();
 
     // The activate page shows the requested scope/permissions.
@@ -228,12 +236,16 @@ async fn activate_shows_scope_and_approves_with_clamped_token() {
     // The CLI poll now returns Approved with a token clamped to the user's
     // grants (the maintainer holds publish at acme/infra, covering the
     // requested acme/infra/prod scope).
-    let poll = db.poll_device(&device_code).unwrap();
+    let poll = db.poll_device(&device_code).await.unwrap();
     let secret = match poll {
         aos_registry_hub::db::DevicePollResult::Approved(secret) => secret,
         other => panic!("expected approval, got {other:?}"),
     };
-    let token = db.validate_token(&secret).unwrap().expect("minted token");
+    let token = db
+        .validate_token(&secret)
+        .await
+        .unwrap()
+        .expect("minted token");
     assert_eq!(token.owner, Principal::user(user));
     assert!(token.permissions.contains(&Permission::Read));
     assert!(token.permissions.contains(&Permission::Publish));
@@ -247,10 +259,10 @@ async fn activate_is_rate_limited_per_session_user() {
     // other users' in-flight device grants. A fresh session user is unaffected.
     use aos_registry_hub::ratelimit::DEVICE_ACTIVATE;
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.find_or_create_user("enum@acme.com").unwrap();
-    db.find_or_create_user("other@acme.com").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.find_or_create_user("enum@acme.com").await.unwrap();
+    db.find_or_create_user("other@acme.com").await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "enum@acme.com").await;
 
     // The first DEVICE_ACTIVATE GETs in the window are served (the rate-limit
@@ -283,9 +295,9 @@ async fn activate_is_rate_limited_per_session_user() {
 
 #[tokio::test]
 async fn post_without_csrf_is_forbidden() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.find_or_create_user("dev@acme.com").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.find_or_create_user("dev@acme.com").await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "dev@acme.com").await;
 
     // revoke-all-sessions with no csrf field → 403.
@@ -320,10 +332,11 @@ async fn token_management_create_list_revoke_rotate() {
     let db = serve_managed(&surface, &fixture, "public").await;
 
     // A developer at the registry scope may mint a read token.
-    let user = db.find_or_create_user("dev@acme.com").unwrap();
+    let user = db.find_or_create_user("dev@acme.com").await.unwrap();
     db.grant_membership("user", user, "acme/infra/prod/cdn", "developer")
+        .await
         .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "dev@acme.com").await;
     let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
 
@@ -347,7 +360,7 @@ async fn token_management_create_list_revoke_rotate() {
     );
 
     // The token now lists for the user.
-    let tokens = db.list_tokens_for(Principal::user(user)).unwrap();
+    let tokens = db.list_tokens_for(Principal::user(user)).await.unwrap();
     assert_eq!(tokens.len(), 1);
     let token_id = tokens[0].0.clone();
 
@@ -368,7 +381,7 @@ async fn token_management_create_list_revoke_rotate() {
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("Token rotated"), "{}", resp.body);
-    let after_rotate = db.list_tokens_for(Principal::user(user)).unwrap();
+    let after_rotate = db.list_tokens_for(Principal::user(user)).await.unwrap();
     let new_id = after_rotate
         .iter()
         .map(|(id, _, _)| id.clone())
@@ -387,6 +400,7 @@ async fn token_management_create_list_revoke_rotate() {
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     assert!(db
         .list_tokens_for(Principal::user(user))
+        .await
         .unwrap()
         .iter()
         .all(|(id, _, _)| id != &new_id));
@@ -404,14 +418,15 @@ async fn token_mint_and_rotate_require_sudo() {
     let fixture = common::standard_registry(&surface);
     let db = serve_managed(&surface, &fixture, "public").await;
 
-    let user = db.find_or_create_user("dev@acme.com").unwrap();
+    let user = db.find_or_create_user("dev@acme.com").await.unwrap();
     db.grant_membership("user", user, "acme/infra/prod/cdn", "developer")
+        .await
         .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let base = "/acme/infra/prod/cdn/-/settings/tokens";
 
     // A stale (non-sudo, auth_level 0) session for the user.
-    let stale_secret = db.create_session(user, 30 * 24 * 60 * 60, 0).unwrap();
+    let stale_secret = db.create_session(user, 30 * 24 * 60 * 60, 0).await.unwrap();
     let stale = format!("{COOKIE_NAME}={stale_secret}");
     let s_csrf = mint_csrf_token(&stale_secret);
 
@@ -427,6 +442,7 @@ async fn token_mint_and_rotate_require_sudo() {
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
     assert!(db
         .list_tokens_for(Principal::user(user))
+        .await
         .unwrap()
         .is_empty());
 
@@ -442,7 +458,7 @@ async fn token_mint_and_rotate_require_sudo() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    let tokens = db.list_tokens_for(Principal::user(user)).unwrap();
+    let tokens = db.list_tokens_for(Principal::user(user)).await.unwrap();
     assert_eq!(tokens.len(), 1);
     let token_id = tokens[0].0.clone();
 
@@ -476,11 +492,12 @@ async fn channel_console_prepares_advance_and_viewer_sees_no_form() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
     let db = serve_managed(&surface, &fixture, "public").await;
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // A viewer sees the grid but no advance form.
-    let viewer = db.find_or_create_user("view@acme.com").unwrap();
+    let viewer = db.find_or_create_user("view@acme.com").await.unwrap();
     db.grant_membership("user", viewer, "acme/infra/prod/cdn", "viewer")
+        .await
         .unwrap();
     let vcookie = login(&app, &db, "view@acme.com").await;
     let resp = send(
@@ -501,8 +518,9 @@ async fn channel_console_prepares_advance_and_viewer_sees_no_form() {
 
     // A maintainer prepares an advance: the apr command is rendered and a
     // change-set is recorded.
-    let maint = db.find_or_create_user("maint@acme.com").unwrap();
+    let maint = db.find_or_create_user("maint@acme.com").await.unwrap();
     db.grant_membership("user", maint, "acme/infra/prod/cdn", "maintainer")
+        .await
         .unwrap();
     let mcookie = login(&app, &db, "maint@acme.com").await;
     let csrf = mint_csrf_token(mcookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
@@ -522,21 +540,23 @@ async fn channel_console_prepares_advance_and_viewer_sees_no_form() {
     );
     assert!(resp.body.contains("Prepared operation"));
     // The preparation recorded a draft change-set + audited it.
-    let changesets = db.list_changesets("acme/infra/prod/cdn").unwrap();
+    let changesets = db.list_changesets("acme/infra/prod/cdn").await.unwrap();
     assert!(changesets.iter().any(|c| c.status == "draft"));
-    let audit = db.list_audit("acme/infra/prod/cdn").unwrap();
+    let audit = db.list_audit("acme/infra/prod/cdn").await.unwrap();
     assert!(audit.iter().any(|a| a.action == "channel.advance.prepared"));
 }
 
 #[tokio::test]
 async fn member_invite_and_remove_audit_and_last_owner_blocked() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
     let _ = org;
     // An owner who manages members.
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
 
@@ -550,9 +570,9 @@ async fn member_invite_and_remove_audit_and_last_owner_blocked() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
-    let audit = db.list_audit("acme").unwrap();
+    let audit = db.list_audit("acme").await.unwrap();
     assert!(audit.iter().any(|a| a.action == "membership.grant"));
-    let invited = db.user_by_email("newdev@acme.com").unwrap().unwrap();
+    let invited = db.user_by_email("newdev@acme.com").await.unwrap().unwrap();
 
     // Remove the developer: allowed, audited.
     let resp = send(
@@ -568,6 +588,7 @@ async fn member_invite_and_remove_audit_and_last_owner_blocked() {
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     assert!(db
         .list_audit("acme")
+        .await
         .unwrap()
         .iter()
         .any(|a| a.action == "membership.revoke"));
@@ -587,6 +608,7 @@ async fn member_invite_and_remove_audit_and_last_owner_blocked() {
     // The owner grant survives.
     assert!(db
         .list_members_of_scope("acme")
+        .await
         .unwrap()
         .iter()
         .any(|(k, id, r)| k == "user" && *id == owner && r == "owner"));
@@ -594,13 +616,14 @@ async fn member_invite_and_remove_audit_and_last_owner_blocked() {
 
 #[tokio::test]
 async fn org_dashboard_authz_matrix() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
-    let member = db.find_or_create_user("m@acme.com").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let member = db.find_or_create_user("m@acme.com").await.unwrap();
     db.grant_membership("user", member, "acme", "viewer")
+        .await
         .unwrap();
-    db.find_or_create_user("outsider@x.com").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    db.find_or_create_user("outsider@x.com").await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // A non-member 404s the private org dashboard (existence undisclosed).
     let out_cookie = login(&app, &db, "outsider@x.com").await;
@@ -644,15 +667,19 @@ async fn org_dashboard_authz_matrix() {
 
 #[tokio::test]
 async fn org_dashboard_shows_create_affordances_to_admins() {
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    db.create_org("acme", "Acme").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
     // An admin holds registry.configure + storage.manage but not iam.admin.
-    let admin = db.find_or_create_user("admin@acme.com").unwrap();
-    db.grant_membership("user", admin, "acme", "admin").unwrap();
+    let admin = db.find_or_create_user("admin@acme.com").await.unwrap();
+    db.grant_membership("user", admin, "acme", "admin")
+        .await
+        .unwrap();
     // An owner additionally holds iam.admin (so sees the delete form).
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     let a_cookie = login(&app, &db, "admin@acme.com").await;
     let resp = send(&app, "GET", "/-/org/acme", Some(&a_cookie), None).await;
@@ -676,11 +703,13 @@ async fn config_edit_and_change_request_console_flow() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
     let db = serve_managed(&surface, &fixture, "public").await;
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // An Owner on the org may edit config and view change requests.
-    let owner = db.find_or_create_user("owner@acme.com").unwrap();
-    db.grant_membership("user", owner, "acme", "owner").unwrap();
+    let owner = db.find_or_create_user("owner@acme.com").await.unwrap();
+    db.grant_membership("user", owner, "acme", "owner")
+        .await
+        .unwrap();
     let cookie = login(&app, &db, "owner@acme.com").await;
 
     // The config-edit page renders the current committed registry.toml.
@@ -729,6 +758,7 @@ async fn config_edit_and_change_request_console_flow() {
     // A git-backed draft change-set now exists for the registry.
     let drafts: Vec<_> = db
         .list_changesets("acme/infra/prod/cdn")
+        .await
         .unwrap()
         .into_iter()
         .filter(|cs| cs.git_ref.is_some())
@@ -751,8 +781,9 @@ async fn config_edit_and_change_request_console_flow() {
     assert!(resp.body.contains("apr change merge"), "{}", resp.body);
 
     // A developer (no registry.configure) cannot submit a change request.
-    let dev = db.find_or_create_user("dev@acme.com").unwrap();
+    let dev = db.find_or_create_user("dev@acme.com").await.unwrap();
     db.grant_membership("user", dev, "acme/infra/prod/cdn", "developer")
+        .await
         .unwrap();
     let dcookie = login(&app, &db, "dev@acme.com").await;
     let dcsrf = mint_csrf_token(dcookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());

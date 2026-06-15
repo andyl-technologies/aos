@@ -54,14 +54,15 @@ async fn serve_upstream(surface: PathBuf) -> String {
 
 /// Create a managed mirror registry whose surface lives under a `local_fs`
 /// binding, returning `(registry_id, binding_root)`.
-fn make_mirror_registry(
+async fn make_mirror_registry(
     db: &Database,
     trust_key: &str,
     binding_root: &std::path::Path,
 ) -> (i64, PathBuf) {
-    let org = db.create_org("acme", "Acme, Inc.").unwrap();
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", &binding_root.to_string_lossy())
+        .await
         .unwrap();
     let reg = db
         .create_managed_registry(
@@ -74,8 +75,9 @@ fn make_mirror_registry(
             std::slice::from_ref(&trust_key.to_string()),
             true,
         )
+        .await
         .unwrap();
-    let root = db.registry_surface_root(reg).unwrap().unwrap();
+    let root = db.registry_surface_root(reg).await.unwrap().unwrap();
     (reg, root)
 }
 
@@ -92,11 +94,12 @@ async fn full_mirror_verifies_then_copies_upstream() {
     // A local mirror registry whose trust anchor is the upstream's (so a
     // consumer keeps upstream trust), bound to an empty local directory.
     let binding_root = dir.path().join("binding");
-    let db = Database::open_in_memory().unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    let db = Database::open_in_memory().await.unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
     db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
+        .await
         .unwrap();
-    let registry = db.registry_by_id(reg).unwrap().unwrap();
+    let registry = db.registry_by_id(reg).await.unwrap().unwrap();
 
     // Sync: verify the upstream, then copy it byte-identically.
     let result = sync_full_mirror(&db, &registry).await.unwrap();
@@ -120,9 +123,9 @@ async fn full_mirror_verifies_then_copies_upstream() {
     );
 
     // The mirror indexed to the upstream's frontier and recorded a clean sync.
-    let status = db.index_status(reg).unwrap().unwrap();
+    let status = db.index_status(reg).await.unwrap().unwrap();
     assert_eq!(status.state, "fresh");
-    let source = db.mirror_source(reg).unwrap().unwrap();
+    let source = db.mirror_source(reg).await.unwrap().unwrap();
     assert_eq!(source.last_sync_status.as_deref(), Some("ok"));
     assert_eq!(source.upstream_frontier.as_deref(), Some("1.0.0"));
 }
@@ -145,11 +148,12 @@ async fn full_mirror_refuses_untrusted_upstream() {
     assert_ne!(wrong_anchor, fixture.trust_key);
 
     let binding_root = dir.path().join("binding");
-    let db = Database::open_in_memory().unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &wrong_anchor, &binding_root);
+    let db = Database::open_in_memory().await.unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &wrong_anchor, &binding_root).await;
     db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
+        .await
         .unwrap();
-    let registry = db.registry_by_id(reg).unwrap().unwrap();
+    let registry = db.registry_by_id(reg).await.unwrap().unwrap();
 
     let err = sync_full_mirror(&db, &registry).await.unwrap_err();
     assert!(format!("{err:#}").contains("verif"), "got: {err:#}");
@@ -160,7 +164,7 @@ async fn full_mirror_refuses_untrusted_upstream() {
         "no surface bytes written on a failed verification"
     );
     // The failure is recorded for the health page.
-    let source = db.mirror_source(reg).unwrap().unwrap();
+    let source = db.mirror_source(reg).await.unwrap().unwrap();
     assert_eq!(source.last_sync_status.as_deref(), Some("failed"));
     assert!(source.last_sync_error.is_some());
     assert!(source.upstream_frontier.is_none());
@@ -177,9 +181,10 @@ async fn pull_through_fetches_verifies_persists_and_serves() {
 
     // A pull-through mirror with an EMPTY local binding.
     let binding_root = dir.path().join("binding");
-    let db = Database::open_in_memory().unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    let db = Database::open_in_memory().await.unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
     db.create_mirror_source(reg, &upstream_url, "pullthrough", true, 3600)
+        .await
         .unwrap();
 
     // Pick a real loose-object path from the upstream surface to request.
@@ -193,7 +198,7 @@ async fn pull_through_fetches_verifies_persists_and_serves() {
     // Sanity: fetch_through alone fetches, verifies, persists, and serves the
     // bytes (isolates the facade wiring from the mirror logic).
     {
-        let fetch = aos_registry_hub::fetch::HttpFetch::new(&upstream_url);
+        let fetch = aos_registry_hub::fetch::HttpFetch::new(&upstream_url).await;
         let direct = fetch_through(
             &fetch,
             &local_root,
@@ -210,8 +215,8 @@ async fn pull_through_fetches_verifies_persists_and_serves() {
 
     // GET the object through the hub facade: it fetches from upstream, verifies
     // by oid, persists locally, and serves the bytes.
-    let state = Arc::new(AppState::new(Arc::new(db), "http://127.0.0.1:8420".into()));
-    let app = router(state);
+    let state = Arc::new(AppState::new(Arc::new(db), "http://127.0.0.1:8420".into()).await);
+    let app = router(state).await;
     let uri = format!("/acme/infra/prod/mirror/{object_path}");
     let response = app
         .clone()
@@ -249,10 +254,10 @@ async fn pull_through_rejects_tampered_object_by_oid() {
     let upstream_url = serve_upstream(upstream_surface.clone()).await;
 
     let binding_root = dir.path().join("binding");
-    let db = Database::open_in_memory().unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    let db = Database::open_in_memory().await.unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
 
-    let fetch = aos_registry_hub::fetch::HttpFetch::new(&upstream_url);
+    let fetch = aos_registry_hub::fetch::HttpFetch::new(&upstream_url).await;
     let err = fetch_through(
         &fetch,
         &local_root,
@@ -293,11 +298,12 @@ async fn full_mirror_rejects_unsigned_narinfo() {
     let upstream_url = serve_upstream(upstream_surface.clone()).await;
 
     let binding_root = dir.path().join("binding");
-    let db = Database::open_in_memory().unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    let db = Database::open_in_memory().await.unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
     db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
+        .await
         .unwrap();
-    let registry = db.registry_by_id(reg).unwrap().unwrap();
+    let registry = db.registry_by_id(reg).await.unwrap().unwrap();
 
     let err = sync_full_mirror(&db, &registry).await.unwrap_err();
     assert!(format!("{err:#}").contains("narinfo"), "got: {err:#}");
@@ -306,7 +312,7 @@ async fn full_mirror_rejects_unsigned_narinfo() {
         !local_root.join("HEAD").exists(),
         "no surface bytes written when a narinfo fails verification"
     );
-    let source = db.mirror_source(reg).unwrap().unwrap();
+    let source = db.mirror_source(reg).await.unwrap().unwrap();
     assert_eq!(source.last_sync_status.as_deref(), Some("failed"));
 }
 
@@ -327,11 +333,12 @@ async fn full_mirror_rejects_tampered_nar() {
     let upstream_url = serve_upstream(upstream_surface.clone()).await;
 
     let binding_root = dir.path().join("binding");
-    let db = Database::open_in_memory().unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    let db = Database::open_in_memory().await.unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
     db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
+        .await
         .unwrap();
-    let registry = db.registry_by_id(reg).unwrap().unwrap();
+    let registry = db.registry_by_id(reg).await.unwrap().unwrap();
 
     let err = sync_full_mirror(&db, &registry).await.unwrap_err();
     assert!(format!("{err:#}").contains("NAR"), "got: {err:#}");
@@ -339,7 +346,7 @@ async fn full_mirror_rejects_tampered_nar() {
         !local_root.join("HEAD").exists(),
         "no surface bytes written when a NAR fails verification"
     );
-    let source = db.mirror_source(reg).unwrap().unwrap();
+    let source = db.mirror_source(reg).await.unwrap().unwrap();
     assert_eq!(source.last_sync_status.as_deref(), Some("failed"));
 }
 
@@ -351,8 +358,8 @@ async fn pull_through_refuses_tampered_narinfo_and_nar() {
     let fixture = common::standard_registry(&upstream_surface);
 
     let binding_root = dir.path().join("binding");
-    let db = Database::open_in_memory().unwrap();
-    let (_reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    let db = Database::open_in_memory().await.unwrap();
+    let (_reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
     let trusted = vec![fixture.trust_key.clone()];
 
     // A correctly-signed narinfo and matching NAR are served.
@@ -604,11 +611,12 @@ async fn full_mirror_writes_verified_nar_bytes_not_a_refetch() {
     let upstream_url = serve_upstream(upstream_surface.clone()).await;
 
     let binding_root = dir.path().join("binding");
-    let db = Database::open_in_memory().unwrap();
-    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root);
+    let db = Database::open_in_memory().await.unwrap();
+    let (reg, local_root) = make_mirror_registry(&db, &fixture.trust_key, &binding_root).await;
     db.create_mirror_source(reg, &upstream_url, "full", true, 3600)
+        .await
         .unwrap();
-    let registry = db.registry_by_id(reg).unwrap().unwrap();
+    let registry = db.registry_by_id(reg).await.unwrap().unwrap();
 
     sync_full_mirror(&db, &registry).await.unwrap();
 

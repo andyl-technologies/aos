@@ -147,12 +147,13 @@ fn bind(params: &[Value]) -> Vec<PgParam<'_>> {
     params.iter().map(PgParam).collect()
 }
 
+#[async_trait::async_trait]
 impl Backend for PostgresBackend {
     fn dialect(&self) -> Dialect {
         Dialect::Postgres
     }
 
-    fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
+    async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
         let (sql, params) = prepare(Dialect::Postgres, sql, params)?;
         let bound = bind(&params);
         let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = bound
@@ -162,18 +163,20 @@ impl Backend for PostgresBackend {
         let mut client = self.lock();
         client
             .execute(&sql, &refs)
+            .await
             .with_context(|| format!("executing {sql}"))
     }
 
-    fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64> {
+    async fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64> {
         let sql = with_returning_id(sql);
         let row = self
-            .query_opt(&sql, params)?
+            .query_opt(&sql, params)
+            .await?
             .context("INSERT … RETURNING id yielded no row")?;
         row.get::<i64>(0)
     }
 
-    fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
+    async fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
         let (sql, params) = prepare(Dialect::Postgres, sql, params)?;
         let bound = bind(&params);
         let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = bound
@@ -183,11 +186,12 @@ impl Backend for PostgresBackend {
         let mut client = self.lock();
         let rows = client
             .query(&sql, &refs)
+            .await
             .with_context(|| format!("querying {sql}"))?;
         Ok(rows_from(&rows))
     }
 
-    fn execute_batch(&self, sql: &str) -> Result<()> {
+    async fn execute_batch(&self, sql: &str) -> Result<()> {
         let mut client = self.lock();
         for stmt in split_statements(sql) {
             let translated = Dialect::Postgres.translate(&stmt)?;
@@ -198,7 +202,10 @@ impl Backend for PostgresBackend {
         Ok(())
     }
 
-    fn with_tx(&self, f: &mut dyn FnMut(&mut dyn Tx) -> Result<()>) -> Result<()> {
+    async fn with_tx(
+        &self,
+        f: &mut (dyn for<'t> FnMut(&'t mut (dyn Tx + 't)) -> Result<()> + Send),
+    ) -> Result<()> {
         let mut client = self.lock();
         let tx = client.transaction()?;
         {
@@ -225,13 +232,15 @@ impl Tx for PgTx<'_> {
             .collect();
         self.tx
             .execute(&sql, &refs)
+            .await
             .with_context(|| format!("executing {sql}"))
     }
 
     fn execute_insert(&mut self, sql: &str, params: &[Value]) -> Result<i64> {
         let sql = with_returning_id(sql);
         let row = self
-            .query_opt(&sql, params)?
+            .query_opt(&sql, params)
+            .await?
             .context("INSERT … RETURNING id yielded no row")?;
         row.get::<i64>(0)
     }
@@ -246,6 +255,7 @@ impl Tx for PgTx<'_> {
         let rows = self
             .tx
             .query(&sql, &refs)
+            .await
             .with_context(|| format!("querying {sql}"))?;
         Ok(rows_from(&rows))
     }

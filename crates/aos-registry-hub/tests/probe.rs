@@ -23,7 +23,7 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
 /// Build an [`AppState`] over `db`.
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(b"probe-test-secret-32byte-key!!!!"),
@@ -39,7 +39,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: hardened_client(),
+        http: hardened_client().await,
         mailer: Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: false,
     })
@@ -103,7 +103,7 @@ async fn probes_record_reachable_and_unreachable_caches() {
     );
     let fixture = build_surface(&surface, &caches_toml);
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     let id = db
         .register_registry(
             "demo",
@@ -111,8 +111,9 @@ async fn probes_record_reachable_and_unreachable_caches() {
             std::slice::from_ref(&fixture.trust_key),
             true,
         )
+        .await
         .unwrap();
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     assert_eq!(registry.id, id);
 
     index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
@@ -120,7 +121,7 @@ async fn probes_record_reachable_and_unreachable_caches() {
         .unwrap();
 
     // Probe the committed caches.
-    let http = hardened_client();
+    let http = hardened_client().await;
     let probes = probe_caches(&db, &http, &registry).await.unwrap();
     let by_url = |needle: &str| {
         probes
@@ -133,10 +134,10 @@ async fn probes_record_reachable_and_unreachable_caches() {
     assert_eq!(by_url("127.0.0.1:9").status, ProbeStatus::Unreachable);
 
     // The rows persisted, and the health page surfaces them.
-    let rows = db.list_cache_probes(registry.id).unwrap();
+    let rows = db.list_cache_probes(registry.id).await.unwrap();
     assert_eq!(rows.len(), 2);
 
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let resp = app
         .oneshot(
             Request::builder()

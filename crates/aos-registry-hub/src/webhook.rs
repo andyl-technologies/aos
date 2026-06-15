@@ -265,13 +265,13 @@ pub fn sign_body(secret: &str, body: &[u8]) -> String {
 ///
 /// Returns an error only on database failure while listing webhooks or
 /// enqueuing a delivery; the payload serialization is infallible.
-pub fn dispatch(db: &Database, org_id: i64, event: &WebhookEvent) -> anyhow::Result<usize> {
+pub async fn dispatch(db: &Database, org_id: i64, event: &WebhookEvent) -> anyhow::Result<usize> {
     let event_type = event.event_type();
     let payload = serde_json::to_string(&event.payload())?;
     let mut enqueued = 0;
-    for hook in db.list_webhooks(org_id)? {
+    for hook in db.list_webhooks(org_id).await? {
         if hook.active && hook.subscribes_to(event_type) {
-            db.enqueue_delivery(hook.id, event_type, &payload)?;
+            db.enqueue_delivery(hook.id, event_type, &payload).await?;
             enqueued += 1;
         }
     }
@@ -329,7 +329,8 @@ pub async fn deliver_one(
             error = %format!("{err:#}"),
             "rejecting webhook delivery: url fails SSRF guard"
         );
-        db.mark_delivery(delivery.id, "failed", None, delivery.attempts + 1, None)?;
+        db.mark_delivery(delivery.id, "failed", None, delivery.attempts + 1, None)
+            .await?;
         return Ok(false);
     }
     let signature = sign_body(&delivery.secret, delivery.payload.as_bytes());
@@ -347,12 +348,13 @@ pub async fn deliver_one(
     match response {
         Ok(resp) if resp.status().is_success() => {
             let code = resp.status().as_u16() as i64;
-            db.mark_delivery(delivery.id, "delivered", Some(code), attempts, None)?;
+            db.mark_delivery(delivery.id, "delivered", Some(code), attempts, None)
+                .await?;
             Ok(true)
         }
         Ok(resp) => {
             let code = resp.status().as_u16() as i64;
-            schedule_retry(db, delivery.id, Some(code), attempts)?;
+            schedule_retry(db, delivery.id, Some(code), attempts).await?;
             Ok(false)
         }
         Err(err) => {
@@ -361,7 +363,7 @@ pub async fn deliver_one(
                 error = %err,
                 "webhook delivery POST failed"
             );
-            schedule_retry(db, delivery.id, None, attempts)?;
+            schedule_retry(db, delivery.id, None, attempts).await?;
             Ok(false)
         }
     }
@@ -369,17 +371,19 @@ pub async fn deliver_one(
 
 /// Record a failed attempt: schedule a backed-off retry, or mark `failed` once
 /// the attempt cap is reached.
-fn schedule_retry(
+async fn schedule_retry(
     db: &Database,
     id: i64,
     response_code: Option<i64>,
     attempts: i64,
 ) -> anyhow::Result<()> {
     if attempts >= MAX_ATTEMPTS {
-        db.mark_delivery(id, "failed", response_code, attempts, None)?;
+        db.mark_delivery(id, "failed", response_code, attempts, None)
+            .await?;
     } else {
         let next = now() + backoff_secs(attempts);
-        db.mark_delivery(id, "pending", response_code, attempts, Some(next))?;
+        db.mark_delivery(id, "pending", response_code, attempts, Some(next))
+            .await?;
     }
     Ok(())
 }
@@ -397,7 +401,7 @@ pub async fn run_delivery_worker(db: Arc<Database>, http: reqwest::Client) {
     let mut tick = tokio::time::interval(Duration::from_secs(WORKER_INTERVAL_SECS));
     loop {
         tick.tick().await;
-        let due = match db.due_deliveries(now()) {
+        let due = match db.due_deliveries(now()).await {
             Ok(due) => due,
             Err(err) => {
                 tracing::warn!(error = %format!("{err:#}"), "listing due webhook deliveries");

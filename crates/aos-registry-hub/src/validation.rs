@@ -275,7 +275,7 @@ pub async fn validate_registry(
     registry: &RegistryRecord,
     depth: ValidationDepth,
 ) -> Result<Vec<ValidationSummary>> {
-    let mut hashes = db.all_store_hashes(registry.id)?;
+    let mut hashes = db.all_store_hashes(registry.id).await?;
     if hashes.len() > MAX_HASHES_PER_RUN {
         tracing::warn!(
             registry = %registry.slug,
@@ -288,11 +288,12 @@ pub async fn validate_registry(
 
     // The cache set and the mirror groups both come from the committed stack
     // when present, falling back to the flat [[caches]] list otherwise.
-    let stack = db.registry_cache_stack(registry.id)?;
+    let stack = db.registry_cache_stack(registry.id).await?;
     let cache_urls: Vec<String> = match &stack {
         Some(node) => node.endpoints(),
         None => db
-            .list_caches(registry.id)?
+            .list_caches(registry.id)
+            .await?
             .into_iter()
             .map(|(u, _)| u)
             .collect(),
@@ -302,7 +303,7 @@ pub async fn validate_registry(
         .map(StackNode::mirror_groups)
         .unwrap_or_default();
 
-    let client = fetch::hardened_client();
+    let client = fetch::hardened_client().await;
     let mut summaries = Vec::new();
     // Missing hashes per cache, for the mirror-group shortfall pass.
     let mut missing_by_cache: std::collections::HashMap<String, BTreeSet<String>> =
@@ -321,7 +322,8 @@ pub async fn validate_registry(
             outcome.reachable,
             started_at,
             finished_at,
-        )?;
+        )
+        .await?;
         // Only *missing* hashes drive mirror-shortfall and repair planning;
         // a corrupt hash is present (so not a replication gap) and is not
         // safely copyable.
@@ -387,8 +389,8 @@ fn annotate_mirror_shortfalls(
 /// # Errors
 ///
 /// Returns an error on database failure.
-pub fn plan_repair(db: &Database, registry: &RegistryRecord) -> Result<Vec<RepairAction>> {
-    let runs = db.latest_validation_runs(registry.id)?;
+pub async fn plan_repair(db: &Database, registry: &RegistryRecord) -> Result<Vec<RepairAction>> {
+    let runs = db.latest_validation_runs(registry.id).await?;
 
     // For each cache: the set of hashes its latest run found missing, and
     // whether it was reachable (an unreachable cache is neither a valid
@@ -398,7 +400,7 @@ pub fn plan_repair(db: &Database, registry: &RegistryRecord) -> Result<Vec<Repai
     let mut reachable: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
     for run in &runs {
         reachable.insert(run.cache_url.clone(), run.reachable);
-        let missing = db.validation_missing(run.id)?.into_iter().collect();
+        let missing = db.validation_missing(run.id).await?.into_iter().collect();
         missing_by_cache.insert(run.cache_url.clone(), missing);
     }
 
@@ -700,6 +702,7 @@ pub struct RepairCredential {
 /// a target the hub does not serve — an arbitrary external cache with no
 /// configured credential — it returns `None`, and [`run_repairs`] records the
 /// repair as `plan_only` rather than writing somewhere it cannot authorize.
+#[async_trait::async_trait]
 pub trait RepairAuthorizer: Send + Sync {
     /// Return a write credential for `target_cache_url`, or `None` when the
     /// hub is not authorized to write to it.
@@ -708,7 +711,7 @@ pub trait RepairAuthorizer: Send + Sync {
     ///
     /// Returns an error on an internal failure while minting the credential
     /// (e.g. a database or signing error).
-    fn credential_for(&self, target_cache_url: &str) -> Result<Option<RepairCredential>>;
+    async fn credential_for(&self, target_cache_url: &str) -> Result<Option<RepairCredential>>;
 }
 
 /// Execute a repair into an **http** target the hub is authorized to write.
@@ -877,14 +880,14 @@ pub async fn run_repairs(
     registry: &RegistryRecord,
     authorizer: &dyn RepairAuthorizer,
 ) -> Result<RepairSummary> {
-    let actions = plan_repair(db, registry)?;
+    let actions = plan_repair(db, registry).await?;
     let mut summary = RepairSummary::default();
     for action in &actions {
         let created_at = unix_now();
         // An http target needs a write credential; a file target never does.
         let credential = match classify_cache(&action.cache_url) {
             Some(CacheKind::File(_)) => None,
-            Some(CacheKind::Http(_)) => match authorizer.credential_for(&action.cache_url)? {
+            Some(CacheKind::Http(_)) => match authorizer.credential_for(&action.cache_url).await? {
                 Some(credential) => Some(credential),
                 None => {
                     // No credential: record plan-only and move on.
@@ -897,7 +900,8 @@ pub async fn run_repairs(
                         None,
                         created_at,
                         Some(unix_now()),
-                    )?;
+                    )
+                    .await?;
                     summary.plan_only += 1;
                     continue;
                 }
@@ -912,7 +916,8 @@ pub async fn run_repairs(
                     Some("unsupported target cache scheme"),
                     created_at,
                     Some(unix_now()),
-                )?;
+                )
+                .await?;
                 summary.failed += 1;
                 continue;
             }
@@ -927,7 +932,9 @@ pub async fn run_repairs(
                     .await
                     .map(|_| ())
             }
-            None => execute_repair(action, &registry.trust_keys).await.map(|_| ()),
+            None => execute_repair(action, &registry.trust_keys)
+                .await
+                .map(|_| ()),
         };
         match result {
             Ok(()) => {
@@ -940,7 +947,8 @@ pub async fn run_repairs(
                     None,
                     created_at,
                     Some(unix_now()),
-                )?;
+                )
+                .await?;
                 summary.done += 1;
             }
             Err(err) => {
@@ -961,7 +969,8 @@ pub async fn run_repairs(
                     Some(&message),
                     created_at,
                     Some(unix_now()),
-                )?;
+                )
+                .await?;
                 summary.failed += 1;
             }
         }
@@ -2055,7 +2064,7 @@ mod tests {
         .unwrap();
 
         let cache_url = format!("file://{}", cache.path().display());
-        let (db, registry) = registry_with_caches(vec![(cache_url.clone(), 100)]);
+        let (db, registry) = registry_with_caches(vec![(cache_url.clone(), 100)]).await;
 
         let summaries = validate_registry(&db, &registry, ValidationDepth::Deep)
             .await
@@ -2065,34 +2074,35 @@ mod tests {
         assert_eq!(summary.missing, 1, "corrupt counts toward problems");
 
         // The finding is recorded as `corrupt`, distinct from `missing`.
-        let runs = db.latest_validation_runs(registry.id).unwrap();
+        let runs = db.latest_validation_runs(registry.id).await.unwrap();
         let run = runs.iter().find(|r| r.cache_url == cache_url).unwrap();
         assert_eq!(
-            db.validation_corrupt(run.id).unwrap(),
+            db.validation_corrupt(run.id).await.unwrap(),
             vec!["abc".to_string()]
         );
-        assert!(db.validation_missing(run.id).unwrap().is_empty());
+        assert!(db.validation_missing(run.id).await.unwrap().is_empty());
 
         // A corrupt hash is NOT planned for repair (a copy would carry the
         // same bad bytes).
-        assert!(plan_repair(&db, &registry).unwrap().is_empty());
+        assert!(plan_repair(&db, &registry).await.unwrap().is_empty());
     }
 
     /// Build a registry whose index references a single store hash `abc`,
     /// with the given `[[caches]]` URLs, in a fresh in-memory db.
-    fn registry_with_caches(caches: Vec<(String, u32)>) -> (Database, RegistryRecord) {
-        registry_with_caches_and_keys(caches, &[])
+    async fn registry_with_caches(caches: Vec<(String, u32)>) -> (Database, RegistryRecord) {
+        registry_with_caches_and_keys(caches, &[]).await
     }
 
     /// As [`registry_with_caches`], but with an explicit narinfo trust roster so
     /// repair tests can exercise the signature gate.
-    fn registry_with_caches_and_keys(
+    async fn registry_with_caches_and_keys(
         caches: Vec<(String, u32)>,
         trust_keys: &[String],
     ) -> (Database, RegistryRecord) {
-        let db = Database::open_in_memory().unwrap();
+        let db = Database::open_in_memory().await.unwrap();
         let id = db
             .register_registry("demo", "/srv/demo", trust_keys, false)
+            .await
             .unwrap();
         let package: aos_package::registry::parse::PackageToml = toml::from_str(
             r#"
@@ -2120,8 +2130,8 @@ mod tests {
             packages: vec![package],
             ..Default::default()
         };
-        db.apply_snapshot(id, &snapshot).unwrap();
-        let registry = db.registry_by_slug("demo").unwrap().unwrap();
+        db.apply_snapshot(id, &snapshot).await.unwrap();
+        let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
         (db, registry)
     }
 
@@ -2145,7 +2155,8 @@ mod tests {
         let (db, registry) = registry_with_caches_and_keys(
             vec![(complete_url.clone(), 100), (incomplete_url.clone(), 50)],
             std::slice::from_ref(&trust_key),
-        );
+        )
+        .await;
 
         // First validation: the incomplete cache is missing the hash.
         let summaries = validate_registry(&db, &registry, ValidationDepth::Presence)
@@ -2159,7 +2170,7 @@ mod tests {
         assert_eq!(incomplete_summary.coverage_percent, 0.0);
 
         // The plan finds the missing hash sourced from the complete cache.
-        let plan = plan_repair(&db, &registry).unwrap();
+        let plan = plan_repair(&db, &registry).await.unwrap();
         assert_eq!(
             plan,
             vec![RepairAction {
@@ -2171,7 +2182,9 @@ mod tests {
 
         // Execute verifies and writes the narinfo + NAR into the incomplete
         // cache.
-        let copied = execute_repair(&plan[0], &registry.trust_keys).await.unwrap();
+        let copied = execute_repair(&plan[0], &registry.trust_keys)
+            .await
+            .unwrap();
         assert_eq!(copied, 2);
         assert!(incomplete.path().join("abc.narinfo").exists());
         assert!(incomplete.path().join("nar/abc.nar").exists());
@@ -2186,7 +2199,7 @@ mod tests {
             .unwrap();
         assert_eq!(incomplete_after.missing, 0);
         assert_eq!(incomplete_after.coverage_percent, 100.0);
-        assert!(plan_repair(&db, &registry).unwrap().is_empty());
+        assert!(plan_repair(&db, &registry).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -2289,7 +2302,7 @@ mod tests {
             upload_url: "http://203.0.113.1/should-never-be-reached".to_string(),
             bearer_jwt: "dummy".to_string(),
         };
-        let client = fetch::hardened_client();
+        let client = fetch::hardened_client().await;
 
         // Empty roster => signature verification fails closed, nothing PUT.
         let err = execute_repair_http(&client, &action, &credential, &[])
@@ -2323,7 +2336,8 @@ mod tests {
         let (db, registry) = registry_with_caches(vec![
             (complete_url.clone(), 100),
             (incomplete_url.clone(), 99),
-        ]);
+        ])
+        .await;
         // Store the stack by re-applying a snapshot carrying its JSON.
         let package: aos_package::registry::parse::PackageToml = toml::from_str(
             r#"
@@ -2355,6 +2369,7 @@ mod tests {
                 ..Default::default()
             },
         )
+        .await
         .unwrap();
 
         let summaries = validate_registry(&db, &registry, ValidationDepth::Presence)

@@ -26,7 +26,7 @@ use tower::ServiceExt;
 const TEST_JWT_SECRET: &[u8] = b"upload-test-secret-32-byte-key!!!";
 
 /// Build an [`AppState`] over `db` with deterministic JWT keys.
-fn app_state(db: Arc<Database>) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -42,7 +42,7 @@ fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: aos_registry_hub::fetch::hardened_client(),
+        http: aos_registry_hub::fetch::hardened_client().await,
         mailer: std::sync::Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: false,
     })
@@ -67,12 +67,13 @@ fn bearer(token_id: &str, principal: Principal, scope: &str, perms: &[Permission
 /// and a managed registry at `acme/infra/prod/cdn` bound to it (prefix
 /// `cdn`). The surface starts empty — it is populated by uploads. Returns
 /// `(db, binding_root)`.
-fn empty_managed(visibility: &str) -> (Arc<Database>, PathBuf) {
+async fn empty_managed(visibility: &str) -> (Arc<Database>, PathBuf) {
     let root = tempfile::tempdir().unwrap().keep();
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let org = db.create_org("acme", "Acme, Inc.").unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", root.to_str().unwrap())
+        .await
         .unwrap();
     db.create_managed_registry(
         org,
@@ -84,6 +85,7 @@ fn empty_managed(visibility: &str) -> (Arc<Database>, PathBuf) {
         &[],
         false, // no signature requirement: fixture is signed but trust keys are not pinned
     )
+    .await
     .unwrap();
     (db, root.join("cdn"))
 }
@@ -168,8 +170,8 @@ async fn publish_through_hub_indexes_and_serves() {
     let files = collect_surface(&surface);
     assert!(files.len() >= 8, "fixture should have many files");
 
-    let (db, binding_root) = empty_managed("public");
-    let app = router(app_state(Arc::clone(&db)));
+    let (db, binding_root) = empty_managed("public").await;
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
         "pub",
         Principal::service_account(1),
@@ -220,8 +222,8 @@ async fn put_requires_publish_permission() {
     common::standard_registry(&surface);
     let object = std::fs::read(surface.join("HEAD")).unwrap();
 
-    let (db, _root) = empty_managed("public");
-    let app = router(app_state(Arc::clone(&db)));
+    let (db, _root) = empty_managed("public").await;
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // No token -> 401.
     let status = put(&app, "/acme/infra/prod/cdn/HEAD", None, object.clone()).await;
@@ -259,8 +261,8 @@ async fn put_requires_publish_permission() {
 
 #[tokio::test]
 async fn upload_to_soft_deleted_org_registry_is_not_found() {
-    let (db, _root) = empty_managed("public");
-    let app = router(app_state(Arc::clone(&db)));
+    let (db, _root) = empty_managed("public").await;
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
         "pub",
         Principal::service_account(1),
@@ -283,8 +285,8 @@ async fn upload_to_soft_deleted_org_registry_is_not_found() {
 
     // Soft-delete the owning org: its registry stops accepting uploads (404),
     // before any auth or quota work — the resource is gone.
-    let org = db.org_by_slug("acme").unwrap().unwrap();
-    assert!(db.soft_delete_org(org.id, 86_400).unwrap());
+    let org = db.org_by_slug("acme").await.unwrap().unwrap();
+    assert!(db.soft_delete_org(org.id, 86_400).await.unwrap());
 
     let status = put(
         &app,
@@ -311,8 +313,8 @@ async fn upload_to_soft_deleted_org_registry_is_not_found() {
 
 #[tokio::test]
 async fn publish_lease_blocks_a_second_pointer_writer() {
-    let (db, _root) = empty_managed("public");
-    let app = router(app_state(Arc::clone(&db)));
+    let (db, _root) = empty_managed("public").await;
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     let token_a = bearer(
         "token-a",
@@ -369,8 +371,8 @@ async fn private_managed_registry_read_requires_token() {
     common::standard_registry(&surface);
     let files = collect_surface(&surface);
 
-    let (db, _root) = empty_managed("private");
-    let app = router(app_state(Arc::clone(&db)));
+    let (db, _root) = empty_managed("private").await;
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let publish = bearer(
         "pub",
         Principal::service_account(1),
@@ -419,15 +421,16 @@ async fn unowned_phase1_registry_is_not_writable() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.register_registry(
         "demo",
         surface.to_str().unwrap(),
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
-    let app = router(app_state(Arc::clone(&db)));
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Even with a valid Publish token, a phase-1 registry with no storage
     // binding rejects the PUT: it is read-only through the facade.
@@ -443,8 +446,8 @@ async fn unowned_phase1_registry_is_not_writable() {
 
 #[tokio::test]
 async fn head_probes_surface_file_presence() {
-    let (db, _root) = empty_managed("public");
-    let app = router(app_state(Arc::clone(&db)));
+    let (db, _root) = empty_managed("public").await;
+    let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
         "pub",
         Principal::service_account(1),

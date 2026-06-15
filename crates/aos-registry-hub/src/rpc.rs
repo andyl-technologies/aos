@@ -115,14 +115,15 @@ fn paginate<T>(
 }
 
 impl RegistryRpc {
-    fn registry_or_not_found(&self, slug: &str) -> Result<RegistryRecord, ConnectError> {
+    async fn registry_or_not_found(&self, slug: &str) -> Result<RegistryRecord, ConnectError> {
         self.db
             .registry_by_slug(slug)
+            .await
             .map_err(internal)?
             .ok_or_else(|| not_found("registry"))
     }
 
-    fn registry_message(
+    async fn registry_message(
         &self,
         record: &RegistryRecord,
         status: Option<IndexStatus>,
@@ -130,6 +131,7 @@ impl RegistryRpc {
         let caches = self
             .db
             .list_caches(record.id)
+            .await
             .map_err(internal)?
             .into_iter()
             .map(|(url, priority)| Cache {
@@ -141,6 +143,7 @@ impl RegistryRpc {
         let roster = self
             .db
             .list_roster(record.id)
+            .await
             .map_err(internal)?
             .into_iter()
             .map(|(id, key, status)| RosterKey {
@@ -221,7 +224,7 @@ impl RegistryRpc {
     /// Returns `PermissionDenied` when either the token or the principal's
     /// current memberships fail to authorize the action, and `Internal` on a
     /// database failure while loading memberships.
-    fn require_permission(
+    async fn require_permission(
         &self,
         claims: &Claims,
         perm: Permission,
@@ -245,7 +248,11 @@ impl RegistryRpc {
                 "unknown principal kind",
             ));
         };
-        let grants = self.db.effective_scopes(principal).map_err(internal)?;
+        let grants = self
+            .db
+            .effective_scopes(principal)
+            .await
+            .map_err(internal)?;
         if iam::allow(&grants, perm, scope) {
             Ok(())
         } else {
@@ -290,7 +297,7 @@ impl RegistryRpc {
     /// Used to drop, rather than reject, records a caller may not read when
     /// filtering a listing (mirroring the HTML `can_read_registry`/`orgs`
     /// filters), so a legitimate "list what I can see" call still succeeds.
-    fn claims_allow(&self, claims: Option<&Claims>, perm: Permission, scope: &Scope) -> bool {
+    async fn claims_allow(&self, claims: Option<&Claims>, perm: Permission, scope: &Scope) -> bool {
         let Some(claims) = claims else {
             return false;
         };
@@ -300,7 +307,7 @@ impl RegistryRpc {
         let Some(principal) = claims_principal(claims) else {
             return false;
         };
-        match self.db.effective_scopes(principal) {
+        match self.db.effective_scopes(principal).await {
             Ok(grants) => iam::allow(&grants, perm, scope),
             Err(_) => false,
         }
@@ -316,9 +323,9 @@ impl RegistryRpc {
     /// the optional `claims` to grant [`Permission::Read`] on the registry
     /// scope. Used to drop, rather than reject, records a caller may not read
     /// so a `ListRegistries` call still returns the caller's visible slice.
-    fn can_read(&self, claims: Option<&Claims>, registry: &RegistryRecord) -> bool {
+    async fn can_read(&self, claims: Option<&Claims>, registry: &RegistryRecord) -> bool {
         if let Some(org_id) = registry.org_id {
-            if !matches!(self.db.org_is_active(org_id), Ok(true)) {
+            if !matches!(self.db.org_is_active(org_id).await, Ok(true)) {
                 return false;
             }
         }
@@ -326,6 +333,7 @@ impl RegistryRpc {
             return true;
         }
         self.claims_allow(claims, Permission::Read, &Scope::parse(&registry.slug))
+            .await
     }
 
     /// Whether `claims`'s principal may create an org under `invite_only`.
@@ -339,24 +347,24 @@ impl RegistryRpc {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    fn signup_permitted(&self, claims: &Claims) -> Result<bool, anyhow::Error> {
+    async fn signup_permitted(&self, claims: &Claims) -> Result<bool, anyhow::Error> {
         let Some(principal) = claims_principal(claims) else {
             return Ok(false);
         };
         if principal.kind != PrincipalKind::User {
             return Ok(true);
         }
-        if self.db.user_has_any_membership(principal.id)? {
+        if self.db.user_has_any_membership(principal.id).await? {
             return Ok(true);
         }
         // Instance admin: an iam.admin grant at the instance root.
-        let grants = self.db.effective_scopes(principal)?;
+        let grants = self.db.effective_scopes(principal).await?;
         if iam::allow(&grants, Permission::IamAdmin, &Scope::root()) {
             return Ok(true);
         }
         // A live invitation for the caller's email.
-        if let Some(email) = self.db.user_email(principal.id)? {
-            if self.db.has_pending_invitation(&email)? {
+        if let Some(email) = self.db.user_email(principal.id).await? {
+            if self.db.has_pending_invitation(&email).await? {
                 return Ok(true);
             }
         }
@@ -380,9 +388,13 @@ impl RegistryRpc {
     /// Returns `NotFound` when the owning org is soft-deleted, and
     /// `Unauthenticated`/`PermissionDenied` when a non-public registry is read
     /// without sufficient authority.
-    fn require_read(&self, ctx: &Context, registry: &RegistryRecord) -> Result<(), ConnectError> {
+    async fn require_read(
+        &self,
+        ctx: &Context,
+        registry: &RegistryRecord,
+    ) -> Result<(), ConnectError> {
         if let Some(org_id) = registry.org_id {
-            if !self.db.org_is_active(org_id).map_err(internal)? {
+            if !self.db.org_is_active(org_id).await.map_err(internal)? {
                 return Err(not_found("registry"));
             }
         }
@@ -391,6 +403,7 @@ impl RegistryRpc {
         }
         let claims = self.require_claims(ctx)?;
         self.require_permission(&claims, Permission::Read, &Scope::parse(&registry.slug))
+            .await
     }
 
     /// The current verified HEAD commit oid of a registry's tracked branch.
@@ -400,13 +413,14 @@ impl RegistryRpc {
     /// Returns `FailedPrecondition` when the registry has no indexed HEAD yet,
     /// `InvalidArgument` for a malformed stored oid, and `Internal` on database
     /// failure.
-    fn head_commit(
+    async fn head_commit(
         &self,
         registry: &RegistryRecord,
     ) -> Result<crate::surface::object::Oid, ConnectError> {
         let hex = self
             .db
             .index_status(registry.id)
+            .await
             .map_err(internal)?
             .and_then(|s| s.last_indexed_commit)
             .ok_or_else(|| {
@@ -419,9 +433,10 @@ impl RegistryRpc {
     }
 
     /// Resolve an org by slug or map a miss to `NotFound`.
-    fn org_or_not_found(&self, slug: &str) -> Result<crate::db::OrgRecord, ConnectError> {
+    async fn org_or_not_found(&self, slug: &str) -> Result<crate::db::OrgRecord, ConnectError> {
         self.db
             .org_by_slug(slug)
+            .await
             .map_err(internal)?
             .ok_or_else(|| not_found("org"))
     }
@@ -467,14 +482,14 @@ impl RegistryService for RegistryRpc {
         req: OwnedView<ListRegistriesRequestView<'static>>,
     ) -> Result<(ListRegistriesResponse, Context), ConnectError> {
         let claims = self.optional_claims(&ctx)?;
-        let records = self.db.list_registries().map_err(internal)?;
+        let records = self.db.list_registries().await.map_err(internal)?;
         let mut registries = Vec::with_capacity(records.len());
         for record in &records {
-            if !self.can_read(claims.as_ref(), record) {
+            if !self.can_read(claims.as_ref(), record).await {
                 continue;
             }
-            let status = self.db.index_status(record.id).map_err(internal)?;
-            registries.push(self.registry_message(record, status)?);
+            let status = self.db.index_status(record.id).await.map_err(internal)?;
+            registries.push(self.registry_message(record, status).await?);
         }
         let (registries, next_page_token) = paginate(registries, req.page_size, req.page_token)?;
         Ok((
@@ -503,12 +518,12 @@ impl RegistryService for RegistryRpc {
         ctx: Context,
         req: OwnedView<GetRegistryRequestView<'static>>,
     ) -> Result<(GetRegistryResponse, Context), ConnectError> {
-        let record = self.registry_or_not_found(req.slug)?;
-        self.require_read(&ctx, &record)?;
-        let status = self.db.index_status(record.id).map_err(internal)?;
+        let record = self.registry_or_not_found(req.slug).await?;
+        self.require_read(&ctx, &record).await?;
+        let status = self.db.index_status(record.id).await.map_err(internal)?;
         Ok((
             GetRegistryResponse {
-                registry: Some(self.registry_message(&record, status)?).into(),
+                registry: Some(self.registry_message(&record, status).await?).into(),
                 ..Default::default()
             },
             ctx,
@@ -532,11 +547,12 @@ impl RegistryService for RegistryRpc {
         ctx: Context,
         req: OwnedView<ListReleasesRequestView<'static>>,
     ) -> Result<(ListReleasesResponse, Context), ConnectError> {
-        let record = self.registry_or_not_found(req.slug)?;
-        self.require_read(&ctx, &record)?;
+        let record = self.registry_or_not_found(req.slug).await?;
+        self.require_read(&ctx, &record).await?;
         let releases: Vec<Release> = self
             .db
             .list_releases(record.id)
+            .await
             .map_err(internal)?
             .into_iter()
             .map(|r| Release {
@@ -581,12 +597,13 @@ impl RegistryService for RegistryRpc {
         req: OwnedView<CreateRegistryRequestView<'static>>,
     ) -> Result<(CreateRegistryResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
-        let org = self.org_or_not_found(req.org_slug)?;
+        let org = self.org_or_not_found(req.org_slug).await?;
         self.require_permission(
             &claims,
             Permission::RegistryConfigure,
             &Scope::parse(&org.slug),
-        )?;
+        )
+        .await?;
         if req.name.is_empty() {
             return Err(invalid("registry name is required"));
         }
@@ -601,6 +618,7 @@ impl RegistryService for RegistryRpc {
             Some(
                 self.db
                     .storage_binding_by_name(org.id, req.binding_name)
+                    .await
                     .map_err(internal)?
                     .ok_or_else(|| not_found("storage binding"))?
                     .id,
@@ -619,16 +637,18 @@ impl RegistryService for RegistryRpc {
                 &trust_keys,
                 true,
             )
+            .await
             .map_err(|e| ConnectError::new(ErrorCode::AlreadyExists, format!("{e:#}")))?;
         let record = self
             .db
             .registry_by_scope(&org.slug, req.project_path, req.name)
+            .await
             .map_err(internal)?
             .ok_or_else(|| internal(anyhow::anyhow!("registry {id} vanished after creation")))?;
-        let status = self.db.index_status(record.id).map_err(internal)?;
+        let status = self.db.index_status(record.id).await.map_err(internal)?;
         Ok((
             CreateRegistryResponse {
-                registry: MessageField::some(self.registry_message(&record, status)?),
+                registry: MessageField::some(self.registry_message(&record, status).await?),
                 ..Default::default()
             },
             ctx,
@@ -680,8 +700,8 @@ impl OrgService for RegistryRpc {
         // Instance signup policy: `open` lets any authenticated principal
         // create an org; `invite_only` requires the caller to already be a
         // member, hold a live invitation, or be an instance admin.
-        if self.db.signup_policy().map_err(internal)? == crate::db::SignupPolicy::InviteOnly
-            && !self.signup_permitted(&claims).map_err(internal)?
+        if self.db.signup_policy().await.map_err(internal)? == crate::db::SignupPolicy::InviteOnly
+            && !self.signup_permitted(&claims).await.map_err(internal)?
         {
             return Err(ConnectError::new(
                 ErrorCode::PermissionDenied,
@@ -714,6 +734,7 @@ impl OrgService for RegistryRpc {
                 && self
                     .db
                     .count_user_owned_orgs(principal.id)
+                    .await
                     .map_err(internal)?
                     >= crate::ratelimit::MAX_ORGS_PER_OWNER
             {
@@ -729,6 +750,7 @@ impl OrgService for RegistryRpc {
         let id = self
             .db
             .create_org(req.slug, req.name)
+            .await
             .map_err(|e| ConnectError::new(ErrorCode::AlreadyExists, format!("{e:#}")))?;
         // Auto-grant the creating user Owner on the new org.
         if let Some(principal) = claims_principal(&claims) {
@@ -740,12 +762,14 @@ impl OrgService for RegistryRpc {
                         req.slug,
                         crate::domain::Role::Owner.as_str(),
                     )
+                    .await
                     .map_err(internal)?;
             }
         }
         let org = self
             .db
             .org_by_id(id)
+            .await
             .map_err(internal)?
             .ok_or_else(|| internal(anyhow::anyhow!("org {id} vanished after creation")))?;
         Ok((
@@ -768,7 +792,7 @@ impl OrgService for RegistryRpc {
         ctx: Context,
         req: OwnedView<GetOrgRequestView<'static>>,
     ) -> Result<(GetOrgResponse, Context), ConnectError> {
-        let org = self.org_or_not_found(req.slug)?;
+        let org = self.org_or_not_found(req.slug).await?;
         Ok((
             GetOrgResponse {
                 org: MessageField::some(org_message(&org)),
@@ -799,16 +823,16 @@ impl OrgService for RegistryRpc {
         req: OwnedView<ListOrgsRequestView<'static>>,
     ) -> Result<(ListOrgsResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
-        let orgs: Vec<Org> = self
-            .db
-            .list_orgs()
-            .map_err(internal)?
-            .iter()
-            .filter(|org| {
-                self.claims_allow(Some(&claims), Permission::Read, &Scope::parse(&org.slug))
-            })
-            .map(org_message)
-            .collect();
+        let all_orgs = self.db.list_orgs().await.map_err(internal)?;
+        let mut orgs: Vec<Org> = Vec::new();
+        for org in all_orgs.iter() {
+            if self
+                .claims_allow(Some(&claims), Permission::Read, &Scope::parse(&org.slug))
+                .await
+            {
+                orgs.push(org_message(org));
+            }
+        }
         let (orgs, next_page_token) = paginate(orgs, req.page_size, req.page_token)?;
         Ok((
             ListOrgsResponse {
@@ -837,17 +861,19 @@ impl ProjectService for RegistryRpc {
         req: OwnedView<CreateProjectRequestView<'static>>,
     ) -> Result<(CreateProjectResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
-        let org = self.org_or_not_found(req.org_slug)?;
+        let org = self.org_or_not_found(req.org_slug).await?;
         self.require_permission(
             &claims,
             Permission::RegistryConfigure,
             &Scope::parse(&org.slug),
-        )?;
+        )
+        .await?;
         if req.name.is_empty() {
             return Err(invalid("project name is required"));
         }
         self.db
             .create_project(org.id, req.path, req.name)
+            .await
             .map_err(|e| ConnectError::new(ErrorCode::AlreadyExists, format!("{e:#}")))?;
         Ok((
             CreateProjectResponse {
@@ -882,11 +908,13 @@ impl ProjectService for RegistryRpc {
         req: OwnedView<ListProjectsRequestView<'static>>,
     ) -> Result<(ListProjectsResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
-        let org = self.org_or_not_found(req.org_slug)?;
-        self.require_permission(&claims, Permission::Read, &Scope::parse(&org.slug))?;
+        let org = self.org_or_not_found(req.org_slug).await?;
+        self.require_permission(&claims, Permission::Read, &Scope::parse(&org.slug))
+            .await?;
         let projects: Vec<Project> = self
             .db
             .list_projects(org.id)
+            .await
             .map_err(internal)?
             .into_iter()
             .map(|p| Project {
@@ -925,12 +953,13 @@ impl StorageService for RegistryRpc {
         req: OwnedView<CreateBindingRequestView<'static>>,
     ) -> Result<(CreateBindingResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
-        let org = self.org_or_not_found(req.org_slug)?;
+        let org = self.org_or_not_found(req.org_slug).await?;
         self.require_permission(
             &claims,
             Permission::RegistryConfigure,
             &Scope::parse(&org.slug),
-        )?;
+        )
+        .await?;
         if req.name.is_empty() || req.root.is_empty() {
             return Err(invalid("binding name and root are required"));
         }
@@ -941,6 +970,7 @@ impl StorageService for RegistryRpc {
         };
         self.db
             .create_storage_binding(org.id, req.name, kind, req.root)
+            .await
             .map_err(|e| {
                 if kind == "local_fs" {
                     ConnectError::new(ErrorCode::AlreadyExists, format!("{e:#}"))
@@ -985,16 +1015,20 @@ impl StorageService for RegistryRpc {
         req: OwnedView<ListBindingsRequestView<'static>>,
     ) -> Result<(ListBindingsResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
-        let org = self.org_or_not_found(req.org_slug)?;
+        let org = self.org_or_not_found(req.org_slug).await?;
         let scope = Scope::parse(&org.slug);
-        self.require_permission(&claims, Permission::Read, &scope)?;
+        self.require_permission(&claims, Permission::Read, &scope)
+            .await?;
         // The `root` host path is an admin-only detail: only a caller who could
         // create or delete bindings (RegistryConfigure) sees it. A plain member
         // gets an empty `root` so the hub's filesystem layout never leaks.
-        let expose_root = self.claims_allow(Some(&claims), Permission::RegistryConfigure, &scope);
+        let expose_root = self
+            .claims_allow(Some(&claims), Permission::RegistryConfigure, &scope)
+            .await;
         let bindings: Vec<Binding> = self
             .db
             .list_storage_bindings(org.id)
+            .await
             .map_err(internal)?
             .into_iter()
             .map(|b| Binding {
@@ -1034,10 +1068,12 @@ impl AuditService for RegistryRpc {
     ) -> Result<(ListAuditResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
         let scope = Scope::parse(req.scope);
-        self.require_permission(&claims, Permission::AuditRead, &scope)?;
+        self.require_permission(&claims, Permission::AuditRead, &scope)
+            .await?;
         let entries: Vec<AuditEntry> = self
             .db
             .list_audit(req.scope)
+            .await
             .map_err(internal)?
             .into_iter()
             .map(|row| AuditEntry {
@@ -1083,10 +1119,12 @@ impl ConfigService for RegistryRpc {
     ) -> Result<(ListChangesetsResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
         let scope = Scope::parse(req.scope);
-        self.require_permission(&claims, Permission::AuditRead, &scope)?;
+        self.require_permission(&claims, Permission::AuditRead, &scope)
+            .await?;
         let changesets: Vec<Changeset> = self
             .db
             .list_changesets(req.scope)
+            .await
             .map_err(internal)?
             .into_iter()
             .map(changeset_message)
@@ -1124,15 +1162,18 @@ impl ConfigService for RegistryRpc {
         let summary = self
             .db
             .changeset(req.change_id)
+            .await
             .map_err(internal)?
             .ok_or_else(|| not_found("changeset"))?;
         self.require_permission(
             &claims,
             Permission::AuditRead,
             &Scope::parse(&summary.scope),
-        )?;
+        )
+        .await?;
         let change_id = crate::config::ChangeId(summary.change_id.clone());
         let revisions: Vec<Revision> = crate::config::review(&self.db, &change_id)
+            .await
             .map_err(internal)?
             .into_iter()
             .map(|(revision, diffs)| Revision {
@@ -1191,10 +1232,12 @@ impl ConfigService for RegistryRpc {
         let summary = self
             .db
             .changeset(req.change_id)
+            .await
             .map_err(internal)?
             .ok_or_else(|| not_found("changeset"))?;
         let scope = Scope::parse(&summary.scope);
-        self.require_permission(&claims, Permission::RegistryConfigure, &scope)?;
+        self.require_permission(&claims, Permission::RegistryConfigure, &scope)
+            .await?;
 
         let Some(actor) = claims_principal(&claims) else {
             return Err(ConnectError::new(
@@ -1213,29 +1256,38 @@ impl ConfigService for RegistryRpc {
             &original,
             &actor,
             &actor_label,
-            |object_type, object_id| {
-                if object_type == "registry" {
-                    self.db
-                        .registry_by_slug(object_id)
-                        .ok()
-                        .flatten()
-                        .map(|r| serde_json::json!({ "visibility": r.visibility }))
-                } else {
-                    None
+            |object_type: &str, object_id: &str| {
+                let is_registry = object_type == "registry";
+                let object_id = object_id.to_string();
+                async move {
+                    if is_registry {
+                        self.db
+                            .registry_by_slug(&object_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|r| serde_json::json!({ "visibility": r.visibility }))
+                    } else {
+                        None
+                    }
                 }
             },
         )
+        .await
         .map_err(|e| ConnectError::new(ErrorCode::FailedPrecondition, format!("{e:#}")))?;
 
         // Apply the revert draft: re-run each revision's live mutation.
         crate::config::apply(&self.db, &draft.change_id, "changeset.revert", |rev| {
-            apply_revert_revision(&self.db, rev)
+            let rev = rev.clone();
+            async move { apply_revert_revision(&self.db, &rev).await }
         })
+        .await
         .map_err(internal)?;
 
         let reverted = self
             .db
             .changeset(draft.change_id.as_str())
+            .await
             .map_err(internal)?
             .ok_or_else(|| internal(anyhow::anyhow!("revert change-set vanished")))?;
         Ok((
@@ -1253,7 +1305,10 @@ impl ConfigService for RegistryRpc {
 /// Only `registry`-visibility revisions carry a live mutation this phase;
 /// `token`/`invitation` exemption revisions are records-only (no live
 /// credential or grant is resurrected), so they apply as no-ops.
-fn apply_revert_revision(db: &Database, revision: &crate::config::Revision) -> anyhow::Result<()> {
+async fn apply_revert_revision(
+    db: &Database,
+    revision: &crate::config::Revision,
+) -> anyhow::Result<()> {
     if revision.object_type == "registry" {
         if let Some(visibility) = revision
             .new_json
@@ -1261,8 +1316,8 @@ fn apply_revert_revision(db: &Database, revision: &crate::config::Revision) -> a
             .and_then(|v| v.get("visibility"))
             .and_then(|v| v.as_str())
         {
-            if let Some(record) = db.registry_by_slug(&revision.object_id)? {
-                db.set_registry_visibility(record.id, visibility)?;
+            if let Some(record) = db.registry_by_slug(&revision.object_id).await? {
+                db.set_registry_visibility(record.id, visibility).await?;
             }
         }
     }
@@ -1303,11 +1358,12 @@ impl PackageService for RegistryRpc {
         ctx: Context,
         req: OwnedView<ListPackagesRequestView<'static>>,
     ) -> Result<(ListPackagesResponse, Context), ConnectError> {
-        let record = self.registry_or_not_found(req.slug)?;
-        self.require_read(&ctx, &record)?;
+        let record = self.registry_or_not_found(req.slug).await?;
+        self.require_read(&ctx, &record).await?;
         let packages: Vec<PackageSummary> = self
             .db
             .list_packages(record.id)
+            .await
             .map_err(internal)?
             .into_iter()
             .map(|p| PackageSummary {
@@ -1347,11 +1403,12 @@ impl PackageService for RegistryRpc {
         ctx: Context,
         req: OwnedView<GetPackageRequestView<'static>>,
     ) -> Result<(GetPackageResponse, Context), ConnectError> {
-        let record = self.registry_or_not_found(req.slug)?;
-        self.require_read(&ctx, &record)?;
+        let record = self.registry_or_not_found(req.slug).await?;
+        self.require_read(&ctx, &record).await?;
         let detail = self
             .db
             .package_detail(record.id, req.name)
+            .await
             .map_err(internal)?
             .ok_or_else(|| not_found("package"))?;
         let versions = detail
@@ -1413,11 +1470,12 @@ impl ChannelService for RegistryRpc {
         ctx: Context,
         req: OwnedView<ListChannelsRequestView<'static>>,
     ) -> Result<(ListChannelsResponse, Context), ConnectError> {
-        let record = self.registry_or_not_found(req.slug)?;
-        self.require_read(&ctx, &record)?;
+        let record = self.registry_or_not_found(req.slug).await?;
+        self.require_read(&ctx, &record).await?;
         let channels: Vec<Channel> = self
             .db
             .list_channels(record.id)
+            .await
             .map_err(internal)?
             .into_iter()
             .map(channel_message)
@@ -1451,11 +1509,12 @@ impl ChannelService for RegistryRpc {
         ctx: Context,
         req: OwnedView<GetChannelRequestView<'static>>,
     ) -> Result<(GetChannelResponse, Context), ConnectError> {
-        let record = self.registry_or_not_found(req.slug)?;
-        self.require_read(&ctx, &record)?;
+        let record = self.registry_or_not_found(req.slug).await?;
+        self.require_read(&ctx, &record).await?;
         let channel = self
             .db
             .list_channels(record.id)
+            .await
             .map_err(internal)?
             .into_iter()
             .find(|c| c.name == req.name)
@@ -1496,8 +1555,9 @@ impl WebhookService for RegistryRpc {
         req: OwnedView<CreateWebhookRequestView<'static>>,
     ) -> Result<(CreateWebhookResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
-        let org = self.org_or_not_found(req.org_slug)?;
-        self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))?;
+        let org = self.org_or_not_found(req.org_slug).await?;
+        self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))
+            .await?;
         if req.url.is_empty() {
             return Err(invalid("webhook url is required"));
         }
@@ -1516,6 +1576,7 @@ impl WebhookService for RegistryRpc {
         let id = self
             .db
             .create_webhook(org.id, req.url, &secret, &events)
+            .await
             .map_err(internal)?;
         Ok((
             CreateWebhookResponse {
@@ -1549,11 +1610,13 @@ impl WebhookService for RegistryRpc {
         req: OwnedView<ListWebhooksRequestView<'static>>,
     ) -> Result<(ListWebhooksResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
-        let org = self.org_or_not_found(req.org_slug)?;
-        self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))?;
+        let org = self.org_or_not_found(req.org_slug).await?;
+        self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))
+            .await?;
         let webhooks: Vec<Webhook> = self
             .db
             .list_webhooks(org.id)
+            .await
             .map_err(internal)?
             .into_iter()
             .map(|w| Webhook {
@@ -1596,15 +1659,18 @@ impl WebhookService for RegistryRpc {
         let webhook = self
             .db
             .webhook(req.id)
+            .await
             .map_err(internal)?
             .ok_or_else(|| not_found("webhook"))?;
         let org = self
             .db
             .org_by_id(webhook.org_id)
+            .await
             .map_err(internal)?
             .ok_or_else(|| not_found("org"))?;
-        self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))?;
-        let deleted = self.db.delete_webhook(req.id).map_err(internal)?;
+        self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))
+            .await?;
+        let deleted = self.db.delete_webhook(req.id).await.map_err(internal)?;
         Ok((
             DeleteWebhookResponse {
                 deleted,
@@ -1645,9 +1711,10 @@ impl PublishService for RegistryRpc {
         req: OwnedView<MintUploadCredentialsRequestView<'static>>,
     ) -> Result<(MintUploadCredentialsResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
-        let registry = self.registry_or_not_found(req.slug)?;
+        let registry = self.registry_or_not_found(req.slug).await?;
         let scope = Scope::parse(&registry.slug);
-        self.require_permission(&claims, Permission::Publish, &scope)?;
+        self.require_permission(&claims, Permission::Publish, &scope)
+            .await?;
 
         let Some(owner) = claims_principal(&claims) else {
             return Err(ConnectError::new(
@@ -1665,6 +1732,7 @@ impl PublishService for RegistryRpc {
                 Some("upload credential (MintUploadCredentials)"),
                 Some(expires_at),
             )
+            .await
             .map_err(internal)?;
         let upload_url = format!(
             "{}/{}",
@@ -1704,10 +1772,12 @@ impl GitService for RegistryRpc {
         ctx: Context,
         req: OwnedView<GitLogRequestView<'static>>,
     ) -> Result<(GitLogResponse, Context), ConnectError> {
-        let registry = self.registry_or_not_found(req.slug)?;
-        self.require_read(&ctx, &registry)?;
-        let head = self.head_commit(&registry)?;
-        let fetch = crate::gitwrite::fetcher_for_registry(&self.db, &registry).map_err(internal)?;
+        let registry = self.registry_or_not_found(req.slug).await?;
+        self.require_read(&ctx, &registry).await?;
+        let head = self.head_commit(&registry).await?;
+        let fetch = crate::gitwrite::fetcher_for_registry(&self.db, &registry)
+            .await
+            .map_err(internal)?;
         let log = crate::gitwrite::commit_log(fetch.as_ref(), head, GIT_LOG_LIMIT)
             .await
             .map_err(internal)?;
@@ -1752,8 +1822,8 @@ impl GitService for RegistryRpc {
         ctx: Context,
         req: OwnedView<GitDiffRequestView<'static>>,
     ) -> Result<(GitDiffResponse, Context), ConnectError> {
-        let registry = self.registry_or_not_found(req.slug)?;
-        self.require_read(&ctx, &registry)?;
+        let registry = self.registry_or_not_found(req.slug).await?;
+        self.require_read(&ctx, &registry).await?;
         let from = if req.from_oid.is_empty() {
             None
         } else {
@@ -1763,12 +1833,14 @@ impl GitService for RegistryRpc {
             )
         };
         let to = if req.to_oid.is_empty() {
-            self.head_commit(&registry)?
+            self.head_commit(&registry).await?
         } else {
             crate::surface::object::Oid::from_hex(req.to_oid)
                 .map_err(|e| invalid(format!("{e:#}")))?
         };
-        let fetch = crate::gitwrite::fetcher_for_registry(&self.db, &registry).map_err(internal)?;
+        let fetch = crate::gitwrite::fetcher_for_registry(&self.db, &registry)
+            .await
+            .map_err(internal)?;
         let diff = crate::gitwrite::diff_config_files(fetch.as_ref(), from, to)
             .await
             .map_err(internal)?;
@@ -1801,55 +1873,56 @@ impl GitService for RegistryRpc {
         req: OwnedView<ListChangeRequestsRequestView<'static>>,
     ) -> Result<(ListChangeRequestsResponse, Context), ConnectError> {
         let claims = self.require_claims(&ctx)?;
-        let registry = self.registry_or_not_found(req.slug)?;
+        let registry = self.registry_or_not_found(req.slug).await?;
         let scope = Scope::parse(&registry.slug);
-        self.require_permission(&claims, Permission::AuditRead, &scope)?;
+        self.require_permission(&claims, Permission::AuditRead, &scope)
+            .await?;
 
         let upload_url = format!(
             "{}/{}",
             self.external_url.trim_end_matches('/'),
             registry.slug
         );
-        let change_requests = self
+        let changesets = self
             .db
             .list_changesets(&registry.slug)
-            .map_err(internal)?
-            .into_iter()
-            .filter(|cs| cs.git_ref.is_some())
-            .map(|cs| {
-                let file_diffs = self
-                    .db
-                    .list_revisions(&cs.change_id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|r| r.object_type == "registry_file")
-                    .map(|r| FileDiff {
-                        diff: crate::gitwrite::unified_diff(
-                            &r.object_id,
-                            r.old_json.as_deref().unwrap_or_default(),
-                            r.new_json.as_deref().unwrap_or_default(),
-                        ),
-                        path: r.object_id,
-                        ..Default::default()
-                    })
-                    .collect();
-                ChangeRequest {
-                    merge_command: crate::gitwrite::merge_command(
-                        &upload_url,
-                        &crate::config::ChangeId(cs.change_id.clone()),
+            .await
+            .map_err(internal)?;
+        let mut change_requests = Vec::new();
+        for cs in changesets.into_iter().filter(|cs| cs.git_ref.is_some()) {
+            let file_diffs = self
+                .db
+                .list_revisions(&cs.change_id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| r.object_type == "registry_file")
+                .map(|r| FileDiff {
+                    diff: crate::gitwrite::unified_diff(
+                        &r.object_id,
+                        r.old_json.as_deref().unwrap_or_default(),
+                        r.new_json.as_deref().unwrap_or_default(),
                     ),
-                    change_id: cs.change_id,
-                    git_ref: cs.git_ref.unwrap_or_default(),
-                    git_commit: cs.git_commit.unwrap_or_default(),
-                    status: cs.status,
-                    summary: cs.summary.unwrap_or_default(),
-                    actor_label: cs.actor_label,
-                    created_at: cs.created_at,
-                    file_diffs,
+                    path: r.object_id,
                     ..Default::default()
-                }
-            })
-            .collect();
+                })
+                .collect();
+            change_requests.push(ChangeRequest {
+                merge_command: crate::gitwrite::merge_command(
+                    &upload_url,
+                    &crate::config::ChangeId(cs.change_id.clone()),
+                ),
+                change_id: cs.change_id,
+                git_ref: cs.git_ref.unwrap_or_default(),
+                git_commit: cs.git_commit.unwrap_or_default(),
+                status: cs.status,
+                summary: cs.summary.unwrap_or_default(),
+                actor_label: cs.actor_label,
+                created_at: cs.created_at,
+                file_diffs,
+                ..Default::default()
+            });
+        }
         Ok((
             ListChangeRequestsResponse {
                 change_requests,

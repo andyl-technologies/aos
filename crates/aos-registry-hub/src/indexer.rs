@@ -94,20 +94,21 @@ pub async fn index_and_record(
     // `release.published` webhook for each newly indexed release.
     let prior_releases: std::collections::HashSet<String> = db
         .list_releases(registry.id)
+        .await
         .map(|rows| rows.into_iter().map(|r| r.semver).collect())
         .unwrap_or_default();
 
     match index_registry(db, fetch, registry).await {
         Ok(outcome) => {
-            dispatch_index_events(db, registry, &outcome, &prior_releases);
+            dispatch_index_events(db, registry, &outcome, &prior_releases).await;
             Ok(outcome)
         }
         Err(err) => {
             let detail = format!("{err:#}");
             if crate::fetch::is_fetch_error(&err) {
-                db.mark_index_stale(registry.id, &detail)?;
+                db.mark_index_stale(registry.id, &detail).await?;
             } else {
-                db.mark_index_failed(registry.id, &detail)?;
+                db.mark_index_failed(registry.id, &detail).await?;
             }
             Err(err)
         }
@@ -120,7 +121,7 @@ pub async fn index_and_record(
 /// Only org-owned registries have webhook subscriptions, so this is a no-op
 /// for unowned phase-1 registries. Dispatch failures are logged, never
 /// propagated — a webhook problem must not fail or roll back an index.
-fn dispatch_index_events(
+async fn dispatch_index_events(
     db: &Database,
     registry: &RegistryRecord,
     outcome: &IndexOutcome,
@@ -139,12 +140,12 @@ fn dispatch_index_events(
         incremental: outcome.incremental,
         at: now,
     };
-    if let Err(err) = crate::webhook::dispatch(db, org_id, &event) {
+    if let Err(err) = crate::webhook::dispatch(db, org_id, &event).await {
         tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "dispatching index.completed webhook");
     }
 
     // `release.published` for each newly indexed release.
-    if let Ok(releases) = db.list_releases(registry.id) {
+    if let Ok(releases) = db.list_releases(registry.id).await {
         for release in releases {
             if prior.contains(&release.semver) {
                 continue;
@@ -155,7 +156,7 @@ fn dispatch_index_events(
                 commit: release.commit_oid.clone(),
                 at: now,
             };
-            if let Err(err) = crate::webhook::dispatch(db, org_id, &event) {
+            if let Err(err) = crate::webhook::dispatch(db, org_id, &event).await {
                 tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "dispatching release.published webhook");
             }
         }
@@ -193,9 +194,10 @@ pub async fn index_registry(
     // index means the immutable object graph is already verified — only
     // the mutable channel partitions need re-checking.
     let state_fresh = db
-        .index_status(registry.id)?
+        .index_status(registry.id)
+        .await?
         .is_some_and(|status| status.state == "fresh");
-    if state_fresh && db.refs_digest(registry.id)?.as_deref() == Some(refs_digest.as_str()) {
+    if state_fresh && db.refs_digest(registry.id).await?.as_deref() == Some(refs_digest.as_str()) {
         return index_incremental(db, fetch, registry, &refs).await;
     }
 
@@ -288,14 +290,14 @@ pub async fn index_registry(
 
     // Channels: branches are channel names; each resolves through 256
     // partition payloads pointing at release tag objects.
-    let branch_names = capped_branch_names(&refs);
+    let branch_names = capped_branch_names(&refs).await;
     let tag_to_semver: BTreeMap<String, String> = releases
         .iter()
         .map(|release| (release.tag_oid.clone(), release.semver.clone()))
         .collect();
     let channels =
         resolve_channels(fetch, registry, &branch_names, &trusted, &tag_to_semver).await?;
-    enforce_floors(db, registry.id, &channels)?;
+    enforce_floors(db, registry.id, &channels).await?;
 
     // A committed [cache_stack] (RFC-0004) is parsed into the nestable
     // try/mirror model: its JSON is stored for stack-aware validation, and
@@ -325,8 +327,8 @@ pub async fn index_registry(
         channels: snapshot.channels.len(),
         incremental: false,
     };
-    db.apply_snapshot(registry.id, &snapshot)?;
-    raise_floors(db, registry.id, &snapshot.channels)?;
+    db.apply_snapshot(registry.id, &snapshot).await?;
+    raise_floors(db, registry.id, &snapshot.channels).await?;
 
     // Cross-reference the verified HEAD commit with the change-set log
     // (RFC-0004 "Configuration management"): a commit carrying an
@@ -341,7 +343,8 @@ pub async fn index_registry(
         &commit,
         &snapshot.commit,
         &roster_lookup(&snapshot.roster),
-    );
+    )
+    .await;
 
     Ok(outcome)
 }
@@ -371,7 +374,7 @@ fn roster_lookup(roster: &[(String, String, String)]) -> BTreeMap<String, String
 /// Failures here are logged, never propagated: provenance recording is an
 /// audit-completeness nicety layered over a snapshot that already committed —
 /// a database hiccup must not fail the index or roll back the snapshot.
-fn record_commit_provenance(
+async fn record_commit_provenance(
     db: &Database,
     registry: &RegistryRecord,
     commit: &crate::surface::object::Commit,
@@ -385,12 +388,15 @@ fn record_commit_provenance(
         // scope is not within this registry — is treated as a no-trailer
         // (external) commit below, so a commit on registry B cannot mark a
         // change request scoped to registry A as applied by carrying A's id.
-        match db.changeset(&change_id) {
+        match db.changeset(&change_id).await {
             Ok(Some(changeset))
                 if crate::domain::Scope::parse(&registry.slug)
                     .contains(&crate::domain::Scope::parse(&changeset.scope)) =>
             {
-                if let Err(err) = db.mark_changeset_applied_commit(&change_id, commit_oid_hex) {
+                if let Err(err) = db
+                    .mark_changeset_applied_commit(&change_id, commit_oid_hex)
+                    .await
+                {
                     tracing::warn!(
                         slug = %registry.slug,
                         %change_id,
@@ -422,14 +428,14 @@ fn record_commit_provenance(
     }
 
     // No known trailer: synthesize an idempotent `external` audit entry.
-    synthesize_external_audit(db, registry, commit, commit_oid_hex, roster);
+    synthesize_external_audit(db, registry, commit, commit_oid_hex, roster).await;
 }
 
 /// Synthesize one `index.external_commit` audit row for an out-of-band commit.
 ///
 /// Idempotent: skipped when an audit row already records this commit, so
 /// re-indexing the same surface never duplicates the entry.
-fn synthesize_external_audit(
+async fn synthesize_external_audit(
     db: &Database,
     registry: &RegistryRecord,
     commit: &crate::surface::object::Commit,
@@ -437,7 +443,7 @@ fn synthesize_external_audit(
     roster: &BTreeMap<String, String>,
 ) {
     const ACTION: &str = "index.external_commit";
-    match db.audit_exists_for_commit(ACTION, commit_oid_hex) {
+    match db.audit_exists_for_commit(ACTION, commit_oid_hex).await {
         Ok(true) => return,
         Ok(false) => {}
         Err(err) => {
@@ -465,17 +471,20 @@ fn synthesize_external_audit(
         "note": "out-of-band commit (not authored via the hub)",
     })
     .to_string();
-    if let Err(err) = db.record_audit(
-        "key",
-        None,
-        &actor_label,
-        ACTION,
-        &registry.slug,
-        None,
-        Some(commit_oid_hex),
-        None,
-        Some(&detail),
-    ) {
+    if let Err(err) = db
+        .record_audit(
+            "key",
+            None,
+            &actor_label,
+            ACTION,
+            &registry.slug,
+            None,
+            Some(commit_oid_hex),
+            None,
+            Some(&detail),
+        )
+        .await
+    {
         tracing::warn!(
             slug = %registry.slug,
             error = %format!("{err:#}"),
@@ -510,32 +519,33 @@ async fn index_incremental(
     // Rebuild the trusted set exactly as the full walk would have left
     // it: pinned anchors plus the verified roster's active keys.
     let mut trusted: Vec<String> = registry.trust_keys.clone();
-    for (_key_id, public_key, status) in db.list_roster(registry.id)? {
+    for (_key_id, public_key, status) in db.list_roster(registry.id).await? {
         if status == "active" && !public_key.is_empty() && !trusted.contains(&public_key) {
             trusted.push(public_key);
         }
     }
 
-    let releases = db.list_releases(registry.id)?;
+    let releases = db.list_releases(registry.id).await?;
     let tag_to_semver: BTreeMap<String, String> = releases
         .iter()
         .map(|release| (release.tag_oid.clone(), release.semver.clone()))
         .collect();
 
-    let branch_names = capped_branch_names(refs);
+    let branch_names = capped_branch_names(refs).await;
     let channels =
         resolve_channels(fetch, registry, &branch_names, &trusted, &tag_to_semver).await?;
-    enforce_floors(db, registry.id, &channels)?;
-    db.update_channels(registry.id, &channels)?;
-    raise_floors(db, registry.id, &channels)?;
+    enforce_floors(db, registry.id, &channels).await?;
+    db.update_channels(registry.id, &channels).await?;
+    raise_floors(db, registry.id, &channels).await?;
 
     let commit = db
-        .index_status(registry.id)?
+        .index_status(registry.id)
+        .await?
         .and_then(|status| status.last_indexed_commit)
         .unwrap_or_default();
     Ok(IndexOutcome {
         commit,
-        packages: db.list_packages(registry.id)?.len(),
+        packages: db.list_packages(registry.id).await?.len(),
         releases: releases.len(),
         channels: channels.len(),
         incremental: true,
@@ -544,7 +554,7 @@ async fn index_incremental(
 
 /// The advertised branch names in deterministic order, capped at
 /// [`MAX_BRANCHES`] with a warning.
-fn capped_branch_names(refs: &Refs) -> Vec<String> {
+async fn capped_branch_names(refs: &Refs) -> Vec<String> {
     let mut names: Vec<String> = refs.branches.keys().cloned().collect();
     if names.len() > MAX_BRANCHES {
         tracing::warn!(
@@ -627,12 +637,16 @@ async fn probe_pack_presence(fetch: &dyn SurfaceFetch, semver_str: &str) -> Resu
 }
 
 /// Reject any channel whose frontier fell below its recorded floor.
-fn enforce_floors(db: &Database, registry_id: i64, channels: &[ChannelSummary]) -> Result<()> {
+async fn enforce_floors(
+    db: &Database,
+    registry_id: i64,
+    channels: &[ChannelSummary],
+) -> Result<()> {
     for channel in channels {
         let Some(frontier) = &channel.frontier else {
             continue;
         };
-        let Some(floor) = db.channel_floor(registry_id, &channel.name)? else {
+        let Some(floor) = db.channel_floor(registry_id, &channel.name).await? else {
             continue;
         };
         let (Ok(frontier_v), Ok(floor_v)) = (
@@ -653,12 +667,12 @@ fn enforce_floors(db: &Database, registry_id: i64, channels: &[ChannelSummary]) 
 }
 
 /// Raise (never lower) each channel's floor to its new frontier.
-fn raise_floors(db: &Database, registry_id: i64, channels: &[ChannelSummary]) -> Result<()> {
+async fn raise_floors(db: &Database, registry_id: i64, channels: &[ChannelSummary]) -> Result<()> {
     for channel in channels {
         let Some(frontier) = &channel.frontier else {
             continue;
         };
-        let raise = match db.channel_floor(registry_id, &channel.name)? {
+        let raise = match db.channel_floor(registry_id, &channel.name).await? {
             None => true,
             Some(floor) => match (
                 semver::Version::parse(frontier),
@@ -669,7 +683,8 @@ fn raise_floors(db: &Database, registry_id: i64, channels: &[ChannelSummary]) ->
             },
         };
         if raise {
-            db.set_channel_floor(registry_id, &channel.name, frontier)?;
+            db.set_channel_floor(registry_id, &channel.name, frontier)
+                .await?;
         }
     }
     Ok(())

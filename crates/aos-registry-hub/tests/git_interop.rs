@@ -172,10 +172,11 @@ async fn real_git_surface_verifies_and_indexes() {
     }
 
     // The hub verifies and indexes the git-produced surface fail-closed.
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.register_registry("demo", surface.to_str().unwrap(), &[trust_key], true)
+        .await
         .unwrap();
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     let outcome = index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
         .await
         .unwrap();
@@ -183,11 +184,11 @@ async fn real_git_surface_verifies_and_indexes() {
     assert_eq!(outcome.releases, 1);
     assert_eq!(outcome.channels, 1);
 
-    let releases = db.list_releases(registry.id).unwrap();
+    let releases = db.list_releases(registry.id).await.unwrap();
     assert_eq!(releases[0].semver, "1.0.0");
     assert_eq!(releases[0].tag_oid, release_tag_oid.trim());
     assert_eq!(releases[0].signer.as_deref(), Some(key_b64));
-    let channels = db.list_channels(registry.id).unwrap();
+    let channels = db.list_channels(registry.id).await.unwrap();
     assert_eq!(channels[0].frontier.as_deref(), Some("1.0.0"));
     assert_eq!(channels[0].partitions.iter().flatten().count(), 256);
 }

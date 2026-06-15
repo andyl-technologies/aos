@@ -121,12 +121,13 @@ fn rows_from(rows: Vec<mysql::Row>) -> Vec<Row> {
         .collect()
 }
 
+#[async_trait::async_trait]
 impl Backend for MysqlBackend {
     fn dialect(&self) -> Dialect {
         Dialect::Mysql
     }
 
-    fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
+    async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
         let (sql, params) = prepare(Dialect::Mysql, sql, params)?;
         let bound: Vec<MyValue> = params.iter().map(to_my).collect();
         let mut conn = self.lock();
@@ -135,7 +136,7 @@ impl Backend for MysqlBackend {
         Ok(conn.affected_rows())
     }
 
-    fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64> {
+    async fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64> {
         let (sql, params) = prepare(Dialect::Mysql, sql, params)?;
         let bound: Vec<MyValue> = params.iter().map(to_my).collect();
         let mut conn = self.lock();
@@ -144,7 +145,7 @@ impl Backend for MysqlBackend {
         Ok(i64::try_from(conn.last_insert_id()).unwrap_or(0))
     }
 
-    fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
+    async fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
         let (sql, params) = prepare(Dialect::Mysql, sql, params)?;
         let bound: Vec<MyValue> = params.iter().map(to_my).collect();
         let mut conn = self.lock();
@@ -154,7 +155,7 @@ impl Backend for MysqlBackend {
         Ok(rows_from(rows))
     }
 
-    fn execute_batch(&self, sql: &str) -> Result<()> {
+    async fn execute_batch(&self, sql: &str) -> Result<()> {
         let mut conn = self.lock();
         for stmt in split_statements(sql) {
             let translated = Dialect::Mysql.translate(&stmt)?;
@@ -164,7 +165,10 @@ impl Backend for MysqlBackend {
         Ok(())
     }
 
-    fn with_tx(&self, f: &mut dyn FnMut(&mut dyn Tx) -> Result<()>) -> Result<()> {
+    async fn with_tx(
+        &self,
+        f: &mut (dyn for<'t> FnMut(&'t mut (dyn Tx + 't)) -> Result<()> + Send),
+    ) -> Result<()> {
         let mut conn = self.lock();
         let mut tx = conn.start_transaction(mysql::TxOpts::default())?;
         {

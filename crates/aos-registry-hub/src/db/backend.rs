@@ -1,22 +1,23 @@
-//! The synchronous database backend trait and its per-engine drivers.
+//! The async database backend trait and its per-engine drivers.
 //!
 //! [`Backend`] is the narrow waist between the hub's
 //! [`Database`](crate::db::Database) methods and the three SQL engines. It is
-//! deliberately **synchronous** — the hub's connection model is a
-//! `Mutex<Connection>` and every caller is sync, so an async trait would
-//! cascade through the whole crate for no benefit. Each driver owns its own
-//! connection behind a `Mutex` and applies [`Dialect::translate`] before
-//! handing SQL to the engine.
+//! **async** (RFC-0004 Phase 5): native engines run their (synchronous) driver
+//! work behind the future and Cloudflare D1 is async-only, so a single async
+//! trait lets one `Database` implementation serve both the native hub and the
+//! Workers runtime. Each driver owns its own connection behind a `Mutex` and
+//! applies [`Dialect::translate`] before handing SQL to the engine. Only
+//! [`Tx`] stays synchronous (see [`Backend::with_tx`]).
 //!
 //! # Operations
 //!
 //! ```text
-//! execute(sql, params)        -> rows affected          (INSERT/UPDATE/DELETE)
-//! execute_insert(sql, params) -> last auto-increment id (INSERT into an `id` table)
-//! query(sql, params)          -> Vec<Row>               (SELECT, or *_RETURNING)
-//! query_opt(sql, params)      -> Option<Row>            (0-or-1-row SELECT)
-//! execute_batch(ddl)          -> ()                     (migration scripts)
-//! with_tx(|tx| …)             -> T                      (a unit of atomic work)
+//! execute(sql, params).await        -> rows affected          (INSERT/UPDATE/DELETE)
+//! execute_insert(sql, params).await -> last auto-increment id (INSERT into an `id` table)
+//! query(sql, params).await          -> Vec<Row>               (SELECT, or *_RETURNING)
+//! query_opt(sql, params).await      -> Option<Row>            (0-or-1-row SELECT)
+//! execute_batch(ddl).await          -> ()                     (migration scripts)
+//! with_tx(|tx| …).await             -> T                      (a unit of atomic work)
 //! ```
 //!
 //! `execute_insert` abstracts away sqlite's `last_insert_rowid()`: postgres
@@ -34,6 +35,7 @@
 //! driver crates.
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 
 use super::dialect::{order_params, Dialect};
 use super::value::{Row, Value};
@@ -42,7 +44,7 @@ use super::value::{Row, Value};
 ///
 /// A batch is the portable unit of atomic multi-statement work. The native
 /// backends run it inside a SQL transaction; Cloudflare D1 runs it as
-/// `batch()` — its *only* atomicity primitive, since it has no interactive
+/// `batch().await` — its *only* atomicity primitive, since it has no interactive
 /// transactions. Because a batch cannot read a value back mid-flight, every
 /// statement must be self-contained: ids are assigned client-side rather than
 /// read from `last_insert_rowid`, and any guard is encoded in a `WHERE` clause
@@ -73,11 +75,18 @@ impl Statement {
     }
 }
 
-/// A synchronous handle to one SQL engine.
+/// An async handle to one SQL engine.
 ///
 /// Implementors own their connection and translate the hub's source SQL with
 /// their [`Backend::dialect`] before executing. All methods take the source
 /// (sqlite-flavored) SQL the [`Database`](crate::db::Database) methods write.
+///
+/// The trait is **async** (RFC-0004 Phase 5): native engines run on a thread
+/// pool and Cloudflare D1 is async-only, so every query is a future. Only
+/// [`Tx`] — the closure-scoped handle for the few read-then-write sites — stays
+/// synchronous, since [`Backend::with_tx`] runs its closure to completion
+/// without yielding.
+#[async_trait]
 pub trait Backend: Send + Sync {
     /// The SQL dialect this backend speaks.
     fn dialect(&self) -> Dialect;
@@ -87,7 +96,7 @@ pub trait Backend: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if translation or execution fails.
-    fn execute(&self, sql: &str, params: &[Value]) -> Result<u64>;
+    async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64>;
 
     /// Runs an `INSERT` and returns the new row's auto-increment id.
     ///
@@ -99,14 +108,14 @@ pub trait Backend: Send + Sync {
     ///
     /// Returns an error if translation or execution fails, or the id cannot
     /// be read back.
-    fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64>;
+    async fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64>;
 
     /// Runs a `SELECT` (or a `… RETURNING`) statement, returning all rows.
     ///
     /// # Errors
     ///
     /// Returns an error if translation or execution fails.
-    fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>>;
+    async fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>>;
 
     /// Runs a statement expected to yield at most one row.
     ///
@@ -114,8 +123,8 @@ pub trait Backend: Send + Sync {
     ///
     /// Returns an error if translation or execution fails, or if more than
     /// one row is returned.
-    fn query_opt(&self, sql: &str, params: &[Value]) -> Result<Option<Row>> {
-        let mut rows = self.query(sql, params)?;
+    async fn query_opt(&self, sql: &str, params: &[Value]) -> Result<Option<Row>> {
+        let mut rows = self.query(sql, params).await?;
         if rows.len() > 1 {
             anyhow::bail!("query_opt expected at most one row, got {}", rows.len());
         }
@@ -128,23 +137,32 @@ pub trait Backend: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if any statement fails to translate or execute.
-    fn execute_batch(&self, sql: &str) -> Result<()>;
+    async fn execute_batch(&self, sql: &str) -> Result<()>;
 
     /// Runs `f` inside one transaction, committing on `Ok` and rolling back
     /// on `Err`.
+    ///
+    /// `f` is synchronous and runs to completion within the call (no `.await`
+    /// inside the closure), so the driver may hold a borrowed transaction
+    /// handle across it without a self-referential future. Retained only for
+    /// the MySQL read-then-write branches; the sqlite/postgres/D1 paths use
+    /// [`Backend::batch`] or single `RETURNING` statements instead.
     ///
     /// # Errors
     ///
     /// Returns an error if the transaction cannot begin or commit, or if `f`
     /// returns one (after rollback).
-    fn with_tx(&self, f: &mut dyn FnMut(&mut dyn Tx) -> Result<()>) -> Result<()>;
+    async fn with_tx(
+        &self,
+        f: &mut (dyn for<'t> FnMut(&'t mut (dyn Tx + 't)) -> Result<()> + Send),
+    ) -> Result<()>;
 
     /// Runs `stmts` as one atomic unit — either all commit, or none do.
     ///
     /// This is the *portable* transaction primitive. Unlike [`Backend::with_tx`]
     /// it takes a fixed, self-contained statement list with no mid-flight reads
     /// or `last_insert_rowid` round-trips, so it maps directly onto Cloudflare
-    /// D1's `batch()` as well as a native SQL transaction. New write paths
+    /// D1's `batch().await` as well as a native SQL transaction. New write paths
     /// should prefer it; `with_tx` is retained for the read-then-write sites not
     /// yet restructured (RFC-0004 Phase 5).
     ///
@@ -156,13 +174,14 @@ pub trait Backend: Send + Sync {
     ///
     /// Returns an error if any statement fails to translate or execute; the
     /// whole batch is then rolled back.
-    fn batch(&self, stmts: &[Statement]) -> Result<()> {
+    async fn batch(&self, stmts: &[Statement]) -> Result<()> {
         self.with_tx(&mut |tx| {
             for stmt in stmts {
                 tx.execute(&stmt.sql, &stmt.params)?;
             }
             Ok(())
         })
+        .await
     }
 
     /// Downcasts to the sqlite driver, for the in-module migration tests that
@@ -369,18 +388,19 @@ mod tests {
     use crate::db::value::Value;
 
     /// An in-memory sqlite backend with a single `t(id, v)` table for batch tests.
-    fn batch_fixture() -> SqliteBackend {
+    async fn batch_fixture() -> SqliteBackend {
         let conn = rusqlite::Connection::open_in_memory().expect("open in-memory sqlite");
         let backend = SqliteBackend::new(conn).expect("wrap connection");
         backend
             .execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT NOT NULL);")
+            .await
             .expect("create table");
         backend
     }
 
-    #[test]
-    fn batch_commits_all_statements_atomically() {
-        let backend = batch_fixture();
+    #[tokio::test]
+    async fn batch_commits_all_statements_atomically() {
+        let backend = batch_fixture().await;
         backend
             .batch(&[
                 Statement::new(
@@ -392,27 +412,33 @@ mod tests {
                     vec![Value::Int(2), Value::Text("b".into())],
                 ),
             ])
+            .await
             .expect("batch commits");
-        let rows = backend.query("SELECT id FROM t ORDER BY id", &[]).unwrap();
+        let rows = backend
+            .query("SELECT id FROM t ORDER BY id", &[])
+            .await
+            .unwrap();
         assert_eq!(rows.len(), 2, "both rows committed");
     }
 
-    #[test]
-    fn batch_rolls_back_on_a_failing_statement() {
-        let backend = batch_fixture();
-        let err = backend.batch(&[
-            Statement::new(
-                "INSERT INTO t (id, v) VALUES (?1, ?2)",
-                vec![Value::Int(1), Value::Text("a".into())],
-            ),
-            // NOT NULL violation: the whole batch must roll back.
-            Statement::new(
-                "INSERT INTO t (id, v) VALUES (?1, NULL)",
-                vec![Value::Int(2)],
-            ),
-        ]);
+    #[tokio::test]
+    async fn batch_rolls_back_on_a_failing_statement() {
+        let backend = batch_fixture().await;
+        let err = backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO t (id, v) VALUES (?1, ?2)",
+                    vec![Value::Int(1), Value::Text("a".into())],
+                ),
+                // NOT NULL violation: the whole batch must roll back.
+                Statement::new(
+                    "INSERT INTO t (id, v) VALUES (?1, NULL)",
+                    vec![Value::Int(2)],
+                ),
+            ])
+            .await;
         assert!(err.is_err(), "a failing statement aborts the batch");
-        let rows = backend.query("SELECT id FROM t", &[]).unwrap();
+        let rows = backend.query("SELECT id FROM t", &[]).await.unwrap();
         assert!(rows.is_empty(), "the first insert was rolled back");
     }
 

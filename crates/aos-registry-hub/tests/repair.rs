@@ -36,7 +36,7 @@ const TEST_JWT_SECRET: &[u8] = b"repair-test-secret-32-byte-key!!!";
 
 /// Build an [`AppState`] over `db` with deterministic JWT keys and the given
 /// external URL (the facade base the repair PUTs land on).
-fn app_state(db: Arc<Database>, external_url: &str) -> Arc<AppState> {
+async fn app_state(db: Arc<Database>, external_url: &str) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
         jwt_keys: JwtKeys::from_secret(TEST_JWT_SECRET),
@@ -52,7 +52,7 @@ fn app_state(db: Arc<Database>, external_url: &str) -> Arc<AppState> {
         auth,
         leases: aos_registry_hub::facade::LeaseMap::new(),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
-        http: hardened_client(),
+        http: hardened_client().await,
         mailer: Arc::new(aos_registry_hub::auth::magic::LogMailer),
         dev: false,
     })
@@ -105,22 +105,27 @@ async fn rpc(
 /// Create org "acme", a `local_fs` binding rooted at `binding_root`, and a
 /// managed registry at `acme/infra/prod/cdn` with surface prefix `cdn` and the
 /// given visibility. Returns the registry id.
-fn create_managed_with_visibility(db: &Database, binding_root: &Path, visibility: &str) -> i64 {
-    create_managed_with_keys(db, binding_root, visibility, &[])
+async fn create_managed_with_visibility(
+    db: &Database,
+    binding_root: &Path,
+    visibility: &str,
+) -> i64 {
+    create_managed_with_keys(db, binding_root, visibility, &[]).await
 }
 
 /// As [`create_managed_with_visibility`], but enrolls a narinfo trust roster so
 /// the repair path's mandatory signature gate can be exercised against a signed
 /// source object.
-fn create_managed_with_keys(
+async fn create_managed_with_keys(
     db: &Database,
     binding_root: &Path,
     visibility: &str,
     trust_keys: &[String],
 ) -> i64 {
-    let org = db.create_org("acme", "Acme, Inc.").unwrap();
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
     let binding = db
         .create_storage_binding(org, "primary", "local_fs", binding_root.to_str().unwrap())
+        .await
         .unwrap();
     db.create_managed_registry(
         org,
@@ -132,12 +137,13 @@ fn create_managed_with_keys(
         trust_keys,
         false,
     )
+    .await
     .unwrap()
 }
 
 /// [`create_managed_with_visibility`] with `private` visibility.
-fn create_managed(db: &Database, binding_root: &Path) -> i64 {
-    create_managed_with_visibility(db, binding_root, "private")
+async fn create_managed(db: &Database, binding_root: &Path) -> i64 {
+    create_managed_with_visibility(db, binding_root, "private").await
 }
 
 /// Build a *signed* `abc.narinfo` (store hash `abc`, NAR at `nar/abc.nar`)
@@ -151,19 +157,22 @@ fn signed_abc_narinfo(nar_bytes: &[u8]) -> (String, String) {
     use base64::Engine as _;
 
     let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-    let trust_key = aos_registry_hub::surface::sshsig::trusted_key_line("demo", &key.verifying_key());
+    let trust_key =
+        aos_registry_hub::surface::sshsig::trusted_key_line("demo", &key.verifying_key());
 
     let mut secret = Vec::with_capacity(64);
     secret.extend_from_slice(&key.to_bytes());
     secret.extend_from_slice(key.verifying_key().as_bytes());
     let secret_b64 = base64::engine::general_purpose::STANDARD.encode(&secret);
     let signer =
-        aos_core::nar::cache::NarInfoSigner::from_key_content(&format!("demo:{secret_b64}")).unwrap();
+        aos_core::nar::cache::NarInfoSigner::from_key_content(&format!("demo:{secret_b64}"))
+            .unwrap();
 
     let store_path = "/var/lib/store/abc-curl-8.5.0";
     let hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
     let size = nar_bytes.len() as i64;
-    let fingerprint = aos_core::nar::cache::NarInfoSigner::fingerprint(store_path, &hash, size, &[]);
+    let fingerprint =
+        aos_core::nar::cache::NarInfoSigner::fingerprint(store_path, &hash, size, &[]);
     let sig = signer.sign(&fingerprint).unwrap();
     let narinfo = format!(
         "StorePath: {store_path}\nURL: nar/abc.nar\nCompression: none\n\
@@ -198,14 +207,15 @@ fn one_hash_package() -> aos_package::registry::parse::PackageToml {
 #[tokio::test]
 async fn mint_upload_credentials_authz_scope_and_expiry() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    create_managed(&db, dir.path());
-    let app = router(app_state(Arc::clone(&db), "http://hub.test"));
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    create_managed(&db, dir.path()).await;
+    let app = router(app_state(Arc::clone(&db), "http://hub.test").await).await;
 
     // The RPC checks the principal's *current* grants too, so the publisher
     // service account holds a real maintainer (publish-capable) membership.
     let publisher_sa = db
-        .create_service_account(db.org_by_slug("acme").unwrap().unwrap().id, "ci")
+        .create_service_account(db.org_by_slug("acme").await.unwrap().unwrap().id, "ci")
+        .await
         .unwrap();
     db.grant_membership(
         "service_account",
@@ -213,6 +223,7 @@ async fn mint_upload_credentials_authz_scope_and_expiry() {
         "acme/infra/prod/cdn",
         "maintainer",
     )
+    .await
     .unwrap();
 
     // An authorized Publish caller mints a credential.
@@ -249,7 +260,11 @@ async fn mint_upload_credentials_authz_scope_and_expiry() {
     );
 
     // The minted token validates and is scoped Publish to exactly this registry.
-    let auth = db.validate_token(token).unwrap().expect("token validates");
+    let auth = db
+        .validate_token(token)
+        .await
+        .unwrap()
+        .expect("token validates");
     assert_eq!(auth.scope.as_str(), "acme/infra/prod/cdn");
     assert_eq!(auth.permissions, vec![Permission::Publish]);
 
@@ -297,20 +312,21 @@ async fn http_repair_fetches_verifies_and_puts_to_facade() {
     // the source's trust key so the signature gate passes. Its binding root
     // (the cdn prefix under it) is initially empty.
     let binding_dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     // Public so the validation HEAD probe (anonymous) can read the facade.
     let reg_id = create_managed_with_keys(
         &db,
         binding_dir.path(),
         "public",
         std::slice::from_ref(&trust_key),
-    );
+    )
+    .await;
 
     // Bring up the real hub so the facade accepts PUTs.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let external_url = format!("http://{}", listener.local_addr().unwrap());
     let target_url = format!("{external_url}/acme/infra/prod/cdn");
-    let app = router(app_state(Arc::clone(&db), &external_url));
+    let app = router(app_state(Arc::clone(&db), &external_url).await).await;
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
@@ -327,8 +343,13 @@ async fn http_repair_fetches_verifies_and_puts_to_facade() {
             ..Default::default()
         },
     )
+    .await
     .unwrap();
-    let registry = db.registry_by_slug("acme/infra/prod/cdn").unwrap().unwrap();
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
 
     // Record the validation state directly: the source holds `abc`, the hub
     // facade target is missing it. (The hub's *own* facade serves reads over
@@ -336,6 +357,7 @@ async fn http_repair_fetches_verifies_and_puts_to_facade() {
     // live presence HEAD against the facade target is not anonymous; recording
     // the state directly keeps the test focused on the repair round-trip.)
     db.record_validation_run(registry.id, &source_url, "presence", 1, &[], true, 0, 1)
+        .await
         .unwrap();
     db.record_validation_run(
         registry.id,
@@ -347,6 +369,7 @@ async fn http_repair_fetches_verifies_and_puts_to_facade() {
         0,
         1,
     )
+    .await
     .unwrap();
 
     // Run repairs with a real hub authorizer (matching keys + external_url).
@@ -355,7 +378,7 @@ async fn http_repair_fetches_verifies_and_puts_to_facade() {
         JwtKeys::from_secret(TEST_JWT_SECRET),
         external_url.clone(),
     );
-    let client = hardened_client();
+    let client = hardened_client().await;
     let summary = validation::run_repairs(&db, &client, &registry, &authorizer)
         .await
         .unwrap();
@@ -374,7 +397,7 @@ async fn http_repair_fetches_verifies_and_puts_to_facade() {
     assert!(written_narinfo.contains("URL: nar/abc.nar"));
 
     // The repair job is recorded `done`.
-    let jobs = db.list_repair_jobs(reg_id, 10).unwrap();
+    let jobs = db.list_repair_jobs(reg_id, 10).await.unwrap();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].status, "done");
     assert_eq!(jobs[0].store_hash, "abc");
@@ -407,14 +430,19 @@ async fn http_repair_to_unauthorized_target_is_plan_only() {
     let target_url = "https://external.example.com/cache".to_string();
 
     let binding_dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(Database::open_in_memory().unwrap());
-    let reg_id = create_managed(&db, binding_dir.path());
-    let registry = db.registry_by_slug("acme/infra/prod/cdn").unwrap().unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let reg_id = create_managed(&db, binding_dir.path()).await;
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
 
     // Record validation runs directly so the repair plan targets the external
     // cache: the source holds `abc`, the external target is missing it. (We
     // bypass live probing — the external URL is not really reachable.)
     db.record_validation_run(reg_id, &source_url, "presence", 1, &[], true, 0, 1)
+        .await
         .unwrap();
     db.record_validation_run(
         reg_id,
@@ -426,6 +454,7 @@ async fn http_repair_to_unauthorized_target_is_plan_only() {
         0,
         1,
     )
+    .await
     .unwrap();
 
     // The authorizer's external_url does not match the external target, so the
@@ -435,7 +464,7 @@ async fn http_repair_to_unauthorized_target_is_plan_only() {
         JwtKeys::from_secret(TEST_JWT_SECRET),
         "http://hub.test".to_string(),
     );
-    let client = hardened_client();
+    let client = hardened_client().await;
     let summary = validation::run_repairs(&db, &client, &registry, &authorizer)
         .await
         .unwrap();
@@ -443,7 +472,7 @@ async fn http_repair_to_unauthorized_target_is_plan_only() {
     assert_eq!(summary.failed, 0);
     assert_eq!(summary.plan_only, 1, "external target left as a plan");
 
-    let jobs = db.list_repair_jobs(reg_id, 10).unwrap();
+    let jobs = db.list_repair_jobs(reg_id, 10).await.unwrap();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].status, "plan_only");
     assert_eq!(jobs[0].cache_url, target_url);

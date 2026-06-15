@@ -50,26 +50,30 @@ async fn http_source_indexes_and_facade_redirects() {
     });
 
     // Index over HTTP, fail-closed, with full verification.
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.register_registry(
         "demo",
         &upstream_url,
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
+    .await
     .unwrap();
-    let registry = db.registry_by_slug("demo").unwrap().unwrap();
-    let fetch = HttpFetch::new(&upstream_url);
+    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
+    let fetch = HttpFetch::new(&upstream_url).await;
     let outcome = index_and_record(&db, &fetch, &registry).await.unwrap();
     assert_eq!(outcome.packages, 1);
     assert_eq!(outcome.channels, 1);
     assert_eq!(
-        db.index_status(registry.id).unwrap().unwrap().state,
+        db.index_status(registry.id).await.unwrap().unwrap().state,
         "fresh"
     );
 
     // The facade redirects machine paths to the upstream.
-    let app = router(Arc::new(AppState::new(db, "http://127.0.0.1:8420".into())));
+    let app = router(Arc::new(
+        AppState::new(db, "http://127.0.0.1:8420".into()).await,
+    ))
+    .await;
     let response = app
         .clone()
         .oneshot(
