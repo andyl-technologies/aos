@@ -94,6 +94,15 @@ Extends the two-node shape of `install-from-image` (registry peer + target):
 - **Retired-cert refuse:** mark the signer cert retired; assert `apm` refuses
   a component signed by it.
 
+Implemented as `checks.fleet.registry-sb-catalog`: publishes the signed
+server-secureboot sysroot + its UKI, asserts the derived facts, and drives
+`apm` through refuse-on-unknown-signer → refuse-on-SBAT-floor → accept. The
+`expected_pcr11` prediction gap above is resolved by measuring the UKI's PE
+*sections* (not the UKI-as-kernel); the test cross-checks the recorded value
+against an independent `objcopy` + `systemd-measure` recompute rather than a
+post-reboot machine reading (that equality remains attestation-side future
+work — the recorded value is the pre-phase base a verifier extends).
+
 ## Cost / sequencing notes
 
 - The SB and measured-boot OVMF/vTPM tests add VM boots; budget like the
