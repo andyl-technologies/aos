@@ -169,6 +169,83 @@ impl Fixture {
         fs::write(self.root.join(nar_url), nar_bytes).unwrap();
     }
 
+    /// Write a *zstd-compressed* nix-cache entry: a signed narinfo declaring
+    /// `Compression: zstd` whose signed `NarHash` is over the **uncompressed**
+    /// NAR, plus the compressed NAR file on disk.
+    ///
+    /// `tamper_compressed` injects the CR-1 attack: when set, the on-disk NAR is
+    /// replaced with `tampered_plain` compressed with zstd, and the narinfo's
+    /// (unsigned) `FileHash` is set to match those malicious *compressed* bytes —
+    /// so a verifier that trusted `FileHash` would accept it, but the decompressed
+    /// bytes do not match the signed `NarHash`. The signed fields (`NarHash`,
+    /// `StorePath`, `NarSize`, `Sig:`) are unchanged, exactly as a MITM upstream
+    /// would keep them.
+    ///
+    /// Returns `(narinfo_relative_path, nar_relative_path)`.
+    ///
+    /// The store hash is unique per `tag` so multiple entries can coexist.
+    // Not every test binary that compiles this shared module calls this builder
+    // (the same pre-existing pattern as the other fixture helpers).
+    #[allow(dead_code)]
+    pub fn put_zstd_nix_entry(
+        &self,
+        tag: &str,
+        plain: &[u8],
+        tamper_compressed: Option<&[u8]>,
+    ) -> (String, String) {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+
+        let store_hash = format!("zstdhash{tag}");
+        let store_path = format!("/var/lib/store/{store_hash}-pkg-1.0");
+        let nar_url = format!("nar/{store_hash}-fixturehash.nar.zst");
+
+        // The signed NarHash is over the UNCOMPRESSED bytes.
+        let nar_hash = format!("sha256:{}", hex::encode(sha2::Sha256::digest(plain)));
+        let nar_size = plain.len() as u64;
+
+        // The bytes actually written to disk (and the compressed bytes FileHash
+        // is computed over): the honest compression of `plain`, unless tampering.
+        let honest_compressed = zstd::encode_all(plain, 0).unwrap();
+        let (on_disk, file_source): (Vec<u8>, Vec<u8>) = match tamper_compressed {
+            Some(evil_plain) => {
+                let evil = zstd::encode_all(evil_plain, 0).unwrap();
+                (evil.clone(), evil)
+            }
+            None => (honest_compressed.clone(), honest_compressed),
+        };
+        let file_hash = format!("sha256:{}", hex::encode(sha2::Sha256::digest(&file_source)));
+        let file_size = on_disk.len() as u64;
+
+        // Sign the fingerprint over the (uncompressed) NarHash, as a real signer
+        // would — the signature is independent of the compressed payload.
+        let mut secret = Vec::with_capacity(64);
+        secret.extend_from_slice(&self.key.to_bytes());
+        secret.extend_from_slice(self.key.verifying_key().as_bytes());
+        let secret_b64 = base64::engine::general_purpose::STANDARD.encode(&secret);
+        let signer =
+            aos_core::nar::cache::NarInfoSigner::from_key_content(&format!("demo:{secret_b64}"))
+                .unwrap();
+        let fingerprint = aos_core::nar::cache::NarInfoSigner::fingerprint(
+            &store_path,
+            &nar_hash,
+            nar_size as i64,
+            &[],
+        );
+        let sig = signer.sign(&fingerprint).unwrap();
+
+        let narinfo = format!(
+            "StorePath: {store_path}\nURL: {nar_url}\nCompression: zstd\n\
+             FileHash: {file_hash}\nFileSize: {file_size}\nNarHash: {nar_hash}\nNarSize: {nar_size}\n\
+             References: \nSig: {sig}\n",
+        );
+        let narinfo_path = format!("{store_hash}.narinfo");
+        fs::write(self.root.join(&narinfo_path), narinfo).unwrap();
+        fs::create_dir_all(self.root.join("nar")).unwrap();
+        fs::write(self.root.join(&nar_url), &on_disk).unwrap();
+        (narinfo_path, nar_url)
+    }
+
     /// Render a narinfo for an *uncompressed* NAR and sign it with the
     /// fixture's key under the registry name (so its `Sig:` verifies against
     /// the roster).

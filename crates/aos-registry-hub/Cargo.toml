@@ -18,6 +18,9 @@ hex = { workspace = true }
 semver = { workspace = true }
 tracing = { workspace = true }
 flate2 = { workspace = true }
+zstd = { workspace = true }
+lzma-rs = { workspace = true }
+bzip2-rs = { workspace = true }
 ed25519-dalek = { workspace = true }
 argon2 = { workspace = true }
 p256 = { workspace = true }
