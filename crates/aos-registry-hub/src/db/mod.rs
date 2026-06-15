@@ -2239,142 +2239,183 @@ impl Database {
     ///
     /// Returns an error on database failure; the transaction rolls back.
     pub fn apply_snapshot(&self, registry_id: i64, snapshot: &IndexSnapshot) -> Result<()> {
-        self.backend.with_tx(&mut |tx| {
-            for table in ["packages", "channels", "releases", "key_rosters", "caches"] {
-                tx.execute(
-                    &format!("DELETE FROM {table} WHERE registry_id = ?1"),
-                    &vals![registry_id],
-                )?;
-            }
+        // Assign surrogate ids client-side so the whole snapshot is one
+        // self-contained batch (D1 has no mid-batch `last_insert_rowid`). The
+        // bases are read once before the batch; the indexer runs sequentially
+        // per registry (main.rs), so no concurrent writer collides on them, and
+        // assigning ids in insertion order preserves the `MAX(package_versions
+        // .id)` "latest version" ordering the read path relies on. Leaf tables
+        // (version_platforms, releases) keep implicit autoincrement — nothing
+        // reads their id back.
+        let mut next_package = self.max_id("packages")?;
+        let mut next_version = self.max_id("package_versions")?;
+        let mut next_channel = self.max_id("channels")?;
 
-            for package in &snapshot.packages {
-                let package_id = tx.execute_insert(
-                    "INSERT INTO packages
-                     (registry_id, name, description, homepage, license, maintainer, sysroot)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    &vals![
-                        registry_id,
-                        package.package.name,
-                        package.package.description,
-                        package.package.homepage,
-                        package.package.license,
-                        package.package.maintainer,
-                        package.package.sysroot,
-                    ],
-                )?;
-                for version in &package.versions {
-                    let version_id = tx.execute_insert(
-                        "INSERT INTO package_versions (package_id, version, previous)
-                         VALUES (?1, ?2, ?3)",
-                        &vals![package_id, version.version, version.previous],
-                    )?;
-                    for (platform, entry) in &version.platforms {
-                        let images = entry
-                            .images
-                            .iter()
-                            .map(|i| {
-                                serde_json::json!({
-                                    "format": i.format,
-                                    "store_path": i.store_path,
-                                    "nar_hash": i.nar_hash,
-                                    "nar_size": i.nar_size,
-                                })
-                            })
-                            .collect::<Vec<_>>();
-                        tx.execute(
-                            "INSERT INTO version_platforms
-                             (version_id, platform, store_path, nar_hash, nar_size,
-                              closure_size, refs, images, source_drv)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                            &vals![
-                                version_id,
-                                platform,
-                                entry.store_path,
-                                entry.nar_hash,
-                                entry.nar_size,
-                                entry.closure_size,
-                                serde_json::to_string(&entry.references)?,
-                                serde_json::Value::Array(images).to_string(),
-                                entry.source_drv,
-                            ],
-                        )?;
-                    }
-                }
-            }
+        let mut stmts: Vec<Statement> = Vec::new();
+        for table in ["packages", "channels", "releases", "key_rosters", "caches"] {
+            stmts.push(Statement::new(
+                format!("DELETE FROM {table} WHERE registry_id = ?1"),
+                vals![registry_id].to_vec(),
+            ));
+        }
 
-            for release in &snapshot.releases {
-                tx.execute(
-                    "INSERT INTO releases
-                     (registry_id, semver, tag_oid, commit_oid, signer, tagged_at, pack_present)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    &vals![
-                        registry_id,
-                        release.semver,
-                        release.tag_oid,
-                        release.commit_oid,
-                        release.signer,
-                        release.tagged_at,
-                        release.pack_present,
-                    ],
-                )?;
-            }
-
-            for channel in &snapshot.channels {
-                let channel_id = tx.execute_insert(
-                    "INSERT INTO channels (registry_id, name, frontier) VALUES (?1, ?2, ?3)",
-                    &vals![registry_id, channel.name, channel.frontier],
-                )?;
-                for (bucket, release) in channel.partitions.iter().enumerate() {
-                    if let Some(release) = release {
-                        tx.execute(
-                            "INSERT INTO channel_partitions (channel_id, bucket, release)
-                             VALUES (?1, ?2, ?3)",
-                            &vals![channel_id, bucket as i64, release],
-                        )?;
-                    }
-                }
-            }
-
-            for (key_id, public_key, status) in &snapshot.roster {
-                tx.execute(
-                    "INSERT INTO key_rosters (registry_id, key_id, public_key, status)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    &vals![registry_id, key_id, public_key, status],
-                )?;
-            }
-            for (url, priority) in &snapshot.caches {
-                tx.execute(
-                    "INSERT INTO caches (registry_id, url, priority) VALUES (?1, ?2, ?3)",
-                    &vals![registry_id, url, *priority],
-                )?;
-            }
-
-            tx.execute(
-                "INSERT INTO registry_index
-                 (registry_id, state, error, last_indexed_commit, name, description, readme,
-                  indexed_at, refs_digest, cache_stack)
-                 VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(registry_id) DO UPDATE SET
-                     state = 'fresh', error = NULL,
-                     last_indexed_commit = excluded.last_indexed_commit,
-                     name = excluded.name, description = excluded.description,
-                     readme = excluded.readme,
-                     indexed_at = excluded.indexed_at,
-                     refs_digest = excluded.refs_digest,
-                     cache_stack = excluded.cache_stack",
-                &vals![
+        for package in &snapshot.packages {
+            next_package += 1;
+            let package_id = next_package;
+            stmts.push(Statement::new(
+                "INSERT INTO packages
+                 (id, registry_id, name, description, homepage, license, maintainer, sysroot)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                vals![
+                    package_id,
                     registry_id,
-                    snapshot.commit,
-                    snapshot.name,
-                    snapshot.description,
-                    snapshot.readme,
-                    unix_now(),
-                    snapshot.refs_digest,
-                    snapshot.cache_stack,
-                ],
-            )?;
-            Ok(())
-        })
+                    package.package.name,
+                    package.package.description,
+                    package.package.homepage,
+                    package.package.license,
+                    package.package.maintainer,
+                    package.package.sysroot,
+                ]
+                .to_vec(),
+            ));
+            for version in &package.versions {
+                next_version += 1;
+                let version_id = next_version;
+                stmts.push(Statement::new(
+                    "INSERT INTO package_versions (id, package_id, version, previous)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    vals![version_id, package_id, version.version, version.previous].to_vec(),
+                ));
+                for (platform, entry) in &version.platforms {
+                    let images = entry
+                        .images
+                        .iter()
+                        .map(|i| {
+                            serde_json::json!({
+                                "format": i.format,
+                                "store_path": i.store_path,
+                                "nar_hash": i.nar_hash,
+                                "nar_size": i.nar_size,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    stmts.push(Statement::new(
+                        "INSERT INTO version_platforms
+                         (version_id, platform, store_path, nar_hash, nar_size,
+                          closure_size, refs, images, source_drv)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        vals![
+                            version_id,
+                            platform,
+                            entry.store_path,
+                            entry.nar_hash,
+                            entry.nar_size,
+                            entry.closure_size,
+                            serde_json::to_string(&entry.references)?,
+                            serde_json::Value::Array(images).to_string(),
+                            entry.source_drv,
+                        ]
+                        .to_vec(),
+                    ));
+                }
+            }
+        }
+
+        for release in &snapshot.releases {
+            stmts.push(Statement::new(
+                "INSERT INTO releases
+                 (registry_id, semver, tag_oid, commit_oid, signer, tagged_at, pack_present)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                vals![
+                    registry_id,
+                    release.semver,
+                    release.tag_oid,
+                    release.commit_oid,
+                    release.signer,
+                    release.tagged_at,
+                    release.pack_present,
+                ]
+                .to_vec(),
+            ));
+        }
+
+        for channel in &snapshot.channels {
+            next_channel += 1;
+            let channel_id = next_channel;
+            stmts.push(Statement::new(
+                "INSERT INTO channels (id, registry_id, name, frontier) VALUES (?1, ?2, ?3, ?4)",
+                vals![channel_id, registry_id, channel.name, channel.frontier].to_vec(),
+            ));
+            for (bucket, release) in channel.partitions.iter().enumerate() {
+                if let Some(release) = release {
+                    stmts.push(Statement::new(
+                        "INSERT INTO channel_partitions (channel_id, bucket, release)
+                         VALUES (?1, ?2, ?3)",
+                        vals![channel_id, bucket as i64, release].to_vec(),
+                    ));
+                }
+            }
+        }
+
+        for (key_id, public_key, status) in &snapshot.roster {
+            stmts.push(Statement::new(
+                "INSERT INTO key_rosters (registry_id, key_id, public_key, status)
+                 VALUES (?1, ?2, ?3, ?4)",
+                vals![registry_id, key_id, public_key, status].to_vec(),
+            ));
+        }
+        for (url, priority) in &snapshot.caches {
+            stmts.push(Statement::new(
+                "INSERT INTO caches (registry_id, url, priority) VALUES (?1, ?2, ?3)",
+                vals![registry_id, url, *priority].to_vec(),
+            ));
+        }
+
+        stmts.push(Statement::new(
+            "INSERT INTO registry_index
+             (registry_id, state, error, last_indexed_commit, name, description, readme,
+              indexed_at, refs_digest, cache_stack)
+             VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(registry_id) DO UPDATE SET
+                 state = 'fresh', error = NULL,
+                 last_indexed_commit = excluded.last_indexed_commit,
+                 name = excluded.name, description = excluded.description,
+                 readme = excluded.readme,
+                 indexed_at = excluded.indexed_at,
+                 refs_digest = excluded.refs_digest,
+                 cache_stack = excluded.cache_stack",
+            vals![
+                registry_id,
+                snapshot.commit,
+                snapshot.name,
+                snapshot.description,
+                snapshot.readme,
+                unix_now(),
+                snapshot.refs_digest,
+                snapshot.cache_stack,
+            ]
+            .to_vec(),
+        ));
+
+        self.backend.batch(&stmts)
+    }
+
+    /// Returns the current maximum `id` in `table`, or `0` when it is empty.
+    ///
+    /// Used to allocate surrogate ids client-side before a batch insert, so the
+    /// batch carries no mid-flight `last_insert_rowid` round-trip (the seam the
+    /// native backends and Cloudflare D1 share). `table` must be a trusted
+    /// literal — it is interpolated directly into the query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    fn max_id(&self, table: &str) -> Result<i64> {
+        let row = self
+            .backend
+            .query_opt(&format!("SELECT COALESCE(MAX(id), 0) FROM {table}"), &[])?
+            .context("COALESCE(MAX(id), 0) returned no row")?;
+        row.get(0)
     }
 
     /// Record an indexing failure without touching the last good index.
@@ -2426,33 +2467,38 @@ impl Database {
     ///
     /// Returns an error on database failure; the transaction rolls back.
     pub fn update_channels(&self, registry_id: i64, channels: &[ChannelSummary]) -> Result<()> {
-        self.backend.with_tx(&mut |tx| {
-            // Deleting channels cascades to channel_partitions.
-            tx.execute(
-                "DELETE FROM channels WHERE registry_id = ?1",
-                &vals![registry_id],
-            )?;
-            for channel in channels {
-                let channel_id = tx.execute_insert(
-                    "INSERT INTO channels (registry_id, name, frontier) VALUES (?1, ?2, ?3)",
-                    &vals![registry_id, channel.name, channel.frontier],
-                )?;
-                for (bucket, release) in channel.partitions.iter().enumerate() {
-                    if let Some(release) = release {
-                        tx.execute(
-                            "INSERT INTO channel_partitions (channel_id, bucket, release)
-                             VALUES (?1, ?2, ?3)",
-                            &vals![channel_id, bucket as i64, release],
-                        )?;
-                    }
+        // Client-side channel ids (assigned in order) so this is one batch with
+        // no mid-flight `last_insert_rowid`; the per-registry sequential indexer
+        // rules out a concurrent writer colliding on the id base.
+        let mut next_channel = self.max_id("channels")?;
+        let mut stmts: Vec<Statement> = Vec::new();
+        // Deleting channels cascades to channel_partitions.
+        stmts.push(Statement::new(
+            "DELETE FROM channels WHERE registry_id = ?1",
+            vals![registry_id].to_vec(),
+        ));
+        for channel in channels {
+            next_channel += 1;
+            let channel_id = next_channel;
+            stmts.push(Statement::new(
+                "INSERT INTO channels (id, registry_id, name, frontier) VALUES (?1, ?2, ?3, ?4)",
+                vals![channel_id, registry_id, channel.name, channel.frontier].to_vec(),
+            ));
+            for (bucket, release) in channel.partitions.iter().enumerate() {
+                if let Some(release) = release {
+                    stmts.push(Statement::new(
+                        "INSERT INTO channel_partitions (channel_id, bucket, release)
+                         VALUES (?1, ?2, ?3)",
+                        vals![channel_id, bucket as i64, release].to_vec(),
+                    ));
                 }
             }
-            tx.execute(
-                "UPDATE registry_index SET indexed_at = ?2 WHERE registry_id = ?1",
-                &vals![registry_id, unix_now()],
-            )?;
-            Ok(())
-        })
+        }
+        stmts.push(Statement::new(
+            "UPDATE registry_index SET indexed_at = ?2 WHERE registry_id = ?1",
+            vals![registry_id, unix_now()].to_vec(),
+        ));
+        self.backend.batch(&stmts)
     }
 
     // -- anti-rollback floors ------------------------------------------------
@@ -2555,34 +2601,40 @@ impl Database {
         started_at: i64,
         finished_at: i64,
     ) -> Result<i64> {
-        let mut run_id = 0_i64;
-        self.backend.with_tx(&mut |tx| {
-            run_id = tx.execute_insert(
-                "INSERT INTO validation_runs
-                 (registry_id, cache_url, depth, checked, missing, reachable,
-                  started_at, finished_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                &vals![
-                    registry_id,
-                    cache_url,
-                    depth,
-                    checked,
-                    findings.len() as i64,
-                    reachable,
-                    started_at,
-                    finished_at,
-                ],
-            )?;
-            for finding in findings {
-                tx.execute(
-                    "INSERT INTO validation_findings (run_id, store_hash, status)
-                     VALUES (?1, ?2, ?3)
-                     ON CONFLICT(run_id, store_hash) DO NOTHING",
-                    &vals![run_id, finding.store_hash, finding.status.as_str()],
-                )?;
-            }
-            Ok(())
-        })?;
+        // validation_runs.id feeds each finding's run_id and is read back as
+        // MAX(id) for "latest run per cache" (latest_validation_runs) and
+        // returned to the caller, so assign it client-side in monotonic order
+        // rather than via last_insert_rowid. A concurrent run would collide on
+        // the id and its batch would roll back (no corruption); validation is
+        // driven per-registry, so that path is effectively sequential.
+        let run_id = self.max_id("validation_runs")? + 1;
+        let mut stmts: Vec<Statement> = vec![Statement::new(
+            "INSERT INTO validation_runs
+             (id, registry_id, cache_url, depth, checked, missing, reachable,
+              started_at, finished_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            vals![
+                run_id,
+                registry_id,
+                cache_url,
+                depth,
+                checked,
+                findings.len() as i64,
+                reachable,
+                started_at,
+                finished_at,
+            ]
+            .to_vec(),
+        )];
+        for finding in findings {
+            stmts.push(Statement::new(
+                "INSERT INTO validation_findings (run_id, store_hash, status)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(run_id, store_hash) DO NOTHING",
+                vals![run_id, finding.store_hash, finding.status.as_str()].to_vec(),
+            ));
+        }
+        self.backend.batch(&stmts)?;
         Ok(run_id)
     }
 
