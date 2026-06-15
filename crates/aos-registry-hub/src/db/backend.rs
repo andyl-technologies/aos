@@ -38,6 +38,41 @@ use anyhow::{Context, Result};
 use super::dialect::{order_params, Dialect};
 use super::value::{Row, Value};
 
+/// One statement in a [`Backend::batch`]: source SQL and its bound parameters.
+///
+/// A batch is the portable unit of atomic multi-statement work. The native
+/// backends run it inside a SQL transaction; Cloudflare D1 runs it as
+/// `batch()` — its *only* atomicity primitive, since it has no interactive
+/// transactions. Because a batch cannot read a value back mid-flight, every
+/// statement must be self-contained: ids are assigned client-side rather than
+/// read from `last_insert_rowid`, and any guard is encoded in a `WHERE` clause
+/// rather than a read-then-branch. This is the seam the unified
+/// native/Cloudflare runtime is built on (RFC-0004 Phase 5).
+#[derive(Debug, Clone)]
+pub struct Statement {
+    /// The source SQL, in the sqlite dialect the [`Database`](crate::db::Database)
+    /// methods write; each backend translates it via [`Dialect`] before running.
+    pub sql: String,
+    /// The parameters bound to `sql`, in `?1`/`?2`… order.
+    pub params: Vec<Value>,
+}
+
+impl Statement {
+    /// Builds a [`Statement`] from source SQL and its bound parameters.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let s = Statement::new("DELETE FROM sessions WHERE id = ?1", vals![id]);
+    /// ```
+    pub fn new(sql: impl Into<String>, params: Vec<Value>) -> Self {
+        Self {
+            sql: sql.into(),
+            params,
+        }
+    }
+}
+
 /// A synchronous handle to one SQL engine.
 ///
 /// Implementors own their connection and translate the hub's source SQL with
@@ -103,6 +138,32 @@ pub trait Backend: Send + Sync {
     /// Returns an error if the transaction cannot begin or commit, or if `f`
     /// returns one (after rollback).
     fn with_tx(&self, f: &mut dyn FnMut(&mut dyn Tx) -> Result<()>) -> Result<()>;
+
+    /// Runs `stmts` as one atomic unit — either all commit, or none do.
+    ///
+    /// This is the *portable* transaction primitive. Unlike [`Backend::with_tx`]
+    /// it takes a fixed, self-contained statement list with no mid-flight reads
+    /// or `last_insert_rowid` round-trips, so it maps directly onto Cloudflare
+    /// D1's `batch()` as well as a native SQL transaction. New write paths
+    /// should prefer it; `with_tx` is retained for the read-then-write sites not
+    /// yet restructured (RFC-0004 Phase 5).
+    ///
+    /// The default implementation replays the statements through
+    /// [`Backend::with_tx`]; a backend may override it where its driver exposes
+    /// a more direct batch API.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any statement fails to translate or execute; the
+    /// whole batch is then rolled back.
+    fn batch(&self, stmts: &[Statement]) -> Result<()> {
+        self.with_tx(&mut |tx| {
+            for stmt in stmts {
+                tx.execute(&stmt.sql, &stmt.params)?;
+            }
+            Ok(())
+        })
+    }
 
     /// Downcasts to the sqlite driver, for the in-module migration tests that
     /// need raw `rusqlite` access. Non-sqlite backends return `None`.
@@ -304,7 +365,56 @@ pub(crate) fn prepare(
 
 #[cfg(test)]
 mod tests {
-    use super::redact_db_url;
+    use super::{redact_db_url, Backend, SqliteBackend, Statement};
+    use crate::db::value::Value;
+
+    /// An in-memory sqlite backend with a single `t(id, v)` table for batch tests.
+    fn batch_fixture() -> SqliteBackend {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory sqlite");
+        let backend = SqliteBackend::new(conn).expect("wrap connection");
+        backend
+            .execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT NOT NULL);")
+            .expect("create table");
+        backend
+    }
+
+    #[test]
+    fn batch_commits_all_statements_atomically() {
+        let backend = batch_fixture();
+        backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO t (id, v) VALUES (?1, ?2)",
+                    vec![Value::Int(1), Value::Text("a".into())],
+                ),
+                Statement::new(
+                    "INSERT INTO t (id, v) VALUES (?1, ?2)",
+                    vec![Value::Int(2), Value::Text("b".into())],
+                ),
+            ])
+            .expect("batch commits");
+        let rows = backend.query("SELECT id FROM t ORDER BY id", &[]).unwrap();
+        assert_eq!(rows.len(), 2, "both rows committed");
+    }
+
+    #[test]
+    fn batch_rolls_back_on_a_failing_statement() {
+        let backend = batch_fixture();
+        let err = backend.batch(&[
+            Statement::new(
+                "INSERT INTO t (id, v) VALUES (?1, ?2)",
+                vec![Value::Int(1), Value::Text("a".into())],
+            ),
+            // NOT NULL violation: the whole batch must roll back.
+            Statement::new(
+                "INSERT INTO t (id, v) VALUES (?1, NULL)",
+                vec![Value::Int(2)],
+            ),
+        ]);
+        assert!(err.is_err(), "a failing statement aborts the batch");
+        let rows = backend.query("SELECT id FROM t", &[]).unwrap();
+        assert!(rows.is_empty(), "the first insert was rolled back");
+    }
 
     #[test]
     fn redact_db_url_strips_password() {
