@@ -457,7 +457,11 @@
         "expose.provides entry contains unknown keys: ${builtins.concatStringsSep ", " extraKeys}"
         (
           throwIfNot
-          (if kind == "directory" then path != null && unit == null else path == null && unit != null)
+          (
+            if kind == "directory"
+            then path != null && unit == null
+            else path == null && unit != null
+          )
           "provided capability '${name}' has invalid path/unit fields for kind '${kind}'"
           (
             {inherit name kind;}
@@ -909,6 +913,41 @@ in rec {
       };
 
     memberUnitNames = authoredUnitNames ++ sideEffectUnitNames;
+    socketActivatedServiceFor = name: unit: let
+      socketConfig = unit.socketConfig or {};
+      accept = socketConfig.Accept or false;
+      acceptString =
+        if builtins.isString accept
+        then lib.toLower accept
+        else accept;
+      acceptEnabled = acceptString == true || acceptString == "true" || acceptString == "yes" || acceptString == "on" || acceptString == "1";
+    in
+      if acceptEnabled
+      then null
+      else socketConfig.Service or "${lib.removeSuffix ".socket" name}.service";
+    socketActivatedServiceUnitNames = uniqueUnits (
+      builtins.filter (unit: unit != null)
+      (
+        lib.mapAttrsToList (
+          name: unit:
+            if lib.hasSuffix ".socket" name
+            then socketActivatedServiceFor name unit
+            else null
+        )
+        units
+      )
+      ++ builtins.map (route: route.unit) (builtins.filter (route: route.kind == "socket") uses)
+    );
+    socketActivatedTargetMemberUnitNames =
+      builtins.filter (
+        unit:
+          !(
+            builtins.elem unit socketActivatedServiceUnitNames
+            && builtins.hasAttr unit units
+            && !((builtins.getAttr unit units).notSocketActivated or false)
+          )
+      )
+      memberUnitNames;
     referencedUnitNames =
       builtins.concatMap (artifact: artifact.units) config.artifacts
       ++ builtins.concatMap (credential: credential.units) config.credentials
@@ -927,10 +966,15 @@ in rec {
       reloadArtifacts = configReloadArtifactsForUnit name;
       reloadPaths = builtins.map (artifact: artifact.path) reloadArtifacts;
       reloadableArtifacts = builtins.filter (artifact: artifact.reload == "reload") reloadArtifacts;
+      directTargetMember =
+        !(
+          builtins.elem name socketActivatedServiceUnitNames
+          && !((unit.notSocketActivated or false))
+        );
     in
       unit
       // {
-        wantedBy = [target];
+        wantedBy = lib.optional directTargetMember target;
         requiredBy = [];
         upheldBy = [];
         partOf = uniqueUnits ((unit.partOf or []) ++ [target]);
@@ -1224,7 +1268,7 @@ in rec {
       // {
         "${target}" = {
           description = "Activation target for ${packageName}";
-          wants = uniqueUnits memberUnitNames;
+          wants = uniqueUnits socketActivatedTargetMemberUnitNames;
         };
       }
     );

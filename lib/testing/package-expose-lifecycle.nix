@@ -1,8 +1,8 @@
 ##! lib/testing/package-expose-lifecycle.nix — RFC-0001 live package expose check.
 ##!
-##! Boots a full AOS system, attaches rendered package-expose units through
-##! `/etc/systemd/system.attached` like the package manager does at activation,
-##! then starts, inspects, reloads, and stops the package targets under systemd.
+##! Boots a full AOS system, seeds package-profile metadata, runs the package
+##! manager's exposed-unit reconciler, then starts, inspects, reloads, and stops
+##! the package targets under systemd.
 {
   pkgs,
   mkSystem,
@@ -14,6 +14,7 @@
   privateOutboundHostIf = "aos${privateOutboundNetnsHash}h";
   privateOutboundPeerIf = "aos${privateOutboundNetnsHash}p";
   privateOutboundNatTable = "aos_pkg_${privateOutboundNetnsHash}";
+  privateOutboundHttpRuleComment = "aos-pkg-expose-lifecycle-outbound-http-test";
 
   privatePackageCommand = pkgs.writeShellScriptBin "expose-lifecycle-private-command" ''
     state=/var/lib/aos-pkg-expose-lifecycle-private
@@ -30,6 +31,45 @@
     ${pkgs.coreutils}/bin/readlink /proc/self/ns/user > "$state/userns"
     printf outbound-ok > "$state/result"
   '';
+
+  socketServer = pkgs.writeTextFile {
+    name = "expose-lifecycle-socket-server";
+    destination = "/share/expose-lifecycle-socket/server.py";
+    text = ''
+      import os
+      import pathlib
+      import socket
+
+      state = pathlib.Path("/var/lib/aos-pkg-expose-lifecycle-socket")
+      state.mkdir(parents=True, exist_ok=True)
+      state.joinpath("listen_fds").write_text(os.environ.get("LISTEN_FDS", ""))
+      state.joinpath("listen_fdnames").write_text(os.environ.get("LISTEN_FDNAMES", ""))
+      state.joinpath("netns").write_text(os.readlink("/proc/self/ns/net"))
+      state.joinpath("userns").write_text(os.readlink("/proc/self/ns/user"))
+
+      if not pathlib.Path("/share/expose-lifecycle-socket-consumer/payload.txt").is_file():
+          raise SystemExit("missing socket consumer root payload")
+
+      if os.environ.get("LISTEN_FDS") != "1":
+          raise SystemExit("expected exactly one socket activation fd")
+
+      listener = socket.socket(fileno=3)
+      listener.settimeout(20)
+      connection, _ = listener.accept()
+      with connection:
+          connection.recv(4096)
+          body = b"socket-ok\n"
+          connection.sendall(
+              b"HTTP/1.1 200 OK\r\n"
+              + b"Content-Type: text/plain\r\n"
+              + b"Content-Length: "
+              + str(len(body)).encode("ascii")
+              + b"\r\nConnection: close\r\n\r\n"
+              + body
+          )
+      state.joinpath("result").write_text("socket-ok")
+    '';
+  };
 
   privatePackage = pkgs.mkDerivation {
     pname = "expose-lifecycle-private";
@@ -62,6 +102,91 @@
         host-paths = [];
         syscalls = "restricted";
       };
+      requires = [];
+    };
+  };
+
+  socketProviderPackage = pkgs.mkDerivation {
+    pname = "expose-lifecycle-socket-provider";
+    version = "0";
+    src = null;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/expose-lifecycle-socket-provider"
+          printf socket-provider-payload > "$out/share/expose-lifecycle-socket-provider/payload.txt"
+        '';
+      }
+    ];
+
+    expose = {
+      units."expose-lifecycle-provider.socket" = {
+        description = "RFC-0001 live inbound-private package socket";
+        socketConfig = {
+          ListenStream = "127.0.0.1:18080";
+        };
+      };
+      permissions = {
+        network = "private";
+        capabilities = [];
+        devices = [];
+        host-paths = [];
+        syscalls = "restricted";
+      };
+      provides = [
+        {
+          name = "api";
+          kind = "socket";
+          unit = "expose-lifecycle-provider.socket";
+        }
+      ];
+      requires = [];
+    };
+  };
+
+  socketConsumerPackage = pkgs.mkDerivation {
+    pname = "expose-lifecycle-socket-consumer";
+    version = "0";
+    src = null;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/expose-lifecycle-socket-consumer"
+          printf socket-consumer-payload > "$out/share/expose-lifecycle-socket-consumer/payload.txt"
+        '';
+      }
+    ];
+
+    expose = {
+      units = {
+        "expose-lifecycle-consumer.service" = {
+          description = "RFC-0001 live inbound-private package socket workload";
+          serviceConfig = {
+            Type = "simple";
+            ExecStart = "${pkgs.python3}/bin/python3 ${socketServer}/share/expose-lifecycle-socket/server.py";
+            StateDirectory = "aos-pkg-expose-lifecycle-socket";
+          };
+        };
+      };
+      permissions = {
+        network = "private";
+        capabilities = [];
+        devices = [];
+        host-paths = [];
+        syscalls = "restricted";
+      };
+      uses = [
+        {
+          provider = "expose-lifecycle-socket-provider";
+          name = "api";
+          kind = "socket";
+          unit = "expose-lifecycle-consumer.service";
+        }
+      ];
       requires = [];
     };
   };
@@ -101,6 +226,61 @@
     };
   };
 
+  seedPackageProfile = pkgs.writeShellScriptBin "seed-expose-lifecycle-profile" ''
+    set -eu
+    profile=/var/lib/profiles/system-packages
+    mkdir -p "$profile/gen-1" "$profile/meta"
+    ln -sfn gen-1 "$profile/current"
+
+    ${pkgs.python3}/bin/python3 - "$profile" \
+      expose-lifecycle-private ${privatePackage} ${privatePackage.expose} \
+      expose-lifecycle-socket-provider ${socketProviderPackage} ${socketProviderPackage.expose} \
+      expose-lifecycle-socket-consumer ${socketConsumerPackage} ${socketConsumerPackage.expose} \
+      expose-lifecycle-outbound ${privateOutboundPackage} ${privateOutboundPackage.expose} <<'PY'
+    import json
+    import pathlib
+    import sys
+
+    profile = pathlib.Path(sys.argv[1])
+    triples = sys.argv[2:]
+    for offset in range(0, len(triples), 3):
+        name, store_path, expose_path = triples[offset : offset + 3]
+        store_hash, separator, _ = pathlib.Path(store_path).name.partition("-")
+        if not separator or not store_hash:
+            raise SystemExit(f"cannot derive store hash from {store_path}")
+        manifest = json.loads(pathlib.Path(expose_path, "manifest.json").read_text())
+        meta = {
+            "store_path": store_path,
+            "pushed_at": 1,
+            "pushed_by": "apm",
+            "expires_at": None,
+            "is_root": True,
+            "last_accessed": 1,
+            "access_count": 0,
+            "apm": {
+                "name": name,
+                "version": "0",
+                "explicit": True,
+                "registry": "test",
+                "installed_at": "2026-06-16T00:00:00Z",
+                "held": False,
+                "source_drv": "",
+                "source_nar_hash": "",
+                "expose": manifest["expose"],
+                "expose_artifact": {
+                    "store_path": expose_path,
+                    "nar_hash": "sha256:test",
+                    "nar_size": 1,
+                },
+                "permissions": manifest["permissions"],
+            },
+        }
+        pathlib.Path(profile, "meta", f"{store_hash}.json").write_text(
+            json.dumps(meta, sort_keys=True)
+        )
+    PY
+  '';
+
   testSystem = mkSystem {
     modules = [
       ../../systems/server.nix
@@ -108,8 +288,15 @@
         environment.systemPackages = [
           privatePackage
           privatePackage.expose
+          socketProviderPackage
+          socketProviderPackage.expose
+          socketConsumerPackage
+          socketConsumerPackage.expose
           privateOutboundPackage
           privateOutboundPackage.expose
+          seedPackageProfile
+          pkgs.aos
+          pkgs.curl
           pkgs.iproute2
           pkgs.nftables
           pkgs.procps-ng
@@ -128,13 +315,21 @@ in
       initial_ip_forward = vm.succeed("cat /proc/sys/net/ipv4/ip_forward").strip()
 
       vm.succeed("systemctl is-active nftables.service")
-      vm.succeed("mkdir -p /etc/systemd/system.attached")
-      vm.succeed("cp -a ${privatePackage.expose}/units/. /etc/systemd/system.attached/")
-      vm.succeed("cp -a ${privateOutboundPackage.expose}/units/. /etc/systemd/system.attached/")
-      vm.succeed("systemctl daemon-reload")
+      vm.succeed("${seedPackageProfile}/bin/seed-expose-lifecycle-profile")
+      vm.succeed("${pkgs.aos}/bin/apm _test-reconcile-exposed-units --system")
       vm.succeed("systemctl cat expose-lifecycle-private.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-private.service'")
+      vm.succeed("systemctl cat expose-lifecycle-consumer.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-consumer.service'")
+      vm.succeed("systemctl cat expose-lifecycle-provider.socket | grep -F '# /etc/systemd/system.attached/expose-lifecycle-provider.socket'")
+      vm.succeed("systemctl cat expose-lifecycle-provider.socket | grep -F '# /etc/systemd/system.attached/expose-lifecycle-provider.socket.d/50-aos-capability-routes.conf'")
+      vm.succeed("systemctl cat aos-pkg-expose-lifecycle-socket-consumer.target | grep -F '# /etc/systemd/system.attached/aos-pkg-expose-lifecycle-socket-consumer.target.d/50-aos-capability-routes.conf'")
       vm.succeed("systemctl cat expose-lifecycle-outbound.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-outbound.service'")
       vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-private.service")
+      vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-consumer.service")
+      vm.succeed("grep -q '^PrivateNetwork=true$' /etc/systemd/system.attached/expose-lifecycle-consumer.service")
+      vm.succeed("grep -q '^Wants=.*expose-lifecycle-provider.socket' /etc/systemd/system.attached/aos-pkg-expose-lifecycle-socket-consumer.target.d/50-aos-capability-routes.conf")
+      vm.succeed("if grep -q '^Wants=.*expose-lifecycle-consumer.service' /etc/systemd/system.attached/aos-pkg-expose-lifecycle-socket-consumer.target; then exit 1; fi")
+      vm.succeed("grep -q '^Service=expose-lifecycle-consumer.service$' /etc/systemd/system.attached/expose-lifecycle-provider.socket.d/50-aos-capability-routes.conf")
+      vm.succeed("grep -q '^FileDescriptorName=aos-expose-lifecycle-socket-provider-api$' /etc/systemd/system.attached/expose-lifecycle-provider.socket.d/50-aos-capability-routes.conf")
       vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-outbound.service")
 
       vm.succeed("systemctl start aos-pkg-expose-lifecycle-private.target")
@@ -157,6 +352,35 @@ in
           "systemctl show -p DynamicUser --value expose-lifecycle-private.service"
       )
       vm.succeed("systemctl stop aos-pkg-expose-lifecycle-private.target")
+
+      vm.succeed("systemctl stop aos-pkg-expose-lifecycle-socket-provider.target aos-pkg-expose-lifecycle-socket-consumer.target expose-lifecycle-provider.socket")
+      vm.succeed("systemctl reset-failed expose-lifecycle-consumer.service")
+      vm.succeed("systemctl start aos-pkg-expose-lifecycle-socket-consumer.target")
+      vm.succeed("systemctl is-active expose-lifecycle-provider.socket")
+      vm.succeed("test \"$(systemctl is-active expose-lifecycle-consumer.service || true)\" = inactive")
+      assert "socket-ok" in vm.succeed(
+          "curl -sf --max-time 20 http://127.0.0.1:18080/"
+      )
+      vm.wait_until_succeeds(
+          "test \"$(cat /var/lib/aos-pkg-expose-lifecycle-socket/result)\" = socket-ok",
+          timeout=30,
+      )
+      assert "aos-expose-lifecycle-socket-provider-api" in vm.succeed(
+          "cat /var/lib/aos-pkg-expose-lifecycle-socket/listen_fdnames"
+      )
+      assert vm.succeed(
+          "cat /var/lib/aos-pkg-expose-lifecycle-socket/netns"
+      ).strip() != host_netns
+      assert vm.succeed(
+          "cat /var/lib/aos-pkg-expose-lifecycle-socket/userns"
+      ).strip() != host_userns
+      assert "${socketConsumerPackage}" in vm.succeed(
+          "systemctl show -p RootDirectory --value expose-lifecycle-consumer.service"
+      )
+      assert "yes" in vm.succeed(
+          "systemctl show -p PrivateNetwork --value expose-lifecycle-consumer.service"
+      )
+      vm.succeed("systemctl stop aos-pkg-expose-lifecycle-socket-consumer.target expose-lifecycle-provider.socket aos-pkg-expose-lifecycle-socket-provider.target")
 
       vm.succeed("systemctl start aos-pkg-expose-lifecycle-outbound.target")
       assert "outbound-ok" in vm.succeed(
@@ -184,6 +408,17 @@ in
       vm.succeed(
           "nft list ruleset | grep -F 'aos-pkg-expose-lifecycle-outbound-netns-forward'"
       )
+      vm.succeed("mkdir -p /tmp/expose-lifecycle-outbound-http")
+      vm.succeed("printf outbound-via-netns > /tmp/expose-lifecycle-outbound-http/index.html")
+      vm.succeed("nft insert rule inet filter input iifname \"${privateOutboundHostIf}\" tcp dport 18081 accept comment \"${privateOutboundHttpRuleComment}\"")
+      vm.succeed("host_addr=$(ip -4 -o addr show dev ${privateOutboundHostIf} | sed -n 's|.*inet \\([0-9.]*\\)/.*|\\1|p'); test -n \"$host_addr\"; cd /tmp/expose-lifecycle-outbound-http; ${pkgs.python3}/bin/python3 -m http.server 18081 --bind \"$host_addr\" >/tmp/expose-lifecycle-outbound-http/server.log 2>&1 & echo $! >/tmp/expose-lifecycle-outbound-http/server.pid")
+      vm.wait_until_succeeds(
+          "host_addr=$(ip -4 -o addr show dev ${privateOutboundHostIf} | sed -n 's|.*inet \\([0-9.]*\\)/.*|\\1|p'); curl -sf --max-time 2 \"http://$host_addr:18081/\" | grep -q outbound-via-netns",
+          timeout=30,
+      )
+      vm.succeed("host_addr=$(ip -4 -o addr show dev ${privateOutboundHostIf} | sed -n 's|.*inet \\([0-9.]*\\)/.*|\\1|p'); ip netns exec aos-pkg-expose-lifecycle-outbound curl -sf --max-time 5 \"http://$host_addr:18081/\" | grep -q outbound-via-netns")
+      vm.succeed("kill \"$(cat /tmp/expose-lifecycle-outbound-http/server.pid)\"")
+      vm.succeed("handle=$(nft -a list chain inet filter input | sed -n 's|.*comment \"${privateOutboundHttpRuleComment}\".*# handle \\([0-9][0-9]*\\).*|\\1|p' | head -n1); test -n \"$handle\"; nft delete rule inet filter input handle \"$handle\"")
       vm.succeed(
           "test \"$(nft -a list chain inet filter forward | grep -F 'comment \"aos-pkg-expose-lifecycle-outbound-netns-forward\"' | wc -l)\" -eq 2"
       )

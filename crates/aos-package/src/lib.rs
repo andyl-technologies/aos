@@ -387,6 +387,13 @@ pub enum PackageCommand {
         #[command(subcommand)]
         op: TestSystemdClientOp,
     },
+    /// Hidden: reconcile exposed package units from the package profile.
+    #[command(name = "_test-reconcile-exposed-units", hide = true)]
+    TestReconcileExposedUnits {
+        /// Use the system package profile
+        #[arg(long)]
+        system: bool,
+    },
 }
 
 /// Operations for the hidden `apm _test-systemd-client` subcommand. Each maps
@@ -455,8 +462,7 @@ pub enum TestSystemdClientOp {
 }
 
 impl PackageCommand {
-    /// Returns `true` when the user passed `--system` on a subcommand that
-    /// supports it (Install, Upgrade, Rollback, Update, Registry).
+    /// Returns `true` when the command selects the system package profile.
     pub fn is_system(&self) -> bool {
         match self {
             PackageCommand::Install { system, .. } => *system,
@@ -464,6 +470,7 @@ impl PackageCommand {
             PackageCommand::Rollback { system, .. } => *system,
             PackageCommand::Update { system, .. } => *system,
             PackageCommand::Registry { system, .. } => *system,
+            PackageCommand::TestReconcileExposedUnits { system } => *system,
             _ => false,
         }
     }
@@ -1853,6 +1860,9 @@ pub async fn run(
             }
         }
         PackageCommand::Registry { command, .. } => run_registry(&config, command, printer).await,
+        PackageCommand::TestReconcileExposedUnits { .. } => {
+            exposed_units::reconcile_system_profile(&config, printer).await
+        }
         // Dispatched by the early-return above, before `ApmConfig::load`.
         PackageCommand::TestSystemdClient { .. } => {
             unreachable!("TestSystemdClient is handled before ApmConfig::load")
