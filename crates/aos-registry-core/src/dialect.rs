@@ -446,4 +446,3 @@ pub fn order_params(params: &[Value], order: &[usize]) -> Vec<Value> {
         .map(|&i| params.get(i).cloned().unwrap_or(Value::Null))
         .collect()
 }
-

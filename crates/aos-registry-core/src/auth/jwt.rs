@@ -184,8 +184,7 @@ impl JwtKeys {
         let claims_bytes = B64
             .decode(claims_b64)
             .context("invalid JWT claims base64")?;
-        let claims: Claims =
-            serde_json::from_slice(&claims_bytes).context("invalid JWT claims")?;
+        let claims: Claims = serde_json::from_slice(&claims_bytes).context("invalid JWT claims")?;
         let now = unix_now()?;
         if claims.exp < now {
             bail!("JWT has expired");
