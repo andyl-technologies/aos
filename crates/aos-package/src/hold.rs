@@ -214,6 +214,8 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                permissions: Default::default(),
             }),
         }
     }

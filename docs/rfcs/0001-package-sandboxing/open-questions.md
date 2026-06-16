@@ -573,10 +573,11 @@ host-mounted state; document k3s upgrade as disruptive (drains). Spec in
 > as the `pkg.expose` store path ([authoring.md](authoring.md)), covered by
 > the NAR hash. Gated on Decision 19's capability-gate field landing first.
 
-**Statement.** `PackageMeta` (`crates/aos-package/src/types.rs`) and the registry
-TOML have **no** field for systemd units, a container rootfs, env/config refs, or
-an `aos-<pkg>.target`. Three placement options exist: extend the registry TOML,
-ship a `.aos-manifest` in the closure, or add a per-registry manifest section.
+**Current implementation.** Phase 0 extends `PackageMeta`
+(`crates/aos-package/src/types.rs`) and the per-platform registry TOML parser
+(`crates/aos-package/src/registry/parse.rs`) with `expose`, the signed
+`permissions` manifest, `min-format`, and `requires-features`. The rendered
+unit payload is still Phase 1.
 
 **Why it matters.** This is the schema that everything else keys off (install
 hook, activation, container launch, config). Getting it wrong is expensive to
@@ -594,10 +595,8 @@ and the container-root reference (Decision 5).
 - Hybrid: minimal class/target hints in registry TOML, detailed unit/container
   spec in the closure manifest.
 
-**Proposed next step.** *apm* + *packages-core*: pick the manifest location and
-draft the schema (must carry the signed `[permissions]` manifest, target name,
-container ref, config hooks). Spec in [apm-integration.md](apm-integration.md)
-and [permissions.md](permissions.md). **DECIDE-EARLY**.
+**Next implementation step.** Phase 1 renders the package-owned `pkg.expose`
+artifact and copies the manifest into that eval-free output.
 
 ---
 
@@ -842,10 +841,9 @@ harness cost. Record the outcome in
 declared by package **name** in the `expose` block
 ([authoring.md](authoring.md)) and materialize as `After=`/`Wants=` edges
 between package targets ([container-model.md](container-model.md)
-§Composition). Today's resolver has no named dependencies at all:
-`PackageMeta.references` carries store-path hashes only, and resolution walks
-`closures/<hash>` adjacency or BFS over hashes
-(`crates/aos-package/src/resolve.rs`).
+§Composition). Phase 0 adds the name-level resolver surface in
+`crates/aos-package/src/resolve.rs`; the Phase 5 expose phase emits the
+corresponding target edges.
 
 **Why it matters.** This is new resolver surface (name-level resolution +
 closure merge), and the semantics need pinning: install-time pull-in
@@ -857,9 +855,8 @@ and pushes retry loops onto users — a documented pain point — so flat orderi
 edges are worth having, but nothing more (no version-constraint solver; the
 registry channel model already pins versions).
 
-**Proposed next step.** *apm*: add `requires: Vec<String>` to the `expose`
-metadata; resolve names at install; emit target edges in the expose phase.
-**DECIDE-EARLY** (schema-shaping).
+**Next implementation step.** Phase 5 emits target ordering edges and typed
+capability routing from the already-parsed `requires` field.
 
 ---
 
@@ -876,14 +873,16 @@ enforcing its privilege** — fail-open.
 with stale apm binaries silently bypasses it.
 
 **Options.** A `min-format`/`requires-features` field added to the schema
-**before** the first permission-bearing package is published, which old
-clients parse and refuse on; or publishing permission-bearing packages in a
-shape old resolvers fail closed on (e.g. a new required key inside
-`[versions.platforms.<p>]`). The first is cleaner; both require acting *now*,
-while no permission-bearing packages exist.
+**before** the first permission-bearing package is published, plus a structural
+wire-format break for permission-bearing entries so old resolvers fail closed
+instead of ignoring unknown fields.
 
-**Proposed next step.** *apm*: add the gate field to `PackageMeta` + parser in
-the next schema change, before any `expose` work ships.
+**Current implementation.** Phase 0 adds `min-format` and `requires-features`
+to `PackageMeta` + the registry parser. Permission-bearing TOML carries the
+gate inside a structured `references` table; pre-Phase-0 clients expected
+`references = [...]` and reject the entry. Current clients also refuse
+unsupported formats/features, and RFC-0001 fields must declare their feature
+gate.
 **DECIDE-BEFORE-MVP** (fail-closed property).
 
 ---

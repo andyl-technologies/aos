@@ -23,13 +23,15 @@ use super::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     resolve_mirror, resolved_downloads_json,
 };
+use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{
     delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
 };
 use super::registry::{RegistrySet, store_path_hash};
-use super::resolve::resolve_closure;
+use super::remove::retained_installed_indexes;
+use super::resolve::resolve_multiple;
 use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
@@ -139,18 +141,25 @@ pub async fn run(
     let mut upgrade_closures: Vec<(String, Vec<PackageMeta>)> = Vec::new();
 
     for candidate in &to_upgrade {
-        let closure = resolve_closure(&registries, &candidate.name, Some(&candidate.registry))
-            .with_context(|| format!("resolving upgrade for '{}'", candidate.name))?;
-        for meta in &closure.closure {
-            let hash = store_path_hash(&meta.store_path).to_string();
-            if !all_new_metas
-                .iter()
-                .any(|m| store_path_hash(&m.store_path) == hash)
-            {
-                all_new_metas.push(meta.clone());
+        let closures = resolve_multiple(
+            &registries,
+            std::slice::from_ref(&candidate.name),
+            Some(&candidate.registry),
+        )
+        .with_context(|| format!("resolving upgrade for '{}'", candidate.name))?;
+        admit_package_roots(closures.iter().flat_map(|closure| closure.closure.iter()))?;
+        for closure in closures {
+            for meta in &closure.closure {
+                let hash = store_path_hash(&meta.store_path).to_string();
+                if !all_new_metas
+                    .iter()
+                    .any(|m| store_path_hash(&m.store_path) == hash)
+                {
+                    all_new_metas.push(meta.clone());
+                }
             }
+            upgrade_closures.push((closure.registry_name, closure.closure));
         }
-        upgrade_closures.push((closure.registry_name, closure.closure));
     }
     let needed_hashes = needed_hashes_after_upgrade(&installed, &to_upgrade, &all_new_metas)
         .await
@@ -346,6 +355,8 @@ pub async fn run(
                     held: flags.held,
                     source_drv: meta.source_drv.clone(),
                     source_nar_hash: meta.source_nar_hash.clone(),
+                    expose: meta.expose.clone(),
+                    permissions: meta.permissions.clone(),
                 }),
             };
 
@@ -484,14 +495,13 @@ async fn needed_hashes_after_upgrade(
         .map(|meta| store_path_hash(&meta.store_path).to_string())
         .collect();
     let upgraded_names: HashSet<&str> = to_upgrade.iter().map(|c| c.name.as_str()).collect();
+    let pending_remove_hashes = hashes_for_installed_names(installed, &upgraded_names);
 
-    for meta in installed {
+    for index in retained_installed_indexes(installed, &pending_remove_hashes) {
+        let meta = &installed[index];
         let Some(apm) = meta.apm.as_ref() else {
             continue;
         };
-        if !apm.explicit || upgraded_names.contains(apm.name.as_str()) {
-            continue;
-        }
 
         for path in closure_paths(&meta.store_path)
             .await
@@ -502,6 +512,21 @@ async fn needed_hashes_after_upgrade(
     }
 
     Ok(needed)
+}
+
+fn hashes_for_installed_names(
+    installed: &[InstalledMeta],
+    names: &HashSet<&str>,
+) -> HashSet<String> {
+    installed
+        .iter()
+        .filter_map(|meta| {
+            let apm = meta.apm.as_ref()?;
+            names
+                .contains(apm.name.as_str())
+                .then(|| store_path_hash(&meta.store_path).to_string())
+        })
+        .collect()
 }
 
 /// Hashes of installed entries (and their source derivations) not in the
@@ -876,6 +901,8 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                permissions: Default::default(),
             }),
         }
     }
@@ -1127,6 +1154,10 @@ references = []
                     sysroot: false,
                     previous: None,
                     images: vec![],
+                    min_format: None,
+                    requires_features: Vec::new(),
+                    expose: None,
+                    permissions: Default::default(),
                 },
                 registry: "aos-core".into(),
             },
@@ -1153,6 +1184,10 @@ references = []
                     sysroot: false,
                     previous: None,
                     images: vec![],
+                    min_format: None,
+                    requires_features: Vec::new(),
+                    expose: None,
+                    permissions: Default::default(),
                 },
                 registry: "aos-core".into(),
             },
@@ -1197,6 +1232,10 @@ references = []
                     sysroot: false,
                     previous: None,
                     images: vec![],
+                    min_format: None,
+                    requires_features: Vec::new(),
+                    expose: None,
+                    permissions: Default::default(),
                 },
                 registry: "aos-core".into(),
             },
@@ -1223,6 +1262,10 @@ references = []
                     sysroot: false,
                     previous: None,
                     images: vec![],
+                    min_format: None,
+                    requires_features: Vec::new(),
+                    expose: None,
+                    permissions: Default::default(),
                 },
                 registry: "aos-core".into(),
             },
@@ -1268,6 +1311,10 @@ references = []
                     sysroot: false,
                     previous: None,
                     images: vec![],
+                    min_format: None,
+                    requires_features: Vec::new(),
+                    expose: None,
+                    permissions: Default::default(),
                 },
                 registry: "aos-core".into(),
             },
@@ -1294,6 +1341,10 @@ references = []
                     sysroot: false,
                     previous: None,
                     images: vec![],
+                    min_format: None,
+                    requires_features: Vec::new(),
+                    expose: None,
+                    permissions: Default::default(),
                 },
                 registry: "aos-core".into(),
             },

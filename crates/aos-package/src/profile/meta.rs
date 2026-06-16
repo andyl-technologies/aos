@@ -398,6 +398,8 @@ pub fn rebuild_meta(
                     held: false,
                     source_drv: pkg.source_drv.clone(),
                     source_nar_hash: pkg.source_nar_hash.clone(),
+                    expose: pkg.expose.clone(),
+                    permissions: pkg.permissions.clone(),
                 }),
             }
         } else {
@@ -466,6 +468,8 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                permissions: Default::default(),
             }),
         }
     }

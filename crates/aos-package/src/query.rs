@@ -290,6 +290,8 @@ fn show_registry_package(
             "dependencies": dep_names,
             "source_drv": meta.source_drv,
             "maintainer": meta.maintainer,
+            "expose": meta.expose,
+            "permissions": meta.permissions,
         });
         printer.json(&json_obj);
     } else {
@@ -312,6 +314,19 @@ fn show_registry_package(
         }
         printer.kv("Source drv", &meta.source_drv);
         printer.kv("Maintainer", &meta.maintainer);
+        if let Some(expose) = &meta.expose {
+            printer.kv("Expose target", &expose.target);
+            if expose.requires.is_empty() {
+                printer.kv("Expose requires", "(none)");
+            } else {
+                printer.kv("Expose requires", &expose.requires.join(", "));
+            }
+        }
+        if !meta.permissions.is_empty() {
+            let rendered =
+                serde_json::to_string(&meta.permissions).context("serializing permissions")?;
+            printer.kv("Permissions", &rendered);
+        }
 
         // Show sysroot-specific information.
         crate::sysroot::show_sysroot_info(meta, printer);
@@ -971,6 +986,8 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                permissions: Default::default(),
             }),
         }
     }

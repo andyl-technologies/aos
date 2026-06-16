@@ -20,7 +20,7 @@
 
 use std::collections::HashSet;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::registry::{RegistrySet, store_path_hash};
 use super::types::PackageMeta;
@@ -221,10 +221,10 @@ fn visit_dependencies_first(
 // Multi-package resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve multiple packages, producing independent closures.
+/// Resolve multiple packages and package-level `expose.requires`.
 ///
-/// Does NOT deduplicate across closures -- that happens at download time
-/// via [`collect_unique_metas`].
+/// Package roots are deduplicated by name while resolving. Store-path members
+/// are still deduplicated later by [`collect_unique_metas`].
 ///
 /// # Errors
 ///
@@ -235,13 +235,68 @@ pub fn resolve_multiple(
     names: &[String],
     registry_filter: Option<&str>,
 ) -> Result<Vec<ResolvedClosure>> {
-    let mut closures = Vec::with_capacity(names.len());
+    let mut closures = Vec::new();
+    let mut resolved = HashSet::new();
+    let mut stack = Vec::new();
+
     for name in names {
-        let c = resolve_closure(registries, name, registry_filter)
-            .with_context(|| format!("resolving package '{name}'"))?;
-        closures.push(c);
+        resolve_with_requires(
+            registries,
+            name,
+            registry_filter,
+            &mut resolved,
+            &mut stack,
+            &mut closures,
+        )?;
     }
     Ok(closures)
+}
+
+fn resolve_with_requires(
+    registries: &RegistrySet,
+    name: &str,
+    registry_filter: Option<&str>,
+    resolved: &mut HashSet<String>,
+    stack: &mut Vec<String>,
+    closures: &mut Vec<ResolvedClosure>,
+) -> Result<()> {
+    if resolved.contains(name) {
+        return Ok(());
+    }
+
+    if let Some(position) = stack.iter().position(|entry| entry == name) {
+        let mut cycle = stack[position..].to_vec();
+        cycle.push(name.to_string());
+        bail!("package requires cycle: {}", cycle.join(" -> "));
+    }
+
+    stack.push(name.to_string());
+    let closure = resolve_closure(registries, name, registry_filter)
+        .with_context(|| format!("resolving package '{name}'"))?;
+
+    let requires = closure
+        .root
+        .expose
+        .as_ref()
+        .map(|expose| expose.requires.clone())
+        .unwrap_or_default();
+    for required in &requires {
+        resolve_with_requires(
+            registries,
+            required,
+            registry_filter,
+            resolved,
+            stack,
+            closures,
+        )
+        .with_context(|| format!("resolving required package '{required}' for '{name}'"))?;
+    }
+
+    let popped = stack.pop();
+    debug_assert_eq!(popped.as_deref(), Some(name));
+    resolved.insert(name.to_string());
+    closures.push(closure);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +337,110 @@ mod tests {
     use crate::registry::tests::{
         curl_store_record, make_registry, make_registry_with_store, zlib_store_record,
     };
+
+    const PROVIDER_TOML: &str = r#"
+[package]
+name = "provider"
+description = "Required provider"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/providerhash-provider-1.0.0"
+nar_hash = "sha256:provider"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+
+    const CONSUMER_TOML: &str = r#"
+[package]
+name = "consumer"
+description = "Requires provider"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/consumerhash-consumer-1.0.0"
+nar_hash = "sha256:consumer"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["expose-v1", "requires-v1"]
+
+[versions.platforms.x86_64-linux.expose]
+target = "aos-pkg-consumer.target"
+requires = ["provider"]
+"#;
+
+    const CYCLE_A_TOML: &str = r#"
+[package]
+name = "cycle-a"
+description = "Cycle A"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/cycleahash-cycle-a-1.0.0"
+nar_hash = "sha256:cyclea"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["expose-v1", "requires-v1"]
+
+[versions.platforms.x86_64-linux.expose]
+target = "aos-pkg-cycle-a.target"
+requires = ["cycle-b"]
+"#;
+
+    const CYCLE_B_TOML: &str = r#"
+[package]
+name = "cycle-b"
+description = "Cycle B"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/cyclebhash-cycle-b-1.0.0"
+nar_hash = "sha256:cycleb"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["expose-v1", "requires-v1"]
+
+[versions.platforms.x86_64-linux.expose]
+target = "aos-pkg-cycle-b.target"
+requires = ["cycle-a"]
+"#;
 
     // 1. Resolving a single package with deps produces a closure containing
     //    both the root and its resolvable dependency.
@@ -359,6 +518,66 @@ mod tests {
         assert_eq!(closures.len(), 2);
         assert_eq!(closures[0].root.name, "curl");
         assert_eq!(closures[1].root.name, "zlib");
+    }
+
+    #[test]
+    fn resolve_multiple_pulls_in_expose_requires() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry(
+            &tmp,
+            "aos-core",
+            500,
+            &[("consumer", CONSUMER_TOML), ("provider", PROVIDER_TOML)],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        let closures = resolve_multiple(&set, &["consumer".to_string()], None).unwrap();
+        let names: Vec<&str> = closures
+            .iter()
+            .map(|closure| closure.root.name.as_str())
+            .collect();
+
+        assert_eq!(names, vec!["provider", "consumer"]);
+    }
+
+    #[test]
+    fn resolve_multiple_deduplicates_explicit_requires() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry(
+            &tmp,
+            "aos-core",
+            500,
+            &[("consumer", CONSUMER_TOML), ("provider", PROVIDER_TOML)],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        let closures = resolve_multiple(
+            &set,
+            &["consumer".to_string(), "provider".to_string()],
+            None,
+        )
+        .unwrap();
+        let names: Vec<&str> = closures
+            .iter()
+            .map(|closure| closure.root.name.as_str())
+            .collect();
+
+        assert_eq!(names, vec!["provider", "consumer"]);
+    }
+
+    #[test]
+    fn resolve_multiple_rejects_requires_cycle() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry(
+            &tmp,
+            "aos-core",
+            500,
+            &[("cycle-a", CYCLE_A_TOML), ("cycle-b", CYCLE_B_TOML)],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        let err = resolve_multiple(&set, &["cycle-a".to_string()], None).unwrap_err();
+        assert!(format!("{err:#}").contains("package requires cycle"));
     }
 
     // 5. collect_unique_metas deduplicates across closures.
