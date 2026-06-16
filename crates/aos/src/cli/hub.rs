@@ -18,6 +18,39 @@ pub enum HubCmd {
         #[command(subcommand)]
         command: HubRegistryCmd,
     },
+    /// List the organizations you can see (needs --token)
+    Orgs {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT (orgs are private; omit only to confirm none are public)
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// List the projects under an org
+    Projects {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Org slug
+        #[arg(long)]
+        org: String,
+    },
+    /// List the storage bindings under an org
+    Bindings {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Org slug
+        #[arg(long)]
+        org: String,
+    },
 }
 
 #[derive(Subcommand)]

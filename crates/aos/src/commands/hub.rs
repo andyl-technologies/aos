@@ -22,7 +22,101 @@ use crate::cli::{HubCmd, HubRegistryCmd};
 pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
     match command {
         HubCmd::Registry { command } => registry(printer, command).await,
+        HubCmd::Orgs { hub, token } => orgs(printer, hub, token.as_deref()).await,
+        HubCmd::Projects { hub, token, org } => {
+            projects(printer, hub, token.as_deref(), org).await
+        }
+        HubCmd::Bindings { hub, token, org } => {
+            bindings(printer, hub, token.as_deref(), org).await
+        }
     }
+}
+
+/// Handles `aos hub orgs`.
+async fn orgs(printer: &Printer, hub: &str, token: Option<&str>) -> Result<()> {
+    let client = hub_client(hub, token)?;
+    let orgs = client.list_orgs().await?;
+    if printer.json_if_active(&serde_json::json!({
+        "orgs": orgs
+            .iter()
+            .map(|o| serde_json::json!({
+                "slug": o.slug,
+                "name": o.name,
+                "created_at": o.created_at,
+            }))
+            .collect::<Vec<_>>(),
+    })) {
+        return Ok(());
+    }
+    if orgs.is_empty() {
+        printer.info("no organizations visible (authenticate with --token?)");
+        return Ok(());
+    }
+    printer.header(&format!("{} org(s) on {hub}", orgs.len()));
+    for org in &orgs {
+        printer.plain(&format!("  {}  {}", org.slug, org.name));
+    }
+    Ok(())
+}
+
+/// Handles `aos hub projects --org <slug>`.
+async fn projects(printer: &Printer, hub: &str, token: Option<&str>, org: &str) -> Result<()> {
+    let client = hub_client(hub, token)?;
+    let projects = client.list_projects(org).await?;
+    if printer.json_if_active(&serde_json::json!({
+        "projects": projects
+            .iter()
+            .map(|p| serde_json::json!({
+                "org_slug": p.org_slug,
+                "path": p.path,
+                "name": p.name,
+            }))
+            .collect::<Vec<_>>(),
+    })) {
+        return Ok(());
+    }
+    if projects.is_empty() {
+        printer.info(&format!("no projects in org '{org}'"));
+        return Ok(());
+    }
+    printer.header(&format!("{} project(s) in {org}", projects.len()));
+    for project in &projects {
+        let path = if project.path.is_empty() {
+            "<org root>"
+        } else {
+            &project.path
+        };
+        printer.plain(&format!("  {path}  {}", project.name));
+    }
+    Ok(())
+}
+
+/// Handles `aos hub bindings --org <slug>`.
+async fn bindings(printer: &Printer, hub: &str, token: Option<&str>, org: &str) -> Result<()> {
+    let client = hub_client(hub, token)?;
+    let bindings = client.list_bindings(org).await?;
+    if printer.json_if_active(&serde_json::json!({
+        "bindings": bindings
+            .iter()
+            .map(|b| serde_json::json!({
+                "org_slug": b.org_slug,
+                "name": b.name,
+                "kind": b.kind,
+                "root": b.root,
+            }))
+            .collect::<Vec<_>>(),
+    })) {
+        return Ok(());
+    }
+    if bindings.is_empty() {
+        printer.info(&format!("no storage bindings in org '{org}'"));
+        return Ok(());
+    }
+    printer.header(&format!("{} binding(s) in {org}", bindings.len()));
+    for binding in &bindings {
+        printer.plain(&format!("  {}  [{}]  {}", binding.name, binding.kind, binding.root));
+    }
+    Ok(())
 }
 
 /// Builds a hub client: token-authenticated when a JWT is supplied, else

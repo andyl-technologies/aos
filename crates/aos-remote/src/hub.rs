@@ -17,9 +17,11 @@ use anyhow::Result;
 use connectrpc::client::{ClientConfig, HttpClient};
 
 use aos_proto::aos::registry::v1::{
-    Channel, ChannelServiceClient, GetRegistryRequest, ListChannelsRequest, ListPackagesRequest,
-    ListRegistriesRequest, ListReleasesRequest, PackageServiceClient, PackageSummary, Registry,
-    RegistryServiceClient, Release,
+    Binding, Channel, ChannelServiceClient, GetRegistryRequest, ListBindingsRequest,
+    ListChannelsRequest, ListOrgsRequest, ListPackagesRequest, ListProjectsRequest,
+    ListRegistriesRequest, ListReleasesRequest, Org, OrgServiceClient, PackageServiceClient,
+    PackageSummary, Project, ProjectServiceClient, Registry, RegistryServiceClient, Release,
+    StorageServiceClient,
 };
 
 use crate::client::{make_http_client, validate_base_url};
@@ -38,6 +40,9 @@ pub struct RegistryHubClient {
     registry: RegistryServiceClient<HttpClient>,
     packages: PackageServiceClient<HttpClient>,
     channels: ChannelServiceClient<HttpClient>,
+    orgs: OrgServiceClient<HttpClient>,
+    projects: ProjectServiceClient<HttpClient>,
+    bindings: StorageServiceClient<HttpClient>,
 }
 
 impl RegistryHubClient {
@@ -79,7 +84,10 @@ impl RegistryHubClient {
         Ok(Self {
             registry: RegistryServiceClient::new(http.clone(), config.clone()),
             packages: PackageServiceClient::new(http.clone(), config.clone()),
-            channels: ChannelServiceClient::new(http, config),
+            channels: ChannelServiceClient::new(http.clone(), config.clone()),
+            orgs: OrgServiceClient::new(http.clone(), config.clone()),
+            projects: ProjectServiceClient::new(http.clone(), config.clone()),
+            bindings: StorageServiceClient::new(http, config),
         })
     }
 
@@ -168,5 +176,57 @@ impl RegistryHubClient {
             .await
             .map_err(|e| anyhow::anyhow!("listing channels for '{slug}': {e}"))?;
         Ok(response.into_owned().channels)
+    }
+
+    /// Lists the organizations visible to this client.
+    ///
+    /// Orgs are a tenant boundary, so this needs an authenticated client (see
+    /// [`connect_with_token`](Self::connect_with_token)); an anonymous client
+    /// sees none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn list_orgs(&self) -> Result<Vec<Org>> {
+        let response = self
+            .orgs
+            .list_orgs(ListOrgsRequest::default())
+            .await
+            .map_err(|e| anyhow::anyhow!("listing orgs: {e}"))?;
+        Ok(response.into_owned().orgs)
+    }
+
+    /// Lists the projects under an org.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn list_projects(&self, org_slug: &str) -> Result<Vec<Project>> {
+        let response = self
+            .projects
+            .list_projects(ListProjectsRequest {
+                org_slug: org_slug.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("listing projects for org '{org_slug}': {e}"))?;
+        Ok(response.into_owned().projects)
+    }
+
+    /// Lists the storage bindings under an org.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn list_bindings(&self, org_slug: &str) -> Result<Vec<Binding>> {
+        let response = self
+            .bindings
+            .list_bindings(ListBindingsRequest {
+                org_slug: org_slug.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("listing bindings for org '{org_slug}': {e}"))?;
+        Ok(response.into_owned().bindings)
     }
 }
