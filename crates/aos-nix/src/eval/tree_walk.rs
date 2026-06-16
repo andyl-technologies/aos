@@ -1537,6 +1537,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_has_context_primop(argument, argument_span, value)
             }
+            StrictUnaryPrimOp::UnsafeDiscardStringContext => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_unsafe_discard_string_context_primop(argument, argument_span, value)
+            }
             StrictUnaryPrimOp::StringLength => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_string_length_primop(argument, argument_span, value)
@@ -1625,6 +1629,44 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         Ok(Value::bool(string.has_context()))
+    }
+
+    fn eval_unsafe_discard_string_context_primop(
+        &mut self,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let string = self.coerce_to_string(argument, value, argument_span)?;
+        let result = {
+            let string = self.heap.get_string(string).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            string.discard_context().map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::String {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?
+        };
+        self.heap.alloc_string(result).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: argument,
+                    source,
+                },
+                argument_span,
+            )
+        })
     }
 
     fn eval_string_length_primop(
@@ -4289,6 +4331,7 @@ enum StrictUnaryPrimOp {
     Ceil,
     Floor,
     HasContext,
+    UnsafeDiscardStringContext,
     StringLength,
     BaseNameOf,
     DirOf,
@@ -4318,6 +4361,7 @@ impl StrictUnaryPrimOp {
             b"ceil" => Some(Self::Ceil),
             b"floor" => Some(Self::Floor),
             b"hasContext" => Some(Self::HasContext),
+            b"unsafeDiscardStringContext" => Some(Self::UnsafeDiscardStringContext),
             b"stringLength" => Some(Self::StringLength),
             b"baseNameOf" => Some(Self::BaseNameOf),
             b"dirOf" => Some(Self::DirOf),
@@ -6929,6 +6973,106 @@ mod tests {
                 id: argument,
                 expected: "string",
                 actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn unsafe_discard_string_context_primop_returns_context_free_string() {
+        assert_eq!(
+            eval_string_bytes("builtins.unsafeDiscardStringContext \"abc\""),
+            b"abc"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.unsafeDiscardStringContext { outPath = \"abc\"; }"),
+            b"abc"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.unsafeDiscardStringContext { __toString = self: \"custom\"; }"
+            ),
+            b"custom"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { unsafeDiscardStringContext = value: \"shadow\"; }; in builtins.unsafeDiscardStringContext \"abc\""
+            ),
+            b"shadow"
+        );
+
+        let ir = lower("builtins.unsafeDiscardStringContext \"x\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("unsafeDiscardStringContext argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"x".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing string allocates");
+
+        let result = evaluator
+            .eval_unsafe_discard_string_context_primop(argument, argument_span, value)
+            .expect("unsafeDiscardStringContext evaluates");
+        let string = evaluator
+            .heap
+            .get_string(result)
+            .expect("result string exists");
+
+        assert_eq!(string.bytes(), b"x");
+        assert!(!string.has_context());
+    }
+
+    #[test]
+    fn unsafe_discard_string_context_primop_forces_and_coerces_argument() {
+        let ir = lower("builtins.unsafeDiscardStringContext (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("unsafeDiscardStringContext forces its argument");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: argument }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower("builtins.unsafeDiscardStringContext 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("integer is not string-coercible here");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
             }
         );
         assert_eq!(error.span(), argument_span);

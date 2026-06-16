@@ -935,11 +935,31 @@ impl IrLowerer {
                 b"getEnv" | b"import" | b"pathExists" | b"readDir" | b"readFile" | b"readFileType",
             ) => Some(EffectClass::Effectful),
             Some(
-                b"isAttrs" | b"isList" | b"isFunction" | b"isString" | b"isInt" | b"isFloat"
-                | b"isBool" | b"isNull" | b"isPath" | b"typeOf" | b"length" | b"attrNames"
-                | b"attrValues" | b"tail" | b"functionArgs" | b"head" | b"ceil" | b"floor"
-                | b"hasContext" | b"listToAttrs" | b"concatLists" | b"stringLength" | b"baseNameOf"
-                | b"dirOf",
+                b"isAttrs"
+                | b"isList"
+                | b"isFunction"
+                | b"isString"
+                | b"isInt"
+                | b"isFloat"
+                | b"isBool"
+                | b"isNull"
+                | b"isPath"
+                | b"typeOf"
+                | b"length"
+                | b"attrNames"
+                | b"attrValues"
+                | b"tail"
+                | b"functionArgs"
+                | b"head"
+                | b"ceil"
+                | b"floor"
+                | b"hasContext"
+                | b"listToAttrs"
+                | b"concatLists"
+                | b"stringLength"
+                | b"baseNameOf"
+                | b"dirOf"
+                | b"unsafeDiscardStringContext",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1825,6 +1845,10 @@ mod tests {
             ("builtins.stringLength \"abc\"", b"stringLength".as_slice()),
             ("builtins.baseNameOf \"/a/b\"", b"baseNameOf".as_slice()),
             ("builtins.dirOf \"/a/b\"", b"dirOf".as_slice()),
+            (
+                "builtins.unsafeDiscardStringContext \"abc\"",
+                b"unsafeDiscardStringContext".as_slice(),
+            ),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -2114,6 +2138,26 @@ mod tests {
         assert_eq!(node(&ir, first).kind, IrKind::Select);
 
         let ir = lowered("let builtins = { hasContext = x: true; }; in builtins.hasContext \"x\"");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered("unsafeDiscardStringContext \"x\"");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir = lowered(
+            "let builtins = { unsafeDiscardStringContext = x: x; }; in builtins.unsafeDiscardStringContext \"x\"",
+        );
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
         };
