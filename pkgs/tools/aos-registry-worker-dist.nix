@@ -279,16 +279,6 @@ in
     }: let
       fixture = pkgs.aos-registry-worker-fixture;
       miniflareJs = "${pkgs.miniflare}/lib/node_modules/miniflare/dist/src/index.js";
-      # Embed the D1 schema at eval time rather than reading a store path at
-      # runtime (a bare .sql store path is not added to the VM rootfs closure).
-      # Strip `--` comment lines here so the embedded JS string carries no
-      # backticks/`${` that would break the template literal it lands in.
-      schemaSql = let
-        raw = builtins.readFile ../../crates/aos-registry-worker/migrations/0001_schema.sql;
-        keep = l: !(lib.hasPrefix "--" (lib.removePrefix " " (lib.removePrefix " " l)));
-        ddl = builtins.filter keep (lib.splitString "\n" raw);
-      in
-        builtins.concatStringsSep "\n" ddl;
 
       # The Node ESM driver: construct Miniflare around the built Worker, seed
       # D1 + R2, dispatch requests, assert the read-path behavior (facade
@@ -303,9 +293,6 @@ in
         const DIST = "${self}";
         const SURFACE = "${fixture}/surface";
         const TRUST_KEY = readFileSync("${fixture}/trust_key", "utf8").trim();
-        // The D1 schema, embedded at build time (comment lines already stripped
-        // in Nix, so this template literal is backtick-free).
-        const SCHEMA = `${schemaSql}`;
 
         let failures = 0;
         // Hard assertion: a failure fails the whole test.
@@ -355,18 +342,14 @@ in
         // the fixture's pinned trust key + signatures required, a PRIVATE
         // `secret` registry, and one package row so the browse UI renders. ──
         const db = await mf.getD1Database("REGISTRY_DB");
-        // miniflare's D1 `exec` runs ONE statement per line. Collapse the
-        // multi-line schema into one statement per line: join everything, split
-        // on `;`, and re-emit each non-empty statement (with its `;`) on its own
-        // single line. Comment lines were already stripped in Nix.
-        const schemaSql = SCHEMA
-          .split("\n").join(" ")
-          .split(";")
-          .map(s => s.replace(/\s+/g, " ").trim())
-          .filter(s => s.length > 0)
-          .map(s => s + ";")
-          .join("\n");
-        await db.exec(schemaSql);
+        // Create the schema the *shared* way: dispatch the Worker's /_init, which
+        // constructs core::Database over the D1Backend and applies the exact core
+        // MIGRATIONS the native hub uses — not a Worker-local schema subset. The
+        // D1Backend binds integers as JS numbers (f64), so the migration's
+        // schema-version write runs cleanly even under the pinned 2024-09-09
+        // workerd seed (whose D1 rejects BigInt binds).
+        const initRes = await mf.dispatchFetch("http://localhost/_init");
+        check("schema /_init applied", initRes.status === 200, "got " + initRes.status);
         await db.prepare(
           "INSERT INTO registries (id, slug, source_url, trust_keys, require_signatures, created_at, visibility, prefix) " +
           "VALUES (1, 'demo', 'file:///demo', ?1, 1, 100, 'public', 'demo')"

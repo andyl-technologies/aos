@@ -177,8 +177,11 @@ pub trait Backend: BackendBounds {
 /// Semicolons inside `'…'` string literals and `-- …` line comments are
 /// ignored, since the hub's migration DDL carries `;` in both (a default
 /// string value, a `--` comment). The migrations use no `BEGIN … END` blocks,
-/// so statement-level `;` splitting is otherwise sufficient. Trailing
-/// whitespace-only fragments are dropped.
+/// so statement-level `;` splitting is otherwise sufficient. Fragments that
+/// carry no executable SQL — only whitespace and `--` line comments, e.g. a
+/// trailing inline comment left after the final `;` — are dropped, since a
+/// backend such as D1 rejects a comment-only prepared statement ("SQL code did
+/// not contain a statement").
 pub fn split_statements(sql: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -210,20 +213,33 @@ pub fn split_statements(sql: &str) -> Vec<String> {
                 current.push(c);
             }
             ';' => {
-                let stmt = current.trim();
-                if !stmt.is_empty() {
-                    out.push(stmt.to_string());
+                if has_sql(&current) {
+                    out.push(current.trim().to_string());
                 }
                 current.clear();
             }
             _ => current.push(c),
         }
     }
-    let tail = current.trim();
-    if !tail.is_empty() {
-        out.push(tail.to_string());
+    if has_sql(&current) {
+        out.push(current.trim().to_string());
     }
     out
+}
+
+/// Returns `true` when `fragment` carries at least one character of executable
+/// SQL — i.e. something other than whitespace and `--` line comments.
+///
+/// Used by [`split_statements`] to drop comment-only fragments (such as a
+/// trailing inline comment after the final `;`) that a backend like D1 would
+/// reject with "SQL code did not contain a statement". A `--` inside a string
+/// literal can cause a false positive (the fragment is reported as having SQL),
+/// which is harmless: a fragment containing a real statement is exactly what we
+/// want to keep.
+fn has_sql(fragment: &str) -> bool {
+    fragment
+        .lines()
+        .any(|line| !line.split("--").next().unwrap_or("").trim().is_empty())
 }
 
 /// Appends `RETURNING id` to an `INSERT` that lacks an explicit `RETURNING`.
@@ -315,8 +331,28 @@ pub(crate) fn redact_db_url(url: &str) -> String {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::{redact_db_url, Backend, SqlxBackend, Statement};
+    use super::{redact_db_url, split_statements, Backend, SqlxBackend, Statement};
     use crate::value::Value;
+
+    #[test]
+    fn split_statements_drops_trailing_inline_comment() {
+        // An inline `--` comment carrying its own `;` after the statement's
+        // terminator must not yield a comment-only fragment (D1 rejects one with
+        // "SQL code did not contain a statement"). Mirrors the v8 migration.
+        let sql = "ALTER TABLE t ADD COLUMN c TEXT; -- a note (with; a semicolon)\n";
+        let stmts = split_statements(sql);
+        assert_eq!(stmts, vec!["ALTER TABLE t ADD COLUMN c TEXT".to_string()]);
+    }
+
+    #[test]
+    fn split_statements_keeps_statements_with_embedded_comments() {
+        // A comment *within* a real statement is retained (the statement still
+        // has executable SQL); only purely-comment fragments are dropped.
+        let sql = "CREATE TABLE t ( id INTEGER -- the id\n ); -- trailing\n";
+        let stmts = split_statements(sql);
+        assert_eq!(stmts.len(), 1);
+        assert!(stmts[0].contains("CREATE TABLE t"));
+    }
 
     /// An in-memory sqlite backend with a single `t(id, v)` table for batch tests.
     async fn batch_fixture() -> SqlxBackend {
