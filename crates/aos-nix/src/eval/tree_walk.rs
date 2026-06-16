@@ -154,12 +154,14 @@ impl EvalOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeWalkOptions {
     store_dir: Vec<u8>,
+    current_system: Option<Vec<u8>>,
 }
 
 impl Default for TreeWalkOptions {
     fn default() -> Self {
         Self {
             store_dir: DEFAULT_STORE_DIR.to_vec(),
+            current_system: None,
         }
     }
 }
@@ -183,7 +185,25 @@ impl TreeWalkOptions {
     pub fn with_store_dir(store_dir: impl Into<Vec<u8>>) -> Result<Self, TreeWalkOptionsError> {
         Ok(Self {
             store_dir: normalize_store_dir(store_dir.into())?,
+            current_system: None,
         })
+    }
+
+    /// Creates evaluator options with a configured target system.
+    ///
+    /// The target system is exposed through `builtins.currentSystem`. Leaving
+    /// it unset keeps that builtin unavailable, which lets callers model
+    /// pure-eval mode and avoids accidental host introspection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `current_system` is empty.
+    pub fn with_current_system(
+        current_system: impl Into<Vec<u8>>,
+    ) -> Result<Self, TreeWalkOptionsError> {
+        let mut options = Self::default();
+        options.set_current_system(current_system)?;
+        Ok(options)
     }
 
     /// Replaces the configured Nix store directory.
@@ -204,9 +224,36 @@ impl TreeWalkOptions {
         Ok(())
     }
 
+    /// Replaces the configured target system.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `current_system` is empty.
+    pub fn set_current_system(
+        &mut self,
+        current_system: impl Into<Vec<u8>>,
+    ) -> Result<(), TreeWalkOptionsError> {
+        let current_system = current_system.into();
+        if current_system.is_empty() {
+            return Err(TreeWalkOptionsError::EmptyCurrentSystem);
+        }
+        self.current_system = Some(current_system);
+        Ok(())
+    }
+
+    /// Clears the configured target system.
+    pub fn clear_current_system(&mut self) {
+        self.current_system = None;
+    }
+
     /// Returns the configured Nix store directory.
     pub fn store_dir(&self) -> &[u8] {
         &self.store_dir
+    }
+
+    /// Returns the configured target system, if one is available.
+    pub fn current_system(&self) -> Option<&[u8]> {
+        self.current_system.as_deref()
     }
 }
 
@@ -216,6 +263,10 @@ pub enum TreeWalkOptionsError {
     /// The configured Nix store directory is not an absolute path.
     #[error("Nix store directory must be absolute")]
     RelativeStoreDir,
+
+    /// The configured target system is empty.
+    #[error("Nix currentSystem value must not be empty")]
+    EmptyCurrentSystem,
 }
 
 fn normalize_store_dir(store_dir: Vec<u8>) -> Result<Vec<u8>, TreeWalkOptionsError> {
@@ -6665,6 +6716,18 @@ impl<'ir> TreeWalk<'ir> {
                 )),
             };
         };
+        if !builtin.is_available(self) {
+            return match default {
+                Some(default) => self.eval_node(default).map(Some),
+                None => Err(TreeWalkError::new(
+                    TreeWalkErrorKind::MissingAttribute {
+                        id,
+                        symbol: *symbol,
+                    },
+                    node.span,
+                )),
+            };
+        }
         if path.len() == 1 {
             return builtin.select(self, id, node.span, *symbol).map(Some);
         }
@@ -6777,7 +6840,8 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         Ok(Some(Value::bool(
-            path.len() == 1 && lookup_builtin_by_name(name).is_some(),
+            path.len() == 1
+                && lookup_builtin_by_name(name).is_some_and(|builtin| builtin.is_available(self)),
         )))
     }
 
@@ -8070,6 +8134,10 @@ impl BuiltinCall {
 trait Builtin: Sync {
     fn name(&self) -> &'static [u8];
 
+    fn is_available(&self, _eval: &TreeWalk<'_>) -> bool {
+        true
+    }
+
     fn first_class_arity(&self) -> Option<usize> {
         None
     }
@@ -8437,6 +8505,35 @@ impl Builtin for NullBuiltin {
         _symbol: Symbol,
     ) -> Result<Value, TreeWalkError> {
         Ok(Value::null())
+    }
+}
+
+struct CurrentSystemBuiltin;
+
+impl Builtin for CurrentSystemBuiltin {
+    fn name(&self) -> &'static [u8] {
+        b"currentSystem"
+    }
+
+    fn is_available(&self, eval: &TreeWalk<'_>) -> bool {
+        eval.options.current_system().is_some()
+    }
+
+    fn select(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        id: IrId,
+        span: Span,
+        symbol: Symbol,
+    ) -> Result<Value, TreeWalkError> {
+        let Some(current_system) = eval.options.current_system() else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedBuiltinAttr { id, symbol },
+                span,
+            ));
+        };
+        let current_system = current_system.to_vec();
+        eval.alloc_static_string(id, span, &current_system)
     }
 }
 
@@ -9454,6 +9551,10 @@ mod tests {
         eval_whnf(&lower(source)).expect("source evaluates")
     }
 
+    fn eval_with_options(source: &str, options: TreeWalkOptions) -> Value {
+        eval_whnf_with_options(&lower(source), options).expect("source evaluates")
+    }
+
     fn eval_string_bytes(source: &str) -> Vec<u8> {
         let outcome = eval_whnf_owned(&lower(source)).expect("source evaluates");
         let string = outcome
@@ -9787,6 +9888,33 @@ mod tests {
     }
 
     #[test]
+    fn tree_walk_options_configure_current_system() {
+        let defaulted = TreeWalkOptions::new();
+        assert_eq!(defaulted.current_system(), None);
+
+        let configured = TreeWalkOptions::with_current_system(b"aarch64-linux".to_vec())
+            .expect("currentSystem configures");
+        assert_eq!(
+            configured.current_system(),
+            Some(b"aarch64-linux".as_slice())
+        );
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_current_system(b"x86_64-linux".to_vec())
+            .expect("currentSystem sets");
+        assert_eq!(options.current_system(), Some(b"x86_64-linux".as_slice()));
+        options.clear_current_system();
+        assert_eq!(options.current_system(), None);
+
+        assert_eq!(
+            TreeWalkOptions::with_current_system(Vec::new())
+                .expect_err("empty currentSystem is rejected"),
+            TreeWalkOptionsError::EmptyCurrentSystem
+        );
+    }
+
+    #[test]
     fn static_builtin_selects_are_first_class_functions() {
         assert_eq!(eval("builtins.true").as_bool(), Ok(true));
         assert_eq!(eval("builtins.false").as_bool(), Ok(false));
@@ -9804,8 +9932,33 @@ mod tests {
             eval_string_bytes("builtins.typeOf builtins.storeDir"),
             b"string"
         );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                "builtins.currentSystem",
+                TreeWalkOptions::with_current_system(b"aarch64-linux".to_vec())
+                    .expect("currentSystem is valid")
+            ),
+            b"aarch64-linux"
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                "builtins.typeOf builtins.currentSystem",
+                TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+                    .expect("currentSystem is valid")
+            ),
+            b"string"
+        );
         assert_eq!(eval("builtins ? length").as_bool(), Ok(true));
-        assert_eq!(eval("builtins ? currentSystem").as_bool(), Ok(true));
+        assert_eq!(eval("builtins ? currentSystem").as_bool(), Ok(false));
+        assert_eq!(
+            eval_with_options(
+                "builtins ? currentSystem",
+                TreeWalkOptions::with_current_system(b"aarch64-linux".to_vec())
+                    .expect("currentSystem is valid")
+            )
+            .as_bool(),
+            Ok(true)
+        );
         assert_eq!(eval("builtins ? storeDir").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? __missing").as_bool(), Ok(false));
         assert_eq!(eval("builtins ? length.foo").as_bool(), Ok(false));
@@ -9836,12 +9989,23 @@ mod tests {
             eval_string_bytes("builtins.storeDir or \"fallback\""),
             b"/nix/store"
         );
+        assert_eq!(
+            eval_string_bytes("builtins.currentSystem or \"fallback\""),
+            b"fallback"
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                "builtins.currentSystem or \"fallback\"",
+                TreeWalkOptions::with_current_system(b"aarch64-linux".to_vec())
+                    .expect("currentSystem is valid")
+            ),
+            b"aarch64-linux"
+        );
     }
 
     #[test]
     fn known_but_unimplemented_builtin_selects_do_not_use_defaults() {
         for (source, name) in [
-            ("builtins.currentSystem or 42", b"currentSystem".as_slice()),
             ("builtins.currentTime or 42", b"currentTime".as_slice()),
             ("builtins.elemAt or 42", b"elemAt".as_slice()),
             ("builtins.exec or 42", b"exec".as_slice()),
@@ -9865,6 +10029,20 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_current_system_behaves_like_missing_attr() {
+        let ir = lower("builtins.currentSystem");
+        let error = eval_whnf_owned(&ir).expect_err("currentSystem is unavailable");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::MissingAttribute {
+                id: ir.root,
+                symbol: symbol_for(&ir, b"currentSystem")
+            }
+        );
+    }
+
+    #[test]
     fn first_class_builtin_selects_respect_shadowing() {
         assert_eq!(
             eval("let builtins = { length = x: 42; }; in builtins.length [ 1 ]").as_int(),
@@ -9876,6 +10054,12 @@ mod tests {
         );
         assert_eq!(
             eval_string_bytes("let builtins = { storeDir = \"local\"; }; in builtins.storeDir"),
+            b"local"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { currentSystem = \"local\"; }; in builtins.currentSystem"
+            ),
             b"local"
         );
     }

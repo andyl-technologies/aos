@@ -29,7 +29,7 @@ macro_rules! builtin_definitions {
             direct_binary ConcatMapBuiltin, b"concatMap", StrictBinaryPrimOp::ConcatMap;
             direct_binary ConcatStringsSepBuiltin, b"concatStringsSep", StrictBinaryPrimOp::ConcatStringsSep;
             strict_unary ConvertHashBuiltin, b"convertHash", StrictUnaryPrimOp::ConvertHash;
-            unsupported CurrentSystemBuiltin, b"currentSystem";
+            custom_value CurrentSystemBuiltin, b"currentSystem";
             unsupported CurrentTimeBuiltin, b"currentTime";
             strict_lazy_binary DeepSeqBuiltin, b"deepSeq";
             unsupported DerivationBuiltin, b"derivation";
