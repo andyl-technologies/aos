@@ -1489,6 +1489,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"addDrvOutputDependencies"
             | b"unsafeDiscardOutputDependency"
             | b"unsafeDiscardStringContext"
+            | b"deepSeq"
             | b"seq"
             | b"all"
             | b"any"

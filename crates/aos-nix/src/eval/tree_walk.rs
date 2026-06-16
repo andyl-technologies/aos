@@ -1270,6 +1270,7 @@ impl<'ir> TreeWalk<'ir> {
             let first = args[0];
             let second = args[1];
             return match primop {
+                StrictLazyBinaryPrimOp::DeepSeq => self.eval_deep_seq_primop(first, second),
                 StrictLazyBinaryPrimOp::Seq => self.eval_seq_primop(first, second),
             };
         }
@@ -1730,6 +1731,79 @@ impl<'ir> TreeWalk<'ir> {
     fn eval_seq_primop(&mut self, first: IrId, second: IrId) -> Result<Value, TreeWalkError> {
         self.eval_node(first)?;
         self.eval_lazy_node(second)
+    }
+
+    fn eval_deep_seq_primop(&mut self, first: IrId, second: IrId) -> Result<Value, TreeWalkError> {
+        let first_span = self.node(first)?.span;
+        let value = self.eval_node(first)?;
+        let mut visited = Vec::new();
+        self.deep_force_value(first, first_span, value, &mut visited)?;
+        self.eval_lazy_node(second)
+    }
+
+    fn deep_force_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        visited: &mut Vec<(ValueTag, u64)>,
+    ) -> Result<(), TreeWalkError> {
+        let value = self.force_value(id, span, value)?;
+        let tag = value.tag();
+        if !matches!(tag, ValueTag::List | ValueTag::Attrs) {
+            return Ok(());
+        }
+
+        let key = (tag, value.payload_bits());
+        if visited.contains(&key) {
+            return Ok(());
+        }
+        let len = visited.len() + 1;
+        visited.try_reserve_exact(1).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
+        })?;
+        visited.push(key);
+
+        match tag {
+            ValueTag::List => {
+                let elements = {
+                    let list = self.heap.get_list(value).map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                    })?;
+                    Self::clone_list_elements(id, span, list)?
+                };
+                for element in elements {
+                    self.deep_force_value(id, span, element, visited)?;
+                }
+            }
+            ValueTag::Attrs => {
+                let values = {
+                    let attrs = self.heap.get_attrs(value).map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                    })?;
+                    let mut values = Vec::new();
+                    values.try_reserve_exact(attrs.len()).map_err(|_| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::ListAllocationFailed {
+                                id,
+                                len: attrs.len(),
+                            },
+                            span,
+                        )
+                    })?;
+                    for entry in attrs.iter_source_order() {
+                        values.push(entry.value);
+                    }
+                    values
+                };
+                for value in values {
+                    self.deep_force_value(id, span, value, visited)?;
+                }
+            }
+            _ => unreachable!("deepSeq only traverses list and attrset values"),
+        }
+
+        Ok(())
     }
 
     fn eval_has_context_primop(
@@ -6967,12 +7041,14 @@ impl StrictTernaryPrimOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StrictLazyBinaryPrimOp {
+    DeepSeq,
     Seq,
 }
 
 impl StrictLazyBinaryPrimOp {
     fn from_bytes(name: &[u8]) -> Option<Self> {
         match name {
+            b"deepSeq" => Some(Self::DeepSeq),
             b"seq" => Some(Self::Seq),
             _ => None,
         }
@@ -10492,6 +10568,79 @@ mod tests {
             .span;
 
         let error = eval_whnf(&ir).expect_err("seq returns and demands second argument");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: second_body }
+        );
+        assert_eq!(error.span(), second_span);
+    }
+
+    #[test]
+    fn deep_seq_primop_forces_nested_values_and_returns_second() {
+        assert_eq!(eval("builtins.deepSeq [ 1 [ 2 ] ] 3").as_int(), Ok(3));
+        assert_eq!(
+            eval("builtins.deepSeq { a = { b = 1; }; } 3").as_int(),
+            Ok(3)
+        );
+        assert_eq!(eval("builtins.deepSeq (x: x) 3").as_int(), Ok(3));
+        assert_eq!(
+            eval("let x = { a = x; }; in builtins.deepSeq x 3").as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval(
+                "let builtins = { deepSeq = first: second: 42; }; in builtins.deepSeq [ (1 / 0) ] 0"
+            )
+            .as_int(),
+            Ok(42)
+        );
+    }
+
+    #[test]
+    fn deep_seq_primop_reports_nested_forcing_errors_before_second() {
+        let ir = lower("builtins.deepSeq [ (1 / 0) ] (2 / 0)");
+        let error = eval_whnf(&ir).expect_err("deepSeq forces list elements first");
+        let TreeWalkErrorKind::DivisionByZero { id: first } = error.kind() else {
+            panic!("expected first list element division by zero");
+        };
+        let first_span = ir.arena.node(first).expect("first error node exists").span;
+        assert_eq!(error.span(), first_span);
+
+        let ir = lower("builtins.deepSeq { a = 1 / 0; } 2");
+        let error = eval_whnf(&ir).expect_err("deepSeq forces attr values");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let source = "builtins.deepSeq { z = 1 / 0; a = 2 / 0; } 1";
+        let ir = lower(source);
+        let error = eval_whnf(&ir).expect_err("deepSeq forces attr values in source order");
+        let z_error_start = source.find("1 / 0").expect("z error expression exists") as u32;
+        assert_eq!(
+            error.span(),
+            Span::new(z_error_start, z_error_start + "1 / 0".len() as u32)
+        );
+
+        let ir = lower("builtins.deepSeq [ 1 ] (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let second = args[1];
+        let IrData::Node(second_body) = ir.arena.node(second).expect("second argument exists").data
+        else {
+            panic!("second argument is a thunk allocation");
+        };
+        let second_span = ir
+            .arena
+            .node(second_body)
+            .expect("second thunk body exists")
+            .span;
+
+        let error = eval_whnf(&ir).expect_err("deepSeq returns and demands second argument");
 
         assert_eq!(
             error.kind(),

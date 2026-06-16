@@ -1,9 +1,10 @@
 //! Phase-1 flat attribute-set representation.
 //!
 //! The tree-walk oracle starts with immutable flat attrsets: entries are stored
-//! sorted by interned [`Symbol`] id for binary-search selection, while a separate
-//! raw-byte lexicographic permutation drives observable iteration order for
-//! `attrNames`, `attrValues`, and `derivationStrict`.
+//! sorted by interned [`Symbol`] id for binary-search selection, while separate
+//! source-order and raw-byte lexicographic permutations drive primop traversal
+//! and observable iteration order for `attrNames`, `attrValues`, and
+//! `derivationStrict`.
 //!
 //! A [`FlatAttrs`] value stores symbols, not names, and does not retain the
 //! [`SymbolTable`] used to validate them. Callers must construct and query an
@@ -41,6 +42,7 @@ impl AttrEntry {
 #[derive(Clone, Debug, Default)]
 pub struct FlatAttrs {
     entries: Vec<AttrEntry>,
+    source_order: Vec<u32>,
     iteration_order: Vec<u32>,
 }
 
@@ -49,6 +51,7 @@ impl FlatAttrs {
     pub const fn empty() -> Self {
         Self {
             entries: Vec::new(),
+            source_order: Vec::new(),
             iteration_order: Vec::new(),
         }
     }
@@ -72,11 +75,28 @@ impl FlatAttrs {
         let len = entries.len();
         let len_u32 = u32::try_from(len).map_err(|_| AttrError::TooManyEntries { len })?;
 
+        let mut source_keys = Vec::new();
+        source_keys
+            .try_reserve_exact(len)
+            .map_err(|_| AttrError::AllocationFailed { entries: len })?;
+        source_keys.extend(entries.iter().map(|entry| entry.key));
+
         entries.sort_unstable_by_key(|entry| entry.key);
         for pair in entries.windows(2) {
             if pair[0].key == pair[1].key {
                 return Err(AttrError::DuplicateKey { key: pair[0].key });
             }
+        }
+
+        let mut source_order = Vec::new();
+        source_order
+            .try_reserve_exact(len)
+            .map_err(|_| AttrError::AllocationFailed { entries: len })?;
+        for key in source_keys {
+            let slot = entries
+                .binary_search_by_key(&key, |entry| entry.key)
+                .map_err(|_| AttrError::UnknownSymbol { key })?;
+            source_order.push(slot as u32);
         }
 
         let mut sort_names = Vec::new();
@@ -107,6 +127,7 @@ impl FlatAttrs {
 
         Ok(Self {
             entries,
+            source_order,
             iteration_order,
         })
     }
@@ -155,6 +176,11 @@ impl FlatAttrs {
         &self.entries
     }
 
+    /// Returns the slot permutation for construction-order iteration.
+    pub fn source_order(&self) -> &[u32] {
+        &self.source_order
+    }
+
     /// Returns the slot permutation for raw-byte lexicographic iteration.
     pub fn iteration_order(&self) -> &[u32] {
         &self.iteration_order
@@ -165,6 +191,14 @@ impl FlatAttrs {
         self.entries.iter()
     }
 
+    /// Iterates entries in the order supplied to [`FlatAttrs::new`].
+    pub fn iter_source_order(&self) -> SourceOrderEntries<'_> {
+        SourceOrderEntries {
+            attrs: self,
+            next: 0,
+        }
+    }
+
     /// Iterates entries in raw-byte lexicographic order.
     pub fn iter_lexicographic(&self) -> LexicographicEntries<'_> {
         LexicographicEntries {
@@ -173,6 +207,30 @@ impl FlatAttrs {
         }
     }
 }
+
+/// Iterator over [`FlatAttrs`] entries in construction order.
+#[derive(Clone, Debug)]
+pub struct SourceOrderEntries<'a> {
+    attrs: &'a FlatAttrs,
+    next: usize,
+}
+
+impl<'a> Iterator for SourceOrderEntries<'a> {
+    type Item = &'a AttrEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slot = *self.attrs.source_order.get(self.next)? as usize;
+        self.next += 1;
+        self.attrs.entries.get(slot)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.attrs.len().saturating_sub(self.next);
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for SourceOrderEntries<'_> {}
 
 /// Iterator over [`FlatAttrs`] entries in observable lexicographic order.
 #[derive(Clone, Debug)]
@@ -250,7 +308,9 @@ mod tests {
         assert!(attrs.is_empty());
         assert_eq!(attrs.len(), 0);
         assert!(attrs.entries_by_symbol().is_empty());
+        assert!(attrs.source_order().is_empty());
         assert!(attrs.iteration_order().is_empty());
+        assert_eq!(attrs.iter_source_order().len(), 0);
         assert_eq!(attrs.iter_lexicographic().len(), 0);
     }
 
@@ -272,6 +332,24 @@ mod tests {
         assert_eq!(attrs.get(ids[1]).expect("a exists").as_int(), Ok(2));
         assert_eq!(attrs.get(ids[2]).expect("m exists").as_int(), Ok(3));
         assert!(!attrs.contains_key(Symbol::new(99)));
+    }
+
+    #[test]
+    fn source_order_iteration_uses_construction_order() {
+        let (symbols, ids) = symbols(&[b"z", b"a", b"m"]);
+        let attrs = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[2], Value::int(3)),
+                AttrEntry::new(ids[1], Value::int(2)),
+                AttrEntry::new(ids[0], Value::int(1)),
+            ],
+            &symbols,
+        )
+        .expect("attrset builds");
+
+        let keys: Vec<Symbol> = attrs.iter_source_order().map(|entry| entry.key).collect();
+        assert_eq!(keys, vec![ids[2], ids[1], ids[0]]);
+        assert_eq!(attrs.source_order(), &[2, 1, 0]);
     }
 
     #[test]

@@ -1014,7 +1014,7 @@ impl IrLowerer {
 
     fn strict_lazy_binary_primop_effect(&self, symbol: Symbol) -> Option<EffectClass> {
         match self.resolved.symbols.resolve(symbol) {
-            Some(b"seq") => Some(EffectClass::Pure),
+            Some(b"deepSeq" | b"seq") => Some(EffectClass::Pure),
             _ => None,
         }
     }
@@ -2015,26 +2015,33 @@ mod tests {
 
     #[test]
     fn lowers_pure_strict_lazy_binary_primops_directly() {
-        let ir = lowered("builtins.seq (let x = 1; in x) (let y = 2; in y)");
-        let root = root_node(&ir);
-        assert_eq!(root.kind, IrKind::PrimOp);
-        assert_eq!(root.effect, EffectClass::Pure);
-        let IrData::PrimOp { symbol, args } = root.data else {
-            panic!("primop payload expected");
-        };
-        assert_eq!(symbol_text(&ir, symbol), b"seq");
-        let args = ir.arena.child_slice(args).expect("primop args exist");
-        assert_eq!(args.len(), 2);
-        assert_eq!(node(&ir, args[0]).kind, IrKind::Let);
-        assert_eq!(node(&ir, args[1]).kind, IrKind::ThunkAlloc);
+        for name in ["deepSeq", "seq"] {
+            let source = format!("builtins.{name} (let x = 1; in x) (let y = 2; in y)");
+            let ir = lowered(&source);
+            let root = root_node(&ir);
+            assert_eq!(root.kind, IrKind::PrimOp);
+            assert_eq!(root.effect, EffectClass::Pure);
+            let IrData::PrimOp { symbol, args } = root.data else {
+                panic!("primop payload expected");
+            };
+            assert_eq!(symbol_text(&ir, symbol), name.as_bytes());
+            let args = ir.arena.child_slice(args).expect("primop args exist");
+            assert_eq!(args.len(), 2);
+            assert_eq!(node(&ir, args[0]).kind, IrKind::Let);
+            assert_eq!(node(&ir, args[1]).kind, IrKind::ThunkAlloc);
+        }
     }
 
     #[test]
     fn shadowed_pure_strict_lazy_binary_primops_stay_ordinary_applications() {
         for source in [
+            "deepSeq 1 2",
             "seq 1 2",
+            "let deepSeq = first: second: second; in deepSeq 1 2",
             "let seq = first: second: second; in seq 1 2",
+            "let builtins = { deepSeq = first: second: second; }; in builtins.deepSeq 1 2",
             "let builtins = { seq = first: second: second; }; in builtins.seq 1 2",
+            "(builtins.deepSeq or (first: second: second)) 1 2",
             "(builtins.seq or (first: second: second)) 1 2",
         ] {
             let ir = lowered(source);
