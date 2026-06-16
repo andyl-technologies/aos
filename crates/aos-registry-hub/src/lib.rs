@@ -93,7 +93,9 @@ pub mod rpc;
 pub mod seed;
 pub mod server;
 pub mod signing;
-pub mod stack;
+/// The cache-stack node model, re-exported from [`aos_registry_core::stack`]
+/// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::stack::…` stable.
+pub use aos_registry_core::stack;
 pub mod surface;
 pub mod ui;
 pub mod validation;

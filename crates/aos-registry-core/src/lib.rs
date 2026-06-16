@@ -11,6 +11,8 @@
 //!   one source statement form serves sqlite, postgres, and mysql.
 //! - [`domain`] — the tenancy/IAM model (org → project → registry tree,
 //!   principals, and the pure role/permission/scope authorization kernel).
+//! - [`stack`] — the cache-stack node model ([`StackNode`](stack::StackNode))
+//!   that round-trips losslessly through JSON.
 //! - [`backend`] — the async [`Backend`](backend::Backend) trait, the
 //!   [`Statement`](backend::Statement) unit of atomic work, and the
 //!   `split_statements`/`with_returning_id`/`prepare` helpers every driver
@@ -27,4 +29,5 @@
 pub mod backend;
 pub mod dialect;
 pub mod domain;
+pub mod stack;
 pub mod value;
