@@ -33,9 +33,11 @@ use std::sync::Arc;
 use aos_proto_types as pb;
 
 use crate::auth::jwt::{Claims, JwtKeys};
+use crate::clock;
 use crate::db::{Database, IndexStatus, RegistryRecord};
 use crate::domain::iam::{self, claims_principal, token_allows};
-use crate::domain::{Permission, Scope};
+use crate::domain::{Permission, PrincipalKind, Role, Scope};
+use crate::ratelimit::{RateClass, RateDecision, RateLimiter, MAX_ORGS_PER_OWNER};
 
 /// Default page size when a list request leaves `page_size` at zero.
 const DEFAULT_PAGE_SIZE: u32 = 500;
@@ -245,16 +247,25 @@ pub struct RpcService {
     pub jwt_keys: JwtKeys,
     /// Externally reachable base URL, used to build the canonical upload URL.
     pub external_url: String,
+    /// The abuse-bound rate limiter (the [`RateLimiter`] port), metering
+    /// `CreateOrg` per principal.
+    pub ratelimit: Arc<dyn RateLimiter>,
 }
 
 impl RpcService {
     /// Construct the service over its dependencies.
     #[must_use]
-    pub fn new(db: Arc<Database>, jwt_keys: JwtKeys, external_url: String) -> Self {
+    pub fn new(
+        db: Arc<Database>,
+        jwt_keys: JwtKeys,
+        external_url: String,
+        ratelimit: Arc<dyn RateLimiter>,
+    ) -> Self {
         Self {
             db,
             jwt_keys,
             external_url,
+            ratelimit,
         }
     }
 
@@ -451,6 +462,159 @@ impl RpcService {
             trust_keys: record.trust_keys.clone(),
             caches,
             roster,
+        })
+    }
+
+    /// Whether `claims`'s principal may create an org under `invite_only`.
+    ///
+    /// Permitted for a service-account caller, an existing org member, an
+    /// instance admin (an `iam.admin` grant at the instance root), or a user
+    /// holding a live invitation for their email.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Internal`] on database failure.
+    async fn signup_permitted(&self, claims: &Claims) -> Result<bool, RpcError> {
+        let Some(principal) = claims_principal(claims) else {
+            return Ok(false);
+        };
+        if principal.kind != PrincipalKind::User {
+            return Ok(true);
+        }
+        if self
+            .db
+            .user_has_any_membership(principal.id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Ok(true);
+        }
+        // Instance admin: an iam.admin grant at the instance root.
+        let grants = self
+            .db
+            .effective_scopes(principal)
+            .await
+            .map_err(RpcError::internal)?;
+        if iam::allow(&grants, Permission::IamAdmin, &Scope::root()) {
+            return Ok(true);
+        }
+        // A live invitation for the caller's email.
+        if let Some(email) = self
+            .db
+            .user_email(principal.id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if self
+                .db
+                .has_pending_invitation(&email)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// `OrgService.CreateOrg` — create an org and grant the caller `Owner`.
+    ///
+    /// The bootstrap exception: any authenticated principal may create an org.
+    /// A user caller is granted `Owner` at the new org's scope; a
+    /// service-account caller creates the org without an auto-grant. Bounded two
+    /// ways against namespace pollution (sec L-3): a per-principal creation rate
+    /// limit ([`RateClass::CreateOrg`]) and a per-owner total cap
+    /// ([`MAX_ORGS_PER_OWNER`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::PermissionDenied`] when the instance is `invite_only` and the
+    /// caller is not permitted, [`RpcError::ResourceExhausted`] when the caller
+    /// exceeds the creation rate or owns [`MAX_ORGS_PER_OWNER`] orgs,
+    /// [`RpcError::InvalidArgument`] for an empty name or invalid slug,
+    /// [`RpcError::AlreadyExists`] when the slug is taken, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn create_org(
+        &self,
+        auth: Option<&str>,
+        req: pb::CreateOrgRequest,
+    ) -> Result<pb::CreateOrgResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        if req.name.is_empty() {
+            return Err(RpcError::invalid("org name is required"));
+        }
+        // Validate the slug before creating the org or granting any membership:
+        // a slug like "/" or "/victimorg" would otherwise normalize (via
+        // `Scope::parse`) into an unintended ancestor scope and hand the caller
+        // Owner over the instance root or a victim org (sec CR-2).
+        iam::validate_org_slug(&req.slug).map_err(|e| RpcError::invalid(format!("org slug: {e}")))?;
+        // Instance signup policy: `invite_only` requires the caller to already
+        // be a member, hold a live invitation, or be an instance admin.
+        if self.db.signup_policy().await.map_err(RpcError::internal)?
+            == crate::db::SignupPolicy::InviteOnly
+            && !self.signup_permitted(&claims).await?
+        {
+            return Err(RpcError::PermissionDenied(
+                "org creation is invite-only on this instance".into(),
+            ));
+        }
+        // Bound the creation rate per authenticated principal (the JWT owner),
+        // after the cheap input/policy gates so a rejected request does not
+        // consume the caller's creation budget.
+        let rl_key = format!("{}:{}", claims.owner_kind, claims.owner_id);
+        if let RateDecision::Limited { retry_after } = self
+            .ratelimit
+            .check(RateClass::CreateOrg, &rl_key, clock::now_unix_secs())
+            .await
+        {
+            return Err(RpcError::ResourceExhausted(format!(
+                "org creation rate limit exceeded; retry after {retry_after}s"
+            )));
+        }
+        // Per-owner total cap: a user principal may own only so many orgs, so a
+        // slow loop cannot accumulate past the burst the rate limit blunts.
+        if let Some(principal) = claims_principal(&claims) {
+            if principal.kind == PrincipalKind::User
+                && self
+                    .db
+                    .count_user_owned_orgs(principal.id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    >= MAX_ORGS_PER_OWNER
+            {
+                return Err(RpcError::ResourceExhausted(format!(
+                    "owned-org limit reached ({MAX_ORGS_PER_OWNER} max); contact an instance admin"
+                )));
+            }
+        }
+        let id = self
+            .db
+            .create_org(&req.slug, &req.name)
+            .await
+            .map_err(|e| RpcError::AlreadyExists(format!("{e:#}")))?;
+        // Auto-grant the creating user Owner on the new org.
+        if let Some(principal) = claims_principal(&claims) {
+            if principal.kind == PrincipalKind::User {
+                self.db
+                    .grant_membership(
+                        principal.kind.as_str(),
+                        principal.id,
+                        &req.slug,
+                        Role::Owner.as_str(),
+                    )
+                    .await
+                    .map_err(RpcError::internal)?;
+            }
+        }
+        let org = self
+            .db
+            .org_by_id(id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("org {id} vanished after creation")))?;
+        Ok(pb::CreateOrgResponse {
+            org: Some(org_message(&org)),
         })
     }
 
