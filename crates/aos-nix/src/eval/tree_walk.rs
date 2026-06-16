@@ -1190,6 +1190,9 @@ impl<'ir> TreeWalk<'ir> {
                     self.eval_get_attr_primop(id, node.span, first, second)
                 }
                 StrictBinaryPrimOp::HasAttr => self.eval_has_attr_primop(first, second),
+                StrictBinaryPrimOp::RemoveAttrs => {
+                    self.eval_remove_attrs_primop(id, node.span, first, second)
+                }
             };
         }
         if args.len() != 1 {
@@ -1684,6 +1687,123 @@ impl<'ir> TreeWalk<'ir> {
             ));
         }
         self.intern_string_value(id, value, span)
+    }
+
+    fn eval_remove_attrs_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_id: IrId,
+        names_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let attrs_span = self.node(attrs_id)?.span;
+        let attrs_value = self.eval_node(attrs_id)?;
+        if attrs_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: attrs_id,
+                    expected: "attrs",
+                    actual: attrs_value.tag(),
+                },
+                attrs_span,
+            ));
+        }
+
+        let names_span = self.node(names_id)?.span;
+        let names_value = self.eval_node(names_id)?;
+        if names_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: names_id,
+                    expected: "list",
+                    actual: names_value.tag(),
+                },
+                names_span,
+            ));
+        }
+        let name_values = {
+            let names = self.heap.get_list(names_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: names_id,
+                        source,
+                    },
+                    names_span,
+                )
+            })?;
+            let mut values = Vec::new();
+            values.try_reserve_exact(names.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: names_id,
+                        len: names.len(),
+                    },
+                    names_span,
+                )
+            })?;
+            values.extend_from_slice(names.as_slice());
+            values
+        };
+        let mut remove = Vec::new();
+        remove.try_reserve_exact(name_values.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id: names_id,
+                    len: name_values.len(),
+                },
+                names_span,
+            )
+        })?;
+        for value in name_values {
+            let value = self.force_value(names_id, names_span, value)?;
+            if value.tag() != ValueTag::String {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: names_id,
+                        expected: "string",
+                        actual: value.tag(),
+                    },
+                    names_span,
+                ));
+            }
+            let key = self.intern_string_value(names_id, value, names_span)?;
+            if !remove.contains(&key) {
+                remove.push(key);
+            }
+        }
+
+        let entries = {
+            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs_id,
+                        source,
+                    },
+                    attrs_span,
+                )
+            })?;
+            let mut entries = Vec::new();
+            entries.try_reserve_exact(attrs.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id,
+                        len: attrs.len(),
+                    },
+                    span,
+                )
+            })?;
+            for entry in attrs.entries_by_symbol() {
+                if !remove.contains(&entry.key) {
+                    entries.push(*entry);
+                }
+            }
+            entries
+        };
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
     fn eval_function_args_primop(
@@ -3323,6 +3443,7 @@ enum StrictBinaryPrimOp {
     ElemAt,
     GetAttr,
     HasAttr,
+    RemoveAttrs,
 }
 
 impl StrictBinaryPrimOp {
@@ -3331,6 +3452,7 @@ impl StrictBinaryPrimOp {
             b"elemAt" => Some(Self::ElemAt),
             b"getAttr" => Some(Self::GetAttr),
             b"hasAttr" => Some(Self::HasAttr),
+            b"removeAttrs" => Some(Self::RemoveAttrs),
             _ => None,
         }
     }
@@ -4827,6 +4949,91 @@ mod tests {
             }
         );
         assert_eq!(error.span(), attrs_span);
+    }
+
+    #[test]
+    fn remove_attrs_primop_removes_names_without_forcing_values() {
+        assert_eq!(
+            eval_list_string_bytes(
+                "builtins.attrNames (builtins.removeAttrs { z = 1; a = 1 / 0; b = 2; } [ \"z\" \"missing\" \"z\" ])"
+            ),
+            vec![b"a".to_vec(), b"b".to_vec()]
+        );
+        assert_eq!(
+            eval("let r = builtins.removeAttrs { a = 1 / 0; b = 2; } [ \"a\" ]; in r.b").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("let builtins = { removeAttrs = set: names: { local = true; }; }; in (builtins.removeAttrs {} []).local")
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn remove_attrs_primop_type_checks_arguments_in_order() {
+        let ir = lower("builtins.removeAttrs 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let attrs = args[0];
+        let attrs_span = ir.arena.node(attrs).expect("attrset argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("removeAttrs checks the attrset before names");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: attrs,
+                expected: "attrs",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), attrs_span);
+
+        let ir = lower("builtins.removeAttrs {} 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let names = args[1];
+        let names_span = ir.arena.node(names).expect("names argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("removeAttrs requires a name list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: names,
+                expected: "list",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), names_span);
+
+        let ir = lower("builtins.removeAttrs {} [ 1 ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let names = args[1];
+        let names_span = ir.arena.node(names).expect("names argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("removeAttrs requires string names");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: names,
+                expected: "string",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), names_span);
     }
 
     #[test]
