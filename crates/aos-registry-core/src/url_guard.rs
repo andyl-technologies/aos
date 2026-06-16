@@ -56,8 +56,11 @@ pub fn fetch_err(message: impl Into<String>) -> anyhow::Error {
 /// Returns a [`FetchError`] when `raw` is not a valid URL or its scheme is not
 /// `http(s)`.
 pub fn require_http_scheme(raw: &str) -> Result<url::Url> {
-    let url = url::Url::parse(raw)
-        .map_err(|err| fetch_err(format!("mirror/frontend URL '{raw}' is not a valid URL: {err}")))?;
+    let url = url::Url::parse(raw).map_err(|err| {
+        fetch_err(format!(
+            "mirror/frontend URL '{raw}' is not a valid URL: {err}"
+        ))
+    })?;
     match url.scheme() {
         "http" | "https" => Ok(url),
         other => Err(fetch_err(format!(
@@ -157,7 +160,9 @@ pub fn is_safe_remote_url(raw: &str) -> Result<()> {
         }
         Some(url::Host::Domain(_)) => {}
         None => {
-            return Err(fetch_err(format!("mirror/frontend URL '{raw}' has no host")));
+            return Err(fetch_err(format!(
+                "mirror/frontend URL '{raw}' has no host"
+            )));
         }
     }
     Ok(())

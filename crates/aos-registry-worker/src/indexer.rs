@@ -470,7 +470,11 @@ async fn mark_state(
         .execute(
             "INSERT INTO registry_index (registry_id, state, error) VALUES (?1, ?2, ?3) \
              ON CONFLICT(registry_id) DO UPDATE SET state = excluded.state, error = excluded.error",
-            &[Value::Int(registry_id), Value::Text(state.to_string()), error],
+            &[
+                Value::Int(registry_id),
+                Value::Text(state.to_string()),
+                error,
+            ],
         )
         .await?;
     Ok(())

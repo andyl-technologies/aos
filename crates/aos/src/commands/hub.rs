@@ -14,9 +14,7 @@ use anyhow::Result;
 use aos_core::output::Printer;
 use aos_remote::RegistryHubClient;
 
-use crate::cli::{
-    HubBindingCmd, HubCmd, HubOrgCmd, HubProjectCmd, HubRegistryCmd, HubWebhookCmd,
-};
+use crate::cli::{HubBindingCmd, HubCmd, HubOrgCmd, HubProjectCmd, HubRegistryCmd, HubWebhookCmd};
 
 /// Handles `aos hub login`: exchanges a provisioning secret for an access JWT.
 async fn login(printer: &Printer, hub: &str, provisioning_token: &str) -> Result<()> {
@@ -63,9 +61,7 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
         HubCmd::MintUpload { hub, token, slug } => {
             mint_upload(printer, hub, token.as_deref(), slug).await
         }
-        HubCmd::Audit { hub, token, scope } => {
-            audit(printer, hub, token.as_deref(), scope).await
-        }
+        HubCmd::Audit { hub, token, scope } => audit(printer, hub, token.as_deref(), scope).await,
         HubCmd::Changesets { hub, token, scope } => {
             changesets(printer, hub, token.as_deref(), scope).await
         }
@@ -302,8 +298,9 @@ async fn webhook(printer: &Printer, command: &HubWebhookCmd) -> Result<()> {
             secret,
         } => {
             let client = hub_client(hub, token.as_deref())?;
-            let (webhook, signing_secret) =
-                client.create_webhook(org, url, event.clone(), secret).await?;
+            let (webhook, signing_secret) = client
+                .create_webhook(org, url, event.clone(), secret)
+                .await?;
             if printer.json_if_active(&serde_json::json!({
                 "webhook": {
                     "id": webhook.id,
@@ -406,10 +403,7 @@ async fn audit(printer: &Printer, hub: &str, token: Option<&str>, scope: &str) -
         return Ok(());
     }
     if entries.is_empty() {
-        printer.info(&format!(
-            "no audit entries at scope {}",
-            scope_label(scope)
-        ));
+        printer.info(&format!("no audit entries at scope {}", scope_label(scope)));
         return Ok(());
     }
     printer.header(&format!(
@@ -447,10 +441,7 @@ async fn changesets(printer: &Printer, hub: &str, token: Option<&str>, scope: &s
         return Ok(());
     }
     if changesets.is_empty() {
-        printer.info(&format!(
-            "no change-sets at scope {}",
-            scope_label(scope)
-        ));
+        printer.info(&format!("no change-sets at scope {}", scope_label(scope)));
         return Ok(());
     }
     printer.header(&format!(

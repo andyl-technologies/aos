@@ -5396,8 +5396,10 @@ impl Database {
             }
         };
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
-        let public_line =
-            aos_registry_surface::sshsig::trusted_key_line("aos-hub-draft", &signing_key.verifying_key());
+        let public_line = aos_registry_surface::sshsig::trusted_key_line(
+            "aos-hub-draft",
+            &signing_key.verifying_key(),
+        );
         Ok((signing_key, public_line))
     }
 

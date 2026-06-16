@@ -28,7 +28,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use ed25519_dalek::SigningKey;
 
-use aos_registry_surface::object::{encode_loose, encode_tree, hash_object, ObjectKind, Oid, TreeEntry};
+use aos_registry_surface::object::{
+    encode_loose, encode_tree, hash_object, ObjectKind, Oid, TreeEntry,
+};
 use aos_registry_surface::sshsig;
 use aos_registry_surface::tag::render_tag_payload;
 

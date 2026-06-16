@@ -17,17 +17,17 @@ use anyhow::{Context, Result};
 use connectrpc::client::{ClientConfig, HttpClient};
 
 use aos_proto::aos::registry::v1::{
-    AuditEntry, AuditServiceClient, Binding, Changeset, Channel, ChannelServiceClient,
-    ConfigServiceClient, CreateBindingRequest, CreateOrgRequest, CreateProjectRequest,
-    CreateRegistryRequest, GetRegistryRequest, ListAuditRequest, ListBindingsRequest,
-    ListChangesetsRequest,
-    ListChannelsRequest, ListOrgsRequest, ListPackagesRequest, ListProjectsRequest,
-    ChangeRequest, CreateWebhookRequest, DeleteWebhookRequest, GetChannelRequest, GetPackageRequest,
-    GitCommit, GitDiffRequest, GitLogRequest, GitServiceClient, ListChangeRequestsRequest,
-    ListRegistriesRequest, ListReleasesRequest, ListWebhooksRequest, MintUploadCredentialsRequest,
-    Org, OrgServiceClient, Package, PackageServiceClient, PackageSummary, Project,
-    ProjectServiceClient, PublishServiceClient, Registry, RegistryServiceClient, Release,
-    RevertChangesetRequest, StorageServiceClient, Webhook, WebhookServiceClient,
+    AuditEntry, AuditServiceClient, Binding, ChangeRequest, Changeset, Channel,
+    ChannelServiceClient, ConfigServiceClient, CreateBindingRequest, CreateOrgRequest,
+    CreateProjectRequest, CreateRegistryRequest, CreateWebhookRequest, DeleteWebhookRequest,
+    GetChannelRequest, GetPackageRequest, GetRegistryRequest, GitCommit, GitDiffRequest,
+    GitLogRequest, GitServiceClient, ListAuditRequest, ListBindingsRequest,
+    ListChangeRequestsRequest, ListChangesetsRequest, ListChannelsRequest, ListOrgsRequest,
+    ListPackagesRequest, ListProjectsRequest, ListRegistriesRequest, ListReleasesRequest,
+    ListWebhooksRequest, MintUploadCredentialsRequest, Org, OrgServiceClient, Package,
+    PackageServiceClient, PackageSummary, Project, ProjectServiceClient, PublishServiceClient,
+    Registry, RegistryServiceClient, Release, RevertChangesetRequest, StorageServiceClient,
+    Webhook, WebhookServiceClient,
 };
 
 use crate::client::{make_http_client, validate_base_url};

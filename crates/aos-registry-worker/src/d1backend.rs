@@ -93,7 +93,11 @@ fn js_to_value(value: &JsValue) -> Value {
 }
 
 /// Prepares + binds a single source statement for D1 (sqlite dialect).
-fn bind_stmt(db: &D1Database, sql: &str, params: &[Value]) -> anyhow::Result<worker::D1PreparedStatement> {
+fn bind_stmt(
+    db: &D1Database,
+    sql: &str,
+    params: &[Value],
+) -> anyhow::Result<worker::D1PreparedStatement> {
     let (translated, ordered) = prepare(Dialect::Sqlite, sql, params)?;
     let js: Vec<JsValue> = ordered.iter().map(to_js).collect();
     db.prepare(&translated).bind(&js).map_err(d1_err)
@@ -151,11 +155,7 @@ impl Backend for D1Backend {
         // bound parameters; run each translated statement in turn.
         for statement in split_statements(sql) {
             let (translated, _) = prepare(Dialect::Sqlite, &statement, &[])?;
-            self.db
-                .prepare(&translated)
-                .run()
-                .await
-                .map_err(d1_err)?;
+            self.db.prepare(&translated).run().await.map_err(d1_err)?;
         }
         Ok(())
     }
