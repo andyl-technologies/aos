@@ -118,7 +118,10 @@ mod entry {
                 return;
             }
         };
-        if let Err(err) = crate::indexer::index_all(&db, &bucket).await {
+        // Drive the indexer's D1 access through the shared D1Backend (f64 binds,
+        // NULL-tolerant reads), the same engine the read path uses.
+        let backend = crate::d1backend::D1Backend::new(db);
+        if let Err(err) = crate::indexer::index_all(&backend, &bucket).await {
             worker::console_error!("scheduled index failed: {err:#}");
         }
     }

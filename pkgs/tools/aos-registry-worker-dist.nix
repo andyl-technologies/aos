@@ -295,20 +295,13 @@ in
         const TRUST_KEY = readFileSync("${fixture}/trust_key", "utf8").trim();
 
         let failures = 0;
-        // Hard assertion: a failure fails the whole test.
+        // Hard assertion: a failure fails the whole test. The entire read +
+        // indexer surface now runs on core::Database over the D1Backend (f64
+        // integer binds, NULL-tolerant reads), so every check is hard — there
+        // are no longer any pinned-workerd D1 quirks to soft-defer.
         function check(name, cond, detail) {
           if (cond) console.log("PASS: " + name);
           else { failures++; console.log("FAIL: " + name + (detail ? " — " + detail : "")); }
-        }
-        // Soft assertion: records the outcome but never fails the test. Used for
-        // the assertions blocked by a runtime-version incompatibility between the
-        // worker's `worker`-crate D1 bindings and the pinned 2024-09-09 workerd
-        // seed (documented below), so the achievable read-path subset still
-        // gates a real pass while the rest is surfaced honestly.
-        let soft_pass = 0, soft_fail = 0;
-        function softCheck(name, cond, detail) {
-          if (cond) { soft_pass++; console.log("SOFT-PASS: " + name); }
-          else { soft_fail++; console.log("SOFT-DEFERRED: " + name + (detail ? " — " + detail : "")); }
         }
 
         // Recursively list every file under a directory as POSIX-relative paths.
@@ -451,7 +444,7 @@ in
           // integers as JS numbers (f64), not the `worker` crate's BigInt that
           // the pinned 2024-09-09 workerd D1 rejected (D1_TYPE_ERROR). So
           // browse-by-registry resolves cleanly now. Hard. (The Cron indexer
-          // WRITE path still binds via the worker crate and remains soft below.)
+          // WRITE path also runs over the D1Backend now — see below.)
           const r = await get("/demo/-/packages");
           const body = await r.text();
           check("browse packages status 200", r.status === 200, "got " + r.status);
@@ -479,46 +472,46 @@ in
         // surface into D1 with full Ed25519 verification + anti-rollback floor.
         // After a clean run the registry indexes `fresh`, the release + channel
         // are recorded, and the channel floor is raised to the frontier. ──
-        // workerd exposes a worker's scheduled handler at the special
-        // `/cdn-cgi/handler/scheduled` path (the same hook `wrangler dev` uses
-        // to trigger crons locally). Dispatch it to drive the Cron indexer.
+        // miniflare exposes a worker's scheduled handler at its control-plane
+        // `/cdn-cgi/mf/scheduled` endpoint (query params `cron`/`time`); this is
+        // miniflare's own hook, distinct from workerd's internal
+        // `/cdn-cgi/handler/scheduled`. Dispatch it to drive the Cron indexer.
         const triggerScheduled = () =>
-          mf.dispatchFetch(ORIGIN + "/cdn-cgi/handler/scheduled?cron=" + encodeURIComponent("*/15 * * * *"));
+          mf.dispatchFetch(ORIGIN + "/cdn-cgi/mf/scheduled?cron=" + encodeURIComponent("*/15 * * * *"));
 
-        // The Cron indexer reads R2 + writes D1. Its D1 writes bind `i64` ids,
-        // so they hit the same BigInt limitation under the 2024-09-09 workerd
-        // seed (D1_TYPE_ERROR) and the scheduled run fails before recording
-        // rows. The indexer's verification *logic* is exercised natively by the
-        // worker's own unit tests (indexlogic.rs + sql.rs) and the surface
-        // verifier is the exact shared `aos-registry-surface` reader; here the
-        // end-to-end D1 write is blocked by the runtime version. All soft.
+        // The Cron indexer reads the R2 surface (verifying every signature via
+        // the shared `aos-registry-surface` reader) and writes the D1 index over
+        // the D1Backend — same engine as the read path, so its `i64` id binds
+        // cross as JS numbers and succeed under the pinned workerd. After a clean
+        // run the registry indexes `fresh`, the release + channel are recorded,
+        // and the anti-rollback floor is raised to the frontier. All hard.
         {
           const sr = await triggerScheduled();
-          softCheck("scheduled trigger accepted", sr.status === 200, "got " + sr.status);
+          check("scheduled trigger accepted", sr.status === 200, "got " + sr.status);
 
           const idx = await db.prepare(
             "SELECT state FROM registry_index WHERE registry_id = 1"
           ).first();
-          softCheck("indexer set registry fresh", idx && idx.state === "fresh",
+          check("indexer set registry fresh", idx && idx.state === "fresh",
             idx ? idx.state : "no row");
 
           const rel = await db.prepare(
             "SELECT semver FROM releases WHERE registry_id = 1"
           ).first();
-          softCheck("indexer recorded release 1.0.0", rel && rel.semver === "1.0.0",
+          check("indexer recorded release 1.0.0", rel && rel.semver === "1.0.0",
             rel ? rel.semver : "no row");
 
           const ch = await db.prepare(
             "SELECT name, frontier FROM channels WHERE registry_id = 1"
           ).first();
-          softCheck("indexer recorded channel stable @ 1.0.0",
+          check("indexer recorded channel stable @ 1.0.0",
             ch && ch.name === "stable" && ch.frontier === "1.0.0",
             ch ? (ch.name + "@" + ch.frontier) : "no row");
 
           const floor = await db.prepare(
             "SELECT floor FROM channel_floors WHERE registry_id = 1 AND channel = 'stable'"
           ).first();
-          softCheck("indexer raised anti-rollback floor to 1.0.0",
+          check("indexer raised anti-rollback floor to 1.0.0",
             floor && floor.floor === "1.0.0", floor ? floor.floor : "no row");
         }
 
@@ -553,20 +546,19 @@ in
           const badIdx = await db.prepare(
             "SELECT state FROM registry_index WHERE registry_id = 3"
           ).first();
-          softCheck("fail-closed: bad registry not fresh",
+          check("fail-closed: bad registry not fresh",
             !badIdx || badIdx.state !== "fresh", badIdx ? badIdx.state : "no row");
           const badRel = await db.prepare(
             "SELECT COUNT(*) AS n FROM releases WHERE registry_id = 3"
           ).first();
           // n comes back from D1 as a number; never any release rows for `bad`.
-          softCheck("fail-closed: bad registry recorded no releases",
+          check("fail-closed: bad registry recorded no releases",
             badRel && Number(badRel.n) === 0, badRel ? String(badRel.n) : "no row");
         }
 
         await mf.dispose();
 
-        console.log("SUMMARY: hard-failures=" + failures +
-          " soft-pass=" + soft_pass + " soft-deferred=" + soft_fail);
+        console.log("SUMMARY: hard-failures=" + failures);
 
         if (failures === 0) {
           // Write a sentinel the shell can test with coreutils alone (the VM
