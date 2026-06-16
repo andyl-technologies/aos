@@ -1679,14 +1679,14 @@ pub async fn run(
             let outcome =
                 remove::run(&config, packages, auto_remove, dry_run, yes, printer).await?;
             if config.settings.auto_gc && auto_remove && !dry_run && outcome.orphan_count > 0 {
-                clean::run_gc_after_mutation(printer).await?;
+                clean::run_gc_after_mutation(config.scope, printer).await?;
             }
             Ok(())
         }
         PackageCommand::Autoremove => {
             let outcome = remove::run_autoremove(&config, dry_run, yes, printer).await?;
             if config.settings.auto_gc && !dry_run && outcome.orphan_count > 0 {
-                clean::run_gc_after_mutation(printer).await?;
+                clean::run_gc_after_mutation(config.scope, printer).await?;
             }
             Ok(())
         }
@@ -1771,7 +1771,7 @@ pub async fn run(
         PackageCommand::Clean { generations, keep } => {
             clean::run(&config, *generations, *keep, printer).await
         }
-        PackageCommand::Gc => clean::run_gc(printer).await,
+        PackageCommand::Gc => clean::run_gc(config.scope, printer).await,
         PackageCommand::Verify { package } => source::run_verify(&config, package, printer).await,
         PackageCommand::Source {
             package,
@@ -2472,8 +2472,10 @@ async fn registry_add(
     printer.kv("URL", url);
     printer.kv("Priority", &priority.to_string());
 
-    let config_dir = config.scope.config_dir();
-    let registries_dir = config_dir.join("registries.d");
+    // A brand-new registry is a self-sufficient definition, written to the
+    // writable config layer (`/var/lib/apm/config` for --system), never the
+    // read-only `/etc/apm` seed.
+    let registries_dir = config.scope.writable_config_dir().join("registries.d");
     fs::create_dir_all(&registries_dir)
         .with_context(|| format!("creating {}", registries_dir.display()))?;
 
@@ -2767,13 +2769,10 @@ async fn registry_remove(
         }
     }
 
-    let trusted_keys_removed = trusted_key_dir_sets_for_registry_removal(config, &toml_path)
-        .into_iter()
-        .try_fold(false, |removed, dirs| {
-            security::KeyStore::new(dirs)
-                .remove(name)
-                .map(|current| removed || current)
-        })?;
+    // Remove the runtime pin from the writable trusted-keys store and mask any
+    // colocated read-only seed anchor.
+    let trusted_keys_removed =
+        security::KeyStore::new(config.scope.trusted_keys_dirs()).remove(name)?;
 
     if printer.mode() == OutputMode::Json {
         printer.json(&serde_json::json!({
@@ -2813,16 +2812,15 @@ async fn registry_set_enabled(
     printer: &Printer,
 ) -> Result<()> {
     validate_registry_name(name)?;
-    let (reg_config, state) =
-        config
-            .find_registry(name)
-            .ok_or_else(|| AosError::RegistryError {
-                message: format!("registry '{name}' not found"),
-            })?;
+    let (reg_config, _) = config
+        .find_registry(name)
+        .ok_or_else(|| AosError::RegistryError {
+            message: format!("registry '{name}' not found"),
+        })?;
 
     let toml_path = config.registry_config_path_for_update(name);
     let previous_enabled = reg_config.enabled;
-    write_registry_enabled(&toml_path, reg_config, state.as_ref(), enabled)?;
+    write_registry_enabled(&toml_path, enabled)?;
 
     let action = if enabled {
         "registry_enable"
@@ -2863,45 +2861,43 @@ async fn registry_set_enabled(
     Ok(())
 }
 
-/// Persist a registry's `enabled` flag, preserving the rest of its config.
-fn write_registry_enabled(
-    path: &std::path::Path,
-    reg_config: &types::RegistryConfig,
-    state: Option<&types::RegistryState>,
-    enabled: bool,
-) -> Result<()> {
-    if path.exists() {
+/// Persist a registry's `enabled` flag to the writable config layer.
+///
+/// When the writable-layer file already exists (an operator-added definition
+/// or a prior overlay), its `enabled` field is updated in place, preserving
+/// every other field. When it does not exist (a *seeded* registry), a minimal
+/// `[registry]` overlay carrying only `enabled` is written, so the registry's
+/// url/signing keep inheriting from the `/etc` seed rather than being shadowed
+/// by a full copy.
+///
+/// # Errors
+///
+/// Returns an error when an existing file cannot be read or parsed, when the
+/// parent directory cannot be created, or when the file cannot be written.
+fn write_registry_enabled(path: &std::path::Path, enabled: bool) -> Result<()> {
+    let mut root: toml::Value = if path.exists() {
         let content =
             fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let mut value: toml::Value =
-            toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
-        let registry = value
-            .get_mut("registry")
-            .and_then(toml::Value::as_table_mut)
-            .ok_or_else(|| anyhow::anyhow!("{}: missing [registry] table", path.display()))?;
-        registry.insert("enabled".into(), toml::Value::Boolean(enabled));
-        let rendered = toml::to_string_pretty(&value)?;
-        fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
-        return Ok(());
-    }
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
-    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-
-    let mut reg_config = reg_config.clone();
-    reg_config.enabled = enabled;
-    let mut registry = match toml::Value::try_from(reg_config)? {
-        toml::Value::Table(table) => table,
-        _ => bail!("registry config did not serialize as a TOML table"),
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?
+    } else {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        toml::Value::Table(toml::map::Map::new())
     };
-    if let Some(state) = state {
-        registry.insert("state".into(), toml::Value::try_from(state)?);
-    }
-    let mut root = toml::map::Map::new();
-    root.insert("registry".into(), toml::Value::Table(registry));
-    let rendered = toml::to_string_pretty(&toml::Value::Table(root))?;
+
+    let table = root
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("{}: top level is not a TOML table", path.display()))?;
+    let registry = table
+        .entry("registry".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("{}: [registry] is not a TOML table", path.display()))?;
+    registry.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+
+    let rendered = toml::to_string_pretty(&root)?;
     fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
@@ -2951,76 +2947,46 @@ fn count_packages_in_dir(dir: &std::path::Path) -> usize {
     count
 }
 
-/// Return the registry config file that `registry remove` should delete.
+/// Return the writable-layer config file that `registry remove` should delete.
 ///
-/// Removing a user-level config has different semantics than updating it:
-/// when a same-name system config exists underneath, deleting only the user
-/// layer would make the registry reappear from the fallback. Treat that as an
-/// ambiguous removal instead of reporting success for a registry that remains
-/// visible.
+/// Removal only ever deletes from the writable layer
+/// (`/var/lib/apm/config` for system scope). A registry that is (also) defined
+/// by a read-only seed below it — typically `/etc/apm`, baked into the image —
+/// cannot be removed this way: deleting the writable file would leave it
+/// visible from the seed, and apm never writes `/etc`. Such a removal is
+/// refused with guidance to blank the seed via Ignition (§5 of the design).
 fn registry_config_path_for_removal(config: &config::ApmConfig, name: &str) -> Result<PathBuf> {
-    let primary = config
-        .scope
-        .config_dir()
-        .join("registries.d")
-        .join(format!("{name}.toml"));
-    if config.scope != ProfileScope::User {
-        return Ok(primary);
-    }
-
-    let fallback = ProfileScope::System
-        .config_dir()
-        .join("registries.d")
-        .join(format!("{name}.toml"));
-    if primary.exists() && fallback.exists() {
+    if registry_defined_by_seed(config, name) {
         return Err(AosError::RegistryError {
             message: format!(
-                "registry '{name}' also exists in system config at {}; refusing to remove only \
-                 the user config at {} because the system registry would remain visible",
-                fallback.display(),
-                primary.display(),
+                "registry '{name}' is defined by a read-only seed (e.g. /etc/apm) that apm \
+                 cannot modify. To remove a seeded registry, blank its seed file \
+                 (replace the contents of registries.d/{name}.toml) via Ignition."
             ),
         }
         .into());
     }
 
-    if primary.exists() || !fallback.exists() {
-        Ok(primary)
-    } else {
-        Ok(fallback)
-    }
+    Ok(config
+        .scope
+        .writable_config_dir()
+        .join("registries.d")
+        .join(format!("{name}.toml")))
 }
 
-/// Return the trust-store layers to clean up for a registry removal.
+/// Whether a layer strictly below the writable one defines registry `name`.
 ///
-/// Most user-scope removals should remove or mask user trust entries.
-/// When user scope is operating on a writable redirected system registry
-/// config, however, the registry itself is being removed from the system layer.
-/// In that case cleanup both layers: any colocated system trust key first,
-/// then user trust pins learned from the system registry during updates. The
-/// order matters because user cleanup masks read-only system anchors that
-/// remain; when the system key is being deleted too, no user revocation marker
-/// should be left behind for it.
-fn trusted_key_dir_sets_for_registry_removal(
-    config: &config::ApmConfig,
-    removed_config_path: &std::path::Path,
-) -> Vec<Vec<PathBuf>> {
-    if config.scope == ProfileScope::User {
-        if let Some(file_name) = removed_config_path.file_name() {
-            let system_registry_config = ProfileScope::System
-                .config_dir()
-                .join("registries.d")
-                .join(file_name);
-            if removed_config_path == system_registry_config {
-                return vec![
-                    ProfileScope::System.trusted_keys_dirs(),
-                    config.scope.trusted_keys_dirs(),
-                ];
-            }
-        }
-    }
-
-    vec![config.scope.trusted_keys_dirs()]
+/// A "definition" is a non-blank `registries.d/{name}.toml` that contributes a
+/// `url`. Seeds always carry a `url`; a writable-layer overlay that only
+/// adjusts state or `enabled` does not. Used to refuse removing a seeded
+/// registry (which apm cannot delete) — see [`registry_config_path_for_removal`].
+fn registry_defined_by_seed(config: &config::ApmConfig, name: &str) -> bool {
+    let layers = config.scope.config_layers();
+    // The last entry is the writable layer; everything below it is a seed.
+    let seed_layers = &layers[..layers.len().saturating_sub(1)];
+    seed_layers.iter().any(|layer| {
+        config::registry_file_has_url(&layer.join("registries.d").join(format!("{name}.toml")))
+    })
 }
 
 #[cfg(test)]
@@ -3182,10 +3148,10 @@ mod tests {
         .unwrap();
 
         let parsed: types::RegistryFile = toml::from_str(&content).unwrap();
-        assert_eq!(parsed.registry.name, "quoted-url");
+        assert_eq!(parsed.registry.name.as_deref(), Some("quoted-url"));
         assert_eq!(
-            parsed.registry.url,
-            "file:///tmp/registry with \"quotes\"\nand newline"
+            parsed.registry.url.as_deref(),
+            Some("file:///tmp/registry with \"quotes\"\nand newline")
         );
         assert_eq!(parsed.registry.priority, 750);
         assert!(parsed.registry.enabled);
@@ -3236,52 +3202,15 @@ mod tests {
     }
 
     #[test]
-    fn registry_remove_user_config_cleans_user_trust_layer() {
+    fn registry_config_path_for_removal_targets_writable_layer() {
         let tmp = TempDir::new().unwrap();
         let config = make_config(&tmp, vec![]);
-        let removed_config = ProfileScope::User
-            .config_dir()
-            .join("registries.d")
-            .join("host-reg.toml");
-
-        assert_eq!(
-            trusted_key_dir_sets_for_registry_removal(&config, &removed_config),
-            vec![ProfileScope::User.trusted_keys_dirs()]
-        );
-    }
-
-    #[test]
-    fn registry_remove_redirected_system_config_cleans_both_trust_layers() {
-        let tmp = TempDir::new().unwrap();
-        let config = make_config(&tmp, vec![]);
-        let removed_config = ProfileScope::System
-            .config_dir()
-            .join("registries.d")
-            .join("host-install-channel.toml");
-
-        assert_eq!(
-            trusted_key_dir_sets_for_registry_removal(&config, &removed_config),
-            vec![
-                ProfileScope::System.trusted_keys_dirs(),
-                ProfileScope::User.trusted_keys_dirs()
-            ]
-        );
-    }
-
-    #[test]
-    fn registry_remove_system_scope_cleans_system_trust_layer() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = make_config(&tmp, vec![]);
-        config.scope = ProfileScope::System;
-        let removed_config = ProfileScope::System
-            .config_dir()
-            .join("registries.d")
-            .join("host-install-channel.toml");
-
-        assert_eq!(
-            trusted_key_dir_sets_for_registry_removal(&config, &removed_config),
-            vec![ProfileScope::System.trusted_keys_dirs()]
-        );
+        // A registry that no read-only seed defines resolves to the writable
+        // layer, never the `/etc` seed. (The unique name is absent from any
+        // real seed dir, so the seed check is deterministically false.)
+        let path = registry_config_path_for_removal(&config, "operator-added-xyz").unwrap();
+        assert!(path.starts_with(config.scope.writable_config_dir()));
+        assert!(path.ends_with("registries.d/operator-added-xyz.toml"));
     }
 
     #[test]
