@@ -6,3 +6,4 @@ description = "Runtime-agnostic core of the AOS registry hub (RFC-0004 Phase 5):
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
