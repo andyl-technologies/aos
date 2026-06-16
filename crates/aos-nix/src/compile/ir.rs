@@ -874,7 +874,7 @@ impl IrLowerer {
             Some(
                 b"isAttrs" | b"isList" | b"isFunction" | b"isString" | b"isInt" | b"isFloat"
                 | b"isBool" | b"isNull" | b"isPath" | b"typeOf" | b"length" | b"attrNames"
-                | b"attrValues" | b"tail" | b"functionArgs" | b"head",
+                | b"attrValues" | b"tail" | b"functionArgs" | b"head" | b"ceil" | b"floor",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1701,6 +1701,8 @@ mod tests {
             ("builtins.tail [ 1 2 ]", b"tail".as_slice()),
             ("builtins.functionArgs (x: x)", b"functionArgs".as_slice()),
             ("builtins.head [ 1 ]", b"head".as_slice()),
+            ("builtins.ceil 1.2", b"ceil".as_slice()),
+            ("builtins.floor 1.8", b"floor".as_slice()),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -1767,6 +1769,22 @@ mod tests {
         assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
 
         let ir = lowered("head [ 1 ]");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir = lowered("ceil 1.2");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir = lowered("floor 1.8");
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::Apply);
         let IrData::Pair { first, .. } = root.data else {
@@ -1849,6 +1867,26 @@ mod tests {
         assert_eq!(node(&ir, first).kind, IrKind::Select);
 
         let ir = lowered("let builtins = { head = x: \"local\"; }; in builtins.head [ 1 ]");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered("let builtins = { ceil = x: 42; }; in builtins.ceil 1.2");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered("let builtins = { floor = x: 42; }; in builtins.floor 1.8");
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
         };

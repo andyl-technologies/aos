@@ -32,6 +32,7 @@ use crate::value::{Value, ValueTag};
 
 const TO_STRING_ATTR: &[u8] = b"__toString";
 const OUT_PATH_ATTR: &[u8] = b"outPath";
+const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
 
 /// Evaluates an IR root to weak head normal form with the tree-walk oracle.
 ///
@@ -1427,11 +1428,62 @@ impl<'ir> TreeWalk<'ir> {
                 };
                 Ok(head)
             }
+            StrictUnaryPrimOp::Ceil => self.eval_float_to_int_primop(
+                id,
+                node.span,
+                argument,
+                value,
+                f64::ceil,
+                ArithmeticOp::Ceil,
+            ),
+            StrictUnaryPrimOp::Floor => self.eval_float_to_int_primop(
+                id,
+                node.span,
+                argument,
+                value,
+                f64::floor,
+                ArithmeticOp::Floor,
+            ),
             StrictUnaryPrimOp::FunctionArgs => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_function_args_primop(id, node.span, argument, argument_span, value)
             }
         }
+    }
+
+    fn eval_float_to_int_primop(
+        &self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        value: Value,
+        op: fn(f64) -> f64,
+        arithmetic_op: ArithmeticOp,
+    ) -> Result<Value, TreeWalkError> {
+        let argument_span = self.node(argument)?.span;
+        let value = match self.expect_number(argument, value, argument_span)? {
+            Number::Int(value) => value,
+            Number::Float(value) => {
+                let rounded = op(value);
+                if rounded.is_nan() {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::ArithmeticOverflow {
+                            id,
+                            op: arithmetic_op,
+                        },
+                        span,
+                    ));
+                }
+                if rounded <= i64::MIN as f64 {
+                    i64::MIN
+                } else if rounded >= I64_MAX_EXCLUSIVE_AS_F64 {
+                    i64::MAX
+                } else {
+                    rounded as i64
+                }
+            }
+        };
+        Ok(Value::int(value))
     }
 
     fn eval_function_args_primop(
@@ -3034,6 +3086,8 @@ enum StrictUnaryPrimOp {
     Tail,
     FunctionArgs,
     Head,
+    Ceil,
+    Floor,
 }
 
 impl StrictUnaryPrimOp {
@@ -3055,6 +3109,8 @@ impl StrictUnaryPrimOp {
             b"tail" => Some(Self::Tail),
             b"functionArgs" => Some(Self::FunctionArgs),
             b"head" => Some(Self::Head),
+            b"ceil" => Some(Self::Ceil),
+            b"floor" => Some(Self::Floor),
             _ => None,
         }
     }
@@ -3186,6 +3242,10 @@ pub enum ArithmeticOp {
     Mul,
     /// Binary numeric division.
     Div,
+    /// Float-to-integer ceiling.
+    Ceil,
+    /// Float-to-integer floor.
+    Floor,
 }
 
 /// A tree-walk evaluation failure with source location.
@@ -4244,6 +4304,62 @@ mod tests {
             }
         );
         assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn ceil_and_floor_primops_round_numbers_to_ints() {
+        assert_eq!(eval("builtins.ceil 1").as_int(), Ok(1));
+        assert_eq!(eval("builtins.ceil 1.2").as_int(), Ok(2));
+        assert_eq!(eval("builtins.ceil (-1.2)").as_int(), Ok(-1));
+        assert_eq!(eval("builtins.floor 1").as_int(), Ok(1));
+        assert_eq!(eval("builtins.floor 1.8").as_int(), Ok(1));
+        assert_eq!(eval("builtins.floor (-1.2)").as_int(), Ok(-2));
+        assert_eq!(
+            eval("let builtins = { ceil = x: 42; }; in builtins.ceil 1.2").as_int(),
+            Ok(42)
+        );
+        assert_eq!(
+            eval("let builtins = { floor = x: 42; }; in builtins.floor 1.8").as_int(),
+            Ok(42)
+        );
+    }
+
+    #[test]
+    fn ceil_and_floor_primops_type_check_arguments() {
+        for source in ["builtins.ceil true", "builtins.floor true"] {
+            let ir = lower(source);
+            let root = ir.arena.node(ir.root).expect("root exists");
+            let IrData::PrimOp { args, .. } = root.data else {
+                panic!("root is a primop");
+            };
+            let args = ir.arena.child_slice(args).expect("primop args exist");
+            let argument = args[0];
+            let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+            let error = eval_whnf(&ir).expect_err("rounding requires a number");
+
+            assert_eq!(
+                error.kind(),
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "number",
+                    actual: ValueTag::Bool
+                }
+            );
+            assert_eq!(error.span(), argument_span);
+        }
+    }
+
+    #[test]
+    fn ceil_and_floor_primops_saturate_int_range_boundaries() {
+        for source in [
+            "builtins.ceil 9223372036854775807.0",
+            "builtins.ceil 9223372036854775808.0",
+            "builtins.floor 9223372036854775807.0",
+            "builtins.floor 9223372036854775808.0",
+        ] {
+            assert_eq!(eval(source).as_int(), Ok(i64::MAX));
+        }
     }
 
     #[test]
