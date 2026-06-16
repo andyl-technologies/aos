@@ -1018,7 +1018,7 @@ impl IrLowerer {
 
     fn strict_ternary_primop_effect(&self, symbol: Symbol) -> Option<EffectClass> {
         match self.resolved.symbols.resolve(symbol) {
-            Some(b"substring" | b"foldl'") => Some(EffectClass::Pure),
+            Some(b"substring" | b"foldl'" | b"replaceStrings") => Some(EffectClass::Pure),
             _ => None,
         }
     }
@@ -2054,6 +2054,10 @@ mod tests {
                 "builtins.foldl' (acc: x: acc) 0 [ 1 ]",
                 b"foldl'".as_slice(),
             ),
+            (
+                "builtins.replaceStrings [ \"a\" ] [ \"b\" ] \"a\"",
+                b"replaceStrings".as_slice(),
+            ),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -2082,6 +2086,10 @@ mod tests {
             "let foldl' = op: initial: list: \"local\"; in foldl' (acc: x: acc) 0 [ 1 ]",
             "let builtins = { foldl' = op: initial: list: \"local\"; }; in builtins.foldl' (acc: x: acc) 0 [ 1 ]",
             "(builtins.foldl' or (op: initial: list: \"default\")) (acc: x: acc) 0 [ 1 ]",
+            "replaceStrings [ \"a\" ] [ \"b\" ] \"a\"",
+            "let replaceStrings = from: to: string: \"local\"; in replaceStrings [ \"a\" ] [ \"b\" ] \"a\"",
+            "let builtins = { replaceStrings = from: to: string: \"local\"; }; in builtins.replaceStrings [ \"a\" ] [ \"b\" ] \"a\"",
+            "(builtins.replaceStrings or (from: to: string: \"default\")) [ \"a\" ] [ \"b\" ] \"a\"",
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);

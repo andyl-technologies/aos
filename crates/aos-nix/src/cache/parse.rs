@@ -1482,6 +1482,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"fromJSON"
             | b"substring"
             | b"foldl'"
+            | b"replaceStrings"
             | b"addDrvOutputDependencies"
             | b"unsafeDiscardOutputDependency"
             | b"unsafeDiscardStringContext"

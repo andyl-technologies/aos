@@ -1248,6 +1248,9 @@ impl<'ir> TreeWalk<'ir> {
                 StrictTernaryPrimOp::FoldlStrict => {
                     self.eval_foldl_strict_primop(id, node.span, first, second, third)
                 }
+                StrictTernaryPrimOp::ReplaceStrings => {
+                    self.eval_replace_strings_primop(id, node.span, first, second, third)
+                }
                 StrictTernaryPrimOp::Substring => self.eval_substring_primop(first, second, third),
             };
         }
@@ -1942,6 +1945,28 @@ impl<'ir> TreeWalk<'ir> {
         Ok(copied)
     }
 
+    fn extend_bytes_for_node(
+        id: IrId,
+        span: Span,
+        target: &mut Vec<u8>,
+        bytes: &[u8],
+    ) -> Result<(), TreeWalkError> {
+        let len = target.len().checked_add(bytes.len()).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: usize::MAX,
+                },
+                span,
+            )
+        })?;
+        target.try_reserve_exact(bytes.len()).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+        })?;
+        target.extend_from_slice(bytes);
+        Ok(())
+    }
+
     fn eval_add_drv_output_dependencies_primop(
         &mut self,
         argument: IrId,
@@ -2222,6 +2247,259 @@ impl<'ir> TreeWalk<'ir> {
                 string_span,
             )
         })
+    }
+
+    fn eval_replace_strings_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        from_id: IrId,
+        to_id: IrId,
+        string_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let from_span = self.node(from_id)?.span;
+        let from_value = self.eval_node(from_id)?;
+        if from_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: from_id,
+                    expected: "list",
+                    actual: from_value.tag(),
+                },
+                from_span,
+            ));
+        }
+        let from_values = {
+            let from = self.heap.get_list(from_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: from_id,
+                        source,
+                    },
+                    from_span,
+                )
+            })?;
+            let mut values = Vec::new();
+            values.try_reserve_exact(from.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: from_id,
+                        len: from.len(),
+                    },
+                    from_span,
+                )
+            })?;
+            values.extend_from_slice(from.as_slice());
+            values
+        };
+
+        let to_span = self.node(to_id)?.span;
+        let to_value = self.eval_node(to_id)?;
+        if to_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: to_id,
+                    expected: "list",
+                    actual: to_value.tag(),
+                },
+                to_span,
+            ));
+        }
+        let to_values = {
+            let to = self.heap.get_list(to_value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id: to_id, source }, to_span)
+            })?;
+            let mut values = Vec::new();
+            values.try_reserve_exact(to.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: to_id,
+                        len: to.len(),
+                    },
+                    to_span,
+                )
+            })?;
+            values.extend_from_slice(to.as_slice());
+            values
+        };
+
+        if from_values.len() != to_values.len() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::ReplaceStringsLengthMismatch {
+                    id,
+                    from_len: from_values.len(),
+                    to_len: to_values.len(),
+                },
+                span,
+            ));
+        }
+
+        let mut patterns = Vec::new();
+        patterns.try_reserve_exact(from_values.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: from_values.len(),
+                },
+                span,
+            )
+        })?;
+        for (from, replacement) in from_values.into_iter().zip(to_values) {
+            let from = self.force_value(from_id, from_span, from)?;
+            if from.tag() != ValueTag::String {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: from_id,
+                        expected: "string",
+                        actual: from.tag(),
+                    },
+                    from_span,
+                ));
+            }
+            let from = {
+                let string = self.heap.get_string(from).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: from_id,
+                            source,
+                        },
+                        from_span,
+                    )
+                })?;
+                Self::copy_bytes_for_node(from_id, from_span, string.bytes())?
+            };
+            patterns.push(ReplaceStringPattern { from, replacement });
+        }
+
+        let string_span = self.node(string_id)?.span;
+        let string_value = self.eval_node(string_id)?;
+        if string_value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: string_id,
+                    expected: "string",
+                    actual: string_value.tag(),
+                },
+                string_span,
+            ));
+        }
+        let (source, context) = {
+            let string = self.heap.get_string(string_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: string_id,
+                        source,
+                    },
+                    string_span,
+                )
+            })?;
+            let source = Self::copy_bytes_for_node(string_id, string_span, string.bytes())?;
+            let context = string
+                .context()
+                .union(&StringContext::empty())
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: string_id,
+                            source,
+                        },
+                        string_span,
+                    )
+                })?;
+            (source, context)
+        };
+
+        let result =
+            self.replace_strings_bytes(id, span, to_id, to_span, &source, context, &patterns)?;
+        self.heap
+            .alloc_string(result)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn replace_strings_bytes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        to_id: IrId,
+        to_span: Span,
+        source: &[u8],
+        mut context: StringContext,
+        patterns: &[ReplaceStringPattern],
+    ) -> Result<NixString, TreeWalkError> {
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(source.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: source.len(),
+                },
+                span,
+            )
+        })?;
+
+        let mut offset = 0;
+        while offset <= source.len() {
+            let matched = patterns
+                .iter()
+                .position(|pattern| source[offset..].starts_with(&pattern.from));
+            let Some(index) = matched else {
+                if offset == source.len() {
+                    break;
+                }
+                Self::extend_bytes_for_node(id, span, &mut bytes, &source[offset..offset + 1])?;
+                offset += 1;
+                continue;
+            };
+
+            let replacement =
+                self.force_replace_string(to_id, to_span, patterns[index].replacement)?;
+            Self::extend_bytes_for_node(id, span, &mut bytes, &replacement.bytes)?;
+            context = context.union(&replacement.context).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+            })?;
+
+            let consumed = patterns[index].from.len();
+            if consumed == 0 {
+                if offset == source.len() {
+                    break;
+                }
+                Self::extend_bytes_for_node(id, span, &mut bytes, &source[offset..offset + 1])?;
+                offset += 1;
+            } else {
+                offset += consumed;
+            }
+        }
+
+        Ok(NixString::new(bytes, context))
+    }
+
+    fn force_replace_string(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<ReplaceStringReplacement, TreeWalkError> {
+        let value = self.force_value(id, span, value)?;
+        if value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        let string = self
+            .heap
+            .get_string(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let bytes = Self::copy_bytes_for_node(id, span, string.bytes())?;
+        let context = string
+            .context()
+            .union(&StringContext::empty())
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        Ok(ReplaceStringReplacement { bytes, context })
     }
 
     fn eval_base_name_of_primop(
@@ -5867,6 +6145,18 @@ enum EqualityContext {
     Nested,
 }
 
+#[derive(Debug)]
+struct ReplaceStringPattern {
+    from: Vec<u8>,
+    replacement: Value,
+}
+
+#[derive(Debug)]
+struct ReplaceStringReplacement {
+    bytes: Vec<u8>,
+    context: StringContext,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HashStringAlgorithm {
     Md5,
@@ -5964,6 +6254,7 @@ impl StrictUnaryPrimOp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StrictTernaryPrimOp {
     FoldlStrict,
+    ReplaceStrings,
     Substring,
 }
 
@@ -5971,6 +6262,7 @@ impl StrictTernaryPrimOp {
     fn from_bytes(name: &[u8]) -> Option<Self> {
         match name {
             b"foldl'" => Some(Self::FoldlStrict),
+            b"replaceStrings" => Some(Self::ReplaceStrings),
             b"substring" => Some(Self::Substring),
             _ => None,
         }
@@ -6457,6 +6749,16 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The overflowing list length.
         len: usize,
+    },
+    /// `replaceStrings` received pattern and replacement lists of different lengths.
+    #[error("replaceStrings at node {id:?} received {from_len} patterns but {to_len} replacements")]
+    ReplaceStringsLengthMismatch {
+        /// The primop node id.
+        id: IrId,
+        /// The number of pattern strings.
+        from_len: usize,
+        /// The number of replacement strings.
+        to_len: usize,
     },
     /// A list primop received an empty list where it requires an element.
     #[error("{op} received an empty list at node {id:?}")]
@@ -10196,6 +10498,224 @@ mod tests {
             }
         );
         assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn replace_strings_primop_replaces_bytes() {
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.replaceStrings [ \"o\" \"l\" ] [ \"0\" \"L\" ] \"hello world\""
+            ),
+            b"heLL0 w0rLd"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.replaceStrings [ \"\" ] [ \"x\" ] \"ab\""),
+            b"xaxbx"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.replaceStrings [ \"a\" \"ab\" ] [ \"X\" \"Y\" ] \"ababa\""),
+            b"XbXbX"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.replaceStrings [ \"ab\" \"a\" ] [ \"Y\" \"X\" ] \"ababa\""),
+            b"YYX"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { replaceStrings = from: to: string: \"local\"; }; in builtins.replaceStrings [ \"a\" ] [ \"b\" ] \"a\""
+            ),
+            b"local"
+        );
+    }
+
+    #[test]
+    fn replace_strings_primop_checks_lengths_before_elements() {
+        let ir = lower("builtins.replaceStrings [ (1 / 0) ] [] (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+
+        let error = eval_whnf_owned(&ir).expect_err("replaceStrings checks list lengths first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::ReplaceStringsLengthMismatch {
+                id: ir.root,
+                from_len: 1,
+                to_len: 0,
+            }
+        );
+        assert_eq!(error.span(), root.span);
+    }
+
+    #[test]
+    fn replace_strings_primop_forces_replacements_only_when_used() {
+        assert_eq!(
+            eval_string_bytes("builtins.replaceStrings [ \"x\" ] [ (1 / 0) ] \"z\""),
+            b"z"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.replaceStrings [ \"x\" ] [ 2 ] \"z\""),
+            b"z"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.replaceStrings [ \"z\" \"x\" ] [ \"y\" (1 / 0) ] \"z\""),
+            b"y"
+        );
+
+        let ir = lower("builtins.replaceStrings [ \"x\" ] [ (1 / 0) ] \"x\"");
+        let error = eval_whnf(&ir).expect_err("used replacement is forced");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. } | TreeWalkErrorKind::Force { .. }
+        ));
+    }
+
+    #[test]
+    fn replace_strings_primop_type_checks_arguments() {
+        let ir = lower("builtins.replaceStrings 1 [] \"x\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let from = args[0];
+        let from_span = ir.arena.node(from).expect("from argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("from must be a list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: from,
+                expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), from_span);
+
+        let ir = lower("builtins.replaceStrings [ 1 ] [ \"x\" ] \"1\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let from = args[0];
+        let from_span = ir.arena.node(from).expect("from argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("from elements must be strings");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: from,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), from_span);
+
+        let ir = lower("builtins.replaceStrings [ \"x\" ] [ 1 ] \"x\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let to = args[1];
+        let to_span = ir.arena.node(to).expect("to argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("used replacements must be strings");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: to,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), to_span);
+
+        let ir = lower("builtins.replaceStrings [ \"a\" ] [ \"x\" ] { outPath = \"a\"; }");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let string = args[2];
+        let string_span = ir.arena.node(string).expect("string argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("string argument is not coerced");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: string,
+                expected: "string",
+                actual: ValueTag::Attrs,
+            }
+        );
+        assert_eq!(error.span(), string_span);
+    }
+
+    #[test]
+    fn replace_strings_primop_unions_source_and_used_replacement_contexts() {
+        let ir = lower("builtins.replaceStrings [ \"x\" \"z\" ] [ \"used\" \"unused\" ] \"x\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let to = args[1];
+        let to_span = ir.arena.node(to).expect("to argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let used = ContextElement::opaque_path(b"/nix/store/used".to_vec())
+            .expect("used context is valid");
+        let unused = ContextElement::opaque_path(b"/nix/store/unused".to_vec())
+            .expect("unused context is valid");
+        let used_value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"USED".to_vec(),
+                StringContext::singleton(used.clone()).expect("used context allocates"),
+            ))
+            .expect("used replacement allocates");
+        let unused_value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"UNUSED".to_vec(),
+                StringContext::singleton(unused.clone()).expect("unused context allocates"),
+            ))
+            .expect("unused replacement allocates");
+        let patterns = vec![
+            ReplaceStringPattern {
+                from: b"x".to_vec(),
+                replacement: used_value,
+            },
+            ReplaceStringPattern {
+                from: b"z".to_vec(),
+                replacement: unused_value,
+            },
+        ];
+
+        let result = evaluator
+            .replace_strings_bytes(
+                ir.root,
+                root.span,
+                to,
+                to_span,
+                b"prexpost",
+                StringContext::singleton(source.clone()).expect("source context allocates"),
+                &patterns,
+            )
+            .expect("replaceStrings evaluates");
+
+        assert_eq!(result.bytes(), b"preUSEDpost");
+        assert!(result.context().contains(&source));
+        assert!(result.context().contains(&used));
+        assert!(!result.context().contains(&unused));
     }
 
     #[test]
