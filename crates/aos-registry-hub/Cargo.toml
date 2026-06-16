@@ -40,9 +40,6 @@ aos-core = { workspace = true }
 aos-package = { workspace = true }
 aos-registry-core = { workspace = true }
 aos-registry-surface = { workspace = true }
-aos-proto = { workspace = true }
-connectrpc = { workspace = true }
-buffa = { workspace = true }
 
 [features]
 default = []

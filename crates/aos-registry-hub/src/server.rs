@@ -204,7 +204,7 @@ impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
         };
         let jwt = self
             .jwt_keys
-            .mint(&auth, crate::rpc::UPLOAD_CREDENTIAL_TTL_SECS)?;
+            .mint(&auth, aos_registry_core::service::UPLOAD_CREDENTIAL_TTL_SECS)?;
         Ok(Some(crate::validation::RepairCredential {
             upload_url: format!("{base}/{}", registry.slug),
             bearer_jwt: jwt,
