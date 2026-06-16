@@ -795,7 +795,12 @@ impl IrLowerer {
         let Some(symbol) = self.direct_builtin_ref_symbol(id)? else {
             return Ok(None);
         };
-        if self.node(id)?.kind == NodeKind::GlobalVar && !self.symbol_is(symbol, b"import") {
+        if self.node(id)?.kind == NodeKind::GlobalVar
+            && !matches!(
+                self.resolved.symbols.resolve(symbol),
+                Some(b"import" | b"isNull")
+            )
+        {
             return Ok(None);
         }
         Ok(self
@@ -1686,6 +1691,7 @@ mod tests {
             ("builtins.isFloat 1.0", b"isFloat".as_slice()),
             ("builtins.isBool true", b"isBool".as_slice()),
             ("builtins.isNull null", b"isNull".as_slice()),
+            ("isNull null", b"isNull".as_slice()),
             ("builtins.isPath \"not-path\"", b"isPath".as_slice()),
             ("builtins.typeOf null", b"typeOf".as_slice()),
         ] {
@@ -1714,6 +1720,16 @@ mod tests {
         assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
 
         let ir = lowered("let typeOf = x: x; in typeOf 1");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::LocalVar);
+
+        let ir = lowered("let isNull = x: false; in isNull null");
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
         };

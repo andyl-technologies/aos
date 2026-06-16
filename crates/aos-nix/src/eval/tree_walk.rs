@@ -3482,6 +3482,11 @@ mod tests {
         assert_eq!(eval("builtins.isFloat 1.0").as_bool(), Ok(true));
         assert_eq!(eval("builtins.isBool false").as_bool(), Ok(true));
         assert_eq!(eval("builtins.isNull null").as_bool(), Ok(true));
+        assert_eq!(eval("isNull null").as_bool(), Ok(true));
+        assert_eq!(
+            eval("let isNull = x: false; in isNull null").as_bool(),
+            Ok(false)
+        );
         assert_eq!(eval("builtins.isPath \"not-path\"").as_bool(), Ok(false));
     }
 
