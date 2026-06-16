@@ -14,7 +14,8 @@ use thiserror::Error;
 use super::heap::{EvalHeap, EvalHeapError, EvalThunk};
 use crate::attrs::{AttrEntry, AttrError, FlatAttrs};
 use crate::compile::{
-    Ir, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId, IrKind, IrNode, IrShapeId,
+    Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId, IrKind,
+    IrNode, IrShapeId,
 };
 use crate::list::{NixList, NixListError};
 use crate::string::{NixString, NixStringError};
@@ -167,6 +168,7 @@ impl<'ir> TreeWalk<'ir> {
             IrKind::Assert => self.eval_assert(id, &node),
             IrKind::UnaryOp => self.eval_unary(id, &node),
             IrKind::BinOp => self.eval_binary(id, &node),
+            IrKind::HasAttr => self.eval_has_attr(id, &node),
             kind => Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedNode { id, kind },
                 node.span,
@@ -263,6 +265,21 @@ impl<'ir> TreeWalk<'ir> {
         }
 
         Ok(())
+    }
+
+    fn attr_path(
+        &self,
+        id: IrId,
+        path: IrAttrPathId,
+        span: Span,
+    ) -> Result<&[IrAttrPathSegment], TreeWalkError> {
+        self.ir
+            .attr_paths
+            .get(path.index())
+            .map(|segments| segments.as_ref())
+            .ok_or_else(|| {
+                TreeWalkError::new(TreeWalkErrorKind::InvalidAttrPath { id, path }, span)
+            })
     }
 
     fn invalid_payload(&self, id: IrId, node: &IrNode, expected: &'static str) -> TreeWalkError {
@@ -510,6 +527,59 @@ impl<'ir> TreeWalk<'ir> {
         self.heap
             .alloc_attrs(shape.as_u32(), attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    fn eval_has_attr(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::HasAttr { receiver, path, .. } = node.data else {
+            return Err(self.invalid_payload(id, node, "has-attr payload"));
+        };
+        let path_segments = self.attr_path(id, path, node.span)?;
+        let segments = path_segments.len();
+        let has_dynamic = path_segments
+            .iter()
+            .any(|segment| matches!(segment, IrAttrPathSegment::Dynamic(_)));
+        let key = match path_segments {
+            [IrAttrPathSegment::Static(symbol)] => {
+                if self.ir.symbols.resolve(*symbol).is_none() {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidSymbol {
+                            id,
+                            symbol: *symbol,
+                        },
+                        node.span,
+                    ));
+                }
+                Some(*symbol)
+            }
+            _ => None,
+        };
+
+        let receiver = self.eval_node(receiver)?;
+        if receiver.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "attrs",
+                    actual: receiver.tag(),
+                },
+                node.span,
+            ));
+        }
+        let Some(key) = key else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedAttrPath {
+                    id,
+                    path,
+                    segments,
+                    has_dynamic,
+                },
+                node.span,
+            ));
+        };
+        let attrs = self.heap.get_attrs(receiver).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+        })?;
+        Ok(Value::bool(attrs.contains_key(key)))
     }
 
     fn eval_add(
@@ -1064,6 +1134,14 @@ pub enum TreeWalkErrorKind {
         /// The invalid child slice payload.
         slice: IrChildSlice,
     },
+    /// An attribute-path side-table id did not resolve through the IR.
+    #[error("invalid attribute path {path:?} at node {id:?}")]
+    InvalidAttrPath {
+        /// The node id carrying the invalid attribute-path id.
+        id: IrId,
+        /// The invalid attribute-path id payload.
+        path: IrAttrPathId,
+    },
     /// A binding-table slice payload did not resolve through the IR.
     #[error("invalid binding slice {slice:?} at node {id:?}")]
     InvalidBindingSlice {
@@ -1225,6 +1303,20 @@ pub enum TreeWalkErrorKind {
         /// Whether the source attrset has dynamic keys.
         has_dynamic: bool,
     },
+    /// The attr path requires nested traversal or dynamic-name support.
+    #[error(
+        "unsupported tree-walk attribute path {path:?} at {id:?}: segments={segments}, has_dynamic={has_dynamic}"
+    )]
+    UnsupportedAttrPath {
+        /// The access node id.
+        id: IrId,
+        /// The unsupported attribute-path id.
+        path: IrAttrPathId,
+        /// The number of path segments.
+        segments: usize,
+        /// Whether any path segment is dynamic.
+        has_dynamic: bool,
+    },
     /// A checked integer arithmetic operation overflowed.
     #[error("arithmetic overflow for {op:?} at node {id:?}")]
     ArithmeticOverflow {
@@ -1262,8 +1354,8 @@ mod tests {
     use std::ptr::NonNull;
 
     use crate::compile::{
-        EffectClass, IrArena, IrBinding, IrData, IrNode, IrShape, lower as lower_ir,
-        resolve as resolve_ast,
+        EffectClass, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode, IrShape,
+        lower as lower_ir, resolve as resolve_ast,
     };
     use crate::string::{ContextElement, StringContext};
     use crate::syntax::{Symbol, SymbolTable, parse_str};
@@ -1325,6 +1417,24 @@ mod tests {
             attr_paths: Vec::new().into_boxed_slice(),
             bindings: bindings.into_boxed_slice(),
             shapes: shapes.into_boxed_slice(),
+        }
+    }
+
+    fn manual_ir_with_attr_paths(
+        root: IrId,
+        nodes: Vec<IrNode>,
+        symbols: SymbolTable,
+        attr_paths: Vec<Box<[IrAttrPathSegment]>>,
+    ) -> Ir {
+        Ir {
+            root,
+            arena: IrArena::from_raw_parts(nodes, Vec::new()),
+            symbols,
+            frames: Vec::new().into_boxed_slice(),
+            with_chains: Vec::new().into_boxed_slice(),
+            attr_paths: attr_paths.into_boxed_slice(),
+            bindings: Vec::new().into_boxed_slice(),
+            shapes: Vec::new().into_boxed_slice(),
         }
     }
 
@@ -1599,6 +1709,88 @@ mod tests {
                 .expect("root exists")
                 .span
         );
+    }
+
+    #[test]
+    fn has_attr_detects_single_static_keys_without_forcing_values() {
+        assert_eq!(eval("({ a = 1; } ? a)").as_bool(), Ok(true));
+        assert_eq!(eval("({ a = 1; } ? z)").as_bool(), Ok(false));
+        assert_eq!(eval("({ a = 1 / 0; } ? a)").as_bool(), Ok(true));
+        assert_eq!(eval("({ a = 1 / 0; } ? z)").as_bool(), Ok(false));
+    }
+
+    #[test]
+    fn has_attr_requires_attrset_receivers() {
+        let ir = lower("(1 ? a)");
+        let error = eval_whnf(&ir).expect_err("integer receiver is not an attrset");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: ir.root,
+                expected: "attrs",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            ir.arena.node(ir.root).expect("root exists").span
+        );
+    }
+
+    #[test]
+    fn has_attr_rejects_nested_and_dynamic_paths_for_now() {
+        let nested = lower("({ a = {}; } ? a.b)");
+        let nested_error = eval_whnf_owned(&nested).expect_err("nested traversal needs forcing");
+
+        assert_eq!(
+            nested_error.kind(),
+            TreeWalkErrorKind::UnsupportedAttrPath {
+                id: nested.root,
+                path: IrAttrPathId::new(0),
+                segments: 2,
+                has_dynamic: false,
+            }
+        );
+        assert_eq!(
+            nested_error.span(),
+            nested.arena.node(nested.root).expect("root exists").span
+        );
+
+        let dynamic = lower("({ a = 1; } ? ${\"a\"})");
+        let dynamic_error = eval_whnf_owned(&dynamic).expect_err("dynamic key coercion is later");
+
+        assert_eq!(
+            dynamic_error.kind(),
+            TreeWalkErrorKind::UnsupportedAttrPath {
+                id: dynamic.root,
+                path: IrAttrPathId::new(0),
+                segments: 1,
+                has_dynamic: true,
+            }
+        );
+        assert_eq!(
+            dynamic_error.span(),
+            dynamic.arena.node(dynamic.root).expect("root exists").span
+        );
+    }
+
+    #[test]
+    fn has_attr_evaluates_receiver_before_unsupported_path_forms() {
+        let ir = lower("((1 / 0) ? a.b)");
+        let error = eval_whnf_owned(&ir).expect_err("receiver errors before path support limits");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+        let division = ir
+            .arena
+            .nodes()
+            .iter()
+            .find(|node| node.kind == IrKind::BinOp)
+            .expect("division node exists");
+        assert_eq!(error.span(), division.span);
     }
 
     #[test]
@@ -2007,6 +2199,73 @@ mod tests {
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::InvalidChildSlice { id: root, slice }
+        );
+        assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn invalid_has_attr_paths_are_reported() {
+        let receiver = IrId::new(0);
+        let root = IrId::new(1);
+        let path = IrAttrPathId::new(2);
+        let span = Span::new(0, 5);
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern(b"a").expect("symbol interns");
+        let ir = manual_ir_with_attr_paths(
+            root,
+            vec![
+                pure_node(IrKind::Int, Span::new(0, 1), IrData::Int(1)),
+                pure_node(
+                    IrKind::HasAttr,
+                    span,
+                    IrData::HasAttr {
+                        site: IrInlineCacheSiteId::new(0),
+                        receiver,
+                        path,
+                    },
+                ),
+            ],
+            symbols,
+            vec![Box::new([IrAttrPathSegment::Static(a)]), Box::new([])],
+        );
+        let error = eval_whnf_owned(&ir).expect_err("attr-path id must exist");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidAttrPath { id: root, path }
+        );
+        assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn invalid_has_attr_static_symbols_are_reported() {
+        let receiver = IrId::new(0);
+        let root = IrId::new(1);
+        let path = IrAttrPathId::new(0);
+        let span = Span::new(0, 5);
+        let symbol = Symbol::new(99);
+        let ir = manual_ir_with_attr_paths(
+            root,
+            vec![
+                pure_node(IrKind::Int, Span::new(0, 1), IrData::Int(1)),
+                pure_node(
+                    IrKind::HasAttr,
+                    span,
+                    IrData::HasAttr {
+                        site: IrInlineCacheSiteId::new(0),
+                        receiver,
+                        path,
+                    },
+                ),
+            ],
+            SymbolTable::new(),
+            vec![Box::new([IrAttrPathSegment::Static(symbol)])],
+        );
+        let error = eval_whnf_owned(&ir).expect_err("static path symbol must exist");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidSymbol { id: root, symbol }
         );
         assert_eq!(error.span(), span);
     }
