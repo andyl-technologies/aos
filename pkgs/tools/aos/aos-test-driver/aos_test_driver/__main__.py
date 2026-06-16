@@ -33,6 +33,15 @@ log: logging.Logger = logging.getLogger(__name__)
 NAME_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _configure_stdio() -> None:
+    """Keep driver/test output visible while Nix is still running the check."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True, write_through=True)
+        except (AttributeError, ValueError):
+            pass
+
+
 def _load_manifest(path: Path) -> dict[str, Any]:
     with open(path) as f:
         manifest: Any = json.load(f)
@@ -61,19 +70,49 @@ def _load_manifest(path: Path) -> dict[str, Any]:
                 f"machine {name!r}: transport must be 'qemu' or"
                 f" 'firecracker' (got {transport!r})"
             )
-        for required in ("kernel", "initrd", "disk", "memory_mib", "vcpu_count"):
+        boot = m.get("boot", "kernel")
+        if boot not in ("kernel", "image"):
+            raise SystemExit(
+                f"machine {name!r}: boot must be 'kernel' or 'image'"
+                f" (got {boot!r})"
+            )
+        if boot == "image" and transport != "qemu":
+            raise SystemExit(
+                f"machine {name!r}: image boot requires the qemu transport"
+            )
+        for required in ("disk", "memory_mib", "vcpu_count"):
             if required not in m:
                 raise SystemExit(
                     f"machine {name!r}: missing required field {required!r}"
                 )
-        if "metadata" not in m:
-            raise SystemExit(
-                f"machine {name!r}: missing 'metadata' (use null to omit)"
-            )
-        if transport == "qemu":
-            if m["metadata"] is None:
+        if boot == "kernel":
+            for required in ("kernel", "initrd"):
+                if required not in m:
+                    raise SystemExit(
+                        f"machine {name!r}: missing required field {required!r}"
+                    )
+            if "metadata" not in m:
                 raise SystemExit(
-                    f"machine {name!r}: qemu transport requires non-null metadata"
+                    f"machine {name!r}: missing 'metadata' (use null to omit)"
+                )
+        else:
+            # Image boot: UEFI firmware is mandatory, and a metadata ISO
+            # is forbidden — its presence would flip platform detection
+            # to PLATFORM_ID=file and ignition would ignore fw_cfg.
+            for required in ("firmware_code", "firmware_vars"):
+                if required not in m:
+                    raise SystemExit(
+                        f"machine {name!r}: image boot requires {required!r}"
+                    )
+            if m.get("metadata") is not None:
+                raise SystemExit(
+                    f"machine {name!r}: image boot must not attach a"
+                    " metadata ISO (it forces PLATFORM_ID=file)"
+                )
+        if transport == "qemu":
+            if boot == "kernel" and m["metadata"] is None:
+                raise SystemExit(
+                    f"machine {name!r}: qemu kernel boot requires non-null metadata"
                 )
             for required in ("mac", "ip"):
                 if required not in m:
@@ -104,10 +143,17 @@ def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
         )
     return QemuMachine(
         name=entry["name"],
-        kernel=entry["kernel"],
-        initrd=entry["initrd"],
+        boot=entry.get("boot", "kernel"),
+        kernel=entry.get("kernel"),
+        initrd=entry.get("initrd"),
         disk=entry["disk"],
-        metadata=entry["metadata"],
+        metadata=entry.get("metadata"),
+        firmware_code=entry.get("firmware_code"),
+        firmware_vars=entry.get("firmware_vars"),
+        fw_cfg=entry.get("fw_cfg"),
+        disk_size_mib=entry.get("disk_size_mib"),
+        tpm=entry.get("tpm", False),
+        swtpm_bin=entry.get("swtpm_bin"),
         memory_mib=entry["memory_mib"],
         vcpu_count=entry["vcpu_count"],
         mac=entry["mac"],
@@ -121,13 +167,19 @@ def _dump_serial_logs(machines: list[Machine]) -> None:
         path = Path(m.serial_log_path)
         if not path.exists():
             continue
-        sys.stderr.write(f"\n--- {m.name} serial log ---\n")
+        _write_stderr_bytes(f"\n--- {m.name} serial log ---\n".encode())
         try:
-            sys.stderr.buffer.write(path.read_bytes())
-            sys.stderr.flush()
+            _write_stderr_bytes(path.read_bytes())
         except OSError as e:
-            sys.stderr.write(f"(could not read {path}: {e})\n")
-        sys.stderr.write(f"--- end {m.name} serial log ---\n\n")
+            _write_stderr_bytes(f"(could not read {path}: {e})\n".encode())
+        _write_stderr_bytes(f"--- end {m.name} serial log ---\n\n".encode())
+
+
+def _write_stderr_bytes(data: bytes) -> None:
+    """Write raw diagnostic bytes to stderr without text-buffer reordering."""
+    sys.stderr.flush()
+    sys.stderr.buffer.write(data)
+    sys.stderr.buffer.flush()
 
 
 # Default budget for the agent-readiness handshake — strictly the time
@@ -202,6 +254,8 @@ def _wait_system_ready(machines: list[Machine], timeout: float) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio()
+
     parser = argparse.ArgumentParser(prog="aos-test-driver")
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--test", required=True, type=Path)

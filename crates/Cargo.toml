@@ -52,7 +52,7 @@ jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.9"
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
-zstd = "0.13"
+zstd = { version = "0.13", features = ["zstdmt"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2", "service"] }

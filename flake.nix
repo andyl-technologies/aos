@@ -45,6 +45,24 @@
         );
     in
       builtins.foldl' (acc: name: acc // forSystem name) {} sysNames;
+
+    # Expose every individual aos package as `pkg-<name>` so a single
+    # component (e.g. `pkg-zlib`, `pkg-gcc`) can be built/benchmarked in
+    # isolation rather than only the whole OS. Filtered to derivations
+    # so the non-package helpers in the set (lib, mkDerivation, fetchurl,
+    # …) don't leak into the flake outputs and break `nix flake check`.
+    pkgPackages = aos: let
+      p = aos.pkgs;
+      isDrv = name: let
+        r = builtins.tryEval p.${name};
+      in
+        r.success && builtins.isAttrs r.value && (r.value.type or null) == "derivation";
+      names = builtins.filter isDrv (builtins.attrNames p);
+    in
+      builtins.listToAttrs (map (name: {
+        name = "pkg-${name}";
+        value = p.${name};
+      }) names);
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
 
@@ -57,13 +75,14 @@
           aos = aos.pkgs.aos;
         }
         // systemPackages aos
+        // pkgPackages aos
     );
 
     devShells = genAttrs systems (
       system: let
         aos = aosFor system;
         packages = [
-          aos.pkgs.aos
+          (aos.pkgs.aos.overrideAttrs (_: {doCheck = false;}))
           aos.pkgs.just
           aos.pkgs.rust
           aos.pkgs.rust.dev
@@ -72,6 +91,16 @@
           aos.pkgs.pkg-config
           aos.pkgs.openssl
           aos.pkgs.protobuf
+          # Runtime tools the aos/apm/apr binaries shell out to by bare name
+          # (see runtimeTools in pkgs/tools/aos/aos.nix), so impure cargo runs
+          # in the dev shell resolve the same AOS-built tools the hermetic build
+          # uses instead of falling back to whatever is installed on the host.
+          aos.pkgs.git
+          aos.pkgs.gnupg
+          aos.pkgs.openssh
+          aos.pkgs.tar
+          aos.pkgs.zstd
+          aos.pkgs.which
         ];
         binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") packages);
       in {
@@ -93,14 +122,9 @@
               else ""
             )
             + ''
-              export AOS_ROOT="$(pwd)"
               export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
               export OPENSSL_DIR="${aos.pkgs.openssl}"
-              export OPENSSL_LIB_DIR="${aos.pkgs.openssl}/lib"
-              export OPENSSL_INCLUDE_DIR="${aos.pkgs.openssl}/include"
               export OPENSSL_NO_VENDOR=1
-              export OPENSSL_STATIC=0
-              export PROTOC="${aos.pkgs.protobuf}/bin/protoc"
             '';
         };
       }

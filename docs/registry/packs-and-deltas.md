@@ -280,8 +280,8 @@ nix-build -A checks.vm.apm.registry-validation-pack-delta-perf
 
 It reports `REGISTRY_PERF_METRIC` lines for full-pack generation, thin-delta
 generation, zstd compression, and consumer reconstruction against a synthetic
-multi-package sha256 registry. It passed on `dylan@builder-hil1-c13958ef` on
-2026-06-08 with output
+multi-package sha256 registry. It passed on a remote KVM builder on 2026-06-08
+with output
 `/nix/store/c6lg01w5ks8f2h4ginav0wfdhlf12az9-aos-vm-test-apm-registry-validation-pack-delta-perf-0`
 and the following serial-log metrics:
 

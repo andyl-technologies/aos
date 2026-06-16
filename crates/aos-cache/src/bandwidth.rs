@@ -1,3 +1,16 @@
+//! Bandwidth limiting and human-readable rate/size parsing.
+//!
+//! [`BandwidthLimiter`] is a token-bucket rate limiter shared (via
+//! [`Arc`]) across all parallel transfers of a push or pull. A background
+//! Tokio task refills the bucket every 100 ms; consumers either call
+//! [`BandwidthLimiter::acquire`] before a whole-buffer transfer, or wrap
+//! a stream in [`RateLimitedRead`] / [`RateLimitedWrite`] for byte-level
+//! throttling.
+//!
+//! [`parse_bandwidth`] and [`parse_size`] parse the CLI's human-readable
+//! values like `"100MB/s"` or `"1MiB"` into byte counts, accepting both
+//! decimal (`kb`, `mb`, `gb`) and binary (`kib`, `mib`, `gib`) units.
+
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,16 +23,30 @@ use tokio::time::{Duration, interval};
 /// Token-bucket rate limiter shared across all parallel connections.
 ///
 /// When `rate` is 0, all methods are no-ops (unlimited).
+///
+/// The bucket refills by `rate / 10` tokens every 100 ms and is capped at
+/// `rate / 5` (two ticks' worth) to allow modest bursts after idle
+/// periods. The refill task holds only a [`Weak`](std::sync::Weak)
+/// reference, so it shuts down automatically once the last `Arc` clone
+/// of the limiter is dropped.
 #[allow(dead_code)]
 pub struct BandwidthLimiter {
+    /// Configured rate in bytes per second; 0 means unlimited.
     rate: u64,
+    /// Currently available token budget, in bytes.
     tokens: AtomicU64,
+    /// Wakes waiters in [`BandwidthLimiter::acquire`] after each refill.
     notify: Notify,
 }
 
 impl BandwidthLimiter {
-    /// Create a new limiter with the given bytes/sec rate.
-    /// Pass 0 for unlimited.
+    /// Creates a new limiter with the given bytes/sec rate and spawns its
+    /// refill task. Pass 0 for unlimited (no task is spawned).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rate > 0` and this is called outside a Tokio runtime,
+    /// since the refill task is spawned with [`tokio::spawn`].
     pub fn new(rate: u64) -> Arc<Self> {
         let limiter = Arc::new(Self {
             rate,
@@ -49,12 +76,18 @@ impl BandwidthLimiter {
         limiter
     }
 
-    /// Whether this limiter is active (rate > 0).
+    /// Returns whether this limiter is active (rate > 0).
     pub fn is_active(&self) -> bool {
         self.rate > 0
     }
 
-    /// Async wait until n bytes of bandwidth are available.
+    /// Waits until bandwidth budget is available for an `n`-byte transfer.
+    ///
+    /// Returns immediately when the limiter is unlimited. If fewer than
+    /// `n` tokens are available but the bucket is non-empty, the whole
+    /// remaining budget is consumed and the call returns — the caller is
+    /// expected to come back before its next transfer, so debt is repaid
+    /// on subsequent acquires rather than blocking mid-transfer.
     pub async fn acquire(&self, n: u64) {
         if self.rate == 0 {
             return;
@@ -81,7 +114,7 @@ impl BandwidthLimiter {
         }
     }
 
-    /// Wrap an AsyncRead with rate limiting.
+    /// Wraps an [`AsyncRead`] with rate limiting.
     ///
     /// Part of the public API for streaming rate-limited I/O (not yet used internally).
     #[allow(dead_code)]
@@ -92,7 +125,7 @@ impl BandwidthLimiter {
         }
     }
 
-    /// Wrap an AsyncWrite with rate limiting.
+    /// Wraps an [`AsyncWrite`] with rate limiting.
     ///
     /// Part of the public API for streaming rate-limited I/O (not yet used internally).
     #[allow(dead_code)]
@@ -104,7 +137,12 @@ impl BandwidthLimiter {
     }
 }
 
-/// An AsyncRead wrapper that enforces bandwidth limits.
+/// An [`AsyncRead`] wrapper that enforces bandwidth limits.
+///
+/// Each `poll_read` is clamped to the tokens currently available; when
+/// the bucket is empty the read returns [`Poll::Pending`] and is retried
+/// after the next refill tick. Created via
+/// [`BandwidthLimiter::wrap_read`].
 pub struct RateLimitedRead<R> {
     inner: R,
     limiter: Arc<BandwidthLimiter>,
@@ -153,7 +191,13 @@ impl<R: AsyncRead + Unpin> AsyncRead for RateLimitedRead<R> {
     }
 }
 
-/// An AsyncWrite wrapper that enforces bandwidth limits.
+/// An [`AsyncWrite`] wrapper that enforces bandwidth limits.
+///
+/// Each `poll_write` is clamped to the tokens currently available
+/// (callers see a short write and retry with the remainder); when the
+/// bucket is empty the write returns [`Poll::Pending`]. Flush and
+/// shutdown pass through unthrottled. Created via
+/// [`BandwidthLimiter::wrap_write`].
 pub struct RateLimitedWrite<W> {
     inner: W,
     limiter: Arc<BandwidthLimiter>,
@@ -198,7 +242,19 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for RateLimitedWrite<W> {
     }
 }
 
-/// Parse a human-readable bandwidth string like "100MB/s" into bytes/sec.
+/// Parses a human-readable bandwidth string like `"100MB/s"` into
+/// bytes/sec.
+///
+/// Parsing is case-insensitive and an optional `/s` suffix is ignored.
+/// Decimal units (`kb`/`mb`/`gb`, or bare `k`/`m`/`g`) are powers of
+/// 1000; binary units (`kib`/`mib`/`gib`) are powers of 1024; `b` or no
+/// unit means bytes. Fractional values like `"1.5MB"` are accepted and
+/// truncated to whole bytes.
+///
+/// # Errors
+///
+/// Returns an error if the numeric part does not parse as a number, or
+/// if the resulting value is negative or exceeds `u64::MAX`.
 pub fn parse_bandwidth(s: &str) -> anyhow::Result<u64> {
     let s = s.trim().to_lowercase();
     let s = s.strip_suffix("/s").unwrap_or(&s);
@@ -242,7 +298,14 @@ pub fn parse_bandwidth(s: &str) -> anyhow::Result<u64> {
     Ok(result as u64)
 }
 
-/// Parse a human-readable size string like "1MB" into bytes.
+/// Parses a human-readable size string like `"1MB"` into bytes.
+///
+/// Sizes and bandwidths share a grammar, so this delegates to
+/// [`parse_bandwidth`] (a stray `/s` suffix is therefore tolerated).
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`parse_bandwidth`].
 pub fn parse_size(s: &str) -> anyhow::Result<u64> {
     parse_bandwidth(s)
 }

@@ -50,9 +50,15 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
 
     let (key_file, trusted_public_key) = nix_cache_key(tmp.path())?;
     let printer = Printer::new(0, true, false);
-    let report =
-        nixcache::generate_static_cache(&registry_dir, &output_dir, Some(&key_file), 37, &printer)
-            .await?;
+    let report = nixcache::generate_static_cache(
+        &registry_dir,
+        &output_dir,
+        Some(&key_file),
+        37,
+        None,
+        &printer,
+    )
+    .await?;
     assert_eq!(report.paths, 1);
     assert_eq!(report.narinfos, 1);
     assert_eq!(report.nars, 1);
@@ -154,8 +160,8 @@ store_path = "{store_path}"
 nar_hash = "sha256:placeholder"
 nar_size = 1
 closure_size = 1
-source_drv = "{store_path}.drv"
-source_nar_hash = "sha256:placeholder"
+source_drv = ""
+source_nar_hash = ""
 references = []
 "#,
     )

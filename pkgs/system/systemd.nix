@@ -30,6 +30,7 @@
   cryptsetup,
   elfutils,
   linux-pam,
+  tpm2-tss,
   coreutils,
   bash,
   python3-pefile,
@@ -106,6 +107,9 @@ in
       cryptsetup
       elfutils
       linux-pam
+      # TPM2 (RFC-0006 phase 3): libtss2-esys/rc/mu + the device TCTI for
+      # systemd-cryptsetup's TPM2 token, systemd-pcrextend, systemd-measure.
+      tpm2-tss
     ];
     propagatedDeps = [];
 
@@ -234,7 +238,7 @@ in
                     -Dsbat-distro-pkgname=systemd \
                     -Dsbat-distro-version=${version} \
                     -Dsbat-distro-url=https://andyl.com \
-                    -Dtpm=false \
+                    -Dtpm=true \
                     -Denvironment-d=false \
                     -Dbinfmt=false \
                     -Drepart=disabled \
@@ -290,7 +294,7 @@ in
                     -Dopenssl=enabled \
                     -Dp11kit=disabled \
                     -Dlibfido2=disabled \
-                    -Dtpm2=disabled \
+                    -Dtpm2=enabled \
                     -Dlibcurl=disabled \
                     -Dlibidn2=disabled \
                     -Dlibidn=disabled \

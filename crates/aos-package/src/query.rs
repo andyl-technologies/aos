@@ -1,11 +1,30 @@
-use std::collections::HashMap;
+//! Read-only query commands: `apm search`, `show`, `list`, and `orphans`.
+//!
+//! All commands open the profile read-only and the registry caches for the
+//! current platform; nothing here mutates state, so they work for
+//! unprivileged callers.
+//!
+//! - **`search`**: substring match over names (and descriptions, unless
+//!   `--names-only`) across enabled registries, or over the installed set
+//!   with `--installed`.
+//! - **`show`**: detailed metadata for one package, including dependency
+//!   names, sysroot containment, and sysroot-lock violations. An installed
+//!   package missing from every registry is still shown from profile
+//!   metadata, marked unavailable.
+//! - **`list`**: package table with `installed` / `upgradable` / `held` /
+//!   `unavailable` status flags and the corresponding filters.
+//! - **`orphans`**: installed packages whose source registry has been
+//!   removed from the configuration entirely.
 
-use anyhow::{Context, Result};
+use std::collections::{HashMap, HashSet};
+
+use anyhow::{Context, Result, bail};
 
 use super::config::ApmConfig;
 use super::profile::Profile;
-use super::profile::meta::list_meta;
+use super::profile::meta::{list_meta, orphaned_by_registry};
 use super::registry::{Registry, RegistrySet, store_path_hash};
+use super::store;
 use super::sysroot_lock;
 use super::types::{InstalledMeta, PackageMeta};
 use aos_core::output::{OutputMode, Printer};
@@ -15,6 +34,16 @@ use aos_core::output::{OutputMode, Printer};
 // ---------------------------------------------------------------------------
 
 /// Search package names and descriptions across all registries.
+///
+/// Matching is case-insensitive substring search; `names_only` restricts it
+/// to names, `installed_only` searches the installed set instead, and
+/// `registry_filter` limits the search to one registry. Duplicate names are
+/// deduplicated with the highest-priority registry winning.
+///
+/// # Errors
+///
+/// Returns an error if the registry caches or (with `installed_only`)
+/// profile metadata cannot be loaded.
 pub async fn search(
     config: &ApmConfig,
     pattern: &str,
@@ -25,21 +54,17 @@ pub async fn search(
 ) -> Result<()> {
     let registries = load_registries(config)?;
 
-    // If --installed, load profile metadata to filter results.
-    let installed_hashes: Option<HashMap<String, InstalledMeta>> = if installed_only {
-        let profile = Profile::open(config.scope)?;
-        let meta_list = list_meta(&profile)?;
-        let map = meta_list
-            .into_iter()
-            .map(|m| {
-                let hash = store_path_hash(&m.store_path).to_string();
-                (hash, m)
-            })
-            .collect();
-        Some(map)
-    } else {
-        None
-    };
+    if installed_only {
+        return search_installed(
+            config,
+            &registries,
+            pattern,
+            names_only,
+            registry_filter,
+            printer,
+        )
+        .await;
+    }
 
     // Collect matches: (name, registry_name, version, description).
     let mut results: Vec<(String, String, String, String)> = Vec::new();
@@ -54,14 +79,6 @@ pub async fn search(
         let matches = reg.search(pattern, names_only);
 
         for meta in matches {
-            // If --installed, skip packages not in profile.
-            if let Some(ref installed) = installed_hashes {
-                let hash = store_path_hash(&meta.store_path).to_string();
-                if !installed.contains_key(&hash) {
-                    continue;
-                }
-            }
-
             results.push((
                 meta.name.clone(),
                 reg.config.name.clone(),
@@ -101,23 +118,150 @@ pub async fn search(
     Ok(())
 }
 
+/// `apm search --installed`: match the pattern against installed packages,
+/// pulling descriptions from the source registry when still available.
+async fn search_installed(
+    config: &ApmConfig,
+    registries: &RegistrySet,
+    pattern: &str,
+    names_only: bool,
+    registry_filter: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    let profile = Profile::open_readonly(config.scope);
+    let meta_list = list_meta(&profile)?;
+    let pattern_lower = pattern.to_lowercase();
+    let mut results: Vec<(String, String, String, String)> = Vec::new();
+
+    for meta in &meta_list {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+        if let Some(filter) = registry_filter {
+            if apm.registry != filter {
+                continue;
+            }
+        }
+
+        let description = installed_description(registries, &apm.registry, &meta.store_path);
+        let name_match = apm.name.to_lowercase().contains(&pattern_lower);
+        let description_match = !names_only && description.to_lowercase().contains(&pattern_lower);
+        if !name_match && !description_match {
+            continue;
+        }
+
+        results.push((
+            apm.name.clone(),
+            apm.registry.clone(),
+            apm.version.clone(),
+            description,
+        ));
+    }
+
+    results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    if printer.mode() == OutputMode::Json {
+        let json_results: Vec<serde_json::Value> = results
+            .iter()
+            .map(|(name, registry, version, description)| {
+                serde_json::json!({
+                    "name": name,
+                    "registry": registry,
+                    "version": version,
+                    "description": description,
+                })
+            })
+            .collect();
+        printer.json(&serde_json::json!(json_results));
+    } else {
+        for (name, registry, version, description) in &results {
+            printer.plain(&format!("{name}/{registry} {version} - {description}"));
+        }
+    }
+
+    Ok(())
+}
+
+/// Description of an installed package from its source registry, or a
+/// placeholder when the registry no longer offers that store path.
+fn installed_description(
+    registries: &RegistrySet,
+    registry_name: &str,
+    store_path: &str,
+) -> String {
+    let hash = store_path_hash(store_path);
+    registries
+        .get_registry(registry_name)
+        .and_then(|reg| reg.get_by_hash(hash))
+        .map(|meta| meta.description.clone())
+        .unwrap_or_else(|| "installed package unavailable in registry".to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Show
 // ---------------------------------------------------------------------------
 
 /// Display detailed information about a package.
-pub async fn show(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
+///
+/// Resolution order: the named registry (with `registry_filter`) or the
+/// highest-priority registry providing the package; if no registry has it
+/// but it is installed, the entry is rendered from profile metadata and
+/// marked unavailable.
+///
+/// # Errors
+///
+/// Returns an error if registry caches or profile metadata cannot be
+/// loaded, the filter names an unknown registry, or the package is neither
+/// in a registry nor installed.
+pub async fn show(
+    config: &ApmConfig,
+    package: &str,
+    registry_filter: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
     let registries = load_registries(config)?;
+    let profile = Profile::open_readonly(config.scope);
+    let meta_list = list_meta(&profile)?;
 
-    let (reg, meta) = registries
-        .resolve(package)
-        .with_context(|| format!("package '{package}' not found in any registry"))?;
+    if let Some(filter) = registry_filter {
+        if let Some(reg) = registries.get_registry(filter) {
+            if let Some(meta) = reg.get(package) {
+                return show_registry_package(config, reg, meta, &meta_list, printer);
+            }
+        }
 
+        if let Some(installed) = find_installed_package(&meta_list, package, Some(filter)) {
+            return show_installed_unavailable(installed, &meta_list, printer).await;
+        }
+
+        if registries.get_registry(filter).is_none() {
+            bail!("registry '{filter}' not found");
+        }
+        bail!("package '{package}' not found in registry '{filter}'");
+    }
+
+    if let Some((reg, meta)) = registries.resolve(package) {
+        show_registry_package(config, reg, meta, &meta_list, printer)
+    } else if let Some(installed) = find_installed_package(&meta_list, package, None) {
+        show_installed_unavailable(installed, &meta_list, printer).await
+    } else {
+        bail!("package '{package}' not found in any registry")
+    }
+}
+
+/// Render `apm show` for a package backed by a registry entry, including
+/// install state, dependency names, sysroot info, and (when installed)
+/// sysroot-lock violations.
+fn show_registry_package(
+    config: &ApmConfig,
+    reg: &Registry,
+    meta: &PackageMeta,
+    meta_list: &[InstalledMeta],
+    printer: &Printer,
+) -> Result<()> {
     let registry_name = reg.config.name.clone();
 
     // Check if installed.
-    let profile = Profile::open(config.scope)?;
-    let meta_list = list_meta(&profile)?;
     let pkg_hash = store_path_hash(&meta.store_path).to_string();
     let installed_meta = meta_list
         .iter()
@@ -204,11 +348,119 @@ pub async fn show(config: &ApmConfig, package: &str, printer: &Printer) -> Resul
     Ok(())
 }
 
+/// Render `apm show` for an installed package no registry offers anymore,
+/// using profile metadata and the live store's reference graph for
+/// dependency names.
+async fn show_installed_unavailable(
+    installed: &InstalledMeta,
+    meta_list: &[InstalledMeta],
+    printer: &Printer,
+) -> Result<()> {
+    let apm = installed
+        .apm
+        .as_ref()
+        .context("installed metadata is missing APM package state")?;
+    let dep_names = installed_dependency_names(installed, meta_list).await?;
+
+    if printer.mode() == OutputMode::Json {
+        let json_obj = serde_json::json!({
+            "name": apm.name,
+            "version": apm.version,
+            "registry": apm.registry,
+            "description": "installed package unavailable in registry",
+            "homepage": null,
+            "license": null,
+            "platform": null,
+            "installed": true,
+            "unavailable": true,
+            "store_path": installed.store_path,
+            "nar_size": null,
+            "nar_size_human": null,
+            "dependencies": dep_names,
+            "source_drv": null,
+            "maintainer": null,
+        });
+        printer.json(&json_obj);
+    } else {
+        printer.kv("Package", &apm.name);
+        printer.kv("Version", &apm.version);
+        printer.kv("Registry", &apm.registry);
+        printer.kv("Status", "installed, unavailable in registry");
+        printer.kv("Description", "installed package unavailable in registry");
+        printer.kv("Installed", "yes");
+        printer.kv("Store path", &installed.store_path);
+        if dep_names.is_empty() {
+            printer.kv("Dependencies", "(none)");
+        } else {
+            printer.kv("Dependencies", &dep_names.join(", "));
+        }
+    }
+
+    Ok(())
+}
+
+/// Dependency display names for an installed package: direct store
+/// references mapped to installed package names, falling back to the raw
+/// store-path hash for unknown references.
+async fn installed_dependency_names(
+    installed: &InstalledMeta,
+    meta_list: &[InstalledMeta],
+) -> Result<Vec<String>> {
+    let root_hash = store_path_hash(&installed.store_path);
+    let installed_by_hash: HashMap<String, String> = meta_list
+        .iter()
+        .filter_map(|meta| {
+            let apm = meta.apm.as_ref()?;
+            Some((
+                store_path_hash(&meta.store_path).to_string(),
+                apm.name.clone(),
+            ))
+        })
+        .collect();
+    let refs = store::direct_references(&installed.store_path).await?;
+    Ok(refs
+        .iter()
+        .map(|path| store_path_hash(path).to_string())
+        .filter(|hash| hash != root_hash)
+        .map(|hash| installed_by_hash.get(&hash).cloned().unwrap_or(hash))
+        .collect())
+}
+
+/// Find an installed package by APM name, optionally restricted to one
+/// source registry.
+fn find_installed_package<'a>(
+    meta_list: &'a [InstalledMeta],
+    package: &str,
+    registry_filter: Option<&str>,
+) -> Option<&'a InstalledMeta> {
+    meta_list.iter().find(|meta| {
+        let Some(apm) = meta.apm.as_ref() else {
+            return false;
+        };
+        apm.name == package
+            && registry_filter
+                .map(|filter| apm.registry == filter)
+                .unwrap_or(true)
+    })
+}
+
 // ---------------------------------------------------------------------------
 // List
 // ---------------------------------------------------------------------------
 
 /// List packages across registries with optional filters.
+///
+/// Each entry shows `name/registry version [status]`, where status combines
+/// `installed`, `upgradable: <version>`, `held`, sysroot-lock violations,
+/// and `unavailable` (installed but no longer in its registry). The default
+/// available-package view deduplicates names by registry priority; the
+/// filtered views (`installed_only`, `upgradable_only`, `held_only`) do not,
+/// so state on lower-priority registries stays visible.
+///
+/// # Errors
+///
+/// Returns an error if the registry caches or profile metadata cannot be
+/// loaded.
 pub async fn list(
     config: &ApmConfig,
     installed_only: bool,
@@ -220,14 +472,13 @@ pub async fn list(
     let registries = load_registries(config)?;
 
     // Load profile metadata for install/upgrade/held checks.
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
     let meta_list = list_meta(&profile)?;
 
-    // Build a map: package_name -> InstalledMeta (for packages with apm section).
-    let installed_by_name: HashMap<String, &InstalledMeta> = meta_list
-        .iter()
-        .filter_map(|m| m.apm.as_ref().map(|apm| (apm.name.clone(), m)))
-        .collect();
+    // Installed state belongs to the registry that supplied the package. The
+    // same package name can exist in multiple registries with different store
+    // paths, versions, and priority.
+    let installed_by_source_map = installed_by_source(&meta_list);
 
     // Pre-load sysroot references and registry lookup for sysroot-lock checks.
     let sysroot_info_for_lock = sysroot_lock::get_sysroot_references(config);
@@ -239,6 +490,7 @@ pub async fn list(
 
     // Collect entries: (name, registry_name, version, status).
     let mut entries: Vec<(String, String, String, String)> = Vec::new();
+    let mut listed_installed_sources: HashSet<(String, String)> = HashSet::new();
 
     for reg in registries.registries() {
         if let Some(filter) = registry_filter {
@@ -256,8 +508,13 @@ pub async fn list(
                 None => continue,
             };
 
-            let installed = installed_by_name.get(name);
+            let installed = installed_by_source_map
+                .get(&(name.to_string(), reg.config.name.clone()))
+                .copied();
             let is_installed = installed.is_some();
+            if is_installed {
+                listed_installed_sources.insert((name.to_string(), reg.config.name.clone()));
+            }
 
             // Determine held status.
             let is_held = installed
@@ -267,9 +524,7 @@ pub async fn list(
 
             // Determine upgradable: installed but registry has different store path hash.
             let is_upgradable = if let Some(inst) = installed {
-                let installed_hash = store_path_hash(&inst.store_path);
-                let registry_hash = store_path_hash(&meta.store_path);
-                installed_hash != registry_hash
+                is_upgradable_installed_root(inst, meta)
             } else {
                 false
             };
@@ -357,11 +612,48 @@ pub async fn list(
         }
     }
 
-    // Sort by name then registry.
-    entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    if (installed_only || held_only) && !upgradable_only {
+        for meta in &meta_list {
+            let Some(apm) = meta.apm.as_ref() else {
+                continue;
+            };
+            if let Some(filter) = registry_filter {
+                if apm.registry != filter {
+                    continue;
+                }
+            }
+            if held_only && !apm.held {
+                continue;
+            }
+            if listed_installed_sources.contains(&(apm.name.clone(), apm.registry.clone())) {
+                continue;
+            }
 
-    // Deduplicate by name (highest priority registry comes first).
-    entries.dedup_by(|b, a| a.0 == b.0);
+            let mut status = build_status_string(true, false, apm.held, None);
+            if !status.is_empty() {
+                status.push(',');
+            }
+            status.push_str("unavailable");
+
+            entries.push((
+                apm.name.clone(),
+                apm.registry.clone(),
+                apm.version.clone(),
+                status,
+            ));
+        }
+    }
+
+    // Sort by name while preserving registry priority order for duplicate
+    // names, because entries were collected from RegistrySet in priority order.
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // The default available-package view deduplicates duplicate names by
+    // priority. Filtered views are state-oriented and should not hide an
+    // installed or upgradable package from a lower-priority registry.
+    if !installed_only && !upgradable_only && !held_only {
+        entries.dedup_by(|b, a| a.0 == b.0);
+    }
 
     // Output.
     if printer.mode() == OutputMode::Json {
@@ -390,6 +682,82 @@ pub async fn list(
     Ok(())
 }
 
+/// List installed packages whose source registry is no longer configured.
+///
+/// Implements `apm orphans`. A package is *orphaned* when the registry it was
+/// installed from has been removed from the configuration (for example by
+/// `apr remove`): it stays installed but can no longer be upgraded, verified,
+/// or re-resolved against its source. The profile is opened read-only, so this
+/// never creates or mutates profile state and works for unprivileged callers
+/// even when the profile lives under a root-owned path.
+///
+/// # Errors
+///
+/// Returns an error only if the profile's metadata directory exists but cannot
+/// be read; a missing profile yields an empty list.
+pub async fn orphans(config: &ApmConfig, printer: &Printer) -> Result<()> {
+    // Read-only: never create or require write access to the profile root.
+    let profile = Profile::open_readonly(config.scope);
+
+    // A registry counts as "configured" whether enabled or disabled — only an
+    // outright-removed registry orphans its packages.
+    let configured: HashSet<&str> = config
+        .registries
+        .iter()
+        .map(|(cfg, _)| cfg.name.as_str())
+        .collect();
+
+    let mut orphans = orphaned_by_registry(&profile, &configured)?;
+    orphans.sort_by(|a, b| {
+        let an = a.apm.as_ref().map(|m| m.name.as_str()).unwrap_or("");
+        let bn = b.apm.as_ref().map(|m| m.name.as_str()).unwrap_or("");
+        an.cmp(bn)
+    });
+
+    if printer.mode() == OutputMode::Json {
+        let json: Vec<serde_json::Value> = orphans
+            .iter()
+            .filter_map(|m| m.apm.as_ref())
+            .map(|a| {
+                serde_json::json!({
+                    "name": a.name,
+                    "version": a.version,
+                    "registry": a.registry,
+                    "explicit": a.explicit,
+                })
+            })
+            .collect();
+        printer.json(&serde_json::json!(json));
+        return Ok(());
+    }
+
+    if orphans.is_empty() {
+        printer
+            .info("No orphaned packages: every installed package's registry is still configured.");
+        return Ok(());
+    }
+
+    printer.header(&format!("Orphaned packages ({}):", orphans.len()));
+    for m in &orphans {
+        if let Some(apm) = m.apm.as_ref() {
+            printer.plain(&format!(
+                "  {} {} (from removed registry '{}')",
+                apm.name, apm.version, apm.registry
+            ));
+        }
+    }
+    printer.plain("");
+    printer.info(&format!(
+        "These packages remain installed but can't be upgraded or verified. Re-add the \
+         registry with `{reg} add <url>`, reinstall from another registry, or remove them \
+         with `{pkg} remove <pkg>`.",
+        reg = aos_core::invocation::package_registry_command(),
+        pkg = aos_core::invocation::package_manager_command(),
+    ));
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -400,6 +768,32 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let cache_dir = config.cache_path();
     let platform = current_platform();
     RegistrySet::load(&cache_dir, &enabled, &platform)
+}
+
+/// Index installed packages by `(name, source registry)` — the same name
+/// may be installed from multiple registries with distinct store paths.
+fn installed_by_source(meta_list: &[InstalledMeta]) -> HashMap<(String, String), &InstalledMeta> {
+    meta_list
+        .iter()
+        .filter_map(|m| {
+            let apm = m.apm.as_ref()?;
+            Some(((apm.name.clone(), apm.registry.clone()), m))
+        })
+        .collect()
+}
+
+/// Whether an explicitly installed package differs from the registry
+/// candidate by store-path hash (i.e. an upgrade is available). Implicit
+/// (dependency-only) installs are never reported as upgradable.
+fn is_upgradable_installed_root(installed: &InstalledMeta, registry_meta: &PackageMeta) -> bool {
+    let Some(apm) = installed.apm.as_ref() else {
+        return false;
+    };
+    if !apm.explicit {
+        return false;
+    }
+
+    store_path_hash(&installed.store_path) != store_path_hash(&registry_meta.store_path)
 }
 
 /// Detect the current platform string (e.g. "x86_64-linux").
@@ -549,6 +943,17 @@ mod tests {
         store_path: &str,
         held: bool,
     ) -> InstalledMeta {
+        sample_installed_meta_with_explicit(name, version, registry, store_path, true, held)
+    }
+
+    fn sample_installed_meta_with_explicit(
+        name: &str,
+        version: &str,
+        registry: &str,
+        store_path: &str,
+        explicit: bool,
+        held: bool,
+    ) -> InstalledMeta {
         InstalledMeta {
             store_path: store_path.into(),
             pushed_at: 1707800000,
@@ -560,10 +965,12 @@ mod tests {
             apm: Some(ApmMeta {
                 name: name.into(),
                 version: version.into(),
-                explicit: true,
+                explicit,
                 registry: registry.into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }
     }
@@ -699,11 +1106,8 @@ mod tests {
             false,
         );
 
-        let installed_by_name: HashMap<String, &InstalledMeta> = {
-            let mut m = HashMap::new();
-            m.insert("curl".to_string(), &curl_installed);
-            m
-        };
+        let installed = vec![curl_installed];
+        let installed_by_source_map = installed_by_source(&installed);
 
         // Filter: only installed packages.
         let mut entries = Vec::new();
@@ -712,7 +1116,9 @@ mod tests {
             names.sort();
             for name in names {
                 let meta = reg.get(name).unwrap();
-                let installed = installed_by_name.get(name);
+                let installed = installed_by_source_map
+                    .get(&(name.to_string(), reg.config.name.clone()))
+                    .copied();
                 let is_installed = installed.is_some();
 
                 // installed_only filter
@@ -748,30 +1154,29 @@ mod tests {
             "/var/lib/store/oldhash12345-curl-8.4.0",
             false,
         );
-        // zlib installed with the same hash (no upgrade)
-        let zlib_installed = sample_installed_meta(
+        // zlib installed with a different hash, but as an auto-installed
+        // dependency it should not be advertised as an independent upgrade.
+        let zlib_installed = sample_installed_meta_with_explicit(
             "zlib",
-            "1.3.1",
+            "1.3.0",
             "aos-core",
-            "/var/lib/store/r4q1m2kp8v3x-zlib-1.3.1",
+            "/var/lib/store/oldzlibhash1-zlib-1.3.0",
+            false,
             false,
         );
 
-        let installed_by_name: HashMap<String, &InstalledMeta> = {
-            let mut m = HashMap::new();
-            m.insert("curl".to_string(), &curl_installed);
-            m.insert("zlib".to_string(), &zlib_installed);
-            m
-        };
+        let installed = vec![curl_installed, zlib_installed];
+        let installed_by_source_map = installed_by_source(&installed);
 
         let mut upgradable = Vec::new();
         for reg in registries.registries() {
             for name in reg.names() {
                 let meta = reg.get(name).unwrap();
-                if let Some(inst) = installed_by_name.get(name) {
-                    let installed_hash = store_path_hash(&inst.store_path);
-                    let registry_hash = store_path_hash(&meta.store_path);
-                    if installed_hash != registry_hash {
+                if let Some(inst) = installed_by_source_map
+                    .get(&(name.to_string(), reg.config.name.clone()))
+                    .copied()
+                {
+                    if is_upgradable_installed_root(inst, meta) {
                         upgradable.push(name.to_string());
                     }
                 }
@@ -780,6 +1185,32 @@ mod tests {
 
         assert_eq!(upgradable.len(), 1);
         assert_eq!(upgradable[0], "curl");
+    }
+
+    #[test]
+    fn installed_by_source_keeps_same_name_registries_distinct() {
+        let low = sample_installed_meta(
+            "priority-tool",
+            "9.0.0",
+            "low-priority",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-priority-tool-9.0.0",
+            false,
+        );
+        let installed = vec![low];
+        let by_source = installed_by_source(&installed);
+
+        assert!(
+            by_source
+                .get(&("priority-tool".to_string(), "high-priority".to_string()))
+                .is_none()
+        );
+        assert_eq!(
+            by_source
+                .get(&("priority-tool".to_string(), "low-priority".to_string()))
+                .and_then(|m| m.apm.as_ref())
+                .map(|apm| apm.version.as_str()),
+            Some("9.0.0")
+        );
     }
 
     // 9. search_with_registry_filter

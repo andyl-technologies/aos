@@ -1,10 +1,48 @@
 //! System sysroot management (`apm install --system`, `apm upgrade --system`,
 //! `apm rollback --system`).
 //!
-//! A sysroot package is a regular package with `sysroot = true`. Installing it
-//! as a system sysroot creates a numbered generation under
-//! `/var/lib/profiles/system/`, runs activation scripts, and compares kernels
-//! to determine if a reboot is needed.
+//! A sysroot package is a regular package with `sysroot = true` whose store
+//! path is a system toplevel. Installing it as the system sysroot creates a
+//! numbered **generation** under `/var/lib/profiles/system/`: a `gen-N/`
+//! directory holding a `toplevel` symlink, recorded in `state.json` (see
+//! [`SystemGenerationState`]) alongside a `current` symlink that always
+//! points at the live generation.
+//!
+//! # Install / upgrade / rollback flow
+//!
+//! [`install_system`] resolves the package, downloads and imports any
+//! missing closure paths, writes the new generation, then runs the
+//! toplevel's `activate` script with the generation number. [`upgrade_system`]
+//! checks the registries for a newer sysroot version and delegates to
+//! [`install_system`]; [`rollback_system`] re-activates a previous
+//! generation's toplevel. Only after a successful activation is the
+//! generation committed as `current`.
+//!
+//! # Activation exit-code contract
+//!
+//! The `activate` script (see `modules/base/activate.sh.in`) rebuilds the
+//! generation's `/etc` overlay, reconciles running daemons via the hidden
+//! [`activate_pre_etc_swap`] / [`activate_post_etc_swap`] split, and swaps
+//! `/etc` atomically. Its exit code is the authority on what happened:
+//!
+//! ```text
+//! 0      switch succeeded, every unit healthy
+//! 5      switch succeeded; only stale-mount cleanup failed (cosmetic)
+//! 6      switch succeeded but some units failed -- the generation stays
+//!        live, but apm exits non-zero
+//! 1/2/3  failed before the swap; the previous generation is still live
+//! 4      swap incomplete; /etc indeterminate -- operator must intervene
+//! ```
+//!
+//! # Kernel upgrade modes
+//!
+//! When the new generation ships a different kernel, [`KernelUpgradeMode`]
+//! selects what happens after activation: `Advisory` (default) updates the
+//! boot loader and advises a reboot, `Kexec` hot-loads the new kernel,
+//! `Reboot` queues a full reboot via systemd, and `Live` applies userspace
+//! only, deferring the kernel to the next reboot. `--drain` runs the
+//! toplevel's drain script (or isolates `drain.target`) before a disruptive
+//! switch.
 
 use std::collections::HashSet;
 use std::fs::OpenOptions;
@@ -15,20 +53,21 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 use aos_systemd::{FailedUnitsReport, JobResult, SystemdClient};
 
 use crate::config::ApmConfig;
 use crate::download::{
-    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfos,
-    resolve_mirror,
+    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
+    fetch_narinfos, resolve_mirror,
 };
+use crate::registry::sb_certs::{self, SbCertsToml};
 use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::{filter_missing, import_nar};
 use crate::types::{PackageMeta, ProfileScope, SystemGeneration, SystemGenerationState};
 use crate::unit_diff::{self, UnitDiff};
-use crate::verify::{verify_download_hash, verify_nar_hash};
+use crate::verify::{verify_download_hash, verify_downloads, verify_nar_hash};
 
 // ---------------------------------------------------------------------------
 // Kernel upgrade mode
@@ -52,7 +91,9 @@ pub enum KernelUpgradeMode {
 // Constants
 // ---------------------------------------------------------------------------
 
+/// File name of the generation-state JSON inside the system profile dir.
 const SYSTEM_STATE_FILE: &str = "state.json";
+/// systemd-boot loader entry rewritten when the kernel changes.
 const BOOT_LOADER_ENTRY: &str = "/boot/loader/entries/aos.conf";
 
 // ---------------------------------------------------------------------------
@@ -63,6 +104,28 @@ const BOOT_LOADER_ENTRY: &str = "/boot/loader/entries/aos.conf";
 ///
 /// When `--image <FMT>` is specified, downloads the pre-compiled image instead
 /// of the toplevel closure.
+///
+/// Otherwise runs the full pipeline: resolve the package, download/verify/
+/// import missing closure paths, create the next `gen-N` directory, run the
+/// toplevel's `activate` script (see the module docs for the exit-code
+/// contract), commit the generation as `current`, and apply the chosen
+/// [`KernelUpgradeMode`]. Note that in `Kexec` and `Reboot` modes a
+/// successful kernel switch does not return.
+///
+/// # Errors
+///
+/// Returns an error when:
+///
+/// - `packages` does not contain exactly one name, the package cannot be
+///   resolved, or it is not marked `sysroot = true`;
+/// - downloading, hash verification, or store import of a closure path fails;
+/// - generation state cannot be read or written;
+/// - the activate script fails before the `/etc` swap (previous generation
+///   stays live), leaves the swap incomplete (exit 4), or completes with
+///   failed units (exit 6 — the new generation *is* live, but the error
+///   surfaces the degraded state);
+/// - the user declines the confirmation prompt
+///   ([`aos_core::error::AosError::UserCancelled`]).
 #[allow(clippy::too_many_arguments)]
 pub async fn install_system(
     config: &ApmConfig,
@@ -120,6 +183,20 @@ pub async fn install_system(
         }
     }
 
+    // Trust-graph totality (RFC-0005 §2.6): seed from the WHOLE graph closure
+    // of each root (every reachable member, including anonymous paths).
+    let trust_roots: Vec<(&str, &str)> = closures
+        .iter()
+        .map(|closure| {
+            (
+                closure.registry_name.as_str(),
+                store_path_hash(&closure.root.store_path),
+            )
+        })
+        .collect();
+    let trust_ctx = registries.trust_context_for_roots(&trust_roots);
+    trust_ctx.enforce_totality()?;
+
     // Step 2: Determine missing store paths.
     printer.step(2, 8, "Checking store...");
     let all_metas = collect_unique_metas(&closures);
@@ -140,7 +217,7 @@ pub async fn install_system(
     let resolved: Vec<ResolvedDownload> = if requests.is_empty() {
         Vec::new()
     } else {
-        fetch_narinfos(
+        fetch_narinfo_closure(
             std::sync::Arc::clone(&engine),
             &requests,
             config.settings.parallel_downloads,
@@ -185,14 +262,10 @@ pub async fn install_system(
         )
         .await?;
 
-        // Step 6: Verify and import.
+        // Step 6: Verify (against each path's source-registry store/ graph
+        // map, RFC-0005; totality enforced above) and import.
         printer.step(5, 8, "Verifying...");
-        for result in &results {
-            verify_download_hash(&result.local_path, &result.download_hash)
-                .with_context(|| format!("verifying download for {}", result.store_path))?;
-            verify_nar_hash(&result.local_path, &result.nar_hash)
-                .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
-        }
+        verify_downloads(&results, &trust_ctx, printer)?;
 
         printer.step(6, 8, "Importing...");
         for result in &results {
@@ -208,6 +281,14 @@ pub async fn install_system(
     } else {
         printer.info("All paths already in store.");
     }
+
+    // Secure Boot validation (RFC-0006 phase 4): the closure is now
+    // downloaded, NAR/hash-verified, and imported. Before we create a new
+    // generation or touch the boot path, validate the image's recorded
+    // Secure Boot facts against the registry's signed catalog so an upgrade
+    // the firmware would reject is refused *here* — a clean, recoverable
+    // download-time refusal rather than a boot-time brick.
+    validate_sysroot_secure_boot(config, toplevel_meta, &closure.registry_name, printer)?;
 
     // Step 7: Create new system generation.
     printer.step(7, 8, "Creating system generation...");
@@ -290,8 +371,13 @@ pub async fn install_system(
     }
     commit_current_generation(&profile_path, &mut state, gen_num)?;
 
-    // Handle kernel upgrade according to the chosen mode.
-    let old_kernel_path = old_gen.as_ref().and_then(|g| g.kernel_path.clone());
+    // Handle kernel upgrade according to the chosen mode. Both sides are
+    // canonicalized so a seeded generation's `<toplevel>/kernel` symlink
+    // form compares equal to the resolved form `resolve_kernel_path`
+    // stores.
+    let old_kernel_path =
+        canonicalize_kernel_path(&old_gen.as_ref().and_then(|g| g.kernel_path.clone()));
+    let kernel_path = canonicalize_kernel_path(&kernel_path);
     handle_kernel_upgrade(
         &old_kernel_path,
         &kernel_path,
@@ -334,6 +420,17 @@ pub async fn install_system(
 }
 
 /// `apm upgrade --system` — check for newer sysroot version and apply.
+///
+/// Looks up the current generation's package in the configured registries;
+/// when a different sysroot version is published, delegates to
+/// [`install_system`] (with confirmation auto-accepted) to perform the
+/// switch.
+///
+/// # Errors
+///
+/// Returns an error when there is no active system generation, when
+/// generation state or registries cannot be loaded, or when the delegated
+/// [`install_system`] call fails.
 pub async fn upgrade_system(
     config: &ApmConfig,
     dry_run: bool,
@@ -404,6 +501,20 @@ pub async fn upgrade_system(
 }
 
 /// `apm rollback --system [--generation N] [--list]`
+///
+/// With `--list`, prints the recorded system generations and returns.
+/// Otherwise re-activates the target generation's toplevel (the explicit
+/// `--generation N`, or the most recent generation before the current one),
+/// commits it as `current`, and applies the chosen [`KernelUpgradeMode`] —
+/// the same activation exit-code contract as [`install_system`] applies.
+///
+/// # Errors
+///
+/// Returns an error when there is no active system generation, the requested
+/// generation does not exist, there is no previous generation to roll back
+/// to, generation state cannot be read or written, or the target's activate
+/// script fails (including the degraded exit-6 case, where the rollback is
+/// live but some units failed).
 pub async fn rollback_system(
     _config: &ApmConfig,
     generation: Option<u32>,
@@ -508,10 +619,12 @@ pub async fn rollback_system(
     }
     commit_current_generation(&profile_path, &mut state, target.number)?;
 
-    // Handle kernel upgrade according to the chosen mode.
+    // Handle kernel upgrade according to the chosen mode (canonicalized
+    // for the same reason as the upgrade path: the seeded generation
+    // records the `kernel` symlink, not its target).
     handle_kernel_upgrade(
-        &current.kernel_path,
-        &target.kernel_path,
+        &canonicalize_kernel_path(&current.kernel_path),
+        &canonicalize_kernel_path(&target.kernel_path),
         &target.toplevel,
         kernel_mode,
         drain,
@@ -541,8 +654,12 @@ pub async fn rollback_system(
 
 /// Check whether a package's closure is contained within the current sysroot.
 ///
-/// Returns `Some((sysroot_name, sysroot_version))` if the package is provided
-/// by the sysroot, `None` otherwise.
+/// Returns `Some((sysroot_name, sysroot_version))` if every reference in
+/// `pkg_refs` is already provided by the active sysroot's closure (in which
+/// case a user-scope install would be redundant), `None` otherwise. All
+/// failure modes — no system generation, unreadable state, unloadable
+/// registries — degrade to `None` rather than erroring, since this is a
+/// best-effort advisory check.
 pub fn check_sysroot_containment(
     pkg_refs: &[String],
     config: &ApmConfig,
@@ -587,6 +704,9 @@ pub fn check_sysroot_containment(
 }
 
 /// Show sysroot-specific information for `apm show <pkg>`.
+///
+/// Prints the sysroot flag, previous-version chain link, closure size, and
+/// any pre-compiled image formats. No-op for non-sysroot packages.
 pub fn show_sysroot_info(meta: &PackageMeta, printer: &Printer) {
     if !meta.sysroot {
         return;
@@ -616,7 +736,11 @@ pub fn show_sysroot_info(meta: &PackageMeta, printer: &Printer) {
 // Image download
 // ---------------------------------------------------------------------------
 
-/// Download a pre-compiled image from a sysroot package.
+/// Download a pre-compiled image from a sysroot package (`--image <FMT>`).
+///
+/// Fetches the image's NAR through the regular download pipeline, imports it
+/// into the store, then copies the image file out to `output` (defaulting to
+/// `<name>-<version>.<format>` in the current directory).
 async fn download_image(
     config: &ApmConfig,
     meta: &PackageMeta,
@@ -655,7 +779,27 @@ async fn download_image(
     printer.kv("Output", output_path);
 
     if dry_run {
-        printer.info("Dry run -- no download.");
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "action": "image_download",
+                "status": "planned",
+                "package": &meta.name,
+                "version": &meta.version,
+                "format": format,
+                "store_path": &img.store_path,
+                "nar_hash": &img.nar_hash,
+                "nar_size": img.nar_size,
+                "output": output_path,
+                "dry_run": true,
+                "downloads": {
+                    "planned": 1,
+                    "downloaded": 0,
+                    "imported": 0,
+                },
+            }));
+        } else {
+            printer.info("Dry run -- no download.");
+        }
         return Ok(());
     }
 
@@ -690,10 +834,14 @@ async fn download_image(
         bail!("image download failed");
     }
 
-    // Import NAR to get the store path, then copy image file out.
+    // Import NAR to get the store path, then copy image file out. The
+    // expected NAR hash is the image entry from the signed package TOML -
+    // not the cache-served narinfo - so the bytes are rooted at the
+    // registry signature (images sit outside the store/ graph).
     let result = &results[0];
     verify_download_hash(&result.local_path, &result.download_hash)?;
-    verify_nar_hash(&result.local_path, &result.nar_hash)?;
+    verify_nar_hash(&result.local_path, &img.nar_hash)
+        .with_context(|| format!("verifying image NAR for {}", img.store_path))?;
     import_nar(
         &result.local_path,
         &result.store_path,
@@ -729,10 +877,30 @@ async fn download_image(
             .with_context(|| format!("copying image to {output_path}"))?;
     }
 
-    printer.success(&format!(
-        "Image {} {} ({}) written to {}.",
-        meta.name, meta.version, format, output_path,
-    ));
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "image_download",
+            "status": "downloaded",
+            "package": &meta.name,
+            "version": &meta.version,
+            "format": format,
+            "store_path": &img.store_path,
+            "nar_hash": &img.nar_hash,
+            "nar_size": img.nar_size,
+            "output": output_path,
+            "dry_run": false,
+            "downloads": {
+                "planned": resolved.len(),
+                "downloaded": results.len(),
+                "imported": results.len(),
+            },
+        }));
+    } else {
+        printer.success(&format!(
+            "Image {} {} ({}) written to {}.",
+            meta.name, meta.version, format, output_path,
+        ));
+    }
 
     Ok(())
 }
@@ -742,6 +910,14 @@ async fn download_image(
 // ---------------------------------------------------------------------------
 
 /// Load system generation state from disk (public wrapper for cross-module use).
+///
+/// Reads `state.json` from `profile_path`; a missing file yields the empty
+/// initial state (`current = 0`, `next = 1`, no generations).
+///
+/// # Errors
+///
+/// Returns an error when the state file exists but cannot be read or parsed
+/// as [`SystemGenerationState`] JSON.
 pub fn load_generation_state_pub(profile_path: &Path) -> Result<SystemGenerationState> {
     load_generation_state(profile_path)
 }
@@ -772,6 +948,9 @@ fn save_generation_state(profile_path: &Path, state: &SystemGenerationState) -> 
     Ok(())
 }
 
+/// Mark `generation` as current: persist it in `state.json` and atomically
+/// repoint the `current` symlink (via a temp link + rename). Called only
+/// after the generation's activate script has succeeded.
 fn commit_current_generation(
     profile_path: &Path,
     state: &mut SystemGenerationState,
@@ -872,9 +1051,13 @@ const PLAN_SCHEMA_VERSION: u32 = 1;
 /// lives on tmpfs (`/run`), so crash debris disappears on reboot.
 const APM_RUN_DIR: &str = "/run/apm";
 
+/// The daemon-reconcile plan handed from the pre-swap phase to the post-swap
+/// phase, serialized as root-owned 0600 JSON under [`APM_RUN_DIR`].
 #[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Plan {
+    /// Plan format version; must equal [`PLAN_SCHEMA_VERSION`] on read.
     schema_version: u32,
+    /// Generation number this plan was computed for.
     generation: u32,
     /// Stopped by the pre-swap phase. Best-effort, informational.
     stopped: Vec<String>,
@@ -884,12 +1067,17 @@ struct Plan {
     to_start: Vec<String>,
     /// Units reconciled because an `X-Reload-Triggers` path changed.
     blanket_targets: Vec<String>,
+    /// Non-fatal diff warnings carried over for display.
     warnings: Vec<String>,
 }
 
 /// `apm activate-pre-etc-swap` — compute the live-vs-candidate diff while the
 /// old `/etc` is still live, stop removed / stop-if-changed units under their
 /// old definitions, and print the post-swap plan path on stdout.
+///
+/// Returns a process exit code rather than a `Result`: `0` on success
+/// (including `--dry-run`), `2` (`RECONCILE_CATASTROPHIC`) on any failure.
+/// The activate script maps these into its own 0/3/4/5/6 contract.
 pub async fn activate_pre_etc_swap(
     generation: u32,
     candidate_etc: &Path,
@@ -967,6 +1155,13 @@ async fn activate_pre_etc_swap_inner(
 /// `apm activate-post-etc-swap` — consume the plan after `/etc` has been
 /// swapped, reload systemd, apply reload/restart/start actions, and scan the
 /// final failed-unit state.
+///
+/// Returns a process exit code rather than a `Result`: `0` when every unit
+/// settled healthy, `1` (`RECONCILE_FAILED_UNITS`) when the apply completed
+/// but the final scan found failed units, and `2`
+/// (`RECONCILE_CATASTROPHIC`) on any other failure (invalid plan, D-Bus
+/// errors, ...). The activate script maps these into its own 0/3/4/5/6
+/// contract.
 pub async fn activate_post_etc_swap(plan_path: &Path, printer: &Printer) -> i32 {
     match activate_post_etc_swap_inner(plan_path, printer).await {
         Ok(code) => code,
@@ -1056,6 +1251,8 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
     Ok(RECONCILE_OK)
 }
 
+/// Convert a [`UnitDiff`] into a serializable [`Plan`], folding install-only
+/// units (new units with no live counterpart) into the start list.
 fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
     let install_only = std::mem::take(&mut diff.install_only);
     for unit in install_only {
@@ -1092,6 +1289,9 @@ fn ensure_secure_run_dir(dir: &Path) -> Result<()> {
     validate_secure_dir(dir)
 }
 
+/// Reject `dir` unless it is a real (non-symlink) directory, root-owned, and
+/// mode 0700 — the plan file's containing directory is part of its trust
+/// boundary.
 fn validate_secure_dir(dir: &Path) -> Result<()> {
     let meta = std::fs::symlink_metadata(dir).with_context(|| format!("stat {}", dir.display()))?;
     if meta.file_type().is_symlink() || !meta.file_type().is_dir() {
@@ -1107,6 +1307,8 @@ fn validate_secure_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Persist the plan as a unique `plan-*.json` tempfile (mode 0600) in
+/// `run_dir`, fsynced, and return its path for the post-swap phase.
 fn write_plan(run_dir: &Path, plan: &Plan) -> Result<PathBuf> {
     let f = tempfile::Builder::new()
         .prefix("plan-")
@@ -1121,6 +1323,9 @@ fn write_plan(run_dir: &Path, plan: &Plan) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Open and parse a plan file with hardening: `O_NOFOLLOW` (no symlinks),
+/// must be a regular root-owned file with mode 0600, and its
+/// `schema_version` must match [`PLAN_SCHEMA_VERSION`].
 fn read_validated_plan(path: &Path) -> Result<Plan> {
     let file = OpenOptions::new()
         .read(true)
@@ -1153,6 +1358,8 @@ fn read_validated_plan(path: &Path) -> Result<Plan> {
     Ok(plan)
 }
 
+/// `fstat(2)` the already-open file descriptor, so the metadata check cannot
+/// race against a path swap between open and stat.
 fn fstat_file(file: &std::fs::File) -> Result<libc::stat> {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
     // SAFETY: `stat` points to valid writable storage and `file` owns a live fd.
@@ -1164,6 +1371,9 @@ fn fstat_file(file: &std::fs::File) -> Result<libc::stat> {
     Ok(unsafe { stat.assume_init() })
 }
 
+/// Whether `uid` counts as "root-owned" for the security checks. Relaxed
+/// under `cfg(test)` so unit tests can exercise the validators as a
+/// non-root user.
 fn root_owned_for_runtime(uid: u32) -> bool {
     uid == 0 || cfg!(test)
 }
@@ -1196,6 +1406,25 @@ fn print_diff(diff: &UnitDiff, printer: &Printer) {
 // ---------------------------------------------------------------------------
 // Kernel / boot loader
 // ---------------------------------------------------------------------------
+
+/// Canonicalize a stored kernel path to the form [`resolve_kernel_path`]
+/// produces (the `kernel` symlink's target).
+///
+/// Generations seeded at first boot historically recorded the
+/// `<toplevel>/kernel` symlink itself rather than its target. Comparing
+/// that form against a resolved path reports a spurious kernel change on
+/// every upgrade or rollback involving the seeded generation — rewriting
+/// the boot loader needlessly and rendering the old version as the
+/// literal string "kernel". Resolving the symlink (when it still exists
+/// on disk) restores exact-string comparability; paths that cannot be
+/// resolved are returned unchanged.
+fn canonicalize_kernel_path(path: &Option<String>) -> Option<String> {
+    let p = path.as_deref()?;
+    match std::fs::read_link(p) {
+        Ok(target) => Some(target.to_string_lossy().to_string()),
+        Err(_) => Some(p.to_string()),
+    }
+}
 
 /// Resolve the kernel path from a toplevel store path.
 fn resolve_kernel_path(toplevel: &str) -> Option<String> {
@@ -1456,24 +1685,267 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Load all enabled registries from the scope's metadata cache.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
     RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
 }
 
+/// Validate a downloaded sysroot's Secure Boot facts against the registry's
+/// signed catalog before activation (RFC-0006 phase 4).
+///
+/// For every image the sysroot ships that records Secure Boot facts, this
+/// enforces, against the registry's committed `sb-certs.toml`:
+///
+/// 1. the image's `sb_signer_cert_sha256` is in the **active** db-cert set
+///    (and not revoked),
+/// 2. every SBAT component's generation is **at or above** the revocation
+///    floor,
+/// 3. (defense in depth) the downloaded UKI's embedded Authenticode
+///    signature re-verifies against the catalog's db cert, when a db cert
+///    PEM is provisioned locally (`trusted-sb-certs.d/<registry>.pem`).
+///
+/// On any mismatch it returns an error *before* a new generation is created
+/// or the boot path is touched, turning a boot-time Secure Boot rejection
+/// into a recoverable download-time refusal.
+///
+/// # Policy for unsigned images
+///
+/// Images that record **no** Secure Boot facts (legacy/unsigned/dev builds:
+/// `sb_signer_cert_sha256 == None` and an empty `sbat`) are skipped so the
+/// existing unsigned development path keeps working. Likewise, if the
+/// registry ships no `sb-certs.toml`, there is nothing to validate against
+/// and the step is a no-op. Validation engages only when *both* the image
+/// carries facts *and* the registry publishes a catalog.
+///
+/// # Errors
+///
+/// Returns an error when the registry catalog cannot be loaded or parsed,
+/// when an image's signer cert is not in the active db-cert set, when an
+/// SBAT generation is below the floor, or when the re-verification of a
+/// downloaded UKI against the db cert fails.
+fn validate_sysroot_secure_boot(
+    config: &ApmConfig,
+    toplevel_meta: &PackageMeta,
+    registry_name: &str,
+    printer: &Printer,
+) -> Result<()> {
+    // The signed `sb-certs.toml` is materialized by `extract_registry_root`
+    // (registry/git.rs) into the registries-storage directory alongside
+    // `registry.toml` / `keys.toml` — NOT the metadata cache that holds
+    // `packages/` and `closures/`. Read it from the same directory the
+    // extractor writes to, or the catalog is silently invisible.
+    let registry_tree = config.scope.registries_path().join(registry_name);
+    let db_cert = sb_db_cert_pem(config, registry_name);
+    validate_sysroot_secure_boot_in(
+        &toplevel_meta.images,
+        registry_name,
+        &registry_tree,
+        db_cert.as_deref(),
+        printer,
+    )
+}
+
+/// Catalog-directory-explicit core of [`validate_sysroot_secure_boot`].
+///
+/// Loads `sb-certs.toml` from `catalog_dir` (the exact directory
+/// `extract_registry_root` writes the registry's root files to) and runs the
+/// per-image gate. Keeping the directory and db-cert path as parameters lets
+/// tests point the validator at a temp tree without relying on the cached
+/// scope path resolution.
+///
+/// # Errors
+///
+/// Returns an error when the catalog fails to load/parse or any image fails
+/// [`validate_image_secure_boot`].
+fn validate_sysroot_secure_boot_in(
+    images: &[crate::types::SysrootImageEntry],
+    registry_name: &str,
+    catalog_dir: &Path,
+    db_cert: Option<&Path>,
+    printer: &Printer,
+) -> Result<()> {
+    let signed_images: Vec<&crate::types::SysrootImageEntry> = images
+        .iter()
+        .filter(|img| img.sb_signer_cert_sha256.is_some() || !img.sbat.is_empty())
+        .collect();
+    if signed_images.is_empty() {
+        // Unsigned/legacy sysroot: nothing to validate (dev path).
+        return Ok(());
+    }
+
+    let Some(catalog) = sb_certs::load_sb_certs_toml(catalog_dir).with_context(|| {
+        format!(
+            "loading Secure Boot catalog for registry '{registry_name}' from {}",
+            catalog_dir.display()
+        )
+    })?
+    else {
+        // The registry publishes no Secure Boot catalog; there is no
+        // signed floor or active set to enforce against.
+        printer.info(
+            "Registry publishes no Secure Boot catalog (sb-certs.toml); \
+             skipping download-time SB validation.",
+        );
+        return Ok(());
+    };
+
+    for img in signed_images {
+        validate_image_secure_boot(img, &catalog, db_cert)?;
+    }
+
+    printer.success("Secure Boot catalog validation passed.");
+    Ok(())
+}
+
+/// Validate one image entry against the registry catalog.
+///
+/// # Errors
+///
+/// Returns an error for an unknown/revoked signer cert, a below-floor SBAT
+/// generation, or a failed UKI re-verification.
+fn validate_image_secure_boot(
+    img: &crate::types::SysrootImageEntry,
+    catalog: &SbCertsToml,
+    db_cert: Option<&Path>,
+) -> Result<()> {
+    // 1. Signer cert must be active and not revoked.
+    match &img.sb_signer_cert_sha256 {
+        Some(cert) if catalog.accepts_signer(cert) => {}
+        Some(cert) => bail!(
+            "Secure Boot validation failed for image '{}': its signer cert \
+             {cert} is not in the registry's active db-cert set (it was \
+             retired or never trusted). Refusing the upgrade before reboot.",
+            img.format,
+        ),
+        None => bail!(
+            "Secure Boot validation failed for image '{}': it records SBAT \
+             facts but no signer cert; the registry cannot vouch for it. \
+             Refusing the upgrade before reboot.",
+            img.format,
+        ),
+    }
+
+    // 2. Every SBAT component must meet the revocation floor.
+    if let Some((component, found, floor)) = catalog.first_below_floor(&img.sbat) {
+        bail!(
+            "Secure Boot validation failed for image '{}': SBAT component \
+             '{component}' generation {found} is below the registry \
+             revocation floor {floor}. This component was revoked fleet-wide; \
+             refusing the upgrade before reboot.",
+            img.format,
+        );
+    }
+
+    // 3. Defense in depth: re-verify the downloaded UKI against the db cert.
+    if let Some(db_cert) = db_cert {
+        if let Some(uki) = find_uki_in_image(&img.store_path) {
+            reverify_uki(&uki, db_cert).with_context(|| {
+                format!(
+                    "re-verifying downloaded UKI for image '{}' against the \
+                     catalog db cert",
+                    img.format
+                )
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Locate a provisioned db certificate PEM for `registry`, if present.
+///
+/// Mirrors the registry trust-anchor delivery: searches the scope's
+/// `trusted-sb-certs.d` directories for `<registry>.pem`, returning the
+/// first match or `None` when no db cert was baked/provisioned (in which
+/// case the re-verification step is skipped).
+fn sb_db_cert_pem(config: &ApmConfig, registry: &str) -> Option<PathBuf> {
+    config
+        .scope
+        .trusted_sb_certs_dirs()
+        .into_iter()
+        .map(|dir| dir.join(format!("{registry}.pem")))
+        .find(|path| path.exists())
+}
+
+/// Find a UKI (`.efi` PE file) inside an imported image store path.
+fn find_uki_in_image(store_path: &str) -> Option<PathBuf> {
+    fn walk(dir: &Path) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = walk(&path) {
+                    return Some(found);
+                }
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+    let root = Path::new(store_path);
+    if root.is_file() {
+        return root
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
+            .then(|| root.to_path_buf());
+    }
+    walk(root)
+}
+
+/// Re-verify a downloaded UKI's Authenticode signature against a db cert.
+///
+/// # Errors
+///
+/// Returns an error when `sbverify` cannot be spawned or reports the
+/// signature does not verify against `db_cert`.
+fn reverify_uki(uki: &Path, db_cert: &Path) -> Result<()> {
+    let output = std::process::Command::new("sbverify")
+        .arg("--cert")
+        .arg(db_cert)
+        .arg(uki)
+        .output()
+        .with_context(|| format!("running sbverify --cert on {}", uki.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        bail!(
+            "downloaded UKI {} failed Secure Boot re-verification against \
+             db cert {}: {}",
+            uki.display(),
+            db_cert.display(),
+            if stderr.trim().is_empty() {
+                stdout.trim()
+            } else {
+                stderr.trim()
+            }
+        );
+    }
+    Ok(())
+}
+
+/// Pick the mirror URL used for image downloads: the first configured
+/// registry's mirror, falling back to the default public cache.
 fn resolve_image_mirror(config: &ApmConfig, _meta: &PackageMeta) -> String {
     // Use the first configured registry's mirror URL.
     if let Some((cfg, _)) = config.registries.first() {
-        return resolve_mirror(cfg);
+        return resolve_mirror(&config.scope.registries_path(), cfg);
     }
     "https://cache.aos.dev".to_string()
 }
 
+/// Build a [`DownloadRequest`] per missing store path, mapping each path back
+/// to the mirror URL of the registry that resolved it.
 fn build_download_requests(
     closures: &[crate::resolve::ResolvedClosure],
     to_download: &[&PackageMeta],
     config: &ApmConfig,
 ) -> Result<Vec<DownloadRequest>> {
+    let registries_base = config.scope.registries_path();
     let mirror_map: std::collections::HashMap<String, String> = closures
         .iter()
         .map(|c| {
@@ -1483,7 +1955,7 @@ fn build_download_requests(
                 .find(|(cfg, _)| cfg.name == c.registry_name)
                 .map(|(cfg, _)| cfg);
             let mirror_url = if let Some(cfg) = reg_config {
-                resolve_mirror(cfg)
+                resolve_mirror(&registries_base, cfg)
             } else {
                 format!("https://registry.aos.dev/{}", c.registry_name)
             };
@@ -1521,6 +1993,8 @@ fn build_download_requests(
     Ok(requests)
 }
 
+/// Prompt `[Y/n]` on stderr; empty/`y`/`yes` accepts, anything else returns
+/// [`aos_core::error::AosError::UserCancelled`].
 fn confirm(printer: &Printer) -> Result<()> {
     printer.plain("Do you want to continue? [Y/n] ");
     let _ = std::io::stderr().flush();
@@ -1538,6 +2012,7 @@ fn confirm(printer: &Printer) -> Result<()> {
     }
 }
 
+/// Format a byte count as a human-readable binary size (B/KiB/MiB/GiB).
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         return format!("{bytes} B");
@@ -1569,6 +2044,8 @@ pub(crate) fn djb2_hash(data: &[u8]) -> u64 {
     hash
 }
 
+/// Current UTC time as `YYYY-MM-DDTHH:MM:SSZ`, computed without a time
+/// crate (see [`days_to_ymd`]).
 fn chrono_iso8601_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1588,6 +2065,8 @@ fn chrono_iso8601_now() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
+/// Convert days since the Unix epoch to a Gregorian `(year, month, day)`
+/// using Howard Hinnant's civil-from-days algorithm.
 fn days_to_ymd(days: i64) -> (i32, u32, u32) {
     let z = days + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
@@ -1609,6 +2088,167 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::sb_certs::{RevokedSbCert, SbCert, write_sb_certs_toml};
+    use crate::types::{SbatEntry, SysrootImageEntry};
+    use tempfile::TempDir;
+
+    const SIGNER_ACTIVE: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    const SIGNER_RETIRED: &str = "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752";
+
+    fn sb_sbat(pairs: &[(&str, u32)]) -> Vec<SbatEntry> {
+        pairs
+            .iter()
+            .map(|(c, g)| SbatEntry {
+                component: (*c).into(),
+                generation: *g,
+            })
+            .collect()
+    }
+
+    fn signed_image(signer: &str, sbat: &[(&str, u32)]) -> SysrootImageEntry {
+        SysrootImageEntry {
+            format: "raw".into(),
+            store_path: "/nix/store/deadbeef-aos-image".into(),
+            nar_hash: "sha256:abc".into(),
+            nar_size: 4096,
+            sb_signer_cert_sha256: Some(signer.into()),
+            sbat: sb_sbat(sbat),
+            expected_pcr11: None,
+        }
+    }
+
+    fn active_catalog() -> SbCertsToml {
+        SbCertsToml {
+            active: vec![SbCert {
+                id: "db-2026".into(),
+                cert_sha256: SIGNER_ACTIVE.into(),
+            }],
+            sbat_floor: sb_sbat(&[("aos", 1)]),
+            ..SbCertsToml::default()
+        }
+    }
+
+    // --- Real-validator coverage (RFC-0006 phase 4 download-time gate) ---
+
+    #[test]
+    fn validate_image_accepts_active_signer_above_floor() {
+        let img = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
+        assert!(validate_image_secure_boot(&img, &active_catalog(), None).is_ok());
+    }
+
+    #[test]
+    fn validate_image_refuses_below_floor() {
+        let img = signed_image(SIGNER_ACTIVE, &[("aos", 1)]);
+        let raised = SbCertsToml {
+            sbat_floor: sb_sbat(&[("aos", 2)]),
+            ..active_catalog()
+        };
+        let err = validate_image_secure_boot(&img, &raised, None).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("below the registry"), "{msg}");
+    }
+
+    #[test]
+    fn validate_image_refuses_retired_cert() {
+        let catalog = SbCertsToml {
+            active: vec![
+                SbCert {
+                    id: "db-2026".into(),
+                    cert_sha256: SIGNER_ACTIVE.into(),
+                },
+                SbCert {
+                    id: "db-2024".into(),
+                    cert_sha256: SIGNER_RETIRED.into(),
+                },
+            ],
+            revoked: vec![RevokedSbCert {
+                id: "db-2024".into(),
+                reason: Some("compromised".into()),
+            }],
+            sbat_floor: sb_sbat(&[("aos", 1)]),
+            ..SbCertsToml::default()
+        };
+        let retired = signed_image(SIGNER_RETIRED, &[("aos", 5)]);
+        assert!(validate_image_secure_boot(&retired, &catalog, None).is_err());
+        let active = signed_image(SIGNER_ACTIVE, &[("aos", 5)]);
+        assert!(validate_image_secure_boot(&active, &catalog, None).is_ok());
+    }
+
+    #[test]
+    fn validate_image_refuses_unknown_signer() {
+        let img = signed_image(SIGNER_RETIRED, &[("aos", 9)]);
+        assert!(validate_image_secure_boot(&img, &active_catalog(), None).is_err());
+    }
+
+    /// Regression guard for C1: the validator must read `sb-certs.toml` from
+    /// the exact directory `extract_registry_root` writes registry root files
+    /// to. This writes the catalog there and confirms the *real* gate
+    /// (`validate_sysroot_secure_boot_in`) picks it up and enforces it. With
+    /// the original cache-vs-registries path mismatch this test fails because
+    /// the catalog is invisible and a below-floor image is wrongly accepted.
+    #[test]
+    fn validate_sysroot_reads_catalog_from_extract_dir() {
+        let tmp = TempDir::new().unwrap();
+        let catalog_dir = tmp.path();
+        // This is the directory layout extract_registry_root produces:
+        // <registries-storage>/<name>/sb-certs.toml at the tree root.
+        write_sb_certs_toml(
+            catalog_dir,
+            &SbCertsToml {
+                active: vec![SbCert {
+                    id: "db".into(),
+                    cert_sha256: SIGNER_ACTIVE.into(),
+                }],
+                sbat_floor: sb_sbat(&[("aos", 5)]),
+                ..SbCertsToml::default()
+            },
+        )
+        .unwrap();
+        let printer = Printer::new(0, true, false);
+
+        // Below the floor (gen 1 < floor 5): must be refused now that the
+        // catalog is actually read from this directory.
+        let below = vec![signed_image(SIGNER_ACTIVE, &[("aos", 1)])];
+        assert!(
+            validate_sysroot_secure_boot_in(&below, "aos", catalog_dir, None, &printer).is_err(),
+            "catalog at the extract dir must be enforced"
+        );
+
+        // At/above the floor: accepted.
+        let ok = vec![signed_image(SIGNER_ACTIVE, &[("aos", 5)])];
+        assert!(validate_sysroot_secure_boot_in(&ok, "aos", catalog_dir, None, &printer).is_ok());
+    }
+
+    #[test]
+    fn validate_sysroot_skips_unsigned_images() {
+        let tmp = TempDir::new().unwrap();
+        let printer = Printer::new(0, true, false);
+        let unsigned = vec![SysrootImageEntry {
+            format: "raw".into(),
+            store_path: "/nix/store/x".into(),
+            nar_hash: "sha256:y".into(),
+            nar_size: 1,
+            sb_signer_cert_sha256: None,
+            sbat: vec![],
+            expected_pcr11: None,
+        }];
+        // No catalog written, no facts on the image: no-op success.
+        assert!(
+            validate_sysroot_secure_boot_in(&unsigned, "aos", tmp.path(), None, &printer).is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_sysroot_refuses_signed_image_with_no_catalog_floor_satisfied_but_signer_absent() {
+        // A signed image plus an empty catalog (no active certs) must refuse:
+        // an empty active set vouches for nobody. The catalog file is present
+        // but empty so load returns Some(default).
+        let tmp = TempDir::new().unwrap();
+        write_sb_certs_toml(tmp.path(), &SbCertsToml::default()).unwrap();
+        let printer = Printer::new(0, true, false);
+        let img = vec![signed_image(SIGNER_ACTIVE, &[("aos", 1)])];
+        assert!(validate_sysroot_secure_boot_in(&img, "aos", tmp.path(), None, &printer).is_err());
+    }
 
     #[test]
     fn generation_state_round_trip() {
@@ -1709,6 +2349,44 @@ mod tests {
     #[test]
     fn extract_kernel_version_none() {
         assert_eq!(extract_kernel_version(&None), "unknown");
+    }
+
+    #[test]
+    fn canonicalize_kernel_path_resolves_seeded_symlink_form() {
+        // A seeded generation records `<toplevel>/kernel` (the symlink),
+        // not its target. Canonicalizing must yield the target so it
+        // compares equal to what resolve_kernel_path stores.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir
+            .path()
+            .join("01234567890123456789012345678901-linux-6.12.1");
+        std::fs::create_dir(&target).unwrap();
+        let link = dir.path().join("kernel");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let seeded = Some(link.to_string_lossy().to_string());
+        assert_eq!(
+            canonicalize_kernel_path(&seeded),
+            Some(target.to_string_lossy().to_string())
+        );
+    }
+
+    #[test]
+    fn canonicalize_kernel_path_keeps_resolved_and_missing_paths() {
+        // Already-resolved paths (not symlinks) and paths that no longer
+        // exist pass through unchanged; None stays None.
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("linux-6.12.1");
+        std::fs::create_dir(&plain).unwrap();
+        let plain_str = plain.to_string_lossy().to_string();
+        assert_eq!(
+            canonicalize_kernel_path(&Some(plain_str.clone())),
+            Some(plain_str)
+        );
+
+        let gone = "/nix/store/gcd-toplevel/kernel".to_string();
+        assert_eq!(canonicalize_kernel_path(&Some(gone.clone())), Some(gone));
+        assert_eq!(canonicalize_kernel_path(&None), None);
     }
 
     #[test]

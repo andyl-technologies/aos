@@ -1,3 +1,12 @@
+//! `aos build` — build a package from source.
+//!
+//! Local mode builds the `pkgs.<name>` attribute (or every package with
+//! `--all`) via `nix-build` and prints the resulting store path. Remote
+//! mode (`--remote URL`) evaluates the derivation locally, uploads any
+//! store paths the server is missing (small `.drv` files batched into a
+//! pack, large sources individually), then streams the remote build's
+//! log and status events back to the terminal.
+
 use anyhow::{Context, Result, bail};
 
 use aos_core::error::AosError;
@@ -6,6 +15,14 @@ use aos_core::output::{Printer, create_spinner};
 use aos_remote::AosClient;
 
 /// `aos build <package>` or `aos build --all`.
+///
+/// Builds the named package (the `pkgs.<package>` attribute) and prints
+/// its store path, or builds every package when `all` is set.
+///
+/// # Errors
+///
+/// Returns an error if no package is named and `all` is not set, or if
+/// the underlying `nix-build` fails.
 pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>, all: bool) -> Result<()> {
     if all {
         return build_all(nix, printer);
@@ -38,6 +55,18 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>, all: bool)
 }
 
 /// `aos build <package> --remote URL` — evaluate locally, upload, build remotely.
+///
+/// The pipeline: instantiate the derivation locally, authenticate with
+/// the server, diff the derivation closure against the server's store,
+/// upload missing paths, then request the build and stream its events
+/// until a `complete` or `error` event arrives.
+///
+/// # Errors
+///
+/// Returns an error if `package` or `token` is missing, or if any
+/// pipeline step (local evaluation, authentication, closure export and
+/// upload, or the build RPC stream) fails. A build that fails on the
+/// server side is reported via its `error` event and does not error here.
 pub async fn run_remote(
     nix: &NixRunner,
     printer: &Printer,
@@ -187,6 +216,7 @@ pub async fn run_remote(
     Ok(())
 }
 
+/// Build every package in the `pkgs` set and list the store paths.
 fn build_all(nix: &NixRunner, printer: &Printer) -> Result<()> {
     printer.info("Building all packages...");
 

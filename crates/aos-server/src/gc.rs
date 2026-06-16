@@ -1,3 +1,15 @@
+//! View-local garbage collection driver.
+//!
+//! This module bundles the per-view GC steps — TTL expiry and eviction
+//! scoring from [`crate::evict`], plus an optional "remove everything"
+//! decommission mode — behind a single [`run_view_gc`] entry point. It is
+//! consumed by the `aos` CLI for offline GC runs; the HTTP `POST /{view}/gc`
+//! endpoint in [`crate::routes`] drives the same primitives directly.
+//!
+//! Note that this module only removes GC *roots* (symlinks and metadata).
+//! Reclaiming the underlying store paths requires a subsequent
+//! `nix-store --gc`, which is the caller's responsibility.
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -9,16 +21,37 @@ use crate::views::ViewManager;
 
 /// Result of a view-local GC operation.
 pub struct GcResult {
+    /// Hashes of roots removed because their TTL (`expires_at`) had passed.
     pub expired: Vec<String>,
+    /// Eviction candidates scored by [`evict::score_candidates`], highest
+    /// score (best to evict) first. Empty when `all` mode was requested.
     pub candidates: Vec<evict::EvictionCandidate>,
+    /// In `all` (decommission) mode, the number of roots that were removed
+    /// (or would be removed under `dry_run`). `None` otherwise.
     pub removed_all: Option<usize>,
 }
 
-/// Run view-local garbage collection: TTL expiry, eviction scoring, and
-/// optionally remove all roots.
+/// Runs view-local garbage collection: TTL expiry, eviction scoring, and
+/// optionally removal of all roots.
+///
+/// The steps are:
+///
+/// 1. Expire roots whose `expires_at` metadata has passed (always applied,
+///    even under `dry_run`).
+/// 2. If `all` is set, remove every remaining `bin/` root and its metadata
+///    (decommission mode; skipped when `dry_run` is set) and return early.
+/// 3. Otherwise, score the remaining roots as eviction candidates and
+///    report them — nothing further is removed.
 ///
 /// This does NOT run `nix-store --gc` — that is the caller's responsibility
-/// (the binary crate handles it via NixRunner).
+/// (the binary crate handles it via its Nix runner). The `collect` flag is
+/// accepted for interface symmetry but is informational only here.
+///
+/// # Errors
+///
+/// Returns an error if the Nix store database does not exist under `root`
+/// (i.e. this is not an AOS server root), if it cannot be opened, or if
+/// scanning roots or reading their metadata fails.
 pub fn run_view_gc(
     root: PathBuf,
     view_name: &str,

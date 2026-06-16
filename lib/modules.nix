@@ -730,7 +730,15 @@
               if priorityFilteredDefs == []
               then
                 if !(isNoDefault decl.option.default)
-                then decl.option.default
+                then
+                  # Merge the default through the option type so type
+                  # coercions and nested submodule field defaults apply.
+                  optType.merge decl.path [
+                    {
+                      file = "<option-default:${pathStr}>";
+                      value = decl.option.default;
+                    }
+                  ]
                 else throw "The option '${pathStr}' is used but has no definition and no default value."
               else let
                 rawMerged = optType.merge decl.path priorityFilteredDefs;

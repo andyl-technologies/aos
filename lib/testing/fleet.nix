@@ -73,9 +73,14 @@
       m = machines.${mname};
     in {
       inherit (m) system roles instanceMetadata;
-      # `extraClosures` defaults to [] on the fleet machine type, so this
-      # `or []` only matters for callers bypassing fleet-spec validation.
+      # `extraClosures` / `varSizeMiB` / `bootMode` / `imageDiskMiB`
+      # default on the fleet machine type, so the `or` fallbacks only
+      # matter for callers bypassing fleet-spec validation.
       extraClosures = m.extraClosures or [];
+      varSizeMiB = m.varSizeMiB or 256;
+      bootMode = m.bootMode or "kernel";
+      imageDiskMiB = m.imageDiskMiB or 40960;
+      tpm = m.tpm or false;
       name = mname;
       ip = "192.168.50.${toString (i + 10)}";
       mac = mkMac 0 (i + 1);
@@ -208,16 +213,20 @@
     # with default null — `userCfg.storage` exists but may BE null,
     # so a literal `userCfg.storage or {}` would not catch it
     # (`or` only catches missing-attr errors). Unwrap explicitly.
-    # `ignition` is a non-null submodule (default `{}`), so the same
-    # treatment isn't needed for the merge path.
+    # The same applies down the `ignition.config.merge` and
+    # `storage.files` chains: a config that only sets `storage.disks`
+    # (an image-boot install config) renders every other submodule as
+    # null, not `{}`.
     maybeNull = x: default:
       if x == null
       then default
       else x;
     userStorage = maybeNull (userCfg.storage or null) {};
 
-    userMerges = ((userCfg.ignition or {}).config or {}).merge or [];
-    userFiles = userStorage.files or [];
+    userIgnition = maybeNull (userCfg.ignition or null) {};
+    userIgnitionConfig = maybeNull (userIgnition.config or null) {};
+    userMerges = maybeNull (userIgnitionConfig.merge or null) [];
+    userFiles = maybeNull (userStorage.files or null) [];
 
     collisions =
       builtins.filter
@@ -241,10 +250,10 @@
         # inspects `storage.files`; merge entries aren't path-scoped and
         # are safe to concatenate.
         ignition =
-          (userCfg.ignition or {})
+          userIgnition
           // {
             config =
-              ((userCfg.ignition or {}).config or {})
+              userIgnitionConfig
               // {
                 merge = roleMerges ++ userMerges;
               };
@@ -260,10 +269,9 @@
       };
 
   # ── Per-machine builds ─────────────────────────────────────────────
-  # `disk` is a function of `{system, extraClosures}` — Nix dedups
-  # identical derivations, so two machines with the same system and the
-  # same extraClosures reference one disk (machines differing only by
-  # extraClosures get distinct disks).
+  # `disk` is a function of `{system, extraClosures, varSizeMiB}`.
+  # Nix dedups identical derivations, so two machines with matching
+  # image inputs reference one disk.
   # `metadataISO` is the only per-machine derivation; in interactive
   # mode the SSH-key+DHCP fragment changes the ignition input, so
   # interactive ISOs hash differently from sandboxed-test ISOs.
@@ -273,19 +281,42 @@
     identity,
     debug ? null,
   }:
-    builtins.map (m: {
-      inherit (m) name ip mac debugMac index system roles;
-      kernel = m.system.config.system.build.kernel;
-      initrd = m.system.config.system.build.initrd;
-      disk = vmLib.mkTestDisk {
-        system = m.system;
-        inherit (m) extraClosures;
-      };
-      metadataISO = metadataLib.mkMetadataIso {
-        name = "${name}-${m.name}";
-        ignitionConfig = composeIgnition {inherit name identity debug;} m;
-      };
-    })
+    builtins.map (
+      m:
+        {
+          inherit (m) name ip mac debugMac index system roles bootMode tpm;
+        }
+        // (
+          if m.bootMode == "image"
+          then {
+            # Image boot: the production raw image IS the disk; the
+            # composed ignition config (identity + roles + user
+            # fragment) rides fw_cfg as a bare config.json, validated
+            # against the FULL profile — storage.disks/filesystems are
+            # exactly what these machines exercise.
+            inherit (m) imageDiskMiB;
+            image = m.system.config.system.build.image.raw;
+            imageName = "aos-${m.system.config.aos.system.name}.img";
+            ignitionConfigDrv = metadataLib.mkIgnitionConfig {
+              name = "${name}-${m.name}";
+              ignitionConfig = composeIgnition {inherit name identity debug;} m;
+              allowStorageHardware = true;
+            };
+          }
+          else {
+            kernel = m.system.config.system.build.kernel;
+            initrd = m.system.config.system.build.initrd;
+            disk = vmLib.mkTestDisk {
+              system = m.system;
+              inherit (m) extraClosures varSizeMiB;
+            };
+            metadataISO = metadataLib.mkMetadataIso {
+              name = "${name}-${m.name}";
+              ignitionConfig = composeIgnition {inherit name identity debug;} m;
+            };
+          }
+        )
+    )
     machinesWithIndex;
 
   # ============================================================
@@ -295,6 +326,7 @@
     # spec is already validated against fleetSpecType by the discoverer
     # — including the per-machine `roles` enum-against-`config.aos.roles`.
     inherit (spec) name testScript timeout machines;
+    bootTimeout = spec.bootTimeout or null;
 
     machinesWithIndex = mkMachinesWithIndex machines;
     hostsEntries = mkHostsEntries machinesWithIndex;
@@ -307,21 +339,47 @@
     # named after `mb.name` (e.g. controlplane, worker). v1 fleet QEMU
     # uniformly uses 2 GiB / 2 vCPU per machine — matching the previous
     # hardcoded `-m 2048 -smp 2`.
-    manifest = {
-      inherit name timeout;
-      machines =
-        builtins.map (mb: {
-          inherit (mb) name mac ip;
-          transport = "qemu";
-          kernel = builtins.toString mb.kernel;
-          initrd = "${builtins.toString mb.initrd}/initrd.img";
-          disk = "${builtins.toString mb.disk}/disk.img";
-          metadata = "${builtins.toString mb.metadataISO}/metadata.iso";
-          memory_mib = 8192;
-          vcpu_count = 2;
-        })
-        machineBuilds;
-    };
+    manifest =
+      {
+        inherit name timeout;
+      }
+      // (lib.optionalAttrs (bootTimeout != null) {boot_timeout = bootTimeout;})
+      // {
+        machines =
+          builtins.map (
+            mb:
+              {
+                inherit (mb) name mac ip;
+                transport = "qemu";
+                memory_mib = 8192;
+                vcpu_count = 2;
+                # vTPM (RFC-0006 phase 3): when set, the driver launches a
+                # per-machine swtpm and wires QEMU's tpm-tis to it.
+                tpm = mb.tpm;
+                swtpm_bin = "${pkgs.swtpm}/bin/swtpm";
+              }
+              // (
+                if mb.bootMode == "image"
+                then {
+                  boot = "image";
+                  disk = "${builtins.toString mb.image}/${mb.imageName}";
+                  disk_size_mib = mb.imageDiskMiB;
+                  fw_cfg = "${builtins.toString mb.ignitionConfigDrv}/config.json";
+                  firmware_code = "${pkgs.edk2}/FV/OVMF_CODE.fd";
+                  firmware_vars = "${pkgs.edk2}/FV/OVMF_VARS.fd";
+                  metadata = null;
+                }
+                else {
+                  boot = "kernel";
+                  kernel = builtins.toString mb.kernel;
+                  initrd = "${builtins.toString mb.initrd}/initrd.img";
+                  disk = "${builtins.toString mb.disk}/disk.img";
+                  metadata = "${builtins.toString mb.metadataISO}/metadata.iso";
+                }
+              )
+          )
+          machineBuilds;
+      };
     manifestFile = pkgs.writeTextFile {
       name = "aos-fleet-test-${name}-manifest.json";
       text = builtins.toJSON manifest;
@@ -368,6 +426,9 @@
         pkgs.socat
         pkgs.python3
         pkgs.aos-test-driver
+        # sgdisk — the driver relocates the GPT backup header after
+        # growing an image-boot machine's per-run disk copy.
+        pkgs.gptfdisk
       ];
 
       phases = [
@@ -421,8 +482,12 @@
       inherit name machinesWithIndex identity debug;
     };
 
-    # SSH host port = 2222 + machine index. Listening on 127.0.0.1 only.
-    sshPort = mb: 2222 + mb.index;
+    # SSH host port = $AOS_FLEET_SSH_BASE + machine index, resolved at
+    # launcher runtime (default 2222). Listening on 127.0.0.1 only. An
+    # eval-time constant collided with whatever already holds :2222 on a
+    # shared host; the env override keeps the launcher usable anywhere
+    # without a rebuild.
+    sshPort = mb: ''$(( AOS_FLEET_SSH_BASE + ${toString mb.index} ))'';
 
     # Per-machine launch fragment, spliced into the launcher.
     # Mirrors mkFleetTest's per-machine block, with two changes:
@@ -434,79 +499,89 @@
     #     no respawn loop. Removing the port would put the agent into
     #     "no transport found" → restart-on-failure every second.
     perMachineLaunch =
-      lib.concatMapStringsSep "\n" (mb: ''
-        echo ""
-        echo "==> Starting machine: ${mb.name} (ip=${mb.ip} mac=${mb.mac} ssh-port=${toString (sshPort mb)})"
+      lib.concatMapStringsSep "\n" (
+        mb:
+          if mb.bootMode == "image"
+          then
+            throw ''
+              fleet '${name}': interactive mode does not support image-boot
+              machines yet — drive the sandboxed test, or boot the image by
+              hand per docs/boot/qemu-uefi.md.
+            ''
+          else ''
+            echo ""
+            echo "==> Starting machine: ${mb.name} (ip=${mb.ip} mac=${mb.mac} ssh-port=${toString (sshPort mb)})"
 
-        AGENT_SOCK_${mb.name}="$FLEET_DIR/${mb.name}-agent.sock"
-        SERIAL_SOCK_${mb.name}="$FLEET_DIR/${mb.name}-serial.sock"
-        SERIAL_LOG_${mb.name}="$FLEET_DIR/${mb.name}-serial.log"
-        QEMU_LOG_${mb.name}="$FLEET_DIR/${mb.name}-qemu.log"
+            AGENT_SOCK_${mb.name}="$FLEET_DIR/${mb.name}-agent.sock"
+            SERIAL_SOCK_${mb.name}="$FLEET_DIR/${mb.name}-serial.sock"
+            SERIAL_LOG_${mb.name}="$FLEET_DIR/${mb.name}-serial.log"
+            QEMU_LOG_${mb.name}="$FLEET_DIR/${mb.name}-qemu.log"
 
-        cp "${mb.disk}/disk.img" "$FLEET_DIR/${mb.name}-disk.img"
-        chmod u+w "$FLEET_DIR/${mb.name}-disk.img"
-        cp "${mb.metadataISO}/metadata.iso" "$FLEET_DIR/${mb.name}-metadata.iso"
-        chmod u+w "$FLEET_DIR/${mb.name}-metadata.iso"
+            cp "${mb.disk}/disk.img" "$FLEET_DIR/${mb.name}-disk.img"
+            chmod u+w "$FLEET_DIR/${mb.name}-disk.img"
+            cp "${mb.metadataISO}/metadata.iso" "$FLEET_DIR/${mb.name}-metadata.iso"
+            chmod u+w "$FLEET_DIR/${mb.name}-metadata.iso"
 
-        VMLINUZ_${mb.name}=$(ls "${mb.kernel}/boot/vmlinuz-"* | head -1)
-        INITRD_${mb.name}="${mb.initrd}/initrd.img"
+            VMLINUZ_${mb.name}=$(ls "${mb.kernel}/boot/vmlinuz-"* | head -1)
+            INITRD_${mb.name}="${mb.initrd}/initrd.img"
 
-        echo "  Kernel:   ''${VMLINUZ_${mb.name}}"
-        echo "  Initrd:   ''${INITRD_${mb.name}}"
-        echo "  Disk:     $FLEET_DIR/${mb.name}-disk.img"
-        echo "  Metadata: $FLEET_DIR/${mb.name}-metadata.iso"
+            echo "  Kernel:   ''${VMLINUZ_${mb.name}}"
+            echo "  Initrd:   ''${INITRD_${mb.name}}"
+            echo "  Disk:     $FLEET_DIR/${mb.name}-disk.img"
+            echo "  Metadata: $FLEET_DIR/${mb.name}-metadata.iso"
 
-        "${pkgs.socat}/bin/socat" -u UNIX-LISTEN:"''${SERIAL_SOCK_${mb.name}}",reuseaddr,fork \
-                                      OPEN:"''${SERIAL_LOG_${mb.name}}",creat,append &
-        DRAIN_PIDS+=($!)
-        SOCK_WAIT=0
-        while [ ! -S "''${SERIAL_SOCK_${mb.name}}" ]; do
-          sleep 0.05
-          SOCK_WAIT=$((SOCK_WAIT + 1))
-          if [ "$SOCK_WAIT" -gt 100 ]; then
-            echo "ERROR: ${mb.name} serial drain socket did not appear within 5s" >&2
-            exit 1
-          fi
-        done
+            "${pkgs.socat}/bin/socat" -u UNIX-LISTEN:"''${SERIAL_SOCK_${mb.name}}",reuseaddr,fork \
+                                          OPEN:"''${SERIAL_LOG_${mb.name}}",creat,append &
+            DRAIN_PIDS+=($!)
+            SOCK_WAIT=0
+            while [ ! -S "''${SERIAL_SOCK_${mb.name}}" ]; do
+              sleep 0.05
+              SOCK_WAIT=$((SOCK_WAIT + 1))
+              if [ "$SOCK_WAIT" -gt 100 ]; then
+                echo "ERROR: ${mb.name} serial drain socket did not appear within 5s" >&2
+                exit 1
+              fi
+            done
 
-        # The user-mode netdev (eth1) is added *after* the mcast netdev
-        # (eth0) so PCI bus ordering puts the fleet NIC first under
-        # `net.ifnames=0`. eth1 takes a DHCP lease from QEMU's built-in
-        # 10.0.2.0/24 server; QEMU forwards 127.0.0.1:$PORT on the host
-        # to :22 in the guest.
-        "${pkgs.qemu}/bin/qemu-system-x86_64" \
-          -machine q35,accel=kvm \
-          -cpu host \
-          -m 8192 \
-          -smp 2 \
-          -nographic \
-          -kernel "''${VMLINUZ_${mb.name}}" \
-          -initrd "''${INITRD_${mb.name}}" \
-          -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0 net.ifnames=0" \
-          -drive file="$FLEET_DIR/${mb.name}-disk.img",format=raw,if=virtio \
-          -drive id=metadata,file="$FLEET_DIR/${mb.name}-metadata.iso",if=none,format=raw,readonly=on \
-          -device virtio-scsi-pci,id=scsi0 \
-          -device scsi-cd,drive=metadata,bus=scsi0.0 \
-          -device virtio-serial \
-          -device virtserialport,chardev=agent,name=aos.test.agent \
-          -chardev socket,id=agent,path="''${AGENT_SOCK_${mb.name}}",server=on,wait=off \
-          -chardev socket,id=ttyS0,path="''${SERIAL_SOCK_${mb.name}}",server=off \
-          -serial chardev:ttyS0 \
-          -netdev socket,id=fleet,mcast="$MCAST_GROUP:$MCAST_PORT",localaddr=127.0.0.1 \
-          -device virtio-net-pci,netdev=fleet,mac=${mb.mac} \
-          -netdev user,id=usernet,hostfwd=tcp:127.0.0.1:${toString (sshPort mb)}-:22 \
-          -device virtio-net-pci,netdev=usernet,mac=${mb.debugMac} \
-          -no-reboot \
-            > "''${QEMU_LOG_${mb.name}}" 2>&1 &
-        QEMU_PID_${mb.name}=$!
-        QEMU_PIDS+=($!)
-        sleep 0.2
-        if ! kill -0 "''${QEMU_PID_${mb.name}}" 2>/dev/null; then
-          echo "ERROR: QEMU for ${mb.name} exited immediately!" >&2
-          cat "''${QEMU_LOG_${mb.name}}" 2>/dev/null || true
-          exit 1
-        fi
-      '')
+            # The user-mode netdev (eth1) is added *after* the mcast netdev
+            # (eth0) so PCI bus ordering puts the fleet NIC first under
+            # `net.ifnames=0`. eth1 takes a DHCP lease from QEMU's built-in
+            # 10.0.2.0/24 server; QEMU forwards 127.0.0.1:$PORT on the host
+            # to :22 in the guest.
+            "${pkgs.qemu}/bin/qemu-system-x86_64" \
+              -machine q35,accel=kvm \
+              -cpu host \
+              -m 8192 \
+              -smp 2 \
+              -nographic \
+              -kernel "''${VMLINUZ_${mb.name}}" \
+              -initrd "''${INITRD_${mb.name}}" \
+              -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0 net.ifnames=0" \
+              -drive file="$FLEET_DIR/${mb.name}-disk.img",format=raw,if=virtio \
+              -drive id=metadata,file="$FLEET_DIR/${mb.name}-metadata.iso",if=none,format=raw,readonly=on \
+              -device virtio-scsi-pci,id=scsi0 \
+              -device scsi-cd,drive=metadata,bus=scsi0.0 \
+              -device virtio-serial \
+              -device virtserialport,chardev=agent,name=aos.test.agent \
+              -chardev socket,id=agent,path="''${AGENT_SOCK_${mb.name}}",server=on,wait=off \
+              -chardev socket,id=ttyS0,path="''${SERIAL_SOCK_${mb.name}}",server=off \
+              -serial chardev:ttyS0 \
+              -netdev socket,id=fleet,mcast="$MCAST_GROUP:$MCAST_PORT",localaddr=127.0.0.1 \
+              -device virtio-net-pci,netdev=fleet,mac=${mb.mac} \
+              -netdev user,id=usernet,hostfwd=tcp:127.0.0.1:${toString (sshPort mb)}-:22 \
+              -device virtio-net-pci,netdev=usernet,mac=${mb.debugMac} \
+              -no-reboot \
+                > "''${QEMU_LOG_${mb.name}}" 2>&1 &
+            QEMU_PID_${mb.name}=$!
+            QEMU_PIDS+=($!)
+            sleep 0.2
+            if ! kill -0 "''${QEMU_PID_${mb.name}}" 2>/dev/null; then
+              echo "ERROR: QEMU for ${mb.name} exited immediately!" >&2
+              cat "''${QEMU_LOG_${mb.name}}" 2>/dev/null || true
+              exit 1
+            fi
+          ''
+      )
       machineBuilds;
 
     sshTable =
@@ -537,6 +612,10 @@
 
       # AOS build libs can conflict with QEMU's runtime linker.
       unset LD_LIBRARY_PATH || true
+
+      # Host port for the per-machine SSH forward: base + machine index.
+      # Override when :2222 is taken on the host.
+      AOS_FLEET_SSH_BASE="''${AOS_FLEET_SSH_BASE:-2222}"
 
       export PATH="${pkgs.coreutils}/bin:${pkgs.socat}/bin:${pkgs.qemu}/bin:''${PATH:-}"
 
@@ -613,6 +692,13 @@
       src = null;
 
       buildDeps = [pkgs.coreutils];
+
+      # The output is the launcher script, executed outside the sandbox
+      # after the build; its embedded store paths (qemu, disks, kernels,
+      # metadata ISOs) are the product. The default nuke-references scrub
+      # would rewrite them to dummy hashes and the launcher would try to
+      # copy from a non-existent dummy /nix/store path at runtime.
+      dontNukeRefs = true;
 
       LAUNCHER_SCRIPT = launcherScript;
 

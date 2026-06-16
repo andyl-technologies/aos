@@ -291,6 +291,42 @@ class AgentClient:
         else:
             self._wait_ready_oneshot(deadline)
 
+    def wait_down(self, deadline: float) -> None:
+        """Block until the agent stops answering PING (qemu in-VM reset).
+
+        The in-VM-reset reboot path keeps QEMU (and its swtpm) running, so
+        the pre-reboot agent keeps answering for the moment between issuing
+        ``reboot`` and the kernel tearing the transport down. Callers must
+        see the agent go silent before waiting for the new boot, or a PONG
+        from the *old* boot is mistaken for the reboot having completed.
+
+        Returns once two consecutive fresh-connection PINGs fail (the
+        guest is rebooting), or when ``deadline`` passes (caller's
+        subsequent ``wait_ready`` still bounds the overall wait).
+
+        # Errors
+
+        Never raises; a missed transition degrades to the readiness wait.
+        """
+        if self.driver != "qemu":
+            return
+        ping_frame = f"{len(b'PING')}\n".encode("ascii") + b"PING"
+        consecutive_down = 0
+        while time.monotonic() < deadline:
+            self._reset_conn()
+            try:
+                sock = self._persistent_conn(time.monotonic() + 2)
+                _write_all(sock, ping_frame, time.monotonic() + 2)
+                self._read_frame(sock, time.monotonic() + 2)
+                consecutive_down = 0  # still up
+            except (OSError, TimeoutError, AgentProtocolError):
+                consecutive_down += 1
+                if consecutive_down >= 2:
+                    self._reset_conn()
+                    return
+            time.sleep(0.3)
+        self._reset_conn()
+
     def _wait_ready_oneshot(self, deadline: float) -> None:
         """firecracker: a timed-out ping leaves nothing buffered (each
         attempt is its own vsock connection), so plain retry is safe."""
@@ -310,68 +346,84 @@ class AgentClient:
             time.sleep(0.5)
 
     def _wait_ready_qemu(self, deadline: float) -> None:
-        """qemu: the persistent connection is opened now and held for the
-        whole run.
+        """qemu: probe with one fresh connection + one PING per attempt;
+        the connection that gets a reply becomes the persistent one.
 
-        The guest agent is not reading its virtio-serial port yet — it
-        only starts once the VM finishes booting — so PINGs sent during
-        boot are buffered by QEMU and answered in a burst once the agent
-        comes up. Because this connection never drops, every PING gets
-        exactly one reply. So we count PINGs still unanswered and drain
-        them all before declaring the agent ready; that keeps the
-        request/response stream strictly 1:1, which the persistent
-        transport relies on for every subsequent command.
+        A PING written before the guest's virtio-serial port is up is
+        NOT reliably buffered: while the port (or the whole
+        virtio-console device, early in boot) is closed, QEMU can drop
+        chardev bytes outright. A held connection therefore overcounts
+        "replies owed" — the drain ledger never balances and readiness
+        is never declared, even with the agent up and answering (seen
+        on image-boot machines after a reboot: outstanding stuck at the
+        number of PINGs sent during firmware/kernel bring-up).
 
-        Error handling is asymmetric on purpose:
-          - read timeout: legitimate (agent still booting, PING sits in
-            QEMU's chardev queue). Loop, keep the connection AND the
-            outstanding count — the buffered reply is still owed to us.
-          - write timeout: only happens if QEMU's chardev outbound
-            buffer is full, which for a 6-byte payload means the link
-            is genuinely stuck. Partial bytes may have landed on the
-            wire, so we must reset the connection rather than write
-            another PING on top of them — otherwise framing desyncs.
-          - any other error: connection is torn, reset and restart the
-            count.
+        A fresh connection per attempt makes the accounting trivial:
+        PINGs from previous attempts died with their connections (the
+        guest's replies to them, if any, were written to a disconnected
+        client and dropped by QEMU — they cannot leak into the new
+        connection), so the first answered PING proves a strictly 1:1
+        stream on the connection we keep, which is the invariant the
+        persistent transport needs for every subsequent command.
         """
         ping_frame = f"{len(b'PING')}\n".encode("ascii") + b"PING"
-        outstanding = 0
+        attempts = 0
         while time.monotonic() < deadline:
+            self._reset_conn()
+            attempts += 1
             try:
                 sock = self._persistent_conn(deadline)
-            except OSError:
+            except OSError as e:
                 # Connect failed (UDS not there yet, refused, …) — wait
                 # for QEMU to come up.
-                self._reset_conn()
+                if attempts % 20 == 1:
+                    log.info(
+                        "[%s] wait_ready: connect failed (%s), retrying",
+                        self.name,
+                        e,
+                    )
                 time.sleep(0.5)
                 continue
             try:
                 _write_all(sock, ping_frame, time.monotonic() + 5)
+                self._read_frame(sock, time.monotonic() + 3)
+                # Reply received. Almost certainly ours — but a PING
+                # from a previous attempt that was still in flight when
+                # we reconnected can produce a stray extra reply on
+                # THIS connection. Confirm the stream is quiet before
+                # declaring it the persistent conn; if a stray shows
+                # up, discard the connection and probe again.
+                try:
+                    self._read_frame(sock, time.monotonic() + 0.25)
+                except TimeoutError:
+                    # Quiet → strictly 1:1; keep this connection.
+                    return
+                if attempts % 20 == 1:
+                    log.info(
+                        "[%s] wait_ready: stray reply drained, re-probing",
+                        self.name,
+                    )
+                continue
             except TimeoutError:
-                # Partial write → wire framing is now compromised.
-                self._reset_conn()
-                outstanding = 0
+                # Agent not up yet (or the PING fell into the
+                # port-closed window) — discard this connection and
+                # probe again.
+                if attempts % 20 == 1:
+                    log.info(
+                        "[%s] wait_ready: no reply yet (attempt %d)",
+                        self.name,
+                        attempts,
+                    )
                 continue
-            except (OSError, _ProtocolMidstream):
-                self._reset_conn()
-                outstanding = 0
+            except (OSError, _ProtocolMidstream) as e:
+                if attempts % 20 == 1:
+                    log.info(
+                        "[%s] wait_ready: probe failed (%s), retrying",
+                        self.name,
+                        e,
+                    )
                 time.sleep(0.5)
-                continue
-            outstanding += 1
-            try:
-                # Drain every reply owed so far. If the agent is still
-                # booting the first read times out and we loop, keeping
-                # the count; once it is up the whole burst drains here.
-                while outstanding > 0:
-                    self._read_frame(sock, time.monotonic() + 3)
-                    outstanding -= 1
-                return
-            except TimeoutError:
-                continue
-            except (OSError, _ProtocolMidstream):
-                self._reset_conn()
-                outstanding = 0
-                time.sleep(0.5)
+        self._reset_conn()
         raise RuntimeError(
             f"[{self.name}] agent did not become ready before manifest timeout"
         )

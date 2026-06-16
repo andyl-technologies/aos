@@ -1,3 +1,15 @@
+//! Arguments for `aos cache` — the binary cache client.
+//!
+//! `CacheCmd` defines the four cache subcommands (`push`, `pull`,
+//! `prefetch`, `list`), each targeting a cache URL (`file://`, `http://`,
+//! `s3://`, or `sftp://`) and selecting store paths either directly or by
+//! evaluating installables from a Nix file/attribute/expression.
+//! `CacheAuthArgs` is flattened into every subcommand and groups the
+//! HTTP, S3, and SFTP authentication flags.
+//!
+//! Doc comments here are clap `--help` text; the implementation lives in
+//! `commands::cache`, which delegates to the `aos-cache` crate.
+
 use clap::{Args, Subcommand};
 
 #[derive(Subcommand)]

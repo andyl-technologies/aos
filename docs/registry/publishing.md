@@ -77,8 +77,8 @@ new one — never a partition tag pointing at a commit whose objects are missing
 **CURRENT.** `apr` is the same binary as `aos`/`apm`, dispatched on `argv[0]`;
 `apr …` expands to `package registry …`. All producer logic lives in
 [`crates/aos-package/src/registry_ops.rs`](../../crates/aos-package/src/registry_ops.rs).
-Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml` +
-`closures/<hash>`). The sha256 object-store scaffolding, signed release tags,
+Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml`)
+plus the `store/` realisation graph (RFC-0005). The sha256 object-store scaffolding, signed release tags,
 channel partition commands, `update-server-info`, root `objects/info/alternates`
 refresh hooks, static Nix-cache generation/upload, and static git-origin upload
 now exist.
@@ -87,9 +87,11 @@ The commands relevant to a release, in workflow order:
 
 | Command | Function | What it actually does (CURRENT) |
 |---|---|---|
-| `apr create <name> [--remote URL] [--trust-key <registry:Ed25519:base64>] [--trust-key-id <id>]` | `create` (`registry_ops.rs:421`) | `git init --object-format=sha256`, set `HEAD` to `refs/heads/stable`, make `packages/`, write a default `registry.toml`, write schema-1 `keys.toml`, initial commit, then refresh dumb-HTTP object indexes; optional `git remote add origin`. |
-| `apr keys list/add/retire` | `run_keys` (`registry_ops.rs`) | Maintains committed `keys.toml`: list active/revoked ids, add registry-bound active signing keys, retire active ids into `[[revoked]]` with an active survivor/vouching id, then commit and refresh dumb-HTTP object indexes unless `--no-commit` is passed. |
-| `apr publish <store-path> […]` | `publish` (`registry_ops.rs:476`) | Introspect the path, write `packages/<x>/<name>.toml`, compute + write `closures/<hash>`, then (unless `--no-commit`) `git add -A && git commit` and refresh `objects/info/alternates` + `update-server-info`. |
+| `apr create <name> [--remote URL] [--trust-key <registry:Ed25519:base64>] [--trust-key-id <id>] [--key <path> \| --key-id <id>]` | `create` (`registry_ops.rs`) | `git init --object-format=sha256`, set `HEAD` to `refs/heads/stable`, make `packages/`, write a default `registry.toml`, write schema-1 `keys.toml` (seeded by `--trust-key`), initial commit (signed with `--key`/`--key-id` when the roster is seeded), then refresh dumb-HTTP object indexes; optional `git remote add origin`. |
+| `apr keys generate <id> [--registry <name>] [--add] [--no-commit] [--key \| --key-id]` | `generate_roster_key` (`registry_ops.rs:2922`) | Mints an Ed25519 keypair in-process (hermetic `sshkey` module, no `ssh-keygen`), writes the OpenSSH private key to `apm/keys/<registry>-<id>.key` (`0600`, refuses overwrite), records its path in `[registry.signing_keys]`, prints the public key + fingerprint; with `--add` appends it to `keys.toml` (signed commit unless `--no-commit`). `--add` on an empty roster errors → use `apr create --trust-key`. |
+| `apr keys list/add/retire` | `run_keys` (`registry_ops.rs:2551`) | Maintains committed `keys.toml`: list active/revoked ids; add registry-bound active signing keys; retire active ids into `[[revoked]]` with an active survivor/vouching id and **re-sign** the channel/release tags whose only valid signer was the retired key (`--no-resign` to skip). `add`/`retire` modify `keys.toml`, so they require `--key`/`--key-id` and produce a **signed** commit; then commit + refresh dumb-HTTP object indexes unless `--no-commit` is passed. |
+| `apr publish <store-path> […]` | `publish` (`registry_ops.rs`) | Introspect the path, write `packages/<x>/<name>.toml`, and record `store/<2-char>/<ia>` realisation files for every runtime-closure member - blessed NAR + dependency edges, plus the CA realisation and pins (via `nix store make-content-addressed`) when the registry is `content_addressed` - refusing on a content mismatch unless `--bless`, then (unless `--no-commit`) commit the touched paths and refresh `objects/info/alternates` + `update-server-info`. |
+| `apr store bless/revoke/verify/backfill [--registry <name>] [--key \| --key-id]` | `run_store` (`registry_ops.rs`) | Maintains the `store/` realisation graph (RFC-0005): `bless` records a path's closure from the local Nix store; `revoke` removes a blessed realisation (a security event - signed, reviewable diff); `verify` checks graph health + closure coverage (`--deep` recomputes local NAR hashes); `backfill` records every published closure so an existing registry becomes fully covered in one signed commit. |
 | `apr tag <name> [--message] (--key <path> \| --key-id <id>)` | `tag` (`registry_ops.rs`) | Resolves the signing key directly from `--key` or from committed `keys.toml` + local `[registry.signing_keys]`, then runs `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; semver tags also prepare a release object dir during the object-store refresh. |
 | `apr sign <tag> (--key <path> \| --key-id <id>)` | `sign` (`registry_ops.rs`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
 | `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, using the same `--key` / `--key-id` signing-key selection as release tags, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
@@ -542,6 +544,11 @@ key paths for `apr tag --key-id`, `apr sign --key-id`, and
 available for one-off signing and is mutually exclusive with `--key-id`.
 `[registry.upload_auth]` values are used as defaults; env/CLI values override
 them; `view` falls back to `"default"` if neither config nor env/CLI sets it.
+Its `upload_urls` list provides the default destinations for
+`apr origin upload`, `apr cache generate`, and `apr release` when no
+`--upload-url` flag is given. The section is managed by `apr origin config`:
+setter flags replace stored values, `--unset <field>` clears them, and a bare
+`apr origin config` shows what is stored — no hand-editing required.
 
 ```toml
 [registry.signing_keys]
@@ -549,6 +556,7 @@ initial = "/run/secrets/acme_registry_initial"
 next = "/run/secrets/acme_registry_next"
 
 [registry.upload_auth]
+upload_urls = ["s3://registry-bucket/"]
 token = "..."
 view = "prod"
 http_user = "cache-user"
@@ -599,8 +607,8 @@ pointers.
 The mixed cache upload path is validated by
 `checks.vm.apm.registry-validation-stock-nix-backend-array`; the static-origin
 upload ordering and CDN metadata contract are validated by
-`checks.vm.apm.registry-validation-origin-cdn-layout`. Both checks passed on
-`dylan@builder-hil1-c13958ef` on 2026-06-08. The backend-array output was
+`checks.vm.apm.registry-validation-origin-cdn-layout`. Both checks passed on a
+remote KVM builder on 2026-06-08. The backend-array output was
 `/nix/store/bwp2ayp8r199n32s2csndcv43qmi38xr-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0`;
 the CDN-layout output was
 `/nix/store/xfzd1yim7sx5cq9gsg6nx8kvh1hi551s-aos-vm-test-apm-registry-validation-origin-cdn-layout-0`.

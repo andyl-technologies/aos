@@ -1,3 +1,5 @@
+//! S3 (`s3://`) cache backend.
+
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -18,6 +20,9 @@ pub struct S3Backend {
 }
 
 impl S3Backend {
+    /// Creates a backend for `bucket` with an optional key `prefix`
+    /// (leading/trailing slashes are trimmed; empty means the bucket
+    /// root).
     pub fn new(bucket: &str, prefix: &str, engine: &Arc<TransferEngine>) -> Self {
         Self {
             engine: Arc::clone(engine),
@@ -26,6 +31,8 @@ impl S3Backend {
         }
     }
 
+    /// Builds an `s3://bucket[/prefix]/path` URL for a cache-relative
+    /// path.
     fn s3_url(&self, path: &str) -> String {
         if self.prefix.is_empty() {
             format!("s3://{}/{}", self.bucket, path)

@@ -20,6 +20,11 @@ use crate::types::{Method, TransferBody, TransferOutput, TransferRequest, Transf
 const FS_CHUNK_SIZE: usize = 64 * 1024; // 64KB
 
 /// Local filesystem protocol handler.
+///
+/// Maps transfer methods onto local file operations: `Get` reads a
+/// file, `Put` writes one atomically (temp file + rename), `Head`
+/// stats it (404 result if missing), and `Delete` unlinks it. POST is
+/// rejected. Parent directories are created as needed on writes.
 pub struct FsProtocol;
 
 impl FsProtocol {
@@ -28,7 +33,7 @@ impl FsProtocol {
         Self
     }
 
-    /// Parse a file:// URL into a local path.
+    /// Parse a `file://` URL into a local path.
     fn parse_url(url: &str) -> Result<PathBuf> {
         let parsed = url::Url::parse(url).with_context(|| format!("invalid file URL: {url}"))?;
 

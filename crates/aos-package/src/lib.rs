@@ -1,7 +1,49 @@
+//! The AOS package manager: the `apm` and `apr` command surfaces.
+//!
+//! This crate implements both halves of the AOS package tooling:
+//!
+//! - **`apm` (consumer)** — installs, upgrades, and removes packages from
+//!   configured registries. The clap tree is [`PackageCommand`], dispatched by
+//!   [`run`].
+//! - **`apr` (producer)** — authors and publishes registries: package
+//!   entries, signing-key rosters, channels, static caches, and releases. The
+//!   clap tree is [`RegistryCommand`], reachable as `apm registry ...` or via
+//!   the `apr` binary alias.
+//!
+//! # Profile scopes
+//!
+//! Every operation runs in one of two [`types::ProfileScope`]s:
+//!
+//! - **User** — the default. State lives under per-user paths
+//!   (`/var/lib/profiles/per-user/$USER/`, XDG config/data/cache dirs) and no
+//!   special privileges are required.
+//! - **System** — selected by `--system` on `install`, `upgrade`,
+//!   `rollback`, and `registry`. Operates on the system sysroot under
+//!   `/var/lib/profiles/system/` with numbered generations, activation
+//!   scripts, and kernel/boot-loader handling (see [`sysroot`]).
+//!
+//! # Module map
+//!
+//! - [`install`] / [`remove`] / [`upgrade`] / [`rollback`] — user-scope
+//!   profile mutations (resolve, download, verify, import, generation switch).
+//! - [`sysroot`] — system-scope generations, activation, and kernel upgrade
+//!   modes; also hosts the hidden `activate-{pre,post}-etc-swap` reconciler.
+//! - [`update`] / [`query`] / [`deps`] / [`hold`] / [`clean`] / [`verify`] /
+//!   [`source`] — registry sync and read-only or maintenance commands.
+//! - [`registry`] / [`registry_ops`] — registry data model and the `apr`
+//!   producer operations (publish, keys, channels, caches, releases).
+//! - [`config`] / [`types`] — configuration loading and the on-disk data
+//!   contracts (registry TOML, generation state JSON, profile paths).
+//! - [`security`] / [`sysroot_lock`] — signature verification, trusted-key
+//!   storage, and the sysroot-lock divergence check.
+//! - [`profile`] / [`store`] / [`download`] — profile generations, the local
+//!   store, and the NAR download engine.
+
 pub mod clean;
 pub mod config;
 pub mod deps;
 pub mod download;
+pub(crate) mod gitcmd;
 pub mod hold;
 pub mod install;
 pub mod profile;
@@ -13,6 +55,7 @@ pub mod resolve;
 pub mod rollback;
 pub mod security;
 pub mod source;
+pub mod sshkey;
 pub mod store;
 pub mod sysroot;
 pub mod sysroot_lock;
@@ -23,16 +66,35 @@ pub mod update;
 pub mod upgrade;
 pub mod verify;
 
+#[cfg(test)]
+pub(crate) mod testutil;
+
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 
 use aos_core::error::AosError;
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 use sysroot::KernelUpgradeMode;
-use types::{ProfileScope, RegistryUploadAuthConfig};
+use types::{
+    ProfileScope, RegistryUploadAuthConfig, validate_branch_name, validate_channel_name,
+    validate_commit_hash, validate_git_ref_name, validate_registry_name,
+};
+
+/// Environment-variable documentation appended to `apm`/`apr` long help.
+pub const ENVIRONMENT_HELP: &str = "Environment:
+  APM_SYSTEM_CONFIG_DIR  Override the system configuration root (default
+                         /etc/apm). Affects every derived system path,
+                         including registries.d and trusted-keys.d, in both
+                         the user and system profile scopes. Must be an
+                         absolute path; intended for development on non-AOS
+                         hosts.
+  AOS_ROOT               Override the AOS root filesystem. System-scope APM
+                         state is written under <AOS_ROOT>/var/lib/apm, and
+                         Nix commands use the AOS_ROOT-relative store.";
 
 /// Clap subcommand enum for `aos package` / `apm`.
 #[derive(Subcommand)]
@@ -101,6 +163,9 @@ pub enum PackageCommand {
         /// Update only this registry
         #[arg(long)]
         registry: Option<String>,
+        /// Sync the system registries (/var/lib/apm, state in /etc/apm)
+        #[arg(long)]
+        system: bool,
     },
     /// Upgrade installed packages to latest
     Upgrade {
@@ -148,6 +213,9 @@ pub enum PackageCommand {
     Show {
         /// Package name
         package: String,
+        /// Show package from this registry
+        #[arg(long)]
+        registry: Option<String>,
     },
     /// List packages
     List {
@@ -196,6 +264,8 @@ pub enum PackageCommand {
     },
     /// List held packages
     Held,
+    /// List installed packages whose source registry is no longer configured
+    Orphans,
     /// Remove cached NAR downloads
     Clean {
         /// Also remove old profile generations
@@ -234,7 +304,7 @@ pub enum PackageCommand {
         /// Roll back the system sysroot
         #[arg(long)]
         system: bool,
-        /// List all system generations
+        /// List profile generations (system generations with --system)
         #[arg(long)]
         list: bool,
         /// Use kexec to hot-load old kernel (with --system)
@@ -251,7 +321,12 @@ pub enum PackageCommand {
         drain: bool,
     },
     /// Manage registries
+    #[command(after_long_help = ENVIRONMENT_HELP)]
     Registry {
+        /// Manage system-wide registries instead of user registries
+        #[arg(long)]
+        system: bool,
+        /// The registry operation to run
         #[command(subcommand)]
         command: RegistryCommand,
     },
@@ -263,8 +338,10 @@ pub enum PackageCommand {
     /// race-free plan path for the post-swap phase.
     #[command(name = "activate-pre-etc-swap", hide = true)]
     ActivatePreEtcSwap {
+        /// Generation number being activated
         #[arg(long = "gen")]
         generation: u32,
+        /// Path to the candidate /etc overlay to diff against live /etc
         #[arg(long)]
         candidate_etc: PathBuf,
     },
@@ -275,6 +352,7 @@ pub enum PackageCommand {
     /// `/etc`, applies reload/restart/start actions, and runs the health gate.
     #[command(name = "activate-post-etc-swap", hide = true)]
     ActivatePostEtcSwap {
+        /// Path to the pre-swap plan file printed by activate-pre-etc-swap
         #[arg(long)]
         plan: PathBuf,
     },
@@ -287,6 +365,7 @@ pub enum PackageCommand {
     /// config, so `run()` dispatches it before `ApmConfig::load`.
     #[command(name = "_test-systemd-client", hide = true)]
     TestSystemdClient {
+        /// The systemd client operation to exercise
         #[command(subcommand)]
         op: TestSystemdClientOp,
     },
@@ -298,33 +377,59 @@ pub enum PackageCommand {
 #[derive(Subcommand)]
 pub enum TestSystemdClientOp {
     /// Start a unit (mode "replace") and wait for its job to settle.
-    Start { unit: String },
+    Start {
+        /// Unit name (e.g. "foo.service")
+        unit: String,
+    },
     /// Stop a unit and wait for its job to settle.
-    Stop { unit: String },
+    Stop {
+        /// Unit name (e.g. "foo.service")
+        unit: String,
+    },
     /// Restart a unit and wait for its job to settle.
-    Restart { unit: String },
+    Restart {
+        /// Unit name (e.g. "foo.service")
+        unit: String,
+    },
     /// Reload a unit (runs `ExecReload=`) and wait for its job to settle.
-    Reload { unit: String },
+    Reload {
+        /// Unit name (e.g. "foo.service")
+        unit: String,
+    },
     /// Start a unit in "isolate" mode and wait for its job to settle.
-    Isolate { unit: String },
+    Isolate {
+        /// Unit name (e.g. "rescue.target")
+        unit: String,
+    },
     /// `Manager.Reload()` — the D-Bus equivalent of `systemctl daemon-reload`.
     DaemonReload,
     /// Clear the failed state of a single unit (`--unit`) or all units.
     ResetFailed {
+        /// Unit whose failed state to clear (all units if omitted)
         #[arg(long)]
         unit: Option<String>,
     },
     /// Whether a unit's `ActiveState == "active"`.
-    IsActive { unit: String },
+    IsActive {
+        /// Unit name (e.g. "foo.service")
+        unit: String,
+    },
     /// List units matching an optional glob `--pattern` / `--state` filter.
     ListUnits {
+        /// Glob pattern to match unit names against
         #[arg(long)]
         pattern: Option<String>,
+        /// Filter by ActiveState (e.g. "active", "failed")
         #[arg(long)]
         state: Option<String>,
     },
     /// Read a single `org.freedesktop.systemd1.Unit` property.
-    Property { unit: String, name: String },
+    Property {
+        /// Unit name (e.g. "foo.service")
+        unit: String,
+        /// Property name (e.g. "ActiveState")
+        name: String,
+    },
     /// Scan for failed (and failed-and-auto-restarting) units.
     FailedUnits,
     /// Drain late `JobRemoved` signals until the bus goes quiet.
@@ -333,12 +438,14 @@ pub enum TestSystemdClientOp {
 
 impl PackageCommand {
     /// Returns `true` when the user passed `--system` on a subcommand that
-    /// supports it (Install, Upgrade, Rollback).
+    /// supports it (Install, Upgrade, Rollback, Update, Registry).
     pub fn is_system(&self) -> bool {
         match self {
             PackageCommand::Install { system, .. } => *system,
             PackageCommand::Upgrade { system, .. } => *system,
             PackageCommand::Rollback { system, .. } => *system,
+            PackageCommand::Update { system, .. } => *system,
+            PackageCommand::Registry { system, .. } => *system,
             _ => false,
         }
     }
@@ -356,15 +463,19 @@ pub enum RegistryCommand {
         #[arg(long)]
         remote: Option<String>,
         /// Public trust key to write into committed keys.toml
-        /// (`registry:Ed25519:<base64>`)
+        /// (`<registry>:Ed25519:<base64>`)
         #[arg(long = "trust-key")]
         trust_key: Option<String>,
         /// Identifier for --trust-key inside keys.toml
         #[arg(long = "trust-key-id")]
         trust_key_id: Option<String>,
-        /// Registry to operate on
+        /// Private key path used to sign the initial commit
+        /// (required with --trust-key)
         #[arg(long)]
-        registry: Option<String>,
+        key: Option<String>,
+        /// Key id whose configured private key signs the initial commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
     },
     /// List configured registries and priorities
     List,
@@ -378,18 +489,32 @@ pub enum RegistryCommand {
         /// Priority (higher = preferred)
         #[arg(long, default_value = "500")]
         priority: u32,
-        /// Pin to exact commit hash (mutually exclusive with --branch/--tag/--version)
+        /// Pin to exact commit hash (mutually exclusive with other tracking flags)
         #[arg(long, group = "tracking")]
         commit: Option<String>,
-        /// Track a branch HEAD (mutually exclusive with --commit/--tag/--version)
+        /// Track a branch HEAD (mutually exclusive with other tracking flags)
         #[arg(long, group = "tracking")]
         branch: Option<String>,
-        /// Pin to exact tag name (mutually exclusive with --commit/--branch/--version)
+        /// Track a signed rollout channel (mutually exclusive with other tracking flags)
+        #[arg(long, group = "tracking")]
+        channel: Option<String>,
+        /// Pin to exact tag name (mutually exclusive with other tracking flags)
         #[arg(long, group = "tracking")]
         tag: Option<String>,
-        /// Semver version constraint on tags (mutually exclusive with --commit/--branch/--tag)
+        /// Semver version constraint on tags (mutually exclusive with other tracking flags)
         #[arg(long, group = "tracking")]
         version: Option<String>,
+        /// Trusted registry signing key in `<registry>:Ed25519:<base64>` form
+        #[arg(long = "trust-key", conflicts_with = "no_verify")]
+        trust_key: Option<String>,
+        /// Disable signature verification for this registry (writes
+        /// `[registry.signing] required = false`; unverified syncs are
+        /// intended for local development registries only)
+        #[arg(long = "no-verify")]
+        no_verify: bool,
+        /// Register the config only; skip cloning the registry into local storage
+        #[arg(long = "no-clone")]
+        no_clone: bool,
     },
     /// Remove a registry
     Remove {
@@ -398,16 +523,39 @@ pub enum RegistryCommand {
         /// Keep local clone on disk
         #[arg(long)]
         keep_local: bool,
+        /// Delete the local clone even when it is an authoring clone with
+        /// uncommitted or unpushed work
+        #[arg(long)]
+        force: bool,
+    },
+    /// Enable a configured registry
+    Enable {
+        /// Registry name
+        name: String,
+    },
+    /// Disable a configured registry without removing its config or cache
+    Disable {
+        /// Registry name
+        name: String,
     },
     /// Manage trusted registry signing keys
     Trust {
+        /// The trust-store operation to run
         #[command(subcommand)]
         command: TrustCommand,
     },
     /// Manage the committed registry keys.toml roster
     Keys {
+        /// The keys.toml roster operation to run
         #[command(subcommand)]
         command: KeysCommand,
+    },
+    /// Manage the committed Secure Boot validation catalog (sb-certs.toml)
+    #[command(name = "sb-certs")]
+    SbCerts {
+        /// The sb-certs.toml catalog operation to run
+        #[command(subcommand)]
+        command: SbCertsCommand,
     },
 
     // ----- Package Entries -----
@@ -442,18 +590,35 @@ pub enum RegistryCommand {
         /// Previous version in the version chain
         #[arg(long)]
         previous: Option<String>,
+        /// Source derivation or source store path to record for this package
+        #[arg(long = "source-drv")]
+        source_drv: Option<String>,
         /// Pre-compiled image store path (repeatable, paired with --image-format)
         #[arg(long = "image")]
         images: Vec<String>,
         /// Image format for each --image (repeatable, paired with --image)
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
+        /// Bless additional content for paths already recorded with different
+        /// bits in the store/ graph instead of failing
+        #[arg(long)]
+        bless: bool,
+        /// Write input-addressed records only, even on a content-addressed
+        /// registry (skip computing CA realisations for this publish)
+        #[arg(long = "no-ca")]
+        no_ca: bool,
         /// Skip creating a git commit
         #[arg(long)]
         no_commit: bool,
         /// Custom commit message
         #[arg(long)]
         message: Option<String>,
+        /// Private key path used to sign the publish commit
+        #[arg(long)]
+        key: Option<String>,
+        /// Active key id whose configured private key signs the publish commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -473,6 +638,12 @@ pub enum RegistryCommand {
         /// Custom commit message
         #[arg(long)]
         message: Option<String>,
+        /// Private key path used to sign the unpublish commit
+        #[arg(long)]
+        key: Option<String>,
+        /// Active key id whose configured private key signs the unpublish commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -569,6 +740,7 @@ pub enum RegistryCommand {
     },
     /// Branch operations
     Branch {
+        /// The branch operation to run
         #[command(subcommand)]
         command: BranchCommand,
     },
@@ -612,16 +784,25 @@ pub enum RegistryCommand {
     },
     /// Channel rollout operations
     Channel {
+        /// The channel operation to run
         #[command(subcommand)]
         command: ChannelCommand,
     },
     /// Static Nix-cache operations
     Cache {
+        /// The cache operation to run
         #[command(subcommand)]
         command: CacheCommand,
     },
+    /// Maintain the store/ realisation graph (blessed bytes + content addresses)
+    Store {
+        /// The realisation-graph operation to run
+        #[command(subcommand)]
+        command: StoreCommand,
+    },
     /// Static git-origin upload operations
     Origin {
+        /// The origin operation to run
         #[command(subcommand)]
         command: OriginCommand,
     },
@@ -656,12 +837,19 @@ pub enum RegistryCommand {
         /// Previous version in the version chain when --store-path is used
         #[arg(long)]
         previous: Option<String>,
+        /// Source derivation or source store path when --store-path is used
+        #[arg(long = "source-drv")]
+        source_drv: Option<String>,
         /// Pre-compiled image store path (repeatable, paired with --image-format)
         #[arg(long = "image")]
         images: Vec<String>,
         /// Image format for each --image (repeatable, paired with --image)
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
+        /// Bless additional content for paths already recorded with different
+        /// bits in the store/ graph when --store-path is used
+        #[arg(long)]
+        bless: bool,
         /// Custom publish commit message when --store-path is used
         #[arg(long)]
         message: Option<String>,
@@ -696,6 +884,7 @@ pub enum RegistryCommand {
         #[arg(long = "cache-priority", default_value = "40")]
         cache_priority: u32,
         /// Backend URL to upload the static origin to; repeat for multiple destinations
+        /// (default: the upload_urls persisted by `origin config`)
         #[arg(long = "upload-url")]
         upload_urls: Vec<String>,
         /// Authentication and backend-specific upload options
@@ -710,6 +899,9 @@ pub enum RegistryCommand {
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
+        /// Parallel compression jobs for the static cache (default: CPU count)
+        #[arg(long)]
+        jobs: Option<usize>,
     },
 
     // ----- Release -----
@@ -753,7 +945,8 @@ pub enum TrustCommand {
     Pin {
         /// Registry name
         registry: String,
-        /// Signing key in registry:Ed25519:<base64> form
+        /// Public key to pin, in <registry>:Ed25519:<base64> form
+        #[arg(value_name = "PUBLIC_KEY")]
         key: String,
         /// Replace existing pinned keys for this registry before pinning
         #[arg(long)]
@@ -781,15 +974,61 @@ pub enum KeysCommand {
         #[arg(long)]
         registry: Option<String>,
     },
+    /// Generate a maintainer Ed25519 keypair and register its private key
+    Generate {
+        /// Stable key id (also names the private key file)
+        #[arg(value_name = "PUBLIC_KEY_ID")]
+        id: String,
+        /// Also append the public key to committed keys.toml
+        #[arg(long)]
+        add: bool,
+        /// Skip creating a git commit (with --add)
+        #[arg(long)]
+        no_commit: bool,
+        /// Private key path used to sign the roster commit (with --add)
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the roster
+        /// commit (with --add)
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Register an externally-held maintainer key (from a path or command)
+    /// without generating or persisting any key material
+    Register {
+        /// Stable key id inside keys.toml
+        #[arg(value_name = "PUBLIC_KEY_ID")]
+        id: String,
+        /// Path to the existing private key file
+        #[arg(long = "key", value_name = "PATH", conflicts_with = "key_command")]
+        key: Option<String>,
+        /// Command, run via `sh -c`, that prints the private key to stdout
+        #[arg(long = "key-command", value_name = "COMMAND", conflicts_with = "key")]
+        key_command: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
     /// Add an active signing key to committed keys.toml
     Add {
-        /// Stable key id inside keys.toml
+        /// Stable key id for the new public key inside keys.toml
+        #[arg(value_name = "PUBLIC_KEY_ID")]
         id: String,
-        /// Signing key in registry:Ed25519:<base64> form
+        /// Public key to enroll, in <registry>:Ed25519:<base64> form
+        #[arg(value_name = "PUBLIC_KEY")]
         key: String,
         /// Skip creating a git commit
         #[arg(long)]
         no_commit: bool,
+        /// Private key path used to sign the roster commit
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the roster commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -797,6 +1036,7 @@ pub enum KeysCommand {
     /// Retire an active signing key by moving its id to [[revoked]]
     Retire {
         /// Active key id to retire
+        #[arg(value_name = "PUBLIC_KEY_ID")]
         id: String,
         /// Human-readable retirement reason
         #[arg(long)]
@@ -807,6 +1047,97 @@ pub enum KeysCommand {
         /// Skip creating a git commit
         #[arg(long)]
         no_commit: bool,
+        /// Private key path used to sign the roster commit
+        /// (defaults to the vouching key's configured private key)
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the roster commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
+        /// Skip re-signing affected channel and release tags; print them
+        /// for manual handling instead
+        #[arg(long = "no-resign")]
+        no_resign: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Secure Boot validation-catalog subcommands.
+///
+/// These mutate the committed `sb-certs.toml` roster in an authoring clone:
+/// the active db-cert set, its revocations, and the SBAT revocation floor
+/// (RFC-0006 phase 4). Like `keys.toml`, every change is written with
+/// [`registry_ops::run_sb_certs`] and committed (optionally signed) so the
+/// catalog is covered by the registry's release signature.
+#[derive(Subcommand)]
+pub enum SbCertsCommand {
+    /// List the active db certs, revocations, and SBAT floor
+    List {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Add an active Secure Boot db certificate to the catalog
+    Add {
+        /// Stable cert id used by revocation entries
+        #[arg(value_name = "ID")]
+        id: String,
+        /// Lowercase hex SHA-256 of the db certificate (DER)
+        #[arg(long = "cert-sha256", value_name = "HEX")]
+        cert_sha256: String,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Private key path used to sign the catalog commit
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Retire a db certificate by moving its id to [[revoked]]
+    Retire {
+        /// Active db cert id to retire
+        #[arg(value_name = "ID")]
+        id: String,
+        /// Human-readable retirement reason
+        #[arg(long)]
+        reason: Option<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Private key path used to sign the catalog commit
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Set (or raise) the SBAT revocation floor for a component
+    SetFloor {
+        /// SBAT component identifier (e.g. aos, systemd)
+        #[arg(long, value_name = "COMPONENT")]
+        component: String,
+        /// Minimum acceptable SBAT generation for the component
+        #[arg(long, value_name = "N")]
+        generation: u32,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Private key path used to sign the catalog commit
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -899,6 +1230,85 @@ pub enum ChannelCommand {
     },
 }
 
+/// `store/` realisation-graph subcommands (RFC-0005).
+#[derive(Subcommand)]
+pub enum StoreCommand {
+    /// Bless a store path's local content (whole closure) into the graph
+    Bless {
+        /// Nix store path whose closure to record
+        store_path: String,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Custom commit message
+        #[arg(long)]
+        message: Option<String>,
+        /// Private key path used to sign the commit
+        #[arg(long)]
+        key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Revoke a blessed realisation (stops the bytes verifying on next sync)
+    Revoke {
+        /// Store path or bare store-path hash to revoke
+        store_path: String,
+        /// Specific CA realisation to revoke (all realisations if omitted)
+        #[arg(long)]
+        realisation: Option<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Custom commit message
+        #[arg(long)]
+        message: Option<String>,
+        /// Private key path used to sign the commit
+        #[arg(long)]
+        key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Check graph health and closure coverage
+    Verify {
+        /// Also recompute local store NAR hashes and require blessed matches
+        #[arg(long)]
+        deep: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Record every published closure from the local Nix store in one pass
+    Backfill {
+        /// Bless additional content for paths already recorded with different
+        /// bits instead of failing
+        #[arg(long)]
+        bless: bool,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Custom commit message
+        #[arg(long)]
+        message: Option<String>,
+        /// Private key path used to sign the commit
+        #[arg(long)]
+        key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
 /// Static cache subcommands.
 #[derive(Subcommand)]
 pub enum CacheCommand {
@@ -914,7 +1324,8 @@ pub enum CacheCommand {
         #[arg(long)]
         cache_url: Option<String>,
         /// Backend URL to upload generated files to; repeat for multiple destinations
-        /// (file://, s3://, sftp://, http://)
+        /// (file://, s3://, sftp://, http://; default: the upload_urls persisted by
+        /// `origin config`)
         #[arg(long = "upload-url")]
         upload_urls: Vec<String>,
         /// Authentication and backend-specific upload options
@@ -929,6 +1340,9 @@ pub enum CacheCommand {
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
+        /// Parallel compression jobs for the static cache (default: CPU count)
+        #[arg(long)]
+        jobs: Option<usize>,
     },
 }
 
@@ -938,7 +1352,8 @@ pub enum OriginCommand {
     /// Upload the dumb-HTTP git origin surface to one or more destinations
     Upload {
         /// Backend URL to upload static origin files to; repeat for multiple destinations
-        /// (file://, s3://, sftp://, http://)
+        /// (file://, s3://, sftp://, http://; default: the upload_urls persisted by
+        /// `origin config`)
         #[arg(long = "upload-url")]
         upload_urls: Vec<String>,
         /// Optional generated static Nix-cache directory to upload beside the git origin
@@ -951,6 +1366,82 @@ pub enum OriginCommand {
         #[arg(long)]
         registry: Option<String>,
     },
+    /// Show or persist producer upload defaults ([registry.upload_auth]) for `origin upload`, `cache generate`, and `release`
+    Config {
+        /// Default backend URL to upload to; repeat for multiple destinations,
+        /// replaces the stored list (file://, s3://, sftp://, http://)
+        #[arg(long = "upload-url")]
+        upload_urls: Vec<String>,
+        /// AOS provisioning token for AOS cache backends
+        #[arg(long)]
+        token: Option<String>,
+        /// AOS cache view
+        #[arg(long)]
+        view: Option<String>,
+        /// Basic auth username for generic HTTP caches
+        #[arg(long)]
+        http_user: Option<String>,
+        /// Basic auth password for generic HTTP caches
+        #[arg(long)]
+        http_password: Option<String>,
+        /// Arbitrary HTTP header (repeatable, replaces the stored list)
+        #[arg(long)]
+        header: Vec<String>,
+        /// AWS region
+        #[arg(long)]
+        s3_region: Option<String>,
+        /// AWS credentials profile name
+        #[arg(long)]
+        s3_profile: Option<String>,
+        /// Custom S3-compatible endpoint (MinIO, B2, etc.)
+        #[arg(long)]
+        s3_endpoint: Option<String>,
+        /// Path to SSH private key
+        #[arg(long)]
+        ssh_key: Option<String>,
+        /// SSH password
+        #[arg(long)]
+        ssh_password: Option<String>,
+        /// Always prompt for the SSH password interactively
+        #[arg(long)]
+        ssh_ask_pass: bool,
+        /// Remove a stored setting (repeatable)
+        #[arg(long, value_name = "FIELD", value_enum)]
+        unset: Vec<UploadConfigField>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// A `[registry.upload_auth]` field name accepted by
+/// `apr origin config --unset`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum UploadConfigField {
+    /// The stored default upload destinations.
+    UploadUrls,
+    /// The AOS provisioning token.
+    Token,
+    /// The AOS cache view.
+    View,
+    /// The HTTP basic-auth username.
+    HttpUser,
+    /// The HTTP basic-auth password.
+    HttpPassword,
+    /// The stored extra HTTP headers.
+    Headers,
+    /// The AWS region.
+    S3Region,
+    /// The AWS credentials profile name.
+    S3Profile,
+    /// The custom S3-compatible endpoint.
+    S3Endpoint,
+    /// The SSH private key path.
+    SshKey,
+    /// The SSH password.
+    SshPassword,
+    /// The interactive SSH password prompt flag.
+    SshAskPass,
 }
 
 /// Authentication flags for registry static-cache uploads.
@@ -992,10 +1483,21 @@ pub struct CacheUploadAuthArgs {
 }
 
 impl CacheUploadAuthArgs {
+    /// Convert these CLI flags into backend [`aos_cache::AuthOptions`],
+    /// without any configuration-file defaults.
+    ///
+    /// Equivalent to [`Self::auth_options_with_config`] with `None`.
     pub fn auth_options(&self) -> aos_cache::AuthOptions {
         self.auth_options_with_config(None)
     }
 
+    /// Convert these CLI flags into backend [`aos_cache::AuthOptions`],
+    /// layered over optional `[registry.upload_auth]` config defaults.
+    ///
+    /// Config values (when present) seed the result; any flag the user set on
+    /// the command line (or via its env binding) overrides the corresponding
+    /// config value. `ssh_ask_pass` is OR-ed, and the cache view falls back to
+    /// `"default"` when neither source sets it.
     pub fn auth_options_with_config(
         &self,
         config: Option<&RegistryUploadAuthConfig>,
@@ -1046,7 +1548,10 @@ impl CacheUploadAuthArgs {
     }
 }
 
-/// Convert mutually-exclusive kernel mode flags into a `KernelUpgradeMode`.
+/// Convert mutually-exclusive kernel mode flags into a [`KernelUpgradeMode`].
+///
+/// Clap's `kernel_mode` arg group guarantees at most one flag is set; with
+/// none set the default [`KernelUpgradeMode::Advisory`] is returned.
 fn parse_kernel_mode(kexec: bool, reboot: bool, live: bool) -> KernelUpgradeMode {
     if kexec {
         KernelUpgradeMode::Kexec
@@ -1060,6 +1565,21 @@ fn parse_kernel_mode(kexec: bool, reboot: bool, live: bool) -> KernelUpgradeMode
 }
 
 /// Main entry point for `aos package` / `apm`.
+///
+/// Loads the [`config::ApmConfig`] for the scope implied by the command
+/// (`--system` selects [`ProfileScope::System`]) and dispatches to the
+/// matching module. The hidden `_test-systemd-client` and
+/// `activate-{pre,post}-etc-swap` subcommands are dispatched *before* config
+/// loading; the activate pair terminates the process directly via
+/// `std::process::exit` so its 0/1/2 exit-code contract reaches the caller
+/// unflattened.
+///
+/// # Errors
+///
+/// Returns an error when configuration loading fails or when the dispatched
+/// subcommand fails (resolution, download, verification, activation,
+/// registry operations, ...). User cancellation at a confirmation prompt is
+/// reported as [`aos_core::error::AosError::UserCancelled`].
 pub async fn run(
     command: &PackageCommand,
     dry_run: bool,
@@ -1105,9 +1625,12 @@ pub async fn run(
         PackageCommand::Install {
             packages,
             registry,
+            download_only,
+            no_deps,
             system: install_system,
             image: image_fmt,
             output: image_output,
+            reinstall,
             ignore_sysroot_lock,
             kexec,
             reboot,
@@ -1136,6 +1659,10 @@ pub async fn run(
                     &config,
                     packages,
                     registry.as_deref(),
+                    *reinstall,
+                    false,
+                    *download_only,
+                    *no_deps,
                     dry_run,
                     yes,
                     &ignore,
@@ -1147,16 +1674,33 @@ pub async fn run(
         PackageCommand::Remove {
             packages,
             autoremove,
-        } => remove::run(&config, packages, *autoremove, dry_run, yes, printer).await,
-        PackageCommand::Autoremove => remove::run_autoremove(&config, dry_run, yes, printer).await,
+        } => {
+            let auto_remove = *autoremove || config.settings.auto_autoremove;
+            let outcome =
+                remove::run(&config, packages, auto_remove, dry_run, yes, printer).await?;
+            if config.settings.auto_gc && auto_remove && !dry_run && outcome.orphan_count > 0 {
+                clean::run_gc_after_mutation(printer).await?;
+            }
+            Ok(())
+        }
+        PackageCommand::Autoremove => {
+            let outcome = remove::run_autoremove(&config, dry_run, yes, printer).await?;
+            if config.settings.auto_gc && !dry_run && outcome.orphan_count > 0 {
+                clean::run_gc_after_mutation(printer).await?;
+            }
+            Ok(())
+        }
         PackageCommand::Reinstall {
             packages,
             ignore_sysroot_lock,
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
-            install::run(&config, packages, None, dry_run, yes, &ignore, printer).await
+            install::run(
+                &config, packages, None, true, true, false, false, dry_run, yes, &ignore, printer,
+            )
+            .await
         }
-        PackageCommand::Update { registry } => {
+        PackageCommand::Update { registry, .. } => {
             update::run(&config, registry.as_deref(), printer).await
         }
         PackageCommand::Upgrade {
@@ -1197,7 +1741,9 @@ pub async fn run(
             )
             .await
         }
-        PackageCommand::Show { package } => query::show(&config, package, printer).await,
+        PackageCommand::Show { package, registry } => {
+            query::show(&config, package, registry.as_deref(), printer).await
+        }
         PackageCommand::List {
             installed,
             upgradable,
@@ -1221,6 +1767,7 @@ pub async fn run(
         PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
         PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
         PackageCommand::Held => hold::run_held(&config, printer).await,
+        PackageCommand::Orphans => query::orphans(&config, printer).await,
         PackageCommand::Clean { generations, keep } => {
             clean::run(&config, *generations, *keep, printer).await
         }
@@ -1241,7 +1788,7 @@ pub async fn run(
             live,
             drain,
         } => {
-            if *rollback_system || *rollback_list {
+            if *rollback_system {
                 let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::rollback_system(
                     &config,
@@ -1253,11 +1800,13 @@ pub async fn run(
                     printer,
                 )
                 .await
+            } else if *rollback_list {
+                rollback::list(&config, printer).await
             } else {
                 rollback::run(&config, *generation, dry_run, printer).await
             }
         }
-        PackageCommand::Registry { command } => run_registry(&config, command, printer).await,
+        PackageCommand::Registry { command, .. } => run_registry(&config, command, printer).await,
         // Dispatched by the early-return above, before `ApmConfig::load`.
         PackageCommand::TestSystemdClient { .. } => {
             unreachable!("TestSystemdClient is handled before ApmConfig::load")
@@ -1275,6 +1824,10 @@ pub async fn run(
 // Registry subcommands
 // ---------------------------------------------------------------------------
 
+/// Dispatch an `apm registry` / `apr` subcommand to its handler.
+///
+/// The consumer-facing lifecycle commands (`list`, `add`, `remove`) are
+/// implemented in this module; everything else delegates to [`registry_ops`].
 async fn run_registry(
     config: &config::ApmConfig,
     command: &RegistryCommand,
@@ -1288,8 +1841,12 @@ async fn run_registry(
             priority,
             commit,
             branch,
+            channel,
             tag,
             version,
+            trust_key,
+            no_verify,
+            no_clone,
         } => {
             registry_add(
                 config,
@@ -1298,23 +1855,37 @@ async fn run_registry(
                 *priority,
                 commit.as_deref(),
                 branch.as_deref(),
+                channel.as_deref(),
                 tag.as_deref(),
                 version.as_deref(),
+                trust_key.as_deref(),
+                *no_verify,
+                !no_clone,
                 printer,
             )
             .await
         }
-        RegistryCommand::Remove { name, keep_local } => {
-            registry_remove(config, name, *keep_local, printer).await
+        RegistryCommand::Remove {
+            name,
+            keep_local,
+            force,
+        } => registry_remove(config, name, *keep_local, *force, printer).await,
+        RegistryCommand::Enable { name } => registry_set_enabled(config, name, true, printer).await,
+        RegistryCommand::Disable { name } => {
+            registry_set_enabled(config, name, false, printer).await
         }
         RegistryCommand::Trust { command } => registry_ops::run_trust(config, command, printer),
         RegistryCommand::Keys { command } => registry_ops::run_keys(config, command, printer),
+        RegistryCommand::SbCerts { command } => {
+            registry_ops::run_sb_certs(config, command, printer)
+        }
         RegistryCommand::Create {
             name,
             remote,
             trust_key,
             trust_key_id,
-            ..
+            key,
+            key_id,
         } => {
             registry_ops::create(
                 config,
@@ -1322,6 +1893,8 @@ async fn run_registry(
                 remote.as_deref(),
                 trust_key.as_deref(),
                 trust_key_id.as_deref(),
+                key.as_deref(),
+                key_id.as_deref(),
                 printer,
             )
             .await
@@ -1337,10 +1910,15 @@ async fn run_registry(
             maintainer,
             sysroot,
             previous,
+            source_drv,
             images,
             image_formats,
+            bless,
+            no_ca,
             no_commit,
             message,
+            key,
+            key_id,
             registry,
         } => {
             registry_ops::publish(
@@ -1355,10 +1933,15 @@ async fn run_registry(
                 maintainer.as_deref(),
                 *sysroot,
                 previous.as_deref(),
+                source_drv.as_deref(),
                 images,
                 image_formats,
+                *bless,
+                *no_ca,
                 *no_commit,
                 message.as_deref(),
+                key.as_deref(),
+                key_id.as_deref(),
                 registry.as_deref(),
                 printer,
             )
@@ -1370,6 +1953,8 @@ async fn run_registry(
             platform,
             no_commit,
             message,
+            key,
+            key_id,
             registry,
         } => {
             registry_ops::unpublish(
@@ -1379,6 +1964,8 @@ async fn run_registry(
                 platform.as_deref(),
                 *no_commit,
                 message.as_deref(),
+                key.as_deref(),
+                key_id.as_deref(),
                 registry.as_deref(),
                 printer,
             )
@@ -1503,6 +2090,9 @@ async fn run_registry(
         RegistryCommand::Cache { command } => {
             registry_ops::run_cache(config, command, printer).await
         }
+        RegistryCommand::Store { command } => {
+            registry_ops::run_store(config, command, printer).await
+        }
         RegistryCommand::Origin { command } => {
             registry_ops::run_origin(config, command, printer).await
         }
@@ -1517,8 +2107,10 @@ async fn run_registry(
             maintainer,
             sysroot,
             previous,
+            source_drv,
             images,
             image_formats,
+            bless,
             message,
             channel,
             init_channel,
@@ -1535,6 +2127,7 @@ async fn run_registry(
             dry_run,
             resume,
             registry,
+            jobs,
         } => {
             registry_ops::release(
                 config,
@@ -1548,8 +2141,10 @@ async fn run_registry(
                 maintainer.as_deref(),
                 *sysroot,
                 previous.as_deref(),
+                source_drv.as_deref(),
                 images,
                 image_formats,
+                *bless,
                 message.as_deref(),
                 channel.as_deref(),
                 *init_channel,
@@ -1566,6 +2161,7 @@ async fn run_registry(
                 *dry_run,
                 *resume,
                 registry.as_deref(),
+                *jobs,
                 printer,
             )
             .await
@@ -1607,12 +2203,54 @@ async fn run_registry(
     }
 }
 
+/// `apr list` — print every configured registry (name, URL, priority,
+/// transport, tracking mode, package count, sync state), plus any local
+/// authoring clones that have no `registries.d/` entry.
 async fn registry_list(config: &config::ApmConfig, printer: &Printer) -> Result<()> {
+    let configured_names: Vec<&str> = config
+        .registries
+        .iter()
+        .map(|(cfg, _)| cfg.name.as_str())
+        .collect();
+    let local = registry_ops::local_registries(&config.scope.registries_path(), &configured_names);
+
+    if printer.mode() == OutputMode::Json {
+        let cache_dir = config.cache_path();
+        let registries = config
+            .registries
+            .iter()
+            .map(|(reg_config, state)| {
+                let tracking = reg_config
+                    .tracking_mode()
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|_| "invalid".to_string());
+                let packages_dir = cache_dir.join(&reg_config.name).join("packages");
+                let signing_required = reg_config.signing.as_ref().map(|signing| signing.required);
+                serde_json::json!({
+                    "name": &reg_config.name,
+                    "url": &reg_config.url,
+                    "priority": reg_config.priority,
+                    "enabled": reg_config.enabled,
+                    "status": if reg_config.enabled { "enabled" } else { "disabled" },
+                    "transport": format!("{:?}", reg_config.transport()),
+                    "tracking": tracking,
+                    "packages": count_packages_in_dir(&packages_dir),
+                    "last_update": state.as_ref().and_then(|state| state.last_update.as_ref()),
+                    "last_commit": state.as_ref().and_then(|state| state.last_commit.as_ref()),
+                    "signing_required": signing_required,
+                })
+            })
+            .collect::<Vec<_>>();
+        printer.json(&serde_json::json!(registries));
+        return Ok(());
+    }
+
     if config.registries.is_empty() {
         printer.info(&format!(
             "No registries configured. Add one with `{} add <url>`.",
             aos_core::invocation::package_registry_command()
         ));
+        print_local_registries(&local, printer);
         return Ok(());
     }
 
@@ -1670,9 +2308,100 @@ async fn registry_list(config: &config::ApmConfig, printer: &Printer) -> Result<
         printer.plain("");
     }
 
+    print_local_registries(&local, printer);
+
     Ok(())
 }
 
+/// Print the `apr list` section for local clones that have no
+/// `registries.d/` entry — typically registries authored with `apr create`,
+/// which are otherwise invisible to consumer-side commands.
+fn print_local_registries(local: &[registry_ops::LocalRegistry], printer: &Printer) {
+    if local.is_empty() {
+        return;
+    }
+
+    printer.header("Local registries (not configured):");
+    printer.plain("");
+
+    for reg in local {
+        printer.header(&format!("  {}", reg.name));
+        printer.kv("Path", &reg.path.display().to_string());
+        if let Some(ref origin) = reg.origin {
+            printer.kv("Remote", origin);
+        }
+        printer.kv("Packages", &reg.packages.to_string());
+        printer.plain("");
+    }
+
+    printer.info(&format!(
+        "Local registries are not used for installs until configured with `{} add <url>`.",
+        aos_core::invocation::package_registry_command()
+    ));
+}
+
+/// `apr add` — register a registry by writing `registries.d/<name>.toml`
+/// (with at most one tracking field and optional `[registry.signing]`),
+/// pinning the `--trust-key` if given, then syncing the initial clone unless
+/// `--no-clone` was passed. A failed initial sync is non-fatal.
+struct RegistryAddConfigToml<'a> {
+    name: &'a str,
+    url: &'a str,
+    priority: u32,
+    commit: Option<&'a str>,
+    branch: Option<&'a str>,
+    channel: Option<&'a str>,
+    tag: Option<&'a str>,
+    version: Option<&'a str>,
+    trusted_key: Option<&'a security::TrustedKey>,
+    no_verify: bool,
+}
+
+fn registry_add_config_toml(config: RegistryAddConfigToml<'_>) -> Result<String> {
+    let mut registry = toml::map::Map::new();
+    registry.insert("name".into(), toml::Value::String(config.name.to_string()));
+    registry.insert("url".into(), toml::Value::String(config.url.to_string()));
+    registry.insert(
+        "priority".into(),
+        toml::Value::Integer(config.priority.into()),
+    );
+    registry.insert("enabled".into(), toml::Value::Boolean(true));
+
+    if let Some(commit) = config.commit {
+        registry.insert("commit".into(), toml::Value::String(commit.to_string()));
+    } else if let Some(branch) = config.branch {
+        registry.insert("branch".into(), toml::Value::String(branch.to_string()));
+    } else if let Some(channel) = config.channel {
+        registry.insert("channel".into(), toml::Value::String(channel.to_string()));
+    } else if let Some(tag) = config.tag {
+        registry.insert("tag".into(), toml::Value::String(tag.to_string()));
+    } else if let Some(version) = config.version {
+        registry.insert("version".into(), toml::Value::String(version.to_string()));
+    }
+
+    if let Some(key) = config.trusted_key {
+        let mut signing = toml::map::Map::new();
+        signing.insert("required".into(), toml::Value::Boolean(true));
+        signing.insert(
+            "public_key".into(),
+            toml::Value::String(format!(
+                "{}:{}:{}",
+                key.registry, key.algorithm, key.public_key
+            )),
+        );
+        registry.insert("signing".into(), toml::Value::Table(signing));
+    } else if config.no_verify {
+        let mut signing = toml::map::Map::new();
+        signing.insert("required".into(), toml::Value::Boolean(false));
+        registry.insert("signing".into(), toml::Value::Table(signing));
+    }
+
+    let mut root = toml::map::Map::new();
+    root.insert("registry".into(), toml::Value::Table(registry));
+    Ok(toml::to_string_pretty(&toml::Value::Table(root))?)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn registry_add(
     config: &config::ApmConfig,
     url: &str,
@@ -1680,13 +2409,18 @@ async fn registry_add(
     priority: u32,
     commit: Option<&str>,
     branch: Option<&str>,
+    channel: Option<&str>,
     tag: Option<&str>,
     version: Option<&str>,
+    trust_key: Option<&str>,
+    no_verify: bool,
+    clone: bool,
     printer: &Printer,
 ) -> Result<()> {
     let name = name_override
         .map(|s| s.to_string())
         .unwrap_or_else(|| derive_registry_name(url));
+    validate_registry_name(&name)?;
 
     if config.find_registry(&name).is_some() {
         bail!(
@@ -1697,11 +2431,42 @@ async fn registry_add(
         );
     }
 
+    if let Some(c) = commit {
+        validate_commit_hash(c)?;
+    }
     // Validate version constraint if provided.
     if let Some(v) = version {
         semver::VersionReq::parse(v)
             .map_err(|e| anyhow::anyhow!("invalid version constraint '{}': {}", v, e))?;
     }
+    if let Some(b) = branch {
+        validate_branch_name(b)?;
+    }
+    if let Some(c) = channel {
+        validate_channel_name(c)?;
+    }
+    if let Some(t) = tag {
+        validate_git_ref_name(t)?;
+    }
+    let trusted_key = trust_key
+        .map(|key| {
+            let (registry, algorithm, public_key) = security::parse_signing_key(key)?;
+            if registry != name {
+                bail!(
+                    "--trust-key belongs to registry '{}', expected '{}'",
+                    registry,
+                    name,
+                );
+            }
+            Ok(security::TrustedKey {
+                registry,
+                algorithm,
+                fingerprint: security::key_fingerprint(&public_key),
+                public_key,
+                source: security::KeySource::Tofu,
+            })
+        })
+        .transpose()?;
 
     printer.header(&format!("Adding registry '{name}'..."));
     printer.kv("URL", url);
@@ -1713,107 +2478,431 @@ async fn registry_add(
         .with_context(|| format!("creating {}", registries_dir.display()))?;
 
     let toml_path = registries_dir.join(format!("{name}.toml"));
-    let mut toml_content = format!(
-        r#"[registry]
-name = "{name}"
-url = "{url}"
-priority = {priority}
-enabled = true
-"#,
-    );
 
-    // Add tracking mode field if specified.
-    if let Some(c) = commit {
-        toml_content.push_str(&format!("commit = \"{c}\"\n"));
-        printer.kv("Tracking", &format!("commit:{}", &c[..c.len().min(12)]));
+    let tracking = if let Some(c) = commit {
+        format!("commit:{}", c.chars().take(12).collect::<String>())
     } else if let Some(b) = branch {
-        toml_content.push_str(&format!("branch = \"{b}\"\n"));
-        printer.kv("Tracking", &format!("branch:{b}"));
+        format!("branch:{b}")
+    } else if let Some(c) = channel {
+        format!("channel:{c}")
     } else if let Some(t) = tag {
-        toml_content.push_str(&format!("tag = \"{t}\"\n"));
-        printer.kv("Tracking", &format!("tag:{t}"));
+        format!("tag:{t}")
     } else if let Some(v) = version {
-        toml_content.push_str(&format!("version = \"{v}\"\n"));
-        printer.kv("Tracking", &format!("version:{v}"));
+        format!("version:{v}")
+    } else {
+        "default".to_string()
+    };
+
+    if tracking != "default" {
+        printer.kv("Tracking", &tracking);
+    }
+    if no_verify && trusted_key.is_none() {
+        // Verification is fail-closed by default; the explicit opt-out is
+        // recorded in the config so the choice is visible and auditable.
+        printer.kv("Signing", "verification disabled (--no-verify)");
     }
 
+    let toml_content = registry_add_config_toml(RegistryAddConfigToml {
+        name: &name,
+        url,
+        priority,
+        commit,
+        branch,
+        channel,
+        tag,
+        version,
+        trusted_key: trusted_key.as_ref(),
+        no_verify,
+    })?;
     fs::write(&toml_path, &toml_content)
         .with_context(|| format!("writing {}", toml_path.display()))?;
+    if let Some(key) = &trusted_key {
+        security::KeyStore::new(config.scope.trusted_keys_dirs()).store(key)?;
+        printer.kv("Signing", "trusted key pinned");
+    }
 
-    printer.success(&format!(
-        "Registry '{name}' added. Run `{} update {name}` to sync package metadata.",
-        aos_core::invocation::package_manager_command()
-    ));
+    let pkg_cmd = aos_core::invocation::package_manager_command();
+
+    if !clone {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "action": "registry_add",
+                "status": "added",
+                "registry": &name,
+                "name": &name,
+                "url": url,
+                "priority": priority,
+                "enabled": true,
+                "tracking": &tracking,
+                "clone": false,
+                "synced": false,
+                "config": toml_path.to_string_lossy(),
+                "signing_required": !no_verify,
+                "verification_disabled": no_verify,
+                "trusted_key_pinned": trusted_key.is_some(),
+            }));
+            return Ok(());
+        }
+        printer.success(&format!(
+            "Registry '{name}' added. Run `{pkg_cmd} update --registry {name}` to sync package metadata."
+        ));
+        return Ok(());
+    }
+
+    printer.success(&format!("Registry '{name}' added."));
+
+    if aos_core::invocation::binary_name() == "apr" {
+        materialize_authoring_clone(config, &name, url, branch, tag, commit, printer)?;
+    }
+
+    // Materialise the local clone under the scope's registry-storage directory
+    // by syncing now. The config was just written to disk, so reload the scope
+    // to pick it up and reuse the regular update path (clone/fetch + state
+    // save-back). A sync failure is non-fatal: the registry is registered and
+    // can be retried with `<pkg> update`.
+    let synced = config::ApmConfig::load(config.scope)?;
+    let sync_printer = if printer.mode() == OutputMode::Json {
+        Printer::new(0, true, false)
+    } else {
+        printer.clone()
+    };
+    let sync_result = update::run(&synced, Some(&name), &sync_printer).await;
+    if let Err(e) = sync_result {
+        if printer.mode() == OutputMode::Json {
+            let packages_dir = config.cache_path().join(&name).join("packages");
+            printer.json(&serde_json::json!({
+                "action": "registry_add",
+                "status": "added",
+                "registry": &name,
+                "name": &name,
+                "url": url,
+                "priority": priority,
+                "enabled": true,
+                "tracking": &tracking,
+                "clone": true,
+                "synced": false,
+                "sync_error": e.to_string(),
+                "packages": count_packages_in_dir(&packages_dir),
+                "config": toml_path.to_string_lossy(),
+                "signing_required": !no_verify,
+                "verification_disabled": no_verify,
+                "trusted_key_pinned": trusted_key.is_some(),
+            }));
+            return Ok(());
+        }
+        printer.warning(&format!(
+            "Registry '{name}' was added, but the initial sync failed: {e}\n\
+             Retry with `{pkg_cmd} update --registry {name}`."
+        ));
+    }
+    if printer.mode() == OutputMode::Json {
+        let reloaded = config::ApmConfig::load(config.scope)?;
+        let state = reloaded
+            .registries
+            .iter()
+            .find(|(cfg, _)| cfg.name == name)
+            .and_then(|(_, state)| state.as_ref());
+        let packages_dir = config.cache_path().join(&name).join("packages");
+        printer.json(&serde_json::json!({
+            "action": "registry_add",
+            "status": "added",
+            "registry": &name,
+            "name": &name,
+            "url": url,
+            "priority": priority,
+            "enabled": true,
+            "tracking": &tracking,
+            "clone": true,
+            "synced": true,
+            "sync_error": null,
+            "packages": count_packages_in_dir(&packages_dir),
+            "last_commit": state.and_then(|state| state.last_commit.as_ref()),
+            "config": toml_path.to_string_lossy(),
+            "signing_required": !no_verify,
+            "verification_disabled": no_verify,
+            "trusted_key_pinned": trusted_key.is_some(),
+        }));
+    }
 
     Ok(())
 }
 
+/// Materializes the writable producer clone used by `apr add`.
+fn materialize_authoring_clone(
+    config: &config::ApmConfig,
+    name: &str,
+    url: &str,
+    branch: Option<&str>,
+    tag: Option<&str>,
+    commit: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    let clone_dir = config.scope.registries_path().join(name);
+    if clone_dir.join(".git").is_dir() {
+        return Ok(());
+    }
+    if clone_dir.exists() {
+        fs::remove_dir_all(&clone_dir).with_context(|| {
+            format!(
+                "removing consumer metadata tree before cloning {}",
+                clone_dir.display()
+            )
+        })?;
+    }
+    if let Some(parent) = clone_dir.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    let mut clone = gitcmd::transport();
+    clone.args(["clone", "--no-checkout", url]);
+    clone.arg(&clone_dir);
+    run_git_command(clone, format!("cloning registry '{name}' from {url}"))?;
+
+    if let Some(branch) = branch {
+        let remote_branch = format!("origin/{branch}");
+        let mut checkout = gitcmd::hermetic();
+        checkout
+            .current_dir(&clone_dir)
+            .args(["checkout", "-B", branch, &remote_branch]);
+        run_git_command(checkout, format!("checking out branch '{branch}'"))?;
+    } else if let Some(tag) = tag {
+        let mut checkout = gitcmd::hermetic();
+        checkout.current_dir(&clone_dir).args(["checkout", tag]);
+        run_git_command(checkout, format!("checking out tag '{tag}'"))?;
+    } else if let Some(commit) = commit {
+        let mut checkout = gitcmd::hermetic();
+        checkout
+            .current_dir(&clone_dir)
+            .args(["checkout", "--detach", commit]);
+        run_git_command(checkout, format!("checking out commit '{commit}'"))?;
+    } else {
+        let mut checkout = gitcmd::hermetic();
+        checkout.current_dir(&clone_dir).arg("checkout");
+        run_git_command(checkout, "checking out remote HEAD")?;
+    }
+
+    printer.info(&format!("Authoring clone ready at {}", clone_dir.display()));
+    Ok(())
+}
+
+fn run_git_command(mut command: Command, context: impl Into<String>) -> Result<()> {
+    let context = context.into();
+    let output = command
+        .output()
+        .with_context(|| format!("running git command while {context}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    bail!("{} failed: {}", context, stderr);
+}
+
+/// `apr remove` — delete a registry's config file, metadata cache, local
+/// clone (unless `--keep-local`), and pinned trusted keys.
+///
+/// Refuses to delete an authoring clone with uncommitted or unpushed work
+/// unless `--force` is passed. Installed packages are deliberately left
+/// untouched; they become orphans visible via `apm orphans`.
 async fn registry_remove(
     config: &config::ApmConfig,
     name: &str,
     keep_local: bool,
+    force: bool,
     printer: &Printer,
 ) -> Result<()> {
-    if config.find_registry(name).is_none() {
+    validate_registry_name(name)?;
+    let clone_dir = config.scope.registries_path().join(name);
+
+    // A registry can exist as a local authoring clone (`apr create`) without
+    // a registries.d entry; accept those too so everything `apr list` shows
+    // can be removed.
+    if config.find_registry(name).is_none() && !clone_dir.is_dir() {
         return Err(AosError::RegistryError {
             message: format!("registry '{name}' not found"),
         }
         .into());
     }
 
-    let prof = profile::Profile::open(config.scope)?;
-    let installed = profile::meta::meta_by_registry(&prof, name)?;
-
-    if !installed.is_empty() {
-        let pkg_names: Vec<String> = installed
-            .iter()
-            .filter_map(|m| m.apm.as_ref().map(|a| a.name.clone()))
-            .collect();
-
-        printer.error(&format!(
-            "Cannot remove registry '{}': {} installed package(s):",
-            name,
-            installed.len()
-        ));
-        for pkg_name in &pkg_names {
-            printer.plain(&format!("  - {pkg_name}"));
-        }
-        printer.plain(&format!(
-            "Remove these packages first with `{} remove`.",
-            aos_core::invocation::package_manager_command()
-        ));
-
-        return Err(AosError::RegistryHasPackages {
-            name: name.to_string(),
-            count: installed.len(),
+    if !keep_local
+        && !force
+        && let Some(reason) = registry_ops::authoring_clone_precious(&clone_dir)?
+    {
+        return Err(AosError::RegistryError {
+            message: format!(
+                "registry '{name}' has a local authoring clone at {} with {reason}.\n\
+                 Push it first, keep it with --keep-local, or delete it anyway with --force.",
+                clone_dir.display(),
+            ),
         }
         .into());
     }
 
-    let config_dir = config.scope.config_dir();
-    let toml_path = config_dir.join("registries.d").join(format!("{name}.toml"));
+    // Removing a registry is a config operation over user-owned paths
+    // (`registries.d/`, the local clone, the metadata cache, trusted keys). It
+    // deliberately does NOT touch the package profile under
+    // `/var/lib/profiles`: that is `apm`'s domain, requires privileges an
+    // unprivileged `apr` invocation may not have, and gating a config delete on
+    // installed-package state conflates the two tools. Any packages still
+    // installed from this registry become orphans; `apm orphans` surfaces them.
+    let toml_path = registry_config_path_for_removal(config, name)?;
+    let toml_existed = toml_path.exists();
 
     if toml_path.exists() {
         fs::remove_file(&toml_path).with_context(|| format!("removing {}", toml_path.display()))?;
     }
 
+    let mut cache_removed = false;
+    let mut local_removed = false;
     if !keep_local {
         let cache_dir = config.cache_path().join(name);
         if cache_dir.exists() {
             let _ = fs::remove_dir_all(&cache_dir);
+            cache_removed = !cache_dir.exists();
         }
 
-        let registries_dir = config.scope.registries_path().join(name);
-        if registries_dir.exists() {
-            let _ = fs::remove_dir_all(&registries_dir);
+        if clone_dir.exists() {
+            let _ = fs::remove_dir_all(&clone_dir);
+            local_removed = !clone_dir.exists();
         }
     }
 
-    let key_store = security::KeyStore::new(config.scope.trusted_keys_dirs());
-    let _ = key_store.remove(name);
+    let trusted_keys_removed = trusted_key_dir_sets_for_registry_removal(config, &toml_path)
+        .into_iter()
+        .try_fold(false, |removed, dirs| {
+            security::KeyStore::new(dirs)
+                .remove(name)
+                .map(|current| removed || current)
+        })?;
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "registry_remove",
+            "status": "removed",
+            "registry": name,
+            "name": name,
+            "keep_local": keep_local,
+            "force": force,
+            "config": toml_path.to_string_lossy(),
+            "config_removed": toml_existed && !toml_path.exists(),
+            "local": clone_dir.to_string_lossy(),
+            "local_removed": local_removed,
+            "cache_removed": cache_removed,
+            "trusted_keys_removed": trusted_keys_removed,
+            "orphan_command": format!("{} orphans", aos_core::invocation::package_manager_command()),
+        }));
+        return Ok(());
+    }
 
     printer.success(&format!("Registry '{name}' removed."));
+    printer.info(&format!(
+        "Any packages installed from '{name}' are now orphaned; review them with `{} orphans`.",
+        aos_core::invocation::package_manager_command()
+    ));
 
+    Ok(())
+}
+
+/// `apm registry enable|disable` — toggle whether a registry participates in
+/// resolution and updates, while keeping its config, local clone, cache, and
+/// trusted keys intact.
+async fn registry_set_enabled(
+    config: &config::ApmConfig,
+    name: &str,
+    enabled: bool,
+    printer: &Printer,
+) -> Result<()> {
+    validate_registry_name(name)?;
+    let (reg_config, state) =
+        config
+            .find_registry(name)
+            .ok_or_else(|| AosError::RegistryError {
+                message: format!("registry '{name}' not found"),
+            })?;
+
+    let toml_path = config.registry_config_path_for_update(name);
+    let previous_enabled = reg_config.enabled;
+    write_registry_enabled(&toml_path, reg_config, state.as_ref(), enabled)?;
+
+    let action = if enabled {
+        "registry_enable"
+    } else {
+        "registry_disable"
+    };
+    let status = if previous_enabled == enabled {
+        "unchanged"
+    } else if enabled {
+        "enabled"
+    } else {
+        "disabled"
+    };
+
+    if printer.mode() == OutputMode::Json {
+        let packages_dir = config.cache_path().join(name).join("packages");
+        printer.json(&serde_json::json!({
+            "action": action,
+            "status": status,
+            "registry": name,
+            "name": name,
+            "enabled": enabled,
+            "previous_enabled": previous_enabled,
+            "changed": previous_enabled != enabled,
+            "config": toml_path.to_string_lossy(),
+            "packages": count_packages_in_dir(&packages_dir),
+        }));
+        return Ok(());
+    }
+
+    match (enabled, previous_enabled == enabled) {
+        (true, true) => printer.info(&format!("Registry '{name}' is already enabled.")),
+        (true, false) => printer.success(&format!("Registry '{name}' enabled.")),
+        (false, true) => printer.info(&format!("Registry '{name}' is already disabled.")),
+        (false, false) => printer.success(&format!("Registry '{name}' disabled.")),
+    }
+
+    Ok(())
+}
+
+/// Persist a registry's `enabled` flag, preserving the rest of its config.
+fn write_registry_enabled(
+    path: &std::path::Path,
+    reg_config: &types::RegistryConfig,
+    state: Option<&types::RegistryState>,
+    enabled: bool,
+) -> Result<()> {
+    if path.exists() {
+        let content =
+            fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut value: toml::Value =
+            toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+        let registry = value
+            .get_mut("registry")
+            .and_then(toml::Value::as_table_mut)
+            .ok_or_else(|| anyhow::anyhow!("{}: missing [registry] table", path.display()))?;
+        registry.insert("enabled".into(), toml::Value::Boolean(enabled));
+        let rendered = toml::to_string_pretty(&value)?;
+        fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
+        return Ok(());
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+
+    let mut reg_config = reg_config.clone();
+    reg_config.enabled = enabled;
+    let mut registry = match toml::Value::try_from(reg_config)? {
+        toml::Value::Table(table) => table,
+        _ => bail!("registry config did not serialize as a TOML table"),
+    };
+    if let Some(state) = state {
+        registry.insert("state".into(), toml::Value::try_from(state)?);
+    }
+    let mut root = toml::map::Map::new();
+    root.insert("registry".into(), toml::Value::Table(registry));
+    let rendered = toml::to_string_pretty(&toml::Value::Table(root))?;
+    fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
@@ -1821,6 +2910,8 @@ async fn registry_remove(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Derive a registry name from its URL: the last path segment with any
+/// trailing `/` or `.git` stripped, filtered to `[A-Za-z0-9_-]`.
 fn derive_registry_name(url: &str) -> String {
     let cleaned = url.trim_end_matches('/').trim_end_matches(".git");
     let name = cleaned.rsplit('/').next().unwrap_or("unknown");
@@ -1829,6 +2920,9 @@ fn derive_registry_name(url: &str) -> String {
         .collect::<String>()
 }
 
+/// Count package TOML files in a registry's sharded `packages/` directory
+/// (`packages/<first-letter>/<name>.toml`). Unreadable directories count as
+/// zero rather than erroring — this only feeds informational output.
 fn count_packages_in_dir(dir: &std::path::Path) -> usize {
     let Ok(entries) = fs::read_dir(dir) else {
         return 0;
@@ -1855,6 +2949,78 @@ fn count_packages_in_dir(dir: &std::path::Path) -> usize {
         }
     }
     count
+}
+
+/// Return the registry config file that `registry remove` should delete.
+///
+/// Removing a user-level config has different semantics than updating it:
+/// when a same-name system config exists underneath, deleting only the user
+/// layer would make the registry reappear from the fallback. Treat that as an
+/// ambiguous removal instead of reporting success for a registry that remains
+/// visible.
+fn registry_config_path_for_removal(config: &config::ApmConfig, name: &str) -> Result<PathBuf> {
+    let primary = config
+        .scope
+        .config_dir()
+        .join("registries.d")
+        .join(format!("{name}.toml"));
+    if config.scope != ProfileScope::User {
+        return Ok(primary);
+    }
+
+    let fallback = ProfileScope::System
+        .config_dir()
+        .join("registries.d")
+        .join(format!("{name}.toml"));
+    if primary.exists() && fallback.exists() {
+        return Err(AosError::RegistryError {
+            message: format!(
+                "registry '{name}' also exists in system config at {}; refusing to remove only \
+                 the user config at {} because the system registry would remain visible",
+                fallback.display(),
+                primary.display(),
+            ),
+        }
+        .into());
+    }
+
+    if primary.exists() || !fallback.exists() {
+        Ok(primary)
+    } else {
+        Ok(fallback)
+    }
+}
+
+/// Return the trust-store layers to clean up for a registry removal.
+///
+/// Most user-scope removals should remove or mask user trust entries.
+/// When user scope is operating on a writable redirected system registry
+/// config, however, the registry itself is being removed from the system layer.
+/// In that case cleanup both layers: any colocated system trust key first,
+/// then user trust pins learned from the system registry during updates. The
+/// order matters because user cleanup masks read-only system anchors that
+/// remain; when the system key is being deleted too, no user revocation marker
+/// should be left behind for it.
+fn trusted_key_dir_sets_for_registry_removal(
+    config: &config::ApmConfig,
+    removed_config_path: &std::path::Path,
+) -> Vec<Vec<PathBuf>> {
+    if config.scope == ProfileScope::User {
+        if let Some(file_name) = removed_config_path.file_name() {
+            let system_registry_config = ProfileScope::System
+                .config_dir()
+                .join("registries.d")
+                .join(file_name);
+            if removed_config_path == system_registry_config {
+                return vec![
+                    ProfileScope::System.trusted_keys_dirs(),
+                    config.scope.trusted_keys_dirs(),
+                ];
+            }
+        }
+    }
+
+    vec![config.scope.trusted_keys_dirs()]
 }
 
 #[cfg(test)]
@@ -1999,6 +3165,37 @@ mod tests {
         assert!(content.contains("priority = 500"));
     }
 
+    #[test]
+    fn registry_add_config_toml_escapes_url_and_tracking_fields() {
+        let content = registry_add_config_toml(RegistryAddConfigToml {
+            name: "quoted-url",
+            url: "file:///tmp/registry with \"quotes\"\nand newline",
+            priority: 750,
+            commit: None,
+            branch: Some("feature/quoted-url"),
+            channel: None,
+            tag: None,
+            version: None,
+            trusted_key: None,
+            no_verify: true,
+        })
+        .unwrap();
+
+        let parsed: types::RegistryFile = toml::from_str(&content).unwrap();
+        assert_eq!(parsed.registry.name, "quoted-url");
+        assert_eq!(
+            parsed.registry.url,
+            "file:///tmp/registry with \"quotes\"\nand newline"
+        );
+        assert_eq!(parsed.registry.priority, 750);
+        assert!(parsed.registry.enabled);
+        assert_eq!(
+            parsed.registry.branch.as_deref(),
+            Some("feature/quoted-url")
+        );
+        assert_eq!(parsed.registry.signing.unwrap().required, false);
+    }
+
     #[tokio::test]
     async fn registry_add_rejects_duplicate() {
         let tmp = TempDir::new().unwrap();
@@ -2014,6 +3211,10 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            false,
+            false,
             &printer,
         )
         .await;
@@ -2028,10 +3229,59 @@ mod tests {
         let config = make_config(&tmp, vec![]);
 
         let printer = Printer::new(0, true, false);
-        let result = registry_remove(&config, "nonexistent", false, &printer).await;
+        let result = registry_remove(&config, "nonexistent", false, false, &printer).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn registry_remove_user_config_cleans_user_trust_layer() {
+        let tmp = TempDir::new().unwrap();
+        let config = make_config(&tmp, vec![]);
+        let removed_config = ProfileScope::User
+            .config_dir()
+            .join("registries.d")
+            .join("host-reg.toml");
+
+        assert_eq!(
+            trusted_key_dir_sets_for_registry_removal(&config, &removed_config),
+            vec![ProfileScope::User.trusted_keys_dirs()]
+        );
+    }
+
+    #[test]
+    fn registry_remove_redirected_system_config_cleans_both_trust_layers() {
+        let tmp = TempDir::new().unwrap();
+        let config = make_config(&tmp, vec![]);
+        let removed_config = ProfileScope::System
+            .config_dir()
+            .join("registries.d")
+            .join("host-install-channel.toml");
+
+        assert_eq!(
+            trusted_key_dir_sets_for_registry_removal(&config, &removed_config),
+            vec![
+                ProfileScope::System.trusted_keys_dirs(),
+                ProfileScope::User.trusted_keys_dirs()
+            ]
+        );
+    }
+
+    #[test]
+    fn registry_remove_system_scope_cleans_system_trust_layer() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = make_config(&tmp, vec![]);
+        config.scope = ProfileScope::System;
+        let removed_config = ProfileScope::System
+            .config_dir()
+            .join("registries.d")
+            .join("host-install-channel.toml");
+
+        assert_eq!(
+            trusted_key_dir_sets_for_registry_removal(&config, &removed_config),
+            vec![ProfileScope::System.trusted_keys_dirs()]
+        );
     }
 
     #[test]
@@ -2067,6 +3317,7 @@ mod tests {
     #[test]
     fn cache_upload_auth_args_merge_config_defaults_and_overrides() {
         let config = RegistryUploadAuthConfig {
+            upload_urls: Vec::new(),
             token: Some("config-token".into()),
             view: Some("prod".into()),
             http_user: Some("config-user".into()),

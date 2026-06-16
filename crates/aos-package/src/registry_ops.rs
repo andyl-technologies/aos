@@ -1,10 +1,50 @@
 //! Registry management operations (`apr` / `apm registry`).
 //!
-//! This module implements producer-side tooling for maintaining AOS package
-//! registries. It operates on local git clones stored at
+//! This module implements the producer-side `apr` command surface for
+//! maintaining AOS package registries. A registry is a git repository
+//! (SHA-256 object format) whose working tree holds `registry.toml`,
+//! per-package metadata under `packages/<letter>/<name>.toml`, closure
+//! adjacency lists under `closures/`, and the committed signing-key roster
+//! `keys.toml`. Commands operate on local authoring clones stored at
 //! `~/.local/share/apm/registries/<name>/`.
+//!
+//! The subcommand families map onto the registry git workflow as follows:
+//!
+//! - **Lifecycle**: [`create`] initializes a new authoring clone;
+//!   [`local_registries`] and [`authoring_clone_precious`] support
+//!   `apr list`/`apr remove` over clones that have no consumer config.
+//! - **Publishing**: [`publish`] introspects a Nix store path and records it
+//!   in package TOML and `store/` realisation records for every
+//!   closure member; [`unpublish`] removes packages, versions, or platform
+//!   entries. Both commit the change (optionally SSH-signed) unless
+//!   `--no-commit` is given. [`run_store`] maintains the realisation graph
+//!   directly (bless/revoke/verify/backfill).
+//! - **Query and integrity**: [`show`], [`packages`], [`verify`] (closure
+//!   consistency), and [`validate`] (cache reachability over HTTP).
+//! - **Git workflow**: [`status`], [`log`], [`diff`], [`run_branch`],
+//!   [`push`], [`pull`], and [`merge`] wrap git in the registry clone.
+//!   Network transports keep the host git configuration visible while all
+//!   other invocations run hermetically (see `crate::gitcmd`).
+//! - **Releases**: [`release`] / [`release_registry_tree`] create the signed
+//!   semver release tag and generate full/delta pack artifacts for the
+//!   static dumb-HTTP origin; [`tag`] and [`sign`] manage signed tags
+//!   directly.
+//! - **Channels**: [`run_channel`] initializes and advances 256-partition
+//!   rollout channels whose partitions are signed tag payloads stored under
+//!   `.git/channels/`.
+//! - **Keys and trust**: [`run_keys`] manages the committed `keys.toml`
+//!   roster (generate/register/add/retire, including re-signing tags after
+//!   a retirement); [`run_trust`] manages the consumer-side pinned trust
+//!   store.
+//! - **Distribution**: [`run_cache`] generates and uploads the static Nix
+//!   binary cache; [`run_origin`] uploads the static git origin files.
+//!
+//! After any operation that adds commits or moves refs, the static
+//! dumb-HTTP object store metadata is refreshed so plain-file origins stay
+//! cloneable.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -12,23 +52,38 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use aos_cache::AuthOptions;
+use aos_core::nar::info as narinfo;
+use aos_core::nix::aos_nix_env;
+use clap::ValueEnum as _;
 use serde_json::Value;
 
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
+use crate::gitcmd;
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::nixcache;
 use crate::registry::objectstore;
 use crate::registry::pack;
+use crate::registry::sb_certs::{self, RevokedSbCert, SbCert, SbCertsToml};
+use crate::registry::state;
 use crate::registry::static_upload;
+use crate::registry::store::{self, DepEdge, NarBytes, Realisation, StoreMap, UpsertOutcome};
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
-use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
-use crate::types::{CacheEntry, RegistryConfig, RegistryRootConfig};
+use crate::security::{
+    KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key, verify_tag_signature,
+};
+use crate::sshkey;
+use crate::types::{
+    CacheEntry, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
+    SbatEntry, SigningKeySource, SigningKeySpec, package_name_bucket, validate_branch_name,
+    validate_channel_name, validate_git_ref_name, validate_package_name, validate_platform_name,
+    validate_registry_name,
+};
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
-    TrustCommand,
+    SbCertsCommand, StoreCommand, TrustCommand, UploadConfigField,
 };
 
 // ---------------------------------------------------------------------------
@@ -47,6 +102,7 @@ fn registry_dir(config: &ApmConfig, registry: Option<&str>) -> Result<PathBuf> {
 /// registry, use it. Otherwise bail with an error.
 fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<String> {
     if let Some(name) = registry {
+        validate_registry_name(name)?;
         return Ok(name.to_string());
     }
 
@@ -58,7 +114,9 @@ fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<S
             for entry in entries.flatten() {
                 if entry.path().is_dir() {
                     if let Some(name) = entry.file_name().to_str() {
-                        names.push(name.to_string());
+                        if validate_registry_name(name).is_ok() {
+                            names.push(name.to_string());
+                        }
                     }
                 }
             }
@@ -93,16 +151,45 @@ fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<S
 }
 
 /// Run a git command in the registry directory, returning stdout.
+///
+/// Runs hermetically (see [`crate::gitcmd`]): host git configuration is
+/// hidden. Network transport commands must use [`git_transport`] instead.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .args(args)
         .current_dir(dir)
         .output()
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            git_failure_details(&output)
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Run a git network-transport command (push, pull) in the registry
+/// directory, returning stdout.
+///
+/// Unlike [`git`], the host configuration stays visible: credential
+/// helpers, proxies, and URL rewrites live there.
+fn git_transport(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = gitcmd::transport()
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
+
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            git_failure_details(&output)
+        );
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -110,24 +197,49 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
 
 /// Run a git command in the registry directory, returning raw stdout bytes.
 fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .args(args)
         .current_dir(dir)
         .output()
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            git_failure_details(&output)
+        );
     }
 
     Ok(output.stdout)
 }
 
+/// Render the useful part of a failed Git invocation.
+fn git_failure_details(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => output.status.to_string(),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (false, false) => format!("{stdout}\n{stderr}"),
+    }
+}
+
+/// Build a `nix`/`nix-store` command with the AOS Nix environment applied.
+fn nix_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    command.envs(aos_nix_env());
+    command
+}
+
 /// Run a git command that is allowed to fail, returning (success, stdout, stderr).
 #[allow(dead_code)]
 fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String, String)> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .args(args)
         .current_dir(dir)
         .output()
@@ -136,6 +248,124 @@ fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String, String)> {
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     Ok((output.status.success(), stdout, stderr))
+}
+
+/// A registry clone present in the scope's registry-storage directory but
+/// absent from the consumer configuration (`registries.d/`).
+///
+/// These are typically authoring clones made by `apr create`, which never
+/// writes a `registries.d` entry; without this struct `apr list` would not
+/// surface them at all.
+#[derive(Debug)]
+pub struct LocalRegistry {
+    /// Directory name, which doubles as the registry name.
+    pub name: String,
+    /// Absolute path to the clone.
+    pub path: PathBuf,
+    /// URL of the `origin` remote, when the clone is a git repository that
+    /// has one configured.
+    pub origin: Option<String>,
+    /// Number of package definition files under `packages/`.
+    pub packages: usize,
+}
+
+/// List registry clones under `registries_path` whose name is not in
+/// `configured`.
+///
+/// Returns entries sorted by name. Missing or unreadable directories yield an
+/// empty list: this feeds an informational `apr list` section, not an
+/// integrity check.
+pub fn local_registries(registries_path: &Path, configured: &[&str]) -> Vec<LocalRegistry> {
+    let Ok(entries) = std::fs::read_dir(registries_path) else {
+        return Vec::new();
+    };
+
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if configured.contains(&name.as_str()) {
+            continue;
+        }
+        let origin = git(&path, &["remote", "get-url", "origin"]).ok();
+        let packages = count_package_tomls(&path.join("packages"));
+        found.push(LocalRegistry {
+            name,
+            path,
+            origin,
+            packages,
+        });
+    }
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found
+}
+
+/// Count `.toml` files anywhere under `dir`.
+fn count_package_tomls(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut count = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            count += count_package_tomls(&path);
+        } else if path.extension().is_some_and(|ext| ext == "toml") {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Explain why deleting `dir` would lose work, if it would.
+///
+/// A directory under the registry-storage path is an authoring clone when it
+/// contains a `.git` entry — consumer-side syncs only materialise plain files
+/// there. Such a clone is precious when it holds uncommitted changes, has no
+/// remote at all (every commit exists only here), or has commits unreachable
+/// from any remote-tracking ref. Returns `Ok(None)` for consumer-extracted
+/// directories and fully pushed clones.
+///
+/// # Errors
+///
+/// Fails when the directory looks like a git repository but git cannot
+/// inspect it (e.g. a corrupted clone).
+pub fn authoring_clone_precious(dir: &Path) -> Result<Option<String>> {
+    if !dir.join(".git").exists() {
+        return Ok(None);
+    }
+
+    let status = git(dir, &["status", "--porcelain"])?;
+    if !status.is_empty() {
+        return Ok(Some("uncommitted changes".to_string()));
+    }
+
+    if git(dir, &["remote"])?.is_empty() {
+        return Ok(Some(
+            "commits that exist nowhere else (no remote is configured)".to_string(),
+        ));
+    }
+
+    let unpushed = git(
+        dir,
+        &["rev-list", "--count", "--branches", "--not", "--remotes"],
+    )?;
+    let unpushed: u64 = unpushed
+        .parse()
+        .with_context(|| format!("parsing unpushed commit count {unpushed:?}"))?;
+    if unpushed > 0 {
+        return Ok(Some(format!(
+            "{unpushed} commit{} not pushed to any remote",
+            if unpushed == 1 { "" } else { "s" },
+        )));
+    }
+
+    Ok(None)
 }
 
 /// Parse a Nix store path into (name, version).
@@ -193,11 +423,7 @@ fn parse_store_path(store_path: &str) -> (String, String) {
 
 /// Get the first letter of a name for directory bucketing.
 fn first_letter(name: &str) -> String {
-    name.chars()
-        .next()
-        .unwrap_or('_')
-        .to_lowercase()
-        .to_string()
+    package_name_bucket(name)
 }
 
 /// Get the default platform string.
@@ -214,7 +440,7 @@ fn default_platform() -> String {
 
 /// Introspect a store path using `nix path-info --json --closure-size`.
 fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
-    let output = Command::new("nix")
+    let output = nix_command("nix")
         .args(["path-info", "--json", "--closure-size", store_path])
         .output()
         .with_context(|| format!("running nix path-info on {store_path}"))?;
@@ -286,6 +512,52 @@ fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
     })
 }
 
+/// Return metadata for the derivation that produced `store_path`, if known.
+fn introspect_deriver(store_path: &str) -> Result<Option<StorePathInfo>> {
+    let output = nix_command("nix-store")
+        .args(["-q", "--deriver", store_path])
+        .output()
+        .with_context(|| format!("querying deriver for {store_path}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "nix-store --query --deriver failed for {store_path}: {}",
+            stderr.trim()
+        );
+    }
+
+    let deriver = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let Some(store_dir) = store_dir_from_store_path(store_path) else {
+        return Ok(None);
+    };
+    if deriver.is_empty()
+        || deriver == "unknown-deriver"
+        || store_dir_from_store_path(&deriver) != Some(store_dir)
+    {
+        return Ok(None);
+    }
+    if !Path::new(&deriver).exists() {
+        return Ok(None);
+    }
+
+    introspect_store_path(&deriver)
+        .with_context(|| format!("introspecting source derivation {deriver}"))
+        .map(Some)
+}
+
+/// Return the store directory portion of a Nix store path.
+fn store_dir_from_store_path(path: &str) -> Option<&str> {
+    let (dir, name) = path.trim_end_matches('/').rsplit_once('/')?;
+    let (hash, _) = name.split_once('-')?;
+    if hash.len() == 32 && hash.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// Metadata returned by `nix path-info` for a single store path.
 struct StorePathInfo {
     path: String,
     nar_hash: String,
@@ -301,7 +573,7 @@ struct StorePathInfo {
 /// enumerate the closure and `nix-store -q --references` for each member.
 fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
     // Get the full closure via nix-store -qR.
-    let output = Command::new("nix-store")
+    let output = nix_command("nix-store")
         .args(["-qR", store_path])
         .output()
         .with_context(|| format!("running nix-store -qR {store_path}"))?;
@@ -320,7 +592,7 @@ fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
     // For each path in the closure, get its direct references.
     let mut result = Vec::with_capacity(closure_paths.len());
     for path in &closure_paths {
-        let ref_output = Command::new("nix-store")
+        let ref_output = nix_command("nix-store")
             .args(["-q", "--references", path])
             .output()
             .with_context(|| format!("running nix-store -q --references {path}"))?;
@@ -341,91 +613,465 @@ fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
     Ok(result)
 }
 
-/// Write closure files for a store path and all its closure members.
-///
-/// Creates `closures/{hash}` for the root store path as an adjacency list.
-/// Also ensures `.gitattributes` has the `closures/** -diff` entry.
-fn write_closure_files(dir: &Path, store_path: &str) -> Result<()> {
-    let closure = compute_closure(store_path)?;
-    if closure.is_empty() {
-        return Ok(());
-    }
-
-    let closures_dir = dir.join("closures");
-    std::fs::create_dir_all(&closures_dir)?;
-
-    // Build the adjacency list file content.
-    // Root should be first line — nix-store -qR returns deps-first order,
-    // so the root is typically last.  Reorder: root first, then the rest.
-    let root_hash = extract_hash(store_path).to_string();
-    let mut lines = String::new();
-
-    // Root line first.
-    if let Some((_, deps)) = closure.iter().find(|(h, _)| *h == root_hash) {
-        lines.push_str(&root_hash);
-        for dep in deps {
-            lines.push(' ');
-            lines.push_str(dep);
-        }
-        lines.push('\n');
-    }
-
-    // Then the rest in dependency order.
-    for (hash, deps) in &closure {
-        if *hash == root_hash {
-            continue;
-        }
-        lines.push_str(hash);
-        for dep in deps {
-            lines.push(' ');
-            lines.push_str(dep);
-        }
-        lines.push('\n');
-    }
-
-    std::fs::write(closures_dir.join(&root_hash), &lines)?;
-
-    // Ensure .gitattributes has the closures entry.
-    ensure_gitattributes(dir)?;
-
-    Ok(())
-}
-
-/// Ensure `.gitattributes` contains `closures/** -diff`.
-fn ensure_gitattributes(dir: &Path) -> Result<()> {
-    let path = dir.join(".gitattributes");
-    let entry = "closures/** -diff\n";
-
-    if path.exists() {
-        let content = std::fs::read_to_string(&path)?;
-        if content.contains("closures/** -diff") {
-            return Ok(());
-        }
-        // Append the entry.
-        let mut new_content = content;
-        if !new_content.ends_with('\n') {
-            new_content.push('\n');
-        }
-        new_content.push_str(entry);
-        std::fs::write(&path, new_content)?;
-    } else {
-        std::fs::write(&path, entry)?;
-    }
-
-    Ok(())
-}
-
 /// Extract the store path hash from a full store path.
 fn extract_hash(store_path: &str) -> &str {
     let basename = store_path.rsplit('/').next().unwrap_or(store_path);
     basename.split('-').next().unwrap_or(basename)
 }
 
-/// Create a git commit in the registry directory.
-fn commit_registry(dir: &Path, message: &str) -> Result<()> {
-    git(dir, &["add", "-A"])?;
-    git(dir, &["commit", "-m", message])?;
+// ---------------------------------------------------------------------------
+// store/ realisation-graph writing (RFC-0005)
+// ---------------------------------------------------------------------------
+
+/// Per-member NAR metadata for a runtime closure.
+struct ClosureMemberNar {
+    path: String,
+    nar_hash: String,
+    nar_size: u64,
+}
+
+/// Introspect every member of a store path's runtime closure in one
+/// `nix path-info --json --recursive` invocation.
+fn introspect_closure_nars(store_path: &str) -> Result<Vec<ClosureMemberNar>> {
+    let output = nix_command("nix")
+        .args(["path-info", "--json", "--recursive", store_path])
+        .output()
+        .with_context(|| format!("running nix path-info --recursive on {store_path}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "nix path-info --recursive failed for {store_path}: {}",
+            stderr.trim()
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(&stdout)
+        .with_context(|| format!("parsing nix path-info JSON for {store_path} closure"))?;
+
+    // nix path-info --json returns an array of entries or an object keyed
+    // by store path, depending on Nix version.
+    let mut members = Vec::new();
+    let mut push = |path_hint: Option<&str>, info: &Value| -> Result<()> {
+        let path = info
+            .get("path")
+            .and_then(Value::as_str)
+            .or(path_hint)
+            .ok_or_else(|| anyhow::anyhow!("nix path-info entry without a path"))?;
+        let nar_hash = info
+            .get("narHash")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("nix path-info missing narHash for {path}"))?;
+        let nar_size = info
+            .get("narSize")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| anyhow::anyhow!("nix path-info missing narSize for {path}"))?;
+        members.push(ClosureMemberNar {
+            path: path.to_string(),
+            nar_hash: nar_hash.to_string(),
+            nar_size,
+        });
+        Ok(())
+    };
+
+    match &json {
+        Value::Array(entries) => {
+            for info in entries {
+                push(None, info)?;
+            }
+        }
+        Value::Object(map) => {
+            for (path, info) in map {
+                push(Some(path.as_str()), info)?;
+            }
+        }
+        other => bail!("unexpected nix path-info JSON shape: {other}"),
+    }
+
+    if members.is_empty() {
+        bail!("nix path-info --recursive returned no closure members for {store_path}");
+    }
+    Ok(members)
+}
+
+/// Run `nix store make-content-addressed --json` over a closure root and
+/// return the input-addressed → content-addressed store-path-hash map for
+/// every member it rewrites.
+///
+/// This is how the producer learns each member's CA realisation and the
+/// dependency CA pins, consistently for the whole closure in one pass. It
+/// realises CA paths in the local store as a side effect.
+fn make_content_addressed(store_path: &str) -> Result<HashMap<String, String>> {
+    let output = nix_command("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command ca-derivations",
+            "store",
+            "make-content-addressed",
+            "--json",
+            store_path,
+        ])
+        .output()
+        .with_context(|| format!("running nix store make-content-addressed on {store_path}"))?;
+    if !output.status.success() {
+        bail!(
+            "nix store make-content-addressed failed for {store_path}: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    let json: Value = serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .with_context(|| format!("parsing make-content-addressed JSON for {store_path}"))?;
+    let rewrites = json
+        .get("rewrites")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("make-content-addressed output missing 'rewrites'"))?;
+    Ok(rewrites
+        .iter()
+        .filter_map(|(ia_path, ca_path)| {
+            ca_path.as_str().map(|ca| {
+                (
+                    extract_hash(ia_path).to_string(),
+                    extract_hash(ca).to_string(),
+                )
+            })
+        })
+        .collect())
+}
+
+/// Counts of realisation-graph mutations performed by [`write_store_files`].
+#[derive(Debug, Default, Clone, Copy)]
+struct StoreWriteReport {
+    /// Paths that gained their first record.
+    created: usize,
+    /// Paths that gained an additional realisation.
+    blessed: usize,
+    /// Paths whose realisation was already present, unchanged.
+    unchanged: usize,
+    /// Whether content addresses were filled.
+    content_addressed: bool,
+}
+
+impl StoreWriteReport {
+    fn merge(&mut self, other: StoreWriteReport) {
+        self.created += other.created;
+        self.blessed += other.blessed;
+        self.unchanged += other.unchanged;
+        self.content_addressed |= other.content_addressed;
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "{} created, {} blessed, {} unchanged{}",
+            self.created,
+            self.blessed,
+            self.unchanged,
+            if self.content_addressed {
+                " (content-addressed)"
+            } else {
+                ""
+            },
+        )
+    }
+}
+
+/// Write `store/` realisation records for every member of a store path's
+/// runtime closure (RFC-0005).
+///
+/// Records each member's exact NAR bytes and dependency edges; when
+/// `content_addressed`, also its CA realisation and pinned dependency CAs
+/// (from `nix store make-content-addressed`). A member already recorded with
+/// *different* content for the same realisation fails the whole write unless
+/// `bless` is set - an unexpected mismatch at publish time is exactly the
+/// divergence the graph exists to surface, so it is never merged silently.
+///
+/// When `content_addressed` is requested but the local Nix cannot compute CA
+/// paths, the member records are still written input-addressed and a warning
+/// is printed (the graph stays valid for IA consumers).
+fn write_store_files(
+    dir: &Path,
+    store_path: &str,
+    content_addressed: bool,
+    bless: bool,
+    printer: &Printer,
+) -> Result<StoreWriteReport> {
+    let closure = compute_closure(store_path)?;
+    let nars = introspect_closure_nars(store_path)?;
+    let nar_by_hash: HashMap<&str, &ClosureMemberNar> =
+        nars.iter().map(|m| (extract_hash(&m.path), m)).collect();
+
+    let ca_by_hash: HashMap<String, String> = if content_addressed {
+        match make_content_addressed(store_path) {
+            Ok(map) => map,
+            Err(err) => {
+                printer.warning(&format!(
+                    "content-addressing unavailable for {store_path}; writing \
+                     input-addressed records only ({err:#})"
+                ));
+                HashMap::new()
+            }
+        }
+    } else {
+        HashMap::new()
+    };
+    let filled_ca = !ca_by_hash.is_empty();
+
+    let mut report = StoreWriteReport {
+        content_addressed: filled_ca,
+        ..Default::default()
+    };
+
+    for (ia_hash, dep_hashes) in &closure {
+        let Some(member) = nar_by_hash.get(ia_hash.as_str()) else {
+            bail!("no NAR metadata for closure member {ia_hash} of {store_path}");
+        };
+        let nar = NarBytes::from_hash(&member.nar_hash, member.nar_size)
+            .with_context(|| format!("building NAR entry for {}", member.path))?;
+        let deps = dep_hashes
+            .iter()
+            .map(|dep| DepEdge {
+                dep_ia: dep.clone(),
+                dep_ca: ca_by_hash.get(dep).cloned(),
+            })
+            .collect();
+        let realisation = Realisation {
+            nar,
+            ca: ca_by_hash.get(ia_hash).cloned(),
+            deps,
+        };
+
+        match store::upsert_realisation(dir, ia_hash, realisation.clone(), bless)? {
+            UpsertOutcome::Created => report.created += 1,
+            UpsertOutcome::AlreadyPresent => report.unchanged += 1,
+            UpsertOutcome::Blessed => report.blessed += 1,
+            UpsertOutcome::Conflict(existing) => {
+                let existing = existing
+                    .iter()
+                    .map(|r| match &r.ca {
+                        Some(ca) => format!("ca:sha256:{ca} nar:sha256:{}", r.nar.sha256_nix32),
+                        None => format!("nar:sha256:{}", r.nar.sha256_nix32),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                bail!(
+                    "{} is already recorded with different content\n  registry: {existing}\n  local:    nar:sha256:{}\n\
+                     A publish-time mismatch is exactly what the store/ graph exists to catch:\n\
+                     either the local rebuild legitimately diverged (re-run with --bless to\n\
+                     add this realisation) or one of the two builds cannot be trusted.",
+                    member.path,
+                    realisation.nar.sha256_nix32,
+                );
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+/// Collect every unique `store_path` from the registry's package TOML
+/// files (runtime closure roots only - sources and images are covered by
+/// their own TOML hashes, not the graph).
+fn collect_package_store_paths(dir: &Path) -> Result<Vec<String>> {
+    let packages_dir = dir.join("packages");
+    let mut paths = std::collections::BTreeSet::new();
+    if !packages_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    for letter_entry in std::fs::read_dir(&packages_dir)
+        .with_context(|| format!("reading {}", packages_dir.display()))?
+    {
+        let letter_path = letter_entry?.path();
+        if !letter_path.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&letter_path)
+            .with_context(|| format!("reading {}", letter_path.display()))?
+        {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let value: toml::Value =
+                toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+            let Some(versions) = value.get("versions").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for version in versions {
+                let Some(platforms) = version.get("platforms").and_then(|v| v.as_table()) else {
+                    continue;
+                };
+                for platform in platforms.values() {
+                    if let Some(sp) = platform.get("store_path").and_then(|v| v.as_str()) {
+                        paths.insert(sp.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(paths.into_iter().collect())
+}
+
+/// Whether the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` environment variables fully
+/// specify a commit identity. They take precedence over any git config and
+/// are how hermetic environments (VM tests, build sandboxes) provide one.
+fn env_commit_identity() -> bool {
+    [
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+    ]
+    .iter()
+    .all(|var| std::env::var_os(var).is_some_and(|value| !value.is_empty()))
+}
+
+/// Read `key` from the host's global git config, failing when it is unset.
+///
+/// Registry commits record who published, so a missing identity is a setup
+/// error, not something to paper over with a placeholder.
+fn host_identity_value(key: &str) -> Result<String> {
+    gitcmd::host_config_value(key).ok_or_else(|| {
+        anyhow::anyhow!(
+            "registry commits record the maintainer's identity, but git {key} is not set.\n\
+             Set it with `git config --global {key} <value>`."
+        )
+    })
+}
+
+/// Check that a commit identity is available, without touching any repo.
+///
+/// Used by [`create`] to refuse before creating anything on disk.
+fn require_commit_identity() -> Result<()> {
+    if env_commit_identity() {
+        return Ok(());
+    }
+    for key in ["user.email", "user.name"] {
+        host_identity_value(key)?;
+    }
     Ok(())
+}
+
+/// Ensure the maintainer's identity is available for commits in `dir`.
+///
+/// Registry git invocations are hermetic (see [`crate::gitcmd`]), so an
+/// identity living only in the maintainer's global config is invisible to
+/// them; capture it into the clone, preserving commit attribution.
+///
+/// # Errors
+///
+/// Fails when no identity is configured in the environment, the clone, or
+/// the host's global config.
+fn ensure_commit_identity(dir: &Path) -> Result<()> {
+    if env_commit_identity() {
+        return Ok(());
+    }
+
+    for key in ["user.email", "user.name"] {
+        if git(dir, &["config", key]).is_ok() {
+            continue;
+        }
+        let host = host_identity_value(key)?;
+        git(dir, &["config", key, &host])?;
+    }
+    Ok(())
+}
+
+/// Render `path` relative to the registry root as a UTF-8 string suitable
+/// for `git add -- <path>`.
+fn registry_relative_path(dir: &Path, path: &Path) -> Result<String> {
+    let rel = path
+        .strip_prefix(dir)
+        .with_context(|| format!("{} is not under {}", path.display(), dir.display()))?;
+    rel.to_str()
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow::anyhow!("registry path is not UTF-8: {}", path.display()))
+}
+
+/// Commit whatever is currently staged, SSH-signing the commit when
+/// `signing_key` points at an OpenSSH private key.
+fn commit_staged_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
+    match signing_key {
+        Some(key) => {
+            let signing_key_config = format!("user.signingkey={key}");
+            let mut command = gitcmd::hermetic();
+            command.arg("-c").arg("gpg.format=ssh");
+            gitcmd::add_ssh_program_config(&mut command);
+            command
+                .arg("-c")
+                .arg(signing_key_config)
+                .arg("commit")
+                .arg("-S")
+                .arg("-m")
+                .arg(message)
+                .current_dir(dir);
+            let output = command
+                .output()
+                .with_context(|| format!("signing registry commit in {}", dir.display()))?;
+            if !output.status.success() {
+                bail!("git commit -S failed: {}", git_failure_details(&output));
+            }
+        }
+        None => {
+            git(dir, &["commit", "-m", message])?;
+        }
+    }
+    Ok(())
+}
+
+/// Create a git commit for a constrained set of registry paths.
+fn commit_registry_paths(
+    dir: &Path,
+    message: &str,
+    paths: &[PathBuf],
+    signing_key: Option<&str>,
+) -> Result<()> {
+    if paths.is_empty() {
+        bail!("no registry paths supplied for commit");
+    }
+
+    ensure_commit_identity(dir)?;
+
+    let relative_paths = paths
+        .iter()
+        .map(|path| registry_relative_path(dir, path))
+        .collect::<Result<Vec<_>>>()?;
+
+    let output = gitcmd::hermetic()
+        .arg("add")
+        .arg("-A")
+        .arg("--")
+        .args(&relative_paths)
+        .current_dir(dir)
+        .output()
+        .with_context(|| {
+            format!(
+                "running git add for {} constrained path(s) in {}",
+                relative_paths.len(),
+                dir.display()
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git add failed: {}", stderr.trim());
+    }
+
+    commit_staged_registry(dir, message, signing_key)
+}
+
+/// Create a git commit in the registry directory.
+///
+/// When `signing_key` is the path to an OpenSSH Ed25519 private key, the
+/// commit is SSH-signed (`gpg.format=ssh`), matching the tag-signing setup
+/// in [`sign_tag`]. Clients verify head-commit signatures during sync, so
+/// commits on registries with a non-empty trust roster should always be
+/// signed.
+fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
+    ensure_commit_identity(dir)?;
+    git(dir, &["add", "-A"])?;
+    commit_staged_registry(dir, message, signing_key)
 }
 
 /// Refresh the static dumb-HTTP object indexes after refs or commits change.
@@ -442,6 +1088,8 @@ fn refresh_registry_object_store(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// List the registry's release versions: every git tag whose name parses
+/// as semver, sorted ascending and deduplicated.
 fn semver_tag_versions(dir: &Path) -> Result<Vec<semver::Version>> {
     let tags = git(dir, &["tag", "--list"])?;
     Ok(semver_versions_from_tag_list(&tags))
@@ -470,7 +1118,20 @@ fn read_registry_toml(dir: &Path) -> Result<Option<RegistryRootConfig>> {
     Ok(Some(config))
 }
 
-/// Resolve mirror URLs for a registry by reading its registry.toml.
+/// Whether a registry records content addresses in its `store/` graph
+/// (`[registry] content_addressed`, RFC-0005). Defaults to `true` when the
+/// file is missing or unparsable.
+fn registry_content_addressed(dir: &Path) -> bool {
+    match read_registry_toml(dir) {
+        Ok(Some(config)) => config.registry.content_addressed,
+        _ => true,
+    }
+}
+
+/// Resolves the mirror cache URLs committed in a registry's `registry.toml`.
+///
+/// Returns the `[[caches]]` entries sorted by descending priority, or an
+/// empty list when the file is missing, unparsable, or lists no caches.
 pub fn resolve_mirrors(dir: &Path) -> Vec<CacheEntry> {
     match read_registry_toml(dir) {
         Ok(Some(config)) if !config.caches.is_empty() => {
@@ -482,7 +1143,12 @@ pub fn resolve_mirrors(dir: &Path) -> Vec<CacheEntry> {
     }
 }
 
-/// Resolve mirror URLs from committed registry.toml plus client-side overrides.
+/// Resolves mirror cache URLs from the committed `registry.toml` plus the
+/// consumer's client-side cache overrides.
+///
+/// The client-configured caches from `registries.d` are merged with the
+/// committed entries and the combined list is sorted by descending
+/// priority.
 pub fn resolve_mirrors_for_registry(
     dir: &Path,
     registry: &crate::types::RegistryConfig,
@@ -493,6 +1159,10 @@ pub fn resolve_mirrors_for_registry(
     caches
 }
 
+/// Build the initial `keys.toml` roster for `apr create`.
+///
+/// Without `--trust-key` the roster is empty. A provided trust key must
+/// belong to `registry_name`; its roster id defaults to `"initial"`.
 fn initial_keys_roster(
     registry_name: &str,
     trust_key: Option<&str>,
@@ -508,9 +1178,7 @@ fn initial_keys_roster(
     };
 
     let trust_key_id = trust_key_id.unwrap_or("initial");
-    if trust_key_id.trim().is_empty() {
-        bail!("--trust-key-id cannot be empty when --trust-key is provided");
-    }
+    validate_roster_key_id(trust_key_id)?;
 
     let (key_registry, _algorithm, _public_key) = parse_signing_key(trust_key)?;
     if key_registry != registry_name {
@@ -532,20 +1200,57 @@ fn initial_keys_roster(
 // Registry Lifecycle
 // ---------------------------------------------------------------------------
 
-/// `apr create <NAME>`
+/// `apr create <NAME>` — initializes a new registry authoring clone.
+///
+/// Creates a SHA-256 git repository at `<registries>/<NAME>` with `stable`
+/// as the default branch, containing a skeleton `registry.toml`, an empty
+/// `packages/` tree, and a `keys.toml` roster (seeded from `--trust-key` /
+/// `--trust-key-id` when given). The initial commit is SSH-signed when a
+/// `--key` or `--key-id` is supplied, the static dumb-HTTP object store is
+/// refreshed, and `--remote` configures an `origin` remote on the clone.
+///
+/// # Errors
+///
+/// Fails when the registry directory already exists; when `--trust-key` is
+/// given without a signing key (clients verify head-commit signatures from
+/// first contact, so a seeded roster requires a signed root commit); when
+/// no git commit identity is configured; when the trust key id is invalid;
+/// when the trust key belongs to a different registry; or when a git
+/// invocation or file write fails.
+#[allow(clippy::too_many_arguments)]
 pub async fn create(
     config: &ApmConfig,
     name: &str,
     remote: Option<&str>,
     trust_key: Option<&str>,
     trust_key_id: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    validate_registry_name(name)?;
     let dir = config.scope.registries_path().join(name);
 
     if dir.exists() {
         bail!("registry '{name}' already exists at {}", dir.display());
     }
+
+    let roster = initial_keys_roster(name, trust_key, trust_key_id)?;
+
+    // A registry seeded with a trust roster must start with a signed
+    // commit: clients verify head-commit signatures from first contact,
+    // and an unsigned root commit would never validate. Refuse before
+    // creating anything on disk.
+    if trust_key.is_some() && key.is_none() && key_id.is_none() {
+        bail!(
+            "--trust-key seeds a trust roster, so the initial commit must be signed: \
+             pass --key <path> (or --key-id <id>) with the maintainer's private key"
+        );
+    }
+
+    // The initial commit needs a maintainer identity; likewise refuse
+    // before creating anything on disk.
+    require_commit_identity()?;
 
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
@@ -554,6 +1259,8 @@ pub async fn create(
     git(&dir, &["init", "--object-format=sha256"])?;
     git(&dir, &["symbolic-ref", "HEAD", "refs/heads/stable"])?;
     objectstore::assert_sha256(&dir)?;
+
+    ensure_commit_identity(&dir)?;
 
     // Create initial directory structure.
     std::fs::create_dir_all(dir.join("packages"))?;
@@ -566,14 +1273,21 @@ description = ""
 "#
     );
     std::fs::write(dir.join("registry.toml"), &registry_toml)?;
-    let roster = initial_keys_roster(name, trust_key, trust_key_id)?;
     keys::write_keys_toml(&dir, &roster)?;
 
+    let signing_key = if key.is_some() || key_id.is_some() {
+        Some(resolve_producer_signing_key(
+            config, &dir, name, key, key_id,
+        )?)
+    } else {
+        None
+    };
+
     // Initial commit.
-    git(&dir, &["add", "-A"])?;
-    git(
+    commit_registry(
         &dir,
-        &["commit", "-m", &format!("Initialize registry '{name}'")],
+        &format!("Initialize registry '{name}'"),
+        signing_key.as_ref().map(|k| k.path()),
     )?;
     refresh_registry_object_store(&dir)
         .context("refreshing dumb-HTTP object store after registry creation")?;
@@ -582,6 +1296,20 @@ description = ""
     if let Some(url) = remote {
         git(&dir, &["remote", "add", "origin", url])?;
         printer.kv("Remote", url);
+    }
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "create",
+            "registry": name,
+            "path": dir.display().to_string(),
+            "remote": remote,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+            "trust_key_id": trust_key.map(|_| trust_key_id.unwrap_or("initial")),
+        }));
+        return Ok(());
     }
 
     printer.success(&format!("Registry '{name}' created at {}", dir.display()));
@@ -593,7 +1321,36 @@ description = ""
 // Publish / Unpublish
 // ---------------------------------------------------------------------------
 
-/// `apr publish <STORE_PATH>`
+/// `apr publish <STORE_PATH>` — records a built Nix store path in the
+/// registry.
+///
+/// Introspects the store path (NAR hash and size, closure size, direct
+/// references, and the source derivation when known), writes or merges the
+/// entry in `packages/<letter>/<name>.toml`, and regenerates the closure
+/// adjacency file under `closures/`. Unless `--no-commit` is set, the
+/// touched paths are committed (SSH-signed when `--key`/`--key-id` is
+/// given) and the dumb-HTTP object store is refreshed.
+///
+/// Package name, version, and platform are parsed from the store path
+/// basename and can each be overridden. `--image`/`--image-format` pairs
+/// attach disk-image artifacts to the platform entry, `--sysroot` marks
+/// the package as a system root, `--previous` records the predecessor
+/// version for delta upgrades, and `--source-drv` records explicit source
+/// provenance for prebuilt binaries whose deriver is not visible to Nix.
+///
+/// # Errors
+///
+/// Fails when the registry has no writable authoring clone, when the
+/// package name is not safe for registry package paths, when the platform
+/// name is not safe for package metadata, when `--image` and
+/// `--image-format` are not given in pairs, when the `nix path-info` /
+/// `nix-store` queries fail for the store path, or when a file write, the
+/// commit, or the object-store refresh fails.
+///
+/// # Panics
+///
+/// Panics if an existing package TOML contains a `versions` array whose
+/// entries are not tables (cannot occur for files written by this tool).
 #[allow(clippy::too_many_arguments)]
 pub async fn publish(
     config: &ApmConfig,
@@ -607,17 +1364,31 @@ pub async fn publish(
     maintainer: Option<&str>,
     sysroot: bool,
     previous: Option<&str>,
+    source_drv: Option<&str>,
     image_paths: &[String],
     image_formats: &[String],
+    bless: bool,
+    no_ca: bool,
     no_commit: bool,
     message: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
-    let dir = registry_dir(config, registry)?;
-    if !dir.exists() {
-        bail!("registry directory does not exist: {}", dir.display());
+    let name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&name);
+    ensure_writable_registry_clone(&name, &dir)?;
+    if let Some(name) = name_override {
+        validate_package_name(name)?;
     }
+    let signing_key = if key.is_some() || key_id.is_some() {
+        Some(resolve_producer_signing_key(
+            config, &dir, &name, key, key_id,
+        )?)
+    } else {
+        None
+    };
 
     // Validate image pairs.
     if image_paths.len() != image_formats.len() {
@@ -628,22 +1399,39 @@ pub async fn publish(
         );
     }
 
-    printer.step(1, 3, "Introspecting store path...");
+    printer.step(1, 4, "Introspecting store path...");
     let info = introspect_store_path(store_path)?;
+    let source_info = if let Some(source_drv) = source_drv {
+        Some(
+            introspect_store_path(source_drv)
+                .with_context(|| format!("introspecting source derivation {source_drv}"))?,
+        )
+    } else {
+        introspect_deriver(&info.path)?
+    };
 
-    // Introspect image store paths if provided.
-    let mut image_infos: Vec<(String, StorePathInfo)> = Vec::new();
+    // Introspect image store paths if provided, deriving Secure Boot facts
+    // from each signed UKI so the catalog mirrors what was actually signed
+    // (RFC-0006 phase 4). The publish-time db-cert verification is enforced
+    // only when a db cert is supplied; absent one, facts are recorded but
+    // not cross-checked here (the closure signature still covers them).
+    let sb_db_cert = sb_db_cert_path(config, &name);
+    let mut image_infos: Vec<(String, StorePathInfo, SbFacts)> = Vec::new();
     for (img_path, img_fmt) in image_paths.iter().zip(image_formats.iter()) {
         let img_info = introspect_store_path(img_path)?;
-        image_infos.push((img_fmt.clone(), img_info));
+        let sb = derive_sb_facts(&img_info.path, sb_db_cert.as_deref())
+            .with_context(|| format!("deriving Secure Boot facts for {}", img_info.path))?;
+        image_infos.push((img_fmt.clone(), img_info, sb));
     }
 
     let (parsed_name, parsed_version) = parse_store_path(&info.path);
     let pkg_name = name_override.unwrap_or(&parsed_name);
     let pkg_version = version_override.unwrap_or(&parsed_version);
+    validate_package_name(pkg_name)?;
     let platform = platform_override
         .map(|s| s.to_string())
         .unwrap_or_else(default_platform);
+    validate_platform_name(&platform)?;
 
     printer.step(2, 4, "Writing package TOML...");
     let letter = first_letter(pkg_name);
@@ -672,13 +1460,15 @@ pub async fn publish(
         sysroot,
         previous,
         &image_infos,
+        source_info.as_ref(),
     )?;
 
     std::fs::write(&toml_path, &new_content)?;
 
-    printer.step(3, 4, "Computing closure...");
-    write_closure_files(&dir, &info.path)
-        .with_context(|| format!("writing closure files for {}", info.path))?;
+    printer.step(3, 4, "Computing realisation graph...");
+    let content_addressed = registry_content_addressed(&dir) && !no_ca;
+    let store_report = write_store_files(&dir, &info.path, content_addressed, bless, printer)
+        .with_context(|| format!("writing store/ realisation graph for {}", info.path))?;
 
     printer.step(4, 4, "Done.");
     printer.kv("Package", pkg_name);
@@ -688,31 +1478,132 @@ pub async fn publish(
     printer.kv("NAR hash", &info.nar_hash);
     printer.kv("NAR size", &format_size(info.nar_size));
     printer.kv("Closure size", &format_size(info.closure_size));
+    printer.kv("Store graph", &store_report.summary());
+    if let Some(source_info) = &source_info {
+        printer.kv("Source drv", &source_info.path);
+    }
     if sysroot {
         printer.kv("Sysroot", "true");
     }
     if let Some(prev) = previous {
         printer.kv("Previous", prev);
     }
-    for (fmt, img_info) in &image_infos {
+    for (fmt, img_info, sb) in &image_infos {
         printer.kv(&format!("Image ({fmt})"), &img_info.path);
+        if let Some(cert) = &sb.signer_cert_sha256 {
+            printer.kv(&format!("  SB signer cert ({fmt})"), cert);
+        }
     }
 
+    let mut committed = false;
+    let mut commit_message = None;
     if !no_commit {
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
-        commit_registry(&dir, msg)?;
+        let staged_paths = [toml_path.clone(), dir.join(store::STORE_DIR)];
+        commit_registry_paths(
+            &dir,
+            msg,
+            &staged_paths,
+            signing_key.as_ref().map(|k| k.path()),
+        )?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after publish")?;
+        committed = true;
+        commit_message = Some(msg.to_string());
         printer.success(&format!("Committed: {msg}"));
     } else {
         printer.info("Skipped commit (--no-commit).");
     }
 
+    if printer.mode() == OutputMode::Json {
+        let source = source_info.as_ref().map(|source| {
+            serde_json::json!({
+                "store_path": source.path.as_str(),
+                "nar_hash": source.nar_hash.as_str(),
+                "nar_size": source.nar_size,
+            })
+        });
+        let images = image_infos
+            .iter()
+            .map(|(format, image, sb)| {
+                serde_json::json!({
+                    "format": format.as_str(),
+                    "store_path": image.path.as_str(),
+                    "nar_hash": image.nar_hash.as_str(),
+                    "nar_size": image.nar_size,
+                    "sb_signer_cert_sha256": sb.signer_cert_sha256,
+                    "sbat": sb.sbat.iter().map(|item| serde_json::json!({
+                        "component": item.component,
+                        "generation": item.generation,
+                    })).collect::<Vec<_>>(),
+                    "expected_pcr11": sb.expected_pcr11,
+                })
+            })
+            .collect::<Vec<_>>();
+        printer.json(&serde_json::json!({
+            "action": "publish",
+            "registry": name,
+            "package": pkg_name,
+            "version": pkg_version,
+            "platform": platform,
+            "store_path": info.path,
+            "nar_hash": info.nar_hash,
+            "nar_size": info.nar_size,
+            "closure_size": info.closure_size,
+            "store_graph": {
+                "created": store_report.created,
+                "blessed": store_report.blessed,
+                "unchanged": store_report.unchanged,
+                "content_addressed": store_report.content_addressed,
+            },
+            "references": info.references,
+            "source": source,
+            "sysroot": sysroot,
+            "previous": previous,
+            "images": images,
+            "package_file": toml_path
+                .strip_prefix(&dir)
+                .unwrap_or(&toml_path)
+                .display()
+                .to_string(),
+            "committed": committed,
+            "commit_message": commit_message,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+        }));
+    }
+
     Ok(())
 }
 
+/// Require `dir` to be a git authoring clone; consumer-extracted registry
+/// trees (plain files synced by `apm update`) cannot host publish commits
+/// and are rejected with remediation steps.
+fn ensure_writable_registry_clone(name: &str, dir: &Path) -> Result<()> {
+    if dir.join(".git").is_dir() {
+        return Ok(());
+    }
+
+    bail!(
+        "registry '{name}' has no writable local clone at {path}.\n\
+         `{pkg} update --registry {name}` only syncs consumer metadata; it cannot create an \
+         APR publishing worktree.\n\
+         To publish, remove and re-add the registry without `--no-clone`, or author a new \
+         local registry with `{reg} create {name}`.",
+        path = dir.display(),
+        reg = aos_core::invocation::package_registry_command(),
+        pkg = aos_core::invocation::package_manager_command(),
+    );
+}
+
 /// Build package TOML content, merging with existing content if present.
+///
+/// A fresh file is rendered through the TOML value serializer; an existing
+/// file is parsed and the version/platform entry is upserted, preserving
+/// unrelated versions and platforms. Panics if an existing `versions` array
+/// entry is not a table.
 #[allow(clippy::too_many_arguments)]
 fn build_package_toml(
     existing: &str,
@@ -726,59 +1617,49 @@ fn build_package_toml(
     maintainer: Option<&str>,
     sysroot: bool,
     previous: Option<&str>,
-    image_infos: &[(String, StorePathInfo)],
+    image_infos: &[(String, StorePathInfo, SbFacts)],
+    source_info: Option<&StorePathInfo>,
 ) -> Result<String> {
     let desc = description.unwrap_or("No description");
     let lic = license.unwrap_or("unknown");
     let maint = maintainer.unwrap_or("unknown");
+    let source_drv = source_info
+        .map(|source| source.path.as_str())
+        .unwrap_or_default();
+    let source_nar_hash = source_info
+        .map(|source| source.nar_hash.as_str())
+        .unwrap_or_default();
+    let platform_table = package_platform_table(info, image_infos, source_drv, source_nar_hash);
 
     if existing.is_empty() {
-        // Create new TOML.
-        let mut content = format!("[package]\nname = \"{name}\"\ndescription = \"{desc}\"\n");
+        let mut package = toml::map::Map::new();
+        package.insert("name".into(), toml::Value::String(name.to_string()));
+        package.insert("description".into(), toml::Value::String(desc.to_string()));
         if sysroot {
-            content.push_str("sysroot = true\n");
+            package.insert("sysroot".into(), toml::Value::Boolean(true));
         }
         if let Some(hp) = homepage {
-            content.push_str(&format!("homepage = \"{hp}\"\n"));
+            package.insert("homepage".into(), toml::Value::String(hp.to_string()));
         }
-        content.push_str(&format!(
-            "license = \"{lic}\"\nmaintainer = \"{maint}\"\n\n"
-        ));
-        content.push_str(&format!("[[versions]]\nversion = \"{version}\"\n"));
+        package.insert("license".into(), toml::Value::String(lic.to_string()));
+        package.insert("maintainer".into(), toml::Value::String(maint.to_string()));
+
+        let mut version_table = toml::map::Map::new();
+        version_table.insert("version".into(), toml::Value::String(version.to_string()));
         if let Some(prev) = previous {
-            content.push_str(&format!("previous = \"{prev}\"\n"));
+            version_table.insert("previous".into(), toml::Value::String(prev.to_string()));
         }
-        content.push_str(&format!(
-            "\n[versions.platforms.{platform}]\n\
-             store_path = \"{}\"\n\
-             nar_hash = \"{}\"\n\
-             nar_size = {}\n\
-             closure_size = {}\n\
-             source_drv = \"\"\n\
-             source_nar_hash = \"\"\n\
-             references = [{}]\n",
-            info.path,
-            info.nar_hash,
-            info.nar_size,
-            info.closure_size,
-            info.references
-                .iter()
-                .map(|r| format!("\"{r}\""))
-                .collect::<Vec<_>>()
-                .join(", "),
-        ));
-        // Append image entries if provided.
-        for (fmt, img_info) in image_infos {
-            content.push_str(&format!(
-                "\n[[versions.platforms.{platform}.images]]\n\
-                 format = \"{fmt}\"\n\
-                 store_path = \"{}\"\n\
-                 nar_hash = \"{}\"\n\
-                 nar_size = {}\n",
-                img_info.path, img_info.nar_hash, img_info.nar_size,
-            ));
-        }
-        Ok(content)
+        let mut platforms = toml::map::Map::new();
+        platforms.insert(platform.to_string(), platform_table);
+        version_table.insert("platforms".into(), toml::Value::Table(platforms));
+
+        let mut root = toml::map::Map::new();
+        root.insert("package".into(), toml::Value::Table(package));
+        root.insert(
+            "versions".into(),
+            toml::Value::Array(vec![toml::Value::Table(version_table)]),
+        );
+        Ok(toml::to_string_pretty(&toml::Value::Table(root))?)
     } else {
         // Parse existing, add/update the version+platform entry.
         let mut toml_val: toml::Value =
@@ -793,47 +1674,6 @@ fn build_package_toml(
 
         // Ensure versions array exists.
         let versions = toml_val.get_mut("versions").and_then(|v| v.as_array_mut());
-
-        let platform_table = {
-            let mut t = toml::map::Map::new();
-            t.insert("store_path".into(), toml::Value::String(info.path.clone()));
-            t.insert(
-                "nar_hash".into(),
-                toml::Value::String(info.nar_hash.clone()),
-            );
-            t.insert(
-                "nar_size".into(),
-                toml::Value::Integer(info.nar_size as i64),
-            );
-            t.insert(
-                "closure_size".into(),
-                toml::Value::Integer(info.closure_size as i64),
-            );
-            t.insert("source_drv".into(), toml::Value::String(String::new()));
-            t.insert("source_nar_hash".into(), toml::Value::String(String::new()));
-            let refs: Vec<toml::Value> = info
-                .references
-                .iter()
-                .map(|r| toml::Value::String(r.clone()))
-                .collect();
-            t.insert("references".into(), toml::Value::Array(refs));
-            // Add images if provided.
-            if !image_infos.is_empty() {
-                let images: Vec<toml::Value> = image_infos
-                    .iter()
-                    .map(|(fmt, img)| {
-                        let mut m = toml::map::Map::new();
-                        m.insert("format".into(), toml::Value::String(fmt.clone()));
-                        m.insert("store_path".into(), toml::Value::String(img.path.clone()));
-                        m.insert("nar_hash".into(), toml::Value::String(img.nar_hash.clone()));
-                        m.insert("nar_size".into(), toml::Value::Integer(img.nar_size as i64));
-                        toml::Value::Table(m)
-                    })
-                    .collect();
-                t.insert("images".into(), toml::Value::Array(images));
-            }
-            toml::Value::Table(t)
-        };
 
         if let Some(versions) = versions {
             // Find existing version entry.
@@ -895,7 +1735,873 @@ fn build_package_toml(
     }
 }
 
-/// `apr unpublish <PACKAGE> [VERSION]`
+/// Secure Boot facts extracted from a signed UKI at publish time.
+///
+/// Every field is derived from the real binary so the registry catalog
+/// cannot disagree with what was actually signed (RFC-0006 phase 4,
+/// `registry-catalog.md`). A field is `None`/empty when the corresponding
+/// fact could not be derived (e.g. `systemd-measure` unavailable).
+#[derive(Debug, Default, Clone)]
+struct SbFacts {
+    /// Lowercase hex SHA-256 of the signer leaf cert in the PE cert table.
+    signer_cert_sha256: Option<String>,
+    /// SBAT component/generation pairs from the PE `.sbat` section.
+    sbat: Vec<SbatEntry>,
+    /// `systemd-measure`-predicted PCR-11 over this UKI's measured sections at
+    /// the `enter-initrd` boot phase (where `/var` is unsealed; see
+    /// [`extract_expected_pcr11`]).
+    expected_pcr11: Option<String>,
+}
+
+/// Locate the UKI (`.efi` PE/COFF executable) inside an image store path.
+///
+/// Sysroot images attach a single UKI per format under their store path.
+/// Returns the path to the first regular `.efi` file found (recursively),
+/// or `None` when the image carries no UKI (an unsigned/legacy image, for
+/// which no Secure Boot facts are recorded).
+fn find_uki_in_store_path(store_path: &str) -> Option<PathBuf> {
+    fn walk(dir: &Path) -> Option<PathBuf> {
+        let entries = fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = walk(&path) {
+                    return Some(found);
+                }
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+    let root = Path::new(store_path);
+    if root.is_file() {
+        return root
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
+            .then(|| root.to_path_buf());
+    }
+    walk(root)
+}
+
+/// Build a [`Command`] for an external Secure Boot helper (`sbverify`,
+/// `objcopy`, `systemd-measure`) that can be resolved through the caller's
+/// `PATH`.
+///
+/// The `aos`/`apm`/`apr` wrappers replace `PATH` with a minimal hermetic tool
+/// set (bash/git/nix/…) and stash the caller's original `PATH` in
+/// `AOS_HOST_PATH`. These SB helpers are *not* in the hermetic set, so a bare
+/// `Command::new` for one of them fails with `NotFound` under the wrappers. We
+/// therefore run them with `PATH` = hermetic entries followed by
+/// `AOS_HOST_PATH`, mirroring [`crate::gitcmd`]'s transport handling: AOS-built
+/// tools keep priority, while host-provided `sbverify`/`objcopy`/
+/// `systemd-measure` become reachable. Outside the wrappers (`AOS_HOST_PATH`
+/// unset) the process `PATH` is left untouched.
+fn sb_tool_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    if let Some(path) = host_augmented_path() {
+        cmd.env("PATH", path);
+    }
+    cmd
+}
+
+/// Concatenate the process `PATH` and the caller's `AOS_HOST_PATH` (hermetic
+/// first), dropping duplicate directories while preserving order.
+///
+/// Returns `None` when `AOS_HOST_PATH` is unset (not running under a wrapper),
+/// so the command inherits the process `PATH` unchanged.
+fn host_augmented_path() -> Option<OsString> {
+    augment_path_with_host(std::env::var_os("PATH"), std::env::var_os("AOS_HOST_PATH"))
+}
+
+/// Pure core of [`host_augmented_path`]: append `host_path` after
+/// `process_path`, de-duplicating directories while preserving order.
+///
+/// Returns `None` when `host_path` is absent (the command should inherit the
+/// process `PATH` unchanged).
+fn augment_path_with_host(
+    process_path: Option<OsString>,
+    host_path: Option<OsString>,
+) -> Option<OsString> {
+    let host_path = host_path?;
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for source in [process_path, Some(host_path)].into_iter().flatten() {
+        for dir in std::env::split_paths(&source) {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    std::env::join_paths(dirs).ok()
+}
+
+/// Hash the signer leaf certificate of a UKI's Authenticode signature.
+///
+/// Confirms the binary is signed with `sbverify --list <uki>`, then reads
+/// the PE security directory directly to recover the Authenticode PKCS#7
+/// blob and returns the lowercase hex SHA-256 of its first (leaf)
+/// certificate. Returns `Ok(None)` when the binary carries no Authenticode
+/// signature (an unsigned image), so unsigned dev builds do not break
+/// publishing.
+///
+/// # Errors
+///
+/// Returns an error if `sbverify` cannot be spawned, exits with a failure
+/// other than "no signature", or the PE/PKCS#7 structure cannot be parsed
+/// into a leaf certificate.
+fn extract_sb_signer_cert_sha256(uki: &Path) -> Result<Option<String>> {
+    let output = sb_tool_command("sbverify")
+        .arg("--list")
+        .arg(uki)
+        .output()
+        .with_context(|| format!("running sbverify --list {}", uki.display()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        // sbverify reports an unsigned binary; treat that as "no facts"
+        // rather than a publish failure.
+        if stderr.contains("No signature")
+            || stdout.contains("No signature")
+            || stderr.contains("no signature")
+        {
+            return Ok(None);
+        }
+        bail!(
+            "sbverify --list {} failed: {}",
+            uki.display(),
+            combine_output(&stdout, &stderr)
+        );
+    }
+
+    let bytes = fs::read(uki).with_context(|| format!("reading {}", uki.display()))?;
+    let leaf = leaf_cert_from_pe(&bytes)
+        .with_context(|| format!("extracting signer cert from {}", uki.display()))?;
+    Ok(Some(sha256_hex(leaf)))
+}
+
+/// Return the first (leaf) X.509 certificate DER bytes from a signed PE's
+/// Authenticode certificate table.
+///
+/// Locates the PE security directory (the `WIN_CERTIFICATE` blob holding a
+/// PKCS#7 `SignedData`), then walks the DER structure to the embedded
+/// certificate set and returns the first certificate's complete DER
+/// encoding.
+///
+/// # Errors
+///
+/// Returns an error when the PE headers, the security directory, or the
+/// PKCS#7 certificate set cannot be parsed.
+fn leaf_cert_from_pe(pe: &[u8]) -> Result<&[u8]> {
+    let (cert_off, cert_len) = pe_security_dir(pe)?;
+    let cert_table = pe
+        .get(cert_off..cert_off + cert_len)
+        .ok_or_else(|| anyhow::anyhow!("security directory extends past end of file"))?;
+    // WIN_CERTIFICATE header: dwLength(4) + wRevision(2) + wCertificateType(2).
+    let pkcs7 = cert_table
+        .get(8..)
+        .ok_or_else(|| anyhow::anyhow!("WIN_CERTIFICATE blob too short"))?;
+    first_certificate_der(pkcs7)
+}
+
+/// Parse the PE optional-header data directory entry for the
+/// `IMAGE_DIRECTORY_ENTRY_SECURITY` (index 4) certificate table, returning
+/// its `(file_offset, size)`.
+///
+/// # Errors
+///
+/// Returns an error when the DOS/PE signatures, the optional-header magic,
+/// or the data directory cannot be read, or when no security directory is
+/// present.
+fn pe_security_dir(pe: &[u8]) -> Result<(usize, usize)> {
+    let read_u16 = |off: usize| -> Option<u16> {
+        pe.get(off..off + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    };
+    let read_u32 = |off: usize| -> Option<u32> {
+        pe.get(off..off + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+
+    if read_u16(0) != Some(0x5a4d) {
+        bail!("not a PE image (missing MZ signature)");
+    }
+    let pe_off = read_u32(0x3c).context("reading e_lfanew")? as usize;
+    if read_u32(pe_off) != Some(0x0000_4550) {
+        bail!("missing PE signature");
+    }
+    // COFF header is 20 bytes; the optional header magic follows.
+    let opt_off = pe_off + 24;
+    let magic = read_u16(opt_off).context("reading optional-header magic")?;
+    // The data directory array starts after the windows-specific fields:
+    // 96 bytes for PE32 (0x10b), 112 bytes for PE32+ (0x20b).
+    let dir_off = match magic {
+        0x10b => opt_off + 96,
+        0x20b => opt_off + 112,
+        other => bail!("unexpected optional-header magic {other:#x}"),
+    };
+    // Security directory is entry index 4 (8 bytes each: RVA/offset + size).
+    let entry = dir_off + 4 * 8;
+    let offset = read_u32(entry).context("reading security dir offset")? as usize;
+    let size = read_u32(entry + 4).context("reading security dir size")? as usize;
+    if offset == 0 || size == 0 {
+        bail!("PE has no Authenticode certificate table");
+    }
+    Ok((offset, size))
+}
+
+/// Walk a PKCS#7 `SignedData` DER blob and return the *signer* certificate's
+/// complete DER encoding from the `[0] IMPLICIT certificates` field.
+///
+/// The signer is identified by matching the first `SignerInfo`'s
+/// `issuerAndSerialNumber` against each embedded certificate's issuer name
+/// and serial number. This correctly picks the leaf even when the embedded
+/// cert set is unordered or carries intermediate CA certs.
+///
+/// # Fallback caveat
+///
+/// If the `SignerInfo` cannot be located (for example a CMS variant that
+/// uses `subjectKeyIdentifier` instead of `issuerAndSerialNumber`, which
+/// Authenticode does not use in practice), this falls back to the first
+/// certificate in the set. Authenticode signers produced by `sbsign`/`ukify`
+/// embed a single end-entity certificate identified by issuer+serial, so the
+/// matched path is the one exercised in production; the fallback exists only
+/// so an unusual blob degrades to the previous behavior rather than failing.
+///
+/// # Errors
+///
+/// Returns an error when the DER structure does not match the expected
+/// PKCS#7 `ContentInfo` → `SignedData` → certificates layout, or the
+/// certificates field is absent.
+fn first_certificate_der(pkcs7: &[u8]) -> Result<&[u8]> {
+    // ContentInfo ::= SEQUENCE { contentType OID, content [0] EXPLICIT ANY }
+    let content_info = der_expect_seq(pkcs7).context("PKCS#7 ContentInfo")?;
+    let (_oid, rest) = der_take(content_info).context("ContentInfo.contentType")?;
+    // content [0] EXPLICIT
+    let (tag, explicit, _) = der_tlv(rest).context("ContentInfo.content")?;
+    if tag != 0xA0 {
+        bail!("PKCS#7 content is not context-tag [0]");
+    }
+    // SignedData ::= SEQUENCE { version, digestAlgorithms, contentInfo,
+    //   certificates [0] IMPLICIT, ..., signerInfos SET }
+    let signed_data = der_expect_seq(explicit).context("SignedData")?;
+
+    let mut certificates: Option<&[u8]> = None;
+    let mut signer_infos: Option<&[u8]> = None;
+    let mut cursor = signed_data;
+    while !cursor.is_empty() {
+        let (tag, value, after) = der_tlv(cursor).context("scanning SignedData fields")?;
+        match tag {
+            // certificates [0] IMPLICIT SET OF Certificate.
+            0xA0 => certificates = Some(value),
+            // signerInfos SET OF SignerInfo (the final SET in SignedData).
+            0x31 => signer_infos = Some(value),
+            _ => {}
+        }
+        cursor = after;
+    }
+
+    let certificates = certificates
+        .ok_or_else(|| anyhow::anyhow!("PKCS#7 SignedData has no certificates field"))?;
+
+    // Try to pick the cert whose issuer+serial matches the first SignerInfo.
+    if let Some(signer_infos) = signer_infos
+        && let Some((issuer, serial)) = signer_issuer_and_serial(signer_infos)
+        && let Some(cert) = certificate_matching(certificates, issuer, serial)?
+    {
+        return Ok(cert);
+    }
+
+    // Fallback: the first certificate in the set (see caveat).
+    der_full_tlv(certificates).context("leaf certificate TLV")
+}
+
+/// Extract `(issuerName, serialNumber)` DER slices from the first
+/// `SignerInfo`'s `issuerAndSerialNumber`, or `None` if not in that form.
+///
+/// `SignerInfo ::= SEQUENCE { version, sid IssuerAndSerialNumber, ... }` and
+/// `IssuerAndSerialNumber ::= SEQUENCE { issuer Name, serialNumber INTEGER }`.
+fn signer_issuer_and_serial(signer_infos_set: &[u8]) -> Option<(&[u8], &[u8])> {
+    // First SignerInfo in the SET.
+    let (_tag, signer_info, _) = der_tlv(signer_infos_set).ok()?;
+    if _tag != 0x30 {
+        return None;
+    }
+    // version INTEGER, then sid IssuerAndSerialNumber SEQUENCE.
+    let (vtag, _version, rest) = der_tlv(signer_info).ok()?;
+    if vtag != 0x02 {
+        return None;
+    }
+    let (stag, ias, _) = der_tlv(rest).ok()?;
+    if stag != 0x30 {
+        return None;
+    }
+    // issuer Name (full TLV), serialNumber INTEGER (full TLV).
+    let issuer = der_full_tlv(ias).ok()?;
+    let (_itag, _ivalue, after_issuer) = der_tlv(ias).ok()?;
+    let serial = der_full_tlv(after_issuer).ok()?;
+    Some((issuer, serial))
+}
+
+/// Find the certificate in `certificates_set` whose issuer Name and serial
+/// number equal `issuer`/`serial`, returning its complete DER TLV.
+///
+/// `Certificate ::= SEQUENCE { tbsCertificate SEQUENCE { ... }, ... }` and
+/// `TBSCertificate ::= SEQUENCE { [0] version?, serialNumber INTEGER,
+/// signature, issuer Name, ... }`.
+///
+/// # Errors
+///
+/// Returns an error if a certificate element is malformed DER.
+fn certificate_matching<'a>(
+    certificates_set: &'a [u8],
+    issuer: &[u8],
+    serial: &[u8],
+) -> Result<Option<&'a [u8]>> {
+    let mut cursor = certificates_set;
+    while !cursor.is_empty() {
+        let cert = der_full_tlv(cursor).context("certificate TLV")?;
+        if cert_issuer_and_serial(cert).is_some_and(|(ci, cs)| ci == issuer && cs == serial) {
+            return Ok(Some(cert));
+        }
+        let consumed = cert.len();
+        cursor = &cursor[consumed..];
+    }
+    Ok(None)
+}
+
+/// Extract `(issuerName, serialNumber)` DER slices from a `Certificate`.
+fn cert_issuer_and_serial(cert: &[u8]) -> Option<(&[u8], &[u8])> {
+    let tbs_outer = der_expect_seq(cert).ok()?; // Certificate value
+    let tbs = der_expect_seq(tbs_outer).ok()?; // TBSCertificate value
+    // Optional [0] EXPLICIT version, then serialNumber INTEGER.
+    let (tag, _v, rest) = der_tlv(tbs).ok()?;
+    let (serial, after_serial) = if tag == 0xA0 {
+        let (stag, _sv, after) = der_tlv(rest).ok()?;
+        if stag != 0x02 {
+            return None;
+        }
+        (der_full_tlv(rest).ok()?, after)
+    } else if tag == 0x02 {
+        (der_full_tlv(tbs).ok()?, rest)
+    } else {
+        return None;
+    };
+    // signature AlgorithmIdentifier SEQUENCE, then issuer Name SEQUENCE.
+    let (_sigtag, _sig, after_sig) = der_tlv(after_serial).ok()?;
+    let issuer = der_full_tlv(after_sig).ok()?;
+    Some((issuer, serial))
+}
+
+/// Split a DER TLV at `data`, returning `(tag, value, remaining)`.
+fn der_tlv(data: &[u8]) -> Result<(u8, &[u8], &[u8])> {
+    if data.len() < 2 {
+        bail!("truncated DER element");
+    }
+    let tag = data[0];
+    let (len, header_len) = der_len(&data[1..])?;
+    let start = 1 + header_len;
+    let end = start
+        .checked_add(len)
+        .filter(|&e| e <= data.len())
+        .ok_or_else(|| anyhow::anyhow!("DER length {len} exceeds buffer"))?;
+    Ok((tag, &data[start..end], &data[end..]))
+}
+
+/// Like [`der_tlv`] but returns the *complete* leading TLV (tag + length +
+/// value) of the first element in `data`.
+fn der_full_tlv(data: &[u8]) -> Result<&[u8]> {
+    let total = der_element_len(data)?;
+    Ok(&data[..total])
+}
+
+/// Return the total byte length of the leading DER element in `data`.
+fn der_element_len(data: &[u8]) -> Result<usize> {
+    if data.len() < 2 {
+        bail!("truncated DER element");
+    }
+    let (len, header_len) = der_len(&data[1..])?;
+    Ok(1 + header_len + len)
+}
+
+/// Expect a DER SEQUENCE (`0x30`) at `data` and return its value bytes.
+fn der_expect_seq(data: &[u8]) -> Result<&[u8]> {
+    let (tag, value, _) = der_tlv(data)?;
+    if tag != 0x30 {
+        bail!("expected DER SEQUENCE, found tag {tag:#x}");
+    }
+    Ok(value)
+}
+
+/// Take the first DER element from `data`, returning `(element, remaining)`.
+fn der_take(data: &[u8]) -> Result<(&[u8], &[u8])> {
+    let total = der_element_len(data)?;
+    Ok((&data[..total], &data[total..]))
+}
+
+/// Decode a DER length field, returning `(length, header_byte_count)`.
+fn der_len(data: &[u8]) -> Result<(usize, usize)> {
+    let first = *data
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("missing DER length"))?;
+    if first < 0x80 {
+        return Ok((first as usize, 1));
+    }
+    let n = (first & 0x7f) as usize;
+    if n == 0 || n > 4 || data.len() < 1 + n {
+        bail!("unsupported DER length encoding");
+    }
+    let mut len = 0usize;
+    for &byte in &data[1..1 + n] {
+        len = (len << 8) | byte as usize;
+    }
+    Ok((len, 1 + n))
+}
+
+/// Return the lowercase hex SHA-256 of `bytes`.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+/// Read the SBAT component/generation table from a UKI's `.sbat` PE section.
+///
+/// Dumps the section with `objcopy -O binary --only-section=.sbat` and
+/// parses the CSV: each non-empty, non-comment line is `component,generation`
+/// (extra columns describing the upstream are ignored). Returns an empty
+/// vector when the binary carries no `.sbat` section.
+///
+/// # Errors
+///
+/// Returns an error if `objcopy` cannot be spawned or fails for a reason
+/// other than the section being absent, the dumped section is not valid
+/// UTF-8, or a generation field is not a non-negative integer.
+fn extract_sbat_entries(uki: &Path) -> Result<Vec<SbatEntry>> {
+    let tmp = tempfile::Builder::new()
+        .prefix("aos-sbat-")
+        .tempfile()
+        .context("creating temp file for .sbat dump")?;
+    let output = sb_tool_command("objcopy")
+        .arg("-O")
+        .arg("binary")
+        .arg("--only-section=.sbat")
+        .arg(uki)
+        .arg(tmp.path())
+        .output()
+        .with_context(|| format!("running objcopy on {}", uki.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // A missing section is not an error for our purposes.
+        if stderr.contains("can't dump section")
+            || stderr.contains("section '.sbat'")
+            || stderr.contains("no symbols")
+        {
+            return Ok(Vec::new());
+        }
+        bail!("objcopy on {} failed: {}", uki.display(), stderr.trim());
+    }
+    let raw = fs::read(tmp.path()).context("reading dumped .sbat section")?;
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let text = String::from_utf8(raw).context("decoding .sbat section as UTF-8")?;
+    parse_sbat_csv(&text)
+}
+
+/// Parse the CSV body of a `.sbat` section into [`SbatEntry`] records.
+///
+/// # Errors
+///
+/// Returns an error if a data line's generation column is not a
+/// non-negative integer.
+fn parse_sbat_csv(text: &str) -> Result<Vec<SbatEntry>> {
+    let mut entries = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_end_matches('\0').trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut fields = line.split(',');
+        let Some(component) = fields.next() else {
+            continue;
+        };
+        let component = component.trim();
+        // The first CSV row is the SBAT format header (`sbat,1,SBAT...`);
+        // it is itself a versioned component and is recorded like any other.
+        let Some(generation) = fields.next() else {
+            continue;
+        };
+        let generation: u32 = generation.trim().parse().with_context(|| {
+            format!("parsing SBAT generation for component '{component}' from '{line}'")
+        })?;
+        entries.push(SbatEntry {
+            component: component.to_string(),
+            generation,
+        });
+    }
+    Ok(entries)
+}
+
+/// Dump a single PE section of `uki` to a fresh temp file with `objcopy`.
+///
+/// Returns the temp file holding the section bytes, or `Ok(None)` when the
+/// section is absent (or empty). The returned handle keeps the file alive;
+/// drop it to remove the temp file.
+///
+/// # Errors
+///
+/// Returns an error if `objcopy` cannot be spawned, or fails for a reason
+/// other than the section being absent.
+fn dump_pe_section(uki: &Path, section: &str) -> Result<Option<tempfile::NamedTempFile>> {
+    let tmp = tempfile::Builder::new()
+        .prefix("aos-uki-section-")
+        .tempfile()
+        .with_context(|| format!("creating temp file for {section} dump"))?;
+    let output = sb_tool_command("objcopy")
+        .arg("-O")
+        .arg("binary")
+        .arg(format!("--only-section={section}"))
+        .arg(uki)
+        .arg(tmp.path())
+        .output()
+        .with_context(|| {
+            format!(
+                "running objcopy --only-section={section} on {}",
+                uki.display()
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("can't dump section")
+            || stderr.contains(section)
+            || stderr.contains("no symbols")
+        {
+            return Ok(None);
+        }
+        bail!(
+            "objcopy --only-section={section} on {} failed: {}",
+            uki.display(),
+            stderr.trim()
+        );
+    }
+    // objcopy emits an empty file for an absent section rather than failing.
+    let len = fs::metadata(tmp.path())
+        .with_context(|| format!("stat-ing dumped {section} section"))?
+        .len();
+    if len == 0 {
+        return Ok(None);
+    }
+    Ok(Some(tmp))
+}
+
+/// Predict the TPM PCR-11 contribution of a UKI via `systemd-measure`.
+///
+/// Runs `systemd-measure calculate` over the assembled UKI and returns the
+/// predicted PCR-11 value as lowercase hex. Returns `Ok(None)` when
+/// `systemd-measure` is not available, so a publish never fails merely
+/// because the measurement tool is missing.
+///
+/// # What is measured
+///
+/// `systemd-measure` must be fed the UKI's individual PE *sections* — the
+/// same inputs sd-stub hashes into PCR 11 — not the whole UKI as a kernel
+/// image. This dumps each section sd-stub measures (`.linux`, `.osrel`,
+/// `.cmdline`, `.initrd`, `.ucode`, `.splash`, `.dtb`, `.uname`, `.sbat`,
+/// `.pcrpkey`), skipping any that are absent, and passes the present ones
+/// to `systemd-measure calculate --bank=sha256`. The result is the PCR 11
+/// value sd-stub + `systemd-pcrextend` reach for the measured sections, which
+/// is also the value `ukify` signs into the `.pcrsig` policy — so a machine
+/// that boots this UKI and seals against the signed policy is sealing
+/// against this digest.
+///
+/// `systemd-measure calculate` emits one `11:sha256=` line per boot phase
+/// (`enter-initrd` → `enter-initrd:leave-initrd:sysinit:ready`); this records
+/// the **first** — the `enter-initrd` phase, which is where
+/// `systemd-cryptsetup` unseals `/var` against the signed policy, so it is the
+/// load-bearing value for TPM-sealed unlock.
+///
+/// # Scope caveat
+///
+/// PCR 11 on a *running* machine continues to advance as `systemd-pcrextend`
+/// records later phases (`leave-initrd`, `sysinit`, `ready`, …). An
+/// attestation verifier comparing a live `systemd-analyze pcrs` reading must
+/// account for the phase the quote was taken at; the TPM-sealed-unlock path
+/// itself uses the signed policy rather than a raw equality check. See
+/// RFC-0006 `registry-catalog.md` / `measured-boot.md`.
+///
+/// # Errors
+///
+/// Returns an error if `objcopy` or `systemd-measure` is found but exits
+/// non-zero, or its output cannot be parsed into a PCR-11 digest.
+fn extract_expected_pcr11(uki: &Path) -> Result<Option<String>> {
+    // Section name -> systemd-measure flag, in sd-stub measurement order.
+    // (systemd-measure applies its own canonical order internally, so the
+    // flag order here is not significant.)
+    const SECTIONS: &[(&str, &str)] = &[
+        (".linux", "--linux"),
+        (".osrel", "--osrel"),
+        (".cmdline", "--cmdline"),
+        (".initrd", "--initrd"),
+        (".ucode", "--ucode"),
+        (".splash", "--splash"),
+        (".dtb", "--dtb"),
+        (".uname", "--uname"),
+        (".sbat", "--sbat"),
+        (".pcrpkey", "--pcrpkey"),
+    ];
+
+    let mut cmd = sb_tool_command("systemd-measure");
+    cmd.arg("calculate").arg("--bank=sha256");
+    // Hold the section temp files alive until systemd-measure has run.
+    let mut held = Vec::new();
+    let mut any = false;
+    for (section, flag) in SECTIONS {
+        if let Some(tmp) = dump_pe_section(uki, section)? {
+            cmd.arg(format!("{flag}={}", tmp.path().display()));
+            held.push(tmp);
+            any = true;
+        }
+    }
+    // No measurable sections (e.g. not actually a UKI) — nothing to record.
+    if !any {
+        return Ok(None);
+    }
+
+    let output = match cmd.output() {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("running systemd-measure on {}", uki.display()));
+        }
+    };
+    if !output.status.success() {
+        bail!(
+            "systemd-measure on {} failed: {}",
+            uki.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_pcr11(&stdout))
+}
+
+/// Extract the PCR-11 digest from `systemd-measure calculate` output.
+///
+/// The tool prints lines such as `11:sha256=<hex>`; this returns the hex of
+/// the first PCR-11/sha256 line, or `None` when none is present.
+fn parse_pcr11(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        // Accept `11:sha256=<hex>` and `11:<hex>` shapes.
+        let Some(rest) = line.strip_prefix("11:") else {
+            continue;
+        };
+        let value = rest.rsplit('=').next().unwrap_or(rest).trim();
+        if !value.is_empty() && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Some(value.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+/// Verify a UKI's embedded Authenticode signature against a db certificate.
+///
+/// Runs `sbverify --cert <db_cert_pem> <uki>`; the registry refuses to
+/// catalog a component it cannot itself verify is signed by the declared
+/// db cert (RFC-0006 phase 4).
+///
+/// # Errors
+///
+/// Returns an error if `sbverify` cannot be spawned or reports the
+/// signature does not verify against `db_cert_pem`.
+fn verify_uki_against_db_cert(uki: &Path, db_cert_pem: &Path) -> Result<()> {
+    let output = sb_tool_command("sbverify")
+        .arg("--cert")
+        .arg(db_cert_pem)
+        .arg(uki)
+        .output()
+        .with_context(|| format!("running sbverify --cert on {}", uki.display()))?;
+    if !output.status.success() {
+        bail!(
+            "UKI {} does not verify against db cert {}: {}",
+            uki.display(),
+            db_cert_pem.display(),
+            combine_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr)
+            )
+        );
+    }
+    Ok(())
+}
+
+/// Join non-empty stdout/stderr fragments into one diagnostic string.
+fn combine_output(stdout: &str, stderr: &str) -> String {
+    match (stdout.trim().is_empty(), stderr.trim().is_empty()) {
+        (true, true) => "(no output)".to_string(),
+        (false, true) => stdout.trim().to_string(),
+        (true, false) => stderr.trim().to_string(),
+        (false, false) => format!("{}\n{}", stdout.trim(), stderr.trim()),
+    }
+}
+
+/// Locate a db certificate PEM to verify published UKIs against, if one is
+/// provisioned for `registry`.
+///
+/// Looks for `<registries-storage>/<registry>/sb-certs/db.pem` in the
+/// authoring clone. Returns `None` when no db cert is provisioned, in which
+/// case `apr publish` records SB facts without the publish-time signature
+/// cross-check (the closure signature still covers the recorded facts).
+fn sb_db_cert_path(config: &ApmConfig, registry: &str) -> Option<PathBuf> {
+    let path = config
+        .scope
+        .registries_path()
+        .join(registry)
+        .join("sb-certs")
+        .join("db.pem");
+    path.exists().then_some(path)
+}
+
+/// Derive Secure Boot facts from an image store path, if it holds a UKI.
+///
+/// Locates the UKI within the image, then extracts the signer cert digest,
+/// SBAT table, and predicted PCR-11. Optionally enforces the publish-time
+/// rule that an image's embedded signature must verify against `db_cert`
+/// before it can be cataloged.
+///
+/// Returns an empty [`SbFacts`] (recording nothing) when the image holds no
+/// UKI, preserving the unsigned/dev publish path.
+///
+/// # Errors
+///
+/// Returns an error when a UKI is present but a Secure Boot fact cannot be
+/// derived, or when `db_cert` is given and the signature does not verify
+/// against it.
+fn derive_sb_facts(image_store_path: &str, db_cert: Option<&Path>) -> Result<SbFacts> {
+    let Some(uki) = find_uki_in_store_path(image_store_path) else {
+        return Ok(SbFacts::default());
+    };
+
+    let signer = extract_sb_signer_cert_sha256(&uki)?;
+    // An image with no embedded signature carries no SB facts to catalog.
+    if signer.is_none() {
+        return Ok(SbFacts::default());
+    }
+
+    if let Some(db_cert) = db_cert {
+        verify_uki_against_db_cert(&uki, db_cert).with_context(|| {
+            "refusing to catalog a component whose signature does not verify \
+             against the declared db cert"
+                .to_string()
+        })?;
+    }
+
+    Ok(SbFacts {
+        signer_cert_sha256: signer,
+        sbat: extract_sbat_entries(&uki)?,
+        expected_pcr11: extract_expected_pcr11(&uki)?,
+    })
+}
+
+fn package_platform_table(
+    info: &StorePathInfo,
+    image_infos: &[(String, StorePathInfo, SbFacts)],
+    source_drv: &str,
+    source_nar_hash: &str,
+) -> toml::Value {
+    let mut table = toml::map::Map::new();
+    table.insert("store_path".into(), toml::Value::String(info.path.clone()));
+    // No nar_hash/nar_size/references here: the output's content binding and
+    // dependency edges live in the store/ realisation graph (RFC-0005), the
+    // single authority. Sources and images keep their hashes below - they sit
+    // outside the runtime closure the graph covers.
+    table.insert(
+        "closure_size".into(),
+        toml::Value::Integer(info.closure_size as i64),
+    );
+    table.insert(
+        "source_drv".into(),
+        toml::Value::String(source_drv.to_string()),
+    );
+    table.insert(
+        "source_nar_hash".into(),
+        toml::Value::String(source_nar_hash.to_string()),
+    );
+
+    if !image_infos.is_empty() {
+        let images = image_infos
+            .iter()
+            .map(|(format, image, sb)| {
+                let mut entry = toml::map::Map::new();
+                entry.insert("format".into(), toml::Value::String(format.clone()));
+                entry.insert("store_path".into(), toml::Value::String(image.path.clone()));
+                entry.insert(
+                    "nar_hash".into(),
+                    toml::Value::String(image.nar_hash.clone()),
+                );
+                entry.insert(
+                    "nar_size".into(),
+                    toml::Value::Integer(image.nar_size as i64),
+                );
+                if let Some(cert) = &sb.signer_cert_sha256 {
+                    entry.insert(
+                        "sb_signer_cert_sha256".into(),
+                        toml::Value::String(cert.clone()),
+                    );
+                }
+                if !sb.sbat.is_empty() {
+                    let sbat = sb
+                        .sbat
+                        .iter()
+                        .map(|item| {
+                            let mut row = toml::map::Map::new();
+                            row.insert(
+                                "component".into(),
+                                toml::Value::String(item.component.clone()),
+                            );
+                            row.insert(
+                                "generation".into(),
+                                toml::Value::Integer(i64::from(item.generation)),
+                            );
+                            toml::Value::Table(row)
+                        })
+                        .collect::<Vec<_>>();
+                    entry.insert("sbat".into(), toml::Value::Array(sbat));
+                }
+                if let Some(pcr11) = &sb.expected_pcr11 {
+                    entry.insert("expected_pcr11".into(), toml::Value::String(pcr11.clone()));
+                }
+                toml::Value::Table(entry)
+            })
+            .collect::<Vec<_>>();
+        table.insert("images".into(), toml::Value::Array(images));
+    }
+
+    toml::Value::Table(table)
+}
+
+/// `apr unpublish <PACKAGE> [VERSION]` — removes package metadata from the
+/// registry.
+///
+/// With neither a version nor `--platform`, the whole package file is
+/// deleted. With a version (and optionally a platform) only the matching
+/// entries are removed; specifying only `--platform` removes that platform
+/// from every version. The file is deleted once no versions remain.
+/// Unless `--no-commit` is set, the change is committed (SSH-signed when
+/// `--key`/`--key-id` is given) and the dumb-HTTP object store is
+/// refreshed. Closure files are left in place.
+///
+/// # Errors
+///
+/// Fails when the package name is not safe for registry package paths, when
+/// the package, the requested version, or the requested platform does not
+/// exist in the registry, or when a file write, the commit, or the
+/// object-store refresh fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn unpublish(
     config: &ApmConfig,
@@ -904,10 +2610,25 @@ pub async fn unpublish(
     platform: Option<&str>,
     no_commit: bool,
     message: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    validate_package_name(package)?;
     let dir = registry_dir(config, registry)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+    let signing_key = if key.is_some() || key_id.is_some() {
+        Some(resolve_producer_signing_key(
+            config,
+            &dir,
+            &registry_name,
+            key,
+            key_id,
+        )?)
+    } else {
+        None
+    };
     let letter = first_letter(package);
     let toml_path = dir
         .join("packages")
@@ -918,9 +2639,13 @@ pub async fn unpublish(
         bail!("package '{package}' not found in registry");
     }
 
+    let mut package_file_removed = false;
+    let mut status = "updated";
     if version.is_none() && platform.is_none() {
         // Remove the entire file.
         std::fs::remove_file(&toml_path)?;
+        package_file_removed = true;
+        status = "removed";
         printer.info(&format!("Removed package '{package}' entirely."));
     } else {
         // Parse and selectively remove.
@@ -929,37 +2654,53 @@ pub async fn unpublish(
 
         if let Some(versions) = toml_val.get_mut("versions").and_then(|v| v.as_array_mut()) {
             if let Some(ver) = version {
+                let idx = versions
+                    .iter()
+                    .position(|v| v.get("version").and_then(|s| s.as_str()) == Some(ver))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("package '{package}' does not contain version '{ver}'")
+                    })?;
                 if let Some(plat) = platform {
                     // Remove specific platform from specific version.
-                    if let Some(idx) = versions
-                        .iter()
-                        .position(|v| v.get("version").and_then(|s| s.as_str()) == Some(ver))
-                    {
-                        if let Some(platforms) = versions[idx]
+                    let remove_version = {
+                        let platforms = versions[idx]
                             .as_table_mut()
                             .and_then(|t| t.get_mut("platforms"))
                             .and_then(|p| p.as_table_mut())
-                        {
-                            platforms.remove(plat);
-                            if platforms.is_empty() {
-                                versions.remove(idx);
-                            }
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "package '{package}' version '{ver}' has no platform entries"
+                                )
+                            })?;
+                        if !platforms.contains_key(plat) {
+                            bail!(
+                                "package '{package}' version '{ver}' does not contain platform '{plat}'"
+                            );
                         }
+                        platforms.remove(plat);
+                        platforms.is_empty()
+                    };
+                    if remove_version {
+                        versions.remove(idx);
                     }
                 } else {
                     // Remove entire version.
-                    versions.retain(|v| v.get("version").and_then(|s| s.as_str()) != Some(ver));
+                    versions.remove(idx);
                 }
             } else if let Some(plat) = platform {
                 // Remove platform from all versions.
+                let mut removed = false;
                 for ver in versions.iter_mut() {
                     if let Some(platforms) = ver
                         .as_table_mut()
                         .and_then(|t| t.get_mut("platforms"))
                         .and_then(|p| p.as_table_mut())
                     {
-                        platforms.remove(plat);
+                        removed |= platforms.remove(plat).is_some();
                     }
+                }
+                if !removed {
+                    bail!("package '{package}' does not contain platform '{plat}'");
                 }
                 // Remove empty versions.
                 versions.retain(|v| {
@@ -972,6 +2713,8 @@ pub async fn unpublish(
 
             if versions.is_empty() {
                 std::fs::remove_file(&toml_path)?;
+                package_file_removed = true;
+                status = "removed";
                 printer.info(&format!(
                     "Removed package '{package}' (no versions remaining)."
                 ));
@@ -982,13 +2725,39 @@ pub async fn unpublish(
         }
     }
 
+    let mut committed = false;
+    let mut commit_message = None;
     if !no_commit {
         let default_msg = format!("unpublish {package}");
         let msg = message.unwrap_or(&default_msg);
-        commit_registry(&dir, msg)?;
+        commit_registry(&dir, msg, signing_key.as_ref().map(|k| k.path()))?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after unpublish")?;
+        committed = true;
+        commit_message = Some(msg.to_string());
         printer.success(&format!("Committed: {msg}"));
+    }
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "unpublish",
+            "registry": registry_name,
+            "package": package,
+            "version": version,
+            "platform": platform,
+            "status": status,
+            "package_file": toml_path
+                .strip_prefix(&dir)
+                .unwrap_or(&toml_path)
+                .display()
+                .to_string(),
+            "package_file_removed": package_file_removed,
+            "committed": committed,
+            "commit_message": commit_message,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+        }));
     }
 
     Ok(())
@@ -998,15 +2767,104 @@ pub async fn unpublish(
 // Registry Query
 // ---------------------------------------------------------------------------
 
-/// `apr show <PACKAGE>`
+fn selected_package_versions(
+    toml_val: &toml::Value,
+    version: Option<&str>,
+) -> Result<Vec<toml::Value>> {
+    let versions = matching_package_versions(toml_val, None);
+    let Some(version) = version else {
+        return Ok(versions);
+    };
+
+    let selected = versions
+        .into_iter()
+        .filter(|entry| entry.get("version").and_then(|v| v.as_str()) == Some(version))
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        bail!("package does not contain version '{version}'");
+    }
+    Ok(selected)
+}
+
+fn matching_package_versions(toml_val: &toml::Value, platform: Option<&str>) -> Vec<toml::Value> {
+    let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+
+    versions
+        .iter()
+        .filter(|entry| version_has_platform(entry, platform))
+        .cloned()
+        .collect()
+}
+
+fn version_has_platform(entry: &toml::Value, platform: Option<&str>) -> bool {
+    let Some(platform) = platform else {
+        return true;
+    };
+    entry
+        .get("platforms")
+        .and_then(|platforms| platforms.as_table())
+        .map(|platforms| platforms.contains_key(platform))
+        .unwrap_or(false)
+}
+
+fn latest_version_string(versions: &[toml::Value]) -> Option<String> {
+    versions
+        .iter()
+        .filter_map(|entry| entry.get("version").and_then(|version| version.as_str()))
+        .max_by(|left, right| compare_registry_versions(left, right))
+        .map(ToString::to_string)
+}
+
+/// Order version strings semver-first: a parsable semver always beats a
+/// non-semver string, and two non-semver strings fall back to lexicographic
+/// comparison.
+fn compare_registry_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    match (semver::Version::parse(left), semver::Version::parse(right)) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Less,
+        (Err(_), Err(_)) => left.cmp(right),
+    }
+}
+
+fn package_toml_with_versions(
+    toml_val: &toml::Value,
+    versions: &[toml::Value],
+) -> Result<toml::Value> {
+    let mut filtered = toml_val.clone();
+    let Some(root) = filtered.as_table_mut() else {
+        bail!("package TOML root is not a table");
+    };
+    root.insert(
+        "versions".to_string(),
+        toml::Value::Array(versions.to_vec()),
+    );
+    Ok(filtered)
+}
+
+/// `apr show <PACKAGE>` — prints a package's registry metadata.
+///
+/// Shows the `[package]` header fields plus each version's per-platform
+/// store paths, NAR sizes, and image artifacts. A version argument filters
+/// the output to that version; `--raw` prints the package TOML verbatim
+/// instead of the formatted view.
+///
+/// # Errors
+///
+/// Fails when the package name is not safe for registry package paths, when
+/// the package file does not exist in the registry, cannot be parsed, or
+/// does not contain the requested version.
 pub async fn show(
     config: &ApmConfig,
     package: &str,
-    _version: Option<&str>,
+    version: Option<&str>,
     raw: bool,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    validate_package_name(package)?;
     let dir = registry_dir(config, registry)?;
     let letter = first_letter(package);
     let toml_path = dir
@@ -1019,11 +2877,27 @@ pub async fn show(
     }
 
     let content = std::fs::read_to_string(&toml_path)?;
+    let toml_val: toml::Value = toml::from_str(&content)?;
+    let selected_versions = selected_package_versions(&toml_val, version)?;
+
+    if printer.mode() == OutputMode::Json {
+        let value = if version.is_some() {
+            package_toml_with_versions(&toml_val, &selected_versions)?
+        } else {
+            toml_val.clone()
+        };
+        printer.json(&serde_json::to_value(&value)?);
+        return Ok(());
+    }
 
     if raw {
-        printer.plain(&content);
+        if version.is_some() {
+            let filtered = package_toml_with_versions(&toml_val, &selected_versions)?;
+            printer.plain(&toml::to_string_pretty(&filtered)?);
+        } else {
+            printer.plain(&content);
+        }
     } else {
-        let toml_val: toml::Value = toml::from_str(&content)?;
         if let Some(pkg) = toml_val.get("package") {
             if let Some(name) = pkg.get("name").and_then(|v| v.as_str()) {
                 printer.header(&format!("Package: {name}"));
@@ -1048,39 +2922,37 @@ pub async fn show(
                 printer.kv("Maintainer", maint);
             }
         }
-        if let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) {
-            for ver in versions {
-                if let Some(v) = ver.get("version").and_then(|v| v.as_str()) {
-                    printer.kv("Version", v);
-                }
-                if let Some(prev) = ver.get("previous").and_then(|v| v.as_str()) {
-                    printer.kv("Previous", prev);
-                }
-                if let Some(platforms) = ver.get("platforms").and_then(|v| v.as_table()) {
-                    for (plat, entry) in platforms {
-                        printer.kv(&format!("  {plat}"), "");
-                        if let Some(sp) = entry.get("store_path").and_then(|v| v.as_str()) {
-                            printer.kv("    Store path", sp);
-                        }
-                        if let Some(ns) = entry.get("nar_size").and_then(|v| v.as_integer()) {
-                            printer.kv("    NAR size", &format_size(ns as u64));
-                        }
-                        if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
-                            for img in images {
-                                if let Some(fmt) = img.get("format").and_then(|v| v.as_str()) {
-                                    let img_path = img
-                                        .get("store_path")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("?");
-                                    let img_size = img
-                                        .get("nar_size")
-                                        .and_then(|v| v.as_integer())
-                                        .unwrap_or(0);
-                                    printer.kv(
-                                        &format!("    Image ({fmt})"),
-                                        &format!("{img_path} ({})", format_size(img_size as u64)),
-                                    );
-                                }
+        for ver in &selected_versions {
+            if let Some(v) = ver.get("version").and_then(|v| v.as_str()) {
+                printer.kv("Version", v);
+            }
+            if let Some(prev) = ver.get("previous").and_then(|v| v.as_str()) {
+                printer.kv("Previous", prev);
+            }
+            if let Some(platforms) = ver.get("platforms").and_then(|v| v.as_table()) {
+                for (plat, entry) in platforms {
+                    printer.kv(&format!("  {plat}"), "");
+                    if let Some(sp) = entry.get("store_path").and_then(|v| v.as_str()) {
+                        printer.kv("    Store path", sp);
+                    }
+                    if let Some(ns) = entry.get("nar_size").and_then(|v| v.as_integer()) {
+                        printer.kv("    NAR size", &format_size(ns as u64));
+                    }
+                    if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
+                        for img in images {
+                            if let Some(fmt) = img.get("format").and_then(|v| v.as_str()) {
+                                let img_path = img
+                                    .get("store_path")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                let img_size = img
+                                    .get("nar_size")
+                                    .and_then(|v| v.as_integer())
+                                    .unwrap_or(0);
+                                printer.kv(
+                                    &format!("    Image ({fmt})"),
+                                    &format!("{img_path} ({})", format_size(img_size as u64)),
+                                );
                             }
                         }
                     }
@@ -1092,11 +2964,21 @@ pub async fn show(
     Ok(())
 }
 
-/// `apr packages`
+/// `apr packages` — lists every package in the registry with its latest
+/// version.
+///
+/// `--platform` restricts the version selection to versions published for
+/// that platform; `--outdated` shows only packages that carry more than
+/// one matching version (i.e. that have superseded entries).
+///
+/// # Errors
+///
+/// Fails when the registry cannot be resolved or a package metadata file
+/// cannot be read or parsed.
 pub async fn packages(
     config: &ApmConfig,
-    _platform: Option<&str>,
-    _outdated: bool,
+    platform: Option<&str>,
+    outdated: bool,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
@@ -1104,6 +2986,10 @@ pub async fn packages(
     let packages_dir = dir.join("packages");
 
     if !packages_dir.is_dir() {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!([]));
+            return Ok(());
+        }
         printer.info("No packages found.");
         return Ok(());
     }
@@ -1117,25 +3003,36 @@ pub async fn packages(
             let path = entry.path();
             if path.extension().map(|e| e == "toml").unwrap_or(false) {
                 let content = std::fs::read_to_string(&path)?;
+                let name = crate::registry::parse::validate_package_file_layout(&path, &content)
+                    .with_context(|| format!("validating {}", path.display()))?;
                 let toml_val: toml::Value = toml::from_str(&content)?;
-                let name = toml_val
-                    .get("package")
-                    .and_then(|p| p.get("name"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                let version = toml_val
-                    .get("versions")
-                    .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.get("version"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                pkgs.push((name.to_string(), version.to_string()));
+                let versions = matching_package_versions(&toml_val, platform);
+                if outdated && versions.len() < 2 {
+                    continue;
+                }
+                let Some(version) = latest_version_string(&versions) else {
+                    continue;
+                };
+                pkgs.push((name, version));
             }
         }
     }
 
     pkgs.sort();
+
+    if printer.mode() == OutputMode::Json {
+        let packages_json = pkgs
+            .iter()
+            .map(|(name, version)| {
+                serde_json::json!({
+                    "name": name,
+                    "version": version,
+                })
+            })
+            .collect::<Vec<_>>();
+        printer.json(&serde_json::json!(packages_json));
+        return Ok(());
+    }
 
     if pkgs.is_empty() {
         printer.info("No packages found.");
@@ -1149,25 +3046,51 @@ pub async fn packages(
     Ok(())
 }
 
-/// `apr verify`
+/// One published store path discovered while scanning package TOMLs for
+/// `apr verify`.
+#[derive(Debug, Clone)]
+struct RegistryVerifyStoreEntry {
+    store_hash: String,
+    store_path: String,
+    package_name: String,
+}
+
+/// `apr verify` — checks registry-internal metadata consistency.
+///
+/// Verifies that every package TOML parses and has a `[package]` section,
+/// that every published store path has a closure file whose first line is
+/// the root hash, that all direct references recorded in the package TOML
+/// appear in the closure, and that the closure adjacency list is
+/// internally closed (members only reference other members). With `--fix`,
+/// closure files are regenerated from the local Nix store before checking,
+/// which requires the published store paths to be present locally.
+///
+/// # Errors
+///
+/// Fails when a `--package` filter is not a safe package name or matches no
+/// package, when `--fix` cannot recompute a closure, or when any
+/// verification error was found.
 pub async fn verify(
     config: &ApmConfig,
-    _package: Option<&str>,
-    _fix: bool,
+    package: Option<&str>,
+    fix: bool,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
-    let dir = registry_dir(config, registry)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
     let packages_dir = dir.join("packages");
-    let closures_dir = dir.join("closures");
+    if let Some(package) = package {
+        validate_package_name(package)?;
+    }
 
     let mut errors = 0u32;
     let mut checked = 0u32;
+    let mut repaired = 0u32;
 
     // Collect all store path hashes from package TOMLs.
-    let mut all_store_hashes: Vec<(String, String)> = Vec::new(); // (hash, pkg_name)
-    let mut all_ref_hashes: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new(); // hash -> references
+    let mut all_store_entries: Vec<RegistryVerifyStoreEntry> = Vec::new();
+    let mut matched_package_filter = package.is_none();
 
     // Verify package TOML files.
     if packages_dir.is_dir() {
@@ -1178,6 +3101,16 @@ pub async fn verify(
             for entry in std::fs::read_dir(letter_entry.path())?.flatten() {
                 let path = entry.path();
                 if path.extension().map(|e| e == "toml").unwrap_or(false) {
+                    let path_matches_filter = match package {
+                        Some(filter) => {
+                            path.file_stem().and_then(|stem| stem.to_str()) == Some(filter)
+                        }
+                        None => true,
+                    };
+                    if !path_matches_filter {
+                        continue;
+                    }
+                    matched_package_filter = true;
                     checked += 1;
                     let content = std::fs::read_to_string(&path)?;
                     match toml::from_str::<toml::Value>(&content) {
@@ -1190,12 +3123,18 @@ pub async fn verify(
                                 errors += 1;
                                 continue;
                             }
+                            let pkg_name =
+                                match crate::registry::parse::validate_package_file_layout(
+                                    &path, &content,
+                                ) {
+                                    Ok(name) => name,
+                                    Err(e) => {
+                                        printer.warning(&format!("{}: {e}", path.display()));
+                                        errors += 1;
+                                        continue;
+                                    }
+                                };
                             // Extract store hashes from all version/platform entries.
-                            let pkg_name = val
-                                .get("package")
-                                .and_then(|p| p.get("name"))
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("unknown");
                             if let Some(versions) = val.get("versions").and_then(|v| v.as_array()) {
                                 for ver in versions {
                                     if let Some(platforms) =
@@ -1206,20 +3145,11 @@ pub async fn verify(
                                                 plat_val.get("store_path").and_then(|s| s.as_str())
                                             {
                                                 let hash = extract_hash(sp).to_string();
-                                                all_store_hashes
-                                                    .push((hash.clone(), pkg_name.to_string()));
-                                                let refs: Vec<String> = plat_val
-                                                    .get("references")
-                                                    .and_then(|r| r.as_array())
-                                                    .map(|arr| {
-                                                        arr.iter()
-                                                            .filter_map(|v| {
-                                                                v.as_str().map(|s| s.to_string())
-                                                            })
-                                                            .collect()
-                                                    })
-                                                    .unwrap_or_default();
-                                                all_ref_hashes.insert(hash, refs);
+                                                all_store_entries.push(RegistryVerifyStoreEntry {
+                                                    store_hash: hash.clone(),
+                                                    store_path: sp.to_string(),
+                                                    package_name: pkg_name.clone(),
+                                                });
                                             }
                                         }
                                     }
@@ -1236,90 +3166,130 @@ pub async fn verify(
         }
     }
 
-    // Verify closure files.
-    let mut closure_checked = 0u32;
-
-    for (store_hash, pkg_name) in &all_store_hashes {
-        let closure_path = closures_dir.join(store_hash);
-
-        // Check closure file exists.
-        if !closure_path.exists() {
-            printer.warning(&format!(
-                "{pkg_name}: missing closure file for store hash {store_hash}"
-            ));
-            errors += 1;
-            continue;
-        }
-
-        closure_checked += 1;
-        let content = std::fs::read_to_string(&closure_path)?;
-        let closure = crate::types::ClosureMeta::parse(store_hash, &content);
-
-        // Check root is first member and matches filename.
-        if closure.members.first().map(|s| s.as_str()) != Some(store_hash) {
-            printer.warning(&format!(
-                "{pkg_name}: closure file {store_hash} does not start with root hash"
-            ));
-            errors += 1;
-        }
-
-        // Check that all direct references from the package TOML are in the closure.
-        if let Some(refs) = all_ref_hashes.get(store_hash) {
-            for ref_hash in refs {
-                if !closure.contains(ref_hash) {
-                    printer.warning(&format!(
-                        "{pkg_name}: reference {ref_hash} not found in closure {store_hash}"
-                    ));
-                    errors += 1;
-                }
-            }
-        }
-
-        // Check that all closure members that have direct deps in the
-        // adjacency list actually reference hashes that are also in the
-        // closure (internal consistency).
-        for member in &closure.members {
-            for dep in closure.direct_deps(member) {
-                if !closure.contains(dep) {
-                    printer.warning(&format!(
-                        "{pkg_name}: closure {store_hash}: member {member} references \
-                         {dep} which is not in the closure"
-                    ));
-                    errors += 1;
-                }
-            }
+    if let Some(filter) = package {
+        if !matched_package_filter {
+            bail!("package '{filter}' not found in registry");
         }
     }
 
-    // Check for orphan closure files (closure files with no matching package).
-    if closures_dir.is_dir() {
-        let known_hashes: std::collections::HashSet<&str> =
-            all_store_hashes.iter().map(|(h, _)| h.as_str()).collect();
-        for entry in std::fs::read_dir(&closures_dir)?.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if !name_str.starts_with('.') && !known_hashes.contains(name_str.as_ref()) {
-                // Not an error — could be a closure for a dep that isn't a
-                // top-level package.  Just note it.
-                checked += 1;
+    if fix {
+        let content_addressed = registry_content_addressed(&dir);
+        let mut seen = HashSet::new();
+        for entry in &all_store_entries {
+            if seen.insert(entry.store_hash.clone()) {
+                write_store_files(&dir, &entry.store_path, content_addressed, false, printer)
+                    .with_context(|| {
+                        format!(
+                            "regenerating store/ records for {} ({})",
+                            entry.package_name, entry.store_path
+                        )
+                    })?;
+                repaired += 1;
+            }
+        }
+        if repaired > 0 {
+            printer.success(&format!(
+                "Regenerated store/ records for {repaired} package(s)."
+            ));
+        }
+    }
+
+    // The store/ realisation graph, for coverage checks below (RFC-0005). A
+    // malformed graph is an error; an absent one downgrades to a warning
+    // (legacy registry - consumers fall back to unauthenticated narinfo).
+    let store_graph = match StoreMap::load(&dir) {
+        Ok(map) => {
+            if !map.is_present() {
+                printer.warning(
+                    "registry publishes no store/ realisation graph; consumer NAR \
+                     verification falls back to unauthenticated narinfo hashes",
+                );
+            }
+            map
+        }
+        Err(e) => {
+            printer.error(&format!("store/ graph failed to load: {e:#}"));
+            errors += 1;
+            StoreMap::default()
+        }
+    };
+
+    // Verify graph coverage: every package root and every member reachable
+    // from it via dependency edges must have a record with a blessed NAR.
+    let mut roots_checked = 0u32;
+    if store_graph.is_present() {
+        for entry in &all_store_entries {
+            let pkg_name = &entry.package_name;
+            roots_checked += 1;
+            let mut seen = HashSet::new();
+            let mut stack = vec![entry.store_hash.clone()];
+            while let Some(hash) = stack.pop() {
+                if !seen.insert(hash.clone()) {
+                    continue;
+                }
+                match store_graph.get(&hash) {
+                    None => {
+                        printer.warning(&format!(
+                            "{pkg_name}: closure member {hash} has no store/ record \
+                             (run `apr store backfill` or `apr verify --fix`)"
+                        ));
+                        errors += 1;
+                    }
+                    Some(record) if record.blessed_nars().is_empty() => {
+                        printer.warning(&format!(
+                            "{pkg_name}: store/ record {hash} has no blessed NAR"
+                        ));
+                        errors += 1;
+                    }
+                    Some(_) => {
+                        stack.extend(store_graph.direct_deps(&hash));
+                    }
+                }
             }
         }
     }
 
     if errors == 0 {
-        printer.success(&format!(
-            "Verified {checked} package(s), {closure_checked} closure(s), no errors."
-        ));
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "action": "verify",
+                "status": "ok",
+                "registry": registry_name,
+                "package": package,
+                "fix": fix,
+                "checked": checked,
+                "roots": roots_checked,
+                "repaired": repaired,
+                "errors": 0,
+            }));
+        } else {
+            printer.success(&format!(
+                "Verified {checked} package(s), {roots_checked} closure root(s), no errors."
+            ));
+        }
     } else {
         printer.error(&format!(
-            "Verified {checked} package(s), {closure_checked} closure(s), {errors} error(s) found."
+            "Verified {checked} package(s), {roots_checked} closure root(s), {errors} error(s) found."
         ));
+        bail!("registry verification failed with {errors} error(s)");
     }
 
     Ok(())
 }
 
-/// `apr diff`
+/// `apr diff` — shows pending changes in the registry clone.
+///
+/// By default diffs the working tree against the index and lists untracked
+/// files, so newly-published package metadata appears in the maintainer's
+/// changeset before it has been staged. With `--remote`, diffs the remote
+/// tracking base (the configured upstream, then `origin/<current-branch>`,
+/// then `origin/HEAD`) against `HEAD`, showing committed work that has not
+/// been pushed. `--stat` prints a diffstat instead of the patch.
+///
+/// # Errors
+///
+/// Fails when `--remote` is given but no remote tracking ref can be
+/// determined, or when git fails.
 pub async fn diff(
     config: &ApmConfig,
     stat: bool,
@@ -1330,18 +3300,48 @@ pub async fn diff(
     let dir = registry_dir(config, registry)?;
 
     if remote {
-        let mut args = vec!["diff", "HEAD", "origin/HEAD"];
+        let base = remote_diff_base(&dir)?;
+        let mut args = vec!["diff", &base, "HEAD"];
         if stat {
             args.push("--stat");
         }
         let output = git(&dir, &args)?;
-        printer.plain(&output);
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "remote": true,
+                "base": base,
+                "stat": stat,
+                "clean": output.is_empty(),
+                "changed_files": diff_name_status_entries(&dir, Some((&base, "HEAD")))?,
+                "output": output,
+            }));
+            return Ok(());
+        }
+        if output.is_empty() {
+            printer.info("No pending changes.");
+        } else {
+            printer.plain(&output);
+        }
     } else {
         let mut args = vec!["diff"];
         if stat {
             args.push("--stat");
         }
         let output = git(&dir, &args)?;
+        let untracked = untracked_diff_entries(&dir)?;
+        let clean = output.is_empty() && untracked.is_empty();
+        let output = diff_output_with_untracked(output, &untracked);
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "remote": false,
+                "base": serde_json::Value::Null,
+                "stat": stat,
+                "clean": clean,
+                "changed_files": diff_name_status_entries_with_untracked(&dir, &untracked)?,
+                "output": output,
+            }));
+            return Ok(());
+        }
         if output.is_empty() {
             printer.info("No pending changes.");
         } else {
@@ -1352,71 +3352,155 @@ pub async fn diff(
     Ok(())
 }
 
-/// `apr validate`
+/// Pick the remote ref `apr diff --remote` compares against: the
+/// configured upstream first, then `origin/<current-branch>`, then
+/// `origin/HEAD`.
+fn remote_diff_base(dir: &Path) -> Result<String> {
+    let (has_upstream, upstream, _) = git_try(
+        dir,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )?;
+    if has_upstream && !upstream.is_empty() {
+        return Ok(upstream);
+    }
+
+    let current_branch = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if current_branch != "HEAD" {
+        let remote_branch = format!("origin/{current_branch}");
+        if git_ref_exists(dir, &remote_branch)? {
+            return Ok(remote_branch);
+        }
+    }
+
+    if git_ref_exists(dir, "origin/HEAD")? {
+        return Ok("origin/HEAD".to_string());
+    }
+
+    bail!(
+        "no remote tracking ref found for diff; push the current branch or set an upstream first"
+    );
+}
+
+fn git_ref_exists(dir: &Path, reference: &str) -> Result<bool> {
+    let (exists, _, _) = git_try(dir, &["rev-parse", "--verify", reference])?;
+    Ok(exists)
+}
+
+fn untracked_diff_entries(dir: &Path) -> Result<Vec<String>> {
+    let output = git(dir, &["ls-files", "--others", "--exclude-standard"])?;
+    Ok(output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+fn diff_output_with_untracked(mut output: String, untracked: &[String]) -> String {
+    if untracked.is_empty() {
+        return output;
+    }
+
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output.push_str("Untracked files:\n");
+    for path in untracked {
+        output.push_str("  A ");
+        output.push_str(path);
+        output.push('\n');
+    }
+    output.trim_end().to_string()
+}
+
+/// `apr validate` — checks that published artifacts are downloadable from
+/// the registry's caches.
+///
+/// For every published store path and image artifact (optionally filtered
+/// by `--package` and `--platform`), fetches the `.narinfo` from each
+/// cache listed in `registry.toml`, cross-checks its store path and NAR
+/// hash against the registry metadata, and probes the referenced NAR with
+/// an HTTP `HEAD`. An entry counts as found when any cache passes all
+/// checks. Requests run with up to `--jobs` in parallel. With `--fix`,
+/// entries missing from every cache are pruned from the registry metadata
+/// on disk (the prune is not committed).
+///
+/// # Errors
+///
+/// Fails when a `--package` filter is not a safe package name, when
+/// `--jobs` is zero, when entries are missing and `--fix` was not given
+/// (or pruned nothing), or when reading registry metadata or running the
+/// validation tasks fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn validate(
     config: &ApmConfig,
-    _package: Option<&str>,
-    _platform: Option<&str>,
-    _fix: bool,
+    package: Option<&str>,
+    platform: Option<&str>,
+    fix: bool,
     jobs: u32,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
     let mirrors = resolve_mirrors(&dir);
+    if let Some(package) = package {
+        validate_package_name(package)?;
+    }
+    if jobs == 0 {
+        bail!("--jobs must be greater than zero");
+    }
 
     if mirrors.is_empty() {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "status": "no_caches",
+                "package": package,
+                "platform": platform,
+                "fix": fix,
+                "jobs": jobs,
+                "caches": 0,
+                "checked": 0,
+                "found": 0,
+                "missing": 0,
+                "missing_entries": [],
+                "removed": 0,
+            }));
+            return Ok(());
+        }
         printer.warning("No caches configured in registry.toml. Cannot validate.");
         return Ok(());
     }
 
-    // Collect all store paths from packages and images.
-    let mut store_paths: Vec<(String, String)> = Vec::new(); // (name, nar_hash)
+    let entries = collect_cache_validation_entries(&dir, package, platform)?;
 
-    let packages_dir = dir.join("packages");
-    if packages_dir.is_dir() {
-        for letter_entry in std::fs::read_dir(&packages_dir)?.flatten() {
-            if !letter_entry.path().is_dir() {
-                continue;
-            }
-            for entry in std::fs::read_dir(letter_entry.path())?.flatten() {
-                let path = entry.path();
-                if path.extension().map(|e| e == "toml").unwrap_or(false) {
-                    let content = std::fs::read_to_string(&path)?;
-                    let toml_val: toml::Value = toml::from_str(&content)?;
-                    if let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) {
-                        for ver in versions {
-                            if let Some(platforms) = ver.get("platforms").and_then(|v| v.as_table())
-                            {
-                                for (_plat, entry) in platforms {
-                                    if let Some(nar_hash) =
-                                        entry.get("nar_hash").and_then(|v| v.as_str())
-                                    {
-                                        let name = toml_val
-                                            .get("package")
-                                            .and_then(|p| p.get("name"))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("unknown");
-                                        store_paths.push((name.to_string(), nar_hash.to_string()));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    if entries.is_empty() {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "status": "no_entries",
+                "package": package,
+                "platform": platform,
+                "fix": fix,
+                "jobs": jobs,
+                "caches": mirrors.len(),
+                "checked": 0,
+                "found": 0,
+                "missing": 0,
+                "missing_entries": [],
+                "removed": 0,
+            }));
+            return Ok(());
         }
-    }
-
-    if store_paths.is_empty() {
         printer.info("No entries to validate.");
         return Ok(());
     }
 
     printer.info(&format!(
         "Validating {} entries against {} cache(s) with {} parallel requests...",
-        store_paths.len(),
+        entries.len(),
         mirrors.len(),
         jobs,
     ));
@@ -1425,65 +3509,591 @@ pub async fn validate(
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(jobs as usize));
     let mut handles = Vec::new();
 
-    for (name, nar_hash) in &store_paths {
+    for entry in entries {
         let client = client.clone();
         let mirrors = mirrors.clone();
-        let name = name.clone();
-        let nar_hash = nar_hash.clone();
         let permit = semaphore.clone().acquire_owned().await?;
 
         let handle = tokio::spawn(async move {
-            let mut found = false;
-            for cache in &mirrors {
-                let url = format!("{}/{}.nar.zst", cache.url.trim_end_matches('/'), nar_hash);
-                let resp = client.head(&url).send().await;
-                if let Ok(resp) = resp {
-                    if resp.status().is_success() {
-                        found = true;
-                        break;
-                    }
-                }
-            }
+            let result = validate_cache_entry(&client, &mirrors, entry).await;
             drop(permit);
-            (name, nar_hash, found)
+            result
         });
         handles.push(handle);
     }
 
     let mut missing = 0u32;
     let mut ok = 0u32;
+    let mut missing_store_paths = HashSet::new();
+    let mut results = Vec::new();
     for handle in handles {
-        let (name, nar_hash, found) = handle.await?;
-        if found {
+        let result = handle.await?;
+        if result.found {
             ok += 1;
         } else {
             missing += 1;
-            printer.warning(&format!("{name}: {nar_hash} not found in any cache"));
+            missing_store_paths.insert(result.entry.store_path.clone());
+            let detail = result
+                .details
+                .first()
+                .map(|detail| format!(" ({detail})"))
+                .unwrap_or_default();
+            printer.warning(&format!(
+                "{}: {} not found in any cache{}",
+                result.entry.name, result.entry.store_path, detail
+            ));
         }
+        results.push(result);
     }
 
     if missing == 0 {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&cache_validation_summary_json(
+                "ok",
+                package,
+                platform,
+                fix,
+                jobs,
+                mirrors.len(),
+                ok,
+                missing,
+                0,
+                &results,
+            ));
+            return Ok(());
+        }
         printer.success(&format!("All {ok} entries found in caches."));
+    } else if fix {
+        let removed = remove_missing_cache_entries(&dir, &missing_store_paths)?;
+        if removed == 0 {
+            if printer.mode() == OutputMode::Json {
+                bail!(
+                    "{}; no matching registry entries removed.",
+                    cache_validation_missing_error(ok, missing, &results)
+                );
+            }
+            bail!("{ok} found, {missing} missing; no matching registry entries removed.");
+        }
+        if printer.mode() == OutputMode::Json {
+            printer.json(&cache_validation_summary_json(
+                "fixed",
+                package,
+                platform,
+                fix,
+                jobs,
+                mirrors.len(),
+                ok,
+                missing,
+                removed,
+                &results,
+            ));
+            return Ok(());
+        }
+        let noun = if removed == 1 { "entry" } else { "entries" };
+        printer.success(&format!(
+            "Removed {removed} missing cache {noun} from registry metadata."
+        ));
     } else {
-        printer.error(&format!("{ok} found, {missing} missing."));
+        if printer.mode() == OutputMode::Json {
+            bail!("{}", cache_validation_missing_error(ok, missing, &results));
+        }
+        bail!("{ok} found, {missing} missing.");
     }
 
     Ok(())
+}
+
+/// One (store path, NAR hash) pair that `apr validate` checks against the
+/// caches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CacheValidationEntry {
+    name: String,
+    platform: String,
+    store_path: String,
+    store_hash: String,
+    /// Acceptable NAR hashes for this path. A legacy TOML entry has one;
+    /// a `store/` record may have several blessed realisations, any
+    /// of which a cache may legitimately serve (RFC-0005 §2.2).
+    nar_hashes: Vec<String>,
+}
+
+/// Outcome of probing the caches for one entry; `details` collects the
+/// per-cache failure reasons.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CacheValidationResult {
+    entry: CacheValidationEntry,
+    found: bool,
+    details: Vec<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cache_validation_summary_json(
+    status: &str,
+    package: Option<&str>,
+    platform: Option<&str>,
+    fix: bool,
+    jobs: u32,
+    caches: usize,
+    found: u32,
+    missing: u32,
+    removed: usize,
+    results: &[CacheValidationResult],
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": status,
+        "package": package,
+        "platform": platform,
+        "fix": fix,
+        "jobs": jobs,
+        "caches": caches,
+        "checked": found + missing,
+        "found": found,
+        "missing": missing,
+        "missing_entries": results
+            .iter()
+            .filter(|result| !result.found)
+            .map(cache_validation_result_json)
+            .collect::<Vec<_>>(),
+        "removed": removed,
+    })
+}
+
+fn cache_validation_result_json(result: &CacheValidationResult) -> serde_json::Value {
+    serde_json::json!({
+        "name": &result.entry.name,
+        "platform": &result.entry.platform,
+        "store_path": &result.entry.store_path,
+        "store_hash": &result.entry.store_hash,
+        "nar_hashes": &result.entry.nar_hashes,
+        "details": &result.details,
+    })
+}
+
+fn cache_validation_missing_error(
+    found: u32,
+    missing: u32,
+    results: &[CacheValidationResult],
+) -> String {
+    let missing_entries = results
+        .iter()
+        .filter(|result| !result.found)
+        .map(|result| {
+            let detail = result
+                .details
+                .first()
+                .map(|detail| format!(" ({detail})"))
+                .unwrap_or_default();
+            format!(
+                "{}: {} not found in any cache{}",
+                result.entry.name, result.entry.store_path, detail
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    if missing_entries.is_empty() {
+        format!("{found} found, {missing} missing")
+    } else {
+        format!("{found} found, {missing} missing: {missing_entries}")
+    }
+}
+
+/// Gather every published (store path, NAR hash) pair from the registry's
+/// package TOMLs — including image artifacts — honoring optional package
+/// and platform filters. The result is sorted and deduplicated.
+fn collect_cache_validation_entries(
+    dir: &Path,
+    package_filter: Option<&str>,
+    platform_filter: Option<&str>,
+) -> Result<Vec<CacheValidationEntry>> {
+    let packages_dir = dir.join("packages");
+    let mut entries = Vec::new();
+
+    if !packages_dir.is_dir() {
+        return Ok(entries);
+    }
+
+    // Newer registries record output NAR hashes in the store/ graph rather
+    // than the package TOML; load it once for the fallback. A malformed graph
+    // is a hard error (matching Registry::load) - silently treating it as
+    // absent would validate nothing on a post-RFC registry.
+    let store_graph = StoreMap::load(dir).context("loading store/ graph for cache validation")?;
+
+    for letter_entry in std::fs::read_dir(&packages_dir)
+        .with_context(|| format!("reading {}", packages_dir.display()))?
+    {
+        let letter_entry = letter_entry?;
+        if !letter_entry.path().is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(letter_entry.path())
+            .with_context(|| format!("reading {}", letter_entry.path().display()))?
+        {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            collect_cache_validation_entries_from_package(
+                &path,
+                package_filter,
+                platform_filter,
+                &store_graph,
+                &mut entries,
+            )?;
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.platform.cmp(&b.platform))
+            .then_with(|| a.store_path.cmp(&b.store_path))
+    });
+    entries.dedup();
+    Ok(entries)
+}
+
+fn collect_cache_validation_entries_from_package(
+    path: &Path,
+    package_filter: Option<&str>,
+    platform_filter: Option<&str>,
+    store_graph: &StoreMap,
+    entries: &mut Vec<CacheValidationEntry>,
+) -> Result<()> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("reading package metadata {}", path.display()))?;
+    let toml_val: toml::Value =
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+    let name = toml_val
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    if package_filter.is_some_and(|filter| filter != name) {
+        return Ok(());
+    }
+
+    let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) else {
+        return Ok(());
+    };
+    for version in versions {
+        let Some(platforms) = version.get("platforms").and_then(|v| v.as_table()) else {
+            continue;
+        };
+        for (platform, entry) in platforms {
+            if platform_filter.is_some_and(|filter| filter != platform) {
+                continue;
+            }
+            let Some(store_path) = entry.get("store_path").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            // Acceptable hashes: the legacy TOML nar_hash, or ALL blessed
+            // NARs from the store/ graph (a cache may legitimately serve any
+            // of them - RFC-0005 §2.3).
+            let mut nar_hashes: Vec<String> = entry
+                .get("nar_hash")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .into_iter()
+                .collect();
+            if nar_hashes.is_empty() {
+                nar_hashes.extend(
+                    store_graph
+                        .blessed_nars(extract_hash(store_path))
+                        .iter()
+                        .map(NarBytes::nar_hash),
+                );
+            }
+            if nar_hashes.is_empty() {
+                continue;
+            }
+            entries.push(CacheValidationEntry {
+                name: name.to_string(),
+                platform: platform.to_string(),
+                store_path: store_path.to_string(),
+                store_hash: extract_hash(store_path).to_string(),
+                nar_hashes,
+            });
+            if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
+                for image in images {
+                    let Some(image_store_path) = image.get("store_path").and_then(|v| v.as_str())
+                    else {
+                        continue;
+                    };
+                    let Some(image_nar_hash) = image.get("nar_hash").and_then(|v| v.as_str())
+                    else {
+                        continue;
+                    };
+                    entries.push(CacheValidationEntry {
+                        name: name.to_string(),
+                        platform: platform.to_string(),
+                        store_path: image_store_path.to_string(),
+                        store_hash: extract_hash(image_store_path).to_string(),
+                        nar_hashes: vec![image_nar_hash.to_string()],
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Prune registry metadata entries whose store paths are in
+/// `missing_store_paths` (`apr validate --fix`).
+///
+/// Removes matching platform entries and image artifacts, then drops
+/// versions left without platforms and deletes package files left without
+/// versions. Returns the number of entries removed. Changes are written to
+/// the working tree only — nothing is committed.
+fn remove_missing_cache_entries(
+    dir: &Path,
+    missing_store_paths: &HashSet<String>,
+) -> Result<usize> {
+    if missing_store_paths.is_empty() {
+        return Ok(0);
+    }
+
+    let packages_dir = dir.join("packages");
+    let mut removed = 0usize;
+
+    if !packages_dir.is_dir() {
+        return Ok(removed);
+    }
+
+    for letter_entry in fs::read_dir(&packages_dir)
+        .with_context(|| format!("reading {}", packages_dir.display()))?
+    {
+        let letter_entry = letter_entry?;
+        if !letter_entry.path().is_dir() {
+            continue;
+        }
+
+        for entry in fs::read_dir(letter_entry.path())
+            .with_context(|| format!("reading {}", letter_entry.path().display()))?
+        {
+            let path = entry?.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+                continue;
+            }
+            removed += remove_missing_cache_entries_from_package(&path, missing_store_paths)?;
+        }
+    }
+
+    Ok(removed)
+}
+
+fn remove_missing_cache_entries_from_package(
+    path: &Path,
+    missing_store_paths: &HashSet<String>,
+) -> Result<usize> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading package metadata {}", path.display()))?;
+    let mut toml_val: toml::Value =
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+    let mut removed = 0usize;
+    let mut remove_package = false;
+
+    if let Some(versions) = toml_val
+        .get_mut("versions")
+        .and_then(|value| value.as_array_mut())
+    {
+        for version in versions.iter_mut() {
+            let Some(platforms) = version
+                .as_table_mut()
+                .and_then(|table| table.get_mut("platforms"))
+                .and_then(|value| value.as_table_mut())
+            else {
+                continue;
+            };
+
+            let platform_names: Vec<String> = platforms
+                .iter()
+                .filter_map(|(platform, entry)| {
+                    let store_path = entry.get("store_path").and_then(|value| value.as_str())?;
+                    if missing_store_paths.contains(store_path) {
+                        Some(platform.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for platform in platform_names {
+                if platforms.remove(&platform).is_some() {
+                    removed += 1;
+                }
+            }
+
+            for (_platform_name, platform) in platforms.iter_mut() {
+                let Some(platform_table) = platform.as_table_mut() else {
+                    continue;
+                };
+                let remove_images_key = if let Some(images) = platform_table
+                    .get_mut("images")
+                    .and_then(|value| value.as_array_mut())
+                {
+                    let before = images.len();
+                    images.retain(|image| {
+                        let remove = image
+                            .get("store_path")
+                            .and_then(|value| value.as_str())
+                            .map(|store_path| missing_store_paths.contains(store_path))
+                            .unwrap_or(false);
+                        !remove
+                    });
+                    removed += before - images.len();
+                    images.is_empty()
+                } else {
+                    false
+                };
+                if remove_images_key {
+                    platform_table.remove("images");
+                }
+            }
+        }
+
+        versions.retain(|version| {
+            version
+                .get("platforms")
+                .and_then(|platforms| platforms.as_table())
+                .map(|platforms| !platforms.is_empty())
+                .unwrap_or(false)
+        });
+        remove_package = versions.is_empty();
+    }
+
+    if removed > 0 {
+        if remove_package {
+            fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+        } else {
+            fs::write(path, toml::to_string_pretty(&toml_val)?)
+                .with_context(|| format!("writing {}", path.display()))?;
+        }
+    }
+
+    Ok(removed)
+}
+
+/// Probe each mirror for one entry: fetch the `.narinfo`, cross-check its
+/// store path and NAR hash against the registry metadata, then `HEAD` the
+/// NAR it references. The first cache that fully matches wins; every
+/// per-cache failure is accumulated as a detail string for diagnostics.
+async fn validate_cache_entry(
+    client: &reqwest::Client,
+    mirrors: &[CacheEntry],
+    entry: CacheValidationEntry,
+) -> CacheValidationResult {
+    let mut details = Vec::new();
+    for cache in mirrors {
+        let base = cache.url.trim_end_matches('/');
+        let narinfo_url =
+            crate::download::join_cache_url(base, &format!("{}.narinfo", entry.store_hash));
+
+        let narinfo = match client.get(&narinfo_url).send().await {
+            Ok(response) if response.status().is_success() => match response.text().await {
+                Ok(text) => match narinfo::parse(&text) {
+                    Ok(narinfo) => narinfo,
+                    Err(err) => {
+                        details.push(format!("{narinfo_url}: invalid narinfo: {err}"));
+                        continue;
+                    }
+                },
+                Err(err) => {
+                    details.push(format!("{narinfo_url}: failed reading narinfo body: {err}"));
+                    continue;
+                }
+            },
+            Ok(response) => {
+                details.push(format!("{narinfo_url}: HTTP {}", response.status()));
+                continue;
+            }
+            Err(err) => {
+                details.push(format!("{narinfo_url}: {err}"));
+                continue;
+            }
+        };
+
+        if narinfo.store_path != entry.store_path {
+            details.push(format!(
+                "{narinfo_url}: narinfo store path {} did not match registry path {}",
+                narinfo.store_path, entry.store_path
+            ));
+            continue;
+        }
+        // Registry hashes may be SRI (legacy TOML) or nixbase32 (store/ graph
+        // map); narinfo hashes vary by emitter. Compare normalized, and
+        // accept the cache if it serves ANY blessed realisation.
+        let narinfo_norm = aos_core::nar::cache::normalize_sha256_nix32(&narinfo.nar_hash);
+        if !entry
+            .nar_hashes
+            .iter()
+            .any(|expected| aos_core::nar::cache::normalize_sha256_nix32(expected) == narinfo_norm)
+        {
+            details.push(format!(
+                "{narinfo_url}: narinfo NarHash {} matched none of the registry NarHash(es) [{}]",
+                narinfo.nar_hash,
+                entry.nar_hashes.join(", ")
+            ));
+            continue;
+        }
+
+        let nar_url = crate::download::join_cache_url(base, &narinfo.url);
+        match client.head(&nar_url).send().await {
+            Ok(response) if response.status().is_success() => {
+                return CacheValidationResult {
+                    entry,
+                    found: true,
+                    details,
+                };
+            }
+            Ok(response) => {
+                details.push(format!("{nar_url}: HTTP {}", response.status()));
+            }
+            Err(err) => {
+                details.push(format!("{nar_url}: {err}"));
+            }
+        }
+    }
+
+    CacheValidationResult {
+        entry,
+        found: false,
+        details,
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Git Workflow
 // ---------------------------------------------------------------------------
 
-/// `apr status`
+/// `apr status` — prints `git status --short` for the registry clone,
+/// including untracked files.
+///
+/// # Errors
+///
+/// Fails when the registry cannot be resolved or git fails.
 pub async fn status(config: &ApmConfig, registry: Option<&str>, printer: &Printer) -> Result<()> {
     let dir = registry_dir(config, registry)?;
-    let output = git(&dir, &["status"])?;
-    printer.plain(&output);
+    let raw_output = git_raw(&dir, &["status", "--short", "--untracked-files=all"])?;
+    let output = String::from_utf8_lossy(&raw_output);
+    if printer.mode() == OutputMode::Json {
+        let entries = parse_status_short(&output);
+        printer.json(&serde_json::json!({
+            "clean": entries.is_empty(),
+            "entries": entries,
+        }));
+        return Ok(());
+    }
+    printer.plain(output.trim());
     Ok(())
 }
 
-/// `apr log`
+/// `apr log` — prints the last `n` commits of the registry clone, one line
+/// each, optionally restricted to the history of a single package's TOML
+/// file.
+///
+/// # Errors
+///
+/// Fails when the registry cannot be resolved, the package filter is not a
+/// safe package name, or git fails.
 pub async fn log(
     config: &ApmConfig,
     package: Option<&str>,
@@ -1498,6 +4108,7 @@ pub async fn log(
 
     let path_filter;
     if let Some(pkg) = package {
+        validate_package_name(pkg)?;
         let letter = first_letter(pkg);
         path_filter = format!("packages/{letter}/{pkg}.toml");
         args.push("--");
@@ -1505,6 +4116,14 @@ pub async fn log(
     }
 
     let output = git(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "package": package,
+            "limit": n,
+            "commits": git_log_entries(&dir, package, n)?,
+        }));
+        return Ok(());
+    }
     if output.is_empty() {
         printer.info("No commits found.");
     } else {
@@ -1514,7 +4133,124 @@ pub async fn log(
     Ok(())
 }
 
-/// Branch subcommands.
+/// Parse `git status --short` lines into structured entries (index and
+/// worktree status characters plus the path).
+fn parse_status_short(output: &str) -> Vec<serde_json::Value> {
+    output
+        .lines()
+        .filter_map(|line| {
+            if line.len() < 3 {
+                return None;
+            }
+            let bytes = line.as_bytes();
+            let index = bytes[0] as char;
+            let worktree = bytes[1] as char;
+            let path = line[3..].to_string();
+            Some(serde_json::json!({
+                "index": index.to_string(),
+                "worktree": worktree.to_string(),
+                "status": line[..2].to_string(),
+                "path": path,
+            }))
+        })
+        .collect()
+}
+
+fn diff_name_status_entries(
+    dir: &Path,
+    range: Option<(&str, &str)>,
+) -> Result<Vec<serde_json::Value>> {
+    let output = match range {
+        Some((base, head)) => git(dir, &["diff", "--name-status", base, head])?,
+        None => git(dir, &["diff", "--name-status"])?,
+    };
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let status = fields.next()?;
+            let path = fields.next()?;
+            let new_path = fields.next();
+            let mut entry = serde_json::json!({
+                "status": status,
+                "path": path,
+            });
+            if let Some(new_path) = new_path {
+                entry["new_path"] = serde_json::json!(new_path);
+            }
+            Some(entry)
+        })
+        .collect())
+}
+
+fn diff_name_status_entries_with_untracked(
+    dir: &Path,
+    untracked: &[String],
+) -> Result<Vec<serde_json::Value>> {
+    let mut entries = diff_name_status_entries(dir, None)?;
+    entries.extend(untracked.iter().map(|path| {
+        serde_json::json!({
+            "status": "A",
+            "path": path,
+            "untracked": true,
+        })
+    }));
+    Ok(entries)
+}
+
+/// Collect structured commit records for JSON output, using ASCII
+/// unit/record separators (`%x1f`/`%x1e`) so subjects containing newlines
+/// or tabs cannot corrupt the framing.
+fn git_log_entries(dir: &Path, package: Option<&str>, n: u32) -> Result<Vec<serde_json::Value>> {
+    let n_str = format!("-{n}");
+    let pretty = "%H%x1f%h%x1f%s%x1f%ct%x1e";
+    let pretty_arg = format!("--pretty=format:{pretty}");
+    let mut args = vec!["log", &n_str, &pretty_arg];
+
+    let path_filter;
+    if let Some(pkg) = package {
+        validate_package_name(pkg)?;
+        let letter = first_letter(pkg);
+        path_filter = format!("packages/{letter}/{pkg}.toml");
+        args.push("--");
+        args.push(&path_filter);
+    }
+
+    let output = git_raw(dir, &args)?;
+    let text = String::from_utf8_lossy(&output);
+    Ok(text
+        .split('\x1e')
+        .filter_map(|record| {
+            let record = record.trim_matches('\n');
+            if record.is_empty() {
+                return None;
+            }
+            let mut fields = record.split('\x1f');
+            let hash = fields.next()?;
+            let short_hash = fields.next()?;
+            let subject = fields.next()?;
+            let timestamp = fields
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or_default();
+            Some(serde_json::json!({
+                "hash": hash,
+                "short_hash": short_hash,
+                "subject": subject,
+                "timestamp": timestamp,
+            }))
+        })
+        .collect())
+}
+
+/// `apr branch` subcommands: list, create, switch to, and delete branches
+/// in the registry clone.
+///
+/// # Errors
+///
+/// Fails when the registry cannot be resolved, a branch name is not safe to
+/// use as a Git ref, or when the underlying git command fails (e.g. deleting
+/// an unmerged branch or switching with a dirty working tree).
 pub async fn run_branch(
     config: &ApmConfig,
     command: &BranchCommand,
@@ -1523,32 +4259,121 @@ pub async fn run_branch(
     match command {
         BranchCommand::List { registry } => {
             let dir = registry_dir(config, registry.as_deref())?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "branches": git_branch_entries(&dir)?,
+                }));
+                return Ok(());
+            }
             let output = git(&dir, &["branch", "-a"])?;
             printer.plain(&output);
             Ok(())
         }
         BranchCommand::Create { name, registry } => {
+            validate_branch_name(name)?;
             let dir = registry_dir(config, registry.as_deref())?;
-            git(&dir, &["branch", name])?;
+            git(&dir, &["branch", "--", name])?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "create",
+                    "branch": name,
+                    "current": current_git_branch(&dir)?,
+                    "branches": git_branch_entries(&dir)?,
+                }));
+                return Ok(());
+            }
             printer.success(&format!("Created branch '{name}'."));
             Ok(())
         }
         BranchCommand::Switch { name, registry } => {
+            validate_branch_name(name)?;
             let dir = registry_dir(config, registry.as_deref())?;
-            git(&dir, &["checkout", name])?;
+            git(&dir, &["switch", "--", name])?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "switch",
+                    "branch": name,
+                    "current": current_git_branch(&dir)?,
+                    "branches": git_branch_entries(&dir)?,
+                }));
+                return Ok(());
+            }
             printer.success(&format!("Switched to branch '{name}'."));
             Ok(())
         }
         BranchCommand::Delete { name, registry } => {
+            validate_branch_name(name)?;
             let dir = registry_dir(config, registry.as_deref())?;
-            git(&dir, &["branch", "-d", name])?;
+            git(&dir, &["branch", "-d", "--", name])?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "delete",
+                    "branch": name,
+                    "current": current_git_branch(&dir)?,
+                    "branches": git_branch_entries(&dir)?,
+                }));
+                return Ok(());
+            }
             printer.success(&format!("Deleted branch '{name}'."));
             Ok(())
         }
     }
 }
 
-/// Channel rollout subcommands.
+fn current_git_branch(dir: &Path) -> Result<String> {
+    git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+}
+
+/// Collect local and remote branch records (name, ref, commit, flags) for
+/// JSON output.
+fn git_branch_entries(dir: &Path) -> Result<Vec<serde_json::Value>> {
+    let current = current_git_branch(dir)?;
+    let output = git_raw(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(refname:short)%00%(objectname)%00",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+    let text = String::from_utf8_lossy(&output);
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\0');
+            let refname = fields.next()?;
+            let short = fields.next()?;
+            let commit = fields.next()?;
+            if refname.is_empty() || short.is_empty() {
+                return None;
+            }
+            let remote = refname.starts_with("refs/remotes/");
+            Some(serde_json::json!({
+                "name": short,
+                "ref": refname,
+                "commit": commit,
+                "remote": remote,
+                "current": !remote && short == current,
+            }))
+        })
+        .collect())
+}
+
+/// `apr channel` subcommands for staged rollouts.
+///
+/// `init` points all 256 partitions of a channel at one release;
+/// `advance` moves a subset (`--count` for an ascending fill, or an
+/// explicit `--partitions` list) to a newer release; `status` summarizes
+/// per-version partition counts and the channel frontier. Partition
+/// updates write signed tag payloads under `.git/channels/<channel>/` and
+/// move the channel branch head to the frontier release.
+///
+/// # Errors
+///
+/// Fails when the semver argument does not parse, when the release tag
+/// does not exist, when the signing key cannot be resolved, or when
+/// partition payloads are missing or fail verification.
 pub async fn run_channel(
     config: &ApmConfig,
     command: &ChannelCommand,
@@ -1605,7 +4430,347 @@ pub async fn run_channel(
     }
 }
 
-/// Static Nix-cache subcommands.
+/// `apr cache` subcommands for the static Nix binary cache.
+///
+/// `generate` renders the registry's published store paths into a static
+/// cache directory (narinfos plus compressed NARs, signed with `--key`
+/// when given), optionally uploads it to each `--upload-url` (falling back
+/// to the `upload_urls` persisted by `apr origin config` when no flag is
+/// given), and with `--cache-url` upserts the `[[caches]]` pointer in
+/// `registry.toml`, committing the pointer change unless `--no-commit` is
+/// set.
+///
+/// # Errors
+///
+/// Fails when cache generation, an upload, the pointer commit, or the
+/// object-store refresh fails.
+/// `apr store` - maintains the registry's `store/` realisation graph
+/// (RFC-0005).
+///
+/// The graph is append-mostly: `bless` adds a realisation computed from the
+/// local Nix store, `revoke` removes one (a security event with the same
+/// review weight as a key retirement), `verify` checks graph health and
+/// coverage, and `backfill` records every published closure in one pass so an
+/// existing registry becomes fully covered.
+///
+/// # Errors
+///
+/// Fails when the registry cannot be resolved, the referenced store paths
+/// are not valid in the local Nix store, a record cannot be read or written,
+/// a blessing conflicts without `--bless`, verification finds errors, or the
+/// commit fails.
+pub async fn run_store(
+    config: &ApmConfig,
+    command: &StoreCommand,
+    printer: &Printer,
+) -> Result<()> {
+    match command {
+        StoreCommand::Bless {
+            store_path,
+            no_commit,
+            message,
+            key,
+            key_id,
+            registry,
+        } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            ensure_writable_registry_clone(&registry_name, &dir)?;
+            let signing_key =
+                resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
+            let content_addressed = registry_content_addressed(&dir);
+
+            // Bless the whole closure of the path (records every member).
+            let report = write_store_files(&dir, store_path, content_addressed, true, printer)
+                .with_context(|| format!("writing store/ records for {store_path}"))?;
+
+            printer.kv("Store graph", &report.summary());
+            let changed = report.created + report.blessed > 0;
+            let mut committed = false;
+            if changed && !*no_commit {
+                let default_msg = format!("store: bless {store_path}");
+                let msg = message.as_deref().unwrap_or(&default_msg);
+                commit_registry_paths(
+                    &dir,
+                    msg,
+                    &[dir.join(store::STORE_DIR)],
+                    signing_key.as_ref().map(|k| k.path()),
+                )?;
+                refresh_registry_object_store(&dir)
+                    .context("refreshing dumb-HTTP object store after store bless")?;
+                committed = true;
+                printer.success(&format!("Committed: {msg}"));
+            } else if !changed {
+                printer.info("Graph already covers this content; nothing to commit.");
+            }
+
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "store_bless",
+                    "registry": registry_name,
+                    "store_path": store_path,
+                    "created": report.created,
+                    "blessed": report.blessed,
+                    "unchanged": report.unchanged,
+                    "content_addressed": report.content_addressed,
+                    "committed": committed,
+                }));
+            }
+            Ok(())
+        }
+
+        StoreCommand::Revoke {
+            store_path,
+            realisation,
+            no_commit,
+            message,
+            key,
+            key_id,
+            registry,
+        } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            ensure_writable_registry_clone(&registry_name, &dir)?;
+            let signing_key =
+                resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
+
+            let ia_hash = extract_hash(store_path);
+            if !store::remove_realisations(&dir, ia_hash, realisation.as_deref())? {
+                bail!("no matching store/ realisation for {ia_hash}; nothing to revoke");
+            }
+
+            printer.success(&format!(
+                "Revoked {} for {ia_hash}.",
+                realisation.as_deref().unwrap_or("all realisations"),
+            ));
+            let mut committed = false;
+            if !*no_commit {
+                let default_msg = format!("store: revoke {ia_hash}");
+                let msg = message.as_deref().unwrap_or(&default_msg);
+                commit_registry_paths(
+                    &dir,
+                    msg,
+                    &[dir.join(store::STORE_DIR)],
+                    signing_key.as_ref().map(|k| k.path()),
+                )?;
+                refresh_registry_object_store(&dir)
+                    .context("refreshing dumb-HTTP object store after store revoke")?;
+                committed = true;
+                printer.success(&format!("Committed: {msg}"));
+            }
+
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "store_revoke",
+                    "registry": registry_name,
+                    "ia_hash": ia_hash,
+                    "realisation": realisation,
+                    "committed": committed,
+                }));
+            }
+            Ok(())
+        }
+
+        StoreCommand::Verify { deep, registry } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            store_verify(&dir, &registry_name, *deep, printer)
+        }
+
+        StoreCommand::Backfill {
+            bless,
+            no_commit,
+            message,
+            key,
+            key_id,
+            registry,
+        } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            ensure_writable_registry_clone(&registry_name, &dir)?;
+            let signing_key =
+                resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
+            let content_addressed = registry_content_addressed(&dir);
+
+            let roots = collect_package_store_paths(&dir)?;
+            if roots.is_empty() {
+                bail!("registry has no published store paths to backfill");
+            }
+
+            let mut report = StoreWriteReport::default();
+            for root in &roots {
+                printer.info(&format!("Recording closure of {root}"));
+                report.merge(
+                    write_store_files(&dir, root, content_addressed, *bless, printer)
+                        .with_context(|| format!("writing store/ records for {root}"))?,
+                );
+            }
+            printer.kv("Roots", &roots.len().to_string());
+            printer.kv("Store graph", &report.summary());
+
+            let changed = report.created + report.blessed > 0;
+            let mut committed = false;
+            if changed && !*no_commit {
+                let default_msg = format!(
+                    "store: backfill realisation graph ({} closures)",
+                    roots.len(),
+                );
+                let msg = message.as_deref().unwrap_or(&default_msg);
+                commit_registry_paths(
+                    &dir,
+                    msg,
+                    &[dir.join(store::STORE_DIR)],
+                    signing_key.as_ref().map(|k| k.path()),
+                )?;
+                refresh_registry_object_store(&dir)
+                    .context("refreshing dumb-HTTP object store after store backfill")?;
+                committed = true;
+                printer.success(&format!("Committed: {msg}"));
+            } else if !changed {
+                printer.info("Graph already covers every published closure.");
+            }
+
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "store_backfill",
+                    "registry": registry_name,
+                    "roots": roots.len(),
+                    "created": report.created,
+                    "blessed": report.blessed,
+                    "unchanged": report.unchanged,
+                    "content_addressed": report.content_addressed,
+                    "committed": committed,
+                }));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Resolve a producer signing key only when `--key`/`--key-id` was given
+/// (the `apr publish` convention).
+fn resolve_optional_signing_key(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    key: &Option<String>,
+    key_id: &Option<String>,
+) -> Result<Option<ResolvedSigningKey>> {
+    if key.is_some() || key_id.is_some() {
+        Ok(Some(resolve_producer_signing_key(
+            config,
+            dir,
+            registry_name,
+            key.as_deref(),
+            key_id.as_deref(),
+        )?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// `apr store verify` - checks graph health: record parseability, coverage of
+/// every published closure member (reachable via dependency edges), and (with
+/// `deep`) agreement with the local Nix store's actual NAR hashes.
+fn store_verify(dir: &Path, registry_name: &str, deep: bool, printer: &Printer) -> Result<()> {
+    let graph = StoreMap::load(dir).context("loading store/ graph")?;
+    if !graph.is_present() {
+        bail!(
+            "registry '{registry_name}' publishes no store/ realisation graph; \
+             run `apr store backfill` to create one"
+        );
+    }
+
+    let mut errors = 0u32;
+    let mut members_checked = 0u32;
+
+    // Coverage: every member reachable from every published package root has a
+    // record with a blessed NAR.
+    for root in collect_package_store_paths(dir)? {
+        let mut seen = HashSet::new();
+        let mut stack = vec![extract_hash(&root).to_string()];
+        while let Some(hash) = stack.pop() {
+            if !seen.insert(hash.clone()) {
+                continue;
+            }
+            members_checked += 1;
+            match graph.get(&hash) {
+                None => {
+                    printer.warning(&format!("closure member {hash} has no store/ record"));
+                    errors += 1;
+                }
+                Some(record) if record.blessed_nars().is_empty() => {
+                    printer.warning(&format!("store/ record {hash} has no blessed NAR"));
+                    errors += 1;
+                }
+                Some(_) => stack.extend(graph.direct_deps(&hash)),
+            }
+        }
+    }
+
+    // Deep: recompute every locally-available closure member's NAR hash and
+    // require it to match a blessed NAR in the record.
+    let mut deep_checked = 0u32;
+    if deep {
+        for root in collect_package_store_paths(dir)? {
+            let members = match introspect_closure_nars(&root) {
+                Ok(members) => members,
+                Err(err) => {
+                    printer.warning(&format!(
+                        "skipping deep check for {root} (not introspectable locally): {err:#}"
+                    ));
+                    continue;
+                }
+            };
+            for member in members {
+                deep_checked += 1;
+                let ia_hash = extract_hash(&member.path);
+                let blessed = graph.blessed_nars(ia_hash);
+                if blessed.is_empty() {
+                    printer.warning(&format!("{}: no store/ record for {ia_hash}", member.path));
+                    errors += 1;
+                    continue;
+                }
+                if !blessed
+                    .iter()
+                    .any(|nar| nar.matches(&member.nar_hash, member.nar_size))
+                {
+                    printer.error(&format!(
+                        "{}: local store content is NOT blessed (local {} / {} bytes)",
+                        member.path, member.nar_hash, member.nar_size,
+                    ));
+                    errors += 1;
+                }
+            }
+        }
+    }
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "store_verify",
+            "registry": registry_name,
+            "records": graph.len(),
+            "members_checked": members_checked,
+            "deep_checked": deep_checked,
+            "errors": errors,
+        }));
+    }
+
+    if errors > 0 {
+        bail!("store/ graph verification failed with {errors} error(s)");
+    }
+    printer.success(&format!(
+        "Graph OK: {} record(s), {members_checked} closure member(s) covered{}.",
+        graph.len(),
+        if deep {
+            format!(", {deep_checked} deep-checked")
+        } else {
+            String::new()
+        },
+    ));
+    Ok(())
+}
+
 pub async fn run_cache(
     config: &ApmConfig,
     command: &CacheCommand,
@@ -1621,35 +4786,66 @@ pub async fn run_cache(
             priority,
             no_commit,
             registry,
+            jobs,
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
-            let report =
-                nixcache::generate_static_cache(&dir, output, key.as_deref(), *priority, printer)
-                    .await?;
+            let upload_urls = resolve_upload_urls(config, &registry_name, upload_urls);
+            let report = nixcache::generate_static_cache(
+                &dir,
+                output,
+                key.as_deref(),
+                *priority,
+                *jobs,
+                printer,
+            )
+            .await?;
 
             printer.success(&format!(
-                "Generated static cache: {} narinfos, {} NARs in {}",
+                "Generated static cache: {} narinfos, {} NARs ({} reused) in {}",
                 report.narinfos,
                 report.nars,
+                report.nars_skipped,
                 report.output_dir.display(),
             ));
 
             if !upload_urls.is_empty() {
                 let auth = auth
                     .auth_options_with_config(registry_upload_auth_config(config, &registry_name));
-                nixcache::upload_static_cache_to_all(output, upload_urls, &auth, printer).await?;
+                nixcache::upload_static_cache_to_all(output, &upload_urls, &auth, printer).await?;
             }
 
+            let mut cache_pointer_updated = false;
+            let mut committed = false;
             if let Some(cache_url) = cache_url {
                 if nixcache::upsert_registry_cache(&dir, cache_url, *priority)? {
+                    cache_pointer_updated = true;
                     printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
                     if !*no_commit {
-                        commit_registry(&dir, "registry: update static cache pointer")?;
+                        commit_registry(&dir, "registry: update static cache pointer", None)?;
                         refresh_registry_object_store(&dir)
                             .context("refreshing dumb-HTTP object store after cache update")?;
+                        committed = true;
                     }
                 }
+            }
+
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "cache_generate",
+                    "registry": registry_name,
+                    "output_dir": report.output_dir.to_string_lossy().to_string(),
+                    "paths": report.paths,
+                    "narinfos": report.narinfos,
+                    "nars": report.nars,
+                    "nars_skipped": report.nars_skipped,
+                    "cache_url": cache_url.as_deref(),
+                    "priority": priority,
+                    "upload_urls": upload_urls,
+                    "uploaded": !upload_urls.is_empty(),
+                    "cache_pointer_updated": cache_pointer_updated,
+                    "committed": committed,
+                }));
             }
 
             Ok(())
@@ -1657,7 +4853,22 @@ pub async fn run_cache(
     }
 }
 
-/// Static git-origin subcommands.
+/// `apr origin` subcommands for the static dumb-HTTP git origin.
+///
+/// `upload` refreshes the static object store indexes and uploads the
+/// registry's git origin files (objects, packs, refs, channel payloads)
+/// to each destination — the `--upload-url` flags, or the persisted
+/// `upload_urls` defaults when no flag is given — so consumers can sync
+/// from a plain file server. `config` shows or persists those producer
+/// upload defaults (destinations and backend auth) in the registry's
+/// `[registry.upload_auth]` section.
+///
+/// # Errors
+///
+/// Fails when `upload` has no destination (neither `--upload-url` flags
+/// nor persisted defaults), when the object-store refresh or any upload
+/// fails, when `config` both sets and unsets the same field, or when
+/// `config` cannot read, parse, or rewrite the registry config file.
 pub async fn run_origin(
     config: &ApmConfig,
     command: &OriginCommand,
@@ -1670,10 +4881,15 @@ pub async fn run_origin(
             auth,
             registry,
         } => {
-            if upload_urls.is_empty() {
-                bail!("at least one --upload-url is required");
-            }
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let upload_urls = resolve_upload_urls(config, &registry_name, upload_urls);
+            if upload_urls.is_empty() {
+                bail!(
+                    "no upload destination: pass --upload-url <url> or persist defaults with \
+                     `{} origin config --upload-url <url>`",
+                    aos_core::invocation::package_registry_command(),
+                );
+            }
             let dir = config.scope.registries_path().join(&registry_name);
             refresh_registry_object_store(&dir)
                 .context("refreshing static git origin before upload")?;
@@ -1682,7 +4898,7 @@ pub async fn run_origin(
             let report = static_upload::upload_static_origin_to_all(
                 &dir,
                 cache_dir.as_deref(),
-                upload_urls,
+                &upload_urls,
                 &auth,
                 printer,
             )
@@ -1693,12 +4909,307 @@ pub async fn run_origin(
                 report.files,
                 format_size(report.bytes),
             ));
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "origin_upload",
+                    "registry": registry_name,
+                    "upload_urls": upload_urls,
+                    "cache_dir": cache_dir.as_ref().map(|path| path.to_string_lossy().to_string()),
+                    "files": report.files,
+                    "bytes": report.bytes,
+                    "bytes_human": format_size(report.bytes),
+                }));
+            }
             Ok(())
+        }
+        OriginCommand::Config {
+            upload_urls,
+            token,
+            view,
+            http_user,
+            http_password,
+            header,
+            s3_region,
+            s3_profile,
+            s3_endpoint,
+            ssh_key,
+            ssh_password,
+            ssh_ask_pass,
+            unset,
+            registry,
+        } => {
+            let updates = UploadConfigUpdates {
+                upload_urls,
+                token: token.as_deref(),
+                view: view.as_deref(),
+                http_user: http_user.as_deref(),
+                http_password: http_password.as_deref(),
+                headers: header,
+                s3_region: s3_region.as_deref(),
+                s3_profile: s3_profile.as_deref(),
+                s3_endpoint: s3_endpoint.as_deref(),
+                ssh_key: ssh_key.as_deref(),
+                ssh_password: ssh_password.as_deref(),
+                ssh_ask_pass: *ssh_ask_pass,
+            };
+            origin_config(config, &updates, unset, registry.as_deref(), printer)
         }
     }
 }
 
-/// Registry trust-store subcommands.
+/// The `apr origin config` setter flags, grouped so [`origin_config`] can
+/// treat "no flag given" uniformly across scalar, list, and boolean fields.
+struct UploadConfigUpdates<'a> {
+    /// Replacement default destinations; empty means "not given".
+    upload_urls: &'a [String],
+    token: Option<&'a str>,
+    view: Option<&'a str>,
+    http_user: Option<&'a str>,
+    http_password: Option<&'a str>,
+    /// Replacement extra HTTP headers; empty means "not given".
+    headers: &'a [String],
+    s3_region: Option<&'a str>,
+    s3_profile: Option<&'a str>,
+    s3_endpoint: Option<&'a str>,
+    ssh_key: Option<&'a str>,
+    ssh_password: Option<&'a str>,
+    /// `--ssh-ask-pass` was passed; `false` means "leave unchanged".
+    ssh_ask_pass: bool,
+}
+
+impl UploadConfigUpdates<'_> {
+    /// Whether any setter flag was given at all.
+    fn is_empty(&self) -> bool {
+        self.upload_urls.is_empty()
+            && self.token.is_none()
+            && self.view.is_none()
+            && self.http_user.is_none()
+            && self.http_password.is_none()
+            && self.headers.is_empty()
+            && self.s3_region.is_none()
+            && self.s3_profile.is_none()
+            && self.s3_endpoint.is_none()
+            && self.ssh_key.is_none()
+            && self.ssh_password.is_none()
+            && !self.ssh_ask_pass
+    }
+
+    /// Whether the setter for `field` was given (used to refuse a
+    /// simultaneous `--unset` of the same field).
+    fn sets(&self, field: UploadConfigField) -> bool {
+        match field {
+            UploadConfigField::UploadUrls => !self.upload_urls.is_empty(),
+            UploadConfigField::Token => self.token.is_some(),
+            UploadConfigField::View => self.view.is_some(),
+            UploadConfigField::HttpUser => self.http_user.is_some(),
+            UploadConfigField::HttpPassword => self.http_password.is_some(),
+            UploadConfigField::Headers => !self.headers.is_empty(),
+            UploadConfigField::S3Region => self.s3_region.is_some(),
+            UploadConfigField::S3Profile => self.s3_profile.is_some(),
+            UploadConfigField::S3Endpoint => self.s3_endpoint.is_some(),
+            UploadConfigField::SshKey => self.ssh_key.is_some(),
+            UploadConfigField::SshPassword => self.ssh_password.is_some(),
+            UploadConfigField::SshAskPass => self.ssh_ask_pass,
+        }
+    }
+
+    /// Apply every given setter onto `upload`.
+    fn apply(&self, upload: &mut RegistryUploadAuthConfig) {
+        if !self.upload_urls.is_empty() {
+            upload.upload_urls = self.upload_urls.to_vec();
+        }
+        if let Some(token) = self.token {
+            upload.token = Some(token.to_string());
+        }
+        if let Some(view) = self.view {
+            upload.view = Some(view.to_string());
+        }
+        if let Some(http_user) = self.http_user {
+            upload.http_user = Some(http_user.to_string());
+        }
+        if let Some(http_password) = self.http_password {
+            upload.http_password = Some(http_password.to_string());
+        }
+        if !self.headers.is_empty() {
+            upload.headers = self.headers.to_vec();
+        }
+        if let Some(s3_region) = self.s3_region {
+            upload.s3_region = Some(s3_region.to_string());
+        }
+        if let Some(s3_profile) = self.s3_profile {
+            upload.s3_profile = Some(s3_profile.to_string());
+        }
+        if let Some(s3_endpoint) = self.s3_endpoint {
+            upload.s3_endpoint = Some(s3_endpoint.to_string());
+        }
+        if let Some(ssh_key) = self.ssh_key {
+            upload.ssh_key = Some(ssh_key.to_string());
+        }
+        if let Some(ssh_password) = self.ssh_password {
+            upload.ssh_password = Some(ssh_password.to_string());
+        }
+        if self.ssh_ask_pass {
+            upload.ssh_ask_pass = true;
+        }
+    }
+}
+
+/// Clear `field` on `upload` (the `--unset` half of `apr origin config`).
+fn unset_upload_config_field(upload: &mut RegistryUploadAuthConfig, field: UploadConfigField) {
+    match field {
+        UploadConfigField::UploadUrls => upload.upload_urls.clear(),
+        UploadConfigField::Token => upload.token = None,
+        UploadConfigField::View => upload.view = None,
+        UploadConfigField::HttpUser => upload.http_user = None,
+        UploadConfigField::HttpPassword => upload.http_password = None,
+        UploadConfigField::Headers => upload.headers.clear(),
+        UploadConfigField::S3Region => upload.s3_region = None,
+        UploadConfigField::S3Profile => upload.s3_profile = None,
+        UploadConfigField::S3Endpoint => upload.s3_endpoint = None,
+        UploadConfigField::SshKey => upload.ssh_key = None,
+        UploadConfigField::SshPassword => upload.ssh_password = None,
+        UploadConfigField::SshAskPass => upload.ssh_ask_pass = false,
+    }
+}
+
+/// `apr origin config` — shows or persists the producer upload defaults in
+/// the registry's `[registry.upload_auth]` section.
+///
+/// With no setter or `--unset` flag, prints the currently persisted
+/// defaults. Otherwise each given setter replaces the stored value (lists
+/// — `--upload-url`, `--header` — are replaced wholesale, not appended),
+/// each `--unset FIELD` clears the stored value, and the section is
+/// rewritten in place, preserving every other field of the config file.
+/// Unsetting the last stored field removes the whole section.
+///
+/// Unlike the flags on `origin upload`/`cache generate`/`release`, the
+/// setters here read nothing from the environment: only values given
+/// explicitly on the command line are persisted.
+///
+/// # Errors
+///
+/// Fails when the same field is both set and `--unset` in one invocation;
+/// when the registry has no `registries.d` config to record into (created
+/// by `apr add`); or when the config file cannot be read, parsed, or
+/// rewritten.
+fn origin_config(
+    config: &ApmConfig,
+    updates: &UploadConfigUpdates<'_>,
+    unset: &[UploadConfigField],
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    let registry_name = resolve_registry_name(config, registry)?;
+    let config_path = config.registry_config_path_for_update(&registry_name);
+    if !config_path.exists() {
+        bail!(
+            "registry '{registry_name}' has no config at {}; register the registry first with \
+             `{} add <url>`, then re-run this command",
+            config_path.display(),
+            aos_core::invocation::package_registry_command(),
+        );
+    }
+
+    let content = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("reading {}", config_path.display()))?;
+    let rf: RegistryFile =
+        toml::from_str(&content).with_context(|| format!("parsing {}", config_path.display()))?;
+    let mut upload = rf.registry.upload_auth.unwrap_or_default();
+
+    if updates.is_empty() && unset.is_empty() {
+        print_upload_config(&registry_name, &config_path, &upload, printer);
+        return Ok(());
+    }
+
+    for field in unset {
+        if updates.sets(*field) {
+            bail!(
+                "cannot both set and --unset '{}' in the same invocation",
+                field.to_possible_value().map_or_else(
+                    || format!("{field:?}"),
+                    |value| value.get_name().to_string(),
+                ),
+            );
+        }
+        unset_upload_config_field(&mut upload, *field);
+    }
+    updates.apply(&mut upload);
+
+    state::save_upload_auth(&config_path, &upload)?;
+    printer.success(&format!(
+        "Updated upload defaults for registry '{registry_name}'.",
+    ));
+    print_upload_config(&registry_name, &config_path, &upload, printer);
+    Ok(())
+}
+
+/// Print the persisted upload defaults, as key/value lines or JSON.
+fn print_upload_config(
+    registry_name: &str,
+    config_path: &Path,
+    upload: &RegistryUploadAuthConfig,
+    printer: &Printer,
+) {
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "origin_config",
+            "registry": registry_name,
+            "config": config_path.display().to_string(),
+            "upload_auth": upload,
+        }));
+        return;
+    }
+
+    printer.kv("Config", &config_path.display().to_string());
+    if *upload == RegistryUploadAuthConfig::default() {
+        printer.info("No upload defaults configured.");
+        return;
+    }
+    if !upload.upload_urls.is_empty() {
+        printer.kv("Upload URLs", &upload.upload_urls.join(", "));
+    }
+    let scalar_fields = [
+        ("Token", &upload.token),
+        ("View", &upload.view),
+        ("HTTP user", &upload.http_user),
+        ("HTTP password", &upload.http_password),
+    ];
+    for (label, value) in scalar_fields {
+        if let Some(value) = value {
+            printer.kv(label, value);
+        }
+    }
+    if !upload.headers.is_empty() {
+        printer.kv("Headers", &upload.headers.join(", "));
+    }
+    let scalar_fields = [
+        ("S3 region", &upload.s3_region),
+        ("S3 profile", &upload.s3_profile),
+        ("S3 endpoint", &upload.s3_endpoint),
+        ("SSH key", &upload.ssh_key),
+        ("SSH password", &upload.ssh_password),
+    ];
+    for (label, value) in scalar_fields {
+        if let Some(value) = value {
+            printer.kv(label, value);
+        }
+    }
+    if upload.ssh_ask_pass {
+        printer.kv("SSH ask pass", "true");
+    }
+}
+
+/// `apr trust` subcommands for the consumer-side pinned trust store.
+///
+/// `pin` stores a `registry:Ed25519:<base64>` public key for a registry
+/// (`--replace` drops existing pins first), `list` shows the pinned keys
+/// per registry, and `remove` deletes a registry's pins.
+///
+/// # Errors
+///
+/// Fails when the registry name is not safe for trusted-key path use, the key
+/// line does not parse or names a different registry, or the trust store
+/// cannot be read or written.
 pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) -> Result<()> {
     let store = KeyStore::new(config.scope.trusted_keys_dirs());
     match command {
@@ -1707,11 +5218,25 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
             key,
             replace,
         } => {
+            validate_registry_name(registry)?;
             let trusted = trusted_key_from_line(registry, key)?;
             if *replace {
                 let _ = store.remove(registry)?;
             }
             store.store(&trusted)?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "trust_pin",
+                    "status": if *replace { "replaced" } else { "pinned" },
+                    "registry": registry,
+                    "replace": *replace,
+                    "key": key,
+                    "algorithm": trusted.algorithm,
+                    "fingerprint": trusted.fingerprint,
+                    "source": format!("{:?}", trusted.source),
+                }));
+                return Ok(());
+            }
             let action = if *replace { "Re-pinned" } else { "Pinned" };
             printer.success(&format!(
                 "{action} trust key for registry '{}' ({})",
@@ -1721,9 +5246,36 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
         }
         TrustCommand::List { registry } => {
             let registries = match registry {
-                Some(name) => vec![name.clone()],
+                Some(name) => {
+                    validate_registry_name(name)?;
+                    vec![name.clone()]
+                }
                 None => configured_registry_names(config),
             };
+            if printer.mode() == OutputMode::Json {
+                let entries = registries
+                    .iter()
+                    .map(|name| {
+                        let keys = store
+                            .lookup_all(name)
+                            .iter()
+                            .map(|key| {
+                                serde_json::json!({
+                                    "algorithm": &key.algorithm,
+                                    "fingerprint": &key.fingerprint,
+                                    "source": format!("{:?}", key.source),
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        serde_json::json!({
+                            "registry": name,
+                            "keys": keys,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                printer.json(&serde_json::json!(entries));
+                return Ok(());
+            }
             if registries.is_empty() {
                 printer.info("No configured registries to inspect.");
                 return Ok(());
@@ -1744,7 +5296,18 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
             Ok(())
         }
         TrustCommand::Remove { registry } => {
-            if store.remove(registry)? {
+            validate_registry_name(registry)?;
+            let removed = store.remove(registry)?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "trust_remove",
+                    "status": if removed { "removed" } else { "current" },
+                    "registry": registry,
+                    "removed": removed,
+                }));
+                return Ok(());
+            }
+            if removed {
                 printer.success(&format!(
                     "Removed pinned trust keys for registry '{registry}'"
                 ));
@@ -1758,13 +5321,64 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
     }
 }
 
-/// Committed keys.toml roster subcommands.
+/// `apr keys` subcommands for the committed `keys.toml` signing roster.
+///
+/// `list` prints active and revoked keys with fingerprints; `generate`
+/// creates a new maintainer keypair; `register` adopts an externally-held
+/// key without persisting key material; `add` appends a public key to the
+/// active roster; `retire` moves a key to the revoked list and re-signs
+/// every release tag and channel partition the retired key still covered
+/// (the vouching survivor signs by default; `--no-resign` prints the plan
+/// instead of executing it).
+///
+/// Roster-changing commits must be signed by an active maintainer key
+/// whenever the roster was already non-empty, because clients verify
+/// head-commit signatures against the keys they currently trust.
+///
+/// # Errors
+///
+/// Fails when a key id is invalid, duplicated, or revoked; when a
+/// retirement would leave no active survivor key; when the commit signing
+/// key cannot be resolved; or when the roster write, commit, re-signing,
+/// or object-store refresh fails.
 pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) -> Result<()> {
     match command {
         KeysCommand::List { registry } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
             let roster = load_committed_roster(&dir)?;
+            if printer.mode() == OutputMode::Json {
+                let active = roster
+                    .active
+                    .iter()
+                    .map(|entry| {
+                        let (_registry, algorithm, public_key) = parse_signing_key(&entry.key)
+                            .with_context(|| format!("invalid active key '{}'", entry.id))?;
+                        Ok(serde_json::json!({
+                            "id": &entry.id,
+                            "algorithm": algorithm,
+                            "fingerprint": key_fingerprint(&public_key),
+                            "key": &entry.key,
+                        }))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let revoked = roster
+                    .revoked
+                    .iter()
+                    .map(|entry| {
+                        serde_json::json!({
+                            "id": &entry.id,
+                            "reason": &entry.reason,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                printer.json(&serde_json::json!({
+                    "registry": registry_name,
+                    "active": active,
+                    "revoked": revoked,
+                }));
+                return Ok(());
+            }
             if roster.active.is_empty() && roster.revoked.is_empty() {
                 printer.info(&format!(
                     "Registry '{registry_name}' has no keys in keys.toml."
@@ -1803,22 +5417,78 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             }
             Ok(())
         }
+        KeysCommand::Generate {
+            id,
+            add,
+            no_commit,
+            signing_key,
+            signing_key_id,
+            registry,
+        } => generate_roster_key(
+            config,
+            id,
+            *add,
+            *no_commit,
+            signing_key.as_deref(),
+            signing_key_id.as_deref(),
+            registry.as_deref(),
+            printer,
+        ),
+        KeysCommand::Register {
+            id,
+            key,
+            key_command,
+            registry,
+        } => register_roster_key(
+            config,
+            id,
+            key.as_deref(),
+            key_command.as_deref(),
+            registry.as_deref(),
+            printer,
+        ),
         KeysCommand::Add {
             id,
             key,
             no_commit,
+            signing_key,
+            signing_key_id,
             registry,
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
             let mut roster = load_committed_roster(&dir)?;
+            let commit_key = if *no_commit {
+                None
+            } else {
+                resolve_roster_commit_key(
+                    config,
+                    &dir,
+                    &registry_name,
+                    &roster,
+                    signing_key.as_deref(),
+                    signing_key_id.as_deref(),
+                )?
+            };
             add_roster_key(&mut roster, &registry_name, id, key)?;
             persist_committed_roster(
                 &dir,
                 &roster,
                 *no_commit,
                 &format!("registry: add signing key {id}"),
+                commit_key.as_ref().map(|k| k.path()),
             )?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "keys_add",
+                    "status": "added",
+                    "registry": registry_name,
+                    "id": id,
+                    "key": key,
+                    "committed": !*no_commit,
+                }));
+                return Ok(());
+            }
             printer.success(&format!(
                 "Added active signing key '{id}' to registry '{registry_name}'."
             ));
@@ -1829,18 +5499,80 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             reason,
             vouched_by,
             no_commit,
+            signing_key,
+            signing_key_id,
+            no_resign,
             registry,
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
             let mut roster = load_committed_roster(&dir)?;
+            let roster_before = roster.clone();
             let vouching_id = retire_roster_key(&mut roster, id, reason.as_deref(), vouched_by)?;
+            // The vouching survivor signs the retirement by default; the
+            // key resolution runs against the pre-retire roster, where the
+            // voucher is still active. Re-signing also needs this key, so
+            // resolution failures abort before anything is modified.
+            let signer = if *no_commit && *no_resign {
+                None
+            } else if signing_key.is_none() && signing_key_id.is_none() {
+                Some(resolve_producer_signing_key(
+                    config,
+                    &dir,
+                    &registry_name,
+                    None,
+                    Some(&vouching_id),
+                )?)
+            } else {
+                resolve_roster_commit_key(
+                    config,
+                    &dir,
+                    &registry_name,
+                    &roster_before,
+                    signing_key.as_deref(),
+                    signing_key_id.as_deref(),
+                )?
+            };
+            // Signatures by the retired key become invalid on clients, so
+            // every tag a client still resolves must be re-signed by a
+            // survivor. Plan against the post-retirement active set before
+            // mutating anything.
+            let survivors: Vec<String> = roster
+                .active
+                .iter()
+                .map(|entry| entry.key.clone())
+                .collect();
+            let plan = plan_retirement_resign(&dir, &survivors)?;
             persist_committed_roster(
                 &dir,
                 &roster,
                 *no_commit,
                 &format!("registry: retire signing key {id}"),
+                if *no_commit {
+                    None
+                } else {
+                    signer.as_ref().map(|k| k.path())
+                },
             )?;
+            if *no_resign {
+                print_resign_plan(&plan, printer);
+            } else if let Some(vouch_key) = signer.as_ref().map(|k| k.path()) {
+                execute_retirement_resign(&dir, &plan, vouch_key, printer)?;
+            }
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "keys_retire",
+                    "status": "retired",
+                    "registry": registry_name,
+                    "id": id,
+                    "reason": reason.as_deref(),
+                    "vouched_by": vouching_id,
+                    "committed": !*no_commit,
+                    "resigned": !*no_resign,
+                    "resign_plan": resign_plan_json(&plan),
+                }));
+                return Ok(());
+            }
             printer.success(&format!(
                 "Retired signing key '{id}' from registry '{registry_name}' (vouched by '{vouching_id}')."
             ));
@@ -1849,6 +5581,607 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
     }
 }
 
+/// `apr sb-certs ...` — manage the committed Secure Boot validation catalog.
+///
+/// Mutates the `sb-certs.toml` roster in an authoring clone (RFC-0006 phase
+/// 4): the active db-cert set, its revocations, and the per-component SBAT
+/// revocation floor. Each mutation loads-or-creates the catalog, applies the
+/// change, and writes it back via
+/// [`crate::registry::sb_certs::write_sb_certs_toml`]. Unless `--no-commit`
+/// is given the change is committed (optionally signed by an active
+/// `keys.toml` maintainer key) the same way `keys.toml` changes are, so the
+/// catalog stays covered by the registry's release signature and reaches
+/// consumers on their next `apm update`.
+///
+/// # Errors
+///
+/// Returns an error when the registry name cannot be resolved, the clone is
+/// not writable, the catalog fails validation, the commit-signing key cannot
+/// be resolved, or the write/commit fails.
+pub fn run_sb_certs(config: &ApmConfig, command: &SbCertsCommand, printer: &Printer) -> Result<()> {
+    match command {
+        SbCertsCommand::List { registry } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            let catalog = load_committed_sb_certs(&dir)?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "registry": registry_name,
+                    "active": catalog.active.iter().map(|c| serde_json::json!({
+                        "id": c.id,
+                        "cert_sha256": c.cert_sha256,
+                    })).collect::<Vec<_>>(),
+                    "revoked": catalog.revoked.iter().map(|r| serde_json::json!({
+                        "id": r.id,
+                        "reason": r.reason,
+                    })).collect::<Vec<_>>(),
+                    "sbat_floor": catalog.sbat_floor.iter().map(|f| serde_json::json!({
+                        "component": f.component,
+                        "generation": f.generation,
+                    })).collect::<Vec<_>>(),
+                }));
+                return Ok(());
+            }
+            if catalog.active.is_empty()
+                && catalog.revoked.is_empty()
+                && catalog.sbat_floor.is_empty()
+            {
+                printer.info(&format!(
+                    "Registry '{registry_name}' has no Secure Boot catalog (sb-certs.toml)."
+                ));
+                return Ok(());
+            }
+            printer.header(&format!("sb-certs.toml for registry '{registry_name}'"));
+            if catalog.active.is_empty() {
+                printer.plain("active: none");
+            } else {
+                printer.plain("active:");
+                for cert in &catalog.active {
+                    printer.plain(&format!("  {}: {}", cert.id, cert.cert_sha256));
+                }
+            }
+            if catalog.revoked.is_empty() {
+                printer.plain("revoked: none");
+            } else {
+                printer.plain("revoked:");
+                for rev in &catalog.revoked {
+                    match &rev.reason {
+                        Some(reason) => printer.plain(&format!("  {}: {}", rev.id, reason)),
+                        None => printer.plain(&format!("  {}", rev.id)),
+                    }
+                }
+            }
+            if catalog.sbat_floor.is_empty() {
+                printer.plain("sbat_floor: none");
+            } else {
+                printer.plain("sbat_floor:");
+                for entry in &catalog.sbat_floor {
+                    printer.plain(&format!("  {}: {}", entry.component, entry.generation));
+                }
+            }
+            Ok(())
+        }
+        SbCertsCommand::Add {
+            id,
+            cert_sha256,
+            no_commit,
+            signing_key,
+            signing_key_id,
+            registry,
+        } => {
+            let (registry_name, dir) = resolve_sb_certs_target(config, registry.as_deref())?;
+            let mut catalog = load_committed_sb_certs(&dir)?;
+            let commit_key = sb_certs_commit_key(
+                config,
+                &dir,
+                &registry_name,
+                *no_commit,
+                signing_key.as_deref(),
+                signing_key_id.as_deref(),
+            )?;
+            add_sb_cert(&mut catalog, id, cert_sha256)?;
+            persist_committed_sb_certs(
+                &dir,
+                &catalog,
+                *no_commit,
+                &format!("registry: add Secure Boot db cert {id}"),
+                commit_key.as_ref().map(|k| k.path()),
+            )?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "sb_certs_add",
+                    "status": "added",
+                    "registry": registry_name,
+                    "id": id,
+                    "cert_sha256": cert_sha256,
+                    "committed": !*no_commit,
+                }));
+                return Ok(());
+            }
+            printer.success(&format!(
+                "Added active Secure Boot db cert '{id}' to registry '{registry_name}'."
+            ));
+            Ok(())
+        }
+        SbCertsCommand::Retire {
+            id,
+            reason,
+            no_commit,
+            signing_key,
+            signing_key_id,
+            registry,
+        } => {
+            let (registry_name, dir) = resolve_sb_certs_target(config, registry.as_deref())?;
+            let mut catalog = load_committed_sb_certs(&dir)?;
+            let commit_key = sb_certs_commit_key(
+                config,
+                &dir,
+                &registry_name,
+                *no_commit,
+                signing_key.as_deref(),
+                signing_key_id.as_deref(),
+            )?;
+            retire_sb_cert(&mut catalog, id, reason.as_deref())?;
+            persist_committed_sb_certs(
+                &dir,
+                &catalog,
+                *no_commit,
+                &format!("registry: retire Secure Boot db cert {id}"),
+                commit_key.as_ref().map(|k| k.path()),
+            )?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "sb_certs_retire",
+                    "status": "retired",
+                    "registry": registry_name,
+                    "id": id,
+                    "reason": reason.as_deref(),
+                    "committed": !*no_commit,
+                }));
+                return Ok(());
+            }
+            printer.success(&format!(
+                "Retired Secure Boot db cert '{id}' from registry '{registry_name}'."
+            ));
+            Ok(())
+        }
+        SbCertsCommand::SetFloor {
+            component,
+            generation,
+            no_commit,
+            signing_key,
+            signing_key_id,
+            registry,
+        } => {
+            let (registry_name, dir) = resolve_sb_certs_target(config, registry.as_deref())?;
+            let mut catalog = load_committed_sb_certs(&dir)?;
+            let commit_key = sb_certs_commit_key(
+                config,
+                &dir,
+                &registry_name,
+                *no_commit,
+                signing_key.as_deref(),
+                signing_key_id.as_deref(),
+            )?;
+            set_sbat_floor(&mut catalog, component, *generation)?;
+            persist_committed_sb_certs(
+                &dir,
+                &catalog,
+                *no_commit,
+                &format!("registry: set SBAT floor {component}={generation}"),
+                commit_key.as_ref().map(|k| k.path()),
+            )?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "sb_certs_set_floor",
+                    "status": "set",
+                    "registry": registry_name,
+                    "component": component,
+                    "generation": generation,
+                    "committed": !*no_commit,
+                }));
+                return Ok(());
+            }
+            printer.success(&format!(
+                "Set SBAT revocation floor '{component}' = {generation} for registry '{registry_name}'."
+            ));
+            Ok(())
+        }
+    }
+}
+
+/// Resolve the registry name and require a writable authoring clone for an
+/// `apr sb-certs` mutation.
+fn resolve_sb_certs_target(
+    config: &ApmConfig,
+    registry: Option<&str>,
+) -> Result<(String, PathBuf)> {
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
+    ensure_writable_registry_clone(&registry_name, &dir)?;
+    Ok((registry_name, dir))
+}
+
+/// Load the committed `sb-certs.toml` catalog, defaulting to an empty
+/// catalog when the file does not exist yet.
+///
+/// # Errors
+///
+/// Returns an error when the registry directory is missing or the catalog
+/// fails to load/validate.
+fn load_committed_sb_certs(dir: &Path) -> Result<SbCertsToml> {
+    if !dir.exists() {
+        bail!("registry directory does not exist: {}", dir.display());
+    }
+    Ok(sb_certs::load_sb_certs_toml(dir)?.unwrap_or_default())
+}
+
+/// Write `sb-certs.toml` and, unless `no_commit`, commit and refresh the
+/// dumb-HTTP object store — the same persistence path `keys.toml` uses.
+///
+/// # Errors
+///
+/// Returns an error when the catalog fails validation, the write fails, or
+/// the commit/object-store refresh fails.
+fn persist_committed_sb_certs(
+    dir: &Path,
+    catalog: &SbCertsToml,
+    no_commit: bool,
+    message: &str,
+    signing_key: Option<&str>,
+) -> Result<()> {
+    sb_certs::write_sb_certs_toml(dir, catalog)?;
+    if !no_commit {
+        commit_registry(dir, message, signing_key)?;
+        refresh_registry_object_store(dir)
+            .context("refreshing dumb-HTTP object store after sb-certs.toml update")?;
+    }
+    Ok(())
+}
+
+/// Resolve the maintainer key that signs an `sb-certs.toml` commit.
+///
+/// The catalog is part of the signed tree, so its commits must be signed by
+/// an active `keys.toml` maintainer key exactly like a roster change. This
+/// reuses [`resolve_roster_commit_key`] against the committed `keys.toml`:
+/// the only unsigned case is a registry whose key roster is still empty
+/// (bootstrap). Returns `None` when `no_commit` is set.
+///
+/// # Errors
+///
+/// Returns an error when the key roster is non-empty but no signing key was
+/// provided, or the requested key cannot be resolved.
+fn sb_certs_commit_key(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    no_commit: bool,
+    signing_key: Option<&str>,
+    signing_key_id: Option<&str>,
+) -> Result<Option<ResolvedSigningKey>> {
+    if no_commit {
+        return Ok(None);
+    }
+    let roster = load_committed_roster(dir)?;
+    resolve_roster_commit_key(
+        config,
+        dir,
+        registry_name,
+        &roster,
+        signing_key,
+        signing_key_id,
+    )
+}
+
+/// Append an active db cert after validating the id is non-empty and unused
+/// and the digest is a 64-char lowercase hex SHA-256.
+///
+/// # Errors
+///
+/// Returns an error when the id is empty or already present, the digest is
+/// malformed, or the same digest is already enrolled under another id.
+fn add_sb_cert(catalog: &mut SbCertsToml, id: &str, cert_sha256: &str) -> Result<()> {
+    if id.is_empty() {
+        bail!("Secure Boot db cert id is empty");
+    }
+    let digest = cert_sha256.to_ascii_lowercase();
+    if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("--cert-sha256 must be a 64-character hex SHA-256 digest, got '{cert_sha256}'");
+    }
+    if catalog.active.iter().any(|c| c.id == id) {
+        bail!("active db cert id '{id}' already exists in sb-certs.toml");
+    }
+    if catalog
+        .active
+        .iter()
+        .any(|c| c.cert_sha256.eq_ignore_ascii_case(&digest))
+    {
+        bail!("db cert digest already enrolled in sb-certs.toml under another id");
+    }
+    catalog.active.push(SbCert {
+        id: id.to_string(),
+        cert_sha256: digest,
+    });
+    Ok(())
+}
+
+/// Move db cert `id` into the revoked set.
+///
+/// The id must name an active db cert; an already-revoked id is rejected.
+/// The cert stays under `[[active]]` (as `validate_catalog` requires every
+/// revocation to reference an active entry) and gains a `[[revoked]]` row.
+///
+/// # Errors
+///
+/// Returns an error when `id` is empty, is not active, or is already
+/// revoked.
+fn retire_sb_cert(catalog: &mut SbCertsToml, id: &str, reason: Option<&str>) -> Result<()> {
+    if id.is_empty() {
+        bail!("Secure Boot db cert id is empty");
+    }
+    if !catalog.active.iter().any(|c| c.id == id) {
+        bail!("db cert id '{id}' is not active in sb-certs.toml");
+    }
+    if catalog.revoked.iter().any(|r| r.id == id) {
+        bail!("db cert id '{id}' is already revoked in sb-certs.toml");
+    }
+    catalog.revoked.push(RevokedSbCert {
+        id: id.to_string(),
+        reason: reason.map(str::to_string),
+    });
+    Ok(())
+}
+
+/// Set or raise the SBAT revocation floor for `component`.
+///
+/// A floor may only be raised, never lowered: lowering would re-admit a
+/// component the fleet already revoked. An absent component is inserted.
+///
+/// # Errors
+///
+/// Returns an error when `component` is empty or the requested generation is
+/// below the existing floor.
+fn set_sbat_floor(catalog: &mut SbCertsToml, component: &str, generation: u32) -> Result<()> {
+    if component.is_empty() {
+        bail!("SBAT floor component is empty");
+    }
+    if let Some(entry) = catalog
+        .sbat_floor
+        .iter_mut()
+        .find(|entry| entry.component == component)
+    {
+        if generation < entry.generation {
+            bail!(
+                "refusing to lower the SBAT floor for '{component}' from {} to {generation}: \
+                 a floor may only be raised",
+                entry.generation,
+            );
+        }
+        entry.generation = generation;
+    } else {
+        catalog.sbat_floor.push(SbatEntry {
+            component: component.to_string(),
+            generation,
+        });
+    }
+    Ok(())
+}
+
+/// Tags whose signatures must be refreshed after a key retirement.
+///
+/// `affected_partitions` carries the release each partition payload must
+/// be rewritten against, captured *before* release tags are force-retagged
+/// (re-signing changes the tag-object id, which would otherwise orphan the
+/// payload's reference).
+struct ResignPlan {
+    affected_releases: Vec<semver::Version>,
+    affected_partitions: Vec<(String, u8, semver::Version)>,
+}
+
+impl ResignPlan {
+    fn is_empty(&self) -> bool {
+        self.affected_releases.is_empty() && self.affected_partitions.is_empty()
+    }
+}
+
+/// Enumerate the tags clients resolve and check which no longer verify
+/// against the surviving active keys.
+///
+/// Covers every channel partition payload under `.git/channels/` and each
+/// release tag those partitions reference. A partition is also marked
+/// affected when its release tag must be re-signed: the new release tag
+/// object gets a different id, so the payload has to be regenerated even
+/// when its own signature is fine.
+fn plan_retirement_resign(dir: &Path, survivors: &[String]) -> Result<ResignPlan> {
+    let release_tags = semver_tag_object_map(dir)?;
+    let git_dir = objectstore::repo_git_dir(dir)?;
+    let channels_dir = git_dir.join("channels");
+
+    // (channel, bucket, version, payload signature fails against survivors)
+    let mut partitions: Vec<(String, u8, semver::Version, bool)> = Vec::new();
+    if channels_dir.exists() {
+        let mut channel_names: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&channels_dir)
+            .with_context(|| format!("reading {}", channels_dir.display()))?
+        {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                channel_names.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        channel_names.sort();
+        for channel_name in channel_names {
+            let channel_dir = channels_dir.join(&channel_name);
+            for bucket in 0..=u8::MAX {
+                let path = channel_dir.join(channel::bucket_hex(bucket));
+                if !path.exists() {
+                    continue;
+                }
+                let payload =
+                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+                let tag = parse_tag_object(&String::from_utf8_lossy(&payload))
+                    .with_context(|| format!("parsing channel partition {}", path.display()))?;
+                let version = release_tags.get(&tag.object).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "channel partition {} points at unknown release tag object {}",
+                        path.display(),
+                        tag.object,
+                    )
+                })?;
+                let oid = hash_tag_object(dir, &payload)?;
+                let verified = verify_tag_signature(dir, &oid, survivors)?;
+                partitions.push((channel_name.clone(), bucket, version.clone(), !verified));
+            }
+        }
+    }
+
+    let mut release_versions: Vec<semver::Version> = release_tags.values().cloned().collect();
+    release_versions.sort();
+    release_versions.dedup();
+
+    let mut affected_releases: Vec<semver::Version> = Vec::new();
+    for version in release_versions {
+        if !verify_tag_signature(dir, &version.to_string(), survivors)? {
+            affected_releases.push(version);
+        }
+    }
+    affected_releases.sort();
+
+    let affected_partitions = partitions
+        .into_iter()
+        .filter(|(_, _, version, failing)| *failing || affected_releases.contains(version))
+        .map(|(channel, bucket, version, _)| (channel, bucket, version))
+        .collect();
+
+    Ok(ResignPlan {
+        affected_releases,
+        affected_partitions,
+    })
+}
+
+/// Re-sign every affected tag with the vouching survivor's private key.
+///
+/// Release tags are force-retagged against their original commit and
+/// message; affected channel partitions are regenerated against the new
+/// tag objects, and each touched channel's branch head and object store
+/// are refreshed.
+fn execute_retirement_resign(
+    dir: &Path,
+    plan: &ResignPlan,
+    vouch_key: &str,
+    printer: &Printer,
+) -> Result<()> {
+    if plan.is_empty() {
+        return Ok(());
+    }
+
+    for version in &plan.affected_releases {
+        let tag = version.to_string();
+        let commit = release_commit(dir, version)?;
+        let payload = git(dir, &["cat-file", "-p", &format!("{tag}^{{tag}}")])?;
+        let message = tag_message_without_signature(&payload);
+        sign_tag(dir, &tag, &commit, message.as_deref(), vouch_key, true)?;
+        printer.info(&format!("Re-signed release tag {tag}."));
+    }
+
+    let mut touched_channels: Vec<&str> = Vec::new();
+    for (channel_name, bucket, version) in &plan.affected_partitions {
+        write_channel_partition_tag(dir, channel_name, *bucket, version, vouch_key)?;
+        if !touched_channels.contains(&channel_name.as_str()) {
+            touched_channels.push(channel_name);
+        }
+    }
+    for channel_name in touched_channels {
+        let map = read_channel_partition_map(dir, channel_name)?;
+        update_channel_frontier(dir, channel_name, &map)?;
+        printer.info(&format!("Re-signed channel '{channel_name}' partitions."));
+    }
+
+    refresh_registry_object_store(dir)
+        .context("refreshing dumb-HTTP object store after key-retirement re-sign")?;
+    Ok(())
+}
+
+/// Print the re-sign plan for manual handling (`--no-resign`).
+fn print_resign_plan(plan: &ResignPlan, printer: &Printer) {
+    if plan.is_empty() {
+        printer.info("No tags need re-signing.");
+        return;
+    }
+    printer.warning("Skipped re-signing (--no-resign). Affected tags:");
+    for version in &plan.affected_releases {
+        printer.plain(&format!("  release tag {version}"));
+    }
+    for (channel, bucket, version) in &plan.affected_partitions {
+        printer.plain(&format!(
+            "  channel {channel} partition {} -> {version}",
+            channel::bucket_hex(*bucket),
+        ));
+    }
+}
+
+fn resign_plan_json(plan: &ResignPlan) -> serde_json::Value {
+    let partitions = plan
+        .affected_partitions
+        .iter()
+        .map(|(channel, bucket, version)| {
+            serde_json::json!({
+                "channel": channel,
+                "bucket": *bucket,
+                "bucket_hex": channel::bucket_hex(*bucket),
+                "version": version.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "release_tags": plan
+            .affected_releases
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "channel_partitions": partitions,
+    })
+}
+
+/// Extract a signed tag's original message, dropping the SSH signature
+/// block git appends to the payload.
+fn tag_message_without_signature(payload: &str) -> Option<String> {
+    let (_, body) = payload.split_once("\n\n")?;
+    let message = match body.find("-----BEGIN SSH SIGNATURE-----") {
+        Some(position) => &body[..position],
+        None => body,
+    };
+    Some(message.trim_end().to_string())
+}
+
+/// Write a tag object payload into the object database, returning its id.
+fn hash_tag_object(dir: &Path, payload: &[u8]) -> Result<String> {
+    use std::process::Stdio;
+    let mut child = gitcmd::hermetic()
+        .args(["hash-object", "-w", "-t", "tag", "--stdin"])
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawning git hash-object")?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        std::io::Write::write_all(stdin, payload).context("writing tag payload to hash-object")?;
+    }
+    let output = child
+        .wait_with_output()
+        .context("running git hash-object")?;
+    if !output.status.success() {
+        bail!(
+            "git hash-object failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Load the committed `keys.toml` roster, defaulting to an empty roster
+/// when the file does not exist yet.
 fn load_committed_roster(dir: &Path) -> Result<KeysToml> {
     if !dir.exists() {
         bail!("registry directory does not exist: {}", dir.display());
@@ -1856,21 +6189,323 @@ fn load_committed_roster(dir: &Path) -> Result<KeysToml> {
     Ok(keys::load_keys_toml(dir)?.unwrap_or_default())
 }
 
+/// `apr keys generate <id>`
+///
+/// Generates an OpenSSH Ed25519 maintainer keypair: the private key is
+/// written under the per-scope config directory (mode `0600`, never
+/// overwriting an existing file), its path is recorded in
+/// `[registry.signing_keys]` so `--key-id <id>` resolves, and the public
+/// half is printed in `registry:Ed25519:<base64>` form. With `--add` the
+/// public key is also appended to the committed `keys.toml` roster via a
+/// signed commit.
+#[allow(clippy::too_many_arguments)]
+fn generate_roster_key(
+    config: &ApmConfig,
+    id: &str,
+    add: bool,
+    no_commit: bool,
+    signing_key: Option<&str>,
+    signing_key_id: Option<&str>,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    validate_roster_key_id(id)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+
+    let keys_dir = config.scope.config_dir().join("keys");
+    {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&keys_dir)
+            .with_context(|| format!("creating key directory {}", keys_dir.display()))?;
+    }
+
+    let key_path = keys_dir.join(format!("{registry_name}-{id}.key"));
+    let keypair = sshkey::Ed25519Keypair::generate();
+    let pem = keypair.to_openssh_private_key(&format!("{registry_name}-{id}"));
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&key_path).with_context(|| {
+            format!(
+                "creating private key file {} (refusing to overwrite an existing key)",
+                key_path.display(),
+            )
+        })?;
+        std::io::Write::write_all(&mut file, pem.as_bytes())
+            .with_context(|| format!("writing {}", key_path.display()))?;
+    }
+
+    let trust_key = keypair.trust_key_line(&registry_name);
+    let key_path_str = key_path.display().to_string();
+
+    // Record the private key path so `--key-id <id>` resolves (§2.6).
+    let config_path = config.registry_config_path_for_update(&registry_name);
+    let configured = config_path.exists();
+    if configured {
+        state::upsert_signing_key(
+            &config_path,
+            id,
+            &SigningKeySource::Path(key_path_str.clone()),
+        )?;
+        printer.kv("Config", &config_path.display().to_string());
+    } else {
+        printer.warning(&format!(
+            "registry '{registry_name}' has no config at {}; to use --key-id {id}, add:\n\
+             [registry.signing_keys]\n\"{id}\" = \"{key_path_str}\"",
+            config_path.display(),
+        ));
+    }
+
+    printer.kv("Key id", id);
+    printer.kv("Private key", &key_path_str);
+    printer.kv("Public key", &trust_key);
+    printer.kv(
+        "Fingerprint",
+        &key_fingerprint(&keypair.public_key_base64()),
+    );
+
+    let mut committed = false;
+    if add {
+        let dir = config.scope.registries_path().join(&registry_name);
+        let mut roster = load_committed_roster(&dir)?;
+        if roster.active.is_empty() {
+            bail!(
+                "registry '{registry_name}' has an empty trust roster; seed the first key with \
+                 `apr create {registry_name} --trust-key {trust_key} --key {key_path_str}` instead \
+                 of --add"
+            );
+        }
+        let commit_key = if no_commit {
+            None
+        } else {
+            resolve_roster_commit_key(
+                config,
+                &dir,
+                &registry_name,
+                &roster,
+                signing_key,
+                signing_key_id,
+            )?
+        };
+        add_roster_key(&mut roster, &registry_name, id, &trust_key)?;
+        persist_committed_roster(
+            &dir,
+            &roster,
+            no_commit,
+            &format!("registry: add signing key {id}"),
+            commit_key.as_ref().map(|k| k.path()),
+        )?;
+        committed = !no_commit;
+        printer.success(&format!(
+            "Added active signing key '{id}' to registry '{registry_name}'."
+        ));
+    }
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "keys_generate",
+            "status": "generated",
+            "registry": registry_name,
+            "id": id,
+            "private_key": key_path_str,
+            "public_key": trust_key,
+            "fingerprint": key_fingerprint(&keypair.public_key_base64()),
+            "configured": configured,
+            "config": if configured {
+                Some(config_path.to_string_lossy().to_string())
+            } else {
+                None
+            },
+            "added": add,
+            "committed": committed,
+        }));
+    }
+
+    Ok(())
+}
+
+/// `apr keys register <id>`
+///
+/// Adopt an externally-held maintainer key without generating or persisting
+/// key material. The private key is obtained from a path (`--key`) or a
+/// command (`--key-command`); its public half is derived with `ssh-keygen -y`
+/// (the same tool git uses to sign); the source is recorded under
+/// `[registry.signing_keys]` so `--key-id <id>` resolves it; and the
+/// `registry:Ed25519:<base64>` trust line is printed for an existing
+/// maintainer to add with `apr keys add`.
+///
+/// Unlike [`generate_roster_key`], nothing is generated and the private key
+/// never lands in a tool-managed file: a command source is materialized only
+/// transiently — long enough to derive the public key — and removed
+/// immediately. Resolving the source here doubles as validation that the
+/// configured path or command actually yields a usable key.
+///
+/// The registry must already have a `registries.d` config (created by
+/// `apr registry add`): the recorded `[registry.signing_keys]` entry is the
+/// whole point of this command, and the config file cannot be created here
+/// because it requires the registry URL. A missing config is an error, and
+/// it is checked up front so the key source (which may prompt, e.g. a
+/// secrets-manager command) is never run for a registration that cannot be
+/// recorded.
+fn register_roster_key(
+    config: &ApmConfig,
+    id: &str,
+    key: Option<&str>,
+    key_command: Option<&str>,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    validate_roster_key_id(id)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+
+    let config_path = config.registry_config_path_for_update(&registry_name);
+    if !config_path.exists() {
+        bail!(
+            "registry '{registry_name}' has no config at {}; register the registry first with \
+             `{} add <url>`, then re-run this command",
+            config_path.display(),
+            aos_core::invocation::package_registry_command(),
+        );
+    }
+
+    let source = match (key, key_command) {
+        (Some(_), Some(_)) => bail!("use only one of --key or --key-command"),
+        (Some(path), None) => SigningKeySource::Path(path.to_string()),
+        (None, Some(command)) => SigningKeySource::Spec(SigningKeySpec {
+            path: None,
+            command: Some(command.to_string()),
+        }),
+        (None, None) => bail!("provide the key with --key <path> or --key-command <command>"),
+    };
+
+    let resolved = resolve_signing_key_source(id, &source)?;
+    let trust_key = derive_trust_key(&registry_name, resolved.path())?;
+    let (_registry, _algorithm, public_key) = parse_signing_key(&trust_key)?;
+
+    state::upsert_signing_key(&config_path, id, &source)?;
+    printer.kv("Config", &config_path.display().to_string());
+
+    printer.kv("Key id", id);
+    match (source.path(), source.command()) {
+        (Some(path), _) => printer.kv("Key path", path),
+        (_, Some(command)) => printer.kv("Key command", command),
+        _ => {}
+    }
+    printer.kv("Public key", &trust_key);
+    printer.kv("Fingerprint", &key_fingerprint(&public_key));
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "keys_register",
+            "status": "registered",
+            "registry": registry_name,
+            "id": id,
+            "source": if source.path().is_some() { "path" } else { "command" },
+            "configured": true,
+            "config": config_path.to_string_lossy().to_string(),
+            "public_key": trust_key,
+            "fingerprint": key_fingerprint(&public_key),
+        }));
+        return Ok(());
+    }
+    printer.info(&format!(
+        "Hand the public key to an active maintainer to add it:\n  {} keys add {id} {trust_key} --registry {registry_name}",
+        aos_core::invocation::package_registry_command(),
+    ));
+    Ok(())
+}
+
+/// Derive the `registry:Ed25519:<base64>` trust line for the private key at
+/// `key_path` by shelling out to `ssh-keygen -y`.
+///
+/// `ssh-keygen -y` reads a private key and prints its public half as
+/// `ssh-ed25519 <base64> [comment]`; the base64 field is exactly the SSH
+/// wire-format blob that the trust line carries.
+fn derive_trust_key(registry_name: &str, key_path: &str) -> Result<String> {
+    let output = gitcmd::ssh_keygen()
+        .arg("-y")
+        .arg("-f")
+        .arg(key_path)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("running `ssh-keygen -y` to derive the public key")?;
+    if !output.status.success() {
+        bail!(
+            "`ssh-keygen -y` failed for the provided key: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    let line = String::from_utf8_lossy(&output.stdout);
+    let mut fields = line.split_whitespace();
+    let algorithm = fields.next().unwrap_or_default();
+    if algorithm != "ssh-ed25519" {
+        bail!("unsupported signing key type '{algorithm}'; registry keys must be Ed25519");
+    }
+    let blob = fields
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("`ssh-keygen -y` produced no public key material"))?;
+    Ok(format!("{registry_name}:Ed25519:{blob}"))
+}
+
+/// Write `keys.toml` back and, unless `no_commit`, commit it and refresh
+/// the dumb-HTTP object store.
 fn persist_committed_roster(
     dir: &Path,
     roster: &KeysToml,
     no_commit: bool,
     message: &str,
+    signing_key: Option<&str>,
 ) -> Result<()> {
     keys::write_keys_toml(dir, roster)?;
     if !no_commit {
-        commit_registry(dir, message)?;
+        commit_registry(dir, message, signing_key)?;
         refresh_registry_object_store(dir)
             .context("refreshing dumb-HTTP object store after keys.toml update")?;
     }
     Ok(())
 }
 
+/// Resolve the signing key for a roster-changing commit.
+///
+/// Roster commits must be signed whenever the pre-change roster is
+/// non-empty: clients verify head-commit signatures against the keys they
+/// already trust, so an unsigned roster change would be rejected on sync.
+/// Only the bootstrap case (adding the first key to an empty roster, which
+/// no client can verify yet) may proceed unsigned without an explicit key.
+fn resolve_roster_commit_key(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    roster_before: &KeysToml,
+    key: Option<&str>,
+    key_id: Option<&str>,
+) -> Result<Option<ResolvedSigningKey>> {
+    if key.is_some() || key_id.is_some() {
+        return resolve_producer_signing_key(config, dir, registry_name, key, key_id).map(Some);
+    }
+    if roster_before.active.is_empty() {
+        return Ok(None);
+    }
+    bail!(
+        "registry '{registry_name}' has a non-empty trust roster, so roster changes must be \
+         signed commits: pass --key <path> or --key-id <id> with an active maintainer key"
+    )
+}
+
+/// Append an active key to the roster after validating that the id is
+/// well-formed and unused, the key is not already present or revoked, and
+/// the key's registry binding matches.
 fn add_roster_key(roster: &mut KeysToml, registry_name: &str, id: &str, key: &str) -> Result<()> {
     validate_roster_key_id(id)?;
     if roster.active.iter().any(|entry| entry.id == id) {
@@ -1899,6 +6534,12 @@ fn add_roster_key(roster: &mut KeysToml, registry_name: &str, id: &str, key: &st
     Ok(())
 }
 
+/// Move key `id` from the active to the revoked roster, returning the id
+/// of the vouching survivor key.
+///
+/// At least one active key must remain. `--vouched-by` is required when
+/// more than one survivor exists and defaults to the sole survivor
+/// otherwise; the voucher must itself be a surviving active key.
 fn retire_roster_key(
     roster: &mut KeysToml,
     id: &str,
@@ -1946,6 +6587,8 @@ fn retire_roster_key(
     Ok(vouching_id)
 }
 
+/// Record `id` in the revoked list, updating the reason if it is already
+/// there.
 fn upsert_revoked_key(roster: &mut KeysToml, id: &str, reason: Option<&str>) {
     let reason = reason.map(str::to_string);
     if let Some(entry) = roster.revoked.iter_mut().find(|entry| entry.id == id) {
@@ -1991,6 +6634,24 @@ fn registry_upload_auth_config<'a>(
         .and_then(|(registry, _state)| registry.upload_auth.as_ref())
 }
 
+/// Resolve upload destinations: `--upload-url` flags when given, otherwise
+/// the `upload_urls` persisted in `[registry.upload_auth]` by
+/// `apr origin config`.
+fn resolve_upload_urls(
+    config: &ApmConfig,
+    registry_name: &str,
+    flag_urls: &[String],
+) -> Vec<String> {
+    if !flag_urls.is_empty() {
+        return flag_urls.to_vec();
+    }
+    registry_upload_auth_config(config, registry_name)
+        .map(|upload| upload.upload_urls.clone())
+        .unwrap_or_default()
+}
+
+/// Parse a `registry:Algorithm:<base64>` line into a [`TrustedKey`] pinned
+/// via TOFU, verifying it belongs to `expected_registry`.
 fn trusted_key_from_line(expected_registry: &str, key: &str) -> Result<TrustedKey> {
     let (registry, algorithm, public_key) = parse_signing_key(key)?;
     if registry != expected_registry {
@@ -2010,16 +6671,229 @@ fn trusted_key_from_line(expected_registry: &str, key: &str) -> Result<TrustedKe
     })
 }
 
+/// A producer signing key resolved to a filesystem path that git can open.
+///
+/// For path sources [`path`](Self::path) points at the user's key file
+/// directly. For command sources the key material is materialized into a
+/// private temporary file (mode `0600`, in a tmpfs-backed directory when one
+/// is available) whose lifetime is bound to this value: the file is removed
+/// when the `ResolvedSigningKey` is dropped.
+///
+/// Because `ResolvedSigningKey` owns a [`tempfile::NamedTempFile`], Rust drops
+/// it — and thus deletes the materialized key — at the end of its enclosing
+/// scope, not at last use. Callers therefore keep it in a local binding for
+/// the whole signing operation: `ssh-keygen` opens the key path more than
+/// once per signature, so the path cannot be a pipe and the file must outlive
+/// every git invocation that reads it.
+#[derive(Debug)]
+struct ResolvedSigningKey {
+    path: String,
+    /// Present for command sources; dropping it removes the temporary file.
+    _materialized: Option<tempfile::NamedTempFile>,
+}
+
+impl ResolvedSigningKey {
+    /// Wrap an on-disk key path that the tool does not own or manage.
+    fn from_path(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            _materialized: None,
+        }
+    }
+
+    /// The path to hand to `git -c user.signingkey=<path>`.
+    fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+/// Candidate directories for short-lived materialized keys, most-preferred
+/// first: a tmpfs-backed runtime directory when available (`$XDG_RUNTIME_DIR`,
+/// then `/dev/shm`), falling back to the system temp directory. Keeping the
+/// plaintext key in RAM-backed storage avoids it ever touching persistent
+/// disk.
+fn ephemeral_key_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        let path = PathBuf::from(dir);
+        if path.is_dir() {
+            dirs.push(path);
+        }
+    }
+    let shm = PathBuf::from("/dev/shm");
+    if shm.is_dir() {
+        dirs.push(shm);
+    }
+    dirs.push(std::env::temp_dir());
+    dirs
+}
+
+/// Create an empty private temporary file in the most-preferred writable
+/// [`ephemeral_key_dirs`] candidate.
+///
+/// A preferred directory may exist yet be unwritable (e.g. a read-only
+/// `$XDG_RUNTIME_DIR`), so each candidate is tried in turn and the first that
+/// accepts the file wins.
+fn create_ephemeral_key_file() -> Result<tempfile::NamedTempFile> {
+    let mut last_err: Option<(PathBuf, std::io::Error)> = None;
+    for dir in ephemeral_key_dirs() {
+        match tempfile::Builder::new()
+            .prefix(".apm-signing-key-")
+            .tempfile_in(&dir)
+        {
+            Ok(file) => return Ok(file),
+            Err(err) => last_err = Some((dir, err)),
+        }
+    }
+    match last_err {
+        Some((dir, err)) => Err(anyhow::Error::new(err))
+            .with_context(|| format!("creating temporary key file in {}", dir.display())),
+        // `ephemeral_key_dirs` always yields the system temp dir, so the loop
+        // runs at least once and records an error on total failure.
+        None => bail!("no candidate directory available for a temporary key file"),
+    }
+}
+
+/// Run a signing-key command via `bash -c` and materialize its stdout into a
+/// private temporary file that `git`/`ssh-keygen` can open.
+///
+/// The command must print the unencrypted OpenSSH private key to stdout. The
+/// returned [`ResolvedSigningKey`] owns the temporary file; the key is removed
+/// from disk as soon as it is dropped.
+///
+/// The `aos`/`apm`/`apr` wrapper scripts replace `PATH` with a minimal
+/// hermetic tool set and stash the caller's original value in
+/// `AOS_HOST_PATH`. A key command is user-supplied and expects the user's
+/// own environment (secret managers like `op`, filters like `jq`), so when
+/// `AOS_HOST_PATH` is present the command runs with the caller's `PATH`
+/// restored verbatim.
+fn materialize_signing_key_command(command: &str) -> Result<ResolvedSigningKey> {
+    materialize_signing_key_command_with_path(command, std::env::var_os("AOS_HOST_PATH"))
+}
+
+/// [`materialize_signing_key_command`] with an explicit `PATH` override for
+/// the spawned `bash -c` process; `None` inherits this process's `PATH`.
+fn materialize_signing_key_command_with_path(
+    command: &str,
+    search_path: Option<std::ffi::OsString>,
+) -> Result<ResolvedSigningKey> {
+    let runtime_path = std::env::var_os("PATH");
+    let shell_program = runtime_path
+        .as_deref()
+        .and_then(|path| executable_on_path("bash", path))
+        .unwrap_or_else(|| PathBuf::from("bash"));
+    let mut shell = std::process::Command::new(shell_program);
+    shell
+        .arg("-c")
+        .arg(command)
+        .stdin(std::process::Stdio::null());
+    if let Some(search_path) = search_path {
+        shell.env("PATH", search_path);
+    }
+    let output = shell
+        .output()
+        .with_context(|| format!("running signing key command `{command}`"))?;
+    if !output.status.success() {
+        bail!(
+            "signing key command `{command}` failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    if output.stdout.iter().all(u8::is_ascii_whitespace) {
+        bail!("signing key command `{command}` produced no key material on stdout");
+    }
+
+    // `tempfile` creates the file with mode 0600 and O_EXCL on Unix and
+    // removes it when the handle drops.
+    let mut file = create_ephemeral_key_file()?;
+    std::io::Write::write_all(file.as_file_mut(), &output.stdout)
+        .context("writing materialized signing key to a temporary file")?;
+    file.as_file()
+        .sync_all()
+        .context("flushing materialized signing key")?;
+
+    let path = file
+        .path()
+        .to_str()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "temporary key path is not valid UTF-8: {}",
+                file.path().display()
+            )
+        })?
+        .to_string();
+    Ok(ResolvedSigningKey {
+        path,
+        _materialized: Some(file),
+    })
+}
+
+/// Return the first regular executable candidate named `program` on `path`.
+fn executable_on_path(program: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Resolve a configured [`SigningKeySource`] to a path git can open.
+///
+/// A path source is validated for existence and returned as-is; a command
+/// source is run and its output materialized via
+/// [`materialize_signing_key_command`].
+fn resolve_signing_key_source(
+    key_id: &str,
+    source: &SigningKeySource,
+) -> Result<ResolvedSigningKey> {
+    match (source.path(), source.command()) {
+        (Some(_), Some(_)) => {
+            bail!("signing key id '{key_id}' configures both 'path' and 'command'; set exactly one")
+        }
+        (None, None) => {
+            bail!("signing key id '{key_id}' configures neither 'path' nor 'command'")
+        }
+        (Some(path), None) => {
+            let path = path.trim();
+            if path.is_empty() {
+                bail!("local private key path for signing key id '{key_id}' is empty");
+            }
+            let path_buf = PathBuf::from(path);
+            if !path_buf.exists() {
+                bail!(
+                    "local private key path for signing key id '{key_id}' does not exist: {}",
+                    path_buf.display(),
+                );
+            }
+            Ok(ResolvedSigningKey::from_path(path))
+        }
+        (None, Some(command)) => {
+            let command = command.trim();
+            if command.is_empty() {
+                bail!("signing key command for id '{key_id}' is empty");
+            }
+            materialize_signing_key_command(command)
+                .with_context(|| format!("resolving signing key id '{key_id}' via command"))
+        }
+    }
+}
+
+/// Resolve the maintainer signing key for tag and commit signing.
+///
+/// `--key` names a private key file used as-is. `--key-id` is looked up in
+/// the committed `keys.toml` roster — rejecting revoked ids and keys bound
+/// to another registry — and resolved to local key material through the
+/// registry config's `[registry.signing_keys]` table (a path or a
+/// command). Exactly one of the two must be provided.
 fn resolve_producer_signing_key(
     config: &ApmConfig,
     dir: &Path,
     registry_name: &str,
     key: Option<&str>,
     key_id: Option<&str>,
-) -> Result<String> {
+) -> Result<ResolvedSigningKey> {
     match (key, key_id) {
         (Some(_), Some(_)) => bail!("use only one of --key or --key-id"),
-        (Some(key), None) => Ok(key.to_string()),
+        (Some(key), None) => Ok(ResolvedSigningKey::from_path(key)),
         (None, Some(key_id)) => {
             validate_roster_key_id(key_id)?;
             let roster = load_committed_roster(dir)?;
@@ -2046,22 +6920,12 @@ fn resolve_producer_signing_key(
                         registry_name,
                     )
                 })?;
-            let path = registry_config.signing_keys.get(key_id).ok_or_else(|| {
+            let source = registry_config.signing_keys.get(key_id).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "no local private key path configured for signing key id '{key_id}'; add [registry.signing_keys] {key_id} = \"/path/to/private-key\" to the registry config or pass --key"
+                    "no local private key configured for signing key id '{key_id}'; add [registry.signing_keys] {key_id} = \"/path/to/private-key\" (or {{ command = \"...\" }}) to the registry config or pass --key"
                 )
             })?;
-            if path.trim().is_empty() {
-                bail!("local private key path for signing key id '{key_id}' is empty");
-            }
-            let path_buf = PathBuf::from(path);
-            if !path_buf.exists() {
-                bail!(
-                    "local private key path for signing key id '{key_id}' does not exist: {}",
-                    path_buf.display(),
-                );
-            }
-            Ok(path.clone())
+            resolve_signing_key_source(key_id, source)
         }
         (None, None) => bail!(
             "--key or --key-id is required: registry release and channel tags must be signed tag objects"
@@ -2080,6 +6944,8 @@ fn registry_config_by_name<'a>(
         .map(|(registry, _state)| registry)
 }
 
+/// `apr channel init`: point all 256 partitions of a channel at one
+/// release and set the channel branch to it.
 async fn channel_init(
     config: &ApmConfig,
     channel_name: &str,
@@ -2097,10 +6963,22 @@ async fn channel_init(
 
     let mut map = PartitionMap::new();
     for bucket in 0..=u8::MAX {
-        write_channel_partition_tag(&dir, channel_name, bucket, version, &signing_key)?;
+        write_channel_partition_tag(&dir, channel_name, bucket, version, signing_key.path())?;
         map.set(bucket as usize, version.clone())?;
     }
     update_channel_frontier(&dir, channel_name, &map)?;
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "channel_init",
+            "registry": registry_name,
+            "channel": channel_name,
+            "version": version.to_string(),
+            "partitions": 256,
+            "frontier": version.to_string(),
+        }));
+        return Ok(());
+    }
 
     printer.success(&format!(
         "Initialized channel '{channel_name}' with 256/256 partitions on {version}."
@@ -2108,6 +6986,8 @@ async fn channel_init(
     Ok(())
 }
 
+/// `apr channel advance`: re-sign the selected partitions of an existing
+/// channel against a newer release and recompute the frontier.
 async fn channel_advance(
     config: &ApmConfig,
     channel_name: &str,
@@ -2129,15 +7009,45 @@ async fn channel_advance(
     channel::assert_full_partition_set(&map)?;
     let selected = select_partitions_for_advance(count, partitions, &map, version)?;
     if selected.is_empty() {
+        if printer.mode() == OutputMode::Json {
+            let frontier = channel::compute_frontier(&map);
+            printer.json(&serde_json::json!({
+                "action": "channel_advance",
+                "registry": registry_name,
+                "channel": channel_name,
+                "version": version.to_string(),
+                "partitions": [],
+                "partition_count": 0,
+                "frontier": frontier.as_ref().map(ToString::to_string),
+                "status": "current",
+            }));
+            return Ok(());
+        }
         printer.info("No partitions selected for advancement.");
         return Ok(());
     }
 
     for bucket in &selected {
-        write_channel_partition_tag(&dir, channel_name, *bucket, version, &signing_key)?;
+        write_channel_partition_tag(&dir, channel_name, *bucket, version, signing_key.path())?;
         map.set(*bucket as usize, version.clone())?;
     }
     update_channel_frontier(&dir, channel_name, &map)?;
+
+    if printer.mode() == OutputMode::Json {
+        let frontier = channel::compute_frontier(&map);
+        let partition_count = selected.len();
+        printer.json(&serde_json::json!({
+            "action": "channel_advance",
+            "registry": registry_name,
+            "channel": channel_name,
+            "version": version.to_string(),
+            "partitions": &selected,
+            "partition_count": partition_count,
+            "frontier": frontier.as_ref().map(ToString::to_string),
+            "status": "advanced",
+        }));
+        return Ok(());
+    }
 
     printer.success(&format!(
         "Advanced channel '{channel_name}' {} partition(s) to {version}.",
@@ -2146,6 +7056,8 @@ async fn channel_advance(
     Ok(())
 }
 
+/// `apr channel status`: summarize partition versions, missing partitions,
+/// and the channel frontier.
 async fn channel_status(
     config: &ApmConfig,
     channel_name: &str,
@@ -2164,6 +7076,26 @@ async fn channel_status(
         }
     }
 
+    if printer.mode() == OutputMode::Json {
+        let versions = counts
+            .iter()
+            .rev()
+            .map(|(version, count)| {
+                serde_json::json!({
+                    "version": version.to_string(),
+                    "partitions": count,
+                })
+            })
+            .collect::<Vec<_>>();
+        printer.json(&serde_json::json!({
+            "channel": channel_name,
+            "frontier": frontier.as_ref().map(ToString::to_string),
+            "missing_partitions": missing,
+            "versions": versions,
+        }));
+        return Ok(());
+    }
+
     printer.header(&format!("Channel: {channel_name}"));
     if let Some(frontier) = frontier {
         printer.kv("Frontier", &frontier.to_string());
@@ -2177,7 +7109,19 @@ async fn channel_status(
     Ok(())
 }
 
-/// `apr push`
+/// `apr push` — pushes the current (or named) branch of the registry clone
+/// to `origin`.
+///
+/// Runs as a network transport, so the host git configuration (credential
+/// helpers, proxies) stays visible. `--set-upstream` passes `-u origin`
+/// with the selected branch, using the current branch when `--branch` is not
+/// supplied; `--force` force-pushes.
+///
+/// # Errors
+///
+/// Fails when a supplied branch name is not safe to use as a Git ref, when
+/// no remote or upstream is configured for the branch, or when the remote
+/// rejects the push.
 pub async fn push(
     config: &ApmConfig,
     branch: Option<&str>,
@@ -2187,23 +7131,43 @@ pub async fn push(
     printer: &Printer,
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
+    let current = current_git_branch(&dir)?;
+    if let Some(branch) = branch {
+        validate_branch_name(branch)?;
+    }
+    let pushed_branch = branch
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| current.clone());
 
     let mut args = vec!["push"];
     if set_upstream {
         args.push("-u");
-        args.push("origin");
     }
     if force {
         args.push("--force");
     }
     if let Some(b) = branch {
-        if !set_upstream {
-            args.push("origin");
-        }
+        args.push("origin");
         args.push(b);
+    } else if set_upstream {
+        args.push("origin");
+        args.push(&current);
     }
 
-    let output = git(&dir, &args)?;
+    let output = git_transport(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "push",
+            "branch": pushed_branch,
+            "set_upstream": set_upstream,
+            "force": force,
+            "current": current,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+            "output": output,
+        }));
+        return Ok(());
+    }
     if !output.is_empty() {
         printer.plain(&output);
     }
@@ -2212,7 +7176,14 @@ pub async fn push(
     Ok(())
 }
 
-/// `apr pull`
+/// `apr pull` — pulls the current branch of the registry clone from its
+/// upstream, rebasing local commits instead of merging when `--rebase` is
+/// given.
+///
+/// # Errors
+///
+/// Fails when no upstream is configured or the pull cannot complete
+/// cleanly (e.g. merge conflicts).
 pub async fn pull(
     config: &ApmConfig,
     rebase: bool,
@@ -2226,13 +7197,33 @@ pub async fn pull(
         args.push("--rebase");
     }
 
-    let output = git(&dir, &args)?;
+    let output = git_transport(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "pull",
+            "rebase": rebase,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+            "output": output,
+        }));
+        return Ok(());
+    }
     printer.plain(&output);
 
     Ok(())
 }
 
-/// `apr merge <BRANCH>`
+/// `apr merge <BRANCH>` — merges `branch` into the current branch of the
+/// registry clone.
+///
+/// `--no-ff` always creates a merge commit; `--squash` stages the combined
+/// changes without committing them.
+///
+/// # Errors
+///
+/// Fails when the branch name is not safe to use as a Git ref, when the
+/// branch does not exist, or when the merge conflicts.
 pub async fn merge(
     config: &ApmConfig,
     branch: &str,
@@ -2242,6 +7233,7 @@ pub async fn merge(
     printer: &Printer,
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
+    validate_branch_name(branch)?;
 
     let mut args = vec!["merge"];
     if no_ff {
@@ -2250,44 +7242,97 @@ pub async fn merge(
     if squash {
         args.push("--squash");
     }
+    args.push("--");
     args.push(branch);
 
     let output = git(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "merge",
+            "branch": branch,
+            "no_ff": no_ff,
+            "squash": squash,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+            "output": output,
+        }));
+        return Ok(());
+    }
     printer.plain(&output);
     printer.success(&format!("Merged '{branch}'."));
 
     Ok(())
 }
 
+fn current_git_head(dir: &Path) -> Result<String> {
+    git(dir, &["rev-parse", "HEAD"])
+}
+
 // ---------------------------------------------------------------------------
 // Release
 // ---------------------------------------------------------------------------
 
+/// Options controlling [`release_registry_tree`].
+///
+/// Mirrors the flags of `apr release` once the optional `--store-path`
+/// publish step has been handled by [`release`].
 #[derive(Debug, Clone)]
 pub struct ReleaseTreeOptions {
+    /// Release version; doubles as the git tag name.
     pub version: semver::Version,
+    /// Path to the OpenSSH Ed25519 private key used for tags and commits.
     pub signing_key: String,
+    /// Channel to initialize or advance after tagging, if any.
     pub channel: Option<String>,
+    /// Initialize all 256 channel partitions instead of advancing a subset.
     pub init_channel: bool,
+    /// Number of partitions to advance (ascending fill).
     pub count: Option<usize>,
+    /// Explicit partition list to advance (decimal or hex buckets).
     pub partitions: Option<String>,
+    /// Directory to generate the static Nix cache into, if any.
     pub cache_output: Option<PathBuf>,
+    /// Nix cache signing key for the generated narinfos.
     pub cache_key: Option<PathBuf>,
+    /// Public cache URL to upsert into `registry.toml` `[[caches]]`.
     pub cache_url: Option<String>,
+    /// Priority recorded for the cache pointer.
     pub cache_priority: u32,
+    /// Static-origin upload destinations.
     pub upload_urls: Vec<String>,
+    /// Authentication used for cache and origin uploads.
     pub upload_auth: AuthOptions,
+    /// Print the release plan without executing it.
     pub dry_run: bool,
+    /// Reuse an existing tag and pack artifacts at HEAD instead of failing.
     pub resume: bool,
+    /// Parallel compression jobs for the static cache (default: CPU count).
+    pub jobs: Option<usize>,
 }
 
+/// Summary of the artifacts produced by [`release_registry_tree`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReleaseReport {
+    /// Filename of the generated full pack, when the release kind needs one.
     pub full_pack: Option<String>,
+    /// Filenames of the generated compressed thin-delta packs.
     pub deltas: Vec<String>,
+    /// Static Nix cache generation report, when one was requested.
+    pub cache: Option<nixcache::StaticCacheReport>,
+    /// Whether the `registry.toml` cache pointer was updated and committed.
+    pub cache_pointer_updated: bool,
+    /// Number of channel partitions touched, when a channel was given.
+    pub channel_partitions: Option<usize>,
+    /// Files uploaded to the static origin, when uploads ran.
     pub uploaded_files: Option<usize>,
+    /// Bytes uploaded to the static origin, when uploads ran.
+    pub uploaded_bytes: Option<u64>,
 }
 
+/// Exclusive on-disk lock (`.git/apr-release.lock`) serializing release
+/// publishers against one registry clone; the lock file records the
+/// holder's pid and is removed on drop.
 struct ReleaseLock {
     path: PathBuf,
 }
@@ -2318,7 +7363,22 @@ impl Drop for ReleaseLock {
     }
 }
 
-/// `apr release <SEMVER>`
+/// `apr release <SEMVER>` — runs the end-to-end registry release workflow.
+///
+/// When `--store-path` is given, first publishes that store path into the
+/// release metadata under the release version (committed and SSH-signed),
+/// including explicit `--source-drv` provenance when provided, then
+/// delegates to [`release_registry_tree`] to create the signed
+/// release tag, generate pack artifacts, and run the optional cache,
+/// channel, and upload steps. `--dry-run` prints the plan without changing
+/// anything.
+///
+/// # Errors
+///
+/// Fails when the semver does not parse, the registry directory is
+/// missing, the signing key cannot be resolved, the working tree is dirty,
+/// the publish step fails, or any delegated release step fails (see
+/// [`release_registry_tree`]).
 #[allow(clippy::too_many_arguments)]
 pub async fn release(
     config: &ApmConfig,
@@ -2332,8 +7392,10 @@ pub async fn release(
     maintainer: Option<&str>,
     sysroot: bool,
     previous: Option<&str>,
+    source_drv: Option<&str>,
     image_paths: &[String],
     image_formats: &[String],
+    bless: bool,
     message: Option<&str>,
     channel: Option<&str>,
     init_channel: bool,
@@ -2350,6 +7412,7 @@ pub async fn release(
     dry_run: bool,
     resume: bool,
     registry: Option<&str>,
+    jobs: Option<usize>,
     printer: &Printer,
 ) -> Result<()> {
     let version = semver::Version::parse(semver)
@@ -2367,6 +7430,7 @@ pub async fn release(
                 "Would publish {store_path} into release metadata for {version}."
             ));
         } else {
+            ensure_release_worktree_clean(&dir)?;
             let release_version = version.to_string();
             publish(
                 config,
@@ -2380,10 +7444,15 @@ pub async fn release(
                 maintainer,
                 sysroot,
                 previous,
+                source_drv,
                 image_paths,
                 image_formats,
-                false,
+                bless,
+                false, // no_ca: release honors the registry's content_addressed setting
+                false, // no_commit
                 message,
+                Some(signing_key.path()),
+                None,
                 Some(&registry_name),
                 printer,
             )
@@ -2395,7 +7464,7 @@ pub async fn release(
         auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
     let options = ReleaseTreeOptions {
         version,
-        signing_key,
+        signing_key: signing_key.path().to_string(),
         channel: channel.map(ToString::to_string),
         init_channel,
         count,
@@ -2404,16 +7473,40 @@ pub async fn release(
         cache_key: cache_key.map(Path::to_path_buf),
         cache_url: cache_url.map(ToString::to_string),
         cache_priority,
-        upload_urls: upload_urls.to_vec(),
+        upload_urls: resolve_upload_urls(config, &registry_name, upload_urls),
         upload_auth,
         dry_run,
         resume,
+        jobs,
     };
 
     release_registry_tree(&dir, &registry_name, &options, printer).await?;
     Ok(())
 }
 
+/// Executes the release workflow against a registry directory.
+///
+/// Under an exclusive release lock, this: optionally commits a
+/// `registry.toml` cache pointer; creates the signed semver release tag at
+/// HEAD (or reuses an existing tag there when `resume` is set); generates
+/// the release pack artifacts under `.git/releases/<version>/` — a full
+/// pack for major/minor releases plus zstd-compressed thin deltas from the
+/// prior releases selected by the delta scheme; optionally generates the
+/// static Nix cache; initializes or advances the rollout channel; and
+/// uploads the static origin files. The dumb-HTTP object store is
+/// refreshed after each ref-moving step. With `dry_run`, the plan is
+/// printed and nothing is modified.
+///
+/// Returns a [`ReleaseReport`] describing the produced artifacts.
+///
+/// # Errors
+///
+/// Fails when the option combination is invalid (`--init-channel` or
+/// partition selectors without `--channel`, `--cache-key` without
+/// `--cache-output`); when another publisher holds the release lock; when
+/// the working tree is dirty; when the tag or pack artifacts already exist
+/// without `resume` (or the tag exists at a different commit); or when
+/// pack generation, cache generation, channel updates, or uploads fail.
 pub async fn release_registry_tree(
     dir: &Path,
     registry_name: &str,
@@ -2422,21 +7515,37 @@ pub async fn release_registry_tree(
 ) -> Result<ReleaseReport> {
     validate_release_options(options)?;
     if options.dry_run {
-        print_release_plan(dir, registry_name, options, printer);
+        if printer.mode() == OutputMode::Json {
+            printer.json(&release_result_json(
+                "planned",
+                registry_name,
+                dir,
+                options,
+                &ReleaseReport::default(),
+            ));
+        } else {
+            print_release_plan(dir, registry_name, options, printer);
+        }
         return Ok(ReleaseReport::default());
     }
 
     let _lock = ReleaseLock::acquire(dir)?;
     objectstore::assert_sha256(dir)?;
+    ensure_release_worktree_clean(dir)?;
 
+    let mut cache_pointer_updated = false;
     if let Some(cache_url) = &options.cache_url {
         if nixcache::upsert_registry_cache(dir, cache_url, options.cache_priority)? {
+            cache_pointer_updated = true;
             printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
-            commit_registry(dir, "registry: update static cache pointer")?;
+            commit_registry(
+                dir,
+                "registry: update static cache pointer",
+                Some(&options.signing_key),
+            )?;
         }
     }
 
-    ensure_release_worktree_clean(dir)?;
     let head = git(dir, &["rev-parse", "HEAD"])?;
     let published_before = semver_tag_versions(dir)?
         .into_iter()
@@ -2450,34 +7559,43 @@ pub async fn release_registry_tree(
     refresh_registry_object_store(dir)
         .context("refreshing dumb-HTTP object store after release artifacts")?;
 
+    let mut cache_report = None;
     if let Some(output) = &options.cache_output {
-        let report = nixcache::generate_static_cache(
+        let generated = nixcache::generate_static_cache(
             dir,
             output,
             options.cache_key.as_deref(),
             options.cache_priority,
+            options.jobs,
             printer,
         )
         .await?;
         printer.success(&format!(
-            "Generated static cache: {} narinfos, {} NARs in {}",
-            report.narinfos,
-            report.nars,
-            report.output_dir.display(),
+            "Generated static cache: {} narinfos, {} NARs ({} reused) in {}",
+            generated.narinfos,
+            generated.nars,
+            generated.nars_skipped,
+            generated.output_dir.display(),
         ));
+        cache_report = Some(generated);
     }
+
+    let mut report = artifacts;
+    report.cache_pointer_updated = cache_pointer_updated;
+    report.cache = cache_report;
 
     if let Some(channel) = &options.channel {
         if options.init_channel {
-            channel_init_dir(
+            let partitions = channel_init_dir(
                 dir,
                 channel,
                 &options.version,
                 &options.signing_key,
                 printer,
             )?;
+            report.channel_partitions = Some(partitions);
         } else {
-            channel_advance_dir(
+            let partitions = channel_advance_dir(
                 dir,
                 channel,
                 &options.version,
@@ -2486,10 +7604,10 @@ pub async fn release_registry_tree(
                 &options.signing_key,
                 printer,
             )?;
+            report.channel_partitions = Some(partitions);
         }
     }
 
-    let mut report = artifacts;
     if !options.upload_urls.is_empty() {
         let upload = static_upload::upload_static_origin_to_all(
             dir,
@@ -2500,6 +7618,7 @@ pub async fn release_registry_tree(
         )
         .await?;
         report.uploaded_files = Some(upload.files);
+        report.uploaded_bytes = Some(upload.bytes);
         printer.success(&format!(
             "Uploaded {} static origin file(s) ({}).",
             upload.files,
@@ -2508,9 +7627,19 @@ pub async fn release_registry_tree(
     }
 
     printer.success(&format!("Released {registry_name} {}.", options.version));
+    if printer.mode() == OutputMode::Json {
+        printer.json(&release_result_json(
+            "released",
+            registry_name,
+            dir,
+            options,
+            &report,
+        ));
+    }
     Ok(report)
 }
 
+/// Reject invalid `apr release` flag combinations before any work happens.
 fn validate_release_options(options: &ReleaseTreeOptions) -> Result<()> {
     match (&options.channel, options.init_channel) {
         (None, true) => bail!("--init-channel requires --channel"),
@@ -2539,6 +7668,84 @@ fn validate_release_options(options: &ReleaseTreeOptions) -> Result<()> {
         bail!("--cache-key requires --cache-output");
     }
     Ok(())
+}
+
+fn release_result_json(
+    status: &str,
+    registry_name: &str,
+    dir: &Path,
+    options: &ReleaseTreeOptions,
+    report: &ReleaseReport,
+) -> serde_json::Value {
+    let channel = options.channel.as_ref().map(|channel| {
+        serde_json::json!({
+            "name": channel,
+            "action": if options.init_channel { "init" } else { "advance" },
+            "count": options.count,
+            "partitions": options.partitions.as_deref(),
+            "touched_partitions": report.channel_partitions,
+        })
+    });
+    serde_json::json!({
+        "action": "release",
+        "status": status,
+        "registry": registry_name,
+        "directory": dir.to_string_lossy().to_string(),
+        "version": options.version.to_string(),
+        "dry_run": options.dry_run,
+        "resume": options.resume,
+        "cache_output": options
+            .cache_output
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        "cache_url": options.cache_url.as_deref(),
+        "cache_priority": options.cache_priority,
+        "cache": report.cache.as_ref().map(static_cache_report_json),
+        "cache_pointer_updated": report.cache_pointer_updated,
+        "upload_urls": &options.upload_urls,
+        "uploaded_files": report.uploaded_files,
+        "uploaded_bytes": report.uploaded_bytes,
+        "uploaded_bytes_human": report.uploaded_bytes.map(format_size),
+        "channel": channel,
+        "full_pack": report.full_pack.as_deref(),
+        "deltas": &report.deltas,
+        "planned_steps": release_plan_steps_json(options),
+    })
+}
+
+fn static_cache_report_json(report: &nixcache::StaticCacheReport) -> serde_json::Value {
+    serde_json::json!({
+        "paths": report.paths,
+        "narinfos": report.narinfos,
+        "nars": report.nars,
+        "nars_skipped": report.nars_skipped,
+        "output_dir": report.output_dir.to_string_lossy().to_string(),
+    })
+}
+
+fn release_plan_steps_json(options: &ReleaseTreeOptions) -> Vec<&'static str> {
+    let mut steps = vec![
+        "ensure_clean_worktree",
+        "create_signed_release_tag",
+        "generate_release_packs",
+    ];
+    if options.cache_url.is_some() {
+        steps.insert(1, "commit_cache_pointer");
+    }
+    if options.cache_output.is_some() {
+        steps.push("generate_static_cache");
+    }
+    if options.channel.is_some() {
+        steps.push(if options.init_channel {
+            "initialize_channel"
+        } else {
+            "advance_channel"
+        });
+    }
+    if !options.upload_urls.is_empty() {
+        steps.push("upload_static_origin");
+    }
+    steps
 }
 
 fn print_release_plan(
@@ -2575,6 +7782,8 @@ fn print_release_plan(
     }
 }
 
+/// Require a clean working tree before releasing; bare repositories pass
+/// trivially.
 fn ensure_release_worktree_clean(dir: &Path) -> Result<()> {
     let is_bare = git(dir, &["rev-parse", "--is-bare-repository"])? == "true";
     if is_bare {
@@ -2587,6 +7796,8 @@ fn ensure_release_worktree_clean(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Create the signed release tag at `head`, or accept an existing tag that
+/// already points at `head` when resuming.
 fn ensure_release_tag(
     dir: &Path,
     options: &ReleaseTreeOptions,
@@ -2627,6 +7838,8 @@ fn ensure_release_tag(
     Ok(())
 }
 
+/// Return the commit an existing release tag points at, or `None` when no
+/// tag exists; a non-tag ref carrying the release name is an error.
 fn existing_release_tag_commit(dir: &Path, version: &semver::Version) -> Result<Option<String>> {
     let tag = version.to_string();
     let (tag_ok, _, tag_stderr) = git_try(dir, &["rev-parse", &format!("{tag}^{{tag}}")])?;
@@ -2644,6 +7857,14 @@ fn existing_release_tag_commit(dir: &Path, version: &semver::Version) -> Result<
     Ok(Some(commit))
 }
 
+/// Generate the pack artifacts for a release under
+/// `.git/releases/<version>/`.
+///
+/// Major and minor releases get a self-contained full pack, recorded in
+/// `info/packs` for dumb-HTTP fetchers. Every release also gets a
+/// zstd-compressed thin delta from each prior release selected by the
+/// delta scheme, so consumers on a supported base version can fetch a
+/// compact incremental pack instead of the full history.
 async fn write_release_artifacts(
     dir: &Path,
     published_before: &[semver::Version],
@@ -2691,10 +7912,13 @@ async fn write_release_artifacts(
     Ok(ReleaseReport {
         full_pack,
         deltas,
-        uploaded_files: None,
+        ..ReleaseReport::default()
     })
 }
 
+/// Generate (or, with `resume`, reuse) the full `pack-*.pack` for a
+/// release commit, staging it in a tempdir before copying it and its
+/// `.idx` into place.
 async fn write_full_pack_artifact(
     dir: &Path,
     commit: &str,
@@ -2710,7 +7934,10 @@ async fn write_full_pack_artifact(
         bail!("full pack {existing} already exists; pass --resume to reuse it");
     }
 
-    let tmp = tempfile::TempDir::new().context("creating full-pack tempdir")?;
+    let tmp = tempfile::Builder::new()
+        .prefix(".tmp-full-pack-")
+        .tempdir_in(pack_dir)
+        .with_context(|| format!("creating full-pack tempdir in {}", pack_dir.display()))?;
     let pack_path = pack::full_pack(dir, commit, tmp.path()).await?;
     let pack_name = file_name_string(&pack_path)?;
     fs::copy(&pack_path, pack_dir.join(&pack_name))
@@ -2725,6 +7952,9 @@ async fn write_full_pack_artifact(
     Ok(pack_name)
 }
 
+/// Generate (or, with `resume`, reuse) the `delta-<base>.pack.zst` thin
+/// pack carrying the objects needed to go from `base_commit` to
+/// `target_commit`.
 async fn write_delta_artifact(
     dir: &Path,
     base: &semver::Version,
@@ -2746,7 +7976,10 @@ async fn write_delta_artifact(
         bail!("delta pack {artifact_name} already exists; pass --resume to reuse it");
     }
 
-    let tmp = tempfile::TempDir::new().context("creating delta-pack tempdir")?;
+    let tmp = tempfile::Builder::new()
+        .prefix(".tmp-delta-pack-")
+        .tempdir_in(pack_dir)
+        .with_context(|| format!("creating delta-pack tempdir in {}", pack_dir.display()))?;
     let delta = pack::thin_delta(dir, base_commit, target_commit, base, tmp.path()).await?;
     let compressed = pack::zstd_compress(&delta, None).await?;
     fs::copy(&compressed, &dest).with_context(|| format!("copying {}", compressed.display()))?;
@@ -2754,6 +7987,8 @@ async fn write_delta_artifact(
     Ok(artifact_name)
 }
 
+/// Find an already-generated full pack in `pack_dir`; more than one is an
+/// error because `info/packs` records exactly one.
 fn existing_full_pack(pack_dir: &Path) -> Result<Option<String>> {
     if !pack_dir.exists() {
         return Ok(None);
@@ -2789,13 +8024,15 @@ fn file_name_string(path: &Path) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("path has no UTF-8 filename: {}", path.display()))
 }
 
+/// Point all 256 partitions of a channel at `version` and move the channel
+/// branch to the new frontier. Returns the partition count (always 256).
 fn channel_init_dir(
     dir: &Path,
     channel_name: &str,
     version: &semver::Version,
     signing_key: &str,
     printer: &Printer,
-) -> Result<()> {
+) -> Result<usize> {
     validate_channel_name(channel_name)?;
     assert_release_tag_exists(dir, version)?;
     let mut map = PartitionMap::new();
@@ -2807,9 +8044,11 @@ fn channel_init_dir(
     printer.success(&format!(
         "Initialized channel '{channel_name}' with 256/256 partitions on {version}."
     ));
-    Ok(())
+    Ok(256)
 }
 
+/// Advance the selected partitions of an existing channel to `version` and
+/// update the frontier. Returns how many partitions were touched.
 fn channel_advance_dir(
     dir: &Path,
     channel_name: &str,
@@ -2818,7 +8057,7 @@ fn channel_advance_dir(
     partitions: Option<&str>,
     signing_key: &str,
     printer: &Printer,
-) -> Result<()> {
+) -> Result<usize> {
     validate_channel_name(channel_name)?;
     assert_release_tag_exists(dir, version)?;
     let mut map = read_channel_partition_map(dir, channel_name)?;
@@ -2826,7 +8065,7 @@ fn channel_advance_dir(
     let selected = select_partitions_for_advance(count, partitions, &map, version)?;
     if selected.is_empty() {
         printer.info("No partitions selected for advancement.");
-        return Ok(());
+        return Ok(0);
     }
     for bucket in &selected {
         write_channel_partition_tag(dir, channel_name, *bucket, version, signing_key)?;
@@ -2837,10 +8076,19 @@ fn channel_advance_dir(
         "Advanced channel '{channel_name}' {} partition(s) to {version}.",
         selected.len()
     ));
-    Ok(())
+    Ok(selected.len())
 }
 
-/// `apr tag <NAME>`
+/// `apr tag <NAME>` — creates an SSH-signed annotated tag at HEAD in the
+/// registry clone and refreshes the dumb-HTTP object store.
+///
+/// The tag message defaults to `AOS registry release`.
+///
+/// # Errors
+///
+/// Fails when the tag name is not a safe Git refname, when the signing key
+/// cannot be resolved, when the tag already exists, or when git tag signing
+/// fails.
 pub async fn tag(
     config: &ApmConfig,
     name: &str,
@@ -2850,25 +8098,53 @@ pub async fn tag(
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    validate_git_ref_name(name)?;
     let registry_name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&registry_name);
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+    let tag_message = message.unwrap_or("AOS registry release");
 
     sign_tag(
         &dir,
         name,
         "HEAD",
-        message.or(Some("AOS registry release")),
-        &signing_key,
+        Some(tag_message),
+        signing_key.path(),
         false,
     )?;
     refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after tag")?;
+
+    if printer.mode() == OutputMode::Json {
+        let tag_object = git(&dir, &["rev-parse", &format!("{name}^{{tag}}")])
+            .with_context(|| format!("resolving tag object for '{name}'"))?;
+        let target = git(&dir, &["rev-parse", &format!("{name}^{{commit}}")])
+            .with_context(|| format!("resolving tag target for '{name}'"))?;
+        printer.json(&serde_json::json!({
+            "action": "tag",
+            "status": "tagged",
+            "registry": registry_name,
+            "tag": name,
+            "message": tag_message,
+            "target": target,
+            "tag_object": tag_object,
+        }));
+        return Ok(());
+    }
 
     printer.success(&format!("Created signed tag '{name}'."));
     Ok(())
 }
 
-/// `apr sign <TAG>`
+/// `apr sign <TAG>` — re-signs an existing tag in place.
+///
+/// The tag is force-recreated against its current target commit with a
+/// fresh SSH signature, and the dumb-HTTP object store is refreshed.
+///
+/// # Errors
+///
+/// Fails when no tag name is given, when the tag name is not a safe Git
+/// refname, when the tag cannot be resolved, when the signing key cannot be
+/// resolved, or when git tag signing fails.
 pub async fn sign(
     config: &ApmConfig,
     tag: Option<&str>,
@@ -2882,7 +8158,10 @@ pub async fn sign(
     let tag_name = tag.ok_or_else(|| {
         anyhow::anyhow!("`apr sign` now signs tag objects; pass the existing tag name to re-sign")
     })?;
+    validate_git_ref_name(tag_name)?;
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+    let previous_tag_object = git(&dir, &["rev-parse", &format!("{tag_name}^{{tag}}")])
+        .with_context(|| format!("resolving existing tag object for '{tag_name}'"))?;
     let target = git(&dir, &["rev-list", "-n", "1", tag_name])
         .with_context(|| format!("resolving tag '{tag_name}' target commit"))?;
 
@@ -2891,38 +8170,48 @@ pub async fn sign(
         tag_name,
         &target,
         Some("AOS registry release"),
-        &signing_key,
+        signing_key.path(),
         true,
     )?;
     refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after sign")?;
+    if printer.mode() == OutputMode::Json {
+        let tag_object = git(&dir, &["rev-parse", &format!("{tag_name}^{{tag}}")])
+            .with_context(|| format!("resolving re-signed tag object for '{tag_name}'"))?;
+        printer.json(&serde_json::json!({
+            "action": "sign",
+            "status": "signed",
+            "registry": registry_name,
+            "tag": tag_name,
+            "target": target,
+            "previous_tag_object": previous_tag_object,
+            "tag_object": tag_object,
+        }));
+        return Ok(());
+    }
     printer.success(&format!("Re-signed tag '{tag_name}'."));
 
     Ok(())
 }
 
-fn validate_channel_name(channel_name: &str) -> Result<()> {
-    if channel_name.is_empty()
-        || channel_name.contains('/')
-        || channel_name.starts_with('-')
-        || channel_name.contains("..")
-    {
-        bail!("channel name must be a single non-empty ref segment");
-    }
-    Ok(())
-}
-
+/// Require the signed release tag for `version` to exist, returning the
+/// tag object id.
 fn assert_release_tag_exists(dir: &Path, version: &semver::Version) -> Result<String> {
     let tag = version.to_string();
     git(dir, &["rev-parse", &format!("{tag}^{{tag}}")])
         .with_context(|| format!("resolving signed release tag '{tag}'"))
 }
 
+/// Resolve the commit a release tag points at.
 fn release_commit(dir: &Path, version: &semver::Version) -> Result<String> {
     let tag = version.to_string();
     git(dir, &["rev-parse", &format!("{tag}^{{commit}}")])
         .with_context(|| format!("resolving release tag '{tag}' commit"))
 }
 
+/// Resolve which partitions a channel advance should touch: `--count`
+/// picks the lowest-numbered partitions not yet on the target version
+/// (ascending fill), while `--partitions` names buckets explicitly.
+/// Exactly one of the two must be given.
 fn select_partitions_for_advance(
     count: Option<usize>,
     partitions: Option<&str>,
@@ -2960,6 +8249,8 @@ fn parse_partition_list(spec: &str) -> Result<Vec<u8>> {
     Ok(buckets)
 }
 
+/// Parse a single partition bucket: `0x`-prefixed or letter-containing
+/// strings are hex, everything else is decimal.
 fn parse_partition(raw: &str) -> Result<u8> {
     if let Some(hex) = raw.strip_prefix("0x") {
         return u8::from_str_radix(hex, 16)
@@ -2973,6 +8264,9 @@ fn parse_partition(raw: &str) -> Result<u8> {
         .with_context(|| format!("invalid decimal partition '{raw}'"))
 }
 
+/// Reconstruct a channel's partition map from the signed tag payloads
+/// under `.git/channels/<name>/`, verifying each payload's channel-name
+/// binding and resolving its target tag object to a release version.
 fn read_channel_partition_map(dir: &Path, channel_name: &str) -> Result<PartitionMap> {
     let release_tags = semver_tag_object_map(dir)?;
     let git_dir = objectstore::repo_git_dir(dir)?;
@@ -3008,6 +8302,7 @@ fn read_channel_partition_map(dir: &Path, channel_name: &str) -> Result<Partitio
     Ok(map)
 }
 
+/// Map each release tag's object id to its release version.
 fn semver_tag_object_map(dir: &Path) -> Result<BTreeMap<String, semver::Version>> {
     let mut map = BTreeMap::new();
     for version in semver_tag_versions(dir)? {
@@ -3017,6 +8312,13 @@ fn semver_tag_object_map(dir: &Path) -> Result<BTreeMap<String, semver::Version>
     Ok(map)
 }
 
+/// Sign and store the payload for one channel partition.
+///
+/// Git can only sign tags through refs, so a temporary tag named after the
+/// channel is force-created against the release tag object, its signed
+/// payload is copied into `.git/channels/<channel>/<bucket>`, and the
+/// temporary ref is deleted. The payload file is the durable artifact
+/// consumers fetch and verify.
 fn write_channel_partition_tag(
     dir: &Path,
     channel_name: &str,
@@ -3054,6 +8356,9 @@ fn write_channel_partition_tag(
     Ok(())
 }
 
+/// Recompute the channel frontier from the partition map, point
+/// `refs/heads/<channel>` at the frontier release's commit, and refresh
+/// the dumb-HTTP object store.
 fn update_channel_frontier(dir: &Path, channel_name: &str, map: &PartitionMap) -> Result<()> {
     channel::assert_full_partition_set(map)?;
     let frontier = channel::compute_frontier(map)
@@ -3077,12 +8382,14 @@ fn sign_tag(
     signing_key: &str,
     force: bool,
 ) -> Result<()> {
+    validate_git_ref_name(tag_name)?;
     let message = message.unwrap_or("AOS registry release");
+    ensure_commit_identity(dir)?;
     let signing_key_config = format!("user.signingkey={signing_key}");
-    let mut command = Command::new("git");
+    let mut command = gitcmd::hermetic();
+    command.arg("-c").arg("gpg.format=ssh");
+    gitcmd::add_ssh_program_config(&mut command);
     command
-        .arg("-c")
-        .arg("gpg.format=ssh")
         .arg("-c")
         .arg(signing_key_config)
         .arg("tag")
@@ -3091,9 +8398,10 @@ fn sign_tag(
         command.arg("-f");
     }
     command
-        .arg(tag_name)
         .arg("-m")
         .arg(message)
+        .arg("--")
+        .arg(tag_name)
         .arg(target)
         .current_dir(dir);
 
@@ -3139,10 +8447,265 @@ fn format_size(bytes: u64) -> String {
 mod tests {
     use super::*;
     use crate::security::verify_tag_signature;
+    use crate::testutil;
     use crate::types::{ApmSettings, ProfileScope, RegistryConfig, RegistryUploadAuthConfig};
-    use base64::Engine as _;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn parse_sbat_csv_reads_component_generations() {
+        let csv = "sbat,1,SBAT Version,sbat,1,https://x\naos,2,AOS,aos,2,https://aos\n# comment\n\nsystemd,1,systemd,systemd,1,https://systemd\n";
+        let entries = parse_sbat_csv(csv).unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                SbatEntry {
+                    component: "sbat".into(),
+                    generation: 1
+                },
+                SbatEntry {
+                    component: "aos".into(),
+                    generation: 2
+                },
+                SbatEntry {
+                    component: "systemd".into(),
+                    generation: 1
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_sbat_csv_rejects_non_numeric_generation() {
+        assert!(parse_sbat_csv("aos,notanumber,AOS\n").is_err());
+    }
+
+    #[test]
+    fn parse_pcr11_extracts_sha256_digest() {
+        let out = "11:sha256=abcdef0123\n12:sha256=ffff\n";
+        assert_eq!(parse_pcr11(out).as_deref(), Some("abcdef0123"));
+        assert_eq!(parse_pcr11("no pcr lines here"), None);
+    }
+
+    #[test]
+    fn parse_pcr11_takes_first_phase_line() {
+        // `systemd-measure calculate` prints one 11: line per boot phase
+        // (enter-initrd first). We record the enter-initrd value, so the
+        // parser must return the FIRST 11: line, not the last.
+        let out = "# PCR[11] Phase <enter-initrd>\n\
+                   # PCR[11] Phase <enter-initrd:leave-initrd>\n\
+                   11:sha256=aaaa\n\
+                   11:sha256=bbbb\n";
+        assert_eq!(parse_pcr11(out).as_deref(), Some("aaaa"));
+    }
+
+    #[test]
+    fn augment_path_appends_host_after_process_dedup() {
+        use std::ffi::OsString;
+        // No host path -> inherit process PATH unchanged (None).
+        assert!(augment_path_with_host(Some(OsString::from("/a:/b")), None).is_none());
+        // Host path appended after process path, duplicates dropped, order kept.
+        let joined =
+            augment_path_with_host(Some(OsString::from("/a:/b")), Some(OsString::from("/b:/c")))
+                .unwrap();
+        assert_eq!(joined, OsString::from("/a:/b:/c"));
+    }
+
+    #[test]
+    fn der_len_handles_short_and_long_forms() {
+        assert_eq!(der_len(&[0x05]).unwrap(), (5, 1));
+        // 0x82 => two length octets follow: 0x01 0x00 = 256.
+        assert_eq!(der_len(&[0x82, 0x01, 0x00]).unwrap(), (256, 3));
+    }
+
+    #[test]
+    fn leaf_cert_from_pe_extracts_first_certificate() {
+        // Build a tiny synthetic PE32+ with a security directory whose
+        // WIN_CERTIFICATE blob holds a PKCS#7 ContentInfo wrapping a
+        // SignedData with two certificates; assert we return the first.
+        let leaf: &[u8] = &[0x30, 0x03, 0x01, 0x02, 0x03]; // SEQUENCE len 3
+        let second: &[u8] = &[0x30, 0x02, 0x09, 0x08]; // SEQUENCE len 2
+        let mut certs_value = Vec::new();
+        certs_value.extend_from_slice(leaf);
+        certs_value.extend_from_slice(second);
+        // certificates [0] IMPLICIT (tag 0xA0).
+        let mut certs_field = vec![0xA0, certs_value.len() as u8];
+        certs_field.extend_from_slice(&certs_value);
+        // SignedData SEQUENCE wrapping the certificates field.
+        let mut signed_data = vec![0x30, certs_field.len() as u8];
+        signed_data.extend_from_slice(&certs_field);
+        // content [0] EXPLICIT wrapping SignedData.
+        let mut content = vec![0xA0, signed_data.len() as u8];
+        content.extend_from_slice(&signed_data);
+        // ContentInfo SEQUENCE { OID, content [0] }.
+        let oid: &[u8] = &[0x06, 0x01, 0x2A]; // OBJECT IDENTIFIER len 1
+        let mut ci_value = Vec::new();
+        ci_value.extend_from_slice(oid);
+        ci_value.extend_from_slice(&content);
+        let mut pkcs7 = vec![0x30, ci_value.len() as u8];
+        pkcs7.extend_from_slice(&ci_value);
+
+        let extracted = first_certificate_der(&pkcs7).unwrap();
+        assert_eq!(extracted, leaf);
+
+        // Wrap the PKCS#7 in a WIN_CERTIFICATE blob and a minimal PE32+ so
+        // leaf_cert_from_pe finds it via the security directory.
+        let mut win_cert = vec![0u8; 8]; // dwLength/wRevision/wCertificateType
+        win_cert.extend_from_slice(&pkcs7);
+
+        // Assemble: DOS header (e_lfanew at 0x3c), PE sig, COFF, optional
+        // header (PE32+ magic), data directories with security entry.
+        let mut pe = vec![0u8; 0x40];
+        pe[0] = b'M';
+        pe[1] = b'Z';
+        let pe_off: u32 = 0x40;
+        pe[0x3c..0x40].copy_from_slice(&pe_off.to_le_bytes());
+        // PE signature + COFF header (20 bytes) + optional header.
+        let mut tail = Vec::new();
+        tail.extend_from_slice(&0x0000_4550u32.to_le_bytes()); // "PE\0\0"
+        tail.extend_from_slice(&[0u8; 20]); // COFF header
+        let opt_start = pe.len() + tail.len();
+        tail.extend_from_slice(&0x020bu16.to_le_bytes()); // PE32+ magic
+        // Pad optional header up to the data directory (112 bytes from magic).
+        tail.resize(tail.len() + (112 - 2), 0);
+        let dir_start = opt_start + 112;
+        // Security dir is entry index 4 (each entry 8 bytes).
+        let cert_off = dir_start + 16 * 8; // place blob after all 16 entries
+        tail.resize(tail.len() + 16 * 8, 0);
+        // Write security entry (index 4): offset + size.
+        let entry_in_tail = (dir_start - pe.len()) + 4 * 8;
+        tail[entry_in_tail..entry_in_tail + 4].copy_from_slice(&(cert_off as u32).to_le_bytes());
+        tail[entry_in_tail + 4..entry_in_tail + 8]
+            .copy_from_slice(&(win_cert.len() as u32).to_le_bytes());
+        pe.extend_from_slice(&tail);
+        assert_eq!(pe.len(), cert_off);
+        pe.extend_from_slice(&win_cert);
+
+        let from_pe = leaf_cert_from_pe(&pe).unwrap();
+        assert_eq!(from_pe, leaf);
+    }
+
+    /// Wrap a DER value in a SEQUENCE/SET/context tag with a short length.
+    fn der_wrap(tag: u8, value: &[u8]) -> Vec<u8> {
+        assert!(value.len() < 0x80, "test helper only handles short form");
+        let mut out = vec![tag, value.len() as u8];
+        out.extend_from_slice(value);
+        out
+    }
+
+    /// M3: with a real SignerInfo present, the signer cert is selected by
+    /// issuer+serial even when it is NOT first in the certificate SET. A
+    /// naive "take element [0]" would return the intermediate and fail.
+    #[test]
+    fn first_certificate_der_selects_signer_by_issuer_and_serial() {
+        // Build a minimal Certificate: SEQUENCE { TBSCertificate SEQUENCE {
+        //   serialNumber INTEGER, signature SEQUENCE{}, issuer Name SEQUENCE
+        // } }. We omit signatureAlgorithm/signatureValue siblings — only the
+        // TBS prefix is parsed by cert_issuer_and_serial.
+        fn make_cert(serial: u8, issuer_byte: u8) -> Vec<u8> {
+            let serial_int = vec![0x02, 0x01, serial]; // INTEGER serial
+            let sig_alg = der_wrap(0x30, &[]); // empty AlgorithmIdentifier
+            let issuer = der_wrap(0x30, &[0x05, 0x01, issuer_byte]); // Name
+            let mut tbs_value = Vec::new();
+            tbs_value.extend_from_slice(&serial_int);
+            tbs_value.extend_from_slice(&sig_alg);
+            tbs_value.extend_from_slice(&issuer);
+            let tbs = der_wrap(0x30, &tbs_value);
+            der_wrap(0x30, &tbs) // Certificate wraps the TBS
+        }
+
+        // Intermediate (serial 1, issuer 0xAA) and signer (serial 9, issuer
+        // 0xBB). Place the signer second.
+        let intermediate = make_cert(1, 0xAA);
+        let signer = make_cert(9, 0xBB);
+        let mut certs_value = Vec::new();
+        certs_value.extend_from_slice(&intermediate);
+        certs_value.extend_from_slice(&signer);
+        let certs_field = der_wrap(0xA0, &certs_value);
+
+        // SignerInfo SEQUENCE { version INTEGER 1, IssuerAndSerialNumber
+        //   SEQUENCE { issuer Name(0xBB), serialNumber INTEGER 9 } }.
+        let issuer_bb = der_wrap(0x30, &[0x05, 0x01, 0xBB]);
+        let serial_9 = vec![0x02, 0x01, 0x09];
+        let mut ias_value = Vec::new();
+        ias_value.extend_from_slice(&issuer_bb);
+        ias_value.extend_from_slice(&serial_9);
+        let ias = der_wrap(0x30, &ias_value);
+        let mut signer_info_value = vec![0x02, 0x01, 0x01]; // version 1
+        signer_info_value.extend_from_slice(&ias);
+        let signer_info = der_wrap(0x30, &signer_info_value);
+        let signer_infos = der_wrap(0x31, &signer_info); // SET OF SignerInfo
+
+        // SignedData SEQUENCE { certificates [0], signerInfos SET }.
+        let mut signed_data_value = Vec::new();
+        signed_data_value.extend_from_slice(&certs_field);
+        signed_data_value.extend_from_slice(&signer_infos);
+        let signed_data = der_wrap(0x30, &signed_data_value);
+        let content = der_wrap(0xA0, &signed_data); // content [0] EXPLICIT
+        let mut ci_value = vec![0x06, 0x01, 0x2A]; // contentType OID
+        ci_value.extend_from_slice(&content);
+        let pkcs7 = der_wrap(0x30, &ci_value);
+
+        let extracted = first_certificate_der(&pkcs7).unwrap();
+        assert_eq!(
+            extracted,
+            signer.as_slice(),
+            "signer cert (issuer 0xBB / serial 9) must be selected, not the first cert"
+        );
+
+        // Sanity: the SHA-256 of the selected cert is the signer's digest.
+        assert_eq!(sha256_hex(extracted), sha256_hex(&signer));
+    }
+
+    const SBCERT_A: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    const SBCERT_B: &str = "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752";
+
+    #[test]
+    fn add_sb_cert_enrolls_and_rejects_dupes() {
+        let mut catalog = SbCertsToml::default();
+        add_sb_cert(&mut catalog, "db-2026", SBCERT_A).unwrap();
+        assert_eq!(catalog.active.len(), 1);
+        assert_eq!(catalog.active[0].cert_sha256, SBCERT_A);
+        // Uppercase digest is normalized to lowercase.
+        let mut c2 = SbCertsToml::default();
+        add_sb_cert(&mut c2, "db", &SBCERT_A.to_ascii_uppercase()).unwrap();
+        assert_eq!(c2.active[0].cert_sha256, SBCERT_A);
+        // Duplicate id and duplicate digest both rejected.
+        assert!(add_sb_cert(&mut catalog, "db-2026", SBCERT_B).is_err());
+        assert!(add_sb_cert(&mut catalog, "other", SBCERT_A).is_err());
+        // Bad digest rejected.
+        assert!(add_sb_cert(&mut catalog, "bad", "nothex").is_err());
+    }
+
+    #[test]
+    fn retire_sb_cert_moves_active_to_revoked() {
+        let mut catalog = SbCertsToml::default();
+        add_sb_cert(&mut catalog, "db", SBCERT_A).unwrap();
+        retire_sb_cert(&mut catalog, "db", Some("compromised")).unwrap();
+        assert_eq!(catalog.revoked.len(), 1);
+        // Still active-listed (validate_catalog requires it) but revoked.
+        assert!(catalog.active.iter().any(|c| c.id == "db"));
+        assert!(!catalog.accepts_signer(SBCERT_A));
+        // Already revoked / unknown id rejected.
+        assert!(retire_sb_cert(&mut catalog, "db", None).is_err());
+        assert!(retire_sb_cert(&mut catalog, "ghost", None).is_err());
+    }
+
+    #[test]
+    fn set_sbat_floor_raises_only() {
+        let mut catalog = SbCertsToml::default();
+        set_sbat_floor(&mut catalog, "aos", 1).unwrap();
+        set_sbat_floor(&mut catalog, "aos", 3).unwrap();
+        assert_eq!(catalog.sbat_floor[0].generation, 3);
+        // Lowering is refused.
+        assert!(set_sbat_floor(&mut catalog, "aos", 2).is_err());
+        // Equal is allowed (idempotent re-set).
+        set_sbat_floor(&mut catalog, "aos", 3).unwrap();
+        // New component inserted.
+        set_sbat_floor(&mut catalog, "systemd", 1).unwrap();
+        assert_eq!(catalog.sbat_floor.len(), 2);
+        assert!(set_sbat_floor(&mut catalog, "", 1).is_err());
+    }
 
     struct TestSigningFixture {
         trusted_key: String,
@@ -3224,10 +8787,43 @@ mod tests {
     }
 
     #[test]
+    fn initial_keys_roster_rejects_invalid_key_id() {
+        let err = initial_keys_roster(
+            "aos-core",
+            Some("aos-core:Ed25519:YWJjZA=="),
+            Some("bad/id"),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("key id"));
+    }
+
+    #[test]
     fn initial_keys_roster_rejects_foreign_registry_key() {
         let err = initial_keys_roster("aos-core", Some("other:Ed25519:YWJjZA=="), Some("2026a"))
             .unwrap_err();
         assert!(format!("{err:#}").contains("expected 'aos-core'"));
+    }
+
+    #[test]
+    fn resolve_upload_urls_prefers_flags_over_persisted_defaults() {
+        let upload_auth = RegistryUploadAuthConfig {
+            upload_urls: vec!["s3://persisted/".to_string()],
+            ..RegistryUploadAuthConfig::default()
+        };
+        let config = ApmConfig {
+            settings: ApmSettings::default(),
+            registries: vec![(test_registry_config("aos-core", Some(upload_auth)), None)],
+            scope: ProfileScope::User,
+        };
+
+        let flags = vec!["s3://flag/".to_string()];
+        assert_eq!(resolve_upload_urls(&config, "aos-core", &flags), flags);
+        assert_eq!(
+            resolve_upload_urls(&config, "aos-core", &[]),
+            vec!["s3://persisted/".to_string()],
+        );
+        // A registry with no persisted defaults resolves to no destinations.
+        assert!(resolve_upload_urls(&config, "other", &[]).is_empty());
     }
 
     #[test]
@@ -3246,7 +8842,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(resolved, "/tmp/key");
+        assert_eq!(resolved.path(), "/tmp/key");
     }
 
     #[test]
@@ -3281,7 +8877,7 @@ mod tests {
             resolve_producer_signing_key(&config, &repo, "aos-core", None, Some("initial"))
                 .unwrap();
 
-        assert_eq!(PathBuf::from(resolved), signing.private_key);
+        assert_eq!(PathBuf::from(resolved.path()), signing.private_key);
     }
 
     #[test]
@@ -3300,7 +8896,7 @@ mod tests {
         let err = resolve_producer_signing_key(&config, &repo, "aos-core", None, Some("initial"))
             .unwrap_err();
 
-        assert!(format!("{err:#}").contains("no local private key path configured"));
+        assert!(format!("{err:#}").contains("no local private key configured"));
     }
 
     #[test]
@@ -3355,12 +8951,215 @@ mod tests {
             "1.0.0",
             "HEAD",
             Some("AOS registry release"),
-            &resolved,
+            resolved.path(),
             false,
         )
         .unwrap();
 
-        assert!(verify_tag_signature(&repo, "1.0.0", &signing.trusted_key).unwrap());
+        assert!(
+            verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&signing.trusted_key))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn producer_signing_key_command_source_signs_verifiable_release_tag() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=main",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+
+        let signing = write_test_signing_key(tmp.path(), "aos-core");
+        write_test_roster(&repo, "initial", &signing.trusted_key, &[]).unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+
+        // A command source: `cat` the key file just-in-time. This exercises
+        // the materialize-to-tempfile path that `ssh-keygen`'s double-open
+        // requires (a pipe would fail here).
+        let mut registry_config = test_registry_config("aos-core", None);
+        registry_config.signing_keys.insert(
+            "initial".to_string(),
+            SigningKeySource::Spec(SigningKeySpec {
+                path: None,
+                command: Some(format!("cat {}", signing.private_key.display())),
+            }),
+        );
+        let config = ApmConfig {
+            settings: ApmSettings::default(),
+            registries: vec![(registry_config, None)],
+            scope: ProfileScope::User,
+        };
+
+        let resolved =
+            resolve_producer_signing_key(&config, &repo, "aos-core", None, Some("initial"))
+                .unwrap();
+        // The key was materialized into a fresh temp file, not the original.
+        assert_ne!(resolved.path(), signing.private_key.to_str().unwrap());
+        let materialized = PathBuf::from(resolved.path());
+        assert!(materialized.exists());
+
+        sign_tag(
+            &repo,
+            "1.0.0",
+            "HEAD",
+            Some("AOS registry release"),
+            resolved.path(),
+            false,
+        )
+        .unwrap();
+        assert!(
+            verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&signing.trusted_key))
+                .unwrap()
+        );
+
+        // Dropping the resolved key removes the materialized temp file.
+        drop(resolved);
+        assert!(!materialized.exists());
+    }
+
+    #[test]
+    fn producer_signing_key_command_failure_is_reported() {
+        let source = SigningKeySource::Spec(SigningKeySpec {
+            path: None,
+            command: Some("exit 3".to_string()),
+        });
+        let err = resolve_signing_key_source("initial", &source).unwrap_err();
+        assert!(format!("{err:#}").contains("signing key command"));
+    }
+
+    #[test]
+    fn signing_key_command_runs_with_search_path_override() {
+        // Passing the current PATH through the override exercises the same
+        // code path the wrappers trigger via AOS_HOST_PATH.
+        let resolved = materialize_signing_key_command_with_path(
+            "printf 'key material'",
+            std::env::var_os("PATH"),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(resolved.path()).unwrap(), "key material");
+    }
+
+    #[test]
+    fn signing_key_command_finds_host_path_helpers() {
+        let tmp = TempDir::new().unwrap();
+        let helper = tmp.path().join("emit-signing-key");
+        let runtime_path = std::env::var_os("PATH").unwrap();
+        let bash = executable_on_path("bash", &runtime_path).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(bash, &helper).unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            fs::copy(bash, &helper).unwrap();
+        }
+
+        let resolved = materialize_signing_key_command_with_path(
+            "emit-signing-key -c \"printf 'host key material'\"",
+            Some(tmp.path().as_os_str().to_os_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(resolved.path()).unwrap(),
+            "host key material"
+        );
+    }
+
+    #[test]
+    fn signing_key_command_shell_resolution_survives_path_override() {
+        // The shell itself is resolved from the runtime PATH before the
+        // user command sees the override, so shell builtins still work.
+        let tmp = TempDir::new().unwrap();
+        let resolved = materialize_signing_key_command_with_path(
+            "printf 'key material'",
+            Some(tmp.path().as_os_str().to_os_string()),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(resolved.path()).unwrap(), "key material");
+    }
+
+    #[test]
+    fn signing_key_command_search_path_override_replaces_command_path() {
+        let tmp = TempDir::new().unwrap();
+        let err = materialize_signing_key_command_with_path(
+            "cat /definitely/missing",
+            Some(tmp.path().as_os_str().to_os_string()),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("signing key command"));
+    }
+
+    #[test]
+    fn signing_key_source_rejects_both_path_and_command() {
+        let source = SigningKeySource::Spec(SigningKeySpec {
+            path: Some("/tmp/key".to_string()),
+            command: Some("cat /tmp/key".to_string()),
+        });
+        let err = resolve_signing_key_source("initial", &source).unwrap_err();
+        assert!(format!("{err:#}").contains("both 'path' and 'command'"));
+    }
+
+    #[test]
+    fn remote_diff_base_uses_pushed_current_branch_without_origin_head() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        let origin = tmp.path().join("origin.git");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=main",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--bare",
+                "--object-format=sha256",
+                origin.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        )
+        .unwrap();
+        git(&repo, &["push", "origin", "main"]).unwrap();
+
+        assert!(!git_ref_exists(&repo, "origin/HEAD").unwrap());
+        assert_eq!(remote_diff_base(&repo).unwrap(), "origin/main");
     }
 
     #[test]
@@ -3414,7 +9213,7 @@ mod tests {
         let mut registry_config = test_registry_config(registry, None);
         registry_config.signing_keys.insert(
             key_id.to_string(),
-            private_key.to_str().unwrap().to_string(),
+            SigningKeySource::Path(private_key.to_str().unwrap().to_string()),
         );
         ApmConfig {
             settings: ApmSettings::default(),
@@ -3447,85 +9246,155 @@ mod tests {
     }
 
     fn write_test_signing_key(root: &Path, registry: &str) -> TestSigningFixture {
+        write_seeded_signing_key(root, registry, [9u8; 32], "registry_ed25519")
+    }
+
+    fn write_seeded_signing_key(
+        root: &Path,
+        registry: &str,
+        seed: [u8; 32],
+        name: &str,
+    ) -> TestSigningFixture {
         let signing_dir = root.join("signing");
         fs::create_dir_all(&signing_dir).unwrap();
 
-        let seed = [9u8; 32];
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
-        let raw_public_key = signing_key.verifying_key().to_bytes();
-        let public_blob = ssh_ed25519_public_key_blob(&raw_public_key);
-        let public_blob_b64 = base64::engine::general_purpose::STANDARD.encode(public_blob);
-        let private_key = signing_dir.join("registry_ed25519");
+        let keypair = crate::sshkey::Ed25519Keypair::from_seed(seed);
+        let private_key = signing_dir.join(name);
 
-        fs::write(
-            &private_key,
-            openssh_ed25519_private_key(&seed, &raw_public_key, registry),
-        )
-        .unwrap();
+        fs::write(&private_key, keypair.to_openssh_private_key(registry)).unwrap();
         restrict_private_key_permissions(&private_key).unwrap();
 
         TestSigningFixture {
-            trusted_key: format!("{registry}:Ed25519:{public_blob_b64}"),
+            trusted_key: keypair.trust_key_line(registry),
             private_key,
         }
     }
 
-    fn ssh_ed25519_public_key_blob(public_key: &[u8; 32]) -> Vec<u8> {
-        let mut blob = Vec::new();
-        push_ssh_string(&mut blob, b"ssh-ed25519");
-        push_ssh_string(&mut blob, public_key);
-        blob
+    #[test]
+    fn retirement_resign_rotates_release_and_partition_signatures() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=stable",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+
+        // Maintainer A signs everything and then retires; B survives.
+        let key_a = write_seeded_signing_key(tmp.path(), "aos-core", [9u8; 32], "key_a");
+        let key_b = write_seeded_signing_key(tmp.path(), "aos-core", [10u8; 32], "key_b");
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+
+        let version = semver::Version::new(1, 0, 0);
+        let key_a_path = key_a.private_key.to_str().unwrap();
+        sign_tag(
+            &repo,
+            "1.0.0",
+            "HEAD",
+            Some("release 1.0.0"),
+            key_a_path,
+            false,
+        )
+        .unwrap();
+        let printer = Printer::new(0, true, false);
+        channel_init_dir(&repo, "prod", &version, key_a_path, &printer).unwrap();
+
+        // Nothing is affected while A is still a survivor.
+        let survivors_both = vec![key_a.trusted_key.clone(), key_b.trusted_key.clone()];
+        let plan = plan_retirement_resign(&repo, &survivors_both).unwrap();
+        assert!(plan.is_empty());
+
+        // Retiring A: the release tag and every partition need re-signing.
+        let survivors = vec![key_b.trusted_key.clone()];
+        let plan = plan_retirement_resign(&repo, &survivors).unwrap();
+        assert_eq!(plan.affected_releases, vec![version.clone()]);
+        assert_eq!(plan.affected_partitions.len(), 256);
+
+        execute_retirement_resign(&repo, &plan, key_b.private_key.to_str().unwrap(), &printer)
+            .unwrap();
+
+        // The release tag now verifies only against the survivor.
+        assert!(
+            verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&key_b.trusted_key)).unwrap()
+        );
+        assert!(
+            !verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&key_a.trusted_key))
+                .unwrap()
+        );
+
+        // Partition payloads were regenerated against the new tag object
+        // and verify against the survivor.
+        let payload = fs::read(repo.join(".git/channels/prod/00")).unwrap();
+        let oid = hash_tag_object(&repo, &payload).unwrap();
+        assert!(
+            verify_tag_signature(&repo, &oid, std::slice::from_ref(&key_b.trusted_key)).unwrap()
+        );
+        let map = read_channel_partition_map(&repo, "prod").unwrap();
+        assert_eq!(channel::compute_frontier(&map), Some(version));
+
+        // Re-planning against the survivor finds nothing left to re-sign.
+        let plan = plan_retirement_resign(&repo, &survivors).unwrap();
+        assert!(plan.is_empty());
     }
 
-    fn openssh_ed25519_private_key(
-        seed: &[u8; 32],
-        public_key: &[u8; 32],
-        comment: &str,
-    ) -> String {
-        let public_blob = ssh_ed25519_public_key_blob(public_key);
-        let mut private_key = Vec::new();
-        private_key.extend_from_slice(seed);
-        private_key.extend_from_slice(public_key);
+    #[test]
+    fn retirement_resign_includes_release_tags_without_channels() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=stable",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
 
-        let mut private = Vec::new();
-        push_u32(&mut private, 0x1234_5678);
-        push_u32(&mut private, 0x1234_5678);
-        push_ssh_string(&mut private, b"ssh-ed25519");
-        push_ssh_string(&mut private, public_key);
-        push_ssh_string(&mut private, &private_key);
-        push_ssh_string(&mut private, comment.as_bytes());
-        for pad in 1..=(8 - private.len() % 8) {
-            if private.len() % 8 == 0 {
-                break;
-            }
-            private.push(pad as u8);
-        }
+        let key_a = write_seeded_signing_key(tmp.path(), "aos-core", [11u8; 32], "key_a");
+        let key_b = write_seeded_signing_key(tmp.path(), "aos-core", [12u8; 32], "key_b");
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
 
-        let mut blob = b"openssh-key-v1\0".to_vec();
-        push_ssh_string(&mut blob, b"none");
-        push_ssh_string(&mut blob, b"none");
-        push_ssh_string(&mut blob, b"");
-        push_u32(&mut blob, 1);
-        push_ssh_string(&mut blob, &public_blob);
-        push_ssh_string(&mut blob, &private);
+        let version = semver::Version::new(1, 0, 0);
+        sign_tag(
+            &repo,
+            "1.0.0",
+            "HEAD",
+            Some("release 1.0.0"),
+            key_a.private_key.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
 
-        let encoded = base64::engine::general_purpose::STANDARD.encode(blob);
-        let mut out = "-----BEGIN OPENSSH PRIVATE KEY-----\n".to_string();
-        for chunk in encoded.as_bytes().chunks(70) {
-            out.push_str(std::str::from_utf8(chunk).unwrap());
-            out.push('\n');
-        }
-        out.push_str("-----END OPENSSH PRIVATE KEY-----\n");
-        out
-    }
+        let survivors = vec![key_b.trusted_key.clone()];
+        let plan = plan_retirement_resign(&repo, &survivors).unwrap();
 
-    fn push_ssh_string(out: &mut Vec<u8>, value: &[u8]) {
-        push_u32(out, value.len() as u32);
-        out.extend_from_slice(value);
-    }
-
-    fn push_u32(out: &mut Vec<u8>, value: u32) {
-        out.extend_from_slice(&value.to_be_bytes());
+        assert_eq!(plan.affected_releases, vec![version]);
+        assert!(plan.affected_partitions.is_empty());
     }
 
     #[cfg(unix)]
@@ -3565,6 +9434,25 @@ mod tests {
     }
 
     #[test]
+    fn store_dir_from_store_path_accepts_alternate_stores() {
+        assert_eq!(
+            store_dir_from_store_path("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-curl-8.5.0"),
+            Some("/nix/store"),
+        );
+        assert_eq!(
+            store_dir_from_store_path(
+                "/build/aos-root/store/0123456789abcdfghijklmnpqrsvwxyz-curl-8.5.0.drv",
+            ),
+            Some("/build/aos-root/store"),
+        );
+        assert_eq!(store_dir_from_store_path("unknown-deriver"), None);
+        assert_eq!(
+            store_dir_from_store_path("/nix/store/not-a-store-path"),
+            None
+        );
+    }
+
+    #[test]
     fn build_package_toml_new() {
         let info = StorePathInfo {
             path: "/nix/store/abc123-curl-8.5.0".into(),
@@ -3586,12 +9474,54 @@ mod tests {
             false,
             None,
             &[],
+            None,
         )
         .unwrap();
         assert!(content.contains("name = \"curl\""));
         assert!(content.contains("version = \"8.5.0\""));
         assert!(content.contains("x86_64-linux"));
-        assert!(content.contains("sha256:deadbeef"));
+        // Output content bindings live in the store/ graph, not the TOML
+        // (RFC-0005).
+        assert!(!content.contains("nar_hash = \"sha256:deadbeef\""));
+        assert!(!content.contains("nar_size"));
+        assert!(content.contains("source_drv = \"\""));
+        assert!(content.contains("source_nar_hash = \"\""));
+    }
+
+    #[test]
+    fn build_package_toml_records_source_deriver() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-curl-8.5.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let source_info = StorePathInfo {
+            path: "/nix/store/drv123-curl-8.5.0.drv".into(),
+            nar_hash: "sha256:source".into(),
+            nar_size: 4096,
+            references: vec![],
+            closure_size: 4096,
+        };
+        let content = build_package_toml(
+            "",
+            "curl",
+            "8.5.0",
+            "x86_64-linux",
+            &info,
+            Some("URL transfer tool"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            Some(&source_info),
+        )
+        .unwrap();
+        assert!(content.contains("source_drv = \"/nix/store/drv123-curl-8.5.0.drv\""));
+        assert!(content.contains("source_nar_hash = \"sha256:source\""));
     }
 
     #[test]
@@ -3634,12 +9564,17 @@ references = []
             false,
             None,
             &[],
+            None,
         )
         .unwrap();
         // Should contain both platforms.
         assert!(content.contains("x86_64-linux"));
         assert!(content.contains("aarch64-linux"));
-        assert!(content.contains("sha256:new"));
+        assert!(content.contains("/nix/store/new-curl-8.5.0"));
+        // The pre-existing platform's legacy fields survive untouched; the
+        // new platform entry carries no nar_hash (RFC-0005).
+        assert!(content.contains("sha256:old"));
+        assert!(!content.contains("sha256:new"));
     }
 
     #[test]
@@ -3670,7 +9605,8 @@ references = []
             Some("aos-team"),
             true,
             Some("2026.03"),
-            &[("raw".to_string(), img_info)],
+            &[("raw".to_string(), img_info, SbFacts::default())],
+            None,
         )
         .unwrap();
         assert!(content.contains("sysroot = true"));
@@ -3680,10 +9616,509 @@ references = []
     }
 
     #[test]
+    fn build_package_toml_escapes_maintainer_metadata() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-tool-1.0.0".into(),
+            nar_hash: "sha256:aabb".into(),
+            nar_size: 42,
+            references: vec!["ref\"one".into()],
+            closure_size: 84,
+        };
+        let img_info = StorePathInfo {
+            path: "/nix/store/def456-tool-image-1.0.0".into(),
+            nar_hash: "sha256:ccdd".into(),
+            nar_size: 128,
+            references: vec![],
+            closure_size: 0,
+        };
+
+        let content = build_package_toml(
+            "",
+            "tool",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some("Tool with \"quoted\" metadata\nand a second line"),
+            Some("https://example.invalid/tool?feature=\"quotes\""),
+            Some("MIT OR Apache-2.0"),
+            Some("AOS Team <aos@example.invalid>"),
+            false,
+            Some("0.9.0+build\"meta"),
+            &[("raw\"image".to_string(), img_info, SbFacts::default())],
+            None,
+        )
+        .unwrap();
+
+        let rendered: toml::Value = toml::from_str(&content).unwrap();
+        assert_eq!(
+            rendered
+                .get("package")
+                .and_then(|package| package.get("description"))
+                .and_then(|description| description.as_str()),
+            Some("Tool with \"quoted\" metadata\nand a second line")
+        );
+        assert_eq!(
+            rendered
+                .get("versions")
+                .and_then(|versions| versions.as_array())
+                .and_then(|versions| versions.first())
+                .and_then(|version| version.get("previous"))
+                .and_then(|previous| previous.as_str()),
+            Some("0.9.0+build\"meta")
+        );
+        assert_eq!(
+            rendered
+                .get("versions")
+                .and_then(|versions| versions.as_array())
+                .and_then(|versions| versions.first())
+                .and_then(|version| version.get("platforms"))
+                .and_then(|platforms| platforms.get("x86_64-linux"))
+                .and_then(|platform| platform.get("images"))
+                .and_then(|images| images.as_array())
+                .and_then(|images| images.first())
+                .and_then(|image| image.get("format"))
+                .and_then(|format| format.as_str()),
+            Some("raw\"image")
+        );
+    }
+
+    #[test]
+    fn selected_package_versions_filters_exact_version() {
+        let toml_val: toml::Value = toml::from_str(
+            r#"[package]
+name = "tool"
+description = "test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaa111-tool-1.0.0"
+nar_hash = "sha256:v1"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "2.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/bbb222-tool-2.0.0"
+nar_hash = "sha256:v2"
+nar_size = 2
+closure_size = 2
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#,
+        )
+        .unwrap();
+
+        let selected = selected_package_versions(&toml_val, Some("1.0.0")).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0]
+                .get("version")
+                .and_then(|version| version.as_str()),
+            Some("1.0.0")
+        );
+        assert!(selected_package_versions(&toml_val, Some("9.9.9")).is_err());
+
+        let raw = package_toml_with_versions(&toml_val, &selected).unwrap();
+        let rendered = toml::to_string_pretty(&raw).unwrap();
+        assert!(rendered.contains("1.0.0"));
+        assert!(!rendered.contains("2.0.0"));
+    }
+
+    #[test]
+    fn latest_version_string_uses_semver_and_platform_filter() {
+        let toml_val: toml::Value = toml::from_str(
+            r#"[package]
+name = "tool"
+description = "test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.9.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaa111-tool-1.9.0"
+nar_hash = "sha256:v1"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "1.10.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/bbb222-tool-1.10.0"
+nar_hash = "sha256:v2"
+nar_size = 2
+closure_size = 2
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "3.0.0"
+
+[versions.platforms.aarch64-linux]
+store_path = "/nix/store/ccc333-tool-3.0.0"
+nar_hash = "sha256:v3"
+nar_size = 3
+closure_size = 3
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            latest_version_string(&matching_package_versions(&toml_val, Some("x86_64-linux"))),
+            Some("1.10.0".to_string())
+        );
+        assert_eq!(
+            latest_version_string(&matching_package_versions(&toml_val, Some("aarch64-linux"))),
+            Some("3.0.0".to_string())
+        );
+        assert!(matching_package_versions(&toml_val, Some("riscv64-linux")).is_empty());
+    }
+
+    #[test]
+    fn cache_validation_entries_honor_package_and_platform_filters() {
+        let tmp = TempDir::new().unwrap();
+        let pkg_dir = tmp.path().join("packages").join("t");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(
+            pkg_dir.join("tool.toml"),
+            r#"[package]
+name = "tool"
+description = "test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaa111-tool-1.0.0"
+nar_hash = "sha256:x86"
+nar_size = 1
+closure_size = 1
+references = []
+
+[versions.platforms.aarch64-linux]
+store_path = "/nix/store/bbb222-tool-1.0.0"
+nar_hash = "sha256:arm"
+nar_size = 1
+closure_size = 1
+references = []
+
+[[versions.platforms.aarch64-linux.images]]
+format = "raw"
+store_path = "/nix/store/ccc333-tool-image-1.0.0"
+nar_hash = "sha256:image"
+nar_size = 1
+"#,
+        )
+        .unwrap();
+
+        let entries =
+            collect_cache_validation_entries(tmp.path(), Some("tool"), Some("aarch64-linux"))
+                .unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                CacheValidationEntry {
+                    name: "tool".into(),
+                    platform: "aarch64-linux".into(),
+                    store_path: "/nix/store/bbb222-tool-1.0.0".into(),
+                    store_hash: "bbb222".into(),
+                    nar_hashes: vec!["sha256:arm".into()],
+                },
+                CacheValidationEntry {
+                    name: "tool".into(),
+                    platform: "aarch64-linux".into(),
+                    store_path: "/nix/store/ccc333-tool-image-1.0.0".into(),
+                    store_hash: "ccc333".into(),
+                    nar_hashes: vec!["sha256:image".into()],
+                },
+            ]
+        );
+        assert!(
+            collect_cache_validation_entries(tmp.path(), Some("missing"), None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn remove_missing_cache_entries_prunes_platforms_and_images() {
+        let tmp = TempDir::new().unwrap();
+        let pkg_dir = tmp.path().join("packages/t");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        let toml_path = pkg_dir.join("tool.toml");
+        fs::write(
+            &toml_path,
+            r#"[package]
+name = "tool"
+description = "test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaa111-tool-1.0.0"
+nar_hash = "sha256:x86"
+nar_size = 1
+closure_size = 1
+references = []
+
+[versions.platforms.aarch64-linux]
+store_path = "/nix/store/bbb222-tool-1.0.0"
+nar_hash = "sha256:arm"
+nar_size = 1
+closure_size = 1
+references = []
+
+[[versions.platforms.aarch64-linux.images]]
+format = "raw"
+store_path = "/nix/store/ccc333-tool-image-1.0.0"
+nar_hash = "sha256:image"
+nar_size = 1
+"#,
+        )
+        .unwrap();
+
+        let mut missing = std::collections::HashSet::new();
+        missing.insert("/nix/store/ccc333-tool-image-1.0.0".to_string());
+        assert_eq!(
+            remove_missing_cache_entries(tmp.path(), &missing).unwrap(),
+            1
+        );
+        let toml_val: toml::Value =
+            toml::from_str(&fs::read_to_string(&toml_path).unwrap()).unwrap();
+        let aarch64 = toml_val
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.get("aarch64-linux"))
+            .unwrap();
+        assert!(aarch64.get("images").is_none());
+
+        missing.clear();
+        missing.insert("/nix/store/bbb222-tool-1.0.0".to_string());
+        assert_eq!(
+            remove_missing_cache_entries(tmp.path(), &missing).unwrap(),
+            1
+        );
+        let toml_val: toml::Value =
+            toml::from_str(&fs::read_to_string(&toml_path).unwrap()).unwrap();
+        let platforms = toml_val
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.as_table())
+            .unwrap();
+        assert!(platforms.contains_key("x86_64-linux"));
+        assert!(!platforms.contains_key("aarch64-linux"));
+
+        missing.clear();
+        missing.insert("/nix/store/aaa111-tool-1.0.0".to_string());
+        assert_eq!(
+            remove_missing_cache_entries(tmp.path(), &missing).unwrap(),
+            1
+        );
+        assert!(!toml_path.exists());
+    }
+
+    #[tokio::test]
+    async fn cache_validation_entry_follows_narinfo_url() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).await.unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let narinfo = concat!(
+                    "StorePath: /nix/store/abc123-tool-1.0.0\n",
+                    "URL: nar/abc123-sha256-test.nar.zst\n",
+                    "Compression: zstd\n",
+                    "NarHash: sha256:test\n",
+                    "NarSize: 1\n",
+                );
+                let response = if req.starts_with("GET /abc123.narinfo ") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        narinfo.len(),
+                        narinfo,
+                    )
+                } else if req.starts_with("HEAD /nar/abc123-sha256-test.nar.zst ") {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                } else {
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_string()
+                };
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let result = validate_cache_entry(
+            &reqwest::Client::new(),
+            &[CacheEntry {
+                url: format!("http://{addr}"),
+                priority: 100,
+            }],
+            CacheValidationEntry {
+                name: "tool".into(),
+                platform: "x86_64-linux".into(),
+                store_path: "/nix/store/abc123-tool-1.0.0".into(),
+                store_hash: "abc123".into(),
+                nar_hashes: vec!["sha256:test".into()],
+            },
+        )
+        .await;
+
+        assert!(result.found, "{result:?}");
+        server.await.unwrap();
+    }
+
+    #[test]
     fn format_size_values() {
         assert_eq!(format_size(500), "500 B");
         assert_eq!(format_size(2048), "2.0 KiB");
         assert_eq!(format_size(3_300_000), "3.1 MiB");
         assert_eq!(format_size(2_147_483_648), "2.0 GiB");
+    }
+
+    /// Initialize a git repository with one commit at `dir`.
+    fn init_authoring_clone(dir: &Path) {
+        fs::create_dir_all(dir).unwrap();
+        testutil::git(dir, &["init"]);
+        fs::write(dir.join("registry.toml"), "[registry]\n").unwrap();
+        testutil::git(dir, &["add", "."]);
+        testutil::git(dir, &["commit", "-m", "init"]);
+    }
+
+    #[test]
+    fn local_registries_skips_configured_names() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("configured-reg")).unwrap();
+        fs::create_dir_all(tmp.path().join("authored-reg/packages/t")).unwrap();
+        fs::write(
+            tmp.path().join("authored-reg/packages/t/tool-1.0.0.toml"),
+            "",
+        )
+        .unwrap();
+
+        let local = local_registries(tmp.path(), &["configured-reg"]);
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].name, "authored-reg");
+        assert_eq!(local[0].packages, 1);
+        assert_eq!(local[0].origin, None);
+    }
+
+    #[test]
+    fn local_registries_reports_origin() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("authored-reg");
+        init_authoring_clone(&dir);
+        testutil::git(
+            &dir,
+            &["remote", "add", "origin", "https://cdn.example.com/reg"],
+        );
+
+        let local = local_registries(tmp.path(), &[]);
+        assert_eq!(local.len(), 1);
+        assert_eq!(
+            local[0].origin.as_deref(),
+            Some("https://cdn.example.com/reg")
+        );
+    }
+
+    #[test]
+    fn local_registries_missing_dir_is_empty() {
+        let tmp = TempDir::new().unwrap();
+        assert!(local_registries(&tmp.path().join("absent"), &[]).is_empty());
+    }
+
+    #[test]
+    fn authoring_clone_precious_ignores_plain_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("consumer-reg");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("registry.toml"), "[registry]\n").unwrap();
+
+        assert!(authoring_clone_precious(&dir).unwrap().is_none());
+        assert!(
+            authoring_clone_precious(&tmp.path().join("absent"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn authoring_clone_precious_without_remote() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("authored-reg");
+        init_authoring_clone(&dir);
+
+        let reason = authoring_clone_precious(&dir).unwrap();
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("no remote")),
+            "got: {reason:?}"
+        );
+    }
+
+    #[test]
+    fn authoring_clone_precious_uncommitted_changes() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("authored-reg");
+        init_authoring_clone(&dir);
+        fs::write(dir.join("registry.toml"), "[registry]\nname = \"x\"\n").unwrap();
+
+        let reason = authoring_clone_precious(&dir).unwrap();
+        assert_eq!(reason.as_deref(), Some("uncommitted changes"));
+    }
+
+    #[test]
+    fn authoring_clone_precious_unpushed_and_pushed() {
+        let tmp = TempDir::new().unwrap();
+        let origin = tmp.path().join("origin.git");
+        fs::create_dir_all(&origin).unwrap();
+        testutil::git(&origin, &["init", "--bare"]);
+
+        let dir = tmp.path().join("authored-reg");
+        init_authoring_clone(&dir);
+        testutil::git(&dir, &["remote", "add", "origin", origin.to_str().unwrap()]);
+
+        let reason = authoring_clone_precious(&dir).unwrap();
+        assert!(
+            reason
+                .as_deref()
+                .is_some_and(|r| r.contains("not pushed to any remote")),
+            "got: {reason:?}"
+        );
+
+        let branch = testutil::git(&dir, &["branch", "--show-current"]);
+        testutil::git(&dir, &["push", "origin", &branch]);
+        assert!(authoring_clone_precious(&dir).unwrap().is_none());
     }
 }

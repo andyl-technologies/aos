@@ -4,16 +4,18 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 use aos_core::output::Printer;
 use aos_package::registry::channel;
 use aos_package::registry::objectstore;
 use aos_package::types::{RegistryConfig, RegistryState, SigningConfig};
-use base64::Engine as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
+
+static SSH_KEYGEN: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 pub struct RegistryFixture {
     tmp: tempfile::TempDir,
@@ -23,6 +25,8 @@ pub struct RegistryFixture {
     cache: PathBuf,
     registries: PathBuf,
     config_dir: PathBuf,
+    trusted: PathBuf,
+    anchors: PathBuf,
     signing: SigningFixture,
 }
 
@@ -34,11 +38,15 @@ impl RegistryFixture {
         let cache = tmp.path().join("cache");
         let registries = tmp.path().join("registries");
         let config_dir = tmp.path().join("config");
+        let trusted = tmp.path().join("trusted-keys.d");
+        let anchors = tmp.path().join("anchors.d");
         fs::create_dir_all(&cache).with_context(|| format!("creating {}", cache.display()))?;
         fs::create_dir_all(&registries)
             .with_context(|| format!("creating {}", registries.display()))?;
         fs::create_dir_all(&config_dir)
             .with_context(|| format!("creating {}", config_dir.display()))?;
+        fs::create_dir_all(&trusted).with_context(|| format!("creating {}", trusted.display()))?;
+        fs::create_dir_all(&anchors).with_context(|| format!("creating {}", anchors.display()))?;
 
         git(
             tmp.path(),
@@ -51,7 +59,9 @@ impl RegistryFixture {
         )?;
         git(&source, &["config", "user.name", "AOS Registry"])?;
         git(&source, &["config", "user.email", "registry@example.com"])?;
-        git(&source, &["config", "commit.gpgsign", "false"])?;
+        // Sign fixture commits with the fixture maintainer key so syncs
+        // under the fail-closed default verify end to end.
+        git(&source, &["config", "commit.gpgsign", "true"])?;
 
         let signing = SigningFixture::new(tmp.path(), name)?;
         signing.configure_git(&source)?;
@@ -64,6 +74,8 @@ impl RegistryFixture {
             cache,
             registries,
             config_dir,
+            trusted,
+            anchors,
             signing,
         })
     }
@@ -82,6 +94,26 @@ impl RegistryFixture {
 
     pub fn registries_dir(&self) -> &Path {
         &self.registries
+    }
+
+    /// Trusted-key directories for sync: a writable store first, then a
+    /// read-only anchor directory (mirroring /etc/apm/trusted-keys.d).
+    pub fn trusted_keys_dirs(&self) -> Vec<PathBuf> {
+        vec![self.trusted.clone(), self.anchors.clone()]
+    }
+
+    /// The writable trusted-key file where sync pins roster keys.
+    pub fn pinned_keys_path(&self) -> PathBuf {
+        self.trusted.join(format!("{}.pub", self.name))
+    }
+
+    /// Write a read-only anchor file (image-baked trust anchor stand-in).
+    pub fn write_anchor_keys(&self, lines: &[&str]) -> Result<()> {
+        let path = self.anchors.join(format!("{}.pub", self.name));
+        let mut content = lines.join("\n");
+        content.push('\n');
+        fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
     }
 
     pub fn printer(&self) -> Printer {
@@ -146,7 +178,7 @@ key = "{}"
     }
 
     pub fn write_package(&self, name: &str, version: &str) -> Result<String> {
-        let hash = format!("{:0<32}", name);
+        let hash = nixbase32_store_hash(name);
         let dir = self.source.join("packages").join(&name[..1]);
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let store_path = format!("/nix/store/{hash}-{name}-{version}");
@@ -158,15 +190,23 @@ key = "{}"
         Ok(store_path)
     }
 
+    /// Write a `store/<shard>/<hash>` realisation record for the path: a
+    /// leaf IA-only record carrying one blessed NAR (RFC-0005). Named
+    /// `write_closure` for historical call-site compatibility.
     pub fn write_closure(&self, store_path: &str) -> Result<()> {
         let hash = store_path
             .strip_prefix("/nix/store/")
             .and_then(|rest| rest.split_once('-'))
             .map(|(hash, _)| hash)
             .ok_or_else(|| anyhow::anyhow!("invalid store path {store_path}"))?;
-        let dir = self.source.join("closures");
+        let dir = self.source.join("store").join(&hash[..2]);
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        fs::write(dir.join(hash), format!("{hash}\n")).context("writing closure file")?;
+        // A valid 52-char nixbase32 SHA-256 plus a size; no dependency edges.
+        fs::write(
+            dir.join(hash),
+            "nar:sha256:1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy:1\n",
+        )
+        .context("writing store record")?;
         Ok(())
     }
 
@@ -174,6 +214,60 @@ key = "{}"
         git(&self.source, &["add", "."])?;
         git(&self.source, &["commit", "-m", message])?;
         git_stdout(&self.source, &["rev-parse", "HEAD"])
+    }
+
+    /// Commit all changes signed with a specific private key (instead of
+    /// the fixture's default maintainer key).
+    pub fn commit_all_with_key(&self, message: &str, key_path: &Path) -> Result<String> {
+        git(&self.source, &["add", "."])?;
+        let signing_key = format!("user.signingkey={}", key_path.display());
+        git(&self.source, &["-c", &signing_key, "commit", "-m", message])?;
+        git_stdout(&self.source, &["rev-parse", "HEAD"])
+    }
+
+    /// Create a signed tag with a specific private key.
+    pub fn signed_tag_with_key(&self, name: &str, target: &str, key_path: &Path) -> Result<String> {
+        let signing_key = format!("user.signingkey={}", key_path.display());
+        git(
+            &self.source,
+            &[
+                "-c",
+                &signing_key,
+                "tag",
+                "-s",
+                name,
+                target,
+                "-m",
+                &format!("release {name}"),
+            ],
+        )?;
+        git_stdout(&self.source, &["rev-parse", &format!("{name}^{{tag}}")])
+    }
+
+    /// Generate an additional maintainer keypair, returning its trust-key
+    /// line and private key path.
+    pub fn make_keypair(&self, seed: [u8; 32], name: &str) -> Result<(String, PathBuf)> {
+        let keypair = aos_package::sshkey::Ed25519Keypair::from_seed(seed);
+        let dir = self.tmp.path().join("signing");
+        fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        let path = dir.join(name);
+        fs::write(&path, keypair.to_openssh_private_key(name))
+            .with_context(|| format!("writing {}", path.display()))?;
+        restrict_key_permissions(&path)?;
+        Ok((keypair.trust_key_line(&self.name), path))
+    }
+
+    /// Write a committed `keys.toml` with an arbitrary roster.
+    pub fn write_keys_toml_with(&self, active: &[(&str, &str)], revoked: &[&str]) -> Result<()> {
+        let mut content = String::from("schema = 1\n");
+        for (id, key) in active {
+            content.push_str(&format!("\n[[keys]]\nid = \"{id}\"\nkey = \"{key}\"\n"));
+        }
+        for id in revoked {
+            content.push_str(&format!("\n[[revoked]]\nid = \"{id}\"\n"));
+        }
+        fs::write(self.source.join("keys.toml"), content).context("writing keys.toml")?;
+        Ok(())
     }
 
     pub fn signed_tag(&self, name: &str, target: &str) -> Result<String> {
@@ -202,6 +296,11 @@ key = "{}"
 
     pub fn set_branch(&self, branch: &str, target: &str) -> Result<()> {
         git(&self.source, &["branch", "-f", branch, target])
+    }
+
+    /// Hard-reset the checked-out branch to `target` (force-push fixture).
+    pub fn reset_hard(&self, target: &str) -> Result<()> {
+        git(&self.source, &["reset", "--hard", target])
     }
 
     pub fn publish_bare_origin(&self) -> Result<()> {
@@ -268,7 +367,12 @@ key = "{}"
             caches: Vec::new(),
             upload_auth: None,
             signing_keys: Default::default(),
-            signing: None,
+            // Unverified legacy sync: opting out requires an explicit
+            // required = false under the fail-closed default.
+            signing: Some(SigningConfig {
+                required: false,
+                public_key: None,
+            }),
         }
     }
 
@@ -291,7 +395,7 @@ key = "{}"
             signing_keys: Default::default(),
             signing: Some(SigningConfig {
                 required: true,
-                public_key: self.trusted_key().to_string(),
+                public_key: Some(self.trusted_key().to_string()),
             }),
         }
     }
@@ -348,6 +452,16 @@ impl Drop for StaticHttpServer {
     }
 }
 
+fn restrict_key_permissions(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("restricting {}", path.display()))?;
+    }
+    Ok(())
+}
+
 struct SigningFixture {
     trusted_key: String,
     private_key: PathBuf,
@@ -361,18 +475,13 @@ impl SigningFixture {
             .with_context(|| format!("creating {}", signing_dir.display()))?;
 
         let seed = [7u8; 32];
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
-        let raw_public_key = signing_key.verifying_key().to_bytes();
-        let public_blob = ssh_ed25519_public_key_blob(&raw_public_key);
-        let public_blob_b64 = base64::engine::general_purpose::STANDARD.encode(public_blob);
+        let keypair = aos_package::sshkey::Ed25519Keypair::from_seed(seed);
+        let public_blob_b64 = keypair.public_key_base64();
         let private_key = signing_dir.join("registry_ed25519");
         let allowed_signers = signing_dir.join("allowed_signers");
 
-        fs::write(
-            &private_key,
-            openssh_ed25519_private_key(&seed, &raw_public_key, registry),
-        )
-        .with_context(|| format!("writing {}", private_key.display()))?;
+        fs::write(&private_key, keypair.to_openssh_private_key(registry))
+            .with_context(|| format!("writing {}", private_key.display()))?;
         restrict_private_key_permissions(&private_key)?;
         fs::write(
             &allowed_signers,
@@ -507,10 +616,92 @@ async fn write_response_with_length(
     Ok(())
 }
 
+/// Build a git command insulated from the host's global and system git
+/// configuration.
+///
+/// Fixture repositories configure everything they need repo-locally
+/// (identity, signing keys, allowed signers); a host `~/.gitconfig` that
+/// enables e.g. `commit.gpgsign` with a GPG key must not leak into them.
+fn git_command(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    add_ssh_program_config(&mut cmd);
+    cmd.current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+    cmd
+}
+
+fn add_ssh_program_config(command: &mut Command) {
+    if let Some(path) = ssh_keygen_path() {
+        command
+            .arg("-c")
+            .arg(format!("gpg.ssh.program={}", path.display()));
+    }
+}
+
+fn ssh_keygen_path() -> Option<&'static Path> {
+    SSH_KEYGEN.get_or_init(find_working_ssh_keygen).as_deref()
+}
+
+fn find_working_ssh_keygen() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("AOS_GIT_SSH_PROGRAM") {
+        candidates.push(PathBuf::from(path));
+    }
+    for env_var in ["AOS_HOST_PATH", "PATH"] {
+        let Some(path) = std::env::var_os(env_var) else {
+            continue;
+        };
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join("ssh-keygen");
+            if !candidates.iter().any(|seen| seen == &candidate) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file() && ssh_keygen_can_sign(candidate))
+}
+
+fn ssh_keygen_can_sign(candidate: &Path) -> bool {
+    let Ok(tmp) = tempfile::TempDir::new() else {
+        return false;
+    };
+    let key = tmp.path().join("key");
+    let Ok(keygen) = Command::new(candidate)
+        .env_remove("LD_LIBRARY_PATH")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "aos-registry", "-f"])
+        .arg(&key)
+        .output()
+    else {
+        return false;
+    };
+    if !keygen.status.success() {
+        return false;
+    }
+
+    let payload = tmp.path().join("payload");
+    if fs::write(&payload, b"aos-registry").is_err() {
+        return false;
+    }
+
+    Command::new(candidate)
+        .env_remove("LD_LIBRARY_PATH")
+        .arg("-Y")
+        .arg("sign")
+        .arg("-f")
+        .arg(&key)
+        .arg("-n")
+        .arg("git")
+        .arg(&payload)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<()> {
-    let output = Command::new("git")
+    let output = git_command(dir)
         .args(args)
-        .current_dir(dir)
         .output()
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
     if !output.status.success() {
@@ -525,9 +716,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn git_stdout(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = git_command(dir)
         .args(args)
-        .current_dir(dir)
         .output()
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
     if !output.status.success() {
@@ -542,9 +732,8 @@ fn git_stdout(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
+    let output = git_command(dir)
         .args(args)
-        .current_dir(dir)
         .output()
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
     if !output.status.success() {
@@ -556,6 +745,43 @@ fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
         );
     }
     Ok(output.stdout)
+}
+
+/// Nix's base32 alphabet, which omits `e`, `o`, `t`, and `u`.
+const NIX_BASE32_ALPHABET: &str = "0123456789abcdfghijklmnpqrsvwxyz";
+
+/// Derive a valid 32-character nixbase32 store-path hash from a package name.
+///
+/// Real Nix store paths are named `<32-char-nixbase32>-<name>-<version>`, and
+/// the registry's `store/` validation enforces that the hash is nixbase32. A
+/// readable placeholder like `hello` cannot be used verbatim (`e`/`o`/`t`/`u`
+/// fall outside the alphabet), so each character is folded into the alphabet
+/// — in-alphabet characters are kept for readability — and the result is
+/// right-padded to 32 characters. The mapping is deterministic, so a given
+/// name always yields the same hash.
+fn nixbase32_store_hash(name: &str) -> String {
+    let mut hash: String = name
+        .chars()
+        .map(|ch| {
+            if NIX_BASE32_ALPHABET.contains(ch) {
+                ch
+            } else {
+                // Fold any out-of-alphabet character (including `e`/`o`/`t`/`u`)
+                // deterministically into the 32-character alphabet.
+                NIX_BASE32_ALPHABET
+                    .as_bytes()
+                    .get((ch as usize) % 32)
+                    .copied()
+                    .map(char::from)
+                    .unwrap_or('0')
+            }
+        })
+        .take(32)
+        .collect();
+    while hash.len() < 32 {
+        hash.push('0');
+    }
+    hash
 }
 
 fn package_toml(name: &str, version: &str, store_path: &str) -> String {
@@ -599,75 +825,25 @@ enabled = {}
     }
     if !config.signing_keys.is_empty() {
         out.push_str("\n[registry.signing_keys]\n");
-        for (id, path) in &config.signing_keys {
-            out.push_str(&format!("\"{id}\" = \"{path}\"\n"));
+        for (id, source) in &config.signing_keys {
+            let value = match (source.path(), source.command()) {
+                (Some(path), _) => format!("\"{path}\""),
+                (_, Some(command)) => format!("{{ command = \"{command}\" }}"),
+                _ => "\"\"".to_string(),
+            };
+            out.push_str(&format!("\"{id}\" = {value}\n"));
         }
     }
     if let Some(signing) = &config.signing {
         out.push_str(&format!(
-            r#"
-[registry.signing]
-required = {}
-public_key = "{}"
-"#,
-            signing.required, signing.public_key
+            "\n[registry.signing]\nrequired = {}\n",
+            signing.required
         ));
-    }
-    out
-}
-
-fn ssh_ed25519_public_key_blob(public_key: &[u8; 32]) -> Vec<u8> {
-    let mut blob = Vec::new();
-    push_ssh_string(&mut blob, b"ssh-ed25519");
-    push_ssh_string(&mut blob, public_key);
-    blob
-}
-
-fn openssh_ed25519_private_key(seed: &[u8; 32], public_key: &[u8; 32], comment: &str) -> String {
-    let public_blob = ssh_ed25519_public_key_blob(public_key);
-    let mut private_key = Vec::new();
-    private_key.extend_from_slice(seed);
-    private_key.extend_from_slice(public_key);
-
-    let mut private = Vec::new();
-    push_u32(&mut private, 0x1234_5678);
-    push_u32(&mut private, 0x1234_5678);
-    push_ssh_string(&mut private, b"ssh-ed25519");
-    push_ssh_string(&mut private, public_key);
-    push_ssh_string(&mut private, &private_key);
-    push_ssh_string(&mut private, comment.as_bytes());
-    for pad in 1..=(8 - private.len() % 8) {
-        if private.len() % 8 == 0 {
-            break;
+        if let Some(public_key) = &signing.public_key {
+            out.push_str(&format!("public_key = \"{public_key}\"\n"));
         }
-        private.push(pad as u8);
     }
-
-    let mut blob = b"openssh-key-v1\0".to_vec();
-    push_ssh_string(&mut blob, b"none");
-    push_ssh_string(&mut blob, b"none");
-    push_ssh_string(&mut blob, b"");
-    push_u32(&mut blob, 1);
-    push_ssh_string(&mut blob, &public_blob);
-    push_ssh_string(&mut blob, &private);
-
-    let encoded = base64::engine::general_purpose::STANDARD.encode(blob);
-    let mut out = "-----BEGIN OPENSSH PRIVATE KEY-----\n".to_string();
-    for chunk in encoded.as_bytes().chunks(70) {
-        out.push_str(std::str::from_utf8(chunk).expect("base64 is UTF-8"));
-        out.push('\n');
-    }
-    out.push_str("-----END OPENSSH PRIVATE KEY-----\n");
     out
-}
-
-fn push_ssh_string(out: &mut Vec<u8>, value: &[u8]) {
-    push_u32(out, value.len() as u32);
-    out.extend_from_slice(value);
-}
-
-fn push_u32(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_be_bytes());
 }
 
 #[cfg(unix)]

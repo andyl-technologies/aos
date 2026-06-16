@@ -7,6 +7,11 @@
 use anyhow;
 
 /// Callback trait for tracking progress of a single transfer.
+///
+/// Implementations are installed on the engine via
+/// [`TransferEngine::set_progress`](crate::transfer::TransferEngine::set_progress).
+/// Callbacks are invoked from the async transfer task, so they should
+/// return quickly and must not block.
 pub trait ProgressHandler: Send + Sync {
     /// Called when a transfer begins.
     fn on_start(&self, url: &str, total_bytes: Option<u64>);
@@ -22,6 +27,12 @@ pub trait ProgressHandler: Send + Sync {
 }
 
 /// Callback trait for tracking progress of a batch of transfers.
+///
+/// Passed to
+/// [`TransferEngine::execute_batch`](crate::transfer::TransferEngine::execute_batch).
+/// The `index` parameter identifies the transfer by its position in
+/// the submitted request list. Per-transfer callbacks may be invoked
+/// concurrently from multiple tasks.
 pub trait BatchProgressHandler: Send + Sync {
     /// Called when an individual transfer in the batch starts.
     fn on_transfer_start(&self, index: usize, url: &str, total_bytes: Option<u64>);
@@ -40,6 +51,10 @@ pub trait BatchProgressHandler: Send + Sync {
 }
 
 /// A no-op progress handler that discards all progress events.
+///
+/// This is the default handler used by the transfer engine when no
+/// custom handler is installed. It implements both [`ProgressHandler`]
+/// and [`BatchProgressHandler`].
 pub struct NoopProgress;
 
 impl ProgressHandler for NoopProgress {
@@ -57,7 +72,11 @@ impl BatchProgressHandler for NoopProgress {
     fn on_batch_progress(&self, _completed: usize, _total: usize, _bytes: u64) {}
 }
 
-/// A progress handler that logs events via tracing.
+/// A progress handler that logs events via [`tracing`].
+///
+/// Start/complete/error events are logged at `info`/`error` level;
+/// per-chunk progress events are logged at `trace` level to avoid
+/// flooding logs during large transfers.
 pub struct TracingProgress;
 
 impl ProgressHandler for TracingProgress {

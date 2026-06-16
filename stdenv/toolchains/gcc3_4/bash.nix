@@ -41,7 +41,14 @@ in
           --without-bash-malloc \
           --disable-nls
 
-        make -j"$NIX_BUILD_CORES"
+        # Bash 3.0's Makefile is not parallel-safe: under `make -j` the
+        # version.h rule (mkversion.sh > newversion.h && mv newversion.h
+        # version.h) races with itself and `mv` loses with
+        # "cannot stat 'newversion.h'" (seen with "Waiting for unfinished
+        # jobs" + duplicate mkdir "File exists"). Build serially — bash
+        # 3.0 is tiny, and cross-package parallelism across wardens is
+        # where build throughput comes from, not -j within this drv.
+        make
         make install
 
         test -f "$out/bin/bash" && test ! -f "$out/bin/sh" && ln -sf bash "$out/bin/sh"

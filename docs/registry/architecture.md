@@ -174,11 +174,15 @@ roster (`keys.toml`: active key(s) + revoked list) — lives as **committed file
 the git tree** and is authenticated *transitively* by the signed tag: the chain
 runs **tag → commit → tree → file** (extending the verification hops below). A key
 inside a file authenticated by that key would be circular for bootstrap, so the
-signing pubkey is *not* in `registry.toml`; the `keys.toml` roster is governed by a
-TOFU-pinned anchor key (client-side `trusted-keys.d/<registry>.pub`), with rotation
-and revocation published as new `keys.toml` versions in signed tags. The committed
+signing pubkey is *not* in `registry.toml`; bootstrap trust is an **out-of-band
+anchor** — baked into the AOS image by `aos.apm.registries`
+(`trusted-keys.d/<registry>.pub`) or pinned with `apr trust pin`, never a silent
+trust-on-first-use. From that anchor the committed `keys.toml` roster is the
+authoritative trusted-key set that clients pin on sync, with rotation and
+revocation published as new signed `keys.toml` versions and reaching machines
+in-band. The committed
 tree is therefore `registry.toml` + `keys.toml` + `packages/<x>/<name>.toml` +
-`closures/<hash>` + `.gitattributes`, distinct from the served object store. See
+`store/` realisation graph, distinct from the served object store. See
 [`repo-layout.md`](./repo-layout.md) for the full tree and the tree ↔ HTTP mapping.
 
 ### 3.4 The rollout overlay — `/channels/<name>/00..ff`
@@ -376,8 +380,8 @@ Full threat model in [`signing-and-trust.md`](./signing-and-trust.md).
   `info/refs` / `HEAD` / relative `info/alternates`, root-centralized loose
   `/objects/`, stock-git dumb-HTTP compatibility.
 - [`repo-layout.md`](./repo-layout.md) — the committed git **tree** content
-  (`registry.toml` `[[caches]]`, `keys.toml` trust roster, `packages/`, `closures/`,
-  `.gitattributes`), authenticated via the signed tag (tag → commit → tree → file),
+  (`registry.toml` `[[caches]]`, `keys.toml` trust roster, `packages/`, the
+  `store/` realisation graph), authenticated via the signed tag (tag → commit → tree → file),
   and the tree ↔ HTTP mapping.
 - [`versioning-and-channels.md`](./versioning-and-channels.md) — semver,
   channels-as-branches, frontier head, the 256-partition rollout, bucket selection,
