@@ -892,6 +892,9 @@ pub enum RegistryCommand {
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
+        /// Parallel compression jobs for the static cache (default: CPU count)
+        #[arg(long)]
+        jobs: Option<usize>,
     },
 
     // ----- Release -----
@@ -1250,6 +1253,9 @@ pub enum CacheCommand {
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
+        /// Parallel compression jobs for the static cache (default: CPU count)
+        #[arg(long)]
+        jobs: Option<usize>,
     },
 }
 
@@ -2031,6 +2037,7 @@ async fn run_registry(
             dry_run,
             resume,
             registry,
+            jobs,
         } => {
             registry_ops::release(
                 config,
@@ -2064,6 +2071,7 @@ async fn run_registry(
                 *dry_run,
                 *resume,
                 registry.as_deref(),
+                *jobs,
                 printer,
             )
             .await
