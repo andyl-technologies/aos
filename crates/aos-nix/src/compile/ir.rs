@@ -992,6 +992,7 @@ impl IrLowerer {
                 | b"splitVersion"
                 | b"fromJSON"
                 | b"toString"
+                | b"toJSON"
                 | b"unsafeDiscardStringContext",
             ) => Some(EffectClass::Pure),
             _ => None,
@@ -1924,6 +1925,7 @@ mod tests {
                 b"fromJSON".as_slice(),
             ),
             ("builtins.toString 1", b"toString".as_slice()),
+            ("builtins.toJSON { a = 1; }", b"toJSON".as_slice()),
             (
                 "builtins.unsafeDiscardStringContext \"abc\"",
                 b"unsafeDiscardStringContext".as_slice(),
@@ -2687,6 +2689,34 @@ mod tests {
         };
         assert_eq!(node(&ir, first).kind, IrKind::Select);
 
+        let ir = lowered("toJSON 1");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir = lowered("let toJSON = x: \"local\"; in toJSON 1");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::LocalVar);
+
+        let ir = lowered("let builtins = { toJSON = x: \"local\"; }; in builtins.toJSON 1");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
         let ir = lowered("toString 1");
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::Apply);
@@ -2906,7 +2936,7 @@ mod tests {
 
     #[test]
     fn unmodeled_pure_builtins_remain_applications() {
-        let ir = lowered("builtins.toJSON 1");
+        let ir = lowered("builtins.fromTOML \"\"");
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::Apply);
         let IrData::Pair { first, .. } = root.data else {

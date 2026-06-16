@@ -16,7 +16,7 @@
 use std::rc::Rc;
 
 use md5::{Digest as _, Md5};
-use serde_json::Value as JsonValue;
+use serde_json::{Number as JsonNumber, Value as JsonValue};
 use sha1::{Digest as _, Sha1};
 use sha2::{Sha256, Sha512};
 use thiserror::Error;
@@ -1673,6 +1673,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_to_string_primop(id, node.span, argument, argument_span, value)
             }
+            StrictUnaryPrimOp::ToJson => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_to_json_primop(id, node.span, argument, argument_span, value)
+            }
             StrictUnaryPrimOp::FunctionArgs => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_function_args_primop(id, node.span, argument, argument_span, value)
@@ -3314,6 +3318,293 @@ impl<'ir> TreeWalk<'ir> {
         }
         let value = if value == 0.0 { 0.0 } else { value };
         format!("{value:.6}").into_bytes()
+    }
+
+    fn eval_to_json_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let mut bytes = Vec::new();
+        let mut context = StringContext::empty();
+        self.write_json_value(
+            id,
+            span,
+            argument,
+            argument_span,
+            value,
+            &mut bytes,
+            &mut context,
+        )?;
+        self.heap
+            .alloc_string(NixString::new(bytes, context))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn write_json_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+        context: &mut StringContext,
+    ) -> Result<(), TreeWalkError> {
+        match value.tag() {
+            ValueTag::Null => Self::extend_bytes_for_node(id, span, out, b"null"),
+            ValueTag::Bool => {
+                if self.expect_bool(value_id, value, value_span)? {
+                    Self::extend_bytes_for_node(id, span, out, b"true")
+                } else {
+                    Self::extend_bytes_for_node(id, span, out, b"false")
+                }
+            }
+            ValueTag::Int => Self::extend_bytes_for_node(
+                id,
+                span,
+                out,
+                (value.payload_bits() as i64).to_string().as_bytes(),
+            ),
+            ValueTag::Float => self.write_json_float(id, span, value, out),
+            ValueTag::String => {
+                self.write_json_string_value(id, span, value_id, value_span, value, out, context)
+            }
+            ValueTag::List => {
+                self.write_json_list(id, span, value_id, value_span, value, out, context)
+            }
+            ValueTag::Attrs => {
+                self.write_json_attrs(id, span, value_id, value_span, value, out, context)
+            }
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::JsonUnsupportedValue {
+                    id: value_id,
+                    actual,
+                },
+                value_span,
+            )),
+        }
+    }
+
+    fn write_json_float(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+    ) -> Result<(), TreeWalkError> {
+        let value = f64::from_bits(value.payload_bits());
+        if !value.is_finite() {
+            return Self::extend_bytes_for_node(id, span, out, b"null");
+        }
+        let value = if value == 0.0 { 0.0 } else { value };
+        let Some(number) = JsonNumber::from_f64(value) else {
+            return Self::extend_bytes_for_node(id, span, out, b"null");
+        };
+        let mut bytes = number.to_string().into_bytes();
+        Self::normalize_json_float_exponent(&mut bytes);
+        Self::extend_bytes_for_node(id, span, out, &bytes)
+    }
+
+    fn normalize_json_float_exponent(bytes: &mut Vec<u8>) {
+        let Some(exponent) = bytes.iter().position(|byte| matches!(*byte, b'e' | b'E')) else {
+            return;
+        };
+        bytes[exponent] = b'e';
+        let sign = exponent + 1;
+        let digits = match bytes.get(sign).copied() {
+            Some(b'+') | Some(b'-') => sign + 1,
+            Some(_) => {
+                bytes.insert(sign, b'+');
+                sign + 1
+            }
+            None => return,
+        };
+        if bytes.len().saturating_sub(digits) == 1 {
+            bytes.insert(digits, b'0');
+        }
+    }
+
+    fn write_json_string_value(
+        &self,
+        id: IrId,
+        span: Span,
+        string_id: IrId,
+        string_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+        context: &mut StringContext,
+    ) -> Result<(), TreeWalkError> {
+        let string = self.heap.get_string(value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: string_id,
+                    source,
+                },
+                string_span,
+            )
+        })?;
+        Self::write_json_string_bytes(id, span, string.bytes(), out)?;
+        *context = context
+            .union(string.context())
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        Ok(())
+    }
+
+    fn write_json_string_bytes(
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), TreeWalkError> {
+        Self::extend_bytes_for_node(id, span, out, b"\"")?;
+        for byte in bytes {
+            match *byte {
+                b'"' => Self::extend_bytes_for_node(id, span, out, b"\\\"")?,
+                b'\\' => Self::extend_bytes_for_node(id, span, out, b"\\\\")?,
+                b'\n' => Self::extend_bytes_for_node(id, span, out, b"\\n")?,
+                b'\r' => Self::extend_bytes_for_node(id, span, out, b"\\r")?,
+                b'\t' => Self::extend_bytes_for_node(id, span, out, b"\\t")?,
+                0x08 => Self::extend_bytes_for_node(id, span, out, b"\\b")?,
+                0x0c => Self::extend_bytes_for_node(id, span, out, b"\\f")?,
+                0x00..=0x1f => {
+                    const HEX: &[u8; 16] = b"0123456789abcdef";
+                    Self::extend_bytes_for_node(id, span, out, b"\\u00")?;
+                    Self::extend_bytes_for_node(
+                        id,
+                        span,
+                        out,
+                        &[HEX[usize::from(byte >> 4)], HEX[usize::from(byte & 0x0f)]],
+                    )?;
+                }
+                byte => Self::extend_bytes_for_node(id, span, out, &[byte])?,
+            }
+        }
+        Self::extend_bytes_for_node(id, span, out, b"\"")
+    }
+
+    fn write_json_list(
+        &mut self,
+        id: IrId,
+        span: Span,
+        list_id: IrId,
+        list_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+        context: &mut StringContext,
+    ) -> Result<(), TreeWalkError> {
+        let elements = {
+            let list = self.heap.get_list(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            let mut elements = Vec::new();
+            elements.try_reserve_exact(list.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: list_id,
+                        len: list.len(),
+                    },
+                    list_span,
+                )
+            })?;
+            elements.extend_from_slice(list.as_slice());
+            elements
+        };
+
+        Self::extend_bytes_for_node(id, span, out, b"[")?;
+        for (index, element) in elements.into_iter().enumerate() {
+            if index > 0 {
+                Self::extend_bytes_for_node(id, span, out, b",")?;
+            }
+            let element = self.force_value(list_id, list_span, element)?;
+            self.write_json_value(id, span, list_id, list_span, element, out, context)?;
+        }
+        Self::extend_bytes_for_node(id, span, out, b"]")
+    }
+
+    fn write_json_attrs(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_id: IrId,
+        attrs_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+        context: &mut StringContext,
+    ) -> Result<(), TreeWalkError> {
+        if self
+            .attr_value_by_name(attrs_id, value, TO_STRING_ATTR, attrs_span)?
+            .is_some()
+        {
+            let string = self.coerce_to_string(attrs_id, value, attrs_span)?;
+            return self
+                .write_json_string_value(id, span, attrs_id, attrs_span, string, out, context);
+        }
+
+        if let Some(out_path) =
+            self.attr_value_by_name(attrs_id, value, OUT_PATH_ATTR, attrs_span)?
+        {
+            let value = self.force_value(attrs_id, attrs_span, out_path)?;
+            return self.write_json_value(id, span, attrs_id, attrs_span, value, out, context);
+        }
+
+        let entries = {
+            let attrs = self.heap.get_attrs(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs_id,
+                        source,
+                    },
+                    attrs_span,
+                )
+            })?;
+            let mut entries = Vec::new();
+            entries.try_reserve_exact(attrs.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::AllocationFailed {
+                            entries: attrs.len(),
+                        },
+                    },
+                    span,
+                )
+            })?;
+            for entry in attrs.iter_lexicographic() {
+                let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidSymbol {
+                            id: attrs_id,
+                            symbol: entry.key,
+                        },
+                        attrs_span,
+                    )
+                })?;
+                entries.push((Self::copy_bytes_for_node(id, span, key)?, entry.value));
+            }
+            entries
+        };
+
+        Self::extend_bytes_for_node(id, span, out, b"{")?;
+        for (index, (key, value)) in entries.into_iter().enumerate() {
+            if index > 0 {
+                Self::extend_bytes_for_node(id, span, out, b",")?;
+            }
+            Self::write_json_string_bytes(id, span, &key, out)?;
+            Self::extend_bytes_for_node(id, span, out, b":")?;
+            let value = self.force_value(attrs_id, attrs_span, value)?;
+            self.write_json_value(id, span, attrs_id, attrs_span, value, out, context)?;
+        }
+        Self::extend_bytes_for_node(id, span, out, b"}")
     }
 
     fn eval_list_to_attrs_primop(
@@ -6610,6 +6901,7 @@ enum StrictUnaryPrimOp {
     SplitVersion,
     FromJson,
     ToString,
+    ToJson,
     ListToAttrs,
     ConcatLists,
 }
@@ -6647,6 +6939,7 @@ impl StrictUnaryPrimOp {
             b"splitVersion" => Some(Self::SplitVersion),
             b"fromJSON" => Some(Self::FromJson),
             b"toString" => Some(Self::ToString),
+            b"toJSON" => Some(Self::ToJson),
             b"listToAttrs" => Some(Self::ListToAttrs),
             b"concatLists" => Some(Self::ConcatLists),
             _ => None,
@@ -7284,6 +7577,14 @@ pub enum TreeWalkErrorKind {
     JsonNumberUnsupported {
         /// The string-valued node that produced the unsupported number.
         id: IrId,
+    },
+    /// A value cannot be represented as JSON.
+    #[error("cannot convert {actual:?} at node {id:?} to JSON")]
+    JsonUnsupportedValue {
+        /// The value node that could not be converted.
+        id: IrId,
+        /// The unsupported runtime tag.
+        actual: ValueTag,
     },
     /// A hash primop received an unsupported algorithm name.
     #[error("unknown hash algorithm at node {id:?}: {algorithm:?}")]
@@ -12081,6 +12382,195 @@ mod tests {
         assert_eq!(string.bytes(), b"a 1 b");
         assert!(string.context().contains(&first_context));
         assert!(string.context().contains(&second_context));
+    }
+
+    #[test]
+    fn to_json_primop_serializes_scalars_and_containers() {
+        assert_eq!(eval_string_bytes("builtins.toJSON null"), b"null");
+        assert_eq!(eval_string_bytes("builtins.toJSON true"), b"true");
+        assert_eq!(eval_string_bytes("builtins.toJSON false"), b"false");
+        assert_eq!(eval_string_bytes("builtins.toJSON 42"), b"42");
+        assert_eq!(
+            eval_string_bytes("builtins.toJSON \"é\""),
+            "\"é\"".as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toJSON \"\\t\\r\\n\\\\\\\"\""),
+            br#""\t\r\n\\\"""#
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.toJSON (builtins.fromJSON "\"\\b\"")"#),
+            br#""\b""#
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.toJSON (builtins.fromJSON "\"\\f\"")"#),
+            br#""\f""#
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toJSON { b = 1; a = [ true false null \"x\" ]; }"),
+            br#"{"a":[true,false,null,"x"],"b":1}"#
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toJSON { \"10\" = 10; \"2\" = 2; A = 1; a = 2; }"),
+            br#"{"10":10,"2":2,"A":1,"a":2}"#
+        );
+    }
+
+    #[test]
+    fn to_json_primop_formats_floats_like_cpp_nix_json() {
+        assert_eq!(eval_string_bytes("builtins.toJSON 1.0"), b"1.0");
+        assert_eq!(eval_string_bytes("builtins.toJSON 1.50"), b"1.5");
+        assert_eq!(eval_string_bytes("builtins.toJSON (-0.0)"), b"0.0");
+        assert_eq!(eval_string_bytes("builtins.toJSON 0.000001"), b"1e-06");
+        assert_eq!(
+            eval_string_bytes("builtins.toJSON 100000000000000000000.0"),
+            b"1e+20"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toJSON ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308))"),
+            b"null"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toJSON (1.0e308 * 1.0e308)"),
+            b"null"
+        );
+    }
+
+    #[test]
+    fn to_json_primop_coerces_special_attrsets() {
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.toJSON { __toString = self: \"hook\"; outPath = \"out\"; }"
+            ),
+            br#""hook""#
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toJSON { __toString = self: { outPath = \"nested\"; }; }"),
+            br#""nested""#
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toJSON { outPath = [ \"a\" \"b\" ]; }"),
+            br#"["a","b"]"#
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toJSON { outPath = \"out\"; a = 1; }"),
+            br#""out""#
+        );
+        assert_eq!(eval_string_bytes("builtins.toJSON {}"), b"{}");
+    }
+
+    #[test]
+    fn to_json_primop_reports_attr_coercion_and_unsupported_values() {
+        let ir = lower("builtins.toJSON { __toString = self: 1; }");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("toJSON argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("__toString result must be a string");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower("builtins.toJSON [ (x: x) ]");
+        let error = eval_whnf_owned(&ir).expect_err("functions cannot become JSON");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::JsonUnsupportedValue {
+                actual: ValueTag::Lambda,
+                ..
+            }
+        ));
+
+        let ir = lower("builtins.toJSON [ 1 (1 / 0) ]");
+        let error = eval_whnf_owned(&ir).expect_err("toJSON forces list elements");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+    }
+
+    #[test]
+    fn to_json_primop_unions_string_contexts() {
+        let ir = lower("builtins.toJSON []");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("toJSON argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let direct_context = ContextElement::opaque_path(b"/nix/store/direct".to_vec())
+            .expect("direct context builds");
+        let out_path_context = ContextElement::opaque_path(b"/nix/store/out-path".to_vec())
+            .expect("outPath context builds");
+        let direct = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"direct".to_vec(),
+                StringContext::singleton(direct_context.clone()).expect("direct context allocates"),
+            ))
+            .expect("direct string allocates");
+        let out_path = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"out".to_vec(),
+                StringContext::singleton(out_path_context.clone())
+                    .expect("outPath context allocates"),
+            ))
+            .expect("outPath string allocates");
+        let out_path_symbol = evaluator
+            .symbols
+            .intern(OUT_PATH_ATTR)
+            .expect("outPath symbol interns");
+        let attrs = FlatAttrs::new(
+            vec![AttrEntry::new(out_path_symbol, out_path)],
+            &evaluator.symbols,
+        )
+        .expect("attrs build");
+        let attrs = evaluator
+            .heap
+            .alloc_attrs(0, attrs)
+            .expect("attrs allocate");
+        let list = evaluator
+            .heap
+            .alloc_list(NixList::new(vec![direct, attrs]))
+            .expect("list allocates");
+
+        let result = evaluator
+            .eval_to_json_primop(ir.root, root.span, argument, argument_span, list)
+            .expect("toJSON evaluates");
+        let string = evaluator
+            .heap
+            .get_string(result)
+            .expect("result is a string");
+
+        assert_eq!(string.bytes(), br#"["direct","out"]"#);
+        assert!(string.context().contains(&direct_context));
+        assert!(string.context().contains(&out_path_context));
     }
 
     #[test]

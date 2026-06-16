@@ -1482,6 +1482,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"splitVersion"
             | b"fromJSON"
             | b"toString"
+            | b"toJSON"
             | b"substring"
             | b"foldl'"
             | b"replaceStrings"
