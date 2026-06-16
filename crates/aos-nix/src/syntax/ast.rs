@@ -5,6 +5,7 @@
 //! indices rather than pointers. Variable-arity children live contiguously in
 //! the arena's child pool and are referenced through [`ChildSlice`].
 
+use std::collections::BTreeMap;
 use std::convert::TryFrom;
 
 use thiserror::Error;
@@ -45,6 +46,64 @@ impl Symbol {
     /// Returns the raw `u32` interner index.
     pub const fn as_u32(self) -> u32 {
         self.0
+    }
+}
+
+/// A dense file-local symbol table.
+#[derive(Clone, Debug, Default)]
+pub struct SymbolTable {
+    by_text: BTreeMap<Vec<u8>, Symbol>,
+    text: Vec<Vec<u8>>,
+}
+
+impl SymbolTable {
+    /// Creates an empty symbol table.
+    pub const fn new() -> Self {
+        Self {
+            by_text: BTreeMap::new(),
+            text: Vec::new(),
+        }
+    }
+
+    /// Returns the number of interned byte strings.
+    pub fn len(&self) -> usize {
+        self.text.len()
+    }
+
+    /// Returns whether the table has no symbols.
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    /// Interns a byte string and returns its dense symbol id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AstErrorKind::TooManySymbols`] if the next symbol id would not
+    /// fit in `u32`.
+    pub fn intern(&mut self, bytes: &[u8]) -> Result<Symbol, AstError> {
+        if let Some(symbol) = self.by_text.get(bytes) {
+            return Ok(*symbol);
+        }
+
+        let raw = u32::try_from(self.text.len()).map_err(|_| {
+            AstError::new(AstErrorKind::TooManySymbols, Span::new(u32::MAX, u32::MAX))
+        })?;
+        let symbol = Symbol::new(raw);
+        let owned = bytes.to_vec();
+        self.text.push(owned.clone());
+        self.by_text.insert(owned, symbol);
+        Ok(symbol)
+    }
+
+    /// Returns the bytes for an interned symbol.
+    pub fn resolve(&self, symbol: Symbol) -> Option<&[u8]> {
+        self.text.get(symbol.as_u32() as usize).map(Vec::as_slice)
+    }
+
+    /// Returns all symbol byte strings in dense-id order.
+    pub fn symbols(&self) -> &[Vec<u8>] {
+        &self.text
     }
 }
 
@@ -219,6 +278,50 @@ pub enum NodeData {
         /// The optional `or` default expression.
         default: Option<NodeId>,
     },
+    /// The node represents a has-attribute test.
+    HasAttr {
+        /// The expression being tested.
+        receiver: NodeId,
+        /// The attribute-path components.
+        path: ChildSlice,
+    },
+    /// The node represents a binding.
+    Binding {
+        /// The binding's attribute path.
+        path: ChildSlice,
+        /// The right-hand expression.
+        value: NodeId,
+    },
+    /// The node represents a `let ... in ...` expression.
+    LetIn {
+        /// The parsed binding nodes.
+        bindings: ChildSlice,
+        /// The body expression.
+        body: NodeId,
+    },
+    /// The node represents an `inherit` group.
+    Inherit {
+        /// The optional source expression from `inherit (expr) name`.
+        from: Option<NodeId>,
+        /// The inherited names as `Ident`/attribute path nodes.
+        names: ChildSlice,
+    },
+    /// The node represents a formal-argument set.
+    FormalSet {
+        /// Formal entry nodes.
+        formals: ChildSlice,
+        /// Whether the formal set accepts extra arguments via `...`.
+        ellipsis: bool,
+        /// The optional `@` alias.
+        alias: Option<Symbol>,
+    },
+    /// The node represents one formal argument.
+    Formal {
+        /// The formal argument name.
+        name: Symbol,
+        /// The optional default expression.
+        default: Option<NodeId>,
+    },
     /// The node represents a de Bruijn local slot.
     Local {
         /// The local frame slot.
@@ -287,6 +390,28 @@ pub enum UnaryOpKind {
     Neg,
     /// Boolean negation.
     Not,
+}
+
+/// A parsed Nix source file or expression.
+#[derive(Clone, Debug)]
+pub struct ParsedAst {
+    /// The expression root node.
+    pub root: NodeId,
+    /// The arena containing the root and every referenced node.
+    pub arena: AstArena,
+    /// File-local symbols referenced by the arena.
+    pub symbols: SymbolTable,
+}
+
+impl ParsedAst {
+    /// Creates a parsed AST bundle.
+    pub const fn new(root: NodeId, arena: AstArena, symbols: SymbolTable) -> Self {
+        Self {
+            root,
+            arena,
+            symbols,
+        }
+    }
 }
 
 /// A compact arena of AST nodes plus a variable-arity child pool.
@@ -441,6 +566,9 @@ impl AstError {
 /// The category of an AST arena failure.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum AstErrorKind {
+    /// The symbol table contains more symbols than a `u32` id can address.
+    #[error("too many AST symbols")]
+    TooManySymbols,
     /// The arena contains more nodes than a `u32` id can address.
     #[error("too many AST nodes")]
     TooManyNodes,
@@ -473,6 +601,20 @@ mod tests {
         assert_eq!(std::mem::size_of::<NodeKind>(), 1);
         assert_eq!(std::mem::size_of::<BinOpKind>(), 1);
         assert_eq!(std::mem::size_of::<UnaryOpKind>(), 1);
+    }
+
+    #[test]
+    fn symbol_table_interns_dense_ids() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern(b"a").expect("a interns");
+        let b = symbols.intern(b"b").expect("b interns");
+        let a_again = symbols.intern(b"a").expect("a interns again");
+
+        assert_eq!(a.as_u32(), 0);
+        assert_eq!(b.as_u32(), 1);
+        assert_eq!(a, a_again);
+        assert_eq!(symbols.resolve(a), Some(b"a".as_slice()));
+        assert_eq!(symbols.resolve(b), Some(b"b".as_slice()));
     }
 
     #[test]

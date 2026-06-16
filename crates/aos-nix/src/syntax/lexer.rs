@@ -369,6 +369,12 @@ impl<'a> Lexer<'a> {
             return self.lex_block_comment(start);
         }
 
+        if self.starts_with(b"${") {
+            self.cursor += 2;
+            self.modes.push(Mode::Interpolation { brace_depth: 0 });
+            return self.token(TokenKind::DollarBrace, start, self.cursor);
+        }
+
         if byte == b'"' {
             self.cursor += 1;
             self.modes.push(Mode::DoubleString);

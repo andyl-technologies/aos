@@ -6,9 +6,11 @@
 
 pub mod ast;
 pub mod lexer;
+pub mod parser;
 
 pub use ast::{
     AstArena, AstError, AstErrorKind, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind,
-    Symbol, UnaryOpKind,
+    ParsedAst, Symbol, SymbolTable, UnaryOpKind,
 };
 pub use lexer::{LexError, LexErrorKind, Lexer, Span, Token, TokenKind};
+pub use parser::{ParseError, ParseErrorKind, Parser, parse_bytes, parse_str};
