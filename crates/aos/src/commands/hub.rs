@@ -2,9 +2,11 @@
 //!
 //! Drives [`aos_remote::RegistryHubClient`] so the CLI interacts with a running
 //! `aos-registry-hub` purely through its public ConnectRPC API, never by
-//! touching the hub's database. Read operations run anonymously by default and
-//! accept an optional `--token` (a hub access JWT) for authenticated reads;
-//! write subcommands follow in later RFC-0004 Phase 5 increments.
+//! touching the hub's database. `login` exchanges a provisioning secret for a
+//! hub access JWT via the REST `POST /oauth2/token` endpoint
+//! ([`aos_remote::exchange_token`]); read operations run anonymously by default
+//! and accept an optional `--token` (that JWT) for authenticated reads. Write
+//! subcommands follow in later RFC-0004 Phase 5 increments.
 
 use anyhow::Result;
 
@@ -12,6 +14,26 @@ use aos_core::output::Printer;
 use aos_remote::RegistryHubClient;
 
 use crate::cli::{HubCmd, HubRegistryCmd};
+
+/// Handles `aos hub login`: exchanges a provisioning secret for an access JWT.
+async fn login(printer: &Printer, hub: &str, provisioning_token: &str) -> Result<()> {
+    let grant = aos_remote::exchange_token(hub, provisioning_token).await?;
+    if printer.json_if_active(&serde_json::json!({
+        "access_token": grant.access_token,
+        "token_type": grant.token_type,
+        "expires_in": grant.expires_in,
+    })) {
+        return Ok(());
+    }
+    // The access token is the deliverable; print it on its own line (plain, not
+    // a styled header) so it is easy to capture into `--token` or a variable.
+    printer.info(&format!(
+        "access token issued ({}, expires in {}s):",
+        grant.token_type, grant.expires_in
+    ));
+    printer.plain(&grant.access_token);
+    Ok(())
+}
 
 /// Dispatches one `aos hub` subcommand.
 ///
@@ -21,6 +43,10 @@ use crate::cli::{HubCmd, HubRegistryCmd};
 /// RPC call fails.
 pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
     match command {
+        HubCmd::Login {
+            hub,
+            provisioning_token,
+        } => login(printer, hub, provisioning_token).await,
         HubCmd::Registry { command } => registry(printer, command).await,
         HubCmd::Orgs { hub, token } => orgs(printer, hub, token.as_deref()).await,
         HubCmd::Projects { hub, token, org } => {
