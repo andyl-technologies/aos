@@ -438,8 +438,10 @@ the prior generation's units.
 - [ ] **Per-package network policy via eBPF** (Cilium-style per-identity), not
       only host-global nftables base-set mutation — the SOTA for per-package L3/L4
       ([`container-model.md`](container-model.md) networking).
-- [ ] **Naming without `nss-mymachines`** (not shipped): explicit `/etc/hosts`
-      or DNS for container reachability.
+- [x] **Naming without `nss-mymachines`** (not shipped): default NSS host
+      lookup uses explicit `/etc/hosts`, `nss-myhostname`, systemd-resolved, and
+      DNS only; fleet metadata already writes `/etc/hosts` entries for host
+      reachability.
 
 > The verity-signed `RootImage=` package root is **no longer deferred** — it is
 > built in **Phase 9** ([`attestation.md`](attestation.md)) under the budget
