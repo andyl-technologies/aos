@@ -210,7 +210,7 @@ pub enum NodeKind {
     BinOp,
     /// A unary operator expression.
     UnaryOp,
-    /// An `inherit` binding group.
+    /// An `inherit` source marker used by desugared inherit bindings.
     Inherit,
     /// A string interpolation expression.
     Interp,
@@ -303,11 +303,11 @@ pub enum NodeData {
         /// The body expression.
         body: NodeId,
     },
-    /// The node represents an `inherit` group.
+    /// The node represents an `inherit` source marker.
     Inherit {
         /// The optional source expression from `inherit (expr) name`.
         from: Option<NodeId>,
-        /// The inherited names as `Ident`/attribute path nodes.
+        /// The inherited target names as `Ident`/attribute path nodes.
         names: ChildSlice,
     },
     /// The node represents a formal-argument set.

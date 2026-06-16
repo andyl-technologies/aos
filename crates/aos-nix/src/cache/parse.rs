@@ -34,7 +34,7 @@ use crate::syntax::{
 };
 
 /// The schema version included in every parse-cache key and metadata file.
-pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 2;
+pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 3;
 
 const KEY_PERSONALIZATION: &[u8] = b"aos-nix-parse-cache-key-v1";
 const FLAG_ENCODING_VERSION: u8 = 1;
@@ -1702,7 +1702,7 @@ mod tests {
 
         entry.write_meta(&meta).expect("metadata writes");
         let text = fs::read_to_string(entry.meta_path()).expect("metadata is readable");
-        assert!(text.contains("schema_version = 2"));
+        assert!(text.contains("schema_version = 3"));
         assert!(!entry.is_complete());
 
         let _ = fs::remove_dir_all(root);

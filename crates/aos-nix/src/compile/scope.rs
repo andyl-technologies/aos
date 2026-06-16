@@ -9,9 +9,9 @@
 //! WithChain { scopes: [innermost_with_scrutinee, ...] }
 //! ```
 //!
-//! Attribute-key identifiers remain syntax nodes until parse-time attr-path
-//! desugaring lands; only identifier nodes in expression position are resolved
-//! here. `inherit` groups keep their target-name syntax nodes and carry separate
+//! Attribute-key identifiers remain syntax nodes after parse-time attr-path
+//! desugaring; only identifier nodes in expression position are resolved here.
+//! Desugared `inherit` bindings keep their target-name syntax nodes and carry
 //! side-table entries for the resolved implicit source expressions.
 
 use std::collections::BTreeSet;
@@ -180,8 +180,8 @@ impl ScopeTables {
         &self.node_inherits
     }
 
-    /// Returns the resolved `inherit` group attached to an `Inherit` node, if
-    /// one exists.
+    /// Returns the resolved `inherit` group attached to a desugared binding or
+    /// zero-target inherit marker node, if one exists.
     pub fn inherit_for_node(&self, node: NodeId) -> Option<InheritGroupId> {
         self.node_inherits.get(node.index()).copied().flatten()
     }
@@ -433,7 +433,7 @@ impl ResolverState {
             NodeKind::Select => self.resolve_select_payload(node),
             NodeKind::HasAttr => self.resolve_has_attr_payload(node),
             NodeKind::LetIn => self.resolve_let_in(id, node),
-            NodeKind::Binding => self.resolve_binding(node, BindingResolveMode::Full),
+            NodeKind::Binding => self.resolve_binding(id, node, BindingResolveMode::Full),
             NodeKind::Inherit => self.resolve_inherit(id, node, BindingResolveMode::Full),
             NodeKind::Interp => self.resolve_interp_payload(node),
             NodeKind::AttrPath => self.resolve_children_payload(node),
@@ -563,7 +563,7 @@ impl ResolverState {
     ) -> Result<(), ScopeError> {
         let node = self.node(id)?;
         match node.kind {
-            NodeKind::Binding => self.resolve_binding(node, mode),
+            NodeKind::Binding => self.resolve_binding(id, node, mode),
             NodeKind::Inherit => self.resolve_inherit(id, node, mode),
             _ => Err(self.invalid_shape(node, "binding or inherit group")),
         }
@@ -573,20 +573,34 @@ impl ResolverState {
         let node = self.node(id)?;
         match node.kind {
             NodeKind::Binding => {
-                let NodeData::Binding { path, .. } = node.data else {
+                let NodeData::Binding { path, value } = node.data else {
                     return Err(self.invalid_shape(node, "binding payload"));
                 };
-                self.ensure_static_let_path(path)
+                if self.node(value)?.kind == NodeKind::Inherit {
+                    self.resolve_binding(id, node, BindingResolveMode::PathOnly)
+                } else {
+                    self.ensure_static_let_path(path)
+                }
             }
             NodeKind::Inherit => self.resolve_inherit(id, node, BindingResolveMode::PathOnly),
             _ => Err(self.invalid_shape(node, "binding or inherit group")),
         }
     }
 
-    fn resolve_binding(&mut self, node: Node, mode: BindingResolveMode) -> Result<(), ScopeError> {
+    fn resolve_binding(
+        &mut self,
+        id: NodeId,
+        node: Node,
+        mode: BindingResolveMode,
+    ) -> Result<(), ScopeError> {
         let NodeData::Binding { path, value } = node.data else {
             return Err(self.invalid_shape(node, "binding payload"));
         };
+        let value_node = self.node(value)?;
+        if value_node.kind == NodeKind::Inherit {
+            self.ensure_static_inherit_names(path)?;
+            return self.resolve_inherit(id, value_node, mode);
+        }
         if matches!(
             mode,
             BindingResolveMode::Full | BindingResolveMode::PathOnly
@@ -1669,16 +1683,19 @@ mod tests {
 
     #[test]
     fn inherit_from_expression_records_resolved_select_sources() {
-        let ast = resolved("let src = { name = 1; }; in { inherit (src) name; }");
+        let ast =
+            resolved("let src = { name = 1; version = 2; }; in { inherit (src) name version; }");
         let NodeData::LetIn { body, .. } = node(&ast, ast.root).data else {
             panic!("let-in payload expected");
         };
         let NodeData::Children(bindings) = node(&ast, body).data else {
             panic!("attrset payload expected");
         };
-        let inherit = child_ids(&ast, bindings)[0];
-        let resolution = inherit_resolution(&ast, inherit);
+        let binding_ids = child_ids(&ast, bindings);
+        let resolution = inherit_resolution(&ast, binding_ids[0]);
+        let second_resolution = inherit_resolution(&ast, binding_ids[1]);
         let from = resolution.from.expect("inherit source expression exists");
+        assert_eq!(second_resolution.from, Some(from));
         assert_eq!(node(&ast, from).kind, NodeKind::LocalVar);
         assert_eq!(local_slot(&ast, from), 0);
         let source = resolution.sources[0].source;
@@ -1688,6 +1705,34 @@ mod tests {
         };
         assert_eq!(receiver, from);
         assert_eq!(child_ids(&ast, path).len(), 1);
+    }
+
+    #[test]
+    fn inherit_from_expression_in_let_sees_the_self_frame() {
+        let ast = resolved("let inherit (src) name; src = { name = 1; }; in name");
+        let NodeData::LetIn { bindings, body } = node(&ast, ast.root).data else {
+            panic!("let-in payload expected");
+        };
+        let binding_ids = child_ids(&ast, bindings);
+        let resolution = inherit_resolution(&ast, binding_ids[0]);
+        let from = resolution.from.expect("inherit source expression exists");
+        assert_eq!(node(&ast, from).kind, NodeKind::LocalVar);
+        assert_eq!(local_slot(&ast, from), 1);
+        assert_eq!(node(&ast, body).kind, NodeKind::LocalVar);
+        assert_eq!(local_slot(&ast, body), 0);
+    }
+
+    #[test]
+    fn empty_inherit_from_groups_still_scope_check_the_source() {
+        let error = resolve(parse_str("{ inherit (missing); x = 1; }").expect("source parses"))
+            .expect_err("missing zero-target inherit source errors");
+        assert!(matches!(error.kind(), ScopeErrorKind::UndefinedSymbol(_)));
+
+        let error = resolve(parse_str("let inherit (src); in 1").expect("source parses"))
+            .expect_err("missing let zero-target inherit source errors");
+        assert!(matches!(error.kind(), ScopeErrorKind::UndefinedSymbol(_)));
+
+        resolved("let inherit (src); src = {}; in 1");
     }
 
     #[test]
@@ -1715,6 +1760,28 @@ mod tests {
         let error = resolve(parse_str("let ${name} = 1; in 1").expect("source parses"))
             .expect_err("computed let target errors");
         assert_eq!(error.kind(), &ScopeErrorKind::DynamicLetBinding);
+    }
+
+    #[test]
+    fn nested_dynamic_let_attr_names_resolve_after_static_prefix() {
+        let ast = resolved("let name = \"b\"; a.${name} = 1; in a");
+        let NodeData::LetIn { bindings, .. } = node(&ast, ast.root).data else {
+            panic!("let-in payload expected");
+        };
+        let a_value = binding_value(&ast, child_ids(&ast, bindings)[1]);
+        let NodeData::Children(nested_bindings) = node(&ast, a_value).data else {
+            panic!("nested attrset payload expected");
+        };
+        let NodeData::Binding { path, .. } = node(&ast, child_ids(&ast, nested_bindings)[0]).data
+        else {
+            panic!("nested binding payload expected");
+        };
+        let dynamic_segment = child_ids(&ast, path)[0];
+        let NodeData::Node(dynamic_name) = node(&ast, dynamic_segment).data else {
+            panic!("dynamic attr segment expected");
+        };
+        assert_eq!(node(&ast, dynamic_name).kind, NodeKind::LocalVar);
+        assert_eq!(local_slot(&ast, dynamic_name), 0);
     }
 
     #[test]

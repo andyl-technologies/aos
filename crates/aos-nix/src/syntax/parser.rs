@@ -701,13 +701,13 @@ impl<'a> Parser<'a> {
                     },
                 ));
             }
-            bindings.push(self.parse_binding()?);
+            bindings.extend(self.parse_binding()?);
         }
         let bindings = self.normalize_bindings(bindings)?;
         self.push_child_slice(&bindings)
     }
 
-    fn parse_binding(&mut self) -> Result<NodeId, ParseError> {
+    fn parse_binding(&mut self) -> Result<Vec<NodeId>, ParseError> {
         if self.peek()?.kind == TokenKind::Inherit {
             return self.parse_inherit();
         }
@@ -716,14 +716,15 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::Assign)?;
         let value = self.parse_expr()?;
         let semi = self.expect(TokenKind::Semi)?.span;
-        self.push(
+        let binding = self.push(
             NodeKind::Binding,
             self.join_span(self.slice_span(path), semi),
             NodeData::Binding { path, value },
-        )
+        )?;
+        Ok(vec![binding])
     }
 
-    fn parse_inherit(&mut self) -> Result<NodeId, ParseError> {
+    fn parse_inherit(&mut self) -> Result<Vec<NodeId>, ParseError> {
         let start = self.expect(TokenKind::Inherit)?.span;
         let from = if self.peek()?.kind == TokenKind::LParen {
             self.bump()?;
@@ -739,12 +740,40 @@ impl<'a> Parser<'a> {
             names.push(self.parse_attr_segment()?);
         }
         let end = self.expect(TokenKind::Semi)?.span;
-        let names = self.push_child_slice(&names)?;
-        self.push(
-            NodeKind::Inherit,
-            self.join_span(start, end),
-            NodeData::Inherit { from, names },
-        )
+        if names.is_empty() {
+            let Some(from) = from else {
+                return Ok(Vec::new());
+            };
+            let names = self.push_child_slice(&[])?;
+            let inherit = self.push(
+                NodeKind::Inherit,
+                self.join_span(start, end),
+                NodeData::Inherit {
+                    from: Some(from),
+                    names,
+                },
+            )?;
+            return Ok(vec![inherit]);
+        }
+        let mut bindings = Vec::with_capacity(names.len());
+        for name in names {
+            let path = self.push_child_slice(&[name])?;
+            let names = self.push_child_slice(&[name])?;
+            let inherit = self.push(
+                NodeKind::Inherit,
+                self.join_span(start, end),
+                NodeData::Inherit { from, names },
+            )?;
+            bindings.push(self.push(
+                NodeKind::Binding,
+                self.join_span(start, end),
+                NodeData::Binding {
+                    path,
+                    value: inherit,
+                },
+            )?);
+        }
+        Ok(bindings)
     }
 
     fn parse_attr_path(&mut self) -> Result<ChildSlice, ParseError> {
@@ -2014,9 +2043,67 @@ mod tests {
             panic!("attrset children expected");
         };
         let bindings = ast.arena.child_slice(bindings).expect("bindings");
+        assert_eq!(bindings.len(), 3);
+        assert_eq!(node(&ast, bindings[0]).kind, NodeKind::Binding);
+        assert_eq!(node(&ast, bindings[1]).kind, NodeKind::Binding);
+        assert_eq!(node(&ast, bindings[2]).kind, NodeKind::Binding);
+        assert_eq!(binding_name(&ast, bindings[0]), b"name");
+        assert_eq!(binding_name(&ast, bindings[1]), b"version");
+        assert_eq!(binding_name(&ast, bindings[2]), b"list");
+
+        let (_, value) = binding_path_and_value(&ast, bindings[0]);
+        assert_eq!(node(&ast, value).kind, NodeKind::Inherit);
+    }
+
+    #[test]
+    fn empty_inherit_groups_desugar_to_no_bindings() {
+        let ast = parse("{ inherit; x = 1; }");
+        let NodeData::Children(bindings) = node(&ast, ast.root).data else {
+            panic!("attrset children expected");
+        };
+        let bindings = child_ids(&ast, bindings);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(binding_name(&ast, bindings[0]), b"x");
+    }
+
+    #[test]
+    fn empty_inherit_from_groups_keep_a_scope_marker() {
+        let ast = parse("{ inherit (src); x = 1; }");
+        let NodeData::Children(bindings) = node(&ast, ast.root).data else {
+            panic!("attrset children expected");
+        };
+        let bindings = child_ids(&ast, bindings);
         assert_eq!(bindings.len(), 2);
         assert_eq!(node(&ast, bindings[0]).kind, NodeKind::Inherit);
-        assert_eq!(node(&ast, bindings[1]).kind, NodeKind::Binding);
+        assert_eq!(binding_name(&ast, bindings[1]), b"x");
+    }
+
+    #[test]
+    fn inherit_from_bindings_share_the_source_expression() {
+        let ast = parse("{ inherit (src) name version; }");
+        let NodeData::Children(bindings) = node(&ast, ast.root).data else {
+            panic!("attrset children expected");
+        };
+        let bindings = child_ids(&ast, bindings);
+        assert_eq!(bindings.len(), 2);
+
+        let (_, first_value) = binding_path_and_value(&ast, bindings[0]);
+        let (_, second_value) = binding_path_and_value(&ast, bindings[1]);
+        let NodeData::Inherit {
+            from: Some(first_from),
+            ..
+        } = node(&ast, first_value).data
+        else {
+            panic!("first inherit marker expected");
+        };
+        let NodeData::Inherit {
+            from: Some(second_from),
+            ..
+        } = node(&ast, second_value).data
+        else {
+            panic!("second inherit marker expected");
+        };
+        assert_eq!(first_from, second_from);
     }
 
     #[test]
@@ -2064,8 +2151,24 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_first_attr_paths_are_not_statically_merged() {
+        let ast = parse("{ ${name}.b = 1; a.c = 2; }");
+        let NodeData::Children(bindings) = node(&ast, ast.root).data else {
+            panic!("attrset children expected");
+        };
+        let bindings = child_ids(&ast, bindings);
+        assert_eq!(bindings.len(), 2);
+    }
+
+    #[test]
     fn duplicate_static_attr_paths_are_parse_errors() {
-        for source in ["{ a.b = 1; a.b = 2; }", "{ a = 1; a.b = 2; }"] {
+        for source in [
+            "{ a.b = 1; a.b = 2; }",
+            "{ a = 1; a.b = 2; }",
+            "let x = 1; in { inherit x; x = 2; }",
+            "let x = 1; in { inherit x; inherit x; }",
+            "let x = 1; in { a = { inherit x; }; a.x = 2; }",
+        ] {
             let error = parse_str(source).expect_err("duplicate attr path errors");
             assert_eq!(error.kind(), &ParseErrorKind::DuplicateAttribute);
         }
