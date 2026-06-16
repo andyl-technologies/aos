@@ -34,7 +34,7 @@
         default = false;
         description = ''
           Whether this package and its rendered expose artifact are baked into
-          the image and seeded into the system package profile on first boot.
+          the image. Bundled packages remain inert unless `preset` is enabled.
         '';
       };
 
@@ -55,6 +55,8 @@
     lib.filterAttrs (_: package: package.bundle) config.aos.packages;
   exposedBundledPackages =
     lib.filterAttrs (_: package: package.package ? expose) bundledPackages;
+  presetExposedPackages =
+    lib.filterAttrs (_: package: package.preset) exposedBundledPackages;
 
   packageTarget = package:
     package.package.expose.passthru.manifest.expose.target;
@@ -115,14 +117,14 @@
             cp ${metaFile}/${packageHash}.json "$out/gen-1/meta/${packageHash}.json"
           ''
         )
-        exposedBundledPackages
+        presetExposedPackages
       )}
     '';
 
   enabledPresetLines =
     lib.mapAttrsToList
     (_: package: "enable ${packageTarget package}")
-    (lib.filterAttrs (_: package: package.bundle && package.preset) exposedBundledPackages);
+    presetExposedPackages;
 
   reconcileExposedUnits = pkgs.writeShellScriptBin "aos-reconcile-exposed-units" ''
     exec ${pkgs.aos}/bin/apm _test-reconcile-exposed-units "$@"
@@ -175,6 +177,14 @@ in {
                   `expose` artifact.
                 '';
               }
+              {
+                assertion = !package.preset || package.bundle;
+                message = ''
+                  aos.packages."${name}" sets `preset = true` without
+                  `bundle = true`. Preset enablement requires the package to
+                  be baked into the image.
+                '';
+              }
             ]
             ++ lib.optionals (package.package ? expose) [
               {
@@ -187,7 +197,7 @@ in {
               }
             ]
         )
-        bundledPackages);
+        config.aos.packages);
 
     system.build.aosPackageProfileSeed = packageSeedBundle;
 
@@ -203,7 +213,7 @@ in {
         )
         exposedBundledPackages);
 
-    systemd.services.aos-seed-baked-packages = lib.mkIf (exposedBundledPackages != {}) {
+    systemd.services.aos-seed-baked-packages = lib.mkIf (presetExposedPackages != {}) {
       description = "Seed baked AOS package profile";
       wantedBy = ["multi-user.target"];
       before = [

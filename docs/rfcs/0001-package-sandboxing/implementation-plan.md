@@ -482,9 +482,11 @@ policy. (migration.md increments 2–4; D14.)
 derivation with an `expose` block, is baked into an image through
 `modules/packages.nix`, seeds the system package profile at boot, attaches its
 rendered unit artifact, and is enabled through image/APM preset policy in the
-`package-test-http-server` VM. The role tree still exists, and the broader
-role-to-package dissolution, security policy split, and fleet-spec rename remain
-open.
+`package-test-http-server` VM. The same VM also proves `bundle = true; preset =
+false` packages stay baked but inert: they are present in the image without
+being seeded into the package profile, attached, or enabled. The role tree still
+exists, and the broader role-to-package dissolution, security policy split, and
+fleet-spec rename remain open.
 
 **Closes.** D14; the [`migration.md`](migration.md) increments.
 

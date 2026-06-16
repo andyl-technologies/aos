@@ -10,11 +10,19 @@
   packageHash = storePathHash pkgs.test-http-server;
   exposeHash = storePathHash pkgs.test-http-server.expose;
   target = pkgs.test-http-server.expose.passthru.manifest.expose.target;
+  inertPackageHash = storePathHash pkgs.expose-smoke;
+  inertExposeHash = storePathHash pkgs.expose-smoke.expose;
+  inertTarget = pkgs.expose-smoke.expose.passthru.manifest.expose.target;
 
   testSystem = mkSystem {
     modules = [
       ../../systems/server.nix
       {
+        aos.packages.expose-smoke = {
+          package = pkgs.expose-smoke;
+          bundle = true;
+          preset = false;
+        };
         aos.packages.test-http-server = {
           package = pkgs.test-http-server;
           bundle = true;
@@ -36,15 +44,22 @@ in
       vm.succeed("${pkgs.jq}/bin/jq -e '.current_generation == 1 and .next_generation == 2' /var/lib/profiles/system-packages/state.json")
       vm.succeed("test -L /var/lib/profiles/system-packages/gen-1/usr/${packageHash}")
       vm.succeed("test -L /var/lib/profiles/system-packages/gen-1/expose/${exposeHash}")
+      vm.fail("test -e /var/lib/profiles/system-packages/gen-1/usr/${inertPackageHash}")
+      vm.fail("test -e /var/lib/profiles/system-packages/gen-1/expose/${inertExposeHash}")
       vm.succeed("test -f /var/lib/profiles/system-packages/meta/${packageHash}.json")
       vm.succeed("${pkgs.jq}/bin/jq -e '.apm.name == \"test-http-server\" and .apm.expose.target == \"${target}\"' /var/lib/profiles/system-packages/meta/${packageHash}.json")
+      vm.succeed("test -e ${pkgs.expose-smoke}")
+      vm.succeed("test -e ${pkgs.expose-smoke.expose}")
 
       vm.succeed("test -f /usr/lib/systemd/system-preset/50-aos-image-packages.preset")
       vm.succeed("grep -qx 'enable ${target}' /usr/lib/systemd/system-preset/50-aos-image-packages.preset")
+      vm.fail("grep -qx 'enable ${inertTarget}' /usr/lib/systemd/system-preset/50-aos-image-packages.preset")
       vm.succeed("grep -qx 'enable ${target}' /etc/systemd/system-preset/30-aos-apm.preset")
+      vm.fail("grep -qx 'enable ${inertTarget}' /etc/systemd/system-preset/30-aos-apm.preset")
       vm.succeed("test -L /etc/systemd/system.attached/${target}")
       vm.succeed("test -L /etc/systemd/system.attached/test-http-server.socket")
       vm.succeed("test -L /etc/systemd/system.attached/test-http-server.service")
+      vm.fail("test -e /etc/systemd/system.attached/${inertTarget}")
 
       vm.succeed("systemctl is-enabled --quiet ${target}")
       vm.succeed("systemctl is-active --quiet ${target}")
