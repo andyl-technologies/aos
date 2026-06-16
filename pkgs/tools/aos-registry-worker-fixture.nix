@@ -49,7 +49,7 @@ in
     # crate — ed25519-dalek is already in the lockfile via aos-registry-surface).
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-yd9vFfOB04dIRdbRlilPn5bYKcMj36gz3cIufKWwFcg=";
+      hash = "sha256-1TKoyD7zFfxuUgUTlDloUyjVB3y5E9B8SSgKKA4bu/U=";
     };
 
     phases = [
