@@ -1588,6 +1588,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_dir_of_primop(argument, argument_span, value)
             }
+            StrictUnaryPrimOp::ParseDrvName => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_parse_drv_name_primop(id, node.span, argument, argument_span, value)
+            }
             StrictUnaryPrimOp::FunctionArgs => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_function_args_primop(id, node.span, argument, argument_span, value)
@@ -1872,6 +1876,65 @@ impl<'ir> TreeWalk<'ir> {
                 argument_span,
             )
         })
+    }
+
+    fn eval_parse_drv_name_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                argument_span,
+            ));
+        }
+        let bytes = {
+            let string = self.heap.get_string(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(string.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id: argument,
+                        len: string.len(),
+                    },
+                    argument_span,
+                )
+            })?;
+            bytes.extend_from_slice(string.bytes());
+            bytes
+        };
+        let (name_end, version_start) = parse_drv_name_split(&bytes);
+        let name = self.alloc_static_string(id, span, &bytes[..name_end])?;
+        let version = self.alloc_static_string(id, span, &bytes[version_start..])?;
+        let name_key = self.intern_builtin_attr_symbol(id, b"name", span)?;
+        let version_key = self.intern_builtin_attr_symbol(id, b"version", span)?;
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(2).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len: 2 }, span)
+        })?;
+        entries.push(AttrEntry::new(name_key, name));
+        entries.push(AttrEntry::new(version_key, version));
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
     fn eval_list_to_attrs_primop(
@@ -4909,6 +4972,17 @@ fn base_name_range(bytes: &[u8]) -> (usize, usize) {
     (start, last + 1 - start)
 }
 
+fn parse_drv_name_split(bytes: &[u8]) -> (usize, usize) {
+    if let Some(dash) = bytes
+        .windows(2)
+        .position(|pair| pair[0] == b'-' && !pair[1].is_ascii_alphabetic())
+    {
+        (dash, dash + 1)
+    } else {
+        (bytes.len(), bytes.len())
+    }
+}
+
 fn dir_name_range(bytes: &[u8]) -> Option<(usize, usize)> {
     if bytes.is_empty() {
         return None;
@@ -4987,6 +5061,7 @@ enum StrictUnaryPrimOp {
     StringLength,
     BaseNameOf,
     DirOf,
+    ParseDrvName,
     ListToAttrs,
     ConcatLists,
 }
@@ -5017,6 +5092,7 @@ impl StrictUnaryPrimOp {
             b"stringLength" => Some(Self::StringLength),
             b"baseNameOf" => Some(Self::BaseNameOf),
             b"dirOf" => Some(Self::DirOf),
+            b"parseDrvName" => Some(Self::ParseDrvName),
             b"listToAttrs" => Some(Self::ListToAttrs),
             b"concatLists" => Some(Self::ConcatLists),
             _ => None,
@@ -8936,6 +9012,88 @@ mod tests {
             ),
             b"shadow"
         );
+    }
+
+    #[test]
+    fn parse_drv_name_primop_splits_name_and_version() {
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-1.2\").name"),
+            b"foo"
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-1.2\").version"),
+            b"1.2"
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-bar\").name"),
+            b"foo-bar"
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-bar\").version"),
+            b""
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo--1\").name"),
+            b"foo"
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo--1\").version"),
+            b"-1"
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-A-1\").name"),
+            b"foo-A"
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-A-1\").version"),
+            b"1"
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-é-1\").name"),
+            b"foo"
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-é-1\").version"),
+            "é-1".as_bytes()
+        );
+        assert_eq!(eval_string_bytes("(builtins.parseDrvName \"\").name"), b"");
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"-1\").version"),
+            b"1"
+        );
+        assert_eq!(
+            eval_list_string_bytes("builtins.attrNames (builtins.parseDrvName \"foo-1\")"),
+            vec![b"name".to_vec(), b"version".to_vec()]
+        );
+        assert_eq!(
+            eval("let builtins = { parseDrvName = x: { name = \"local\"; version = \"\"; }; }; in builtins.parseDrvName \"foo-1\" == { name = \"local\"; version = \"\"; }")
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn parse_drv_name_primop_requires_a_string() {
+        let ir = lower("builtins.parseDrvName 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("parseDrvName requires a string");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
     }
 
     #[test]

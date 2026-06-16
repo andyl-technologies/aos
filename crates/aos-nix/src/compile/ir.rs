@@ -985,6 +985,7 @@ impl IrLowerer {
                 | b"stringLength"
                 | b"baseNameOf"
                 | b"dirOf"
+                | b"parseDrvName"
                 | b"unsafeDiscardStringContext",
             ) => Some(EffectClass::Pure),
             _ => None,
@@ -1895,6 +1896,10 @@ mod tests {
             ("builtins.baseNameOf \"/a/b\"", b"baseNameOf".as_slice()),
             ("builtins.dirOf \"/a/b\"", b"dirOf".as_slice()),
             (
+                "builtins.parseDrvName \"foo-1.0\"",
+                b"parseDrvName".as_slice(),
+            ),
+            (
                 "builtins.unsafeDiscardStringContext \"abc\"",
                 b"unsafeDiscardStringContext".as_slice(),
             ),
@@ -2148,6 +2153,14 @@ mod tests {
         };
         assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
 
+        let ir = lowered("parseDrvName \"foo-1\"");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
         let ir = lowered("let typeOf = x: x; in typeOf 1");
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
@@ -2191,6 +2204,18 @@ mod tests {
 
         let ir =
             lowered("let builtins = { attrValues = x: [ \"local\" ]; }; in builtins.attrValues {}");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered(
+            "let builtins = { parseDrvName = x: { name = \"local\"; version = \"\"; }; }; in builtins.parseDrvName \"foo-1\"",
+        );
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
         };
