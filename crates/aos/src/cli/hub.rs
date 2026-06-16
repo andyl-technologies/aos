@@ -53,4 +53,26 @@ pub enum HubRegistryCmd {
         /// Registry slug (e.g. `acme/infra/prod/cdn`)
         slug: String,
     },
+    /// List a registry's published packages
+    Packages {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access (omit for public reads)
+        #[arg(long)]
+        token: Option<String>,
+        /// Registry slug (e.g. `acme/infra/prod/cdn`)
+        slug: String,
+    },
+    /// List a registry's rollout channels
+    Channels {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access (omit for public reads)
+        #[arg(long)]
+        token: Option<String>,
+        /// Registry slug (e.g. `acme/infra/prod/cdn`)
+        slug: String,
+    },
 }

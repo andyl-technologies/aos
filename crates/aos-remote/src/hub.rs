@@ -17,8 +17,9 @@ use anyhow::Result;
 use connectrpc::client::{ClientConfig, HttpClient};
 
 use aos_proto::aos::registry::v1::{
-    GetRegistryRequest, ListRegistriesRequest, ListReleasesRequest, Registry, RegistryServiceClient,
-    Release,
+    Channel, ChannelServiceClient, GetRegistryRequest, ListChannelsRequest, ListPackagesRequest,
+    ListRegistriesRequest, ListReleasesRequest, PackageServiceClient, PackageSummary, Registry,
+    RegistryServiceClient, Release,
 };
 
 use crate::client::{make_http_client, validate_base_url};
@@ -35,6 +36,8 @@ const HUB_TIMEOUT_SECS: u64 = 30;
 #[derive(Clone)]
 pub struct RegistryHubClient {
     registry: RegistryServiceClient<HttpClient>,
+    packages: PackageServiceClient<HttpClient>,
+    channels: ChannelServiceClient<HttpClient>,
 }
 
 impl RegistryHubClient {
@@ -74,7 +77,9 @@ impl RegistryHubClient {
             config = config.default_header("authorization", format!("Bearer {token}"));
         }
         Ok(Self {
-            registry: RegistryServiceClient::new(http, config),
+            registry: RegistryServiceClient::new(http.clone(), config.clone()),
+            packages: PackageServiceClient::new(http.clone(), config.clone()),
+            channels: ChannelServiceClient::new(http, config),
         })
     }
 
@@ -127,5 +132,41 @@ impl RegistryHubClient {
             .await
             .map_err(|e| anyhow::anyhow!("listing releases for '{slug}': {e}"))?;
         Ok(response.into_owned().releases)
+    }
+
+    /// Lists a registry's published packages (the verified index), for a public
+    /// registry when anonymous.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn list_packages(&self, slug: &str) -> Result<Vec<PackageSummary>> {
+        let response = self
+            .packages
+            .list_packages(ListPackagesRequest {
+                slug: slug.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("listing packages for '{slug}': {e}"))?;
+        Ok(response.into_owned().packages)
+    }
+
+    /// Lists a registry's rollout channels, for a public registry when
+    /// anonymous.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn list_channels(&self, slug: &str) -> Result<Vec<Channel>> {
+        let response = self
+            .channels
+            .list_channels(ListChannelsRequest {
+                slug: slug.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("listing channels for '{slug}': {e}"))?;
+        Ok(response.into_owned().channels)
     }
 }
