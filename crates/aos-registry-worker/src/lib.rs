@@ -45,7 +45,9 @@
 //!
 //! Worker glue (wasm32-only, gated behind `#[cfg(target_arch = "wasm32")]`):
 //!
-//! - `d1` — the async D1 read access layer.
+//! - `d1backend` — the [`aos_registry_core::backend::Backend`] over D1.
+//! - `reads` — the read access layer driving `core::Database` over `d1backend`,
+//!   projecting onto the [`model`] types the renderer and JSON API consume.
 //! - `facade` — the R2 machine-path facade handler.
 //! - `handlers` — the `fetch` request dispatch.
 //! - `indexer` — the Cron-trigger indexer over R2 + D1.
@@ -68,8 +70,6 @@ pub mod render;
 pub mod sql;
 
 #[cfg(target_arch = "wasm32")]
-pub mod d1;
-#[cfg(target_arch = "wasm32")]
 pub mod d1backend;
 #[cfg(target_arch = "wasm32")]
 pub mod facade;
@@ -77,6 +77,8 @@ pub mod facade;
 pub mod handlers;
 #[cfg(target_arch = "wasm32")]
 pub mod indexer;
+#[cfg(target_arch = "wasm32")]
+pub mod reads;
 
 #[cfg(target_arch = "wasm32")]
 mod entry {
