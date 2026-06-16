@@ -281,58 +281,43 @@ impl SearchParams {
 
 /// Build the complete hub router.
 ///
-/// `aos.registry.v1` ConnectRPC method paths are static two-segment
-/// routes (`/aos.registry.v1.RegistryService/ListRegistries`), so axum's
+/// `aos.registry.v1` Connect-JSON method paths are static two-segment routes
+/// (`/aos.registry.v1.RegistryService/ListRegistries`), so axum's
 /// static-over-dynamic precedence keeps them from being shadowed by the
 /// `/{slug}/{*path}` facade wildcard.
+///
+/// The RPC surface is the shared, transport-free
+/// [`RpcService`](aos_registry_core::service::RpcService) served as Connect-JSON
+/// by [`aos_registry_core::connect::router`] — the *same* router the Cloudflare
+/// Worker mounts — so the native hub and the Worker speak one wire protocol. The
+/// hub's in-process limiter and surface transports satisfy the service's ports
+/// via [`crate::coreports`].
 pub async fn router(state: Arc<AppState>) -> Router {
-    use aos_proto::aos::registry::v1::{
-        AuditServiceExt, ChannelServiceExt, ConfigServiceExt, GitServiceExt, OrgServiceExt,
-        PackageServiceExt, ProjectServiceExt, PublishServiceExt, RegistryServiceExt,
-        StorageServiceExt, WebhookServiceExt,
-    };
-    let rpc = Arc::new(crate::rpc::RegistryRpc {
-        db: Arc::clone(&state.db),
-        jwt_keys: state.auth.jwt_keys.clone(),
-        external_url: state.external_url.clone(),
-        ratelimit: Arc::clone(&state.ratelimit),
-    });
-    let connect_router = connectrpc::Router::new();
-    let connect_router = RegistryServiceExt::register(Arc::clone(&rpc), connect_router);
-    let connect_router = OrgServiceExt::register(Arc::clone(&rpc), connect_router);
-    let connect_router = ProjectServiceExt::register(Arc::clone(&rpc), connect_router);
-    let connect_router = StorageServiceExt::register(Arc::clone(&rpc), connect_router);
-    let connect_router = AuditServiceExt::register(Arc::clone(&rpc), connect_router);
-    let connect_router = ConfigServiceExt::register(Arc::clone(&rpc), connect_router);
-    let connect_router = PackageServiceExt::register(Arc::clone(&rpc), connect_router);
-    let connect_router = ChannelServiceExt::register(Arc::clone(&rpc), connect_router);
-    let connect_router = PublishServiceExt::register(Arc::clone(&rpc), connect_router);
-    let connect_router = GitServiceExt::register(Arc::clone(&rpc), connect_router);
-    let connect_router = WebhookServiceExt::register(rpc, connect_router);
-    let connect_paths: Vec<String> = connect_router
-        .methods()
-        .map(|method| format!("/{method}"))
-        .collect();
-    let connect_service = connect_router.into_axum_service();
-
-    // Mount the ConnectRPC method paths into a dedicated sub-router so a small
-    // inbound body cap can be scoped to *just* the RPC surface (the large
-    // surface-upload PUT path keeps its own, far larger limit). Applying
-    // `DefaultBodyLimit` at this sub-router level bounds every RPC body without
-    // touching the upload or browse routes.
-    let mut rpc_router: Router<Arc<AppState>> = Router::new();
-    for path in &connect_paths {
-        rpc_router = rpc_router.route_service(path, connect_service.clone());
-    }
-    // Use tower-http's `RequestBodyLimitLayer` rather than axum's
-    // `DefaultBodyLimit` here: the ConnectRPC routes are raw tower services that
-    // read the request body directly, so they never consult the axum extractor
-    // limit. `RequestBodyLimitLayer` enforces the cap at the body-stream level
-    // (rejecting with `413 Payload Too Large`) regardless of how the inner
-    // service consumes the body.
-    let rpc_router = rpc_router.layer(tower_http::limit::RequestBodyLimitLayer::new(
-        RPC_MAX_BODY_BYTES,
+    // The shared Connect-JSON RPC service, built over the hub's database, signing
+    // keys, and base URL (the same fields the old per-hub service held), with the
+    // in-process limiter adapted to the core `RateLimiter` port and the native
+    // surface provider (filesystem/HTTP fetchers chosen per a registry's storage
+    // binding).
+    let rpc_service = Arc::new(aos_registry_core::service::RpcService::new(
+        Arc::clone(&state.db),
+        state.auth.jwt_keys.clone(),
+        state.external_url.clone(),
+        Arc::clone(&state.ratelimit) as Arc<dyn aos_registry_core::ratelimit::RateLimiter>,
+        Arc::new(crate::coreports::HubSurfaceProvider::new(Arc::clone(
+            &state.db,
+        ))),
     ));
+    // The shared router owns `/aos.registry.v1.*` and carries its own axum state
+    // (the `Arc<RpcService>`), so it is already fully stated; it is merged into
+    // the finished AppState-stated router below. A small inbound body cap is
+    // scoped to *just* the RPC surface (the large surface-upload PUT path keeps
+    // its own, far larger limit). `RequestBodyLimitLayer` enforces the cap at the
+    // body-stream level (`413 Payload Too Large`) regardless of how the handler
+    // consumes the body.
+    let rpc_router =
+        aos_registry_core::connect::router(rpc_service).layer(
+            tower_http::limit::RequestBodyLimitLayer::new(RPC_MAX_BODY_BYTES),
+        );
 
     // The `/oauth2/token` exchange fragment runs on Arc<AuthState>; bind its
     // state up front so it merges into the AppState-typed router below.
@@ -373,7 +358,6 @@ pub async fn router(state: Arc<AppState>) -> Router {
                 // innermost limit the body extractor sees wins).
                 .layer(DefaultBodyLimit::max(crate::facade::MAX_UPLOAD_BYTES)),
         );
-    router = router.merge(rpc_router);
     // The nested-canonical catch-all is registered last: axum's
     // static-over-dynamic precedence keeps the explicit routes above
     // (healthz, _assets, oauth2, RPC method paths, the flat `/{slug}` shapes)
@@ -396,6 +380,13 @@ pub async fn router(state: Arc<AppState>) -> Router {
             resolve_session,
         ))
         .with_state(state)
+        // The shared Connect-JSON RPC router carries its own `Arc<RpcService>`
+        // state, so it is merged after `with_state` (when the surrounding router
+        // is `Router<()>` too). Its static `/aos.registry.v1.*` paths win over
+        // the `/{slug}/{*path}` facade wildcard by static-over-dynamic
+        // precedence, and the outer layers below (body cap, panic catcher,
+        // security headers) still wrap its responses.
+        .merge(rpc_router)
         // Router-wide inbound body cap. The RPC surface is already bounded to
         // the smaller `RPC_MAX_BODY_BYTES` by its own sub-router layer above
         // (which, being closer to the handler, wins for those routes). This
