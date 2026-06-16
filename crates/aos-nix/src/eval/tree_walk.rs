@@ -1310,6 +1310,9 @@ impl<'ir> TreeWalk<'ir> {
                 StrictBinaryPrimOp::HashString => {
                     self.eval_hash_string_primop(id, node.span, first, second)
                 }
+                StrictBinaryPrimOp::ConcatStringsSep => {
+                    self.eval_concat_strings_sep_primop(id, node.span, first, second)
+                }
                 StrictBinaryPrimOp::Add => {
                     self.eval_numeric_binary(id, node, BinaryArithmeticOp::Add, first, second)
                 }
@@ -2500,6 +2503,153 @@ impl<'ir> TreeWalk<'ir> {
             .union(&StringContext::empty())
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
         Ok(ReplaceStringReplacement { bytes, context })
+    }
+
+    fn eval_concat_strings_sep_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        separator_id: IrId,
+        list_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let separator_span = self.node(separator_id)?.span;
+        let separator_value = self.eval_node(separator_id)?;
+        if separator_value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: separator_id,
+                    expected: "string",
+                    actual: separator_value.tag(),
+                },
+                separator_span,
+            ));
+        }
+        let (separator_bytes, separator_context) = {
+            let separator = self.heap.get_string(separator_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: separator_id,
+                        source,
+                    },
+                    separator_span,
+                )
+            })?;
+            let bytes = Self::copy_bytes_for_node(separator_id, separator_span, separator.bytes())?;
+            let context = separator
+                .context()
+                .union(&StringContext::empty())
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: separator_id,
+                            source,
+                        },
+                        separator_span,
+                    )
+                })?;
+            (bytes, context)
+        };
+
+        let list_span = self.node(list_id)?.span;
+        let list_value = self.eval_node(list_id)?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list_id,
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list_span,
+            ));
+        }
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            let mut elements = Vec::new();
+            elements.try_reserve_exact(list.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: list_id,
+                        len: list.len(),
+                    },
+                    list_span,
+                )
+            })?;
+            elements.extend_from_slice(list.as_slice());
+            elements
+        };
+
+        let result = self.concat_strings_sep_values(
+            id,
+            span,
+            list_id,
+            list_span,
+            &separator_bytes,
+            separator_context,
+            &elements,
+        )?;
+        self.heap
+            .alloc_string(result)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn concat_strings_sep_values(
+        &mut self,
+        id: IrId,
+        span: Span,
+        list_id: IrId,
+        list_span: Span,
+        separator: &[u8],
+        mut context: StringContext,
+        elements: &[Value],
+    ) -> Result<NixString, TreeWalkError> {
+        let mut bytes = Vec::new();
+        for (index, element) in elements.iter().copied().enumerate() {
+            let element = self.force_value(list_id, list_span, element)?;
+            let element = self.coerce_to_string(list_id, element, list_span)?;
+            let (element_bytes, element_context) = {
+                let string = self.heap.get_string(element).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: list_id,
+                            source,
+                        },
+                        list_span,
+                    )
+                })?;
+                let bytes = Self::copy_bytes_for_node(list_id, list_span, string.bytes())?;
+                let context =
+                    string
+                        .context()
+                        .union(&StringContext::empty())
+                        .map_err(|source| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::String {
+                                    id: list_id,
+                                    source,
+                                },
+                                list_span,
+                            )
+                        })?;
+                (bytes, context)
+            };
+            if index > 0 {
+                Self::extend_bytes_for_node(id, span, &mut bytes, separator)?;
+            }
+            Self::extend_bytes_for_node(id, span, &mut bytes, &element_bytes)?;
+            context = context.union(&element_context).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+            })?;
+        }
+
+        Ok(NixString::new(bytes, context))
     }
 
     fn eval_base_name_of_primop(
@@ -6302,6 +6452,7 @@ enum StrictBinaryPrimOp {
     Elem,
     LessThan,
     HashString,
+    ConcatStringsSep,
     All,
     Any,
     ConcatMap,
@@ -6330,6 +6481,7 @@ impl StrictBinaryPrimOp {
             b"elem" => Some(Self::Elem),
             b"lessThan" => Some(Self::LessThan),
             b"hashString" => Some(Self::HashString),
+            b"concatStringsSep" => Some(Self::ConcatStringsSep),
             b"all" => Some(Self::All),
             b"any" => Some(Self::Any),
             b"concatMap" => Some(Self::ConcatMap),
@@ -10716,6 +10868,182 @@ mod tests {
         assert!(result.context().contains(&source));
         assert!(result.context().contains(&used));
         assert!(!result.context().contains(&unused));
+    }
+
+    #[test]
+    fn concat_strings_sep_primop_joins_coerced_strings() {
+        assert_eq!(eval_string_bytes("builtins.concatStringsSep \",\" []"), b"");
+        assert_eq!(
+            eval_string_bytes("builtins.concatStringsSep \",\" [ \"a\" ]"),
+            b"a"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.concatStringsSep \",\" [ \"a\" \"b\" \"c\" ]"),
+            b"a,b,c"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.concatStringsSep \",\" [ { outPath = \"a\"; } { __toString = self: \"b\"; } ]"
+            ),
+            b"a,b"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { concatStringsSep = sep: list: \"local\"; }; in builtins.concatStringsSep \",\" [ \"a\" \"b\" ]"
+            ),
+            b"local"
+        );
+    }
+
+    #[test]
+    fn concat_strings_sep_primop_checks_arguments_left_to_right() {
+        let ir = lower("builtins.concatStringsSep 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let separator = args[0];
+        let separator_span = ir
+            .arena
+            .node(separator)
+            .expect("separator argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("separator is checked first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: separator,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), separator_span);
+
+        let ir = lower("builtins.concatStringsSep { outPath = \",\"; } [ \"a\" ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let separator = args[0];
+        let separator_span = ir
+            .arena
+            .node(separator)
+            .expect("separator argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("separator is not coerced");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: separator,
+                expected: "string",
+                actual: ValueTag::Attrs,
+            }
+        );
+        assert_eq!(error.span(), separator_span);
+
+        let ir = lower("builtins.concatStringsSep \",\" 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("second argument must be a list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: list,
+                expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), list_span);
+
+        let ir = lower("builtins.concatStringsSep \",\" [ \"a\" 1 ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("list elements must coerce to strings");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: list,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), list_span);
+    }
+
+    #[test]
+    fn concat_strings_sep_primop_unions_separator_and_element_contexts() {
+        let ir = lower("builtins.concatStringsSep \",\" []");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+
+        let separator = ContextElement::opaque_path(b"/nix/store/separator".to_vec())
+            .expect("separator context is valid");
+        let element = ContextElement::opaque_path(b"/nix/store/element".to_vec())
+            .expect("element context is valid");
+        let element_value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"elem".to_vec(),
+                StringContext::singleton(element.clone()).expect("element context allocates"),
+            ))
+            .expect("element string allocates");
+
+        let empty = evaluator
+            .concat_strings_sep_values(
+                ir.root,
+                root.span,
+                list,
+                list_span,
+                b",",
+                StringContext::singleton(separator.clone()).expect("separator context allocates"),
+                &[],
+            )
+            .expect("empty concatStringsSep evaluates");
+
+        assert_eq!(empty.bytes(), b"");
+        assert!(empty.context().contains(&separator));
+
+        let single = evaluator
+            .concat_strings_sep_values(
+                ir.root,
+                root.span,
+                list,
+                list_span,
+                b",",
+                StringContext::singleton(separator.clone()).expect("separator context allocates"),
+                &[element_value],
+            )
+            .expect("single-element concatStringsSep evaluates");
+
+        assert_eq!(single.bytes(), b"elem");
+        assert!(single.context().contains(&separator));
+        assert!(single.context().contains(&element));
     }
 
     #[test]

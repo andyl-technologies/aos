@@ -1466,6 +1466,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"concatLists"
             | b"lessThan"
             | b"hashString"
+            | b"concatStringsSep"
             | b"add"
             | b"sub"
             | b"mul"

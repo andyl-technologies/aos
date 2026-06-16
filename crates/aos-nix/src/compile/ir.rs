@@ -1001,9 +1001,10 @@ impl IrLowerer {
         match self.resolved.symbols.resolve(symbol) {
             Some(
                 b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs" | b"intersectAttrs"
-                | b"catAttrs" | b"elem" | b"lessThan" | b"hashString" | b"add" | b"sub" | b"mul"
-                | b"div" | b"bitAnd" | b"bitOr" | b"bitXor" | b"compareVersions" | b"all" | b"any"
-                | b"filter" | b"partition" | b"concatMap" | b"groupBy",
+                | b"catAttrs" | b"elem" | b"lessThan" | b"hashString" | b"concatStringsSep"
+                | b"add" | b"sub" | b"mul" | b"div" | b"bitAnd" | b"bitOr" | b"bitXor"
+                | b"compareVersions" | b"all" | b"any" | b"filter" | b"partition" | b"concatMap"
+                | b"groupBy",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1964,6 +1965,10 @@ mod tests {
                 "builtins.hashString \"sha256\" \"abc\"",
                 b"hashString".as_slice(),
             ),
+            (
+                "builtins.concatStringsSep \",\" [ \"a\" \"b\" ]",
+                b"concatStringsSep".as_slice(),
+            ),
             ("builtins.add 1 2", b"add".as_slice()),
             ("builtins.sub 2 1", b"sub".as_slice()),
             ("builtins.mul 2 3", b"mul".as_slice()),
@@ -2638,6 +2643,34 @@ mod tests {
 
         let ir = lowered(
             "let builtins = { hashString = type: value: \"local\"; }; in builtins.hashString \"sha256\" \"abc\"",
+        );
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered("concatStringsSep \",\" [ \"a\" \"b\" ]");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir = lowered(
+            "let builtins = { concatStringsSep = sep: list: \"local\"; }; in builtins.concatStringsSep \",\" [ \"a\" \"b\" ]",
         );
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
