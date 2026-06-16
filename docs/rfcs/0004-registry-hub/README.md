@@ -14,24 +14,29 @@
   against live servers). Plus the phase-major `apr` upload fix and
   `apr web generate`. ~865 tests across the hub and `aos-package`.
 
-  **Phase 5 (Proposed, 2026-06-15):** a single async runtime shared by the
+  **Phase 5 (In progress, 2026-06-16):** a single async runtime shared by the
   native hub and the Cloudflare Workers deployment, at **full feature
   parity** — see [`10-unified-runtime.md`](10-unified-runtime.md). This
-  **supersedes** the read-only Workers spike in `crates/aos-registry-worker`
-  (R2 facade + D1 browse/JSON read path + Cron indexer reusing
-  `aos-registry-surface`, compiled to `wasm32-unknown-unknown`): rather than
-  a duplicated read-only edge, the read/write/console/auth path becomes one
-  `aos-registry-core` crate over async backend traits (sqlx for
-  native pg/mysql/sqlite, D1 for Workers) and a shared `axum` router served
-  through `axum-cloudflare-adapter`. Phase 5 folds the standalone hub CLI
-  into `aos hub …` (API-driven, no direct DB access) and gates on the D1
-  batch-only transaction audit recorded in that file.
+  **supersedes** the read-only Workers edge in `crates/aos-registry-worker`.
+  The **data layer landed** (PR #99): the async `Backend` trait, the shared
+  `aos-registry-core::Database` (reads *and* writes), and the worker's
+  `D1Backend` (sqlx for native pg/mysql/sqlite, D1 for Workers). The
+  **remaining work** is the handler unification: the read/write/console/auth
+  path becomes one shared `axum` router served natively via `axum::serve` and
+  on Workers via `axum-cloudflare-adapter`, deleting the worker's hand-written
+  read-only fetch router. A wasm-feasibility spike (2026-06-16) confirmed the
+  shared router compiles to wasm but the `connectrpc` *server* runtime does
+  not, so RPC keeps a thin per-target transport adapter over shared logic
+  (and `aos-proto` splits into a wasm-clean message-types crate). Phase 5 folds
+  the standalone hub CLI into `aos hub …` (API-driven, no direct DB access);
+  once the unification lands the worker answers the same `aos.registry.v1`
+  calls. Gated on the D1 batch-only transaction audit recorded in that file.
 
   Still deferred to RFC-future: the Leptos-CSR WASM SPA web surface (the
   no-JS static tier ships); passkeys/WebAuthn beyond phase 2; mirroring
   (full/derived/pull-through); validation deep depth and HTTP-cache repair;
   git-backed change requests; quotas/backup/offboarding.
-- **Date:** 2026-06-12 (Phase 5 addendum: 2026-06-15)
+- **Date:** 2026-06-12 (Phase 5 addendum: 2026-06-15; wasm spike + RPC-adapter amendment: 2026-06-16)
 - **PR:** [#99](https://github.com/andyl-technologies/aos/pull/99)
 - **Audience:** anyone working on `crates/aos-package/` (the `apr`/`apm`
   registry surface), `crates/aos-server/`, `crates/aos-proto/`,
@@ -57,4 +62,4 @@ is a live proposal and its own file carries its working status.
 | [07-data-ops-and-testing.md](07-data-ops-and-testing.md) | Database schema sketch, operations (migrations/backup/quotas/observability), testing, changes outside the hub crate |
 | [08-sequencing.md](08-sequencing.md) | Implementation sequencing of the shipped phases |
 | [09-alternatives-and-open-questions.md](09-alternatives-and-open-questions.md) | Alternatives considered and open questions |
-| [10-unified-runtime.md](10-unified-runtime.md) | **Phase 5 (Proposed):** one async codebase, full Cloudflare/native parity, sqlx + D1 backends, `aos hub` CLI-over-API, the D1 transaction audit |
+| [10-unified-runtime.md](10-unified-runtime.md) | **Phase 5 (In progress):** one async codebase, full Cloudflare/native parity, sqlx + D1 backends, `aos hub` CLI-over-API, the wasm-feasibility spike + RPC transport adapter, the D1 transaction audit |

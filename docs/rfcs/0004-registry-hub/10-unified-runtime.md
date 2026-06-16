@@ -1,10 +1,21 @@
 # Phase 5: one async runtime, full Cloudflare/native parity
 
-- **Status:** Proposed (2026-06-15). Gated on the D1 transaction audit
-  below; no code written yet. Supersedes the read-only Workers spike
-  (`crates/aos-registry-worker` as a separate, read-only edge).
+- **Status:** In progress (2026-06-16). **Data layer landed** (PR #99): the
+  async `Backend` trait, the shared `aos-registry-core::Database` (reads *and*
+  writes), and the worker's `D1Backend` all ship; the worker folds its read
+  path + Cron indexer onto `core::Database`. **Remaining work — the handler
+  unification** (this is where parity is won): move the facade, browse UI, JSON
+  API, RPC, auth, and producer console into one shared `axum` router in
+  `core`, served natively via `axum::serve` and on Workers via
+  `axum-cloudflare-adapter`. The worker's hand-written read-only fetch router
+  (`handlers.rs`/`reads.rs`/`facade.rs`) is then deleted. The wasm-feasibility
+  spike that gated the handler shape is **done** — results in
+  "[Spike results](#spike-results-2026-06-16-what-actually-compiles-to-wasm)"
+  below; it forced one amendment to the RPC transport (the `connectrpc`
+  *server* runtime cannot target wasm). Still gated on the D1 transaction
+  audit for the write sites.
 - **Audience:** `crates/aos-registry-hub/`, `crates/aos-registry-worker/`,
-  the `aos` CLI (`crates/aos/`, `crates/aos-remote/`).
+  `crates/aos-proto/`, the `aos` CLI (`crates/aos/`, `crates/aos-remote/`).
 
 > Code links reflect the tree at the time of writing and are illustrative
 > of the proposal; this is a design record, not a description of shipped
@@ -50,9 +61,14 @@ Three hard constraints, not arbitrary choices:
    run on the Workers single-threaded JS event loop.
 
 Two of these have since dissolved: `rusqlite` can target wasm via the
-`ffi-sqlite-wasm-rs` feature, and `axum` runs on Workers through
-`axum-cloudflare-adapter`. The remaining one — sync vs async — is the thing
-this phase removes by going **async everywhere**.
+`ffi-sqlite-wasm-rs` feature, and `axum` (types-only, `default-features =
+false`) runs on Workers through `axum-cloudflare-adapter` — both **verified by
+the spike below**. The third splits: `tokio`/`axum` are fine, but the
+`connectrpc` *server runtime* specifically is **not** wasm-portable (it drags
+in `hyper`/`hyper-util`/`tokio`+`mio`/`zstd-sys`), so RPC keeps a thin
+per-target transport adapter over shared logic. The sync-vs-async constraint —
+the thing that forced the *whole read path* to be rebuilt — is removed by going
+**async everywhere**.
 
 ## Goal
 
@@ -166,6 +182,29 @@ pub trait Blobs {
   `scheduled` event on Workers (with Cloudflare Queues / a Durable Object
   for anything longer-running than the indexer).
 
+### Seams the producer console / write path still need
+
+The audit of `aos-registry-hub` surfaced four more native-only couplings that
+the write/console/auth path depends on. Three are *already* trait-shaped in
+`core`; one is not. All resolve the same way — a port with a native and a
+worker impl, the logic above it written once:
+
+- `SecretSealer` (**exists** in `core::auth::seal`) — seals OIDC client
+  secrets and hosted-key seeds at rest (AES-256-GCM). Native builds it from a
+  file-backed instance key; the worker builds the *same* `AesGcmSealer` from a
+  Wrangler secret binding. No new trait — just a different constructor.
+- `Mailer` (**exists** in `core::auth::magic`) — sends magic-link / invite
+  email. Native impl is the SMTP/dev-echo seam; the worker needs a
+  `worker::Fetch`-backed impl posting to an email API (or the dev-echo path).
+- **Publish lease** (**not yet a trait**) — `facade.rs` guards concurrent
+  pointer-flips with an in-memory `std::sync::Mutex<LeaseMap>`, which is
+  per-isolate and meaningless across Worker invocations. Becomes a `Lease`
+  port backed by a conditional D1 `UPDATE … WHERE expires_at < ?` (or a
+  Durable Object) — atomic across the edge.
+- **Rate limiter** (**not yet a trait**) — `ratelimit.rs` is an in-memory
+  token bucket; same per-isolate problem. Becomes a `RateLimiter` port over
+  D1/KV (or a Durable Object) on the worker; the in-memory bucket stays native.
+
 ## Backend choice: `sqlx` native, D1 on Workers
 
 `sqlx` is the native backend and **collapses the three current backends**
@@ -185,6 +224,55 @@ Two constraints to respect:
   `query_with(…).fetch_all(pool)` over `Dialect`-rewritten SQL is what we
   want. `ffi-sqlite-wasm-rs` is reserved for running the shared `db` layer's
   tests under wasm; D1 remains the Worker's durable store.
+
+## Spike results (2026-06-16): what actually compiles to wasm
+
+Before committing the handler-unification to the shared-router shape, a
+throwaway probe crate (`axum` + `axum-cloudflare-adapter` + `worker` 0.4.2 +
+`connectrpc`) was compiled against `wasm32-unknown-unknown`. Findings, all
+empirical:
+
+| Dependency | `wasm32-unknown-unknown` | Notes |
+| --- | --- | --- |
+| `axum` 0.8 (`default-features = false`) | ✅ compiles | types/router only; no hyper server |
+| `axum-cloudflare-adapter` 0.14 + `worker` 0.4.2 | ✅ compiles | confirms `#[event(fetch)]` can serve the shared router |
+| plain `axum` handlers (write/console/auth/facade) | ✅ | ordinary handlers — parity is just "move them into `core`" |
+| **`connectrpc` 0.3 server runtime** | ❌ **hard blocker** | unconditional `hyper` + `hyper-util` + `tokio`(+`mio`) + `tower`; `default` pulls `zstd-sys` (C + amd64 `.S`). Not portable even with `default-features = false, features = ["server","axum"]`. |
+| `prost` message types (in isolation) | ✅ (pure Rust) | wasm-clean as a standalone codec; **today's `aos-proto` crate is not** — it depends on `connectrpc`, hence the split below |
+
+**Consequence — the one amendment to "shared router incl. RPC":** the
+`connectrpc` server cannot be mounted into the worker's router. RPC therefore
+keeps its method bodies as transport-free functions in `core` (a shared
+`RpcService` trait), with a thin per-target *transport adapter*:
+
+- **Native:** the existing `connectrpc` server (`#[connectrpc]` trait impls in
+  `aos-registry-hub::rpc`) becomes a thin delegate to `RpcService` — unchanged
+  wire behavior, mature runtime.
+- **Worker:** a small hand-rolled **Connect-unary** `axum` handler decodes the
+  request (proto or JSON per `Content-Type`), calls the same `RpcService`, and
+  encodes the Connect response — all over the wasm-clean `prost` messages.
+
+This requires splitting `aos-proto` so the worker can depend on the **message
+types without the `connectrpc` runtime**: a `aos-proto-types` crate (prost
+messages + serde, wasm-clean) re-exported by `aos-proto` (which adds the
+`connectrpc` client/server, native-only). Every *other* route — facade, browse,
+JSON read API, auth, console — is the byte-identical shared `axum` handler on
+both targets; only RPC carries a second (thin) transport adapter, and **no
+service logic is written twice**.
+
+`RpcService` carries the same **target-conditional `Send` bound** the shipped
+`Backend` trait already uses — `#[cfg_attr(not(target_arch = "wasm32"),
+async_trait)]` (Send) natively, `async_trait(?Send)` on wasm — so the native
+`connectrpc`/hyper server gets the `Send + 'static` futures it requires while
+the worker's single-threaded handler stays `?Send`. The `?Send` shown in the
+illustrative trait sketches above is the wasm arm of that same `cfg_attr`, not
+an unconditional bound; the method bodies remain single-source.
+
+> Reality note: the shipped data layer holds the backend as `Box<dyn Backend>`
+> on `Database` (not the generic `Router<State<B: Backend>>` this file
+> originally sketched under "Dispatch"). The boxed form is what compiles
+> cleanly through `axum-cloudflare-adapter` and keeps `core` free of a backend
+> type parameter; the "prefer generics" note below is superseded.
 
 ## Frontends: one router, two servers
 
@@ -209,9 +297,21 @@ async fn scheduled(_e: ScheduledEvent, env: Env, _: ScheduleContext) {
 
 `facade.rs`, `keymap.rs`, `render.rs`, the inline JSON API, and the query
 methods in `d1.rs` all **delete** — they become the shared
-`handlers`/`render` over `D1Backend`.
+`handlers`/`render` over `D1Backend`. The lone exception is RPC: the spike
+showed the `connectrpc` server cannot mount on wasm, so the `/aos.registry.v1/*`
+routes are *not* the identical handler across targets — the worker adds the
+Connect-unary transport adapter (spike amendment above) over the same
+`RpcService`. Every other route in the sketch is byte-identical on both.
 
 ### Dispatch
+
+> **Superseded by the shipped data layer** (see the Reality note under the
+> spike results): `Database` holds `Box<dyn Backend>`, not a generic
+> `Router<State<B: Backend>>`. The boxed form is what passes cleanly through
+> `axum-cloudflare-adapter` and keeps `core` free of a backend type
+> parameter; the dynamic-dispatch cost is negligible against D1/network
+> latency. The original generics recommendation below is retained only as
+> design history.
 
 Each shell has exactly one backend, so `Router<State<B: Backend>>` with
 generics monomorphizes cleanly and avoids `#[async_trait]` boxing. The
@@ -243,11 +343,14 @@ aos hub registry create <org>/<proj>/<name> …  # RPC call, --hub <url> --token
 aos hub instance set-signup-policy invite_only # RPC call
 ```
 
-Because the Worker now serves the *same* router (including the
-authenticated admin/RPC routes), `aos hub … --hub https://…workers.dev`
-configures a Cloudflare deployment identically to a native one — no raw D1
-SQL, no `wrangler` seeding beyond the one-time `migrations apply`. Same code
-path yields the same config path.
+Once handler unification lands (step 4), the Worker serves the *same* router
+for every non-RPC route and answers the RPC surface through its Connect-unary
+transport adapter (the spike amendment above), so `aos hub … --hub
+https://…workers.dev` will configure a Cloudflare deployment identically to a
+native one — no raw D1 SQL, no `wrangler` seeding beyond the one-time
+`migrations apply`. Same code path yields the same config path. *Today the
+worker serves only the read path; the admin/RPC routes answer on the native
+hub.*
 
 ## The D1 transaction audit (the gate)
 
@@ -314,17 +417,34 @@ Designable seams, not blockers — but real work, surfaced now:
 
 ## Sequencing
 
-1. **Redefine the transaction seam** as an async batch-of-statements
-   primitive on `Backend` (the keystone — everything conforms to it).
-2. **Restructure the 14 read-then-write sites**: client-side UUIDs for the 3
-   insert-chain writers; confirm the 4 claim/consume sites already use
-   `RETURNING` on the SQLite path; redesign the 4 guarded-invariant sites
-   and `delete_user`.
-3. **Flip `Backend` to async** and implement the `sqlx::Any` native backend
-   (collapsing the three current backends).
-4. **Extract `aos-registry-core`** and fold `aos-registry-worker` into it via
-   `axum-cloudflare-adapter`, deleting the duplicated read-path modules.
-5. **Move the CLI to the API** under `aos hub …`.
+Steps 1–4a (the data layer) **landed in PR #99**. Steps 4b onward (the handler
+unification) are the remaining work that wins parity.
+
+1. ✅ **Redefine the transaction seam** as an async batch-of-statements
+   primitive on `Backend` (the keystone). *Done.*
+2. ✅ **Restructure the read-then-write sites** (client-side ids / `RETURNING`
+   / guarded conditionals) so writes are batchable on D1. *Done.*
+3. ✅ **Flip `Backend` to async** and ship the native `sqlx` backend +
+   `core::Database` (reads and writes) + the worker `D1Backend`. *Done.*
+4. **Handler unification** (in progress — the parity work):
+   - a. ✅ Worker read path + Cron indexer fold onto `core::Database`. *Done.*
+   - b. **Split `aos-proto`** into `aos-proto-types` (prost messages, serde,
+     wasm-clean) and `aos-proto` (adds the `connectrpc` client/server,
+     native-only).
+   - c. **Lift the handlers into `core`** as one shared `axum` router: facade,
+     browse UI, JSON API, auth, producer console — plain `axum` handlers
+     written once. Add the `Blobs` port and the `Lease`/`RateLimiter` ports;
+     wire `SecretSealer`/`Mailer` worker impls.
+   - d. **RPC transport adapter**: extract RPC method bodies into a
+     transport-free `RpcService` in `core`; native delegates from the
+     `connectrpc` server, the worker mounts a hand-rolled Connect-unary `axum`
+     handler over `aos-proto-types` (see the spike amendment above).
+   - e. **Fold the worker** onto the shared router via `axum-cloudflare-adapter`
+     and **delete** `handlers.rs`/`reads.rs`/`facade.rs`/`render.rs`/`keymap.rs`
+     (the duplicated read-only edge).
+5. **Move the CLI to the API** under `aos hub …` (largely shipped in PR #99 as
+   the `aos hub` ConnectRPC client against the native hub; the worker answers
+   the same calls only once step 4d lands).
 6. **Install-time root bootstrap** as the sole non-API mutation path.
 
 ## Open questions
@@ -338,3 +458,17 @@ Designable seams, not blockers — but real work, surfaced now:
 - Whether the Cloudflare deployment *exposes* the write/console/auth surface
   by default or gates it behind configuration (parity in code; policy in
   config).
+- ~~Can the shared `axum` router (incl. RPC) run on wasm?~~ **Resolved by the
+  spike:** the router yes, the `connectrpc` *server* no — hence the RPC
+  transport adapter (above).
+- **`axum-cloudflare-adapter` ↔ `worker` version skew.** The adapter's latest
+  (0.14) tracks `worker` 0.5.x, while the worker crate currently pins
+  `worker` 0.4.2. The adapter's `to_axum_request` / `to_worker_response` take
+  the `worker` crate's `Request`/`Response` types, so the adapter version must
+  match the `worker` version the `#[event(fetch)]` shell uses. Resolve by
+  bumping the worker crate to 0.5.x (and re-validating D1/R2 binding behavior
+  under the pinned workerd) or pinning an adapter release built against 0.4.x.
+- **Argon2 cost under the Worker CPU budget** (carried from sharp edges): the
+  password-auth path runs in-request on the worker; confirm the cost
+  parameters fit the per-request CPU limit or move password verification to a
+  Durable Object.
