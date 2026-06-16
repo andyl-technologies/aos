@@ -26,7 +26,6 @@ argon2 = { workspace = true }
 p256 = { workspace = true }
 rsa = { workspace = true }
 ciborium = { workspace = true }
-sqlx = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true }
 axum = { workspace = true }
 jsonwebtoken = { workspace = true }
@@ -48,9 +47,10 @@ buffa = { workspace = true }
 [features]
 default = []
 # Enable the postgres / mysql sqlx Database backends (RFC-0004 phase 5). sqlite
-# is always compiled in; these add the matching sqlx driver and the enum arm.
-postgres = ["sqlx/postgres"]
-mysql = ["sqlx/mysql"]
+# is always compiled in; these delegate to aos-registry-core, where the
+# SqlxBackend driver and its feature-gated enum arms now live.
+postgres = ["aos-registry-core/postgres"]
+mysql = ["aos-registry-core/mysql"]
 
 [dev-dependencies]
 aos-cache = { workspace = true }
