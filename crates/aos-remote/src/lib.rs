@@ -21,8 +21,14 @@
 /// ConnectRPC-based client for the AOS server.
 pub mod client;
 
+/// ConnectRPC-based client for the AOS registry hub (RFC-0004) — backs the
+/// `aos hub …` CLI subcommands.
+pub mod hub;
+
 pub use client::AosClient;
+pub use hub::RegistryHubClient;
 
 // Re-export proto types that consumers need.
 pub use aos_proto::aos::build::v1::BuildEvent;
 pub use aos_proto::aos::gc::v1::{EvictionCandidate, GcResponse};
+pub use aos_proto::aos::registry::v1::Registry;
