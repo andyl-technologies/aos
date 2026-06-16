@@ -85,8 +85,53 @@ pub fn require_http_scheme(raw: &str) -> Result<url::Url> {
 ///
 /// Returns a [`FetchError`] when the scheme is not `http(s)`, the URL has no
 /// host, or a literal-IP host is local/internal.
+/// Whether the SSRF local/internal-address guard is relaxed by the
+/// `AOS_HUB_ALLOW_LOCAL_REMOTES` dev/test escape hatch.
+///
+/// Honored **only in debug builds** — compiled out of release entirely, so a
+/// production hub binary and the release Worker never relax the guard — and only
+/// when the variable is set to a truthy value (`1`/`true`/`yes`/`on`).
+/// Integration tests stand up upstream servers on `127.0.0.1`; this lets them
+/// register a local mirror/frontend/webhook URL while a release build always
+/// keeps the guard. The non-`http(s)` scheme rejection is never relaxed.
+#[must_use]
+pub fn allow_local_remotes() -> bool {
+    // Compiled out entirely in release: a production binary never honors the
+    // hatch no matter what is in the environment.
+    if !cfg!(debug_assertions) {
+        return false;
+    }
+    match std::env::var("AOS_HUB_ALLOW_LOCAL_REMOTES") {
+        Ok(value) => {
+            let value = value.trim();
+            let on = matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            );
+            if on {
+                // Loud, one-time breadcrumb: this should only ever appear in
+                // test/dev logs, never in production (where it is unreachable).
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| {
+                    eprintln!(
+                        "aos-registry-core: SSRF local-remote guard RELAXED via \
+                         AOS_HUB_ALLOW_LOCAL_REMOTES (debug build only)"
+                    );
+                });
+            }
+            on
+        }
+        Err(_) => false,
+    }
+}
+
 pub fn is_safe_remote_url(raw: &str) -> Result<()> {
     let url = require_http_scheme(raw)?;
+    // The dev/test escape hatch relaxes the local/internal rejection (the scheme
+    // rejection above always applies). Honored only in debug builds.
+    if allow_local_remotes() {
+        return Ok(());
+    }
     // `url::Host` classifies the host precisely: an IPv6 literal serializes with
     // brackets through `host_str()` (so a bare `parse::<IpAddr>()` would miss
     // it), but `Host::Ipv6` hands back the parsed address directly. A literal IP

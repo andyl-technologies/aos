@@ -20,20 +20,26 @@
 //!   URL check, HTTP surface-path validator, traversal-safe path join) shared
 //!   by the native hub's `fetch` hardening and the Worker's egress policy.
 //! - [`backend`] — the async [`Backend`](backend::Backend) trait, the
-//!   [`Statement`](backend::Statement) unit of atomic work, and the
-//!   `split_statements`/`with_returning_id`/`prepare` helpers every driver
-//!   reuses. The concrete drivers (`SqlxBackend` for native, D1 for the
-//!   Worker) live in the deployment crates and implement this trait.
+//!   [`Statement`](backend::Statement) unit of atomic work, the
+//!   `split_statements`/`with_returning_id`/`prepare` helpers, and the native
+//!   [`SqlxBackend`](backend::SqlxBackend) driver (compiled only off-wasm; the
+//!   Worker supplies a D1 `Backend` instead).
+//! - [`db`] — the [`Database`](db::Database) handle: the schema `MIGRATIONS`
+//!   and every read/write query method, written once over the [`Backend`]
+//!   trait so the native hub and the Worker share one implementation.
 //!
 //! Later phases move the indexer and the HTTP handlers here too, leaving the
 //! deployment crates as thin shells around their concrete backend (sqlx for
 //! native, D1 for the Worker).
 //!
-//! The crate carries no I/O, runtime, or driver dependencies of its own and
-//! compiles to `wasm32-unknown-unknown`.
+//! The crate is **wasm-clean on `wasm32-unknown-unknown`**: native-only pieces
+//! (the `sqlx` driver, the secret-key filesystem loader) are gated off that
+//! target, and randomness reaches `crypto.getRandomValues` through getrandom's
+//! JS backend.
 
 pub mod auth;
 pub mod backend;
+pub mod db;
 pub mod dialect;
 pub mod domain;
 pub mod stack;
