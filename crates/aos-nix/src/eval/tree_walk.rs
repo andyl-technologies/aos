@@ -29,6 +29,9 @@ use crate::string::{NixString, NixStringError};
 use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind};
 use crate::value::{Value, ValueTag};
 
+const TO_STRING_ATTR: &[u8] = b"__toString";
+const OUT_PATH_ATTR: &[u8] = b"outPath";
+
 /// Evaluates an IR root to weak head normal form with the tree-walk oracle.
 ///
 /// # Errors
@@ -608,7 +611,7 @@ impl<'ir> TreeWalk<'ir> {
             IrData::Node(child) => {
                 let span = self.node(child)?.span;
                 let value = self.eval_node(child)?;
-                self.expect_string_value(child, value, span)
+                self.coerce_to_string(child, value, span)
             }
             IrData::Children(children) => {
                 let children = self.ir.arena.child_slice(children).ok_or_else(|| {
@@ -631,13 +634,13 @@ impl<'ir> TreeWalk<'ir> {
                 let first_span = self.node(*first)?.span;
                 let mut current = {
                     let value = self.eval_node(*first)?;
-                    self.expect_string_value(*first, value, first_span)?
+                    self.coerce_to_string(*first, value, first_span)?
                 };
                 for child in rest {
                     let child_span = self.node(*child)?.span;
                     let next = {
                         let value = self.eval_node(*child)?;
-                        self.expect_string_value(*child, value, child_span)?
+                        self.coerce_to_string(*child, value, child_span)?
                     };
                     current = self.concat_strings(id, node, current, next)?;
                 }
@@ -674,24 +677,74 @@ impl<'ir> TreeWalk<'ir> {
         }
     }
 
-    fn expect_string_value(
-        &self,
+    fn coerce_to_string(
+        &mut self,
         id: IrId,
         value: Value,
         span: Span,
     ) -> Result<Value, TreeWalkError> {
-        if value.tag() == ValueTag::String {
-            Ok(value)
-        } else {
-            Err(TreeWalkError::new(
+        match value.tag() {
+            ValueTag::String => Ok(value),
+            ValueTag::Attrs => self.coerce_attrs_to_string(id, value, span),
+            actual => Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id,
                     expected: "string",
-                    actual: value.tag(),
+                    actual,
                 },
                 span,
-            ))
+            )),
         }
+    }
+
+    fn coerce_attrs_to_string(
+        &mut self,
+        id: IrId,
+        attrs_value: Value,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        if let Some(hook) = self.attr_value_by_name(id, attrs_value, TO_STRING_ATTR, span)? {
+            let hook = self.force_value(id, span, hook)?;
+            let value = self.apply_lambda_value(id, span, id, hook, span, id, attrs_value)?;
+            return self.coerce_to_string(id, value, span);
+        }
+
+        if let Some(out_path) = self.attr_value_by_name(id, attrs_value, OUT_PATH_ATTR, span)? {
+            let value = self.force_value(id, span, out_path)?;
+            return self.coerce_to_string(id, value, span);
+        }
+
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::Type {
+                id,
+                expected: "string",
+                actual: ValueTag::Attrs,
+            },
+            span,
+        ))
+    }
+
+    fn attr_value_by_name(
+        &mut self,
+        id: IrId,
+        attrs_value: Value,
+        name: &[u8],
+        span: Span,
+    ) -> Result<Option<Value>, TreeWalkError> {
+        let symbol = self.symbols.intern(name).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::SymbolIntern {
+                    id,
+                    source: source.kind().clone(),
+                },
+                source.span(),
+            )
+        })?;
+        let attrs = self
+            .heap
+            .get_attrs(attrs_value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        Ok(attrs.get(symbol))
     }
 
     fn eval_attr_name(
@@ -736,16 +789,11 @@ impl<'ir> TreeWalk<'ir> {
         let span = self.node(expression)?.span;
         let value = self.eval_node(expression)?;
         match value.tag() {
-            ValueTag::String => self.intern_string_value(id, value, span).map(Some),
             ValueTag::Null if null_policy == DynamicAttrNullPolicy::SkipNull => Ok(None),
-            actual => Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: expression,
-                    expected: "string",
-                    actual,
-                },
-                span,
-            )),
+            _ => {
+                let string = self.coerce_to_string(expression, value, span)?;
+                self.intern_string_value(id, string, span).map(Some)
+            }
         }
     }
 
@@ -1070,16 +1118,52 @@ impl<'ir> TreeWalk<'ir> {
                 function_span,
             ));
         }
-        let lambda = self.heap.clone_lambda(function).map_err(|source| {
-            TreeWalkError::new(TreeWalkErrorKind::Heap { id: first, source }, function_span)
-        })?;
         let argument = self.eval_lazy_node(second)?;
-        let slot_count = self.frame_info(id, lambda.frame(), node.span)?.slot_count as usize;
-        let call_frame = EvalFrame::new(slot_count).map_err(|source| {
-            TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+        self.apply_lambda_value(
+            id,
+            node.span,
+            first,
+            function,
+            function_span,
+            second,
+            argument,
+        )
+    }
+
+    fn apply_lambda_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function: Value,
+        function_span: Span,
+        argument_id: IrId,
+        argument: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if function.tag() != ValueTag::Lambda {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: function_id,
+                    expected: "lambda",
+                    actual: function.tag(),
+                },
+                function_span,
+            ));
+        }
+        let lambda = self.heap.clone_lambda(function).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: function_id,
+                    source,
+                },
+                function_span,
+            )
         })?;
-        let mut call_env = self.clone_env_frames(id, lambda.env(), node.span)?;
-        let call_with_env = self.clone_with_scopes(id, lambda.with_scope_env(), node.span)?;
+        let slot_count = self.frame_info(id, lambda.frame(), span)?.slot_count as usize;
+        let call_frame = EvalFrame::new(slot_count)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))?;
+        let mut call_env = self.clone_env_frames(id, lambda.env(), span)?;
+        let call_with_env = self.clone_with_scopes(id, lambda.with_scope_env(), span)?;
         call_env.try_reserve_exact(1).map_err(|_| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Env {
@@ -1088,7 +1172,7 @@ impl<'ir> TreeWalk<'ir> {
                         frames: call_env.len() + 1,
                     },
                 },
-                node.span,
+                span,
             )
         })?;
         call_env.push(call_frame);
@@ -1096,16 +1180,16 @@ impl<'ir> TreeWalk<'ir> {
         let saved_with_scopes = std::mem::replace(&mut self.with_scopes, call_with_env);
         let result = (|| {
             let call_frame = self.env.last().cloned().ok_or_else(|| {
-                TreeWalkError::new(TreeWalkErrorKind::MissingEnvironment { id }, node.span)
+                TreeWalkError::new(TreeWalkErrorKind::MissingEnvironment { id }, span)
             })?;
             self.bind_lambda_argument(
                 id,
                 lambda.pattern(),
                 slot_count,
                 &call_frame,
-                second,
+                argument_id,
                 argument,
-                node.span,
+                span,
             )?;
             self.eval_node(lambda.body())
         })();
@@ -2655,6 +2739,15 @@ mod tests {
         eval_whnf(&lower(source)).expect("source evaluates")
     }
 
+    fn eval_string_bytes(source: &str) -> Vec<u8> {
+        let outcome = eval_whnf_owned(&lower(source)).expect("source evaluates");
+        let string = outcome
+            .heap()
+            .get_string(outcome.value())
+            .expect("result is a heap-owned string");
+        string.bytes().to_vec()
+    }
+
     fn symbol_for(ir: &Ir, name: &[u8]) -> Symbol {
         let index = ir
             .symbols
@@ -2806,6 +2899,104 @@ mod tests {
                 .bytes(),
             b"line\n\"quoted\""
         );
+    }
+
+    #[test]
+    fn interpolation_coerces_attrsets_with_to_string_before_out_path() {
+        assert_eq!(
+            eval_string_bytes("\"${{ __toString = self: self.name; name = \"custom\"; }}\""),
+            b"custom"
+        );
+        assert_eq!(
+            eval_string_bytes("\"pre-${{ outPath = \"store\"; }}-post\""),
+            b"pre-store-post"
+        );
+        assert_eq!(
+            eval_string_bytes("\"${{ __toString = self: \"hook\"; outPath = 1 / 0; }}\""),
+            b"hook"
+        );
+        assert_eq!(
+            eval_string_bytes("\"${{ __toString = self: { outPath = \"nested\"; }; }}\""),
+            b"nested"
+        );
+        assert_eq!(
+            eval_string_bytes("\"${{ outPath = { outPath = \"nested\"; }; }}\""),
+            b"nested"
+        );
+    }
+
+    #[test]
+    fn dynamic_attr_names_use_string_coercion() {
+        assert_eq!(
+            eval("{ ${ { outPath = \"name\"; } } = 7; }.name").as_int(),
+            Ok(7)
+        );
+        assert_eq!(
+            eval("{ value = 9; }.${ { __toString = self: \"value\"; } }").as_int(),
+            Ok(9)
+        );
+    }
+
+    #[test]
+    fn interpolation_rejects_non_coercible_values() {
+        let cases = [
+            ("\"${1}\"", ValueTag::Int),
+            ("\"${true}\"", ValueTag::Bool),
+            ("\"${null}\"", ValueTag::Null),
+            ("\"${[]}\"", ValueTag::List),
+            ("\"${{}}\"", ValueTag::Attrs),
+        ];
+
+        for (source, actual) in cases {
+            let ir = lower(source);
+            let error = eval_whnf_owned(&ir).expect_err("value is not interpolable");
+            let TreeWalkErrorKind::Type {
+                expected,
+                actual: observed,
+                ..
+            } = error.kind()
+            else {
+                panic!("expected type error for {source}");
+            };
+            assert_eq!(expected, "string");
+            assert_eq!(observed, actual);
+        }
+    }
+
+    #[test]
+    fn interpolation_requires_to_string_results_to_be_strings() {
+        let ir = lower("\"${{ __toString = self: 1; }}\"");
+        let error = eval_whnf_owned(&ir).expect_err("__toString result must be a string");
+        let TreeWalkErrorKind::Type {
+            expected, actual, ..
+        } = error.kind()
+        else {
+            panic!("expected type error for non-string __toString result");
+        };
+        assert_eq!(expected, "string");
+        assert_eq!(actual, ValueTag::Int);
+
+        let ir = lower("\"${{ __toString = \"bad\"; outPath = \"fallback\"; }}\"");
+        let error = eval_whnf_owned(&ir).expect_err("__toString takes precedence over outPath");
+        let TreeWalkErrorKind::Type {
+            expected, actual, ..
+        } = error.kind()
+        else {
+            panic!("expected type error for non-lambda __toString");
+        };
+        assert_eq!(expected, "lambda");
+        assert_eq!(actual, ValueTag::String);
+
+        let ir = lower("\"${{ __toString = self: {}; outPath = \"fallback\"; }}\"");
+        let error = eval_whnf_owned(&ir).expect_err("bad __toString result does not fall back");
+        let TreeWalkErrorKind::Type {
+            expected, actual, ..
+        } = error.kind()
+        else {
+            panic!("expected type error for non-coercible __toString result");
+        };
+        assert_eq!(expected, "string");
+        assert_eq!(actual, ValueTag::Attrs);
     }
 
     #[test]
