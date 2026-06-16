@@ -5,16 +5,17 @@
 //! assertions, boolean operators, string literals and concatenation, list-spine
 //! concatenation, static and recursive static attribute-set literals, static
 //! attribute selection, lexical `let` environments, simple lambda application,
-//! thunk forcing, numeric arithmetic, numeric and string comparisons, and
-//! scalar/string equality to weak head normal form, establishing the arena
-//! access and diagnostic surface used by later slices for formal-set patterns,
-//! dynamic attribute sets, primitive operations, and derivation boundaries.
+//! lazy `with` scope lookup, thunk forcing, numeric arithmetic, numeric and
+//! string comparisons, and scalar/string equality to weak head normal form,
+//! establishing the arena access and diagnostic surface used by later slices for
+//! formal-set patterns, dynamic attribute sets, primitive operations, and
+//! derivation boundaries.
 
 use std::rc::Rc;
 
 use thiserror::Error;
 
-use super::env::{EvalEnv, EvalEnvError, EvalFrame};
+use super::env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
 use super::heap::{EvalHeap, EvalHeapError, EvalLambda, EvalThunk};
 use super::thunk::{ForceClaim, ForceError};
 use crate::attrs::{AttrEntry, AttrError, FlatAttrs};
@@ -100,6 +101,7 @@ pub struct TreeWalk<'ir> {
     ir: &'ir Ir,
     heap: EvalHeap,
     env: Vec<Rc<EvalFrame>>,
+    with_scopes: Vec<EvalWithScope>,
 }
 
 impl<'ir> TreeWalk<'ir> {
@@ -109,6 +111,7 @@ impl<'ir> TreeWalk<'ir> {
             ir,
             heap: EvalHeap::new(),
             env: Vec::new(),
+            with_scopes: Vec::new(),
         }
     }
 
@@ -174,11 +177,13 @@ impl<'ir> TreeWalk<'ir> {
             IrKind::Str => self.eval_string(id, &node),
             IrKind::LocalVar => self.eval_local_var(id, &node),
             IrKind::UpvalVar => self.eval_upval_var(id, &node),
+            IrKind::WithVar => self.eval_with_var(id, &node),
             IrKind::List => self.eval_list(id, &node),
             IrKind::AttrSet => self.eval_attrset(id, &node),
             IrKind::Lambda => self.eval_lambda(id, &node),
             IrKind::Apply => self.eval_apply(id, &node),
             IrKind::Let => self.eval_let(id, &node),
+            IrKind::With => self.eval_with(id, &node),
             IrKind::If => self.eval_if(id, &node),
             IrKind::Assert => self.eval_assert(id, &node),
             IrKind::UnaryOp => self.eval_unary(id, &node),
@@ -241,6 +246,11 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))
     }
 
+    fn capture_with_env(&self, id: IrId, span: Span) -> Result<EvalWithEnv, TreeWalkError> {
+        EvalWithEnv::capture(&self.with_scopes)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))
+    }
+
     fn clone_env_frames(
         &self,
         id: IrId,
@@ -261,6 +271,29 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         cloned.extend_from_slice(frames);
+        Ok(cloned)
+    }
+
+    fn clone_with_scopes(
+        &self,
+        id: IrId,
+        env: &EvalWithEnv,
+        span: Span,
+    ) -> Result<Vec<EvalWithScope>, TreeWalkError> {
+        let scopes = env.scopes();
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(scopes.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Env {
+                    id,
+                    source: EvalEnvError::WithCaptureAllocationFailed {
+                        scopes: scopes.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        cloned.extend_from_slice(scopes);
         Ok(cloned)
     }
 
@@ -399,6 +432,69 @@ impl<'ir> TreeWalk<'ir> {
             )),
             None => Err(TreeWalkError::new(
                 TreeWalkErrorKind::InvalidAttrPath { id, path },
+                span,
+            )),
+        }
+    }
+
+    fn with_chain_scope_count(
+        &self,
+        id: IrId,
+        chain: u32,
+        span: Span,
+    ) -> Result<usize, TreeWalkError> {
+        self.ir
+            .with_chains
+            .get(chain as usize)
+            .map(|chain| chain.scopes.len())
+            .ok_or_else(|| {
+                TreeWalkError::new(TreeWalkErrorKind::InvalidWithChain { id, chain }, span)
+            })
+    }
+
+    fn with_chain_scope(
+        &self,
+        id: IrId,
+        chain: u32,
+        index: usize,
+        span: Span,
+    ) -> Result<IrId, TreeWalkError> {
+        self.ir
+            .with_chains
+            .get(chain as usize)
+            .and_then(|chain| chain.scopes.get(index).copied())
+            .ok_or_else(|| {
+                TreeWalkError::new(TreeWalkErrorKind::InvalidWithChain { id, chain }, span)
+            })
+    }
+
+    fn with_scope_value(&self, id: IrId, scope: IrId, span: Span) -> Result<Value, TreeWalkError> {
+        self.with_scopes
+            .iter()
+            .rev()
+            .find(|active| active.scope() == scope)
+            .map(EvalWithScope::value)
+            .ok_or_else(|| {
+                TreeWalkError::new(TreeWalkErrorKind::MissingWithScope { id, scope }, span)
+            })
+    }
+
+    fn eval_global_fallback(
+        &self,
+        id: IrId,
+        symbol: Symbol,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        match self.ir.symbols.resolve(symbol) {
+            Some(b"true") => Ok(Value::bool(true)),
+            Some(b"false") => Ok(Value::bool(false)),
+            Some(b"null") => Ok(Value::null()),
+            Some(_) => Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnresolvedWithVar { id, symbol },
+                span,
+            )),
+            None => Err(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidSymbol { id, symbol },
                 span,
             )),
         }
@@ -601,11 +697,21 @@ impl<'ir> TreeWalk<'ir> {
         let IrData::Node(body) = node.data else {
             return Err(self.invalid_payload(id, node, "thunk body"));
         };
+        self.alloc_thunk_for_node(id, body, node.span)
+    }
+
+    fn alloc_thunk_for_node(
+        &mut self,
+        id: IrId,
+        body: IrId,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
         self.node(body)?;
-        let env = self.capture_env(id, node.span)?;
+        let env = self.capture_env(id, span)?;
+        let with_env = self.capture_with_env(id, span)?;
         self.heap
-            .alloc_thunk(EvalThunk::with_env(body, env))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+            .alloc_thunk(EvalThunk::with_captures(body, env, with_env))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
     fn force_value(&mut self, id: IrId, span: Span, value: Value) -> Result<Value, TreeWalkError> {
@@ -625,9 +731,12 @@ impl<'ir> TreeWalk<'ir> {
             ForceClaim::AlreadyForced(value) => Ok(value),
             ForceClaim::Claimed(guard) => {
                 let thunk_env = self.clone_env_frames(id, thunk.env(), span)?;
+                let thunk_with_env = self.clone_with_scopes(id, thunk.with_scope_env(), span)?;
                 let saved_env = std::mem::replace(&mut self.env, thunk_env);
+                let saved_with_scopes = std::mem::replace(&mut self.with_scopes, thunk_with_env);
                 let result = self.eval_node(body);
                 self.env = saved_env;
+                self.with_scopes = saved_with_scopes;
                 let value = result?;
                 guard.finish(value).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
@@ -687,6 +796,72 @@ impl<'ir> TreeWalk<'ir> {
         result
     }
 
+    fn eval_with(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Pair {
+            first: scope,
+            second: body,
+        } = node.data
+        else {
+            return Err(self.invalid_payload(id, node, "with pair"));
+        };
+        self.node(body)?;
+        let value = self.alloc_thunk_for_node(id, scope, node.span)?;
+        self.with_scopes.try_reserve_exact(1).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::WithScopeAllocationFailed {
+                    id,
+                    scopes: self.with_scopes.len() + 1,
+                },
+                node.span,
+            )
+        })?;
+        self.with_scopes.push(EvalWithScope::new(scope, value));
+        let result = self.eval_node(body);
+        let _ = self.with_scopes.pop();
+        result
+    }
+
+    fn eval_with_var(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::WithVar { symbol, chain } = node.data else {
+            return Err(self.invalid_payload(id, node, "with-var payload"));
+        };
+        if self.ir.symbols.resolve(symbol).is_none() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidSymbol { id, symbol },
+                node.span,
+            ));
+        }
+
+        let scope_count = self.with_chain_scope_count(id, chain, node.span)?;
+        for index in 0..scope_count {
+            let scope = self.with_chain_scope(id, chain, index, node.span)?;
+            let scope_span = self.node(scope)?.span;
+            let scope_value = self.with_scope_value(id, scope, node.span)?;
+            let attrs_value = self.force_value(scope, scope_span, scope_value)?;
+            if attrs_value.tag() != ValueTag::Attrs {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: scope,
+                        expected: "attrs",
+                        actual: attrs_value.tag(),
+                    },
+                    scope_span,
+                ));
+            }
+            let selected = {
+                let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                })?;
+                attrs.get(symbol)
+            };
+            if let Some(value) = selected {
+                return Ok(value);
+            }
+        }
+
+        self.eval_global_fallback(id, symbol, node.span)
+    }
+
     fn eval_lambda(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
         let IrData::Lambda {
             pattern,
@@ -706,8 +881,11 @@ impl<'ir> TreeWalk<'ir> {
         self.node(body)?;
         self.frame_info(id, frame, node.span)?;
         let env = self.capture_env(id, node.span)?;
+        let with_env = self.capture_with_env(id, node.span)?;
         self.heap
-            .alloc_lambda(EvalLambda::new(pattern, body, frame, env))
+            .alloc_lambda(EvalLambda::with_captures(
+                pattern, body, frame, env, with_env,
+            ))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
@@ -744,6 +922,7 @@ impl<'ir> TreeWalk<'ir> {
             node.span,
         )?;
         let mut call_env = self.clone_env_frames(id, lambda.env(), node.span)?;
+        let call_with_env = self.clone_with_scopes(id, lambda.with_scope_env(), node.span)?;
         call_env.try_reserve_exact(1).map_err(|_| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Env {
@@ -757,8 +936,10 @@ impl<'ir> TreeWalk<'ir> {
         })?;
         call_env.push(call_frame);
         let saved_env = std::mem::replace(&mut self.env, call_env);
+        let saved_with_scopes = std::mem::replace(&mut self.with_scopes, call_with_env);
         let result = self.eval_node(lambda.body());
         self.env = saved_env;
+        self.with_scopes = saved_with_scopes;
         result
     }
 
@@ -1661,6 +1842,22 @@ pub enum TreeWalkErrorKind {
         /// The invalid frame id payload.
         frame: u32,
     },
+    /// A with-chain id did not resolve through the lowered IR.
+    #[error("invalid with-chain id {chain} at node {id:?}")]
+    InvalidWithChain {
+        /// The node id carrying the invalid with-chain id.
+        id: IrId,
+        /// The invalid with-chain id payload.
+        chain: u32,
+    },
+    /// A with-chain scope did not have a matching active runtime scope.
+    #[error("missing active with scope {scope:?} at node {id:?}")]
+    MissingWithScope {
+        /// The with-variable node id.
+        id: IrId,
+        /// The lowered scope node id from the with-chain.
+        scope: IrId,
+    },
     /// A let frame's slot count did not match its binding table.
     #[error("let frame at node {id:?} has {frame_slots} slots for {bindings} bindings")]
     LetFrameSlotMismatch {
@@ -1781,6 +1978,14 @@ pub enum TreeWalkErrorKind {
         /// The requested list length.
         len: usize,
     },
+    /// The active with-scope stack could not reserve another entry.
+    #[error("failed to reserve {scopes} active with scopes at node {id:?}")]
+    WithScopeAllocationFailed {
+        /// The with-expression node id.
+        id: IrId,
+        /// The requested number of active with scopes.
+        scopes: usize,
+    },
     /// A heap-backed value was produced by the non-owning convenience API.
     #[error("heap-backed {tag:?} value at node {id:?} requires an owning evaluation result")]
     HeapValueRequiresOwner {
@@ -1853,6 +2058,14 @@ pub enum TreeWalkErrorKind {
         /// The select node id.
         id: IrId,
         /// The missing static attribute symbol.
+        symbol: Symbol,
+    },
+    /// A dynamic with lookup found no attribute and no supported global fallback.
+    #[error("unresolved with variable {symbol:?} at node {id:?}")]
+    UnresolvedWithVar {
+        /// The with-variable node id.
+        id: IrId,
+        /// The missing symbol.
         symbol: Symbol,
     },
     /// A boolean-tagged value had an invalid payload.
@@ -1948,7 +2161,7 @@ mod tests {
 
     use crate::compile::{
         EffectClass, FrameInfo, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode, IrShape,
-        lower as lower_ir, resolve as resolve_ast,
+        IrWithChain, lower as lower_ir, resolve as resolve_ast,
     };
     use crate::string::{ContextElement, StringContext};
     use crate::syntax::{Symbol, SymbolTable, parse_str};
@@ -1992,6 +2205,24 @@ mod tests {
 
     fn manual_ir(root: IrId, nodes: Vec<IrNode>) -> Ir {
         empty_ir(root, IrArena::from_raw_parts(nodes, Vec::new()))
+    }
+
+    fn manual_ir_with_with_chains(
+        root: IrId,
+        nodes: Vec<IrNode>,
+        symbols: SymbolTable,
+        with_chains: Vec<IrWithChain>,
+    ) -> Ir {
+        Ir {
+            root,
+            arena: IrArena::from_raw_parts(nodes, Vec::new()),
+            symbols,
+            frames: Vec::new().into_boxed_slice(),
+            with_chains: with_chains.into_boxed_slice(),
+            attr_paths: Vec::new().into_boxed_slice(),
+            bindings: Vec::new().into_boxed_slice(),
+            shapes: Vec::new().into_boxed_slice(),
+        }
     }
 
     fn manual_ir_with_attr_tables(
@@ -2484,6 +2715,81 @@ mod tests {
             Ok(11)
         );
         assert_eq!(eval("((x: y: x) (1 + 2)) 0").as_int(), Ok(3));
+    }
+
+    #[test]
+    fn with_scopes_probe_dynamic_attrs_lazily() {
+        assert_eq!(eval("with { a = 1; }; a").as_int(), Ok(1));
+        assert_eq!(eval("with { f = x: x + 1; }; f 2").as_int(), Ok(3));
+        assert_eq!(eval("with (1 / 0); 7").as_int(), Ok(7));
+        assert_eq!(eval("with { a = 1 / 0; }; 7").as_int(), Ok(7));
+        assert_eq!(eval("with { a = 1; }; with { a = 2; }; a").as_int(), Ok(2));
+        assert_eq!(eval("let a = 3; in with { a = 1; }; a").as_int(), Ok(3));
+        assert_eq!(eval("with { true = 1; }; true").as_int(), Ok(1));
+        assert_eq!(eval("with {}; true").as_bool(), Ok(true));
+        assert_eq!(eval("with {}; false").as_bool(), Ok(false));
+        assert_eq!(eval("with {}; null").tag(), ValueTag::Null);
+    }
+
+    #[test]
+    fn with_scopes_capture_lexical_environments() {
+        assert_eq!(
+            eval("let x = 1; f = y: with { a = x + y; }; a; in let x = 10; in f x").as_int(),
+            Ok(11)
+        );
+        assert_eq!(
+            eval("let x = 1; scope = { a = x; }; f = y: with scope; a + y; in f 2").as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval("let f = with { a = 1; }; x: a + x; in f 2").as_int(),
+            Ok(3)
+        );
+        assert_eq!(eval("(with { a = 1 + 2; }; { b = a; }).b").as_int(), Ok(3));
+    }
+
+    #[test]
+    fn with_lookup_reports_non_attr_scopes_and_missing_names() {
+        let non_attr = lower("with 1; missing");
+        let root = non_attr.arena.node(non_attr.root).expect("root exists");
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("with root has pair payload");
+        };
+        let first_span = non_attr.arena.node(first).expect("scope exists").span;
+        let error = eval_whnf(&non_attr).expect_err("non-attr with scope is invalid on lookup");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: first,
+                expected: "attrs",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), first_span);
+
+        let missing = lower("with {}; missing");
+        let IrData::Pair {
+            second: missing_var,
+            ..
+        } = missing
+            .arena
+            .node(missing.root)
+            .expect("missing root exists")
+            .data
+        else {
+            panic!("with root has pair payload");
+        };
+        let missing_symbol = symbol_for(&missing, b"missing");
+        let error = eval_whnf(&missing).expect_err("missing with name remains unresolved");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnresolvedWithVar {
+                id: missing_var,
+                symbol: missing_symbol,
+            }
+        );
     }
 
     #[test]
@@ -3170,6 +3476,8 @@ mod tests {
             (IrKind::LocalVar, "local payload"),
             (IrKind::UpvalVar, "upvalue payload"),
             (IrKind::Let, "let payload"),
+            (IrKind::With, "with pair"),
+            (IrKind::WithVar, "with-var payload"),
         ];
 
         for (index, (kind, expected)) in cases.into_iter().enumerate() {
@@ -3213,6 +3521,59 @@ mod tests {
             );
             assert_eq!(error.span(), span);
         }
+    }
+
+    #[test]
+    fn invalid_with_chain_metadata_is_reported() {
+        let mut symbols = SymbolTable::new();
+        let missing = symbols.intern(b"missing").expect("symbol interns");
+        let root = IrId::new(0);
+        let span = Span::new(0, 7);
+        let invalid_chain = manual_ir_with_with_chains(
+            root,
+            vec![pure_node(
+                IrKind::WithVar,
+                span,
+                IrData::WithVar {
+                    symbol: missing,
+                    chain: 0,
+                },
+            )],
+            symbols.clone(),
+            Vec::new(),
+        );
+        let error = eval_whnf(&invalid_chain).expect_err("missing with chain is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidWithChain { id: root, chain: 0 }
+        );
+        assert_eq!(error.span(), span);
+
+        let scope = IrId::new(1);
+        let missing_scope = manual_ir_with_with_chains(
+            root,
+            vec![
+                pure_node(
+                    IrKind::WithVar,
+                    span,
+                    IrData::WithVar {
+                        symbol: missing,
+                        chain: 0,
+                    },
+                ),
+                pure_node(IrKind::AttrSet, Span::new(10, 12), IrData::None),
+            ],
+            symbols,
+            vec![IrWithChain::new(vec![scope].into_boxed_slice())],
+        );
+        let error = eval_whnf(&missing_scope).expect_err("inactive with scope is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::MissingWithScope { id: root, scope }
+        );
+        assert_eq!(error.span(), span);
     }
 
     #[test]

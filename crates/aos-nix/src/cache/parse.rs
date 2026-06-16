@@ -28,8 +28,8 @@ use thiserror::Error;
 use crate::compile::{
     EffectClass, FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, Ir, IrArena,
     IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrError,
-    IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, ResolvedAst, ScopeError,
-    ScopeTables, Upvalue, WithChain, lower, resolve,
+    IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain, ResolvedAst,
+    ScopeError, ScopeTables, Upvalue, WithChain, lower, resolve,
 };
 use crate::syntax::{
     AstArena, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind, ParseError, Span, Symbol,
@@ -1072,11 +1072,9 @@ fn decode_lowered_ir(bytes: &[u8], symbols: SymbolTable) -> Result<Ir, String> {
         let scope_count = reader.read_len("IR with-chain scope count")?;
         let mut scopes = Vec::with_capacity(scope_count);
         for _ in 0..scope_count {
-            scopes.push(NodeId::new(reader.read_u32()?));
+            scopes.push(IrId::new(reader.read_u32()?));
         }
-        with_chains.push(WithChain {
-            scopes: scopes.into_boxed_slice(),
-        });
+        with_chains.push(IrWithChain::new(scopes.into_boxed_slice()));
     }
     let mut attr_paths = Vec::with_capacity(attr_path_count);
     for _ in 0..attr_path_count {
@@ -1341,6 +1339,11 @@ fn validate_lowered_ir_artifact(ir: &Ir) -> Result<(), String> {
     for binding in ir.bindings.as_ref() {
         validate_ir_attr_path_segment(ir, binding.key)?;
         check_ir_id(ir, binding.value, "binding value")?;
+    }
+    for chain in ir.with_chains.as_ref() {
+        for scope in chain.scopes.as_ref() {
+            check_ir_id(ir, *scope, "with-chain scope")?;
+        }
     }
     for shape in ir.shapes.as_ref() {
         for key in shape.keys.as_ref() {
@@ -2990,6 +2993,7 @@ mod tests {
               drv = derivationStrict { name = "x"; };
               flag = true;
               none = null;
+              picked = with { fallback = 2; }; fallback;
             }
         "#;
         let resolved = resolve(parse_str(source).expect("source parses")).expect("scope resolves");

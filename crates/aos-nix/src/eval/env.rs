@@ -1,15 +1,18 @@
-//! Lexical environment frames for the tree-walk evaluator.
+//! Lexical and dynamic environment captures for the tree-walk evaluator.
 //!
 //! The tree-walk oracle stores active lexical frames as shared slot arrays so
 //! thunks can capture the frame graph at allocation time. Slots are filled after
 //! the frame is pushed, which supports Nix's self-visible `let` bindings and
 //! lets recursive thunks blackhole through the ordinary thunk state machine.
+//! Dynamic `with` scopes are captured alongside lexical frames so escaping
+//! thunks and closures preserve the same runtime lookup chain.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use thiserror::Error;
 
+use crate::compile::IrId;
 use crate::value::Value;
 
 /// A captured lexical environment snapshot.
@@ -41,6 +44,62 @@ impl EvalEnv {
     /// Returns the captured frame stack, ordered outermost to innermost.
     pub fn frames(&self) -> &[Rc<EvalFrame>] {
         &self.frames
+    }
+}
+
+/// A captured dynamic `with` scope stack.
+#[derive(Clone, Debug, Default)]
+pub struct EvalWithEnv {
+    scopes: Box<[EvalWithScope]>,
+}
+
+impl EvalWithEnv {
+    /// Captures the active `with` scope stack.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalEnvError::WithCaptureAllocationFailed`] if the snapshot
+    /// scope list cannot be reserved.
+    pub fn capture(scopes: &[EvalWithScope]) -> Result<Self, EvalEnvError> {
+        let mut captured = Vec::new();
+        captured.try_reserve_exact(scopes.len()).map_err(|_| {
+            EvalEnvError::WithCaptureAllocationFailed {
+                scopes: scopes.len(),
+            }
+        })?;
+        captured.extend_from_slice(scopes);
+        Ok(Self {
+            scopes: captured.into_boxed_slice(),
+        })
+    }
+
+    /// Returns the captured `with` scopes, ordered outermost to innermost.
+    pub fn scopes(&self) -> &[EvalWithScope] {
+        &self.scopes
+    }
+}
+
+/// One active dynamic `with` scope.
+#[derive(Clone, Copy, Debug)]
+pub struct EvalWithScope {
+    scope: IrId,
+    value: Value,
+}
+
+impl EvalWithScope {
+    /// Creates an active `with` scope entry.
+    pub const fn new(scope: IrId, value: Value) -> Self {
+        Self { scope, value }
+    }
+
+    /// Returns the lowered scrutinee node for this scope.
+    pub const fn scope(&self) -> IrId {
+        self.scope
+    }
+
+    /// Returns the lazy attrset value for this scope.
+    pub const fn value(&self) -> Value {
+        self.value
     }
 }
 
@@ -124,6 +183,12 @@ pub enum EvalEnvError {
     CaptureAllocationFailed {
         /// The requested number of captured frames.
         frames: usize,
+    },
+    /// A captured `with` scope list could not be allocated.
+    #[error("failed to reserve {scopes} captured with scopes")]
+    WithCaptureAllocationFailed {
+        /// The requested number of captured `with` scopes.
+        scopes: usize,
     },
     /// A frame was already borrowed in an incompatible mode.
     #[error("environment frame borrow conflict")]

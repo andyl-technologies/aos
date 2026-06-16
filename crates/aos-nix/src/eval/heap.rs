@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use super::env::EvalEnv;
+use super::env::{EvalEnv, EvalWithEnv};
 use super::thunk::ThunkCell;
 use crate::attrs::FlatAttrs;
 use crate::compile::{FrameId, IrId};
@@ -22,12 +22,13 @@ use crate::value::{HeapObject, Value, ValueError, ValueTag};
 
 /// A suspended tree-walk thunk heap record.
 ///
-/// The record stores the lowered thunk body, captured lexical environment, and
-/// serial state/result cell.
+/// The record stores the lowered thunk body, captured lexical and dynamic
+/// `with` environments, and serial state/result cell.
 #[derive(Debug)]
 pub struct EvalThunk {
     body: IrId,
     env: EvalEnv,
+    with_env: EvalWithEnv,
     cell: ThunkCell,
 }
 
@@ -39,9 +40,15 @@ impl EvalThunk {
 
     /// Creates a suspended thunk record for `body` and `env`.
     pub fn with_env(body: IrId, env: EvalEnv) -> Self {
+        Self::with_captures(body, env, EvalWithEnv::default())
+    }
+
+    /// Creates a suspended thunk record with lexical and dynamic captures.
+    pub fn with_captures(body: IrId, env: EvalEnv, with_env: EvalWithEnv) -> Self {
         Self {
             body,
             env,
+            with_env,
             cell: ThunkCell::new(),
         }
     }
@@ -56,6 +63,11 @@ impl EvalThunk {
         &self.env
     }
 
+    /// Returns the dynamic `with` environment captured when this thunk was allocated.
+    pub const fn with_scope_env(&self) -> &EvalWithEnv {
+        &self.with_env
+    }
+
     /// Returns the serial state/result cell for this thunk.
     pub const fn cell(&self) -> &ThunkCell {
         &self.cell
@@ -65,24 +77,37 @@ impl EvalThunk {
 /// A user lambda closure heap record.
 ///
 /// The record stores the lowered parameter pattern and body, the resolver frame
-/// used for the call's argument slots, and the lexical environment captured when
-/// the lambda was constructed.
+/// used for the call's argument slots, and the lexical and dynamic `with`
+/// environments captured when the lambda was constructed.
 #[derive(Debug)]
 pub struct EvalLambda {
     pattern: IrId,
     body: IrId,
     frame: FrameId,
     env: EvalEnv,
+    with_env: EvalWithEnv,
 }
 
 impl EvalLambda {
     /// Creates a lambda closure record.
     pub fn new(pattern: IrId, body: IrId, frame: FrameId, env: EvalEnv) -> Self {
+        Self::with_captures(pattern, body, frame, env, EvalWithEnv::default())
+    }
+
+    /// Creates a lambda closure record with lexical and dynamic captures.
+    pub fn with_captures(
+        pattern: IrId,
+        body: IrId,
+        frame: FrameId,
+        env: EvalEnv,
+        with_env: EvalWithEnv,
+    ) -> Self {
         Self {
             pattern,
             body,
             frame,
             env,
+            with_env,
         }
     }
 
@@ -104,6 +129,11 @@ impl EvalLambda {
     /// Returns the lexical environment captured when this lambda was allocated.
     pub const fn env(&self) -> &EvalEnv {
         &self.env
+    }
+
+    /// Returns the dynamic `with` environment captured when this lambda was allocated.
+    pub const fn with_scope_env(&self) -> &EvalWithEnv {
+        &self.with_env
     }
 }
 

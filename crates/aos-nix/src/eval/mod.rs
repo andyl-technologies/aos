@@ -10,7 +10,7 @@ pub mod heap;
 pub mod thunk;
 pub mod tree_walk;
 
-pub use env::{EvalEnv, EvalEnvError, EvalFrame};
+pub use env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
 pub use heap::{EvalHeap, EvalHeapError, EvalLambda, EvalThunk};
 pub use thunk::{ForceClaim, ForceError, ForceGuard, ThunkCell, ThunkState};
 pub use tree_walk::{

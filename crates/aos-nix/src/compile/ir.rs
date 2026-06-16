@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
-use super::{FrameInfo, ResolvedAst, WithChain};
+use super::{FrameInfo, ResolvedAst};
 use crate::syntax::{
     AstErrorKind, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind, Span, Symbol,
     SymbolTable, UnaryOpKind,
@@ -36,8 +36,8 @@ pub struct Ir {
     pub symbols: SymbolTable,
     /// Scope frame metadata carried from resolution.
     pub frames: Box<[FrameInfo]>,
-    /// Dynamic `with` chains carried from resolution.
-    pub with_chains: Box<[WithChain]>,
+    /// Dynamic `with` chains translated to lowered scrutinee nodes.
+    pub with_chains: Box<[IrWithChain]>,
     /// Attribute paths referenced by access nodes.
     pub attr_paths: Box<[Box<[IrAttrPathSegment]>]>,
     /// Binding runs referenced by `let` and attrset construction nodes.
@@ -455,6 +455,20 @@ impl IrShape {
     }
 }
 
+/// An innermost-first dynamic `with` probe chain in lowered IR.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrWithChain {
+    /// Active `with` scrutinee nodes, ordered innermost to outermost.
+    pub scopes: Box<[IrId]>,
+}
+
+impl IrWithChain {
+    /// Creates a `with` chain from lowered scrutinee node ids.
+    pub fn new(scopes: Box<[IrId]>) -> Self {
+        Self { scopes }
+    }
+}
+
 /// A fixed-stride IR arena plus variable-arity child pool.
 #[derive(Clone, Debug, Default)]
 pub struct IrArena {
@@ -559,6 +573,20 @@ pub enum IrErrorKind {
     /// A child slice did not point into the AST child pool.
     #[error("invalid AST child slice")]
     InvalidChildSlice,
+    /// A with-chain side-table id did not resolve through the scope table.
+    #[error("invalid with-chain id {chain}")]
+    InvalidWithChain {
+        /// The missing resolver with-chain id.
+        chain: u32,
+    },
+    /// A with-chain referenced a scrutinee that has not been lowered yet.
+    #[error("with-chain {chain} references unlowered scope {scope:?}")]
+    UnloweredWithScope {
+        /// The resolver with-chain id.
+        chain: u32,
+        /// The AST node id of the referenced scrutinee.
+        scope: NodeId,
+    },
     /// The resolved AST had a node shape that lowering cannot consume.
     #[error("invalid {kind:?} node shape, expected {expected}")]
     InvalidNodeShape {
@@ -599,9 +627,12 @@ impl From<crate::syntax::AstError> for IrError {
 struct IrLowerer {
     resolved: ResolvedAst,
     arena: IrArena,
+    lowered_nodes: BTreeMap<NodeId, IrId>,
     attr_paths: Vec<Box<[IrAttrPathSegment]>>,
     bindings: Vec<IrBinding>,
     shapes: Vec<IrShape>,
+    with_chains: Vec<IrWithChain>,
+    with_chain_map: BTreeMap<u32, u32>,
     inherit_from_thunks: BTreeMap<NodeId, IrId>,
     inline_cache_sites: u32,
 }
@@ -611,9 +642,12 @@ impl IrLowerer {
         Self {
             resolved,
             arena: IrArena::new(),
+            lowered_nodes: BTreeMap::new(),
             attr_paths: Vec::new(),
             bindings: Vec::new(),
             shapes: Vec::new(),
+            with_chains: Vec::new(),
+            with_chain_map: BTreeMap::new(),
             inherit_from_thunks: BTreeMap::new(),
             inline_cache_sites: 0,
         }
@@ -622,18 +656,12 @@ impl IrLowerer {
     fn lower(mut self) -> Result<Ir, IrError> {
         let root = self.lower_expr(self.resolved.root)?;
         let frames = self.resolved.scopes.frames().to_vec().into_boxed_slice();
-        let with_chains = self
-            .resolved
-            .scopes
-            .with_chains()
-            .to_vec()
-            .into_boxed_slice();
         Ok(Ir {
             root,
             arena: self.arena,
             symbols: self.resolved.symbols,
             frames,
-            with_chains,
+            with_chains: self.with_chains.into_boxed_slice(),
             attr_paths: self.attr_paths.into_boxed_slice(),
             bindings: self.bindings.into_boxed_slice(),
             shapes: self.shapes.into_boxed_slice(),
@@ -642,7 +670,7 @@ impl IrLowerer {
 
     fn lower_expr(&mut self, id: NodeId) -> Result<IrId, IrError> {
         let node = self.node(id)?;
-        match node.kind {
+        let lowered = match node.kind {
             NodeKind::Int => {
                 let NodeData::Int(value) = node.data else {
                     return Err(self.invalid_shape(node, "integer payload"));
@@ -672,16 +700,7 @@ impl IrLowerer {
                 self.push(IrKind::UpvalVar, node.span, IrData::Upval { depth, slot })
             }
             NodeKind::GlobalVar => self.lower_global(node),
-            NodeKind::WithVar => {
-                let NodeData::WithVar { symbol, chain } = node.data else {
-                    return Err(self.invalid_shape(node, "with-var payload"));
-                };
-                self.push(
-                    IrKind::WithVar,
-                    node.span,
-                    IrData::WithVar { symbol, chain },
-                )
-            }
+            NodeKind::WithVar => self.lower_with_var(node),
             NodeKind::List => self.lower_list(node),
             NodeKind::AttrSet => self.lower_attrset(id, node, false),
             NodeKind::RecAttrSet => self.lower_attrset(id, node, true),
@@ -701,7 +720,9 @@ impl IrLowerer {
             NodeKind::Binding | NodeKind::Inherit | NodeKind::Ident | NodeKind::AttrPath => {
                 Err(self.invalid_shape(node, "lowerable expression"))
             }
-        }
+        }?;
+        self.lowered_nodes.insert(id, lowered);
+        Ok(lowered)
     }
 
     fn lower_symbol_node(&mut self, node: Node, kind: IrKind) -> Result<IrId, IrError> {
@@ -721,6 +742,43 @@ impl IrLowerer {
             Some(b"null") => self.push(IrKind::Null, node.span, IrData::None),
             _ => self.push(IrKind::GlobalVar, node.span, IrData::Symbol(symbol)),
         }
+    }
+
+    fn lower_with_var(&mut self, node: Node) -> Result<IrId, IrError> {
+        let NodeData::WithVar { symbol, chain } = node.data else {
+            return Err(self.invalid_shape(node, "with-var payload"));
+        };
+        let chain = self.lower_with_chain(chain, node.span)?;
+        self.push(
+            IrKind::WithVar,
+            node.span,
+            IrData::WithVar { symbol, chain },
+        )
+    }
+
+    fn lower_with_chain(&mut self, chain: u32, span: Span) -> Result<u32, IrError> {
+        if let Some(lowered) = self.with_chain_map.get(&chain).copied() {
+            return Ok(lowered);
+        }
+        let raw = u32::try_from(self.with_chains.len())
+            .map_err(|_| IrError::new(IrErrorKind::TooManySideTableEntries, span))?;
+        let resolver_chain = self
+            .resolved
+            .scopes
+            .with_chains()
+            .get(chain as usize)
+            .ok_or_else(|| IrError::new(IrErrorKind::InvalidWithChain { chain }, span))?;
+        let mut scopes = Vec::new();
+        for scope in resolver_chain.scopes.iter().copied() {
+            let lowered = self.lowered_nodes.get(&scope).copied().ok_or_else(|| {
+                IrError::new(IrErrorKind::UnloweredWithScope { chain, scope }, span)
+            })?;
+            scopes.push(lowered);
+        }
+        self.with_chains
+            .push(IrWithChain::new(scopes.into_boxed_slice()));
+        self.with_chain_map.insert(chain, raw);
+        Ok(raw)
     }
 
     fn is_derivation_strict_ref(&self, id: NodeId) -> Result<bool, IrError> {
@@ -1456,10 +1514,40 @@ mod tests {
     #[test]
     fn with_shadowed_bool_name_remains_dynamic() {
         let ir = lowered("with { true = 1; }; true");
-        let IrData::Pair { second, .. } = root_node(&ir).data else {
+        let IrData::Pair { first, second } = root_node(&ir).data else {
             panic!("with payload expected");
         };
         assert_eq!(node(&ir, second).kind, IrKind::WithVar);
+        let IrData::WithVar { chain, .. } = node(&ir, second).data else {
+            panic!("with-var payload expected");
+        };
+        let chain = &ir.with_chains[chain as usize];
+        assert_eq!(chain.scopes.as_ref(), &[first]);
+    }
+
+    #[test]
+    fn with_var_chains_point_to_lowered_scopes_inner_first() {
+        let ir = lowered("with { outer = 1; }; with { inner = 2; }; missing");
+        let IrData::Pair {
+            first: outer,
+            second: inner_with,
+        } = root_node(&ir).data
+        else {
+            panic!("outer with payload expected");
+        };
+        let IrData::Pair {
+            first: inner,
+            second: body,
+        } = node(&ir, inner_with).data
+        else {
+            panic!("inner with payload expected");
+        };
+        let IrData::WithVar { chain, .. } = node(&ir, body).data else {
+            panic!("with-var payload expected");
+        };
+
+        let chain = &ir.with_chains[chain as usize];
+        assert_eq!(chain.scopes.as_ref(), &[inner, outer]);
     }
 
     #[test]
