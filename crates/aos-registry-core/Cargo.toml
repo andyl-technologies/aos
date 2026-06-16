@@ -90,3 +90,8 @@ getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] 
 # uuid::Uuid::new_v4 draws from getrandom; the `js` feature routes it to
 # crypto.getRandomValues on the Workers target.
 uuid = { workspace = true, features = ["js"] }
+# The `Send` bridge for the shared Connect-JSON axum router on the
+# single-threaded Worker: SendWrapper makes the `?Send` D1-backed RpcService
+# state + handler futures satisfy axum's `Send + Sync` bounds (sound with one
+# thread). Native uses the identity bridge and needs no such dep. RFC-0004 Ph5.
+send_wrapper = { version = "0.6", features = ["futures"] }
