@@ -381,10 +381,11 @@ apm at first boot; define upgrade/rollback.
 - [x] **Hot-reload plumbing (D25).** The manifest declares whether the service
       supports reload; a config change runs `systemctl reload-or-restart`
       (`Type=notify-reload`/`RELOADING=1` where supported, restart otherwise).
-- [ ] **Typed capability routing (D18).** `requires` resolves typed capabilities a
+- [x] **Typed capability routing (D18).** `requires` resolves typed capabilities a
       provider's `expose` declares. Directory and namespace routes now emit
-      runtime drop-ins (`BindReadOnlyPaths=` / `JoinsNamespaceOf=`) with
-      same-generation validation; socket fd-passing remains fail-closed and open.
+      runtime drop-ins (`BindReadOnlyPaths=` / `JoinsNamespaceOf=`), while
+      socket routes emit named-fd activation drop-ins and consumer-target edges,
+      with same-generation validation.
 - [x] **Upgrade / rollback (D11).** Upgrade = generation switch + `daemon-reload`
       + restart with the unit's own semantics (k3s keeps `KillMode=process`, no pod
       kill). Rollback = switch back (both store paths gc-rooted) → rewrite the
@@ -394,8 +395,8 @@ apm at first boot; define upgrade/rollback.
 path, first-boot desired-set reconciliation, package-profile install/prune,
 generation upgrade/rollback mechanics, signed structured/env config artifact
 metadata + desired materialization, config-triggered reload/restart, and
-directory/namespace capability-route drop-ins. TPM2-sealed credential delivery
-and socket fd-passing remain open and keep the phase at ◐ rather than ☑.
+directory/namespace/socket capability-route drop-ins. TPM2-sealed credential
+delivery remains open and keeps the phase at ◐ rather than ☑.
 
 **Closes when complete.** D8 (install half), D9, D11, D16, D18, D24, D25.
 
