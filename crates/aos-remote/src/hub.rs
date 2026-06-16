@@ -19,7 +19,8 @@ use connectrpc::client::{ClientConfig, HttpClient};
 use aos_proto::aos::registry::v1::{
     AuditEntry, AuditServiceClient, Binding, Changeset, Channel, ChannelServiceClient,
     ConfigServiceClient, CreateBindingRequest, CreateOrgRequest, CreateProjectRequest,
-    GetRegistryRequest, ListAuditRequest, ListBindingsRequest, ListChangesetsRequest,
+    CreateRegistryRequest, GetRegistryRequest, ListAuditRequest, ListBindingsRequest,
+    ListChangesetsRequest,
     ListChannelsRequest, ListOrgsRequest, ListPackagesRequest, ListProjectsRequest,
     ListRegistriesRequest, ListReleasesRequest, Org, OrgServiceClient, PackageServiceClient,
     PackageSummary, Project, ProjectServiceClient, Registry, RegistryServiceClient, Release,
@@ -364,5 +365,51 @@ impl RegistryHubClient {
             .binding
             .into_option()
             .context("hub returned no binding for the create request")
+    }
+
+    /// Creates an org-owned, storage-bound managed registry.
+    ///
+    /// Requires `registry.configure` on the org scope. `project_path` is the
+    /// owning project's materialized path (`""` for an org-root registry);
+    /// `visibility` is `public`/`internal`/`private`; `binding_name` and `prefix`
+    /// place the surface in a storage binding (an empty `binding_name` leaves the
+    /// registry unbound); `trust_keys` are pinned anchors in
+    /// `name:Ed25519:<base64>` form.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable, the RPC fails (e.g. missing
+    /// permission, a duplicate canonical path, or an unknown binding), or the
+    /// response omits the created registry.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_registry(
+        &self,
+        org_slug: &str,
+        project_path: &str,
+        name: &str,
+        visibility: &str,
+        binding_name: &str,
+        prefix: &str,
+        trust_keys: Vec<String>,
+    ) -> Result<Registry> {
+        let response = self
+            .registry
+            .create_registry(CreateRegistryRequest {
+                org_slug: org_slug.into(),
+                project_path: project_path.into(),
+                name: name.into(),
+                visibility: visibility.into(),
+                binding_name: binding_name.into(),
+                prefix: prefix.into(),
+                trust_keys,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("creating registry '{name}' in org '{org_slug}': {e}"))?;
+        response
+            .into_owned()
+            .registry
+            .into_option()
+            .context("hub returned no registry for the create request")
     }
 }
