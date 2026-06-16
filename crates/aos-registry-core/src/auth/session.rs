@@ -12,11 +12,11 @@
 //! whose owner re-authenticated recently. Sudo is *time-bounded*: a session
 //! counts as sudo only while `auth_level == 1` **and** the re-authentication
 //! is within [`SUDO_WINDOW_SECS`] of now (see
-//! [`crate::db::SessionAuth::is_sudo`]). The most destructive operations
+//! `SessionAuth::is_sudo`). The most destructive operations
 //! (password change, registry/org deletion) require a sudo session.
 //!
 //! Sessions also enforce two independent lifetime bounds, both checked in
-//! [`crate::db::Database::validate_session`]:
+//! `Database::validate_session`:
 //!
 //! - an **idle timeout** of [`IDLE_TIMEOUT_SECS`]: a session dies once
 //!   `now - last_seen_at` exceeds it. Each successful validation bumps
@@ -26,7 +26,7 @@
 //!   session row's `expires_at` is set to this absolute cap at creation.
 //!
 //! The session lifecycle (create, validate-and-bump, revoke, revoke-all,
-//! elevate) lives on [`crate::db::Database`]; this module owns only the
+//! elevate) lives on `Database`; this module owns only the
 //! secret format, the cookie name, and the lifetime/sudo constants.
 
 use rand::Rng;
@@ -69,7 +69,7 @@ pub fn new_session_secret() -> String {
 ///
 /// Produces `__Host-aos_session=<secret>; Secure; HttpOnly; SameSite=Lax;
 /// Path=/; Max-Age=<max_age_secs>`. Pass the value returned by
-/// [`crate::db::Database::create_session`] as `secret`.
+/// `Database::create_session` as `secret`.
 #[must_use]
 pub fn set_cookie_header(secret: &str, max_age_secs: i64) -> String {
     format!(

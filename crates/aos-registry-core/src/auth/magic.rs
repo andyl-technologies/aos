@@ -16,7 +16,7 @@
 //! ships [`LogMailer`], which logs the link instead of sending it — useful
 //! for dev and tests. Real transports (SMTP via `lettre` natively, an HTTP
 //! mail API on Workers) implement [`Mailer`] in a later phase. The link
-//! lifecycle (create, consume-once) lives on [`crate::db::Database`].
+//! lifecycle (create, consume-once) lives on `Database`.
 
 use rand::Rng;
 
@@ -37,7 +37,7 @@ pub fn new_magic_secret() -> String {
 ///
 /// Implementations send the URL however their runtime allows; the hub
 /// holds a `dyn Mailer` and calls [`Mailer::send_magic_link`] after
-/// [`crate::db::Database::create_magic_link`] returns the secret.
+/// `Database::create_magic_link` returns the secret.
 pub trait Mailer: Send + Sync {
     /// Sends `link_url` (a fully-formed magic-link URL) to `email`.
     ///

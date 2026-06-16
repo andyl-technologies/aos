@@ -15,7 +15,7 @@
 //! ```
 //!
 //! The hash stored in `tokens.hash` is the lowercase hex SHA-256 of the
-//! whole plaintext (prefix included). Both [`crate::db::Database`] token
+//! whole plaintext (prefix included). Both `Database` token
 //! and session/device/magic methods funnel their hashing through
 //! [`sha256_hex`] so the on-disk hash format is defined in exactly one
 //! place.
@@ -33,7 +33,7 @@ use sha2::{Digest, Sha256};
 /// # Examples
 ///
 /// ```no_run
-/// use aos_registry_hub::auth::token::{generate_token, sha256_hex};
+/// use aos_registry_core::auth::token::{generate_token, sha256_hex};
 ///
 /// let (secret, hash) = generate_token();
 /// assert!(secret.starts_with("aos_"));
@@ -50,7 +50,7 @@ pub fn generate_token() -> (String, String) {
 /// Computes the lowercase hex SHA-256 digest of `input`.
 ///
 /// This is the one hashing primitive shared by every credential store in
-/// [`crate::db`]: tokens, sessions, device codes, and magic links all hash
+/// the hub's db layer: tokens, sessions, device codes, and magic links all hash
 /// their secrets this way before they touch the database.
 #[must_use]
 pub fn sha256_hex(input: &str) -> String {

@@ -334,11 +334,16 @@ dependencies = [
  "argon2",
  "async-trait",
  "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "hex",
  "password-hash",
+ "rand 0.9.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "toml 0.8.23",
+ "tracing",
  "url",
 ]
 

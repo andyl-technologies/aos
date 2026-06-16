@@ -46,68 +46,16 @@
 //! and `magic_links` tables. Only secret *hashes* are stored, so a database
 //! leak never yields a usable credential.
 
-pub mod device;
 pub mod extract;
 pub mod jwt;
-pub mod magic;
 pub mod oidc;
-/// Argon2id password hashing, re-exported from [`aos_registry_core::auth::password`]
-/// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::auth::password::…` stable.
-pub use aos_registry_core::auth::password;
 pub mod seal;
-pub mod session;
-pub mod token;
 pub mod webauthn;
 
-use crate::domain::Permission;
-
-/// Parses a permission verb from its snake-case wire name.
-///
-/// This is the inverse of [`Permission::as_str`]; it is the single point
-/// that maps the JSON/JWT permission strings back to the domain enum.
-/// Returns `None` for any string that is not one of the known verbs.
-#[must_use]
-pub fn permission_from_str(s: &str) -> Option<Permission> {
-    match s {
-        "read" => Some(Permission::Read),
-        "publish" => Some(Permission::Publish),
-        "channel.advance" => Some(Permission::ChannelAdvance),
-        "keys.manage" => Some(Permission::KeysManage),
-        "tokens.self" => Some(Permission::TokensSelf),
-        "tokens.manage" => Some(Permission::TokensManage),
-        "members.manage" => Some(Permission::MembersManage),
-        "registry.configure" => Some(Permission::RegistryConfigure),
-        "storage.manage" => Some(Permission::StorageManage),
-        "validation.repair" => Some(Permission::ValidationRepair),
-        "audit.read" => Some(Permission::AuditRead),
-        "iam.admin" => Some(Permission::IamAdmin),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn permission_roundtrips_through_str() {
-        use Permission::*;
-        for perm in [
-            Read,
-            Publish,
-            ChannelAdvance,
-            KeysManage,
-            TokensSelf,
-            TokensManage,
-            MembersManage,
-            RegistryConfigure,
-            StorageManage,
-            ValidationRepair,
-            AuditRead,
-            IamAdmin,
-        ] {
-            assert_eq!(permission_from_str(perm.as_str()), Some(perm));
-        }
-        assert_eq!(permission_from_str("nope"), None);
-    }
-}
+// The runtime-agnostic auth primitives moved to aos-registry-core (RFC-0004
+// Phase 5) so the Worker shares them; re-exported here so every
+// `crate::auth::{token,session,magic,device,password,permission_from_str}::…`
+// path is unchanged.
+pub use aos_registry_core::auth::{
+    device, magic, password, permission_from_str, session, token,
+};
