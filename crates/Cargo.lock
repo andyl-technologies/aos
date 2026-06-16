@@ -237,8 +237,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "md-5",
  "nix-compat",
  "serde_json",
+ "sha1 0.10.6",
  "sha2 0.10.9",
  "thiserror",
  "tracing",

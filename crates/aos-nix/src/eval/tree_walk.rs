@@ -15,7 +15,10 @@
 
 use std::rc::Rc;
 
+use md5::{Digest as _, Md5};
 use serde_json::Value as JsonValue;
+use sha1::{Digest as _, Sha1};
+use sha2::{Sha256, Sha512};
 use thiserror::Error;
 
 use super::env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
@@ -1301,6 +1304,9 @@ impl<'ir> TreeWalk<'ir> {
                 StrictBinaryPrimOp::LessThan => {
                     self.eval_comparison(id, node, ComparisonOp::Lt, first, second)
                 }
+                StrictBinaryPrimOp::HashString => {
+                    self.eval_hash_string_primop(id, node.span, first, second)
+                }
                 StrictBinaryPrimOp::Add => {
                     self.eval_numeric_binary(id, node, BinaryArithmeticOp::Add, first, second)
                 }
@@ -2399,6 +2405,121 @@ impl<'ir> TreeWalk<'ir> {
         let right =
             self.context_free_string_bytes(right_id, right_span, right, "compareVersions")?;
         Ok(Value::int(compare_version_bytes(&left, &right)))
+    }
+
+    fn eval_hash_string_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        algorithm_id: IrId,
+        string_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let algorithm_span = self.node(algorithm_id)?.span;
+        let algorithm = self.eval_node(algorithm_id)?;
+        let algorithm = self.eval_hash_string_algorithm(algorithm_id, algorithm_span, algorithm)?;
+
+        let string_span = self.node(string_id)?.span;
+        let string = self.eval_node(string_id)?;
+        if string.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: string_id,
+                    expected: "string",
+                    actual: string.tag(),
+                },
+                string_span,
+            ));
+        }
+        self.eval_hash_string_value(id, span, string_id, string_span, string, algorithm)
+    }
+
+    fn eval_hash_string_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        string_id: IrId,
+        string_span: Span,
+        string: Value,
+        algorithm: HashStringAlgorithm,
+    ) -> Result<Value, TreeWalkError> {
+        let digest = {
+            let string = self.heap.get_string(string).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: string_id,
+                        source,
+                    },
+                    string_span,
+                )
+            })?;
+            match algorithm {
+                HashStringAlgorithm::Md5 => Md5::digest(string.bytes()).to_vec(),
+                HashStringAlgorithm::Sha1 => Sha1::digest(string.bytes()).to_vec(),
+                HashStringAlgorithm::Sha256 => Sha256::digest(string.bytes()).to_vec(),
+                HashStringAlgorithm::Sha512 => Sha512::digest(string.bytes()).to_vec(),
+            }
+        };
+        let bytes = Self::lower_hex_bytes(id, span, &digest)?;
+        self.heap
+            .alloc_string(NixString::from_bytes(bytes))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_hash_string_algorithm(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<HashStringAlgorithm, TreeWalkError> {
+        let algorithm_bytes = self.context_free_string_bytes(id, span, value, "hashString")?;
+        HashStringAlgorithm::from_bytes(&algorithm_bytes).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::UnknownHashAlgorithm {
+                    id,
+                    algorithm: algorithm_bytes,
+                },
+                span,
+            )
+        })
+    }
+
+    #[cfg(test)]
+    fn eval_hash_string_primop_with_string_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        algorithm_id: IrId,
+        string_id: IrId,
+        string_span: Span,
+        string: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let algorithm_span = self.node(algorithm_id)?.span;
+        let algorithm = self.eval_node(algorithm_id)?;
+        let algorithm = self.eval_hash_string_algorithm(algorithm_id, algorithm_span, algorithm)?;
+        self.eval_hash_string_value(id, span, string_id, string_span, string, algorithm)
+    }
+
+    fn lower_hex_bytes(id: IrId, span: Span, digest: &[u8]) -> Result<Vec<u8>, TreeWalkError> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+
+        let len = digest.len().checked_mul(2).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: usize::MAX,
+                },
+                span,
+            )
+        })?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+        })?;
+        for byte in digest {
+            bytes.push(HEX[usize::from(byte >> 4)]);
+            bytes.push(HEX[usize::from(byte & 0x0f)]);
+        }
+        Ok(bytes)
     }
 
     #[cfg(test)]
@@ -5747,6 +5868,26 @@ enum EqualityContext {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HashStringAlgorithm {
+    Md5,
+    Sha1,
+    Sha256,
+    Sha512,
+}
+
+impl HashStringAlgorithm {
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        match bytes {
+            b"md5" => Some(Self::Md5),
+            b"sha1" => Some(Self::Sha1),
+            b"sha256" => Some(Self::Sha256),
+            b"sha512" => Some(Self::Sha512),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StrictUnaryPrimOp {
     IsAttrs,
     IsList,
@@ -5868,6 +6009,7 @@ enum StrictBinaryPrimOp {
     CatAttrs,
     Elem,
     LessThan,
+    HashString,
     All,
     Any,
     ConcatMap,
@@ -5895,6 +6037,7 @@ impl StrictBinaryPrimOp {
             b"catAttrs" => Some(Self::CatAttrs),
             b"elem" => Some(Self::Elem),
             b"lessThan" => Some(Self::LessThan),
+            b"hashString" => Some(Self::HashString),
             b"all" => Some(Self::All),
             b"any" => Some(Self::Any),
             b"concatMap" => Some(Self::ConcatMap),
@@ -6434,6 +6577,14 @@ pub enum TreeWalkErrorKind {
     JsonNumberUnsupported {
         /// The string-valued node that produced the unsupported number.
         id: IrId,
+    },
+    /// A hash primop received an unsupported algorithm name.
+    #[error("unknown hash algorithm at node {id:?}: {algorithm:?}")]
+    UnknownHashAlgorithm {
+        /// The algorithm string node.
+        id: IrId,
+        /// The unsupported algorithm bytes.
+        algorithm: Vec<u8>,
     },
     /// An internal string-context element violated its shape invariant.
     #[error("invalid string context at node {id:?}")]
@@ -10472,6 +10623,197 @@ mod tests {
             }
         );
         assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn hash_string_primop_hashes_bytes() {
+        assert_eq!(
+            eval_string_bytes("builtins.hashString \"md5\" \"abc\""),
+            b"900150983cd24fb0d6963f7d28e17f72"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.hashString \"sha1\" \"abc\""),
+            b"a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.hashString \"sha256\" \"abc\""),
+            b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.hashString \"sha512\" \"abc\""),
+            b"ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { hashString = type: value: \"local\"; }; in builtins.hashString \"sha256\" \"abc\""
+            ),
+            b"local"
+        );
+    }
+
+    #[test]
+    fn hash_string_primop_hashes_context_bearing_string_bytes() {
+        let ir = lower("builtins.hashString \"sha256\" \"abc\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let algorithm = args[0];
+        let string = args[1];
+        let string_span = ir.arena.node(string).expect("string argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"abc".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing string allocates");
+
+        let result = evaluator
+            .eval_hash_string_primop_with_string_value(
+                ir.root,
+                root.span,
+                algorithm,
+                string,
+                string_span,
+                value,
+            )
+            .expect("hashString evaluates");
+        let string = evaluator
+            .heap
+            .get_string(result)
+            .expect("result is a string");
+
+        assert_eq!(
+            string.bytes(),
+            b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(!string.has_context());
+    }
+
+    #[test]
+    fn hash_string_primop_rejects_context_bearing_algorithm() {
+        let ir = lower("builtins.hashString \"sha256\" (1 / 0)");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let algorithm = args[0];
+        let algorithm_span = ir.arena.node(algorithm).expect("algorithm exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"sha256".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing algorithm allocates");
+
+        let error = evaluator
+            .eval_hash_string_algorithm(algorithm, algorithm_span, value)
+            .expect_err("hashString rejects algorithm string context");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                id: algorithm,
+                op: "hashString",
+            }
+        );
+        assert_eq!(error.span(), algorithm_span);
+    }
+
+    #[test]
+    fn hash_string_primop_checks_algorithm_before_string() {
+        let ir = lower("builtins.hashString \"bad\" (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let algorithm = args[0];
+        let algorithm_span = ir.arena.node(algorithm).expect("algorithm exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("unknown algorithm is rejected first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnknownHashAlgorithm {
+                id: algorithm,
+                algorithm: b"bad".to_vec(),
+            }
+        );
+        assert_eq!(error.span(), algorithm_span);
+
+        let ir = lower("builtins.hashString \"SHA256\" \"abc\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let algorithm = args[0];
+
+        let error = eval_whnf_owned(&ir).expect_err("algorithm names are case-sensitive");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnknownHashAlgorithm {
+                id: algorithm,
+                algorithm: b"SHA256".to_vec(),
+            }
+        );
+    }
+
+    #[test]
+    fn hash_string_primop_type_checks_arguments() {
+        let ir = lower("builtins.hashString 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let algorithm = args[0];
+        let algorithm_span = ir.arena.node(algorithm).expect("algorithm exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("algorithm must be a string");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: algorithm,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), algorithm_span);
+
+        let ir = lower("builtins.hashString \"sha256\" { outPath = \"abc\"; }");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let string = args[1];
+        let string_span = ir.arena.node(string).expect("string exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("string argument is not coerced");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: string,
+                expected: "string",
+                actual: ValueTag::Attrs,
+            }
+        );
+        assert_eq!(error.span(), string_span);
     }
 
     #[test]

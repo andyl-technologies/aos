@@ -21,6 +21,8 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "process", "signal", "macros", "net", "io-util", "fs", "time"] }
+md-5 = "0.11"
+sha1 = "0.10"
 sha2 = "0.10"
 base64 = "0.22"
 regex = "1"
