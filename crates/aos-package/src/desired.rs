@@ -6,10 +6,10 @@
 //! are installed, and explicit installed names absent from the file are
 //! removed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::config::ApmConfig;
@@ -29,6 +29,8 @@ struct DesiredToml {
     #[serde(default)]
     packages: Vec<String>,
     #[serde(default)]
+    config: DesiredPackageConfig,
+    #[serde(default)]
     desired: Option<DesiredSection>,
 }
 
@@ -36,7 +38,13 @@ struct DesiredToml {
 struct DesiredSection {
     #[serde(default)]
     packages: Vec<String>,
+    #[serde(default)]
+    config: DesiredPackageConfig,
 }
+
+/// Desired config values keyed by package, artifact, and field name.
+pub(crate) type DesiredPackageConfig =
+    BTreeMap<String, BTreeMap<String, BTreeMap<String, toml::Value>>>;
 
 /// Reconcile explicit APM roots against a desired-package file.
 ///
@@ -52,7 +60,8 @@ pub async fn reconcile_from_file(
     yes: bool,
     printer: &Printer,
 ) -> Result<()> {
-    let desired = desired_packages_from_file(path)?;
+    let desired_file = DesiredFile::from_path(path)?;
+    let desired = desired_file.packages;
     let installed_before = explicit_installed_packages(config)?;
 
     let additions = desired
@@ -70,7 +79,7 @@ pub async fn reconcile_from_file(
     }
 
     if !additions.is_empty() {
-        install::run(
+        install::run_deferred_expose_reconcile(
             config,
             &additions,
             None,
@@ -102,7 +111,17 @@ pub async fn reconcile_from_file(
             .await
             .context("removing packages absent from desired package set")?;
     }
-    if additions.is_empty() && removals.is_empty() && !dry_run {
+
+    let changed_config = if dry_run {
+        false
+    } else {
+        crate::config_artifact::reconcile_desired_config(config, &desired_file.config, printer)
+            .await
+            .context("reconciling desired package config")?
+    };
+
+    let profile_changed = !additions.is_empty() || !removals.is_empty();
+    if (profile_changed || changed_config) && !dry_run {
         crate::exposed_units::reconcile_system_profile(config, printer)
             .await
             .context("reconciling exposed package units")?;
@@ -121,6 +140,7 @@ pub async fn reconcile_from_file(
             "desired": desired,
             "install": additions,
             "remove": removals,
+            "config_changed": changed_config,
             "dry_run": dry_run,
         }));
     } else if additions.is_empty() && removals.is_empty() {
@@ -130,27 +150,54 @@ pub async fn reconcile_from_file(
     Ok(())
 }
 
-fn desired_packages_from_file(path: &Path) -> Result<BTreeSet<String>> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading desired package file {}", path.display()))?;
-    desired_packages_from_str(&content).with_context(|| format!("parsing {}", path.display()))
+#[derive(Debug)]
+struct DesiredFile {
+    packages: BTreeSet<String>,
+    config: DesiredPackageConfig,
 }
 
-fn desired_packages_from_str(content: &str) -> Result<BTreeSet<String>> {
-    let parsed: DesiredToml = toml::from_str(content).context("invalid desired package TOML")?;
-    let names = parsed
-        .desired
-        .map(|desired| desired.packages)
-        .filter(|packages| !packages.is_empty())
-        .unwrap_or(parsed.packages);
-
-    let mut set = BTreeSet::new();
-    for name in names {
-        validate_package_name(&name)
-            .with_context(|| format!("invalid desired package name '{name}'"))?;
-        set.insert(name);
+impl DesiredFile {
+    fn from_path(path: &Path) -> Result<Self> {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("reading desired package file {}", path.display()))?;
+        Self::from_str(&content).with_context(|| format!("parsing {}", path.display()))
     }
-    Ok(set)
+
+    fn from_str(content: &str) -> Result<Self> {
+        let parsed: DesiredToml =
+            toml::from_str(content).context("invalid desired package TOML")?;
+        let top_level_present = !parsed.packages.is_empty() || !parsed.config.is_empty();
+        let (names, config) = match parsed.desired {
+            Some(desired) if !desired.packages.is_empty() || !desired.config.is_empty() => {
+                if top_level_present {
+                    bail!("desired package file must not mix top-level keys with [desired]");
+                }
+                (desired.packages, desired.config)
+            }
+            _ => (parsed.packages, parsed.config),
+        };
+
+        let mut set = BTreeSet::new();
+        for name in names {
+            validate_package_name(&name)
+                .with_context(|| format!("invalid desired package name '{name}'"))?;
+            set.insert(name);
+        }
+        for name in config.keys() {
+            validate_package_name(name)
+                .with_context(|| format!("invalid desired config package name '{name}'"))?;
+        }
+
+        Ok(Self {
+            packages: set,
+            config,
+        })
+    }
+}
+
+#[cfg(test)]
+fn desired_packages_from_str(content: &str) -> Result<BTreeSet<String>> {
+    Ok(DesiredFile::from_str(content)?.packages)
 }
 
 fn explicit_installed_packages(config: &ApmConfig) -> Result<BTreeSet<String>> {
@@ -196,6 +243,38 @@ packages = ["k3s-worker"]
             packages.into_iter().collect::<Vec<_>>(),
             vec!["k3s-worker".to_string()]
         );
+    }
+
+    #[test]
+    fn desired_file_parse_nested_config() {
+        let desired = DesiredFile::from_str(
+            r#"
+[desired]
+packages = ["web"]
+
+[desired.config.web.env]
+TOKEN = "abc"
+"#,
+        )
+        .unwrap();
+
+        assert!(desired.packages.contains("web"));
+        assert_eq!(desired.config["web"]["env"]["TOKEN"].as_str(), Some("abc"));
+    }
+
+    #[test]
+    fn desired_file_rejects_mixed_top_level_and_nested_forms() {
+        let err = DesiredFile::from_str(
+            r#"
+packages = ["web"]
+
+[desired]
+packages = ["worker"]
+"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("must not mix"));
     }
 
     #[test]

@@ -77,13 +77,14 @@ use crate::security::{
 };
 use crate::sshkey;
 use crate::types::{
-    CacheEntry, ExposeArtifactMeta, ExposeMeta, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_PERMISSIONS_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta,
-    RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig, SbatEntry,
-    SigningKeySource, SigningKeySpec, package_name_bucket, validate_branch_name,
-    validate_channel_name, validate_expose_artifact_meta, validate_expose_meta,
-    validate_git_ref_name, validate_package_name, validate_permissions_meta,
-    validate_platform_name, validate_registry_name,
+    CacheEntry, ExposeArtifactMeta, ExposeMeta, FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_V1,
+    FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
+    FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile,
+    RegistryRootConfig, RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec,
+    package_name_bucket, validate_branch_name, validate_channel_name,
+    validate_expose_artifact_meta, validate_expose_meta, validate_git_ref_name,
+    validate_package_name, validate_permissions_meta, validate_platform_name,
+    validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
@@ -95,6 +96,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PublishExposeManifest {
     expose: ExposeMeta,
     permissions: PermissionsMeta,
@@ -2713,6 +2715,17 @@ fn package_platform_table(
         ];
         if !manifest.expose.requires.is_empty() {
             required_features.push(toml::Value::String(FEATURE_REQUIRES_V1.to_string()));
+        }
+        if !manifest.expose.config.is_empty() {
+            required_features.push(toml::Value::String(FEATURE_CONFIG_V1.to_string()));
+        }
+        if manifest.expose.config.has_unit_reconciliation() {
+            required_features.push(toml::Value::String(FEATURE_RELOAD_V1.to_string()));
+        }
+        if !manifest.expose.provides.is_empty() || !manifest.expose.uses.is_empty() {
+            required_features.push(toml::Value::String(
+                FEATURE_CAPABILITY_ROUTES_V1.to_string(),
+            ));
         }
         table.insert(
             "requires-features".into(),
@@ -9726,6 +9739,30 @@ mod tests {
                 units: vec!["webapp.service".into()],
                 images: Vec::new(),
                 requires: vec!["zlib".into()],
+                config: crate::types::ExposeConfigMeta {
+                    artifacts: vec![crate::types::ConfigArtifactMeta {
+                        name: "env".into(),
+                        path: "/etc/aos/packages/webapp/config.env".into(),
+                        format: crate::types::ConfigArtifactFormat::Env,
+                        required: vec!["TOKEN".into()],
+                        optional: Vec::new(),
+                        units: vec!["webapp.service".into()],
+                        reload: crate::types::ConfigReloadPolicy::Reload,
+                    }],
+                    credentials: Vec::new(),
+                },
+                provides: vec![crate::types::ProvidedCapabilityMeta {
+                    name: "data".into(),
+                    kind: crate::types::CapabilityKind::Directory,
+                    path: Some("/var/lib/webapp/data".into()),
+                    unit: None,
+                }],
+                uses: vec![crate::types::RequiredCapabilityMeta {
+                    provider: "zlib".into(),
+                    name: "headers".into(),
+                    kind: crate::types::CapabilityKind::Directory,
+                    unit: "webapp.service".into(),
+                }],
             },
             permissions,
         };
@@ -9777,6 +9814,9 @@ mod tests {
                 FEATURE_EXPOSE_ARTIFACT_V1,
                 FEATURE_PERMISSIONS_V1,
                 FEATURE_REQUIRES_V1,
+                FEATURE_CONFIG_V1,
+                FEATURE_RELOAD_V1,
+                FEATURE_CAPABILITY_ROUTES_V1,
             ]
         );
         assert_eq!(
@@ -9853,6 +9893,9 @@ mod tests {
                 units: vec!["webapp.service".into()],
                 images: Vec::new(),
                 requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
             },
             permissions: PermissionsMeta::default(),
         };
@@ -9901,6 +9944,9 @@ mod tests {
                 units: vec!["webapp.service".into()],
                 images: Vec::new(),
                 requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
             },
             permissions: PermissionsMeta::default(),
         };

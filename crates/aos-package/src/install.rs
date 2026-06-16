@@ -37,7 +37,9 @@ use super::download::{
     fetch_narinfos, order_resolved_downloads, reference_store_path, resolve_mirror,
     resolved_downloads_json,
 };
-use super::exposed_units::{rebuild_generation_expose_roots, reconcile_system_profile};
+use super::exposed_units::{
+    rebuild_generation_expose_roots, reconcile_system_profile, validate_generation_exposed_units,
+};
 use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
@@ -99,6 +101,67 @@ pub async fn run(
     yes: bool,
     ignore_lock: &IgnoreSysrootLock,
     printer: &Printer,
+) -> Result<()> {
+    run_inner(
+        config,
+        packages,
+        registry_filter,
+        reinstall,
+        require_installed,
+        download_only,
+        no_deps,
+        dry_run,
+        yes,
+        ignore_lock,
+        printer,
+        true,
+    )
+    .await
+}
+
+pub(crate) async fn run_deferred_expose_reconcile(
+    config: &ApmConfig,
+    packages: &[String],
+    registry_filter: Option<&str>,
+    reinstall: bool,
+    require_installed: bool,
+    download_only: bool,
+    no_deps: bool,
+    dry_run: bool,
+    yes: bool,
+    ignore_lock: &IgnoreSysrootLock,
+    printer: &Printer,
+) -> Result<()> {
+    run_inner(
+        config,
+        packages,
+        registry_filter,
+        reinstall,
+        require_installed,
+        download_only,
+        no_deps,
+        dry_run,
+        yes,
+        ignore_lock,
+        printer,
+        false,
+    )
+    .await
+}
+
+async fn run_inner(
+    config: &ApmConfig,
+    packages: &[String],
+    registry_filter: Option<&str>,
+    reinstall: bool,
+    require_installed: bool,
+    download_only: bool,
+    no_deps: bool,
+    dry_run: bool,
+    yes: bool,
+    ignore_lock: &IgnoreSysrootLock,
+    printer: &Printer,
+    reconcile_exposed_units: bool,
 ) -> Result<()> {
     let json_mode = printer.mode() == OutputMode::Json;
     if packages.is_empty() {
@@ -171,7 +234,9 @@ pub async fn run(
                 None,
             ));
         }
-        reconcile_system_profile(config, printer).await?;
+        if reconcile_exposed_units {
+            reconcile_system_profile(config, printer).await?;
+        }
         printer.info("All requested packages are already installed. No changes made.");
         return Ok(());
     }
@@ -510,13 +575,16 @@ pub async fn run(
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
     let future_installed = list_meta(&profile)?;
     rebuild_generation_expose_roots(&new_gen, &future_installed)?;
+    validate_generation_exposed_units(&new_gen, &future_installed)?;
 
     // Build FHS tree for the new generation.
     build_generation_fhs_tree(&new_gen, printer)?;
 
     // Atomic switch to the new generation.
     profile.switch_to(&new_gen)?;
-    reconcile_system_profile(config, printer).await?;
+    if reconcile_exposed_units {
+        reconcile_system_profile(config, printer).await?;
+    }
 
     printer.step(7, 7, "Done!");
     let verb = if reinstall {

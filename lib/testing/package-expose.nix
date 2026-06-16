@@ -34,6 +34,139 @@
       };
     };
   };
+  configPackage = pkgs.mkDerivation {
+    pname = "expose-config";
+    version = "0";
+    src = null;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/expose-config"
+          printf expose-config > "$out/share/expose-config/payload.txt"
+        '';
+      }
+    ];
+
+    expose = {
+      units."expose-config.service" = {
+        description = "RFC-0001 expose config service";
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+          ExecReload = "${pkgs.bash}/bin/bash -c true";
+        };
+      };
+      config = {
+        artifacts = [
+          {
+            name = "env";
+            path = "/etc/aos/packages/expose-config/config.env";
+            format = "env";
+            required = ["TOKEN"];
+            optional = ["URL"];
+            units = ["expose-config.service"];
+            reload = "reload";
+          }
+        ];
+        credentials = [
+          {
+            name = "join-token";
+            units = ["expose-config.service"];
+            encrypted = true;
+          }
+        ];
+      };
+      provides = [
+        {
+          name = "data";
+          kind = "directory";
+          path = "/var/lib/expose-config/data";
+        }
+      ];
+      uses = [
+        {
+          provider = "expose-config";
+          name = "data";
+          kind = "directory";
+          unit = "expose-config.service";
+        }
+      ];
+    };
+  };
+  splitConfigPackage = pkgs.mkDerivation {
+    pname = "expose-config-split";
+    version = "0";
+    src = null;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/expose-config-split"
+          printf expose-config-split > "$out/share/expose-config-split/payload.txt"
+        '';
+      }
+    ];
+
+    expose = {
+      units = {
+        "expose-config-split-main.service" = {
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        "expose-config-split-sidecar.service" = {
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.bash}/bin/bash -c true";
+          };
+        };
+      };
+      config.artifacts = [
+        {
+          name = "main";
+          path = "/etc/aos/packages/expose-config-split/main.env";
+          format = "env";
+          required = ["TOKEN"];
+          units = ["expose-config-split-main.service"];
+        }
+        {
+          name = "sidecar";
+          path = "/etc/aos/packages/expose-config-split/sidecar.env";
+          format = "env";
+          required = ["TOKEN"];
+          units = ["expose-config-split-sidecar.service"];
+        }
+      ];
+    };
+  };
+  unknownConfigUnit = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.artifacts = [
+          {
+            name = "bad";
+            path = "/etc/aos/packages/expose-config-split/bad.env";
+            format = "env";
+            units = ["missing.service"];
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  unknownConfigUnitRejected =
+    if unknownConfigUnit.success
+    then throw "expose renderer must reject config artifacts that reference unknown units"
+    else "ok";
   serverSystem = mkSystem ../../systems/server.nix;
   k3sWorkerRole = serverSystem.config.aos.roles.k3s-worker;
   k3sCommon = import ../../modules/roles/kubernetes/_k3s-common.nix {inherit lib pkgs;};
@@ -307,6 +440,8 @@ in
     exposeConfinement = builtins.toJSON pkg.expose.passthru.confinement;
     minimalPayload = minimal;
     minimalExposePath = minimal.expose;
+    configExposePath = configPackage.expose;
+    splitConfigExposePath = splitConfigPackage.expose;
     overriddenPayload = overridden;
     overriddenExposePath = overridden.expose;
     permissionOnlyModulesExposePath = permissionOnlyModules.expose;
@@ -317,12 +452,14 @@ in
     regexNamePrivateOutboundExposePath = regexNamePrivateOutbound.expose;
     k3sWorkerExposePath = k3sWorkerSpike.expose;
     inherit k3sWorkerRoleUnitPath k3sWorkerRolePreflightPath;
-    inherit reservedCollisionRejected privilegedExecPrefixRejected kernelModulePermissionMismatchRejected;
+    inherit reservedCollisionRejected privilegedExecPrefixRejected kernelModulePermissionMismatchRejected unknownConfigUnitRejected;
 
     buildDeps =
       (builtins.map (pkg: pkg.exposeCheck) (builtins.attrValues packagesWithExpose))
       ++ [
         minimal.exposeCheck
+        configPackage.exposeCheck
+        splitConfigPackage.exposeCheck
         overridden.exposeCheck
         permissionOnlyModules.exposeCheck
         withHoles.exposeCheck
@@ -498,6 +635,33 @@ in
           fi
           if find "$minimalExposePath/units" -name '*.mount' | grep .; then
             echo "minimal expose package must not render package-authored mount units" >&2
+            exit 1
+          fi
+
+          config_unit="$configExposePath/units/expose-config.service"
+          config_manifest="$configExposePath/manifest.json"
+          grep -q 'BindReadOnlyPaths=/nix/store' "$config_unit"
+          grep -q 'BindReadOnlyPaths=/etc/aos/packages/expose-config/config.env' "$config_unit"
+          grep -q 'ConditionPathExists=/etc/aos/packages/expose-config/config.env' "$config_unit"
+          grep -q 'X-ReloadIfChanged=true' "$config_unit"
+          grep -q 'X-Reload-Triggers=/etc/aos/packages/expose-config/config.env' "$config_unit"
+          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","units":\["expose-config.service"\]}\]}' "$config_manifest"
+          grep -q '"provides":\[{"kind":"directory","name":"data","path":"/var/lib/expose-config/data"}\]' "$config_manifest"
+          grep -q '"uses":\[{"kind":"directory","name":"data","provider":"expose-config","unit":"expose-config.service"}\]' "$config_manifest"
+          test "$unknownConfigUnitRejected" = ok
+
+          split_main="$splitConfigExposePath/units/expose-config-split-main.service"
+          split_sidecar="$splitConfigExposePath/units/expose-config-split-sidecar.service"
+          grep -q 'BindReadOnlyPaths=/etc/aos/packages/expose-config-split/main.env' "$split_main"
+          grep -q 'ConditionPathExists=/etc/aos/packages/expose-config-split/main.env' "$split_main"
+          if grep -q 'expose-config-split/sidecar.env' "$split_main"; then
+            echo "main service must not receive sidecar config artifact" >&2
+            exit 1
+          fi
+          grep -q 'BindReadOnlyPaths=/etc/aos/packages/expose-config-split/sidecar.env' "$split_sidecar"
+          grep -q 'ConditionPathExists=/etc/aos/packages/expose-config-split/sidecar.env' "$split_sidecar"
+          if grep -q 'expose-config-split/main.env' "$split_sidecar"; then
+            echo "sidecar service must not receive main config artifact" >&2
             exit 1
           fi
 

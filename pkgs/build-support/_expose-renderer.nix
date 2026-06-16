@@ -31,7 +31,11 @@
   ];
 
   packageNameType = "^[A-Za-z0-9][A-Za-z0-9+._=-]*$";
+  configNameType = "^[A-Za-z0-9_.-]+$";
+  configFieldType = "^[A-Za-z_][A-Za-z0-9_]*$";
   capabilityType = "^CAP_[A-Z0-9_]+$";
+  capabilityRouteNameType = "^[A-Za-z0-9_.-]+$";
+  credentialNameType = "^[A-Za-z0-9_.-]+$";
   kernelModuleType = "^[A-Za-z0-9_-]+$";
   sysctlKeyType = "^[A-Za-z0-9_.-]+$";
   sysctlValueType = "^[^[:space:]]+$";
@@ -334,6 +338,175 @@
       // lib.optionalAttrs (securityLabel != null) {security-label = securityLabel;}
     );
 
+  validateConfigField = field:
+    throwIfNot
+    (builtins.isString field && builtins.match configFieldType field != null)
+    "invalid config field name '${builtins.toString field}'"
+    field;
+
+  validateConfigArtifact = packageName: artifact:
+    throwIfNot
+    (builtins.isAttrs artifact)
+    "expose.config.artifacts entries must be attrsets"
+    (
+      let
+        allowedKeys = ["name" "path" "format" "required" "optional" "units" "reload"];
+        extraKeys = builtins.filter (key: !(builtins.elem key allowedKeys)) (builtins.attrNames artifact);
+        name =
+          throwIfNot
+          (artifact ? name && builtins.isString artifact.name && builtins.match configNameType artifact.name != null && builtins.match ".*\\.\\..*" artifact.name == null)
+          "invalid config artifact name '${builtins.toString (artifact.name or "")}'"
+          artifact.name;
+        path =
+          throwIfNot
+          (artifact ? path && builtins.isString artifact.path && lib.hasPrefix "/etc/aos/packages/" artifact.path)
+          "config artifact '${name}' path must be under /etc/aos/packages"
+          artifact.path;
+        format =
+          throwIfNot
+          (builtins.elem (artifact.format or "env") ["env" "json" "toml"])
+          "config artifact '${name}' format must be `env`, `json`, or `toml`"
+          (artifact.format or "env");
+        required = builtins.map validateConfigField (validateList "expose.config.artifacts.required" (artifact.required or []));
+        optional = builtins.map validateConfigField (validateList "expose.config.artifacts.optional" (artifact.optional or []));
+        units = builtins.map validateUnitName (validateList "expose.config.artifacts.units" (artifact.units or []));
+        reload =
+          throwIfNot
+          (builtins.elem (artifact.reload or "restart") ["restart" "reload" "none"])
+          "config artifact '${name}' reload must be `restart`, `reload`, or `none`"
+          (artifact.reload or "restart");
+      in
+        throwIfNot
+        (extraKeys == [])
+        "expose.config.artifacts entry contains unknown keys: ${builtins.concatStringsSep ", " extraKeys}"
+        {
+          inherit name path format required optional units reload;
+        }
+    );
+
+  validateCredential = credential:
+    throwIfNot
+    (builtins.isAttrs credential)
+    "expose.config.credentials entries must be attrsets"
+    (
+      let
+        allowedKeys = ["name" "units" "encrypted"];
+        extraKeys = builtins.filter (key: !(builtins.elem key allowedKeys)) (builtins.attrNames credential);
+        name =
+          throwIfNot
+          (credential ? name && builtins.isString credential.name && builtins.match credentialNameType credential.name != null)
+          "invalid credential name '${builtins.toString (credential.name or "")}'"
+          credential.name;
+        units = builtins.map validateUnitName (validateList "expose.config.credentials.units" (credential.units or []));
+        encrypted = validateBool "expose.config.credentials.encrypted" (credential.encrypted or false);
+      in
+        throwIfNot
+        (extraKeys == [])
+        "expose.config.credentials entry contains unknown keys: ${builtins.concatStringsSep ", " extraKeys}"
+        {
+          inherit name units encrypted;
+        }
+    );
+
+  validateConfig = packageName: config: let
+    checkedConfig =
+      throwIfNot
+      (builtins.isAttrs config)
+      "expose.config must be an attrset"
+      config;
+    allowedKeys = ["artifacts" "credentials"];
+    extraKeys = builtins.filter (key: !(builtins.elem key allowedKeys)) (builtins.attrNames checkedConfig);
+  in
+    throwIfNot
+    (extraKeys == [])
+    "expose.config contains unknown keys: ${builtins.concatStringsSep ", " extraKeys}"
+    {
+      artifacts = builtins.map (validateConfigArtifact packageName) (validateList "expose.config.artifacts" (checkedConfig.artifacts or []));
+      credentials = builtins.map validateCredential (validateList "expose.config.credentials" (checkedConfig.credentials or []));
+    };
+
+  validateProvidedCapability = capability:
+    throwIfNot
+    (builtins.isAttrs capability)
+    "expose.provides entries must be attrsets"
+    (
+      let
+        allowedKeys = ["name" "kind" "path" "unit"];
+        extraKeys = builtins.filter (key: !(builtins.elem key allowedKeys)) (builtins.attrNames capability);
+        name =
+          throwIfNot
+          (capability ? name && builtins.isString capability.name && builtins.match capabilityRouteNameType capability.name != null)
+          "invalid provided capability name '${builtins.toString (capability.name or "")}'"
+          capability.name;
+        kind =
+          throwIfNot
+          (builtins.elem (capability.kind or "") ["directory" "namespace" "socket"])
+          "provided capability '${name}' kind must be `directory`, `namespace`, or `socket`"
+          capability.kind;
+        path =
+          if capability ? path
+          then validateAbsolutePath "provided capability path" capability.path
+          else null;
+        unit =
+          if capability ? unit
+          then validateUnitName capability.unit
+          else null;
+      in
+        throwIfNot
+        (extraKeys == [])
+        "expose.provides entry contains unknown keys: ${builtins.concatStringsSep ", " extraKeys}"
+        (
+          throwIfNot
+          (if kind == "directory" then path != null && unit == null else path == null && unit != null)
+          "provided capability '${name}' has invalid path/unit fields for kind '${kind}'"
+          (
+            {inherit name kind;}
+            // lib.optionalAttrs (path != null) {inherit path;}
+            // lib.optionalAttrs (unit != null) {inherit unit;}
+          )
+        )
+    );
+
+  validateRequiredCapability = capability:
+    throwIfNot
+    (builtins.isAttrs capability)
+    "expose.uses entries must be attrsets"
+    (
+      let
+        allowedKeys = ["provider" "name" "kind" "unit"];
+        extraKeys = builtins.filter (key: !(builtins.elem key allowedKeys)) (builtins.attrNames capability);
+        provider =
+          throwIfNot
+          (capability ? provider)
+          "expose.uses entries must declare provider"
+          (validatePackageName capability.provider);
+        name =
+          throwIfNot
+          (capability ? name && builtins.isString capability.name && builtins.match capabilityRouteNameType capability.name != null)
+          "invalid required capability name '${builtins.toString (capability.name or "")}'"
+          capability.name;
+        kind =
+          throwIfNot
+          (builtins.elem (capability.kind or "") ["directory" "namespace" "socket"])
+          "required capability '${name}' kind must be `directory`, `namespace`, or `socket`"
+          capability.kind;
+        unit =
+          throwIfNot
+          (capability ? unit)
+          "expose.uses entries must declare consumer unit"
+          (validateUnitName capability.unit);
+      in
+        throwIfNot
+        (extraKeys == [])
+        "expose.uses entry contains unknown keys: ${builtins.concatStringsSep ", " extraKeys}"
+        (
+          throwIfNot
+          (lib.hasSuffix ".service" unit)
+          "required capability '${provider}.${name}' consumer unit must be a service"
+          {inherit provider name kind unit;}
+        )
+    );
+
   selectUnits = suffix: units:
     lib.mapAttrs' (
       name: value: lib.nameValuePair (lib.removeSuffix suffix name) value
@@ -529,6 +702,9 @@ in rec {
       "images"
       "requires"
       "permissions"
+      "config"
+      "provides"
+      "uses"
     ];
     exposeExtraKeys = builtins.filter (
       key: !(builtins.elem key allowedExposeKeys)
@@ -563,6 +739,15 @@ in rec {
       builtins.map
       validateImage
       (validateList "expose.images" (checkedExpose.images or []));
+    config = validateConfig packageName (checkedExpose.config or {});
+    provides =
+      builtins.map
+      validateProvidedCapability
+      (validateList "expose.provides" (checkedExpose.provides or []));
+    uses =
+      builtins.map
+      validateRequiredCapability
+      (validateList "expose.uses" (checkedExpose.uses or []));
     permissions = validatePermissions packageName (checkedExpose.permissions or {});
     kernel = validateKernel (checkedExpose.kernel or {});
     firewall = validateFirewall (checkedExpose.firewall or {});
@@ -658,6 +843,26 @@ in rec {
     netnsHostAddress = "${netnsPrefix}.${builtins.toString (netnsFourthOctet + 1)}";
     netnsPeerAddress = "${netnsPrefix}.${builtins.toString (netnsFourthOctet + 2)}";
 
+    configArtifactsForUnit = unitName:
+      builtins.filter (
+        artifact: artifact.units == [] || builtins.elem unitName artifact.units
+      )
+      config.artifacts;
+
+    configArtifactPathsForUnit = unitName:
+      builtins.map (artifact: artifact.path) (configArtifactsForUnit unitName);
+
+    configConditionPathsForUnit = unitName:
+      builtins.map (artifact: artifact.path) (
+        builtins.filter (artifact: artifact.required != []) (configArtifactsForUnit unitName)
+      );
+
+    configReloadArtifactsForUnit = unitName:
+      builtins.filter (
+        artifact: artifact.reload != "none" && builtins.elem unitName artifact.units
+      )
+      config.artifacts;
+
     sandboxServiceConfig = unitName: authoredServiceConfig: let
       checkedAuthoredServiceConfig =
         validateNoPrivilegedExecPrefixes packageName unitName authoredServiceConfig;
@@ -683,7 +888,7 @@ in rec {
         Delegate = cgroupDelegate;
         CapabilityBoundingSet = builtins.concatStringsSep " " capabilities;
         AmbientCapabilities = builtins.concatStringsSep " " capabilities;
-        BindReadOnlyPaths = uniqueUnits (["/nix/store"] ++ readOnlyHostPaths);
+        BindReadOnlyPaths = uniqueUnits (["/nix/store"] ++ readOnlyHostPaths ++ configArtifactPathsForUnit unitName);
         BindPaths = readWriteHostPaths;
         ProtectKernelTunables = true;
         ProtectKernelModules = true;
@@ -704,8 +909,25 @@ in rec {
       };
 
     memberUnitNames = authoredUnitNames ++ sideEffectUnitNames;
+    referencedUnitNames =
+      builtins.concatMap (artifact: artifact.units) config.artifacts
+      ++ builtins.concatMap (credential: credential.units) config.credentials
+      ++ builtins.filter (unit: unit != null) (builtins.map (capability: capability.unit or null) provides)
+      ++ builtins.map (route: route.unit) uses;
+    unknownUnitReferences =
+      builtins.filter (unit: !(builtins.elem unit authoredUnitNames)) referencedUnitNames;
+    unitReferencesValid =
+      throwIfNot
+      (unknownUnitReferences == [])
+      "mkDerivation expose for package '${packageName}' references unknown authored units: ${builtins.concatStringsSep ", " unknownUnitReferences}"
+      true;
 
-    addTargetMembership = name: unit:
+    addTargetMembership = name: unit: let
+      conditionPaths = configConditionPathsForUnit name;
+      reloadArtifacts = configReloadArtifactsForUnit name;
+      reloadPaths = builtins.map (artifact: artifact.path) reloadArtifacts;
+      reloadableArtifacts = builtins.filter (artifact: artifact.reload == "reload") reloadArtifacts;
+    in
       unit
       // {
         wantedBy = [target];
@@ -714,6 +936,13 @@ in rec {
         partOf = uniqueUnits ((unit.partOf or []) ++ [target]);
         after = uniqueUnits ((unit.after or []) ++ sideEffectUnitNames);
         requires = uniqueUnits ((unit.requires or []) ++ sideEffectUnitNames);
+        unitConfig =
+          (unit.unitConfig or {})
+          // lib.optionalAttrs (conditionPaths != []) {
+            ConditionPathExists = uniqueUnits ((asList ((unit.unitConfig or {}).ConditionPathExists or [])) ++ conditionPaths);
+          };
+        reloadTriggers = uniqueUnits ((unit.reloadTriggers or []) ++ reloadPaths);
+        reloadIfChanged = (unit.reloadIfChanged or false) || reloadableArtifacts != [];
       }
       // lib.optionalAttrs (lib.hasSuffix ".service" name) {
         serviceConfig = sandboxServiceConfig name (unit.serviceConfig or {});
@@ -999,7 +1228,7 @@ in rec {
         };
       }
     );
-    typedSystemd = validateTypedUnits synthesizedUnits;
+    typedSystemd = builtins.seq unitReferencesValid (validateTypedUnits synthesizedUnits);
     renderedUnitNames = unitNamesFromTypedSystemd typedSystemd;
     manifestUnitNames =
       throwIfNot
@@ -1014,7 +1243,7 @@ in rec {
 
     manifest = {
       expose = {
-        inherit target requires images;
+        inherit target requires images config provides uses;
         units = manifestUnitNames;
       };
       kernel = manifestKernel;

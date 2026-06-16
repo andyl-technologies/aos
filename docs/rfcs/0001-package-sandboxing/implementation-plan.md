@@ -371,27 +371,31 @@ apm at first boot; define upgrade/rollback.
       the desired set: install additions **and uninstall packages removed from
       `desired.toml`** (disable target, remove attach units + preset lines, gc the
       generation). Replaces additive-only — the Nix/Talos/K8s declarative idiom.
-- [ ] **Layered config (D9, signed off).** Secrets via TPM2-sealed systemd-creds
-      (`SetCredentialEncrypted=`, signed-PCR-11 policy); structured config via an
-      apm config artifact validated against the manifest-declared schema before
-      start; simple via `EnvironmentFile=` ([`config.md`](config.md)).
-- [ ] **Hot-reload plumbing (D25).** The manifest declares whether the service
+- [ ] **Layered config (D9, signed off).** Structured/env apm config artifacts
+      are declared in signed `expose.config` metadata, validated against the
+      manifest-declared required/optional field set, materialized under
+      `/var/etc` + `/etc`, and bound into sandboxed units before start for
+      desired-file installs. Secrets via TPM2-sealed systemd-creds
+      (`SetCredentialEncrypted=`, signed-PCR-11 policy) remain open
+      ([`config.md`](config.md)).
+- [x] **Hot-reload plumbing (D25).** The manifest declares whether the service
       supports reload; a config change runs `systemctl reload-or-restart`
       (`Type=notify-reload`/`RELOADING=1` where supported, restart otherwise).
 - [ ] **Typed capability routing (D18).** `requires` resolves typed capabilities a
-      provider's `expose` declares; the renderer wires each as a least-privilege
-      fd-pass / `BindReadOnlyPaths=` / `JoinsNamespaceOf=` (flat name ordering is
-      the first increment).
+      provider's `expose` declares. Directory and namespace routes now emit
+      runtime drop-ins (`BindReadOnlyPaths=` / `JoinsNamespaceOf=`) with
+      same-generation validation; socket fd-passing remains fail-closed and open.
 - [x] **Upgrade / rollback (D11).** Upgrade = generation switch + `daemon-reload`
       + restart with the unit's own semantics (k3s keeps `KillMode=process`, no pod
       kill). Rollback = switch back (both store paths gc-rooted) → rewrite the
       attach symlinks + preset lines → `daemon-reload` + restart.
 
 **Phase 5 implementation scope.** This increment implements the runtime attach
-path, first-boot desired-set reconciliation, package-profile install/prune, and
-generation upgrade/rollback mechanics. The layered config (D9), hot-reload
-config plumbing (D25), and typed capability routing part of D18 remain open and
-keep the phase at ◐ rather than ☑.
+path, first-boot desired-set reconciliation, package-profile install/prune,
+generation upgrade/rollback mechanics, signed structured/env config artifact
+metadata + desired materialization, config-triggered reload/restart, and
+directory/namespace capability-route drop-ins. TPM2-sealed credential delivery
+and socket fd-passing remain open and keep the phase at ◐ rather than ☑.
 
 **Closes when complete.** D8 (install half), D9, D11, D16, D18, D24, D25.
 

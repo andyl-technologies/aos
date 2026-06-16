@@ -17,7 +17,9 @@ use crate::config::ApmConfig;
 use crate::profile::meta::list_meta;
 use crate::profile::{Generation, Profile};
 use crate::registry::store_path_hash;
-use crate::types::{InstalledMeta, ProfileScope};
+use crate::types::{
+    CapabilityKind, InstalledMeta, ProfileScope, ProvidedCapabilityMeta, RequiredCapabilityMeta,
+};
 use crate::unit_diff::{self, UnitDiff};
 use aos_core::output::Printer;
 use aos_systemd::{JobOutcome, SystemdClient};
@@ -33,6 +35,8 @@ struct ExposedPackage {
     units: BTreeSet<String>,
     artifact_hash: String,
     artifact_store_path: String,
+    provides: Vec<ProvidedCapabilityMeta>,
+    uses: Vec<RequiredCapabilityMeta>,
 }
 
 /// Rebuild the generation's `expose/` GC-root symlinks from metadata.
@@ -69,6 +73,22 @@ pub(crate) fn rebuild_generation_expose_roots(
         atomic_symlink(Path::new(&store_path), &expose_dir.join(hash))?;
     }
 
+    Ok(())
+}
+
+/// Validate a generation's exposed package metadata and rooted artifacts.
+///
+/// # Errors
+///
+/// Returns an error if an exposed package is missing its rendered artifact,
+/// declares duplicate units, references missing unit files, or has invalid
+/// capability routes.
+pub(crate) fn validate_generation_exposed_units(
+    generation: &Generation,
+    installed: &[InstalledMeta],
+) -> Result<()> {
+    let expose_dir = generation.path.join("expose");
+    exposed_packages_from_expose_dir(&expose_dir, installed)?;
     Ok(())
 }
 
@@ -138,6 +158,14 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
 }
 
 fn exposed_packages(profile: &Profile, installed: &[InstalledMeta]) -> Result<Vec<ExposedPackage>> {
+    let expose_dir = profile.current_path().join("expose");
+    exposed_packages_from_expose_dir(&expose_dir, installed)
+}
+
+fn exposed_packages_from_expose_dir(
+    expose_dir: &Path,
+    installed: &[InstalledMeta],
+) -> Result<Vec<ExposedPackage>> {
     let mut packages = Vec::new();
     let mut unit_owners = BTreeMap::<String, String>::new();
     for entry in installed {
@@ -158,11 +186,7 @@ fn exposed_packages(profile: &Profile, installed: &[InstalledMeta]) -> Result<Ve
         };
 
         let artifact_hash = store_path_hash(&artifact.store_path).to_string();
-        let artifact_root = profile
-            .current_path()
-            .join("expose")
-            .join(&artifact_hash)
-            .join("units");
+        let artifact_root = expose_dir.join(&artifact_hash).join("units");
 
         let mut units = expose.units.iter().cloned().collect::<BTreeSet<_>>();
         units.insert(expose.target.clone());
@@ -193,9 +217,12 @@ fn exposed_packages(profile: &Profile, installed: &[InstalledMeta]) -> Result<Ve
             units,
             artifact_hash,
             artifact_store_path: artifact.store_path.clone(),
+            provides: expose.provides.clone(),
+            uses: expose.uses.clone(),
         });
     }
     packages.sort_by(|left, right| left.name.cmp(&right.name));
+    validate_capability_routes(&packages)?;
     Ok(packages)
 }
 
@@ -217,8 +244,215 @@ fn write_attached_units(root: &Path, packages: &[ExposedPackage]) -> Result<()> 
                 })?;
             }
         }
+        write_capability_route_dropins(&dir, packages)?;
     }
     Ok(())
+}
+
+fn validate_capability_routes(packages: &[ExposedPackage]) -> Result<()> {
+    let package_names = packages
+        .iter()
+        .map(|package| package.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for package in packages {
+        for route in &package.uses {
+            if !package.units.contains(&route.unit) {
+                bail!(
+                    "package '{}' consumes capability '{}.{}' from unknown unit '{}'",
+                    package.name,
+                    route.provider,
+                    route.name,
+                    route.unit
+                );
+            }
+            if !route.unit.ends_with(".service") {
+                bail!(
+                    "package '{}' consumes capability '{}.{}' from non-service unit '{}'",
+                    package.name,
+                    route.provider,
+                    route.name,
+                    route.unit
+                );
+            }
+            if !package_names.contains(route.provider.as_str()) {
+                bail!(
+                    "package '{}' requires capability '{}.{}' from package '{}' which is not installed in this generation",
+                    package.name,
+                    route.provider,
+                    route.name,
+                    route.provider
+                );
+            }
+            let provider = packages
+                .iter()
+                .find(|candidate| candidate.name == route.provider)
+                .expect("provider package checked above");
+            let provided = find_provided_capability(provider, &route.name)?;
+            if provided.kind != route.kind {
+                bail!(
+                    "package '{}' requires capability '{}.{}' as {:?}, but provider declares {:?}",
+                    package.name,
+                    route.provider,
+                    route.name,
+                    route.kind,
+                    provided.kind
+                );
+            }
+            match route.kind {
+                CapabilityKind::Directory => {
+                    if provided.path.is_none() {
+                        bail!(
+                            "provider package '{}' capability '{}' is missing a directory path",
+                            provider.name,
+                            provided.name
+                        );
+                    }
+                }
+                CapabilityKind::Namespace => {
+                    let Some(unit) = provided.unit.as_ref() else {
+                        bail!(
+                            "provider package '{}' capability '{}' is missing a namespace unit",
+                            provider.name,
+                            provided.name
+                        );
+                    };
+                    if !provider.units.contains(unit) {
+                        bail!(
+                            "provider package '{}' capability '{}' references unknown unit '{}'",
+                            provider.name,
+                            provided.name,
+                            unit
+                        );
+                    }
+                }
+                CapabilityKind::Socket => {
+                    bail!(
+                        "socket capability routes are not implemented yet: package '{}' requires '{}.{}'",
+                        package.name,
+                        route.provider,
+                        route.name
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn find_provided_capability<'a>(
+    package: &'a ExposedPackage,
+    name: &str,
+) -> Result<&'a ProvidedCapabilityMeta> {
+    package
+        .provides
+        .iter()
+        .find(|provided| provided.name == name)
+        .with_context(|| {
+            format!(
+                "provider package '{}' does not declare capability '{}'",
+                package.name, name
+            )
+        })
+}
+
+fn write_capability_route_dropins(dir: &Path, packages: &[ExposedPackage]) -> Result<()> {
+    for (unit, content) in capability_route_dropins(packages)? {
+        let dropin_dir = dir.join(format!("{unit}.d"));
+        std::fs::create_dir_all(&dropin_dir)
+            .with_context(|| format!("creating {}", dropin_dir.display()))?;
+        std::fs::write(dropin_dir.join("50-aos-capability-routes.conf"), content)
+            .with_context(|| format!("writing capability route drop-in for {unit}"))?;
+    }
+    Ok(())
+}
+
+fn capability_route_dropins(packages: &[ExposedPackage]) -> Result<BTreeMap<String, String>> {
+    let mut dropins = BTreeMap::<String, DropinSections>::new();
+    for package in packages {
+        for route in &package.uses {
+            let provider = packages
+                .iter()
+                .find(|candidate| candidate.name == route.provider)
+                .with_context(|| {
+                    format!(
+                        "package '{}' requires capability '{}.{}' from missing provider '{}'",
+                        package.name, route.provider, route.name, route.provider
+                    )
+                })?;
+            let provided = find_provided_capability(provider, &route.name)?;
+            let entry = dropins.entry(route.unit.clone()).or_default();
+            match route.kind {
+                CapabilityKind::Directory => {
+                    let path = provided
+                        .path
+                        .as_ref()
+                        .context("directory capability missing path")?;
+                    entry.unit_lines.push(format!("Wants={}", provider.target));
+                    entry.unit_lines.push(format!("After={}", provider.target));
+                    entry
+                        .service_lines
+                        .push(format!("BindReadOnlyPaths={path}"));
+                }
+                CapabilityKind::Namespace => {
+                    let unit = provided
+                        .unit
+                        .as_ref()
+                        .context("namespace capability missing unit")?;
+                    entry.unit_lines.push(format!("Wants={unit}"));
+                    entry.unit_lines.push(format!("After={unit}"));
+                    entry.unit_lines.push(format!("JoinsNamespaceOf={unit}"));
+                }
+                CapabilityKind::Socket => {
+                    bail!(
+                        "socket capability routes are not implemented yet: package '{}' requires '{}.{}'",
+                        package.name,
+                        route.provider,
+                        route.name
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(dropins
+        .into_iter()
+        .map(|(unit, sections)| (unit, sections.render()))
+        .collect())
+}
+
+#[derive(Debug, Default)]
+struct DropinSections {
+    unit_lines: Vec<String>,
+    service_lines: Vec<String>,
+}
+
+impl DropinSections {
+    fn render(mut self) -> String {
+        self.unit_lines.sort();
+        self.unit_lines.dedup();
+        self.service_lines.sort();
+        self.service_lines.dedup();
+
+        let mut out = String::new();
+        if !self.unit_lines.is_empty() {
+            out.push_str("[Unit]\n");
+            for line in self.unit_lines {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+        if !self.service_lines.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("[Service]\n");
+            for line in self.service_lines {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+        out
+    }
 }
 
 fn write_exact_preset(root: &Path, targets: &BTreeSet<String>) -> Result<()> {
@@ -387,6 +621,9 @@ fn copy_existing_attached_units(root: &Path, destination: &Path) -> Result<()> {
             let entry = entry?;
             let file_name = entry.file_name();
             if !is_unit_file_name(&file_name) {
+                if is_dropin_dir_name(&file_name) {
+                    copy_dropin_dir(&entry.path(), &destination.join(file_name))?;
+                }
                 continue;
             }
             atomic_symlink(&entry.path(), &destination.join(file_name))?;
@@ -404,6 +641,7 @@ fn link_candidate_attached_units(packages: &[ExposedPackage], destination: &Path
             atomic_symlink(&target, &destination.join(unit))?;
         }
     }
+    write_capability_route_dropins(destination, packages)?;
     Ok(())
 }
 
@@ -436,6 +674,25 @@ fn is_unit_file_name(name: &OsStr) -> bool {
     ];
     let name = name.to_string_lossy();
     UNIT_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
+}
+
+fn is_dropin_dir_name(name: &OsStr) -> bool {
+    name.to_string_lossy().ends_with(".d")
+}
+
+fn copy_dropin_dir(source: &Path, destination: &Path) -> Result<()> {
+    std::fs::create_dir_all(destination)
+        .with_context(|| format!("creating {}", destination.display()))?;
+    for entry in
+        std::fs::read_dir(source).with_context(|| format!("reading {}", source.display()))?
+    {
+        let entry = entry?;
+        if entry.path().extension().and_then(OsStr::to_str) != Some("conf") {
+            continue;
+        }
+        atomic_symlink(&entry.path(), &destination.join(entry.file_name()))?;
+    }
+    Ok(())
 }
 
 fn reset_dir(path: &Path) -> Result<()> {
@@ -511,7 +768,10 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    use crate::types::{ApmMeta, ExposeArtifactMeta, ExposeMeta, InstalledMeta};
+    use crate::types::{
+        ApmMeta, CapabilityKind, ExposeArtifactMeta, ExposeMeta, InstalledMeta,
+        ProvidedCapabilityMeta, RequiredCapabilityMeta,
+    };
 
     fn installed_with_expose(
         tmp: &TempDir,
@@ -556,6 +816,9 @@ mod tests {
                     units: vec![format!("{name}.service")],
                     images: Vec::new(),
                     requires: Vec::new(),
+                    config: Default::default(),
+                    provides: Vec::new(),
+                    uses: Vec::new(),
                 }),
                 expose_artifact: Some(ExposeArtifactMeta {
                     store_path: artifact.display().to_string(),
@@ -681,6 +944,121 @@ mod tests {
     }
 
     #[test]
+    fn capability_route_dropins_bind_provider_directories() {
+        let tmp = TempDir::new().unwrap();
+        let mut provider = installed_with_expose(&tmp, "provider", "pkghash111", "artifacthash111");
+        provider
+            .apm
+            .as_mut()
+            .unwrap()
+            .expose
+            .as_mut()
+            .unwrap()
+            .provides = vec![ProvidedCapabilityMeta {
+            name: "data".into(),
+            kind: CapabilityKind::Directory,
+            path: Some("/var/lib/provider/data".into()),
+            unit: None,
+        }];
+        let mut consumer = installed_with_expose(&tmp, "consumer", "pkghash222", "artifacthash222");
+        consumer.apm.as_mut().unwrap().expose.as_mut().unwrap().uses =
+            vec![RequiredCapabilityMeta {
+                provider: "provider".into(),
+                name: "data".into(),
+                kind: CapabilityKind::Directory,
+                unit: "consumer.service".into(),
+            }];
+
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        for installed in [&provider, &consumer] {
+            let artifact = installed
+                .apm
+                .as_ref()
+                .unwrap()
+                .expose_artifact
+                .as_ref()
+                .unwrap()
+                .store_path
+                .clone();
+            std::os::unix::fs::symlink(
+                &artifact,
+                profile
+                    .current_path()
+                    .join("expose")
+                    .join(store_path_hash(&artifact)),
+            )
+            .unwrap();
+        }
+
+        let packages = exposed_packages(&profile, &[provider, consumer]).unwrap();
+        let dropins = capability_route_dropins(&packages).unwrap();
+        let dropin = dropins.get("consumer.service").unwrap();
+        assert!(dropin.contains("Wants=aos-pkg-provider.target"));
+        assert!(dropin.contains("After=aos-pkg-provider.target"));
+        assert!(dropin.contains("BindReadOnlyPaths=/var/lib/provider/data"));
+    }
+
+    #[test]
+    fn exposed_packages_rejects_socket_capability_routes_until_supported() {
+        let tmp = TempDir::new().unwrap();
+        let mut provider = installed_with_expose(&tmp, "provider", "pkghash111", "artifacthash111");
+        provider
+            .apm
+            .as_mut()
+            .unwrap()
+            .expose
+            .as_mut()
+            .unwrap()
+            .provides = vec![ProvidedCapabilityMeta {
+            name: "api".into(),
+            kind: CapabilityKind::Socket,
+            path: None,
+            unit: Some("provider.service".into()),
+        }];
+        let mut consumer = installed_with_expose(&tmp, "consumer", "pkghash222", "artifacthash222");
+        consumer.apm.as_mut().unwrap().expose.as_mut().unwrap().uses =
+            vec![RequiredCapabilityMeta {
+                provider: "provider".into(),
+                name: "api".into(),
+                kind: CapabilityKind::Socket,
+                unit: "consumer.service".into(),
+            }];
+
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        for installed in [&provider, &consumer] {
+            let artifact = installed
+                .apm
+                .as_ref()
+                .unwrap()
+                .expose_artifact
+                .as_ref()
+                .unwrap()
+                .store_path
+                .clone();
+            std::os::unix::fs::symlink(
+                &artifact,
+                profile
+                    .current_path()
+                    .join("expose")
+                    .join(store_path_hash(&artifact)),
+            )
+            .unwrap();
+        }
+
+        let err = exposed_packages(&profile, &[provider, consumer]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("socket capability routes are not implemented"));
+    }
+
+    #[test]
     fn attached_unit_diff_restarts_changed_services() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("root");
@@ -727,6 +1105,8 @@ mod tests {
             units: BTreeSet::from(["aos-pkg-web.target".to_string(), "web.service".to_string()]),
             artifact_hash: "newartifacthash".into(),
             artifact_store_path: new_artifact.display().to_string(),
+            provides: Vec::new(),
+            uses: Vec::new(),
         };
 
         let diff = compute_attached_unit_diff(&root, &[package]).unwrap();
