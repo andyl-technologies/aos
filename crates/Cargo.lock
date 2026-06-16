@@ -236,6 +236,7 @@ name = "aos-nix"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "blake3",
  "md-5",
  "nix-compat",

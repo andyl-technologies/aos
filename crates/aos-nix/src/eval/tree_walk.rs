@@ -21,6 +21,7 @@ use std::{
     rc::Rc,
 };
 
+use base64::Engine as _;
 use md5::{Digest as _, Md5};
 use serde_json::{Number as JsonNumber, Value as JsonValue};
 use sha1::{Digest as _, Sha1};
@@ -44,7 +45,11 @@ const TO_STRING_ATTR: &[u8] = b"__toString";
 const OUT_PATH_ATTR: &[u8] = b"outPath";
 const NAME_ATTR: &[u8] = b"name";
 const VALUE_ATTR: &[u8] = b"value";
+const HASH_ATTR: &[u8] = b"hash";
+const HASH_ALGO_ATTR: &[u8] = b"hashAlgo";
+const TO_HASH_FORMAT_ATTR: &[u8] = b"toHashFormat";
 const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
+const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
 /// Evaluates an IR root to weak head normal form with the tree-walk oracle.
 ///
@@ -1724,6 +1729,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_to_json_primop(id, node.span, argument, argument_span, value)
             }
+            StrictUnaryPrimOp::ConvertHash => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_convert_hash_primop(id, node.span, argument, argument_span, value)
+            }
             StrictUnaryPrimOp::FunctionArgs => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_function_args_primop(id, node.span, argument, argument_span, value)
@@ -3083,6 +3092,59 @@ impl<'ir> TreeWalk<'ir> {
         self.alloc_hash_digest(id, span, &digest)
     }
 
+    fn eval_convert_hash_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "attrs",
+                    actual: value.tag(),
+                },
+                argument_span,
+            ));
+        }
+
+        let hash_value =
+            self.required_attr_value_by_name(argument, value, HASH_ATTR, argument_span)?;
+        let hash_value = self.force_value(argument, argument_span, hash_value)?;
+        let hash =
+            self.context_free_string_bytes(argument, argument_span, hash_value, "convertHash")?;
+
+        let expected_algorithm = if let Some(algorithm_value) =
+            self.attr_value_by_name(argument, value, HASH_ALGO_ATTR, argument_span)?
+        {
+            let algorithm_value = self.force_value(argument, argument_span, algorithm_value)?;
+            Some(self.eval_hash_algorithm(
+                argument,
+                argument_span,
+                algorithm_value,
+                "convertHash",
+            )?)
+        } else {
+            None
+        };
+
+        let format_value =
+            self.required_attr_value_by_name(argument, value, TO_HASH_FORMAT_ATTR, argument_span)?;
+        let format_value = self.force_value(argument, argument_span, format_value)?;
+        let format =
+            self.eval_convert_hash_format(argument, argument_span, format_value, "convertHash")?;
+
+        let (algorithm, digest) =
+            self.decode_convert_hash(argument, argument_span, &hash, expected_algorithm)?;
+        let bytes = Self::encode_convert_hash_digest(id, span, algorithm, format, &digest)?;
+        self.heap
+            .alloc_string(NixString::from_bytes(bytes))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
     fn hash_bytes(bytes: &[u8], algorithm: HashStringAlgorithm) -> Vec<u8> {
         match algorithm {
             HashStringAlgorithm::Md5 => Md5::digest(bytes).to_vec(),
@@ -3121,6 +3183,423 @@ impl<'ir> TreeWalk<'ir> {
                 span,
             )
         })
+    }
+
+    fn required_attr_value_by_name(
+        &mut self,
+        id: IrId,
+        attrs_value: Value,
+        name: &[u8],
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        let symbol = self.intern_builtin_attr_symbol(id, name, span)?;
+        let attrs = self
+            .heap
+            .get_attrs(attrs_value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        attrs.get(symbol).ok_or_else(|| {
+            TreeWalkError::new(TreeWalkErrorKind::MissingAttribute { id, symbol }, span)
+        })
+    }
+
+    fn eval_convert_hash_format(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        op: &'static str,
+    ) -> Result<ConvertHashFormat, TreeWalkError> {
+        let format_bytes = self.context_free_string_bytes(id, span, value, op)?;
+        ConvertHashFormat::from_bytes(&format_bytes).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::UnknownHashFormat {
+                    id,
+                    format: format_bytes,
+                },
+                span,
+            )
+        })
+    }
+
+    fn decode_convert_hash(
+        &self,
+        argument: IrId,
+        argument_span: Span,
+        hash: &[u8],
+        expected_algorithm: Option<HashStringAlgorithm>,
+    ) -> Result<(HashStringAlgorithm, Vec<u8>), TreeWalkError> {
+        if let Some((algorithm, input_format, payload)) =
+            Self::split_convert_hash_typed_input(argument, argument_span, hash)?
+        {
+            if let Some(expected) = expected_algorithm {
+                if algorithm != expected {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::HashAlgorithmMismatch {
+                            id: argument,
+                            hash: Self::copy_bytes_for_node(argument, argument_span, hash)?,
+                            expected: Self::copy_bytes_for_node(
+                                argument,
+                                argument_span,
+                                expected.name(),
+                            )?,
+                        },
+                        argument_span,
+                    ));
+                }
+            }
+
+            let digest = match input_format {
+                ConvertHashInputFormat::Sri => {
+                    self.decode_sri_hash_payload(argument, argument_span, hash, algorithm, payload)?
+                }
+                ConvertHashInputFormat::Typed => {
+                    self.decode_hash_payload(argument, argument_span, hash, algorithm, payload)?
+                }
+            };
+            return Ok((algorithm, digest));
+        }
+
+        let Some(algorithm) = expected_algorithm else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::HashAlgorithmRequired {
+                    id: argument,
+                    hash: Self::copy_bytes_for_node(argument, argument_span, hash)?,
+                },
+                argument_span,
+            ));
+        };
+        let digest = self.decode_hash_payload(argument, argument_span, hash, algorithm, hash)?;
+        Ok((algorithm, digest))
+    }
+
+    fn split_convert_hash_typed_input(
+        id: IrId,
+        span: Span,
+        hash: &[u8],
+    ) -> Result<Option<(HashStringAlgorithm, ConvertHashInputFormat, &[u8])>, TreeWalkError> {
+        let sri_separator = hash.iter().position(|byte| *byte == b'-');
+        let typed_separator = hash.iter().position(|byte| *byte == b':');
+        let Some((separator, input_format)) = (match (sri_separator, typed_separator) {
+            (Some(sri), Some(typed)) if sri < typed => Some((sri, ConvertHashInputFormat::Sri)),
+            (Some(_), Some(typed)) => Some((typed, ConvertHashInputFormat::Typed)),
+            (Some(sri), None) => Some((sri, ConvertHashInputFormat::Sri)),
+            (None, Some(typed)) => Some((typed, ConvertHashInputFormat::Typed)),
+            (None, None) => None,
+        }) else {
+            return Ok(None);
+        };
+        let algorithm = HashStringAlgorithm::from_bytes(&hash[..separator]).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::UnknownHashAlgorithm {
+                    id,
+                    algorithm: hash[..separator].to_vec(),
+                },
+                span,
+            )
+        })?;
+        Ok(Some((algorithm, input_format, &hash[separator + 1..])))
+    }
+
+    fn decode_sri_hash_payload(
+        &self,
+        id: IrId,
+        span: Span,
+        hash: &[u8],
+        algorithm: HashStringAlgorithm,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let digest_len = algorithm.digest_len();
+        let padded_len = Self::base64_encoded_len(digest_len);
+        let unpadded_len = Self::base64_unpadded_encoded_len(digest_len);
+        let decoded = if payload.len() == padded_len {
+            base64::engine::general_purpose::STANDARD.decode(payload)
+        } else if payload.len() == unpadded_len {
+            base64::engine::general_purpose::STANDARD_NO_PAD.decode(payload)
+        } else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidSriHash {
+                    id,
+                    hash: hash.to_vec(),
+                },
+                span,
+            ));
+        }
+        .map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidSriHash {
+                    id,
+                    hash: hash.to_vec(),
+                },
+                span,
+            )
+        })?;
+        self.check_hash_digest_len(id, span, hash, algorithm, decoded)
+    }
+
+    fn decode_hash_payload(
+        &self,
+        id: IrId,
+        span: Span,
+        hash: &[u8],
+        algorithm: HashStringAlgorithm,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let digest_len = algorithm.digest_len();
+        if payload.len()
+            == digest_len.checked_mul(2).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
+                    span,
+                )
+            })?
+        {
+            return Self::decode_base16_hash(id, span, hash, payload);
+        }
+        if payload.len() == Self::nix_base32_encoded_len(digest_len) {
+            return Self::decode_nix_base32_hash(id, span, hash, payload);
+        }
+        let base64_len = Self::base64_encoded_len(digest_len);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .map_err(|_| {
+                if payload.len() == base64_len {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidBase64Hash {
+                            id,
+                            hash: hash.to_vec(),
+                        },
+                        span,
+                    )
+                } else {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::HashWrongLength {
+                            id,
+                            hash: hash.to_vec(),
+                            algorithm: algorithm.name().to_vec(),
+                        },
+                        span,
+                    )
+                }
+            })?;
+        self.check_hash_digest_len(id, span, hash, algorithm, decoded)
+    }
+
+    fn check_hash_digest_len(
+        &self,
+        id: IrId,
+        span: Span,
+        hash: &[u8],
+        algorithm: HashStringAlgorithm,
+        digest: Vec<u8>,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        if digest.len() == algorithm.digest_len() {
+            Ok(digest)
+        } else {
+            Err(TreeWalkError::new(
+                TreeWalkErrorKind::HashWrongLength {
+                    id,
+                    hash: hash.to_vec(),
+                    algorithm: algorithm.name().to_vec(),
+                },
+                span,
+            ))
+        }
+    }
+
+    fn decode_base16_hash(
+        id: IrId,
+        span: Span,
+        hash: &[u8],
+        payload: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let mut out = Vec::new();
+        out.try_reserve_exact(payload.len() / 2).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: payload.len() / 2,
+                },
+                span,
+            )
+        })?;
+        for pair in payload.chunks_exact(2) {
+            let high = Self::hex_digit(pair[0]).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidBase16Hash {
+                        id,
+                        hash: hash.to_vec(),
+                    },
+                    span,
+                )
+            })?;
+            let low = Self::hex_digit(pair[1]).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidBase16Hash {
+                        id,
+                        hash: hash.to_vec(),
+                    },
+                    span,
+                )
+            })?;
+            out.push((high << 4) | low);
+        }
+        Ok(out)
+    }
+
+    fn hex_digit(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn decode_nix_base32_hash(
+        id: IrId,
+        span: Span,
+        hash: &[u8],
+        payload: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        Self::decode_nix_base32(id, span, payload)?.ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidNix32Hash {
+                    id,
+                    hash: hash.to_vec(),
+                },
+                span,
+            )
+        })
+    }
+
+    fn decode_nix_base32(
+        id: IrId,
+        span: Span,
+        encoded: &[u8],
+    ) -> Result<Option<Vec<u8>>, TreeWalkError> {
+        let len = encoded
+            .len()
+            .checked_mul(5)
+            .map(|bits| bits / 8)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
+                    span,
+                )
+            })?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+        })?;
+        out.resize(len, 0);
+        for (n, byte) in encoded.iter().rev().enumerate() {
+            let Some(digit) = NIX_BASE32.iter().position(|digit| digit == byte) else {
+                return Ok(None);
+            };
+            let digit = digit as u16;
+            let bit = n * 5;
+            let i = bit / 8;
+            let j = bit % 8;
+            let Some(current) = out.get_mut(i) else {
+                return Ok(None);
+            };
+            *current |= (digit << j) as u8;
+            let carry = digit >> (8 - j);
+            match out.get_mut(i + 1) {
+                Some(next) => *next |= carry as u8,
+                None if carry != 0 => return Ok(None),
+                None => {}
+            }
+        }
+        Ok(Some(out))
+    }
+
+    fn encode_convert_hash_digest(
+        id: IrId,
+        span: Span,
+        algorithm: HashStringAlgorithm,
+        format: ConvertHashFormat,
+        digest: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        match format {
+            ConvertHashFormat::Base16 => Self::lower_hex_bytes(id, span, digest),
+            ConvertHashFormat::Nix32 => Self::encode_nix_base32(id, span, digest),
+            ConvertHashFormat::Base64 => {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(digest);
+                Self::copy_bytes_for_node(id, span, encoded.as_bytes())
+            }
+            ConvertHashFormat::Sri => {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(digest);
+                let len = algorithm
+                    .name()
+                    .len()
+                    .checked_add(1)
+                    .and_then(|len| len.checked_add(encoded.len()))
+                    .ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::ByteAllocationFailed {
+                                id,
+                                len: usize::MAX,
+                            },
+                            span,
+                        )
+                    })?;
+                let mut out = Vec::new();
+                out.try_reserve_exact(len).map_err(|_| {
+                    TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+                })?;
+                out.extend_from_slice(algorithm.name());
+                out.push(b'-');
+                out.extend_from_slice(encoded.as_bytes());
+                Ok(out)
+            }
+        }
+    }
+
+    fn encode_nix_base32(id: IrId, span: Span, bytes: &[u8]) -> Result<Vec<u8>, TreeWalkError> {
+        if bytes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let len = Self::nix_base32_encoded_len(bytes.len());
+        let mut out = Vec::new();
+        out.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+        })?;
+        for n in (0..len).rev() {
+            let bit = n * 5;
+            let i = bit / 8;
+            let j = bit % 8;
+            let mut c = (bytes[i] >> j) as u16;
+            if i + 1 < bytes.len() {
+                c |= (bytes[i + 1] as u16) << (8 - j);
+            }
+            out.push(NIX_BASE32[usize::from(c & 0x1f)]);
+        }
+        Ok(out)
+    }
+
+    fn nix_base32_encoded_len(byte_len: usize) -> usize {
+        byte_len.saturating_mul(8).div_ceil(5)
+    }
+
+    fn base64_encoded_len(byte_len: usize) -> usize {
+        byte_len.div_ceil(3).saturating_mul(4)
+    }
+
+    fn base64_unpadded_encoded_len(byte_len: usize) -> usize {
+        let len = (byte_len / 3).saturating_mul(4);
+        match byte_len % 3 {
+            0 => len,
+            1 => len.saturating_add(2),
+            2 => len.saturating_add(3),
+            _ => len,
+        }
     }
 
     #[cfg(test)]
@@ -7103,6 +7582,50 @@ impl HashStringAlgorithm {
             _ => None,
         }
     }
+
+    fn name(self) -> &'static [u8] {
+        match self {
+            Self::Md5 => b"md5",
+            Self::Sha1 => b"sha1",
+            Self::Sha256 => b"sha256",
+            Self::Sha512 => b"sha512",
+        }
+    }
+
+    fn digest_len(self) -> usize {
+        match self {
+            Self::Md5 => 16,
+            Self::Sha1 => 20,
+            Self::Sha256 => 32,
+            Self::Sha512 => 64,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConvertHashFormat {
+    Base16,
+    Nix32,
+    Base64,
+    Sri,
+}
+
+impl ConvertHashFormat {
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        match bytes {
+            b"base16" => Some(Self::Base16),
+            b"nix32" | b"base32" => Some(Self::Nix32),
+            b"base64" => Some(Self::Base64),
+            b"sri" => Some(Self::Sri),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConvertHashInputFormat {
+    Sri,
+    Typed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7138,6 +7661,7 @@ enum StrictUnaryPrimOp {
     FromJson,
     ToString,
     ToJson,
+    ConvertHash,
     ListToAttrs,
     ConcatLists,
 }
@@ -7176,6 +7700,7 @@ impl StrictUnaryPrimOp {
             b"fromJSON" => Some(Self::FromJson),
             b"toString" => Some(Self::ToString),
             b"toJSON" => Some(Self::ToJson),
+            b"convertHash" => Some(Self::ConvertHash),
             b"listToAttrs" => Some(Self::ListToAttrs),
             b"concatLists" => Some(Self::ConcatLists),
             _ => None,
@@ -7851,6 +8376,74 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The unsupported algorithm bytes.
         algorithm: Vec<u8>,
+    },
+    /// `builtins.convertHash` received an unsupported output format.
+    #[error("unknown hash format at node {id:?}: {format:?}")]
+    UnknownHashFormat {
+        /// The format string node.
+        id: IrId,
+        /// The unsupported output format bytes.
+        format: Vec<u8>,
+    },
+    /// `builtins.convertHash` received an untyped hash without `hashAlgo`.
+    #[error("hash at node {id:?} does not include an algorithm: {hash:?}")]
+    HashAlgorithmRequired {
+        /// The convertHash argument node.
+        id: IrId,
+        /// The hash bytes that need an explicit algorithm.
+        hash: Vec<u8>,
+    },
+    /// `builtins.convertHash` received a typed hash that disagreed with `hashAlgo`.
+    #[error("hash at node {id:?} does not match expected algorithm {expected:?}: {hash:?}")]
+    HashAlgorithmMismatch {
+        /// The convertHash argument node.
+        id: IrId,
+        /// The typed hash bytes.
+        hash: Vec<u8>,
+        /// The expected algorithm bytes.
+        expected: Vec<u8>,
+    },
+    /// `builtins.convertHash` received a hash with the wrong digest length.
+    #[error("hash at node {id:?} has the wrong length for {algorithm:?}: {hash:?}")]
+    HashWrongLength {
+        /// The convertHash argument node.
+        id: IrId,
+        /// The hash bytes with the wrong length.
+        hash: Vec<u8>,
+        /// The algorithm whose digest length was expected.
+        algorithm: Vec<u8>,
+    },
+    /// `builtins.convertHash` received an invalid base16 hash.
+    #[error("invalid base16 hash at node {id:?}: {hash:?}")]
+    InvalidBase16Hash {
+        /// The convertHash argument node.
+        id: IrId,
+        /// The rejected hash bytes.
+        hash: Vec<u8>,
+    },
+    /// `builtins.convertHash` received an invalid Nix base32 hash.
+    #[error("invalid nix32 hash at node {id:?}: {hash:?}")]
+    InvalidNix32Hash {
+        /// The convertHash argument node.
+        id: IrId,
+        /// The rejected hash bytes.
+        hash: Vec<u8>,
+    },
+    /// `builtins.convertHash` received an invalid base64 hash.
+    #[error("invalid base64 hash at node {id:?}: {hash:?}")]
+    InvalidBase64Hash {
+        /// The convertHash argument node.
+        id: IrId,
+        /// The rejected hash bytes.
+        hash: Vec<u8>,
+    },
+    /// `builtins.convertHash` received an invalid SRI hash.
+    #[error("invalid SRI hash at node {id:?}: {hash:?}")]
+    InvalidSriHash {
+        /// The convertHash argument node.
+        id: IrId,
+        /// The rejected hash bytes.
+        hash: Vec<u8>,
     },
     /// An internal string-context element violated its shape invariant.
     #[error("invalid string context at node {id:?}")]
@@ -12590,6 +13183,345 @@ mod tests {
             }
         );
         assert_eq!(error.span(), string_span);
+    }
+
+    #[test]
+    fn convert_hash_primop_converts_formats() {
+        let sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.convertHash {{ hash = \"{sha256}\"; hashAlgo = \"sha256\"; toHashFormat = \"base64\"; }}"
+            )),
+            b"ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.convertHash {{ hash = \"{sha256}\"; hashAlgo = \"sha256\"; toHashFormat = \"nix32\"; }}"
+            )),
+            b"1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.convertHash {{ hash = \"{sha256}\"; hashAlgo = \"sha256\"; toHashFormat = \"base32\"; }}"
+            )),
+            b"1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.convertHash {{ hash = \"{sha256}\"; hashAlgo = \"sha256\"; toHashFormat = \"sri\"; }}"
+            )),
+            b"sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.convertHash { hash = \"ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=\"; hashAlgo = \"sha256\"; toHashFormat = \"base16\"; }"
+            ),
+            sha256.as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.convertHash { hash = \"BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD\"; hashAlgo = \"sha256\"; toHashFormat = \"base16\"; }"
+            ),
+            sha256.as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.convertHash { hash = \"sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=\"; toHashFormat = \"base16\"; }"
+            ),
+            sha256.as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.convertHash { hash = \"sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0\"; toHashFormat = \"base16\"; }"
+            ),
+            sha256.as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.convertHash { hash = \"sha256:1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s\"; toHashFormat = \"base16\"; }"
+            ),
+            sha256.as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.convertHash {{ hash = \"sha256:{sha256}\"; toHashFormat = \"base16\"; }}"
+            )),
+            sha256.as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.convertHash { hash = builtins.hashString \"md5\" \"abc\"; hashAlgo = \"md5\"; toHashFormat = \"nix32\"; }"
+            ),
+            b"3jgzhjhz9zjvbb0kyj7jc500ch"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.convertHash { hash = builtins.hashString \"sha1\" \"abc\"; hashAlgo = \"sha1\"; toHashFormat = \"base64\"; }"
+            ),
+            b"qZk+NkcGgWq6PiVxeFDCbJzQ2J0="
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.convertHash { hash = builtins.hashString \"sha512\" \"abc\"; hashAlgo = \"sha512\"; toHashFormat = \"nix32\"; }"
+            ),
+            b"2gs8k559z4rlahfx0y688s49m2vvszylcikrfinm30ly9rak69236nkam5ydvly1ai7xac99vxfc4ii84hawjbk876blyk1jfhkbbyx"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { convertHash = args: \"local\"; }; in builtins.convertHash { hash = 1 / 0; }"
+            ),
+            b"local"
+        );
+    }
+
+    #[test]
+    fn convert_hash_primop_checks_arguments_in_nix_order() {
+        let ir = lower("builtins.convertHash 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("convertHash argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("argument must be an attrset");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "attrs",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = 1 / 0; hashAlgo = 1 / 0; toHashFormat = 1 / 0; }",
+        ))
+        .expect_err("hash is forced first");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = \"abc\"; hashAlgo = 1 / 0; toHashFormat = 1 / 0; }",
+        ))
+        .expect_err("hashAlgo is forced second");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = \"abc\"; hashAlgo = \"sha256\"; toHashFormat = 1 / 0; }",
+        ))
+        .expect_err("toHashFormat is forced third");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+    }
+
+    #[test]
+    fn convert_hash_primop_reports_missing_attributes() {
+        let ir =
+            lower("builtins.convertHash { hashAlgo = \"sha256\"; toHashFormat = \"base16\"; }");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("convertHash argument exists");
+        let mut evaluator = TreeWalk::new(&ir);
+
+        let error = evaluator
+            .eval_root()
+            .expect_err("convertHash requires hash");
+
+        let TreeWalkErrorKind::MissingAttribute { id, symbol } = error.kind() else {
+            panic!("expected missing hash attribute");
+        };
+        assert_eq!(id, argument);
+        assert_eq!(evaluator.symbols.resolve(symbol), Some(b"hash".as_slice()));
+
+        let ir = lower(
+            "builtins.convertHash { hash = builtins.hashString \"sha256\" \"abc\"; hashAlgo = \"sha256\"; }",
+        );
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("convertHash argument exists");
+        let mut evaluator = TreeWalk::new(&ir);
+
+        let error = evaluator
+            .eval_root()
+            .expect_err("convertHash requires toHashFormat");
+
+        let TreeWalkErrorKind::MissingAttribute { id, symbol } = error.kind() else {
+            panic!("expected missing toHashFormat attribute");
+        };
+        assert_eq!(id, argument);
+        assert_eq!(
+            evaluator.symbols.resolve(symbol),
+            Some(b"toHashFormat".as_slice())
+        );
+    }
+
+    #[test]
+    fn convert_hash_primop_requires_direct_strings() {
+        let ir = lower(
+            "builtins.convertHash { hash = { outPath = \"abc\"; }; hashAlgo = \"sha256\"; toHashFormat = \"base16\"; }",
+        );
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("convertHash argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("hash is not coerced");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Attrs,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = \"abc\"; hashAlgo = null; toHashFormat = \"base16\"; }",
+        ))
+        .expect_err("hashAlgo must be a string when present");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Null,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = \"abc\"; hashAlgo = \"sha256\"; toHashFormat = { outPath = \"base16\"; }; }",
+        ))
+        .expect_err("toHashFormat is not coerced");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Attrs,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn convert_hash_primop_rejects_invalid_hashes() {
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = \"abc\"; hashAlgo = \"bad\"; toHashFormat = \"base16\"; }",
+        ))
+        .expect_err("unknown algorithm is rejected");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnknownHashAlgorithm { algorithm, .. }
+                if algorithm.as_slice() == b"bad"
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = \"abc\"; hashAlgo = \"sha256\"; toHashFormat = \"bad\"; }",
+        ))
+        .expect_err("unknown format is rejected");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnknownHashFormat { format, .. }
+                if format.as_slice() == b"bad"
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = \"abc\"; toHashFormat = \"base16\"; }",
+        ))
+        .expect_err("untyped hashes require hashAlgo");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::HashAlgorithmRequired { hash, .. }
+                if hash.as_slice() == b"abc"
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = \"sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=\"; hashAlgo = \"md5\"; toHashFormat = \"base16\"; }",
+        ))
+        .expect_err("typed hashes must agree with hashAlgo");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::HashAlgorithmMismatch { expected, .. }
+                if expected.as_slice() == b"md5"
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = \"abc\"; hashAlgo = \"sha256\"; toHashFormat = \"base16\"; }",
+        ))
+        .expect_err("short hashes are rejected");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::HashWrongLength { hash, algorithm, .. }
+                if hash.as_slice() == b"abc" && algorithm.as_slice() == b"sha256"
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = \"sha256:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"; toHashFormat = \"base16\"; }",
+        ))
+        .expect_err("invalid hex hashes are rejected");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidBase16Hash { .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = \"????????????????????????????????????????????\"; hashAlgo = \"sha256\"; toHashFormat = \"base16\"; }",
+        ))
+        .expect_err("invalid base64 hashes are rejected");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidBase64Hash { .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.convertHash { hash = \"sha256-invalid\"; toHashFormat = \"base16\"; }",
+        ))
+        .expect_err("invalid SRI hashes are rejected");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidSriHash { .. }
+        ));
     }
 
     #[test]

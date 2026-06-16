@@ -993,6 +993,7 @@ impl IrLowerer {
                 | b"fromJSON"
                 | b"toString"
                 | b"toJSON"
+                | b"convertHash"
                 | b"unsafeDiscardStringContext",
             ) => Some(EffectClass::Pure),
             _ => None,
@@ -1928,6 +1929,10 @@ mod tests {
             ("builtins.toString 1", b"toString".as_slice()),
             ("builtins.toJSON { a = 1; }", b"toJSON".as_slice()),
             (
+                "builtins.convertHash { hash = \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"; hashAlgo = \"sha256\"; toHashFormat = \"base64\"; }",
+                b"convertHash".as_slice(),
+            ),
+            (
                 "builtins.unsafeDiscardStringContext \"abc\"",
                 b"unsafeDiscardStringContext".as_slice(),
             ),
@@ -2733,6 +2738,39 @@ mod tests {
         assert_eq!(node(&ir, first).kind, IrKind::LocalVar);
 
         let ir = lowered("let builtins = { toJSON = x: \"local\"; }; in builtins.toJSON 1");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let convert_hash_args = "{ hash = \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"; hashAlgo = \"sha256\"; toHashFormat = \"base64\"; }";
+        let ir = lowered(&format!("convertHash {convert_hash_args}"));
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir = lowered(&format!(
+            "let convertHash = args: \"local\"; in convertHash {convert_hash_args}"
+        ));
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::LocalVar);
+
+        let ir = lowered(&format!(
+            "let builtins = {{ convertHash = args: \"local\"; }}; in builtins.convertHash {convert_hash_args}"
+        ));
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
         };
