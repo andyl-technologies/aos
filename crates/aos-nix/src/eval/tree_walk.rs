@@ -27,7 +27,7 @@ use crate::compile::{
     IrKind, IrNode, IrShapeId,
 };
 use crate::list::{NixList, NixListError};
-use crate::string::{ContextKind, NixString, NixStringError};
+use crate::string::{ContextElement, ContextKind, NixString, NixStringError, StringContext};
 use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind};
 use crate::value::{Value, ValueTag};
 
@@ -1621,6 +1621,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_get_context_primop(id, node.span, argument, argument_span, value)
             }
+            StrictUnaryPrimOp::AddDrvOutputDependencies => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+            }
             StrictUnaryPrimOp::UnsafeDiscardStringContext => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_unsafe_discard_string_context_primop(argument, argument_span, value)
@@ -1926,6 +1930,96 @@ impl<'ir> TreeWalk<'ir> {
         })?;
         copied.extend_from_slice(bytes);
         Ok(copied)
+    }
+
+    fn eval_add_drv_output_dependencies_primop(
+        &mut self,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let string_value = self.coerce_to_string(argument, value, argument_span)?;
+        let result = {
+            let string = self.heap.get_string(string_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            let context = string.context();
+            if context.len() != 1 {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::StringContextElementCount {
+                        id: argument,
+                        len: context.len(),
+                    },
+                    argument_span,
+                ));
+            }
+            let Some(element) = context.elements().first() else {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::StringContextElementCount {
+                        id: argument,
+                        len: 0,
+                    },
+                    argument_span,
+                ));
+            };
+            if let ContextKind::SingleOutput = element.kind() {
+                let output = element.output().ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidStringContext { id: argument },
+                        argument_span,
+                    )
+                })?;
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::StringContextDerivationOutput {
+                        id: argument,
+                        output: Self::copy_bytes_for_node(argument, argument_span, output)?,
+                    },
+                    argument_span,
+                ));
+            }
+            let path = Self::copy_bytes_for_node(argument, argument_span, element.path())?;
+            if !path.ends_with(b".drv") {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::StringContextPathNotDerivation { id: argument, path },
+                    argument_span,
+                ));
+            }
+            let bytes = Self::copy_bytes_for_node(argument, argument_span, string.bytes())?;
+            let element = ContextElement::deep_derivation(path).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::String {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            let context = StringContext::singleton(element).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::String {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            NixString::new(bytes, context)
+        };
+        self.heap.alloc_string(result).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: argument,
+                    source,
+                },
+                argument_span,
+            )
+        })
     }
 
     fn eval_unsafe_discard_string_context_primop(
@@ -5595,6 +5689,7 @@ enum StrictUnaryPrimOp {
     Floor,
     HasContext,
     GetContext,
+    AddDrvOutputDependencies,
     UnsafeDiscardStringContext,
     StringLength,
     BaseNameOf,
@@ -5629,6 +5724,7 @@ impl StrictUnaryPrimOp {
             b"floor" => Some(Self::Floor),
             b"hasContext" => Some(Self::HasContext),
             b"getContext" => Some(Self::GetContext),
+            b"addDrvOutputDependencies" => Some(Self::AddDrvOutputDependencies),
             b"unsafeDiscardStringContext" => Some(Self::UnsafeDiscardStringContext),
             b"stringLength" => Some(Self::StringLength),
             b"baseNameOf" => Some(Self::BaseNameOf),
@@ -6219,6 +6315,30 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The primop rejecting the string context.
         op: &'static str,
+    },
+    /// A context-transforming primop required exactly one string-context element.
+    #[error("string context at node {id:?} must have exactly one element, but has {len}")]
+    StringContextElementCount {
+        /// The string-valued node whose context had the wrong cardinality.
+        id: IrId,
+        /// The observed context element count.
+        len: usize,
+    },
+    /// A context-transforming primop required a derivation path context.
+    #[error("string context path at node {id:?} is not a derivation: {path:?}")]
+    StringContextPathNotDerivation {
+        /// The string-valued node whose context path was rejected.
+        id: IrId,
+        /// The rejected context path bytes.
+        path: Vec<u8>,
+    },
+    /// A context-transforming primop rejected a single derivation output context.
+    #[error("string context at node {id:?} names derivation output {output:?}")]
+    StringContextDerivationOutput {
+        /// The string-valued node whose context output was rejected.
+        id: IrId,
+        /// The rejected output name bytes.
+        output: Vec<u8>,
     },
     /// A JSON string failed to parse.
     #[error("JSON parse failed at node {id:?}: {message}")]
@@ -9350,6 +9470,239 @@ mod tests {
                 id: argument,
                 expected: "string",
                 actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn add_drv_output_dependencies_primop_upgrades_derivation_context() {
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { addDrvOutputDependencies = value: \"shadow\"; }; in builtins.addDrvOutputDependencies \"x\""
+            ),
+            b"shadow"
+        );
+
+        let ir = lower("builtins.addDrvOutputDependencies \"x\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("addDrvOutputDependencies argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let drv_path = b"/nix/store/derivation.drv";
+        let context = StringContext::singleton(
+            ContextElement::opaque_path(drv_path.to_vec()).expect("drv context is valid"),
+        )
+        .expect("context allocates");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(drv_path.to_vec(), context))
+            .expect("context-bearing string allocates");
+
+        let result = evaluator
+            .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+            .expect("addDrvOutputDependencies evaluates");
+        let string = evaluator
+            .heap
+            .get_string(result)
+            .expect("result string exists");
+
+        assert_eq!(string.bytes(), drv_path);
+        assert_eq!(string.context().len(), 1);
+        let element = string
+            .context()
+            .elements()
+            .first()
+            .expect("result context element exists");
+        assert_eq!(element.kind(), ContextKind::DeepDerivation);
+        assert_eq!(element.path(), drv_path);
+    }
+
+    #[test]
+    fn add_drv_output_dependencies_primop_is_idempotent_for_deep_context() {
+        let ir = lower("builtins.addDrvOutputDependencies \"x\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("addDrvOutputDependencies argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let drv_path = b"/nix/store/deep.drv";
+        let context = StringContext::singleton(
+            ContextElement::deep_derivation(drv_path.to_vec()).expect("deep context is valid"),
+        )
+        .expect("context allocates");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(drv_path.to_vec(), context))
+            .expect("context-bearing string allocates");
+
+        let result = evaluator
+            .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+            .expect("addDrvOutputDependencies evaluates");
+        let string = evaluator
+            .heap
+            .get_string(result)
+            .expect("result string exists");
+
+        assert_eq!(string.bytes(), drv_path);
+        assert_eq!(string.context().len(), 1);
+        let element = string
+            .context()
+            .elements()
+            .first()
+            .expect("result context element exists");
+        assert_eq!(element.kind(), ContextKind::DeepDerivation);
+        assert_eq!(element.path(), drv_path);
+    }
+
+    #[test]
+    fn add_drv_output_dependencies_primop_rejects_invalid_context_shapes() {
+        let ir = lower("builtins.addDrvOutputDependencies \"x\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("addDrvOutputDependencies argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("empty context is rejected");
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextElementCount {
+                id: argument,
+                len: 0,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let mut evaluator = TreeWalk::new(&ir);
+        let context = StringContext::new(vec![
+            ContextElement::opaque_path(b"/nix/store/a.drv".to_vec())
+                .expect("first context is valid"),
+            ContextElement::opaque_path(b"/nix/store/b.drv".to_vec())
+                .expect("second context is valid"),
+        ]);
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(b"x".to_vec(), context))
+            .expect("context-bearing string allocates");
+        let error = evaluator
+            .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+            .expect_err("multiple context elements are rejected");
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextElementCount {
+                id: argument,
+                len: 2,
+            }
+        );
+
+        let mut evaluator = TreeWalk::new(&ir);
+        let source_path = b"/nix/store/source";
+        let context = StringContext::singleton(
+            ContextElement::opaque_path(source_path.to_vec()).expect("source context is valid"),
+        )
+        .expect("context allocates");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(source_path.to_vec(), context))
+            .expect("context-bearing string allocates");
+        let error = evaluator
+            .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+            .expect_err("non-derivation context paths are rejected");
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextPathNotDerivation {
+                id: argument,
+                path: source_path.to_vec(),
+            }
+        );
+
+        let mut evaluator = TreeWalk::new(&ir);
+        let drv_path = b"/nix/store/output.drv";
+        let context = StringContext::singleton(
+            ContextElement::single_output(drv_path.to_vec(), b"out".to_vec())
+                .expect("output context is valid"),
+        )
+        .expect("context allocates");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(drv_path.to_vec(), context))
+            .expect("context-bearing string allocates");
+        let error = evaluator
+            .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+            .expect_err("output context is rejected");
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextDerivationOutput {
+                id: argument,
+                output: b"out".to_vec(),
+            }
+        );
+    }
+
+    #[test]
+    fn add_drv_output_dependencies_primop_coerces_argument() {
+        let ir = lower("builtins.addDrvOutputDependencies 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("integer coercion is rejected");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower("builtins.addDrvOutputDependencies { outPath = \"x\"; }");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("coerced context-free string is rejected");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextElementCount {
+                id: argument,
+                len: 0,
             }
         );
         assert_eq!(error.span(), argument_span);
