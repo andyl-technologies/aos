@@ -17,7 +17,8 @@ use anyhow::Result;
 use connectrpc::client::{ClientConfig, HttpClient};
 
 use aos_proto::aos::registry::v1::{
-    GetRegistryRequest, ListRegistriesRequest, Registry, RegistryServiceClient,
+    GetRegistryRequest, ListRegistriesRequest, ListReleasesRequest, Registry, RegistryServiceClient,
+    Release,
 };
 
 use crate::client::{make_http_client, validate_base_url};
@@ -108,5 +109,23 @@ impl RegistryHubClient {
             .await
             .map_err(|e| anyhow::anyhow!("fetching registry '{slug}': {e}"))?;
         Ok(response.into_owned().registry.into_option())
+    }
+
+    /// Lists a registry's verified releases (newest first), for a public
+    /// registry when anonymous.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn list_releases(&self, slug: &str) -> Result<Vec<Release>> {
+        let response = self
+            .registry
+            .list_releases(ListReleasesRequest {
+                slug: slug.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("listing releases for '{slug}': {e}"))?;
+        Ok(response.into_owned().releases)
     }
 }

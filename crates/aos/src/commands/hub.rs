@@ -2,9 +2,9 @@
 //!
 //! Drives [`aos_remote::RegistryHubClient`] so the CLI interacts with a running
 //! `aos-registry-hub` purely through its public ConnectRPC API, never by
-//! touching the hub's database. Read operations here work anonymously against
-//! the hub's public browse surface; authenticated and write subcommands follow
-//! in later RFC-0004 Phase 5 increments.
+//! touching the hub's database. Read operations run anonymously by default and
+//! accept an optional `--token` (a hub access JWT) for authenticated reads;
+//! write subcommands follow in later RFC-0004 Phase 5 increments.
 
 use anyhow::Result;
 
@@ -25,11 +25,20 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
     }
 }
 
+/// Builds a hub client: token-authenticated when a JWT is supplied, else
+/// anonymous (public reads only).
+fn hub_client(hub: &str, token: Option<&str>) -> Result<RegistryHubClient> {
+    match token {
+        Some(token) => RegistryHubClient::connect_with_token(hub, token),
+        None => RegistryHubClient::connect_anonymous(hub),
+    }
+}
+
 /// Handles `aos hub registry …`.
 async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Result<()> {
     match command {
-        HubRegistryCmd::List { hub } => {
-            let client = RegistryHubClient::connect_anonymous(hub)?;
+        HubRegistryCmd::List { hub, token } => {
+            let client = hub_client(hub, token.as_deref())?;
             let registries = client.list_registries().await?;
             if printer.json_if_active(&serde_json::json!({
                 "registries": registries
@@ -62,8 +71,8 @@ async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Result<()> {
             }
             Ok(())
         }
-        HubRegistryCmd::Get { hub, slug } => {
-            let client = RegistryHubClient::connect_anonymous(hub)?;
+        HubRegistryCmd::Get { hub, token, slug } => {
+            let client = hub_client(hub, token.as_deref())?;
             let registry = client.get_registry(slug).await?;
             if printer.json_if_active(&serde_json::json!({
                 "registry": registry.as_ref().map(|r| serde_json::json!({
@@ -90,6 +99,32 @@ async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Result<()> {
                     Ok(())
                 }
             }
+        }
+        HubRegistryCmd::Releases { hub, token, slug } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let releases = client.list_releases(slug).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "releases": releases
+                    .iter()
+                    .map(|r| serde_json::json!({
+                        "semver": r.semver,
+                        "commit_oid": r.commit_oid,
+                        "tag_oid": r.tag_oid,
+                        "tagged_at": r.tagged_at,
+                    }))
+                    .collect::<Vec<_>>(),
+            })) {
+                return Ok(());
+            }
+            if releases.is_empty() {
+                printer.info(&format!("no verified releases for '{slug}'"));
+                return Ok(());
+            }
+            printer.header(&format!("{} release(s) for {slug}", releases.len()));
+            for release in &releases {
+                printer.plain(&format!("  {}  {}", release.semver, release.commit_oid));
+            }
+            Ok(())
         }
     }
 }
