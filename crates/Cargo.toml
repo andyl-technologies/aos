@@ -53,11 +53,15 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 # Server
 axum = { version = "0.8", features = ["macros"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+# Async SQL toolkit driving the registry-hub `Backend` over concrete pools
+# (RFC-0004 phase 5, step 3b). The per-engine driver features (sqlite/postgres/
+# mysql) are selected by `aos-registry-hub`'s own cargo features; the bundled
+# sqlite driver is pure-Rust and needs no system library. `runtime-tokio` reuses
+# the existing tokio runtime rather than spawning a second reactor.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
+# Still used by aos-package, aos-server, and aos-registry-worker; the registry
+# hub moved off it to sqlx (RFC-0004 Phase 5 step 3b).
 rusqlite = { version = "0.32", features = ["bundled"] }
-# Pure-Rust sync SQL drivers for the registry-hub dialect abstraction (RFC-0004
-# phase 4). Both avoid libpq/libmysqlclient and any system library.
-postgres = "0.19"
-mysql = { version = "25", default-features = false, features = ["minimal", "default-rustls"] }
 jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.9"

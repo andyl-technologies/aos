@@ -1,13 +1,11 @@
 //! The async database backend trait and its per-engine drivers.
 //!
 //! [`Backend`] is the narrow waist between the hub's
-//! [`Database`](crate::db::Database) methods and the three SQL engines. It is
-//! **async** (RFC-0004 Phase 5): native engines run their (synchronous) driver
-//! work behind the future and Cloudflare D1 is async-only, so a single async
-//! trait lets one `Database` implementation serve both the native hub and the
-//! Workers runtime. Each driver owns its own connection behind a `Mutex` and
-//! applies [`Dialect::translate`] before handing SQL to the engine. Only
-//! [`Tx`] stays synchronous (see [`Backend::with_tx`]).
+//! [`Database`](crate::db::Database) methods and the SQL engines. It is
+//! **async** (RFC-0004 Phase 5): the single [`SqlxBackend`] implementation runs
+//! every query over a concrete `sqlx` connection pool, so one `Database`
+//! implementation serves sqlite, postgres, and mysql. Each engine arm applies
+//! [`Dialect::translate`] before handing SQL to its pool.
 //!
 //! # Operations
 //!
@@ -17,22 +15,24 @@
 //! query(sql, params).await          -> Vec<Row>               (SELECT, or *_RETURNING)
 //! query_opt(sql, params).await      -> Option<Row>            (0-or-1-row SELECT)
 //! execute_batch(ddl).await          -> ()                     (migration scripts)
-//! with_tx(|tx| …).await             -> T                      (a unit of atomic work)
+//! batch(&[Statement]).await         -> ()                     (one atomic transaction)
 //! ```
 //!
 //! `execute_insert` abstracts away sqlite's `last_insert_rowid()`: postgres
 //! has no equivalent, so the driver appends `RETURNING id` and reads the
-//! value back (every hub auto-increment table names its key `id`); mysql uses
-//! `LAST_INSERT_ID()`.
+//! value back (every hub auto-increment table names its key `id`); mysql reads
+//! `last_insert_id()` from the result.
 //!
-//! [`Tx`] mirrors the same operations inside a transaction, so the multi-row
-//! writes (`apply_snapshot`, `record_validation_run`, `rotate_token`, …) run
-//! atomically on every engine.
+//! [`Backend::batch`] runs a fixed statement list inside one real `sqlx`
+//! transaction, so the multi-row writes (`apply_snapshot`,
+//! `record_validation_run`, `rotate_token`, …) commit atomically on every
+//! engine. The few read-then-write sites that sqlite/postgres express as a
+//! single guarded `RETURNING`/upsert run as sequential claim-gated statements
+//! on mysql (see [`Database`](crate::db::Database)).
 //!
-//! Only [`SqliteBackend`] is compiled by default. [`PostgresBackend`] and
-//! [`MysqlBackend`] are gated behind the `postgres` and `mysql` cargo
-//! features respectively, keeping the default build free of their (pure-Rust)
-//! driver crates.
+//! Only [`SqlxBackend::Sqlite`] is compiled by default; the postgres and mysql
+//! arms are gated behind the `postgres` and `mysql` cargo features, keeping the
+//! default build free of those `sqlx` drivers.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -77,15 +77,13 @@ impl Statement {
 
 /// An async handle to one SQL engine.
 ///
-/// Implementors own their connection and translate the hub's source SQL with
-/// their [`Backend::dialect`] before executing. All methods take the source
-/// (sqlite-flavored) SQL the [`Database`](crate::db::Database) methods write.
+/// Implementors own their connection pool and translate the hub's source SQL
+/// with their [`Backend::dialect`] before executing. All methods take the
+/// source (sqlite-flavored) SQL the [`Database`](crate::db::Database) methods
+/// write.
 ///
-/// The trait is **async** (RFC-0004 Phase 5): native engines run on a thread
-/// pool and Cloudflare D1 is async-only, so every query is a future. Only
-/// [`Tx`] — the closure-scoped handle for the few read-then-write sites — stays
-/// synchronous, since [`Backend::with_tx`] runs its closure to completion
-/// without yielding.
+/// The trait is **async** (RFC-0004 Phase 5): every query is a future driven on
+/// the existing tokio runtime by the underlying `sqlx` pool.
 #[async_trait]
 pub trait Backend: Send + Sync {
     /// The SQL dialect this backend speaks.
@@ -139,99 +137,18 @@ pub trait Backend: Send + Sync {
     /// Returns an error if any statement fails to translate or execute.
     async fn execute_batch(&self, sql: &str) -> Result<()>;
 
-    /// Runs `f` inside one transaction, committing on `Ok` and rolling back
-    /// on `Err`.
-    ///
-    /// `f` is synchronous and runs to completion within the call (no `.await`
-    /// inside the closure), so the driver may hold a borrowed transaction
-    /// handle across it without a self-referential future. Retained only for
-    /// the MySQL read-then-write branches; the sqlite/postgres/D1 paths use
-    /// [`Backend::batch`] or single `RETURNING` statements instead.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the transaction cannot begin or commit, or if `f`
-    /// returns one (after rollback).
-    async fn with_tx(
-        &self,
-        f: &mut (dyn for<'t> FnMut(&'t mut (dyn Tx + 't)) -> Result<()> + Send),
-    ) -> Result<()>;
-
     /// Runs `stmts` as one atomic unit — either all commit, or none do.
     ///
-    /// This is the *portable* transaction primitive. Unlike [`Backend::with_tx`]
-    /// it takes a fixed, self-contained statement list with no mid-flight reads
-    /// or `last_insert_rowid` round-trips, so it maps directly onto Cloudflare
-    /// D1's `batch().await` as well as a native SQL transaction. New write paths
-    /// should prefer it; `with_tx` is retained for the read-then-write sites not
-    /// yet restructured (RFC-0004 Phase 5).
-    ///
-    /// The default implementation replays the statements through
-    /// [`Backend::with_tx`]; a backend may override it where its driver exposes
-    /// a more direct batch API.
+    /// This is the *portable* transaction primitive: a fixed, self-contained
+    /// statement list with no mid-flight reads or `last_insert_rowid`
+    /// round-trips. [`SqlxBackend`] runs it inside one real `sqlx` transaction
+    /// (`begin` / per-statement `execute` / `commit`).
     ///
     /// # Errors
     ///
     /// Returns an error if any statement fails to translate or execute; the
     /// whole batch is then rolled back.
-    async fn batch(&self, stmts: &[Statement]) -> Result<()> {
-        self.with_tx(&mut |tx| {
-            for stmt in stmts {
-                tx.execute(&stmt.sql, &stmt.params)?;
-            }
-            Ok(())
-        })
-        .await
-    }
-
-    /// Downcasts to the sqlite driver, for the in-module migration tests that
-    /// need raw `rusqlite` access. Non-sqlite backends return `None`.
-    #[cfg(test)]
-    fn as_sqlite(&self) -> Option<&SqliteBackend> {
-        None
-    }
-}
-
-/// The transaction-scoped subset of [`Backend`] operations.
-///
-/// A `Tx` is handed to the closure passed to [`Backend::with_tx`]; its writes
-/// commit or roll back atomically with the rest of the closure.
-pub trait Tx {
-    /// Runs a non-`SELECT` statement inside the transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if translation or execution fails.
-    fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64>;
-
-    /// Runs an `INSERT` inside the transaction, returning the new `id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if translation or execution fails, or the id cannot
-    /// be read back.
-    fn execute_insert(&mut self, sql: &str, params: &[Value]) -> Result<i64>;
-
-    /// Runs a `SELECT` (or `… RETURNING`) inside the transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if translation or execution fails.
-    fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<Row>>;
-
-    /// Runs a 0-or-1-row statement inside the transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if translation or execution fails, or more than one
-    /// row is returned.
-    fn query_opt(&mut self, sql: &str, params: &[Value]) -> Result<Option<Row>> {
-        let mut rows = self.query(sql, params)?;
-        if rows.len() > 1 {
-            anyhow::bail!("query_opt expected at most one row, got {}", rows.len());
-        }
-        Ok(rows.pop())
-    }
+    async fn batch(&self, stmts: &[Statement]) -> Result<()>;
 }
 
 /// Splits a multi-statement DDL script into individual statements at
@@ -242,6 +159,7 @@ pub trait Tx {
 /// string value, a `--` comment). The migrations use no `BEGIN … END` blocks,
 /// so statement-level `;` splitting is otherwise sufficient. Trailing
 /// whitespace-only fragments are dropped.
+#[cfg_attr(not(any(feature = "postgres", feature = "mysql")), allow(dead_code))]
 pub(crate) fn split_statements(sql: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -289,18 +207,8 @@ pub(crate) fn split_statements(sql: &str) -> Vec<String> {
     out
 }
 
-mod sqlite;
-pub use sqlite::SqliteBackend;
-
-#[cfg(feature = "postgres")]
-mod postgres;
-#[cfg(feature = "postgres")]
-pub use postgres::PostgresBackend;
-
-#[cfg(feature = "mysql")]
-mod mysql;
-#[cfg(feature = "mysql")]
-pub use mysql::MysqlBackend;
+mod sqlx;
+pub use sqlx::SqlxBackend;
 
 /// Appends `RETURNING id` to an `INSERT` that lacks an explicit `RETURNING`.
 ///
@@ -384,13 +292,14 @@ pub(crate) fn prepare(
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_db_url, Backend, SqliteBackend, Statement};
+    use super::{redact_db_url, Backend, SqlxBackend, Statement};
     use crate::db::value::Value;
 
     /// An in-memory sqlite backend with a single `t(id, v)` table for batch tests.
-    async fn batch_fixture() -> SqliteBackend {
-        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory sqlite");
-        let backend = SqliteBackend::new(conn).expect("wrap connection");
+    async fn batch_fixture() -> SqlxBackend {
+        let backend = SqlxBackend::connect_sqlite(":memory:")
+            .await
+            .expect("open in-memory sqlite");
         backend
             .execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT NOT NULL);")
             .await
