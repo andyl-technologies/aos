@@ -5,9 +5,25 @@
 {
   pkgs,
   lib,
+  mkSystem,
   packagesWithExpose,
 }: let
   pkg = pkgs.expose-smoke;
+  serverSystem = mkSystem ../../systems/server.nix;
+  k3sWorkerRole = serverSystem.config.aos.roles.k3s-worker;
+  k3sCommon = import ../../modules/roles/kubernetes/_k3s-common.nix {inherit lib pkgs;};
+  k3sWorkerRequiredEnv = ["K3S_TOKEN" "K3S_URL"];
+  roleSystemdLinkTarget = unitName: let
+    matches =
+      builtins.filter
+      (link: link.path == "/etc/systemd/system/${unitName}")
+      (k3sWorkerRole.ignitionConfig.storage.links or []);
+  in
+    if builtins.length matches == 1
+    then (builtins.head matches).target
+    else throw "expected exactly one k3s-worker role ignition link for ${unitName}";
+  k3sWorkerRoleUnitPath = roleSystemdLinkTarget "k3s.service";
+  k3sWorkerRolePreflightPath = roleSystemdLinkTarget "k3s-preflight.service";
   overridden = pkg.overrideAttrs (_: {
     expose = {
       units."expose-smoke-override.service" = {
@@ -131,6 +147,91 @@
       requires = [];
     };
   });
+  k3sWorkerSpike = pkgs.mkDerivation {
+    pname = "k3s-worker";
+    version = "0";
+    src = null;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/k3s-worker"
+          printf k3s-worker > "$out/share/k3s-worker/payload.txt"
+        '';
+      }
+    ];
+
+    expose = {
+      units = {
+        "k3s-preflight.service" =
+          k3sCommon.preflightService "k3s-worker" k3sWorkerRequiredEnv;
+        "k3s.service" = {
+          description = "Lightweight Kubernetes (agent / worker)";
+          wantedBy = ["multi-user.target"];
+          after = ["network-online.target" "k3s-preflight.service"];
+          wants = ["network-online.target"];
+          requisite = ["k3s-preflight.service"];
+          path = k3sCommon.runtimePath;
+          serviceConfig = {
+            Type = "notify";
+            EnvironmentFile = "/etc/rancher/k3s/k3s.env";
+            ExecStart = "${pkgs.k3s}/bin/k3s agent";
+            KillMode = "process";
+            Delegate = "yes";
+            LimitNOFILE = "1048576";
+            LimitNPROC = "infinity";
+            LimitCORE = "infinity";
+            TasksMax = "infinity";
+            TimeoutStartSec = "infinity";
+            Restart = "always";
+            RestartSec = "5s";
+          };
+        };
+      };
+      kernel = k3sWorkerRole.kernel;
+      firewall = k3sWorkerRole.firewall;
+      permissions = {
+        network = "host";
+        privileged-users = true;
+        cgroup-delegate = true;
+        capabilities = [
+          "CAP_SYS_ADMIN"
+          "CAP_NET_ADMIN"
+          "CAP_NET_RAW"
+          "CAP_SYS_RESOURCE"
+          "CAP_SYS_PTRACE"
+        ];
+        devices = [
+          "/dev/net/tun"
+          "/dev/kmsg"
+          "/dev/fuse"
+        ];
+        host-paths = [
+          {
+            path = "/var/lib/rancher";
+            mode = "rw";
+          }
+          {
+            path = "/var/lib/kubelet";
+            mode = "rw";
+          }
+          {
+            path = "/etc/rancher/k3s";
+            mode = "read-only";
+          }
+          {
+            path = "/lib/modules";
+            mode = "read-only";
+          }
+        ];
+        kernel-modules = ["br_netfilter" "vxlan" "ip_set"];
+        syscalls = "privileged";
+        security-label = "aos-pkg-k3s-worker";
+      };
+      requires = [];
+    };
+  };
 in
   pkgs.mkDerivation {
     pname = "package-expose-check";
@@ -146,6 +247,8 @@ in
     privilegedSyscallsExposePath = privilegedSyscalls.expose;
     privateOutboundExposePath = privateOutbound.expose;
     regexNamePrivateOutboundExposePath = regexNamePrivateOutbound.expose;
+    k3sWorkerExposePath = k3sWorkerSpike.expose;
+    inherit k3sWorkerRoleUnitPath k3sWorkerRolePreflightPath;
     inherit reservedCollisionRejected privilegedExecPrefixRejected;
 
     buildDeps =
@@ -157,6 +260,7 @@ in
         privilegedSyscalls.exposeCheck
         privateOutbound.exposeCheck
         regexNamePrivateOutbound.exposeCheck
+        k3sWorkerSpike.exposeCheck
       ];
 
     phases = [
@@ -397,6 +501,131 @@ in
             echo "netns detection must not use regex grep for package names" >&2
             exit 1
           fi
+
+          k3s_worker_unit="$k3sWorkerExposePath/units/k3s.service"
+          k3s_worker_target="$k3sWorkerExposePath/units/aos-pkg-k3s-worker.target"
+          k3s_worker_modules="$k3sWorkerExposePath/units/aos-pkg-k3s-worker-modules.service"
+          k3s_worker_manifest="$k3sWorkerExposePath/manifest.json"
+          k3s_role_unit="$k3sWorkerRoleUnitPath"
+          k3s_role_preflight="$k3sWorkerRolePreflightPath"
+          test -f "$k3s_worker_unit"
+          test -f "$k3sWorkerExposePath/units/k3s-preflight.service"
+          test -f "$k3s_worker_target"
+          test -f "$k3s_worker_modules"
+          test -f "$k3s_role_unit"
+          test -f "$k3s_role_preflight"
+          test ! -f "$k3sWorkerExposePath/units/aos-pkg-k3s-worker-netns.service"
+
+          require_role_line() {
+            key="$1"
+            role_line=$(grep "^$key=" "$k3s_role_unit")
+            test -n "$role_line"
+            grep -Fxq "$role_line" "$k3s_worker_unit"
+          }
+          require_role_words() {
+            key="$1"
+            role_line=$(sed -n "s|^$key=||p" "$k3s_role_unit")
+            package_line=$(sed -n "s|^$key=||p" "$k3s_worker_unit")
+            test -n "$role_line"
+            test -n "$package_line"
+            for word in $role_line; do
+              case " $package_line " in
+                *" $word "*) ;;
+                *)
+                  echo "k3s worker package unit lost role $key word $word" >&2
+                  exit 1
+                  ;;
+              esac
+            done
+          }
+          require_role_path_environment() {
+            role_path=$(sed -n 's|^Environment="PATH=||p' "$k3s_role_unit" | sed 's|"$||')
+            package_path=$(sed -n 's|^Environment="PATH=||p' "$k3s_worker_unit" | sed 's|"$||')
+            test -n "$role_path"
+            test -n "$package_path"
+            old_ifs=$IFS
+            IFS=:
+            for path_entry in $role_path; do
+              case ":$package_path:" in
+                *":$path_entry:"*) ;;
+                *)
+                  echo "k3s worker package unit lost role PATH entry $path_entry" >&2
+                  IFS=$old_ifs
+                  exit 1
+                  ;;
+              esac
+            done
+            IFS=$old_ifs
+          }
+          require_preflight_line() {
+            key="$1"
+            role_line=$(grep "^$key=" "$k3s_role_preflight")
+            test -n "$role_line"
+            grep -Fxq "$role_line" "$k3sWorkerExposePath/units/k3s-preflight.service"
+          }
+
+          require_role_line Description
+          require_role_path_environment
+          require_role_line EnvironmentFile
+          require_role_line ExecStart
+          require_role_line KillMode
+          require_role_line LimitNOFILE
+          require_role_line LimitNPROC
+          require_role_line LimitCORE
+          require_role_line TasksMax
+          require_role_line TimeoutStartSec
+          require_role_line Restart
+          require_role_line RestartSec
+          require_role_words After
+          require_role_words Wants
+          require_role_words Requisite
+          require_preflight_line Description
+          require_preflight_line ConditionPathExists
+          require_preflight_line EnvironmentFile
+          require_preflight_line ExecStart
+
+          grep -q 'Description=Lightweight Kubernetes (agent / worker)' "$k3s_worker_unit"
+          grep -q 'ExecStart=${pkgs.k3s}/bin/k3s agent' "$k3s_worker_unit"
+          grep -q 'KillMode=process' "$k3s_worker_unit"
+          grep -q 'Requisite=k3s-preflight.service' "$k3s_worker_unit"
+          grep -q 'After=.*k3s-preflight.service' "$k3s_worker_unit"
+          grep -q 'PrivateNetwork=false' "$k3s_worker_unit"
+          if grep -q 'NetworkNamespacePath=' "$k3s_worker_unit"; then
+            echo "k3s worker must stay on host networking" >&2
+            exit 1
+          fi
+          grep -q 'Delegate=true' "$k3s_worker_unit"
+          grep -q 'PrivateUsers=false' "$k3s_worker_unit"
+          grep -q 'DynamicUser=false' "$k3s_worker_unit"
+          grep -q 'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_RESOURCE CAP_SYS_PTRACE' \
+            "$k3s_worker_unit"
+          grep -q 'AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_RESOURCE CAP_SYS_PTRACE' \
+            "$k3s_worker_unit"
+          grep -q 'RestrictAddressFamilies=AF_NETLINK' "$k3s_worker_unit"
+          grep -q 'DeviceAllow=/dev/net/tun rwm' "$k3s_worker_unit"
+          grep -q 'DeviceAllow=/dev/kmsg rwm' "$k3s_worker_unit"
+          grep -q 'DeviceAllow=/dev/fuse rwm' "$k3s_worker_unit"
+          grep -q 'BindPaths=/var/lib/rancher' "$k3s_worker_unit"
+          grep -q 'BindPaths=/var/lib/kubelet' "$k3s_worker_unit"
+          grep -q 'BindReadOnlyPaths=/etc/rancher/k3s' "$k3s_worker_unit"
+          grep -q 'BindReadOnlyPaths=/lib/modules' "$k3s_worker_unit"
+          grep -q 'RootDirectory=' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          grep -q 'PartOf=aos-pkg-k3s-worker.target' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          if grep -q 'SystemCallFilter=' "$k3s_worker_unit"; then
+            echo "k3s worker privileged syscall profile must not render a restrictive SystemCallFilter" >&2
+            exit 1
+          fi
+          grep -q 'Wants=k3s-preflight.service k3s.service aos-pkg-k3s-worker-modules.service aos-pkg-k3s-worker-sysctl.service aos-pkg-k3s-worker-firewall.service' \
+            "$k3s_worker_target"
+          grep -q 'ExecStart=${pkgs.kmod}/sbin/modprobe -a br_netfilter vxlan ip_set' \
+            "$k3s_worker_modules"
+          grep -q '"confinement":{"class":"unconfined"' "$k3s_worker_manifest"
+          grep -q '"label":"unconfined"' "$k3s_worker_manifest"
+          grep -q '"network":"host"' "$k3s_worker_manifest"
+          grep -q '"privileged-users":true' "$k3s_worker_manifest"
+          grep -q '"cgroup-delegate":true' "$k3s_worker_manifest"
+          grep -q '"kernel-modules":\["br_netfilter","vxlan","ip_set"\]' "$k3s_worker_manifest"
+          grep -q '"security-label":"aos-pkg-k3s-worker"' "$k3s_worker_manifest"
 
           if grep -R "$exposePath" "$payload"; then
             echo "payload output must not contain a reference to its expose path" >&2
