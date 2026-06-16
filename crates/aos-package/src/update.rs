@@ -200,7 +200,7 @@ pub async fn run(
                 // never in the read-only `/etc/apm` seed. For a seeded registry
                 // this is a `[registry.state]`-only overlay; the registry's
                 // url/signing keep inheriting from the seed.
-                let state_path = config.registry_config_path_for_update(&reg_config.name);
+                let state_path = config.registry_overlay_path(&reg_config.name);
                 state::save_state(&state_path, &current_state)
                     .with_context(|| format!("saving state for registry '{}'", reg_config.name))?;
 

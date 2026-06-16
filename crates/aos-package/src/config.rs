@@ -343,16 +343,54 @@ impl ApmConfig {
 
     /// Return the registry config file to mutate for `name`.
     ///
-    /// Mutations always land in the writable layer
-    /// ([`ProfileScope::writable_config_dir`]) — `/var/lib/apm/config` for
-    /// system scope — never in the read-only `/etc/apm` seed. The file may not
-    /// exist yet; callers create it (as a minimal delta that inherits the
-    /// remaining fields from lower layers).
-    pub fn registry_config_path_for_update(&self, name: &str) -> PathBuf {
+    /// Return the writable-layer overlay file for `name`.
+    ///
+    /// Consumer mutations — `apm update` sync state and `registry`
+    /// `enable`/`disable` — write a minimal delta here: always
+    /// [`ProfileScope::writable_config_dir`] (`/var/lib/apm/config` for system
+    /// scope), never the read-only `/etc/apm` seed. The file may not exist yet
+    /// (callers create it); for a seeded registry the delta merges over the
+    /// seed, so url/signing keep inheriting from `/etc`.
+    pub fn registry_overlay_path(&self, name: &str) -> PathBuf {
         self.scope
             .writable_config_dir()
             .join("registries.d")
             .join(format!("{name}.toml"))
+    }
+
+    /// Return the existing config file a producer command edits in place.
+    ///
+    /// Unlike [`ApmConfig::registry_overlay_path`] (which always targets the
+    /// writable overlay), the `apr` maintainer commands (`origin config`,
+    /// `keys generate`/`register`) edit a registry's *definition* where it
+    /// already lives: the user file when present, otherwise a writable system
+    /// config file when the registry came only from system config. If neither
+    /// exists this returns the primary path so callers can report a precise
+    /// missing-config error.
+    pub fn registry_config_path_for_update(&self, name: &str) -> PathBuf {
+        let primary = self
+            .scope
+            .config_dir()
+            .join("registries.d")
+            .join(format!("{name}.toml"));
+        if primary.exists() || self.scope != ProfileScope::User {
+            return primary;
+        }
+
+        let fallback = ProfileScope::System
+            .config_dir()
+            .join("registries.d")
+            .join(format!("{name}.toml"));
+        if fallback.exists()
+            && std::fs::OpenOptions::new()
+                .write(true)
+                .open(&fallback)
+                .is_ok()
+        {
+            fallback
+        } else {
+            primary
+        }
     }
 }
 
