@@ -50,6 +50,18 @@ pub enum HubCmd {
         #[command(subcommand)]
         command: HubWebhookCmd,
     },
+    /// Draft and apply a forward revert of a change-set (needs registry.configure)
+    RevertChangeset {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// The change-set id to revert
+        #[arg(long)]
+        change_id: String,
+    },
     /// Mint a short-lived, registry-scoped upload credential (needs publish)
     MintUpload {
         /// Hub base URL (http:// or https://)
@@ -359,5 +371,31 @@ pub enum HubRegistryCmd {
         token: Option<String>,
         /// Registry slug (e.g. `acme/infra/prod/cdn`)
         slug: String,
+    },
+    /// Show full detail for one package (every version and platform)
+    Package {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access (omit for public reads)
+        #[arg(long)]
+        token: Option<String>,
+        /// Registry slug (e.g. `acme/infra/prod/cdn`)
+        slug: String,
+        /// Package name
+        name: String,
+    },
+    /// Show one rollout channel with its 256-partition map
+    Channel {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access (omit for public reads)
+        #[arg(long)]
+        token: Option<String>,
+        /// Registry slug (e.g. `acme/infra/prod/cdn`)
+        slug: String,
+        /// Channel name
+        name: String,
     },
 }

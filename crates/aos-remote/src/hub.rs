@@ -22,11 +22,12 @@ use aos_proto::aos::registry::v1::{
     CreateRegistryRequest, GetRegistryRequest, ListAuditRequest, ListBindingsRequest,
     ListChangesetsRequest,
     ListChannelsRequest, ListOrgsRequest, ListPackagesRequest, ListProjectsRequest,
-    ChangeRequest, CreateWebhookRequest, DeleteWebhookRequest, GitCommit, GitDiffRequest,
-    GitLogRequest, GitServiceClient, ListChangeRequestsRequest, ListRegistriesRequest,
-    ListReleasesRequest, ListWebhooksRequest, MintUploadCredentialsRequest, Org, OrgServiceClient,
-    PackageServiceClient, PackageSummary, Project, ProjectServiceClient, PublishServiceClient,
-    Registry, RegistryServiceClient, Release, StorageServiceClient, Webhook, WebhookServiceClient,
+    ChangeRequest, CreateWebhookRequest, DeleteWebhookRequest, GetChannelRequest, GetPackageRequest,
+    GitCommit, GitDiffRequest, GitLogRequest, GitServiceClient, ListChangeRequestsRequest,
+    ListRegistriesRequest, ListReleasesRequest, ListWebhooksRequest, MintUploadCredentialsRequest,
+    Org, OrgServiceClient, Package, PackageServiceClient, PackageSummary, Project,
+    ProjectServiceClient, PublishServiceClient, Registry, RegistryServiceClient, Release,
+    RevertChangesetRequest, StorageServiceClient, Webhook, WebhookServiceClient,
 };
 
 use crate::client::{make_http_client, validate_base_url};
@@ -597,5 +598,68 @@ impl RegistryHubClient {
             .await
             .map_err(|e| anyhow::anyhow!("listing change requests for '{slug}': {e}"))?;
         Ok(response.into_owned().change_requests)
+    }
+
+    /// Fetches full detail for one package (every version and platform artifact),
+    /// or `None` when it does not exist or is not visible to this client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn get_package(&self, slug: &str, name: &str) -> Result<Option<Package>> {
+        let response = self
+            .packages
+            .get_package(GetPackageRequest {
+                slug: slug.into(),
+                name: name.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("fetching package '{name}' in '{slug}': {e}"))?;
+        Ok(response.into_owned().package.into_option())
+    }
+
+    /// Fetches one rollout channel with its partition map, or `None` when it does
+    /// not exist or is not visible to this client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn get_channel(&self, slug: &str, name: &str) -> Result<Option<Channel>> {
+        let response = self
+            .channels
+            .get_channel(GetChannelRequest {
+                slug: slug.into(),
+                name: name.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("fetching channel '{name}' in '{slug}': {e}"))?;
+        Ok(response.into_owned().channel.into_option())
+    }
+
+    /// Drafts and applies a forward revert of a change-set, returning the new
+    /// revert change-set.
+    ///
+    /// Requires `registry.configure` on the change-set's scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable, the RPC fails (e.g. missing
+    /// permission or an unknown change-set), or the response omits the revert.
+    pub async fn revert_changeset(&self, change_id: &str) -> Result<Changeset> {
+        let response = self
+            .config
+            .revert_changeset(RevertChangesetRequest {
+                change_id: change_id.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("reverting change-set '{change_id}': {e}"))?;
+        response
+            .into_owned()
+            .changeset
+            .into_option()
+            .context("hub returned no change-set for the revert request")
     }
 }
