@@ -89,7 +89,7 @@ reframes how the phases below are read:
 |-------|------|--------------------|--------|--------|
 | **P0** | Schema & policy foundation: registry metadata, policy file, `requires`, the fail-closed capability gate, the permission surface | — (do first) | D2, D12, D18, D19; D1(a) | ☑ |
 | **P1** | `expose` authoring + build-time renderer (eval-free artifacts via `passthru`) | P0 schema pinned | authoring.md mechanics | ☑ |
-| **P2** | Target sandbox + gated side-effect services + nftables reload coherence + eval assertion | P1 | D15; activation.md | ☐ |
+| **P2** | Target sandbox + gated side-effect services + nftables reload coherence + eval assertion | P1 | D15; activation.md | ☑ |
 | **P3** | Per-unit sandboxing materialization + confinement label + **the Decision 17 validation spike** (the gate) | P1, P2 | D2, D4, D10, D17; D1(b) | ☐ |
 | **P4** | Preset enablement (image `disable *`; Ignition per-host preset; every-boot `aos-preset.service`) | P2 | D8 (enable half) | ☐ |
 | **P5** | `apm install` + install-at-boot + **declarative reconciliation (install + prune)** + upgrade/rollback + **layered config** (TPM2 creds / schema'd artifact / EnvironmentFile) + **hot-reload plumbing** | P3, P4 | D8 (install half), D9, D11, D16, D24, D25 | ☐ |
@@ -218,23 +218,23 @@ design, now produced by the P1 renderer (not a `modules/roles` synthesis).
 
 **Deliverables.**
 
-- [ ] **Synthesize `aos-pkg-<name>.target`** (D15 naming, resolved). Members are
+- [x] **Synthesize `aos-pkg-<name>.target`** (D15 naming, resolved). Members are
       `PartOf=` + `WantedBy=` the target; no member is `WantedBy=` a system target
       directly. Template stays `aos-package@.service` with `PartOf=aos-pkg-%i.target`.
-- [ ] **Gated side-effect oneshots** replacing the three global scan-dir drop-ins:
+- [x] **Gated side-effect oneshots** replacing the three global scan-dir drop-ins:
       `aos-pkg-<name>-modules.service` (`modprobe -a`),
       `aos-pkg-<name>-sysctl.service` (`sysctl -w`),
       `aos-pkg-<name>-firewall.service` (`nft add/delete element` against the base
       `allowed_tcp`/`allowed_udp` sets) — each `WantedBy`/`PartOf` the target.
-- [ ] **nftables reload coherence.** Each firewall service declares
+- [x] **nftables reload coherence.** Each firewall service declares
       `ReloadPropagatedFrom=nftables.service` and an `ExecReload=` identical to
       its `ExecStart` (re-adding an element is idempotent), so a base-ruleset
       reload (`nft -f` begins with `flush ruleset`) re-applies every *active*
       package's ports. Drop the `include "/etc/nftables.d/*.nft"` line from
       `modules/security/firewall.nix`.
-- [ ] **Eval-time sandbox assertion.** Single activation root + **zero** storage
+- [x] **Eval-time sandbox assertion.** Single activation root + **zero** storage
       entries under `/etc/modules-load.d`, `/etc/sysctl.d`, `/etc/nftables.d`.
-- [ ] **Teardown semantics.** Disabled = strict (nothing applied); stopped =
+- [x] **Teardown semantics.** Disabled = strict (nothing applied); stopped =
       `PartOf` propagates stop, firewall `ExecStop` removes ports, workload stops;
       loaded modules + applied sysctls stay (documented one-way).
 

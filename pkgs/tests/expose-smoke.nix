@@ -20,7 +20,9 @@ mkDerivation {
   expose = {
     units."expose-smoke.service" = {
       description = "RFC-0001 expose smoke service";
-      wantedBy = ["aos-pkg-expose-smoke.target"];
+      wantedBy = ["multi-user.target"];
+      requiredBy = ["multi-user.target"];
+      upheldBy = ["multi-user.target"];
       after = ["network.target"];
       serviceConfig = {
         Type = "oneshot";
@@ -29,11 +31,20 @@ mkDerivation {
     };
     units."var-lib-exposesmoke.mount" = {
       description = "RFC-0001 expose smoke mount";
-      wantedBy = ["aos-pkg-expose-smoke.target"];
+      wantedBy = ["multi-user.target"];
       what = "tmpfs";
       where = "/var/lib/exposesmoke";
       type = "tmpfs";
       mountConfig.Options = "mode=0755";
+    };
+    kernel = {
+      modules = ["br_netfilter"];
+      sysctl."net.ipv4.ip_forward" = "1";
+    };
+    firewall = {
+      allowedTCP = [8000 8443];
+      allowedUDP = [5353];
+      forwardPolicy = "accept";
     };
     permissions = {
       network = "private";
