@@ -5,6 +5,7 @@ members = [
     "aos-core",
     "aos-net",
     "aos-proto",
+    "aos-proto-types",
     "aos-server",
     "aos-cache",
     "aos-remote",
@@ -121,6 +122,7 @@ libc = "0.2"
 connectrpc = { version = "0.3", features = ["server", "client", "client-tls", "axum"] }
 buffa = "0.3"
 prost = "0.13"
+prost-build = "0.13"
 futures = "0.3"
 webpki-roots = "1"
 rustls-native-certs = "0.8"
@@ -134,6 +136,7 @@ rcgen = "0.14"
 aos-core = { path = "aos-core" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
+aos-proto-types = { path = "aos-proto-types" }
 aos-server = { path = "aos-server" }
 aos-cache = { path = "aos-cache" }
 aos-remote = { path = "aos-remote" }

@@ -40,7 +40,7 @@
   no-JS static tier ships); passkeys/WebAuthn beyond phase 2; mirroring
   (full/derived/pull-through); validation deep depth and HTTP-cache repair;
   git-backed change requests; quotas/backup/offboarding.
-- **Date:** 2026-06-12 (Phase 5 addendum: 2026-06-15; wasm spike + RPC-adapter amendment: 2026-06-16)
+- **Date:** 2026-06-12 (Phase 5 addendum: 2026-06-15; wasm spike + Connect-JSON transport decision: 2026-06-16)
 - **PR:** [#99](https://github.com/andyl-technologies/aos/pull/99)
 - **Audience:** anyone working on `crates/aos-package/` (the `apr`/`apm`
   registry surface), `crates/aos-server/`, `crates/aos-proto/`,
