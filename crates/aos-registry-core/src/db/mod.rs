@@ -2072,6 +2072,19 @@ impl Database {
         Ok(db)
     }
 
+    /// Wraps an already-migrated `backend` **without** running migrations.
+    ///
+    /// For read paths that open a fresh handle per request against a database
+    /// some other path already migrated — notably the Cloudflare Worker, whose
+    /// schema is applied once via `/_init` (or `wrangler d1 migrations apply`)
+    /// and which must not pay a migration round-trip on every read. Use
+    /// [`with_backend`](Self::with_backend) when the caller owns the schema and
+    /// should migrate it.
+    #[must_use]
+    pub fn attach(backend: Box<dyn Backend>) -> Self {
+        Self { backend }
+    }
+
     /// The SQL dialect of the underlying backend.
     fn dialect(&self) -> Dialect {
         self.backend.dialect()

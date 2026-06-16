@@ -30,8 +30,8 @@
 
 use worker::{Env, Request, Response, Result};
 
-use crate::d1::Db;
 use crate::model::Registry;
+use crate::reads::Reads;
 use crate::{facade, render};
 
 /// Binding names the Worker expects in `wrangler.toml`.
@@ -63,8 +63,7 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
         None => (path.as_str(), ""),
     };
 
-    let db_handle = env.d1(D1_BINDING)?;
-    let db = Db::new(&db_handle);
+    let db = Reads::new(env.d1(D1_BINDING)?);
     let Some(registry) = db.registry_by_slug(slug).await? else {
         return Response::error("Not Found", 404);
     };
@@ -84,7 +83,7 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
 }
 
 /// Route a `/-/` sub-path to a browse page or the JSON API.
-async fn human_or_api(db: &Db<'_>, _env: &Env, registry: &Registry, sub: &str) -> Result<Response> {
+async fn human_or_api(db: &Reads, _env: &Env, registry: &Registry, sub: &str) -> Result<Response> {
     if let Some(api) = sub.strip_prefix("api/") {
         return api_route(db, registry, api).await;
     }
@@ -135,7 +134,7 @@ async fn human_or_api(db: &Db<'_>, _env: &Env, registry: &Registry, sub: &str) -
 }
 
 /// Serve the JSON read API for a registry.
-async fn api_route(db: &Db<'_>, registry: &Registry, sub: &str) -> Result<Response> {
+async fn api_route(db: &Reads, registry: &Registry, sub: &str) -> Result<Response> {
     match sub {
         "registry" => {
             let index = db.registry_index(registry.id).await?;
@@ -163,8 +162,7 @@ async fn api_route(db: &Db<'_>, registry: &Registry, sub: &str) -> Result<Respon
 
 /// The hub home page: every public registry.
 async fn hub_home(env: &Env) -> Result<Response> {
-    let db_handle = env.d1(D1_BINDING)?;
-    let db = Db::new(&db_handle);
+    let db = Reads::new(env.d1(D1_BINDING)?);
     let registries = db.list_public_registries().await?;
     html(render::home_page(&registries))
 }

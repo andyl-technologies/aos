@@ -20,7 +20,7 @@
 //! interactive transactions).
 
 use async_trait::async_trait;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 use worker::D1Database;
 
 use aos_registry_core::backend::{prepare, split_statements, Backend, Statement};
@@ -59,37 +59,36 @@ fn to_js(value: &Value) -> JsValue {
     }
 }
 
-/// Converts one D1 column value (deserialized as JSON) into a [`Value`].
+/// Converts one D1 column, as a raw [`JsValue`], into a [`Value`].
 ///
-/// D1 yields sqlite types as JSON: NULL→null, INTEGER→number (no fraction),
-/// REAL→number (fraction), TEXT→string, BLOB→array of byte numbers. A JSON
-/// boolean (not produced by sqlite, but tolerated) maps to the `0`/`1` integer
-/// the schema stores.
-fn from_json(value: serde_json::Value) -> Value {
-    match value {
-        serde_json::Value::Null => Value::Null,
-        serde_json::Value::Bool(b) => Value::Int(i64::from(b)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Int(i)
-            } else if let Some(f) = n.as_f64() {
-                Value::Real(f)
-            } else {
-                // u64 past i64::MAX — saturate rather than lose the row.
-                Value::Int(i64::MAX)
-            }
+/// Reading cells straight off the JS row array (rather than through
+/// `serde_wasm_bindgen` into `serde_json::Value`) is deliberate: a NULL column
+/// arrives as JS `null`, which `serde_wasm_bindgen` refuses to coerce into
+/// `serde_json::Value` ("invalid type: null, expected any valid JSON value"),
+/// and the hub's full-column SELECTs read many nullable columns. The mapping
+/// mirrors sqlite affinities D1 surfaces: `null`→Null, number→Int when it has
+/// no fractional part (sqlite INTEGER; ids/counts are well under 2^53) else
+/// Real, string→Text, `Uint8Array`→Bytes (BLOB). A boolean (not produced by
+/// sqlite, but tolerated) maps to the `0`/`1` integer the schema stores.
+fn js_to_value(value: &JsValue) -> Value {
+    if value.is_null() || value.is_undefined() {
+        Value::Null
+    } else if let Some(b) = value.as_bool() {
+        Value::Int(i64::from(b))
+    } else if let Some(f) = value.as_f64() {
+        if f.fract() == 0.0 && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+            Value::Int(f as i64)
+        } else {
+            Value::Real(f)
         }
-        serde_json::Value::String(s) => Value::Text(s),
-        // A BLOB column arrives as a JSON array of byte numbers.
-        serde_json::Value::Array(items) => {
-            let bytes = items
-                .iter()
-                .filter_map(|v| v.as_u64().map(|n| n as u8))
-                .collect();
-            Value::Bytes(bytes)
-        }
-        // sqlite produces no nested objects; treat as NULL rather than panic.
-        serde_json::Value::Object(_) => Value::Null,
+    } else if let Some(s) = value.as_string() {
+        Value::Text(s)
+    } else if let Ok(bytes) = value.clone().dyn_into::<js_sys::Uint8Array>() {
+        Value::Bytes(bytes.to_vec())
+    } else {
+        // No other sqlite/D1 column shape is expected; treat as NULL rather
+        // than fail the whole row.
+        Value::Null
     }
 }
 
@@ -130,12 +129,20 @@ impl Backend for D1Backend {
 
     async fn query(&self, sql: &str, params: &[Value]) -> anyhow::Result<Vec<Row>> {
         let stmt = bind_stmt(&self.db, sql, params)?;
-        // `raw` returns each row as a positional array of column values, exactly
-        // the shape `Row` wants (column order matches the SELECT list).
-        let rows: Vec<Vec<serde_json::Value>> = stmt.raw().await.map_err(d1_err)?;
+        // `raw_js_value` returns each row as a JS array of positional column
+        // values (column order matches the SELECT list). We walk the cells
+        // directly as `JsValue`s rather than via `raw::<Vec<serde_json::Value>>`,
+        // because serde-wasm-bindgen rejects a JS `null` column ("invalid type:
+        // null, expected any valid JSON value") and the hub's full-column
+        // SELECTs read many nullable columns (org_id, storage_binding_id,
+        // indexed_at, …). See [`js_to_value`].
+        let rows = stmt.raw_js_value().await.map_err(d1_err)?;
         Ok(rows
             .into_iter()
-            .map(|cols| Row::new(cols.into_iter().map(from_json).collect()))
+            .map(|row| {
+                let cols = js_sys::Array::from(&row);
+                Row::new(cols.iter().map(|c| js_to_value(&c)).collect())
+            })
             .collect())
     }
 

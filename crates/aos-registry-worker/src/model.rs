@@ -4,9 +4,9 @@
 //! on native. They mirror the native hub's row/detail structs
 //! (`aos_registry_hub::db::{PackageRow, ReleaseRow, …}`) and the
 //! `aos.registry.v1` read shapes, restricted to the read path the Worker
-//! serves. The D1 layer ([`crate::d1`]) deserializes D1 rows into these via
-//! `serde-wasm-bindgen`; the JSON API serializes them directly; the renderer
-//! ([`crate::render`]) reads them to build HTML.
+//! serves. The read layer (`crate::reads`, wasm32-only) projects
+//! `core::Database` rows onto these; the JSON API serializes them directly; the
+//! renderer ([`crate::render`]) reads them to build HTML.
 //!
 //! The JSON read API is a **simple JSON shape**, not full Connect framing: it
 //! returns these structs as plain `application/json` at `/-/api/...` paths.
