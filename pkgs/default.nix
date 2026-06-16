@@ -413,6 +413,13 @@
     // {
       # --- Explicit overrides for packages needing non-standard arguments ---
       linux = callPackage ./kernel/linux.nix {inherit linuxSource;};
+      # Build a kernel variant with extra kconfig appended. Use this — not
+      # `linux.override { extraConfig = …; }` — for deployment kernels:
+      # `extraConfig` is a linux.nix function arg consumed before
+      # mkDerivation, so the inherited `.override` hook can't reach it
+      # (silent no-op). callPackage threads it directly. (RFC-0006 lockdown.)
+      linuxWith = extraConfig:
+        callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;};
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
 
       kubelet = callPackage ./kubernetes/kubelet.nix {inherit kubeSource;};

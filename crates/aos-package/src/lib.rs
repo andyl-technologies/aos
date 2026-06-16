@@ -550,6 +550,13 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: KeysCommand,
     },
+    /// Manage the committed Secure Boot validation catalog (sb-certs.toml)
+    #[command(name = "sb-certs")]
+    SbCerts {
+        /// The sb-certs.toml catalog operation to run
+        #[command(subcommand)]
+        command: SbCertsCommand,
+    },
 
     // ----- Package Entries -----
     /// Publish a package to the registry from a store path
@@ -1051,6 +1058,86 @@ pub enum KeysCommand {
         /// for manual handling instead
         #[arg(long = "no-resign")]
         no_resign: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Secure Boot validation-catalog subcommands.
+///
+/// These mutate the committed `sb-certs.toml` roster in an authoring clone:
+/// the active db-cert set, its revocations, and the SBAT revocation floor
+/// (RFC-0006 phase 4). Like `keys.toml`, every change is written with
+/// [`registry_ops::run_sb_certs`] and committed (optionally signed) so the
+/// catalog is covered by the registry's release signature.
+#[derive(Subcommand)]
+pub enum SbCertsCommand {
+    /// List the active db certs, revocations, and SBAT floor
+    List {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Add an active Secure Boot db certificate to the catalog
+    Add {
+        /// Stable cert id used by revocation entries
+        #[arg(value_name = "ID")]
+        id: String,
+        /// Lowercase hex SHA-256 of the db certificate (DER)
+        #[arg(long = "cert-sha256", value_name = "HEX")]
+        cert_sha256: String,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Private key path used to sign the catalog commit
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Retire a db certificate by moving its id to [[revoked]]
+    Retire {
+        /// Active db cert id to retire
+        #[arg(value_name = "ID")]
+        id: String,
+        /// Human-readable retirement reason
+        #[arg(long)]
+        reason: Option<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Private key path used to sign the catalog commit
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Set (or raise) the SBAT revocation floor for a component
+    SetFloor {
+        /// SBAT component identifier (e.g. aos, systemd)
+        #[arg(long, value_name = "COMPONENT")]
+        component: String,
+        /// Minimum acceptable SBAT generation for the component
+        #[arg(long, value_name = "N")]
+        generation: u32,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Private key path used to sign the catalog commit
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1789,6 +1876,9 @@ async fn run_registry(
         }
         RegistryCommand::Trust { command } => registry_ops::run_trust(config, command, printer),
         RegistryCommand::Keys { command } => registry_ops::run_keys(config, command, printer),
+        RegistryCommand::SbCerts { command } => {
+            registry_ops::run_sb_certs(config, command, printer)
+        }
         RegistryCommand::Create {
             name,
             remote,

@@ -1314,7 +1314,12 @@ pub async fn extract_registry_root(repo_dir: &Path, commit: &str, target_dir: &P
         .await
         .with_context(|| format!("creating {}", target_dir.display()))?;
 
-    for file in ["registry.toml", "keys.toml", ".gitattributes"] {
+    for file in [
+        "registry.toml",
+        "keys.toml",
+        "sb-certs.toml",
+        ".gitattributes",
+    ] {
         extract_optional_root_file(repo_dir, commit, target_dir, file).await?;
     }
 
