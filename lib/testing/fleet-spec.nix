@@ -7,14 +7,13 @@
 # surface as `evalModules` errors rather than runtime failures inside
 # the harness.
 #
-# `fleetMachineType.options.roles`'s `enum` is derived from this
-# machine's chosen `system.config.aos.roles`, filtered to roles where
-# `bundle = true` on that system — only bundled roles are listable,
-# since a role not bundled on the host has no ignition fragment at
-# `/etc/aos/ignition-roles/<name>` for the synthesised merge entry to
-# point at. The type is forced lazily — only when a `roles` value is
-# type-checked, by which time `config.system` has been merged from the
-# user's definition.
+# `fleetMachineType.options.roles` and `packages` derive their enums from this
+# machine's chosen system config, filtered to entries where `bundle = true` on
+# that system. Only bundled entries are listable: a role must have an ignition
+# fragment at `/etc/aos/ignition-roles/<name>`, and a package must have its
+# payload plus expose artifact baked into the machine image. The types are
+# forced lazily — only when a value is type-checked, by which time
+# `config.system` has been merged from the user's definition.
 {
   lib,
   pkgs,
@@ -88,6 +87,26 @@
           listed roles must have `bundle = true` on the chosen system
           — otherwise the fragment is not on disk and the merge would
           fail at first boot.
+        '';
+      };
+
+      packages = mkOption {
+        type = let
+          availablePackages = builtins.attrNames (
+            lib.filterAttrs
+            (_: package: package.bundle)
+            (config.system.config.aos.packages or {})
+          );
+        in
+          types.listOf (types.enum availablePackages);
+        default = [];
+        description = ''
+          Names of `aos.packages.<name>` to activate at runtime on this
+          machine. Each package must have `bundle = true` on the chosen
+          system so the package payload and rendered expose artifact are
+          already present in the image. The fleet harness seeds the
+          per-machine system package profile before stage 2, and APM
+          reconciliation attaches and presets the selected package target.
         '';
       };
 
