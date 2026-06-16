@@ -20,9 +20,11 @@
 //!   scope-resolved IR consumed by later evaluator tiers.
 //! - [`cache`] owns content-addressed frontend cache keys and on-disk entry
 //!   layout.
+//! - [`value`] owns the 16-byte tagged runtime value word used by the safe
+//!   tree-walk oracle.
 //!
 //! Future Phase-1 modules land below this boundary in the order specified by
-//! the RFC: `value`, `heap`, `attrs`, `eval`, `runtime`, and `store`.
+//! the RFC: `heap`, `attrs`, `eval`, `runtime`, and `store`.
 
 #![forbid(unsafe_code)]
 
@@ -31,6 +33,7 @@ pub mod compile;
 pub mod error;
 pub mod native;
 pub mod syntax;
+pub mod value;
 
 pub use error::{NativeEvalError, SrcSpan};
 pub use native::NixNative;
