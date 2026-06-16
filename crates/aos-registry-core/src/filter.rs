@@ -153,7 +153,7 @@ impl Filter {
     /// # Errors
     ///
     /// Returns [`FilterError`] when the expression is longer than
-    /// [`MAX_FILTER_LEN`], is nested deeper than [`MAX_FILTER_DEPTH`], or has a
+    /// `MAX_FILTER_LEN`, is nested deeper than `MAX_FILTER_DEPTH`, or has a
     /// syntax error — an unknown operator, a missing value, an unbalanced
     /// parenthesis, or trailing tokens that do not form part of the expression.
     pub fn parse(input: &str) -> Result<Option<Self>, FilterError> {

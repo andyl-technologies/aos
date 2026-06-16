@@ -226,7 +226,7 @@
 //! user, and otherwise a fresh user + identity is provisioned (when
 //! `allow_jit`). The OIDC flow itself — PKCE, the authorization URL, the token
 //! exchange, and JWKS-backed RS256 id_token verification — lives in
-//! [`crate::auth::oidc`]; this module only stores and lists the rows.
+//! the hub's `auth::oidc` module; this module only stores and lists the rows.
 //!
 //! # Hosted signing keys (v10)
 //!
@@ -251,8 +251,8 @@
 //! ([`Database::load_hosted_signing_key`]). The `public_key` is the
 //! registry trusted-key line operators pin as a trust anchor, so the hub's
 //! own signatures verify through the same indexer path
-//! ([`crate::surface::tag::verify_signed_tag`]) as any client's. The
-//! operations a hosted key unlocks live in [`crate::signing`]; this module
+//! ([`aos_registry_surface::tag::verify_signed_tag`]) as any client's. The
+//! operations a hosted key unlocks live in the hub's `signing` module; this module
 //! only stores and lists the rows.
 //!
 //! # Outbound webhooks (v11)
@@ -294,7 +294,7 @@
 //!
 //! `status` is `ok` (reachable, valid `nix-cache-info`), `stale` (reachable but
 //! no/empty `nix-cache-info`), or `unreachable` (transport failure or missing
-//! file root). The probing logic lives in [`crate::probe`].
+//! file root). The probing logic lives in the hub's `probe` module.
 //!
 //! # Operations: quotas, signup policy, soft-delete (v13)
 //!
@@ -1316,7 +1316,7 @@ pub struct OrgDomainRecord {
 
 /// An in-flight OIDC authorization-code request (system-of-record row).
 ///
-/// Created at [`crate::auth::oidc::begin_login`] and consumed exactly once at
+/// Created at the hub's `auth::oidc::begin_login` and consumed exactly once at
 /// the callback by [`Database::take_oidc_flow`]; carries the PKCE
 /// `code_verifier` and the `nonce` the returned id_token is checked against.
 #[derive(Debug, Clone)]
@@ -1686,7 +1686,7 @@ pub struct RepairJobRow {
 /// The latest freshness probe of one committed cache endpoint.
 ///
 /// See the [cache-freshness migration docs](self) for the `status` vocabulary
-/// and the probing logic in [`crate::probe`].
+/// and the probing logic in the hub's `probe` module.
 #[derive(Debug, Clone)]
 pub struct CacheProbeRow {
     /// The committed cache endpoint that was probed.
@@ -1707,7 +1707,7 @@ pub struct CacheProbeRow {
 /// [`Database::is_mirror`]). The [`MirrorSource::mode`] selects the
 /// replication strategy: `full` copies the verified upstream surface into the
 /// local binding on a schedule; `pullthrough` fetches-on-miss through a
-/// proxied frontend. See [`crate::mirror`] for the sync and fetch logic.
+/// proxied frontend. See the hub's `mirror` module for the sync and fetch logic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MirrorSource {
     /// The upstream registry surface URL (`file://`, `/path`, or `http(s)://`).
@@ -2722,7 +2722,7 @@ impl Database {
 
     /// The store hashes a validation run found corrupt, sorted.
     ///
-    /// A `corrupt` finding is recorded only at [`crate::validation::ValidationDepth::Deep`]:
+    /// A `corrupt` finding is recorded only at the hub's `validation::ValidationDepth::Deep`:
     /// a hash whose narinfo and NAR are present, but the downloaded NAR's
     /// content hash does not match the narinfo's declared `FileHash`/`NarHash`.
     /// This is distinct from a `missing` finding (which repair can fix by
@@ -2849,7 +2849,7 @@ impl Database {
     /// Records (upserting) the latest freshness probe of one cache endpoint.
     ///
     /// One row is kept per `(registry_id, cache_url)`; re-probing overwrites
-    /// the prior observation. See [`crate::probe`] for the producer.
+    /// the prior observation. See the hub's `probe` module for the producer.
     ///
     /// # Errors
     ///
@@ -3598,7 +3598,7 @@ impl Database {
     /// This turns the opaque `refs` closure-edge list on the package page into
     /// a legible dependency list: resolvable hashes link to their package page,
     /// unresolvable ones fall back to their narinfo permalink. Resolution runs
-    /// in Rust against [`store_hash_index`](Self::store_hash_index), so it is
+    /// in Rust against `store_hash_index`, so it is
     /// independent of the backend's JSON-function dialect.
     ///
     /// # Errors
@@ -3767,7 +3767,7 @@ impl Database {
     /// List verified releases, newest first.
     ///
     /// Naturally bounded: the indexer writes at most
-    /// [`MAX_SEMVER_TAGS`](crate::indexer::MAX_SEMVER_TAGS) (1024) release rows
+    /// the hub's `indexer::MAX_SEMVER_TAGS` (1024) release rows
     /// per registry, so the result set cannot grow without bound and needs no
     /// additional DB-side `LIMIT`.
     ///
@@ -5347,7 +5347,7 @@ impl Database {
     /// so it carries no consumption trust; it exists only to produce a
     /// well-formed signed commit object the hub and `apr` can fetch and diff.
     ///
-    /// The seed is sealed at rest with the instance [`SecretSealer`] exactly as
+    /// The seed is sealed at rest with the instance [`SecretSealer`](crate::auth::seal::SecretSealer) exactly as
     /// hosted keys are ([`Self::create_hosted_key`]): the 32-byte seed is
     /// hex-encoded, then sealed, then stored as the `draft_signing_key`
     /// instance-config value. Returns the usable signing key together with its
@@ -5541,12 +5541,10 @@ impl Database {
     /// The number of orgs a user currently *owns* (holds an `Owner`
     /// membership on at an org-root scope).
     ///
-    /// Used by the org-creation cap ([`MAX_ORGS_PER_OWNER`]) to bound namespace
+    /// Used by the org-creation cap (the hub's `ratelimit::MAX_ORGS_PER_OWNER`) to bound namespace
     /// pollution: an `Owner` membership's scope is the org slug (a single path
     /// segment with no `/`), which is exactly what `CreateOrg` grants the
     /// creator, so counting those rows counts the principal's owned orgs.
-    ///
-    /// [`MAX_ORGS_PER_OWNER`]: crate::ratelimit::MAX_ORGS_PER_OWNER
     ///
     /// # Errors
     ///
@@ -5724,7 +5722,7 @@ impl Database {
     /// predicate makes the delete a no-op (returning `Ok(false)`) for any org
     /// restored after it was listed. The caller passes the *same* `now` it gave
     /// [`Database::list_purgeable_orgs`] (see
-    /// [`purge_expired_orgs`](crate::export::purge_expired_orgs)), so one
+    /// the hub's `export::purge_expired_orgs`), so one
     /// consistent timestamp spans the list and every delete in a purge tick.
     ///
     /// # Errors
@@ -5880,7 +5878,7 @@ impl Database {
     ///
     /// A secret is accepted when its hash is known, it is not expired, and
     /// it is either not revoked or still inside the
-    /// [`ROTATION_GRACE_SECS`] window after its `revoked_at` stamp (so a
+    /// `ROTATION_GRACE_SECS` window after its `revoked_at` stamp (so a
     /// rotated token's old secret keeps working briefly). On success
     /// `last_used_at` is bumped to now. Returns `Ok(None)` for any
     /// unknown, expired, or fully-revoked secret without distinguishing
@@ -5994,7 +5992,7 @@ impl Database {
     /// Rotate a token: revoke the old one and mint a replacement with the
     /// same owner, scope, permissions, comment, and expiry.
     ///
-    /// The old secret keeps validating for [`ROTATION_GRACE_SECS`] after
+    /// The old secret keeps validating for `ROTATION_GRACE_SECS` after
     /// rotation (its `revoked_at` is stamped now, and
     /// [`Database::validate_token`] honors the grace window) so in-flight
     /// clients are not cut off mid-request. Returns `(new_id, new_secret)`,
@@ -7544,10 +7542,10 @@ impl Database {
     /// entry instance-wide.
     ///
     /// The `audit_log` is append-only and grows without bound, so the DB read
-    /// is capped at [`MAX_AUDIT_SCAN`] **most-recent** rows before the
+    /// is capped at `MAX_AUDIT_SCAN` **most-recent** rows before the
     /// scope filter is applied in Rust: a single request can never materialize
     /// the whole table. Scope-filtered results are therefore drawn from the
-    /// most recent [`MAX_AUDIT_SCAN`] entries — ample for the console's paged
+    /// most recent `MAX_AUDIT_SCAN` entries — ample for the console's paged
     /// audit view and the `ListAudit` RPC, which surface recent activity.
     ///
     /// # Errors

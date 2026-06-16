@@ -25,7 +25,7 @@
 //!   [`SqlxBackend`](backend::SqlxBackend) driver (compiled only off-wasm; the
 //!   Worker supplies a D1 `Backend` instead).
 //! - [`db`] — the [`Database`](db::Database) handle: the schema `MIGRATIONS`
-//!   and every read/write query method, written once over the [`Backend`]
+//!   and every read/write query method, written once over the [`Backend`](backend::Backend)
 //!   trait so the native hub and the Worker share one implementation.
 //!
 //! Later phases move the indexer and the HTTP handlers here too, leaving the

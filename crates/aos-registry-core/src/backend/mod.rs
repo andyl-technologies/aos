@@ -290,10 +290,10 @@ pub use sqlx::SqlxBackend;
 ///
 /// # Examples
 ///
-/// ```no_run
-/// # // Illustrative only; `redact_db_url` is crate-private.
-/// // redact_db_url("postgresql://app:s3cret@db.internal/hub")
-/// //   == "postgresql://app:***@db.internal/hub"
+/// ```text
+/// // Illustrative only; `redact_db_url` is crate-private.
+/// redact_db_url("postgresql://app:s3cret@db.internal/hub")
+///   == "postgresql://app:***@db.internal/hub"
 /// ```
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg_attr(not(any(feature = "postgres", feature = "mysql")), allow(dead_code))]
