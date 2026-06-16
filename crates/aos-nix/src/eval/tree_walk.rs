@@ -2,7 +2,7 @@
 //!
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
 //! first slices evaluate scalar and list literals, boolean control flow,
-//! assertions, boolean operators, string literals and concatenation, list-spine
+//! assertions, boolean operators, string/URI literals and concatenation, list-spine
 //! concatenation, static and recursive static attribute-set literals, dynamic
 //! string-valued attribute names, static and dynamic string-valued
 //! attribute selection, lexical `let` environments, simple and formal-set lambda
@@ -138,7 +138,7 @@ impl<'ir> TreeWalk<'ir> {
     /// Evaluates a node to weak head normal form.
     ///
     /// This initial public node entry point is intentionally limited to scalar
-    /// literal, list literal, static attrset literal, string literal,
+    /// literal, list literal, static attrset literal, string and URI literal,
     /// control-flow, boolean operator, string/list concatenation, attrset
     /// update, static
     /// attribute selection, lexical `let` environment, simple and formal-set
@@ -181,7 +181,7 @@ impl<'ir> TreeWalk<'ir> {
                 }
                 Ok(Value::null())
             }
-            IrKind::Str => self.eval_string(id, &node),
+            IrKind::Str | IrKind::Uri => self.eval_string(id, &node),
             IrKind::Interp => self.eval_interp(id, &node),
             IrKind::LocalVar => self.eval_local_var(id, &node),
             IrKind::UpvalVar => self.eval_upval_var(id, &node),
@@ -3006,6 +3006,22 @@ mod tests {
                 .expect("escaped string is heap-owned")
                 .bytes(),
             b"line\n\"quoted\""
+        );
+    }
+
+    #[test]
+    fn evaluates_uri_literals_as_strings() {
+        assert_eq!(
+            eval_string_bytes("https://example.test/path?x=1"),
+            b"https://example.test/path?x=1"
+        );
+        assert_eq!(
+            eval_string_bytes("https://example.test + \"/more\""),
+            b"https://example.test/more"
+        );
+        assert_eq!(
+            eval("https://example.test == \"https://example.test\"").as_bool(),
+            Ok(true)
         );
     }
 

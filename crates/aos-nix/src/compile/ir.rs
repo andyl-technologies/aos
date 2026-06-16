@@ -1416,7 +1416,7 @@ fn effect_for(kind: IrKind) -> EffectClass {
 fn is_trivial_value(kind: IrKind) -> bool {
     matches!(
         kind,
-        IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null | IrKind::Str
+        IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null | IrKind::Str | IrKind::Uri
     )
 }
 
@@ -1733,7 +1733,7 @@ mod tests {
 
     #[test]
     fn unsupported_literal_values_stay_lazy() {
-        let ir = lowered("let p = ./foo; s = <nixpkgs>; u = http://example.test; in 1");
+        let ir = lowered("let p = ./foo; s = <nixpkgs>; in 1");
         let root = node(&ir, ir.root);
         let IrData::Let { bindings, .. } = root.data else {
             panic!("let payload expected");
@@ -1752,8 +1752,24 @@ mod tests {
             node(&ir, thunk_inner(&ir, bindings[1])).kind,
             IrKind::SearchPath
         );
-        assert_eq!(node(&ir, bindings[2]).kind, IrKind::ThunkAlloc);
-        assert_eq!(node(&ir, thunk_inner(&ir, bindings[2])).kind, IrKind::Uri);
+    }
+
+    #[test]
+    fn uri_literals_are_trivial_values() {
+        let ir = lowered("let u = http://example.test; in [ u ]");
+        let root = node(&ir, ir.root);
+        let IrData::Let { bindings, body, .. } = root.data else {
+            panic!("let payload expected");
+        };
+        let binding = ir.bindings[bindings.start as usize];
+        assert_eq!(node(&ir, binding.value).kind, IrKind::Uri);
+
+        let list = node(&ir, body);
+        let IrData::Children(elements) = list.data else {
+            panic!("list elements expected");
+        };
+        let elements = ir.arena.child_slice(elements).expect("list slice exists");
+        assert_eq!(node(&ir, elements[0]).kind, IrKind::ThunkAlloc);
     }
 
     #[test]
