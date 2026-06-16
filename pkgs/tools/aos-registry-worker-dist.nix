@@ -427,13 +427,13 @@ in
         {
           const r1 = await get("/demo/nar/does-not-exist.nar.zst");
           check("missing object is 404", r1.status === 404, "got " + r1.status);
-          // Unknown-registry 404 goes through `registry_by_slug` → D1
-          // `.first(None)` returning JS `null`; under the pinned 2024-09-09
-          // workerd seed, serde-wasm-bindgen rejects `null` as the `Option`'s
-          // None instead of yielding it, so the worker 500s here. On real
-          // Cloudflare D1 (and newer workerd) this resolves to a 404. Soft.
+          // Unknown-registry → `registry_by_slug` finds no row → core's
+          // `query_opt` yields a clean `None` (no row), so the worker 404s. This
+          // resolves cleanly under the pinned workerd now that the read path
+          // runs core::Database over the D1Backend (the old worker-crate
+          // `.first(None)` null path 500'd on serde-wasm-bindgen). Hard.
           const r2 = await get("/nope/nix-cache-info");
-          softCheck("unknown registry is 404", r2.status === 404, "got " + r2.status);
+          check("unknown registry is 404", r2.status === 404, "got " + r2.status);
         }
 
         // ── (c) Browse render: the registry home + package table render the
@@ -446,34 +446,32 @@ in
           check("hub home status 200", home.status === 200, "got " + home.status);
           check("hub home lists 'demo'", homeBody.includes("demo"));
 
-          // The per-registry package table binds `registry_id` (an i64) into a
-          // D1 statement; the `worker` crate marshals i64 as a JS BigInt, which
-          // the 2024-09-09 workerd D1 driver rejects with D1_TYPE_ERROR
-          // ("Type 'bigint' not supported"). Newer workerd/CF D1 accept BigInt
-          // binds. Soft until the workerd seed is advanced (or the worker binds
-          // ids as f64). Both browse-by-registry and the indexer writes share
-          // this exact limitation.
+          // The per-registry package table binds `registry_id` (an i64). The
+          // read path now runs core::Database over the D1Backend, which binds
+          // integers as JS numbers (f64), not the `worker` crate's BigInt that
+          // the pinned 2024-09-09 workerd D1 rejected (D1_TYPE_ERROR). So
+          // browse-by-registry resolves cleanly now. Hard. (The Cron indexer
+          // WRITE path still binds via the worker crate and remains soft below.)
           const r = await get("/demo/-/packages");
           const body = await r.text();
-          softCheck("browse packages status 200", r.status === 200, "got " + r.status);
-          softCheck("browse packages contains 'curl'", body.includes("curl"));
+          check("browse packages status 200", r.status === 200, "got " + r.status);
+          check("browse packages contains 'curl'", body.includes("curl"));
         }
 
         // ── (d) Visibility gating: the PRIVATE registry is not served on the
         // anonymous read path (404 for both facade and browse). ──
         {
-          // Private gating runs through `registry_by_slug` with the
-          // `visibility = 'public'` filter → no row → D1 `.first(None)` null
-          // (same serde-wasm-bindgen null-Option limitation as the unknown
-          // registry above). The SQL filter itself is proven correct by the
-          // worker's native unit tests; here the worker 500s on the null under
-          // the pinned workerd. Soft. (Crucially, the private surface is still
-          // NOT served — a 500, never the private bytes.)
+          // Private gating: `Reads::registry_by_slug` applies the
+          // `visibility == "public"` filter, so a private registry yields a
+          // clean `None` → 404. Now that the read path runs core::Database (the
+          // old worker-crate null path 500'd under the pinned workerd), this
+          // resolves to a real 404. Hard. (The private surface is never served:
+          // both the 404 and the not-200 invariant hold.)
           const r1 = await get("/secret/nix-cache-info");
-          softCheck("private registry facade not served (404 expected)", r1.status === 404, "got " + r1.status);
+          check("private registry facade not served (404 expected)", r1.status === 404, "got " + r1.status);
           check("private registry facade does NOT leak bytes (not 200)", r1.status !== 200, "got " + r1.status);
           const r2 = await get("/secret/-/packages");
-          softCheck("private registry browse not served (404 expected)", r2.status === 404, "got " + r2.status);
+          check("private registry browse not served (404 expected)", r2.status === 404, "got " + r2.status);
           check("private registry browse does NOT leak (not 200)", r2.status !== 200, "got " + r2.status);
         }
 
