@@ -675,8 +675,7 @@ pub enum CapabilityKind {
     Directory,
     /// A provider service namespace joined by consumer units.
     Namespace,
-    /// Socket/fd-passing capability. Declared for schema stability; activation
-    /// rejects consumer routes until generated socket units are implemented.
+    /// Socket/fd-passing capability routed through generated systemd drop-ins.
     Socket,
 }
 

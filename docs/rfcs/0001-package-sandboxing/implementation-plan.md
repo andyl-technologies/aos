@@ -412,17 +412,25 @@ the prior generation's units.
 
 **Deliverables.**
 
-- [ ] **Root = store path via `RootDirectory=`** (D5/D6): an ordinary closure
+- [x] **Root = store path via `RootDirectory=`** (D5/D6): an ordinary closure
       member, inheriting NAR hashing + the registry tag-signature chain +
       gc-rooting; no image build, no loop device, no udev ordering. Bake k3s and
-      other infrastructure; fetch workloads (the standing default).
+      other infrastructure; fetch workloads (the standing default). Rendered
+      expose services set `RootDirectory=` to the payload store path, install /
+      upgrade root those artifacts and `expose.images`, and the lifecycle VM
+      asserts the active package root.
 - [ ] **Networking modes (D3).** *inbound-only private* (default): host-owned
       socket units pass **named** fds into the sandboxed unit (`PrivateNetwork=`
       on both + socket `JoinsNamespaceOf=`). *private with outbound*: the gated
       `aos-pkg-<n>-netns.service` from P3 (named netns + veth, host side
       systemd-networkd) + `NetworkNamespacePath=`, **plus Landlock TCP
       bind/connect rules on the allowed ports** ([`enforcement.md`](enforcement.md)).
-      *host*: k3s and peers.
+      *host*: k3s and peers. Partial coverage exists: the runtime route
+      generator emits named-fd socket drop-ins, the lifecycle VM now exercises
+      package-manager reconciliation plus cross-package named-fd inbound
+      activation, and it performs a real private-outbound netns HTTP request.
+      Landlock TCP policy, eBPF policy, and the exact socket namespace shape
+      remain before this item is complete.
 - [ ] **Per-package network policy via eBPF** (Cilium-style per-identity), not
       only host-global nftables base-set mutation — the SOTA for per-package L3/L4
       ([`container-model.md`](container-model.md) networking).

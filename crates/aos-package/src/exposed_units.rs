@@ -20,7 +20,7 @@ use crate::registry::store_path_hash;
 use crate::types::{
     CapabilityKind, InstalledMeta, ProfileScope, ProvidedCapabilityMeta, RequiredCapabilityMeta,
 };
-use crate::unit_diff::{self, UnitDiff};
+use crate::unit_diff::{self, Parsed, UnitDiff};
 use aos_core::output::Printer;
 use aos_systemd::{JobOutcome, SystemdClient};
 use tempfile::TempDir;
@@ -293,6 +293,7 @@ fn validate_capability_routes(packages: &[ExposedPackage]) -> Result<()> {
         .iter()
         .map(|package| package.name.as_str())
         .collect::<BTreeSet<_>>();
+    let mut socket_routes = BTreeMap::<String, String>::new();
     for package in packages {
         for route in &package.uses {
             if !package.units.contains(&route.unit) {
@@ -365,17 +366,97 @@ fn validate_capability_routes(packages: &[ExposedPackage]) -> Result<()> {
                     }
                 }
                 CapabilityKind::Socket => {
-                    bail!(
-                        "socket capability routes are not implemented yet: package '{}' requires '{}.{}'",
-                        package.name,
-                        route.provider,
-                        route.name
-                    );
+                    let Some(unit) = provided.unit.as_ref() else {
+                        bail!(
+                            "provider package '{}' capability '{}' is missing a socket unit",
+                            provider.name,
+                            provided.name
+                        );
+                    };
+                    if !unit.ends_with(".socket") {
+                        bail!(
+                            "provider package '{}' capability '{}' references non-socket unit '{}'",
+                            provider.name,
+                            provided.name,
+                            unit
+                        );
+                    }
+                    if !provider.units.contains(unit) {
+                        bail!(
+                            "provider package '{}' capability '{}' references unknown unit '{}'",
+                            provider.name,
+                            provided.name,
+                            unit
+                        );
+                    }
+                    validate_routed_socket_unit(provider, provided, route)?;
+                    let route_key = unit.clone();
+                    let consumer = format!("{}:{}", package.name, route.unit);
+                    if let Some(existing) = socket_routes.insert(route_key, consumer.clone()) {
+                        bail!(
+                            "socket capability '{}.{}' uses socket unit '{}' which is routed to both {} and {}",
+                            route.provider,
+                            route.name,
+                            unit,
+                            existing,
+                            consumer
+                        );
+                    }
                 }
             }
         }
     }
     Ok(())
+}
+
+fn validate_routed_socket_unit(
+    provider: &ExposedPackage,
+    provided: &ProvidedCapabilityMeta,
+    route: &RequiredCapabilityMeta,
+) -> Result<()> {
+    let unit = provided
+        .unit
+        .as_ref()
+        .context("socket capability missing unit")?;
+    let socket_path = Path::new(&provider.artifact_store_path)
+        .join("units")
+        .join(unit);
+    let text = std::fs::read_to_string(&socket_path)
+        .with_context(|| format!("reading routed socket unit {}", socket_path.display()))?;
+    let parsed = Parsed::parse(&text);
+    let socket = parsed.sections.get("Socket");
+    let last_value = |key: &str| {
+        socket
+            .and_then(|section| section.get(key))
+            .and_then(|values| values.last())
+            .map(String::as_str)
+    };
+    if last_value("Accept").is_some_and(systemd_bool) {
+        bail!(
+            "provider package '{}' capability '{}' references socket unit '{}' with Accept=yes",
+            provider.name,
+            provided.name,
+            unit
+        );
+    }
+    if let Some(service) = last_value("Service") {
+        bail!(
+            "provider package '{}' capability '{}' references socket unit '{}' that already declares Service={}; routed socket capabilities set Service={} at activation",
+            provider.name,
+            provided.name,
+            unit,
+            service,
+            route.unit
+        );
+    }
+    Ok(())
+}
+
+fn systemd_bool(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn find_provided_capability<'a>(
@@ -442,12 +523,25 @@ fn capability_route_dropins(packages: &[ExposedPackage]) -> Result<BTreeMap<Stri
                     entry.unit_lines.push(format!("JoinsNamespaceOf={unit}"));
                 }
                 CapabilityKind::Socket => {
-                    bail!(
-                        "socket capability routes are not implemented yet: package '{}' requires '{}.{}'",
-                        package.name,
-                        route.provider,
-                        route.name
-                    );
+                    let socket_unit = provided
+                        .unit
+                        .as_ref()
+                        .context("socket capability missing unit")?;
+                    entry.unit_lines.push(format!("Wants={socket_unit}"));
+                    entry.unit_lines.push(format!("After={socket_unit}"));
+
+                    let target_entry = dropins.entry(package.target.clone()).or_default();
+                    target_entry.unit_lines.push(format!("Wants={socket_unit}"));
+                    target_entry.unit_lines.push(format!("After={socket_unit}"));
+
+                    let socket_entry = dropins.entry(socket_unit.clone()).or_default();
+                    socket_entry
+                        .socket_lines
+                        .push(format!("Service={}", route.unit));
+                    socket_entry.socket_lines.push(format!(
+                        "FileDescriptorName={}",
+                        socket_file_descriptor_name(&route.provider, &route.name)
+                    ));
                 }
             }
         }
@@ -463,6 +557,7 @@ fn capability_route_dropins(packages: &[ExposedPackage]) -> Result<BTreeMap<Stri
 struct DropinSections {
     unit_lines: Vec<String>,
     service_lines: Vec<String>,
+    socket_lines: Vec<String>,
 }
 
 impl DropinSections {
@@ -471,6 +566,8 @@ impl DropinSections {
         self.unit_lines.dedup();
         self.service_lines.sort();
         self.service_lines.dedup();
+        self.socket_lines.sort();
+        self.socket_lines.dedup();
 
         let mut out = String::new();
         if !self.unit_lines.is_empty() {
@@ -490,8 +587,22 @@ impl DropinSections {
                 out.push('\n');
             }
         }
+        if !self.socket_lines.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("[Socket]\n");
+            for line in self.socket_lines {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
         out
     }
+}
+
+fn socket_file_descriptor_name(provider: &str, name: &str) -> String {
+    format!("aos-{provider}-{name}")
 }
 
 fn write_exact_preset(root: &Path, targets: &BTreeSet<String>) -> Result<()> {
@@ -1075,7 +1186,97 @@ mod tests {
     }
 
     #[test]
-    fn exposed_packages_rejects_socket_capability_routes_until_supported() {
+    fn capability_route_dropins_route_provider_sockets() {
+        let tmp = TempDir::new().unwrap();
+        let mut provider = installed_with_expose(&tmp, "provider", "pkghash111", "artifacthash111");
+        let provider_artifact = provider
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        std::fs::write(
+            Path::new(&provider_artifact).join("units/provider.socket"),
+            "[Socket]\nListenStream=127.0.0.1:18080\n",
+        )
+        .unwrap();
+        provider
+            .apm
+            .as_mut()
+            .unwrap()
+            .expose
+            .as_mut()
+            .unwrap()
+            .units
+            .push("provider.socket".into());
+        provider
+            .apm
+            .as_mut()
+            .unwrap()
+            .expose
+            .as_mut()
+            .unwrap()
+            .provides = vec![ProvidedCapabilityMeta {
+            name: "api".into(),
+            kind: CapabilityKind::Socket,
+            path: None,
+            unit: Some("provider.socket".into()),
+        }];
+        let mut consumer = installed_with_expose(&tmp, "consumer", "pkghash222", "artifacthash222");
+        consumer.apm.as_mut().unwrap().expose.as_mut().unwrap().uses =
+            vec![RequiredCapabilityMeta {
+                provider: "provider".into(),
+                name: "api".into(),
+                kind: CapabilityKind::Socket,
+                unit: "consumer.service".into(),
+            }];
+
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        for installed in [&provider, &consumer] {
+            let artifact = installed
+                .apm
+                .as_ref()
+                .unwrap()
+                .expose_artifact
+                .as_ref()
+                .unwrap()
+                .store_path
+                .clone();
+            std::os::unix::fs::symlink(
+                &artifact,
+                profile
+                    .current_path()
+                    .join("expose")
+                    .join(store_path_hash(&artifact)),
+            )
+            .unwrap();
+        }
+
+        let packages = exposed_packages(&profile, &[provider, consumer]).unwrap();
+        let dropins = capability_route_dropins(&packages).unwrap();
+        let consumer_dropin = dropins.get("consumer.service").unwrap();
+        assert!(consumer_dropin.contains("Wants=provider.socket"));
+        assert!(consumer_dropin.contains("After=provider.socket"));
+        assert!(!consumer_dropin.contains("JoinsNamespaceOf=provider.socket"));
+        let target_dropin = dropins.get("aos-pkg-consumer.target").unwrap();
+        assert!(target_dropin.contains("Wants=provider.socket"));
+        assert!(target_dropin.contains("After=provider.socket"));
+        let socket_dropin = dropins.get("provider.socket").unwrap();
+        assert!(socket_dropin.contains("[Socket]"));
+        assert!(socket_dropin.contains("Service=consumer.service"));
+        assert!(socket_dropin.contains("FileDescriptorName=aos-provider-api"));
+        assert!(!socket_dropin.contains("PrivateNetwork=true"));
+    }
+
+    #[test]
+    fn exposed_packages_rejects_socket_capability_from_non_socket_unit() {
         let tmp = TempDir::new().unwrap();
         let mut provider = installed_with_expose(&tmp, "provider", "pkghash111", "artifacthash111");
         provider
@@ -1127,7 +1328,293 @@ mod tests {
 
         let err = exposed_packages(&profile, &[provider, consumer]).unwrap_err();
 
-        assert!(format!("{err:#}").contains("socket capability routes are not implemented"));
+        assert!(format!("{err:#}").contains("references non-socket unit 'provider.service'"));
+    }
+
+    #[test]
+    fn exposed_packages_rejects_socket_capability_routed_to_multiple_consumers() {
+        let tmp = TempDir::new().unwrap();
+        let mut provider = installed_with_expose(&tmp, "provider", "pkghash111", "artifacthash111");
+        let provider_artifact = provider
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        std::fs::write(
+            Path::new(&provider_artifact).join("units/provider.socket"),
+            "[Socket]\nListenStream=127.0.0.1:18080\n",
+        )
+        .unwrap();
+        let provider_expose = provider.apm.as_mut().unwrap().expose.as_mut().unwrap();
+        provider_expose.units.push("provider.socket".into());
+        provider_expose.provides = vec![ProvidedCapabilityMeta {
+            name: "api".into(),
+            kind: CapabilityKind::Socket,
+            path: None,
+            unit: Some("provider.socket".into()),
+        }];
+
+        let mut first = installed_with_expose(&tmp, "first", "pkghash222", "artifacthash222");
+        first.apm.as_mut().unwrap().expose.as_mut().unwrap().uses = vec![RequiredCapabilityMeta {
+            provider: "provider".into(),
+            name: "api".into(),
+            kind: CapabilityKind::Socket,
+            unit: "first.service".into(),
+        }];
+        let mut second = installed_with_expose(&tmp, "second", "pkghash333", "artifacthash333");
+        second.apm.as_mut().unwrap().expose.as_mut().unwrap().uses = vec![RequiredCapabilityMeta {
+            provider: "provider".into(),
+            name: "api".into(),
+            kind: CapabilityKind::Socket,
+            unit: "second.service".into(),
+        }];
+
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        for installed in [&provider, &first, &second] {
+            let artifact = installed
+                .apm
+                .as_ref()
+                .unwrap()
+                .expose_artifact
+                .as_ref()
+                .unwrap()
+                .store_path
+                .clone();
+            std::os::unix::fs::symlink(
+                &artifact,
+                profile
+                    .current_path()
+                    .join("expose")
+                    .join(store_path_hash(&artifact)),
+            )
+            .unwrap();
+        }
+
+        let err = exposed_packages(&profile, &[provider, first, second]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("uses socket unit 'provider.socket'"));
+        assert!(format!("{err:#}").contains("routed to both"));
+    }
+
+    #[test]
+    fn exposed_packages_rejects_distinct_socket_capabilities_on_one_socket_unit() {
+        let tmp = TempDir::new().unwrap();
+        let mut provider = installed_with_expose(&tmp, "provider", "pkghash111", "artifacthash111");
+        let provider_artifact = provider
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        std::fs::write(
+            Path::new(&provider_artifact).join("units/provider.socket"),
+            "[Socket]\nListenStream=127.0.0.1:18080\n",
+        )
+        .unwrap();
+        let provider_expose = provider.apm.as_mut().unwrap().expose.as_mut().unwrap();
+        provider_expose.units.push("provider.socket".into());
+        provider_expose.provides = vec![
+            ProvidedCapabilityMeta {
+                name: "api".into(),
+                kind: CapabilityKind::Socket,
+                path: None,
+                unit: Some("provider.socket".into()),
+            },
+            ProvidedCapabilityMeta {
+                name: "metrics".into(),
+                kind: CapabilityKind::Socket,
+                path: None,
+                unit: Some("provider.socket".into()),
+            },
+        ];
+
+        let mut first = installed_with_expose(&tmp, "first", "pkghash222", "artifacthash222");
+        first.apm.as_mut().unwrap().expose.as_mut().unwrap().uses = vec![RequiredCapabilityMeta {
+            provider: "provider".into(),
+            name: "api".into(),
+            kind: CapabilityKind::Socket,
+            unit: "first.service".into(),
+        }];
+        let mut second = installed_with_expose(&tmp, "second", "pkghash333", "artifacthash333");
+        second.apm.as_mut().unwrap().expose.as_mut().unwrap().uses = vec![RequiredCapabilityMeta {
+            provider: "provider".into(),
+            name: "metrics".into(),
+            kind: CapabilityKind::Socket,
+            unit: "second.service".into(),
+        }];
+
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        for installed in [&provider, &first, &second] {
+            let artifact = installed
+                .apm
+                .as_ref()
+                .unwrap()
+                .expose_artifact
+                .as_ref()
+                .unwrap()
+                .store_path
+                .clone();
+            std::os::unix::fs::symlink(
+                &artifact,
+                profile
+                    .current_path()
+                    .join("expose")
+                    .join(store_path_hash(&artifact)),
+            )
+            .unwrap();
+        }
+
+        let err = exposed_packages(&profile, &[provider, first, second]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("uses socket unit 'provider.socket'"));
+        assert!(format!("{err:#}").contains("routed to both"));
+    }
+
+    #[test]
+    fn exposed_packages_rejects_routed_socket_accept_yes() {
+        let tmp = TempDir::new().unwrap();
+        let mut provider = installed_with_expose(&tmp, "provider", "pkghash111", "artifacthash111");
+        let provider_artifact = provider
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        std::fs::write(
+            Path::new(&provider_artifact).join("units/provider.socket"),
+            "[Socket]\nListenStream=127.0.0.1:18080\nAccept=Yes\n",
+        )
+        .unwrap();
+        let provider_expose = provider.apm.as_mut().unwrap().expose.as_mut().unwrap();
+        provider_expose.units.push("provider.socket".into());
+        provider_expose.provides = vec![ProvidedCapabilityMeta {
+            name: "api".into(),
+            kind: CapabilityKind::Socket,
+            path: None,
+            unit: Some("provider.socket".into()),
+        }];
+
+        let mut consumer = installed_with_expose(&tmp, "consumer", "pkghash222", "artifacthash222");
+        consumer.apm.as_mut().unwrap().expose.as_mut().unwrap().uses =
+            vec![RequiredCapabilityMeta {
+                provider: "provider".into(),
+                name: "api".into(),
+                kind: CapabilityKind::Socket,
+                unit: "consumer.service".into(),
+            }];
+
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        for installed in [&provider, &consumer] {
+            let artifact = installed
+                .apm
+                .as_ref()
+                .unwrap()
+                .expose_artifact
+                .as_ref()
+                .unwrap()
+                .store_path
+                .clone();
+            std::os::unix::fs::symlink(
+                &artifact,
+                profile
+                    .current_path()
+                    .join("expose")
+                    .join(store_path_hash(&artifact)),
+            )
+            .unwrap();
+        }
+
+        let err = exposed_packages(&profile, &[provider, consumer]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("with Accept=yes"));
+    }
+
+    #[test]
+    fn exposed_packages_rejects_routed_socket_with_existing_service() {
+        let tmp = TempDir::new().unwrap();
+        let mut provider = installed_with_expose(&tmp, "provider", "pkghash111", "artifacthash111");
+        let provider_artifact = provider
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        std::fs::write(
+            Path::new(&provider_artifact).join("units/provider.socket"),
+            "[Socket]\nListenStream=127.0.0.1:18080\nService=provider.service\n",
+        )
+        .unwrap();
+        let provider_expose = provider.apm.as_mut().unwrap().expose.as_mut().unwrap();
+        provider_expose.units.push("provider.socket".into());
+        provider_expose.provides = vec![ProvidedCapabilityMeta {
+            name: "api".into(),
+            kind: CapabilityKind::Socket,
+            path: None,
+            unit: Some("provider.socket".into()),
+        }];
+
+        let mut consumer = installed_with_expose(&tmp, "consumer", "pkghash222", "artifacthash222");
+        consumer.apm.as_mut().unwrap().expose.as_mut().unwrap().uses =
+            vec![RequiredCapabilityMeta {
+                provider: "provider".into(),
+                name: "api".into(),
+                kind: CapabilityKind::Socket,
+                unit: "consumer.service".into(),
+            }];
+
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        for installed in [&provider, &consumer] {
+            let artifact = installed
+                .apm
+                .as_ref()
+                .unwrap()
+                .expose_artifact
+                .as_ref()
+                .unwrap()
+                .store_path
+                .clone();
+            std::os::unix::fs::symlink(
+                &artifact,
+                profile
+                    .current_path()
+                    .join("expose")
+                    .join(store_path_hash(&artifact)),
+            )
+            .unwrap();
+        }
+
+        let err = exposed_packages(&profile, &[provider, consumer]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("already declares Service=provider.service"));
     }
 
     #[test]
