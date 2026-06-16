@@ -143,10 +143,10 @@ impl<'ir> TreeWalk<'ir> {
     /// update, static
     /// attribute selection, lexical `let` environment, simple and formal-set
     /// lambda application, lazy `with` lookup, numeric arithmetic, numeric and
-    /// string comparison, scalar/string/function/list/attrset equality, and
-    /// conservative thunk allocation nodes. Remaining environment-dependent nodes return
-    /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add their
-    /// explicit runtime context.
+    /// string/list comparison, scalar/string/function/list/attrset equality,
+    /// and conservative thunk allocation nodes. Remaining environment-dependent
+    /// nodes return [`TreeWalkErrorKind::UnsupportedNode`] until later slices
+    /// add their explicit runtime context.
     ///
     /// # Errors
     ///
@@ -2173,10 +2173,26 @@ impl<'ir> TreeWalk<'ir> {
                 }
                 self.compare_strings(id, node, op, left, right)
             }
+            ValueTag::List => {
+                let rhs_span = self.node(rhs)?.span;
+                let right = self.eval_node(rhs)?;
+                if right.tag() != ValueTag::List {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id: rhs,
+                            expected: "list",
+                            actual: right.tag(),
+                        },
+                        rhs_span,
+                    ));
+                }
+                self.compare_lists(id, node, op, left, right)
+                    .map(Value::bool)
+            }
             actual => Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id: lhs,
-                    expected: "number or string",
+                    expected: "number, string, or list",
                     actual,
                 },
                 lhs_span,
@@ -2199,6 +2215,254 @@ impl<'ir> TreeWalk<'ir> {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
         Ok(Value::bool(op.compare_bytes(left.bytes(), right.bytes())))
+    }
+
+    fn compare_lists(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        op: ComparisonOp,
+        left: Value,
+        right: Value,
+    ) -> Result<bool, TreeWalkError> {
+        let mut equality_guard = EqualityPairGuard::default();
+        self.compare_lists_with_guard(id, node, op, left, right, &mut equality_guard)
+    }
+
+    fn compare_lists_with_guard(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        op: ComparisonOp,
+        left: Value,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
+    ) -> Result<bool, TreeWalkError> {
+        if !equality_guard.enter(left, right) {
+            return Ok(op.compare_equal());
+        }
+
+        let result =
+            self.compare_list_entries_with_guard(id, node, op, left, right, equality_guard);
+        equality_guard.exit(left, right);
+        result
+    }
+
+    fn compare_list_entries_with_guard(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        op: ComparisonOp,
+        left: Value,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
+    ) -> Result<bool, TreeWalkError> {
+        let left_elements = {
+            let list = self.heap.get_list(left).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            Self::clone_list_elements(id, node.span, list)?
+        };
+        let right_elements = {
+            let list = self.heap.get_list(right).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            Self::clone_list_elements(id, node.span, list)?
+        };
+
+        for (left, right) in left_elements
+            .iter()
+            .copied()
+            .zip(right_elements.iter().copied())
+        {
+            let left = self.force_value(id, node.span, left)?;
+            let right = self.force_value(id, node.span, right)?;
+            if self.values_equal_for_ordering(id, node, left, right, equality_guard)? {
+                continue;
+            }
+            return self.compare_values_for_ordering(id, node, op, left, right, equality_guard);
+        }
+
+        Ok(op.compare_lengths(left_elements.len(), right_elements.len()))
+    }
+
+    fn compare_values_for_ordering(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        op: ComparisonOp,
+        left: Value,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
+    ) -> Result<bool, TreeWalkError> {
+        match left.tag() {
+            ValueTag::Int | ValueTag::Float => {
+                let left = self.expect_number(id, left, node.span)?;
+                let right = self.expect_number(id, right, node.span)?;
+                Ok(compare_numbers(op, left, right))
+            }
+            ValueTag::String => {
+                if right.tag() != ValueTag::String {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id,
+                            expected: "string",
+                            actual: right.tag(),
+                        },
+                        node.span,
+                    ));
+                }
+                self.compare_strings(id, node, op, left, right)
+                    .and_then(|value| self.expect_bool(id, value, node.span))
+            }
+            ValueTag::List => {
+                if right.tag() != ValueTag::List {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id,
+                            expected: "list",
+                            actual: right.tag(),
+                        },
+                        node.span,
+                    ));
+                }
+                self.compare_lists_with_guard(id, node, op, left, right, equality_guard)
+            }
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "number, string, or list",
+                    actual,
+                },
+                node.span,
+            )),
+        }
+    }
+
+    fn values_equal_for_ordering(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
+    ) -> Result<bool, TreeWalkError> {
+        match (left.tag(), right.tag()) {
+            (ValueTag::List, ValueTag::List) => {
+                self.lists_equal_for_ordering(id, node, left, right, equality_guard)
+            }
+            (ValueTag::Attrs, ValueTag::Attrs) => {
+                self.attrsets_equal_for_ordering(id, node, left, right, equality_guard)
+            }
+            _ => self.values_equal(id, node, left, right, EqualityContext::Nested),
+        }
+    }
+
+    fn lists_equal_for_ordering(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
+    ) -> Result<bool, TreeWalkError> {
+        if !equality_guard.enter(left, right) {
+            return Ok(true);
+        }
+
+        let result = self.list_entries_equal_for_ordering(id, node, left, right, equality_guard);
+        equality_guard.exit(left, right);
+        result
+    }
+
+    fn list_entries_equal_for_ordering(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
+    ) -> Result<bool, TreeWalkError> {
+        let left_elements = {
+            let list = self.heap.get_list(left).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            Self::clone_list_elements(id, node.span, list)?
+        };
+        let right_elements = {
+            let list = self.heap.get_list(right).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            Self::clone_list_elements(id, node.span, list)?
+        };
+        if left_elements.len() != right_elements.len() {
+            return Ok(false);
+        }
+
+        for (left, right) in left_elements.into_iter().zip(right_elements) {
+            let left = self.force_value(id, node.span, left)?;
+            let right = self.force_value(id, node.span, right)?;
+            if !self.values_equal_for_ordering(id, node, left, right, equality_guard)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn attrsets_equal_for_ordering(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
+    ) -> Result<bool, TreeWalkError> {
+        if !equality_guard.enter(left, right) {
+            return Ok(true);
+        }
+
+        let result = self.attrset_entries_equal_for_ordering(id, node, left, right, equality_guard);
+        equality_guard.exit(left, right);
+        result
+    }
+
+    fn attrset_entries_equal_for_ordering(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
+    ) -> Result<bool, TreeWalkError> {
+        let left_entries = {
+            let attrs = self.heap.get_attrs(left).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            Self::clone_attr_entries(id, node.span, attrs)?
+        };
+        let right_entries = {
+            let attrs = self.heap.get_attrs(right).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            Self::clone_attr_entries(id, node.span, attrs)?
+        };
+        if left_entries.len() != right_entries.len() {
+            return Ok(false);
+        }
+
+        for (left, right) in left_entries.iter().zip(&right_entries) {
+            if left.key != right.key {
+                return Ok(false);
+            }
+        }
+        for (left, right) in left_entries.into_iter().zip(right_entries) {
+            let left = self.force_value(id, node.span, left.value)?;
+            let right = self.force_value(id, node.span, right.value)?;
+            if !self.values_equal_for_ordering(id, node, left, right, equality_guard)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn eval_integer_binary(
@@ -2324,6 +2588,31 @@ enum EqualityContext {
     Nested,
 }
 
+#[derive(Debug, Default)]
+struct EqualityPairGuard {
+    active: Vec<(Value, Value)>,
+}
+
+impl EqualityPairGuard {
+    fn enter(&mut self, left: Value, right: Value) -> bool {
+        if self.active.iter().any(|(active_left, active_right)| {
+            (active_left.raw_eq(left) && active_right.raw_eq(right))
+                || (active_left.raw_eq(right) && active_right.raw_eq(left))
+        }) {
+            return false;
+        }
+        self.active.push((left, right));
+        true
+    }
+
+    fn exit(&mut self, left: Value, right: Value) {
+        let active = self.active.pop();
+        debug_assert!(active.is_some_and(|(active_left, active_right)| {
+            active_left.raw_eq(left) && active_right.raw_eq(right)
+        }));
+    }
+}
+
 impl Number {
     fn to_float(self) -> f64 {
         match self {
@@ -2387,6 +2676,22 @@ impl ComparisonOp {
     }
 
     fn compare_bytes(self, left: &[u8], right: &[u8]) -> bool {
+        match self {
+            Self::Lt => left < right,
+            Self::Gt => left > right,
+            Self::Le => left <= right,
+            Self::Ge => left >= right,
+        }
+    }
+
+    const fn compare_equal(self) -> bool {
+        match self {
+            Self::Lt | Self::Gt => false,
+            Self::Le | Self::Ge => true,
+        }
+    }
+
+    const fn compare_lengths(self, left: usize, right: usize) -> bool {
         match self {
             Self::Lt => left < right,
             Self::Gt => left > right,
@@ -5759,6 +6064,144 @@ mod tests {
     }
 
     #[test]
+    fn list_comparisons_are_lexicographic() {
+        assert_eq!(eval("[1 2] < [1 3]").as_bool(), Ok(true));
+        assert_eq!(eval("[1 3] > [1 2]").as_bool(), Ok(true));
+        assert_eq!(eval("[1 2] <= [1 2]").as_bool(), Ok(true));
+        assert_eq!(eval("[1 2] >= [1 3]").as_bool(), Ok(false));
+        assert_eq!(eval("[1] < [1 0]").as_bool(), Ok(true));
+        assert_eq!(eval("[1 0] > [1]").as_bool(), Ok(true));
+        assert_eq!(eval("[] < [0]").as_bool(), Ok(true));
+        assert_eq!(eval("[1 \"a\"] < [1 \"b\"]").as_bool(), Ok(true));
+        assert_eq!(eval("[[1 2]] < [[1 3]]").as_bool(), Ok(true));
+    }
+
+    #[test]
+    fn list_comparisons_short_circuit() {
+        assert_eq!(eval("[1 (1 / 0)] < [2 (1 / 0)]").as_bool(), Ok(true));
+        assert_eq!(eval("[2 (1 / 0)] < [1 (1 / 0)]").as_bool(), Ok(false));
+
+        let ir = lower("[1 (1 / 0)] <= [1 (2 / 0)]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::Binary { lhs, .. } = root.data else {
+            panic!("comparison root has binary payload");
+        };
+        let left = ir.arena.node(lhs).expect("lhs exists");
+        let IrData::Children(left_elements) = left.data else {
+            panic!("lhs list has children");
+        };
+        let left_elements = ir
+            .arena
+            .child_slice(left_elements)
+            .expect("lhs elements exist");
+        let throwing_thunk = ir.arena.node(left_elements[1]).expect("thunk exists");
+        let IrData::Node(throwing_element) = throwing_thunk.data else {
+            panic!("list element is a thunk");
+        };
+        let throwing_span = ir
+            .arena
+            .node(throwing_element)
+            .expect("throwing element exists")
+            .span;
+
+        let error = eval_whnf(&ir).expect_err("equal prefix forces next element");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero {
+                id: throwing_element
+            }
+        );
+        assert_eq!(error.span(), throwing_span);
+    }
+
+    #[test]
+    fn list_comparisons_handle_recursive_container_equality() {
+        assert_eq!(eval("let xs = [ xs ]; in xs < xs").as_bool(), Ok(false));
+        assert_eq!(eval("let xs = [ xs ]; in xs <= xs").as_bool(), Ok(true));
+        assert_eq!(
+            eval("let s = rec { a = s; }; in [s] < [s]").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval("let s = rec { a = s; }; in [s] <= [s]").as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn structural_equality_still_forces_shared_list_elements() {
+        let error = eval_whnf(&lower("let xs = [ (1 / 0) ]; in xs == xs"))
+            .expect_err("shared throwing list element is forced");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+    }
+
+    #[test]
+    fn list_comparisons_type_check_operands_left_to_right() {
+        let rhs_ir = lower("[1] < true");
+        let root = rhs_ir.arena.node(rhs_ir.root).expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("comparison root has binary payload");
+        };
+        let rhs_span = rhs_ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf(&rhs_ir).expect_err("boolean rhs is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: rhs,
+                expected: "list",
+                actual: ValueTag::Bool,
+            }
+        );
+        assert_eq!(error.span(), rhs_span);
+
+        let nested_ir = lower("[1] < [\"a\"]");
+        let error = eval_whnf_owned(&nested_ir).expect_err("string element is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: nested_ir.root,
+                expected: "number",
+                actual: ValueTag::String,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            nested_ir
+                .arena
+                .node(nested_ir.root)
+                .expect("root exists")
+                .span
+        );
+
+        let lhs_ir = lower("false < [(1 / 0)]");
+        let root = lhs_ir.arena.node(lhs_ir.root).expect("root exists");
+        let IrData::Binary { lhs, .. } = root.data else {
+            panic!("comparison root has binary payload");
+        };
+        let lhs_span = lhs_ir.arena.node(lhs).expect("lhs exists").span;
+
+        let error = eval_whnf(&lhs_ir).expect_err("boolean lhs is invalid before rhs");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: lhs,
+                expected: "number, string, or list",
+                actual: ValueTag::Bool,
+            }
+        );
+        assert_eq!(error.span(), lhs_span);
+    }
+
+    #[test]
     fn comparisons_type_check_operands_left_to_right() {
         let rhs_ir = lower("1 < true");
         let root = rhs_ir.arena.node(rhs_ir.root).expect("root exists");
@@ -5851,7 +6294,7 @@ mod tests {
             error.kind(),
             TreeWalkErrorKind::Type {
                 id: lhs,
-                expected: "number or string",
+                expected: "number, string, or list",
                 actual: ValueTag::Bool,
             }
         );
