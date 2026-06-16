@@ -25,6 +25,27 @@ toml = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 
+[features]
+default = []
+# Enable the postgres / mysql sqlx Database backends (RFC-0004 Phase 5). sqlite
+# is always compiled in (native); these add the matching sqlx driver and the
+# SqlxBackend enum arm. The native hub re-delegates its own postgres/mysql
+# features to these.
+postgres = ["sqlx/postgres"]
+mysql = ["sqlx/mysql"]
+
+# The concrete native database driver. `sqlx` does not build for
+# wasm32-unknown-unknown, so it is a native-only dependency: the SqlxBackend
+# Backend impl is compiled out of the Cloudflare Worker target, which supplies a
+# D1 Backend instead (RFC-0004 Phase 5). `runtime-tokio` reuses the existing
+# tokio runtime; the bundled pure-Rust sqlite driver needs no system library.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+sqlx = { workspace = true, features = ["sqlite"] }
+
+[dev-dependencies]
+# The native SqlxBackend batch tests are async; drive them on a tokio runtime.
+tokio = { workspace = true }
+
 # The OS CSPRNG (argon2 salt, and the secret/token generators to come) reaches
 # the browser/Workers `crypto.getRandomValues` through getrandom's JS backend on
 # wasm32. getrandom 0.2 (via password-hash/rand_core 0.6) uses the `js` feature;
