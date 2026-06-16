@@ -606,7 +606,7 @@ in
         rootfsDeps = [
           pkgs.nodejs
           pkgs.miniflare
-          pkgs.workerd
+          pkgs.workerd-source
           self
           fixture
           pkgs.coreutils
@@ -624,9 +624,9 @@ in
           DRIVER_EOF
 
           echo "==> running miniflare + workerd against the built worker"
-          # miniflare honors MINIFLARE_WORKERD_PATH to use the AOS-wrapped
-          # workerd seed instead of the npm blob in its own closure.
-          export MINIFLARE_WORKERD_PATH="${pkgs.workerd}/bin/workerd"
+          # miniflare honors MINIFLARE_WORKERD_PATH to use the from-source AOS
+          # workerd (built via AOS Bazel) instead of the npm blob in its closure.
+          export MINIFLARE_WORKERD_PATH="${pkgs.workerd-source}/bin/workerd"
           export HOME=/tmp
 
           # A top-level throw in the ESM driver must fail the test. Run node
