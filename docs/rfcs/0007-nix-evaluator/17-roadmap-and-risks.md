@@ -479,12 +479,12 @@ AOS package set. Build it in this order.
 
 **Value + heap (Phase-1 subset, [05](05-value-representation.md)/[06](06-memory-management-and-gc.md)).**
 
-- [ ] `value.rs` — the 16-byte tagged `Value` (i64/f64 inline; heap forms behind
+- [x] `value.rs` — the 16-byte tagged `Value` (i64/f64 inline; heap forms behind
       `NonNull`). **No NaN-boxing** (measure-gated, [05](05-value-representation.md) §12).
-- [ ] `heap/arena.rs` — bump-arena Tier A (allocate, never free, drop at exit),
+- [x] `heap/arena.rs` — bump-arena Tier A (allocate, never free, drop at exit),
       with all allocation behind `aos_alloc_*`-shaped entry points so the GC tier
       can swap in later without touching callers. **No GC in Phase 1.**
-- [ ] `attrs.rs` — sorted-vec + binary-search attrsets with `u32`-interned
+- [x] `attrs.rs` — sorted-vec + binary-search attrsets with `u32`-interned
       symbols; deterministic iteration order. Hidden classes are Phase-4.
 
 **Tree-walk oracle ([08](08-execution-tiers-and-cranelift.md) §2.1).**

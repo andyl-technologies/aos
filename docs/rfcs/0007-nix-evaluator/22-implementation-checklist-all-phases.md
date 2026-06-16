@@ -165,7 +165,7 @@ hold invariant.
       NodeIds), `syntax/parser.rs` (recursive-descent + Pratt; rnix is
       test-only, `C-7`), `compile/scope.rs` (de Bruijn `(depth, slot)`),
       `cache/parse.rs` (blake3 content-addressed parse cache).
-- [ ] Value + heap subset: `value.rs` (16-byte tagged `Value`, **no NaN-boxing**,
+- [x] Value + heap subset: `value.rs` (16-byte tagged `Value`, **no NaN-boxing**,
       `S-6`/`M-4`), `heap/arena.rs` (bump-arena Tier A, allocate-never-free,
       all alloc behind `aos_alloc_*`), `attrs.rs` (sorted-vec + binary-search,
       `u32`-interned symbols, deterministic iteration order).
