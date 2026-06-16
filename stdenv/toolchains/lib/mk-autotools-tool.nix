@@ -19,10 +19,24 @@
     then value
     else "";
 
-  source = builtins.fetchTarball {
-    inherit (spec) url;
-    sha256 = spec.hash;
-  };
+  source =
+    if (spec.fetchMode or "tarball") == "url"
+    then
+      builtins.derivation {
+        name = spec.srcName or (builtins.baseNameOf spec.url);
+        system = buildPlatform.system;
+        builder = "builtin:fetchurl";
+        inherit (spec) url;
+        outputHash = spec.hash;
+        outputHashMode = "flat";
+        outputHashAlgo = "sha256";
+        preferLocalBuild = true;
+      }
+    else
+      builtins.fetchTarball {
+        inherit (spec) url;
+        sha256 = spec.hash;
+      };
 
   name = spec.name or "${spec.pname}-${spec.version}";
   makeInfo = spec.makeInfo or "true";
