@@ -6,9 +6,11 @@
   path + Cron indexer onto `core::Database`. **Remaining work — the handler
   unification** (this is where parity is won): move the facade, browse UI, JSON
   API, RPC, auth, and producer console into one shared `axum` router in
-  `core`, served natively via `axum::serve` and on Workers via
-  `axum-cloudflare-adapter`. The worker's hand-written read-only fetch router
-  (`handlers.rs`/`reads.rs`/`facade.rs`) is then deleted. The wasm-feasibility
+  `core`, served natively via `axum::serve` and on Workers via a hand-rolled
+  `worker`⇄`axum` bridge (the published `axum-cloudflare-adapter`s don't support
+  the worker 0.4.x pin — see Open questions). The worker's hand-written
+  read-only fetch router (`handlers.rs`/`reads.rs`/`facade.rs`) is then deleted.
+  The wasm-feasibility
   spike that gated the handler shape is **done** — results in
   "[Spike results](#spike-results-2026-06-16-what-actually-compiles-to-wasm)"
   below; it forced the RPC transport decision (the `connectrpc` *server*
@@ -291,23 +293,25 @@ bound; the method bodies remain single-source.
 
 > Reality note: the shipped data layer holds the backend as `Box<dyn Backend>`
 > on `Database` (not the generic `Router<State<B: Backend>>` this file
-> originally sketched under "Dispatch"). The boxed form is what compiles
-> cleanly through `axum-cloudflare-adapter` and keeps `core` free of a backend
-> type parameter; the "prefer generics" note below is superseded.
+> originally sketched under "Dispatch"). The boxed form keeps `core` free of a
+> backend type parameter and mounts cleanly through the hand-rolled worker
+> bridge; the "prefer generics" note below is superseded.
 
 ## Frontends: one router, two servers
 
 ```rust,ignore
 // native shell (aos-registry-hub)
-let app: axum::Router = aos_registry_core::handlers::router(state);
+let app: axum::Router = aos_registry_core::connect::router(service);
 axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
 
-// worker shell (aos-registry-worker)
+// worker shell (aos-registry-worker) — hand-rolled bridge (no adapter dep; see
+// the version-skew resolution in Open questions), over worker 0.4.2's API.
 #[event(fetch)]
 async fn fetch(req: worker::Request, env: Env, _: Context) -> worker::Result<worker::Response> {
-    let app = aos_registry_core::handlers::router(state_from(env)?);  // identical router
-    Ok(axum_cloudflare_adapter::to_worker_response(
-        app.oneshot(axum_cloudflare_adapter::to_axum_request(req).await?).await?).await?)
+    let app = aos_registry_core::connect::router(service_from(env)?);  // identical router
+    let axum_req = worker_request_to_http(req).await?;     // method/uri/headers/body
+    let axum_resp = app.oneshot(axum_req).await?;          // SendWrapper bridges Send
+    http_response_to_worker(axum_resp).await               // status/headers/body
 }
 
 #[event(scheduled)]
@@ -468,9 +472,11 @@ unification) are the remaining work that wins parity.
      both targets. Delete the native `connectrpc` server impls
      (`aos-registry-hub::rpc`); the connectrpc *runtime* leaves the registry
      path entirely.
-   - e. **Fold the worker** onto the shared router via `axum-cloudflare-adapter`
-     and **delete** `handlers.rs`/`reads.rs`/`facade.rs`/`render.rs`/`keymap.rs`
-     (the duplicated read-only edge).
+   - e. **Fold the worker** onto the shared router via the hand-rolled
+     `worker`⇄`axum` bridge (no adapter dep — see the version-skew resolution in
+     Open questions) + the `SendWrapper` Send bridge, and **delete**
+     `handlers.rs`/`reads.rs`/`facade.rs`/`render.rs`/`keymap.rs` (the
+     duplicated read-only edge).
    - f. **Port `aos-remote::RegistryHubClient`** to a Connect-JSON `reqwest`
      client over `aos-proto-types`, replacing the connectrpc client (the
      `aos hub …` CLI above it is unchanged).
@@ -500,13 +506,20 @@ unification) are the remaining work that wins parity.
   bytes) would not interop out of the box. If third-party Connect clients become
   a requirement, switch the codec to canonical proto3-JSON (`pbjson-build`)
   without changing any handler or service logic. Defaulting to plain `serde`.
-- **`axum-cloudflare-adapter` ↔ `worker` version skew.** The adapter's latest
-  (0.14) tracks `worker` 0.5.x, while the worker crate currently pins
-  `worker` 0.4.2. The adapter's `to_axum_request` / `to_worker_response` take
-  the `worker` crate's `Request`/`Response` types, so the adapter version must
-  match the `worker` version the `#[event(fetch)]` shell uses. Resolve by
-  bumping the worker crate to 0.5.x (and re-validating D1/R2 binding behavior
-  under the pinned workerd) or pinning an adapter release built against 0.4.x.
+- **`axum-cloudflare-adapter` ↔ `worker` version skew — RESOLVED: hand-roll the
+  bridge, drop the adapter.** No adapter release supports the AOS pin: 0.12
+  needs `worker` 0.2 + `axum` 0.7, and 0.14 jumps to `worker` 0.5 + `axum` 0.8 —
+  there is no build for `worker` 0.4.x with `axum` 0.8 (confirmed against the
+  published crate manifests). Using the adapter would force a `worker`
+  0.4.2 → 0.5 bump (changed D1/R2 APIs, re-validation against the pinned
+  workerd's D1 quirks) for no real gain, since the adapter only converts
+  `worker::Request`⇄`http::Request` and runs `router.oneshot`. The Worker shell
+  therefore **hand-rolls** that ~40-line bridge over `worker` 0.4.2's
+  `Request`/`Response` API and calls `connect::router(...).oneshot(req)`
+  directly — keeping the pin, dropping the external dependency, and still
+  serving the *same* shared `axum` router. (The Send bridge above —
+  `SendWrapper` — is what makes that router mountable on wasm in the first
+  place.)
 - **Argon2 cost under the Worker CPU budget** (carried from sharp edges): the
   password-auth path runs in-request on the worker; confirm the cost
   parameters fit the per-request CPU limit or move password verification to a
