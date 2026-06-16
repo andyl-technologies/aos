@@ -1,17 +1,18 @@
 //! Safe tree-walk evaluator over lowered IR.
 //!
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
-//! first slices evaluate scalar literals, boolean control flow, assertions,
-//! boolean operators, string literals and concatenation, numeric arithmetic,
-//! numeric and string comparisons, and scalar/string equality to weak head
-//! normal form, establishing the arena access and diagnostic surface used by
-//! later slices for environments, thunks, functions, attribute sets, primitive
-//! operations, and derivation boundaries.
+//! first slices evaluate scalar and empty list literals, boolean control flow,
+//! assertions, boolean operators, string literals and concatenation, numeric
+//! arithmetic, numeric and string comparisons, and scalar/string equality to
+//! weak head normal form, establishing the arena access and diagnostic surface
+//! used by later slices for environments, thunks, functions, attribute sets,
+//! primitive operations, and derivation boundaries.
 
 use thiserror::Error;
 
 use super::heap::{EvalHeap, EvalHeapError};
-use crate::compile::{Ir, IrData, IrId, IrKind, IrNode};
+use crate::compile::{Ir, IrChildSlice, IrData, IrId, IrKind, IrNode};
+use crate::list::NixList;
 use crate::string::{NixString, NixStringError};
 use crate::syntax::{BinOpKind, Span, Symbol, UnaryOpKind};
 use crate::value::{Value, ValueTag};
@@ -116,9 +117,9 @@ impl<'ir> TreeWalk<'ir> {
     /// Evaluates a node to weak head normal form.
     ///
     /// This initial public node entry point is intentionally limited to
-    /// environment-free scalar literal, string literal, control-flow, boolean
-    /// operator, string concatenation, numeric arithmetic, numeric and string
-    /// comparison, and scalar/string equality nodes.
+    /// environment-free scalar literal, empty list literal, string literal,
+    /// control-flow, boolean operator, string concatenation, numeric arithmetic,
+    /// numeric and string comparison, and scalar/string equality nodes.
     /// Environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add an explicit
     /// runtime and environment context.
@@ -156,6 +157,7 @@ impl<'ir> TreeWalk<'ir> {
                 Ok(Value::null())
             }
             IrKind::Str => self.eval_string(id, &node),
+            IrKind::List => self.eval_list(id, &node),
             IrKind::If => self.eval_if(id, &node),
             IrKind::Assert => self.eval_assert(id, &node),
             IrKind::UnaryOp => self.eval_unary(id, &node),
@@ -290,6 +292,33 @@ impl<'ir> TreeWalk<'ir> {
         owned.extend_from_slice(bytes);
         self.heap
             .alloc_string(NixString::from_bytes(owned))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    fn eval_list(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Children(children) = node.data else {
+            return Err(self.invalid_payload(id, node, "list children"));
+        };
+        let children = self.ir.arena.child_slice(children).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidChildSlice {
+                    id,
+                    slice: children,
+                },
+                node.span,
+            )
+        })?;
+        if !children.is_empty() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedListElements {
+                    id,
+                    len: children.len(),
+                },
+                node.span,
+            ));
+        }
+        self.heap
+            .alloc_list(NixList::empty())
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
@@ -778,6 +807,14 @@ pub enum TreeWalkErrorKind {
         /// The expected payload contract.
         expected: &'static str,
     },
+    /// A child-pool slice payload did not resolve through the IR arena.
+    #[error("invalid child slice {slice:?} at node {id:?}")]
+    InvalidChildSlice {
+        /// The node id carrying the invalid child slice.
+        id: IrId,
+        /// The invalid child slice payload.
+        slice: IrChildSlice,
+    },
     /// A symbol payload did not resolve through the IR symbol table.
     #[error("invalid symbol {symbol:?} at node {id:?}")]
     InvalidSymbol {
@@ -856,6 +893,14 @@ pub enum TreeWalkErrorKind {
         left: ValueTag,
         /// The right operand's runtime value tag.
         right: ValueTag,
+    },
+    /// Non-empty list spines require thunk allocation support.
+    #[error("unsupported tree-walk non-empty list with {len} elements at {id:?}")]
+    UnsupportedListElements {
+        /// The list node id.
+        id: IrId,
+        /// The number of list elements in the spine.
+        len: usize,
     },
     /// A checked integer arithmetic operation overflowed.
     #[error("arithmetic overflow for {op:?} at node {id:?}")]
@@ -993,6 +1038,40 @@ mod tests {
                 .expect("escaped string is heap-owned")
                 .bytes(),
             b"line\n\"quoted\""
+        );
+    }
+
+    #[test]
+    fn evaluates_empty_list_literals_with_owned_heap() {
+        let ir = lower("[]");
+        let outcome = eval_whnf_owned(&ir).expect("empty list evaluates");
+        let value = outcome.value();
+
+        assert_eq!(value.tag(), ValueTag::List);
+        assert!(
+            outcome
+                .heap()
+                .get_list(value)
+                .expect("list is heap-owned")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn non_empty_list_literals_wait_for_thunk_allocation() {
+        let ir = lower("[ (1 / 0) ]");
+        let error = eval_whnf_owned(&ir).expect_err("non-empty list needs thunks");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedListElements {
+                id: ir.root,
+                len: 1,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            ir.arena.node(ir.root).expect("root exists").span
         );
     }
 
@@ -1155,18 +1234,33 @@ mod tests {
             error.span(),
             ir.arena.node(ir.root).expect("root exists").span
         );
+
+        let list_ir = lower("[]");
+        let error = eval_whnf(&list_ir).expect_err("list value needs owning heap");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::HeapValueRequiresOwner {
+                id: list_ir.root,
+                tag: ValueTag::List,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            list_ir.arena.node(list_ir.root).expect("root exists").span
+        );
     }
 
     #[test]
     fn unsupported_nodes_report_kind_and_span() {
-        let ir = lower("[]");
-        let error = eval_whnf(&ir).expect_err("list construction is not implemented yet");
+        let ir = lower("{}");
+        let error = eval_whnf(&ir).expect_err("attrset construction is not implemented yet");
 
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::UnsupportedNode {
                 id: ir.root,
-                kind: IrKind::List,
+                kind: IrKind::AttrSet,
             }
         );
         assert_eq!(error.span(), Span::new(0, 2));
@@ -1213,6 +1307,7 @@ mod tests {
             (IrKind::Bool, IrData::None, "boolean payload"),
             (IrKind::Null, IrData::Bool(false), "empty payload"),
             (IrKind::Str, IrData::None, "string symbol payload"),
+            (IrKind::List, IrData::None, "list children"),
         ];
 
         for (index, (kind, data, expected)) in cases.into_iter().enumerate() {
@@ -1251,6 +1346,24 @@ mod tests {
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::InvalidSymbol { id: root, symbol }
+        );
+        assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn invalid_list_child_slices_are_reported() {
+        let root = IrId::new(0);
+        let slice = IrChildSlice::new(7, 1);
+        let span = Span::new(0, 2);
+        let ir = manual_ir(
+            root,
+            vec![pure_node(IrKind::List, span, IrData::Children(slice))],
+        );
+        let error = eval_whnf_owned(&ir).expect_err("list child slice must exist");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidChildSlice { id: root, slice }
         );
         assert_eq!(error.span(), span);
     }
