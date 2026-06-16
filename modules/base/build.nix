@@ -559,6 +559,7 @@ in {
                 ln -sfn ${config.system.build.etcBasedir} $out/etc-basedir
                 ln -sfn ${config.system.build.etcDump} $out/etc-dump
                 ln -sfn ${config.system.build.systemdSystemUnits} $out/systemd-units
+                ln -sfn ${config.system.build.systemdSystemPresets} $out/systemd-presets
                 ln -sfn ${config.system.build.ignitionRolesBundle} $out/ignition-roles
                 ln -sfn ${config.environment.etc."os-release".source} $out/os-release
                 ln -sfn ${config.system.build.kernel} $out/kernel
