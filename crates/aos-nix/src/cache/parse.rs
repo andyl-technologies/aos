@@ -23,12 +23,12 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::compile::{
-    FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, ResolvedAst, ScopeTables,
-    Upvalue, WithChain,
+    FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, ResolvedAst, ScopeError,
+    ScopeTables, Upvalue, WithChain, resolve,
 };
 use crate::syntax::{
-    AstArena, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind, Span, Symbol, SymbolTable,
-    UnaryOpKind,
+    AstArena, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind, ParseError, Span, Symbol,
+    SymbolTable, UnaryOpKind, parse_bytes,
 };
 
 /// The schema version included in every parse-cache key and metadata file.
@@ -156,6 +156,65 @@ impl ParseCache {
     pub fn entry_for_source(&self, source: &[u8]) -> ParseCacheEntry {
         self.entry_for_key(self.key_for_source(source))
     }
+
+    /// Loads a resolved parse artifact from cache or parses and stores it.
+    ///
+    /// Cache misses and corrupt artifacts both fall back to parsing `source`.
+    /// The optional `source_hint` is written only to diagnostic metadata; it is
+    /// not part of the cache key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] when parsing or scope resolution fails. Cache
+    /// write failures are reported through [`CachedParse::stored`] rather than
+    /// returned as errors, keeping the cache performance-only for evaluator
+    /// callers.
+    pub fn load_or_parse_bytes(
+        &self,
+        source: &[u8],
+        source_hint: Option<String>,
+    ) -> Result<CachedParse, ParseCacheError> {
+        let key = self.key_for_source(source);
+        let entry = self.entry_for_key(key);
+        if entry.is_complete() {
+            if let Ok(resolved) = entry.read_resolved() {
+                return Ok(CachedParse {
+                    key,
+                    entry,
+                    resolved,
+                    hit: true,
+                    stored: true,
+                });
+            }
+        }
+
+        let parsed = parse_bytes(source).map_err(|source| ParseCacheError::Parse { source })?;
+        let resolved = resolve(parsed).map_err(|source| ParseCacheError::Scope { source })?;
+        let meta = ParseCacheMeta::for_resolved(self.schema_version, source_hint, &resolved)?;
+        let stored = entry.write_resolved(&resolved, &meta).is_ok();
+        Ok(CachedParse {
+            key,
+            entry,
+            resolved,
+            hit: false,
+            stored,
+        })
+    }
+}
+
+/// The result of [`ParseCache::load_or_parse_bytes`].
+#[derive(Clone, Debug)]
+pub struct CachedParse {
+    /// The content-addressed key for the source bytes.
+    pub key: ParseCacheKey,
+    /// The cache entry used for this source.
+    pub entry: ParseCacheEntry,
+    /// The loaded or freshly parsed resolved AST.
+    pub resolved: ResolvedAst,
+    /// Whether the artifact was loaded from cache.
+    pub hit: bool,
+    /// Whether a valid artifact is present in the cache after this operation.
+    pub stored: bool,
 }
 
 /// Filesystem paths for one parse-cache entry.
@@ -308,6 +367,29 @@ impl ParseCacheMeta {
         }
     }
 
+    /// Creates metadata for a resolved AST artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if the arena node count or symbol count does
+    /// not fit in the metadata's `u32` fields.
+    pub fn for_resolved(
+        schema_version: u32,
+        source_hint: Option<String>,
+        resolved: &ResolvedAst,
+    ) -> Result<Self, ParseCacheError> {
+        let node_count = u32::try_from(resolved.arena.len())
+            .map_err(|_| ParseCacheError::EncodeArtifact("node count exceeds u32".to_owned()))?;
+        let symbol_count = u32::try_from(resolved.symbols.len())
+            .map_err(|_| ParseCacheError::EncodeArtifact("symbol count exceeds u32".to_owned()))?;
+        Ok(Self::new(
+            schema_version,
+            source_hint,
+            node_count,
+            symbol_count,
+        ))
+    }
+
     /// Formats this metadata as TOML.
     pub fn to_toml(&self) -> String {
         let mut out = String::new();
@@ -326,6 +408,18 @@ impl ParseCacheMeta {
 /// A parse-cache filesystem failure.
 #[derive(Debug, Error)]
 pub enum ParseCacheError {
+    /// Source bytes could not be parsed.
+    #[error("failed to parse source for parse cache")]
+    Parse {
+        /// The parser failure.
+        source: ParseError,
+    },
+    /// A parsed AST could not be scope-resolved.
+    #[error("failed to resolve source for parse cache")]
+    Scope {
+        /// The scope-resolution failure.
+        source: ScopeError,
+    },
     /// The cache entry directory could not be created.
     #[error("failed to create parse-cache directory {path:?}")]
     CreateDir {
@@ -1292,6 +1386,69 @@ mod tests {
         assert!(!entry.is_complete());
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_or_parse_writes_then_hits_by_source_content() {
+        let root = temp_root();
+        let cache = ParseCache::new(root.join("parse"));
+        let source = b"let x = 1; in x";
+
+        let miss = cache
+            .load_or_parse_bytes(source, Some("first.nix".to_owned()))
+            .expect("source parses on miss");
+        assert!(!miss.hit);
+        assert!(miss.stored);
+        assert!(miss.entry.is_complete());
+
+        let hit = cache
+            .load_or_parse_bytes(source, Some("second-name-is-not-identity.nix".to_owned()))
+            .expect("source loads on hit");
+        assert!(hit.hit);
+        assert!(hit.stored);
+        assert_eq!(hit.key, miss.key);
+        assert_eq!(hit.resolved.arena.nodes(), miss.resolved.arena.nodes());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_or_parse_recovers_from_corrupt_artifact() {
+        let root = temp_root();
+        let cache = ParseCache::new(root.join("parse"));
+        let source = b"let x = 1; in x";
+        let first = cache
+            .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+            .expect("source parses on miss");
+        fs::write(first.entry.ir_path(), b"not an ir artifact").expect("corrupt ir writes");
+
+        let recovered = cache
+            .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+            .expect("source reparses after corrupt cache");
+        assert!(!recovered.hit);
+        assert!(recovered.stored);
+        assert!(recovered.entry.is_complete());
+        assert_eq!(
+            recovered.resolved.arena.nodes(),
+            first.resolved.arena.nodes()
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_or_parse_treats_write_failures_as_cache_misses() {
+        let root = temp_root();
+        fs::write(&root, b"not a directory").expect("file cache root writes");
+        let cache = ParseCache::new(root.join("parse"));
+
+        let parsed = cache
+            .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
+            .expect("parse succeeds despite cache write failure");
+        assert!(!parsed.hit);
+        assert!(!parsed.stored);
+
+        let _ = fs::remove_file(root);
     }
 
     #[test]

@@ -7,6 +7,6 @@
 pub mod parse;
 
 pub use parse::{
-    PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheEntry, ParseCacheError, ParseCacheFlags,
-    ParseCacheKey, ParseCacheMeta,
+    CachedParse, PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheEntry, ParseCacheError,
+    ParseCacheFlags, ParseCacheKey, ParseCacheMeta,
 };

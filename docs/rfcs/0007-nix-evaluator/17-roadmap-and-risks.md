@@ -474,7 +474,7 @@ AOS package set. Build it in this order.
 - [x] `syntax/parser.rs` — recursive-descent + Pratt for operators; **no rnix in
       the production path** (rnix is a test-only oracle).
 - [x] `compile/scope.rs` — name resolution to de Bruijn `(depth, slot)` indices.
-- [ ] `cache/parse.rs` — content-addressed (blake3) parse-artifact cache so the
+- [x] `cache/parse.rs` — content-addressed (blake3) parse-artifact cache so the
       package set parses once.
 
 **Value + heap (Phase-1 subset, [05](05-value-representation.md)/[06](06-memory-management-and-gc.md)).**
