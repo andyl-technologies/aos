@@ -44,15 +44,19 @@ in
         export PATH="${prev.coreutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${crossBinutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin:${prev.m4}/bin:${prev.flex}/bin:${prev.bison}/bin:${prev.texinfo}/bin"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
 
-        cp -r ${gccSrc} "$TMPDIR/gcc-4.8.5"
+        mkdir -p "$TMPDIR/gcc-4.8.5"
+        (cd ${gccSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5" && tar xf -)
         chmod -R u+w "$TMPDIR/gcc-4.8.5"
 
         # In-tree GMP, MPFR, MPC
-        cp -r ${gmpSrc} "$TMPDIR/gcc-4.8.5/gmp"
+        mkdir -p "$TMPDIR/gcc-4.8.5/gmp"
+        (cd ${gmpSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5/gmp" && tar xf -)
         chmod -R u+w "$TMPDIR/gcc-4.8.5/gmp"
-        cp -r ${mpfrSrc} "$TMPDIR/gcc-4.8.5/mpfr"
+        mkdir -p "$TMPDIR/gcc-4.8.5/mpfr"
+        (cd ${mpfrSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5/mpfr" && tar xf -)
         chmod -R u+w "$TMPDIR/gcc-4.8.5/mpfr"
-        cp -r ${mpcSrc} "$TMPDIR/gcc-4.8.5/mpc"
+        mkdir -p "$TMPDIR/gcc-4.8.5/mpc"
+        (cd ${mpcSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5/mpc" && tar xf -)
         chmod -R u+w "$TMPDIR/gcc-4.8.5/mpc"
 
         SRC="$TMPDIR/gcc-4.8.5"
@@ -110,12 +114,20 @@ in
         ${prev.sed}/bin/sed -i \
           "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = ${crossGlibc}/include|" \
           gcc/Makefile
+        ${prev.sed}/bin/sed -i \
+          '/CC="$(CC_FOR_TARGET).*export CC;/a\	CPP="$(CC_FOR_TARGET) $(XGCC_FLAGS_FOR_TARGET) $$TFLAGS -E"; export CPP; \\' \
+          Makefile
 
         # Create $prefix/$target/bin/ with cross-tool symlinks
         mkdir -p "$out/${hostPlatform.config}/bin"
         for tool in as ld ar ranlib nm objcopy objdump strip; do
           ln -sf ${crossBinutils}/bin/${hostPlatform.config}-$tool \
             "$out/${hostPlatform.config}/bin/$tool" 2>/dev/null || true
+        done
+        TARGLIB="$out/${hostPlatform.config}/lib"
+        mkdir -p "$TARGLIB"
+        for f in "${crossGlibc}/lib/"*.o "${crossGlibc}/lib/"*.a; do
+          test -f "$f" && ln -sf "$f" "$TARGLIB/"
         done
 
         # Override target-libiberty — can fail with header incompatibilities
@@ -127,7 +139,12 @@ in
           CXXFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
           LDFLAGS_FOR_TARGET="-L${crossGlibc}/lib -static"
 
+        make -j"$NIX_BUILD_CORES" all-target-libgcc \
+          CFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
+          LDFLAGS_FOR_TARGET="-L${crossGlibc}/lib -static"
+
         make install-gcc
+        make install-target-libgcc
 
         # Create expected symlinks
         test -f "$out/bin/gcc" && test ! -f "$out/bin/${hostPlatform.config}-gcc" && \
@@ -138,12 +155,15 @@ in
         # Create libgcc_eh.a and re-index libgcc.a
         GCCLIB="$out/lib/gcc/${hostPlatform.config}/4.8.5"
         mkdir -p "$GCCLIB"
-        "${prev.binutils}/bin/ar" crs "$GCCLIB/libgcc_eh.a"
+        test -f "$GCCLIB/libgcc.a" || { echo "FATAL: libgcc.a not installed"; exit 1; }
+        test -f "$GCCLIB/crtbeginT.o" || { echo "FATAL: crtbeginT.o not installed"; exit 1; }
+        if [ ! -f "$GCCLIB/libgcc_eh.a" ]; then
+          "${crossBinutils}/bin/${hostPlatform.config}-ar" crs "$GCCLIB/libgcc_eh.a"
+        fi
         "${crossBinutils}/bin/${hostPlatform.config}-ranlib" \
           "$GCCLIB/libgcc.a" 2>/dev/null || true
 
         # Symlink glibc CRT and libraries into GCC's library directories
-        TARGLIB="$out/${hostPlatform.config}/lib"
         mkdir -p "$GCCLIB" "$TARGLIB"
         for f in "${crossGlibc}/lib/"*.o "${crossGlibc}/lib/"*.a; do
           test -f "$f" && ln -sf "$f" "$GCCLIB/" && ln -sf "$f" "$TARGLIB/"
