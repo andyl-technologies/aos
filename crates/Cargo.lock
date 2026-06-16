@@ -327,6 +327,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-registry-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "aos-registry-hub"
 version = "0.1.0"
 dependencies = [
@@ -336,6 +343,7 @@ dependencies = [
  "aos-core",
  "aos-package",
  "aos-proto",
+ "aos-registry-core",
  "aos-registry-surface",
  "argon2",
  "async-trait",
