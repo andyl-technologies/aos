@@ -208,6 +208,30 @@ fn channel_message(channel: crate::db::ChannelSummary) -> pb::Channel {
     }
 }
 
+/// Project an [`OrgRecord`](crate::db::OrgRecord) onto the wire [`pb::Org`].
+fn org_message(org: &crate::db::OrgRecord) -> pb::Org {
+    pb::Org {
+        slug: org.slug.clone(),
+        name: org.name.clone(),
+        created_at: org.created_at,
+    }
+}
+
+/// Project a [`ChangesetRow`](crate::db::ChangesetRow) onto the wire
+/// [`pb::Changeset`], flattening its optional summary/applied/revert fields.
+fn changeset_message(row: crate::db::ChangesetRow) -> pb::Changeset {
+    pb::Changeset {
+        change_id: row.change_id,
+        actor_label: row.actor_label,
+        scope: row.scope,
+        status: row.status,
+        summary: row.summary.unwrap_or_default(),
+        created_at: row.created_at,
+        applied_at: row.applied_at.unwrap_or_default(),
+        reverted_by_change_id: row.reverted_by_change_id.unwrap_or_default(),
+    }
+}
+
 /// The shared, transport-free implementation of the `aos.registry.v1` services.
 ///
 /// Holds only data the method bodies need — the [`Database`], the [`JwtKeys`]
@@ -677,5 +701,319 @@ impl RpcService {
         Ok(pb::GetChannelResponse {
             channel: Some(channel_message(channel)),
         })
+    }
+
+    /// Resolve an org by slug or map a miss to `NotFound`.
+    async fn org_or_not_found(&self, slug: &str) -> Result<crate::db::OrgRecord, RpcError> {
+        self.db
+            .org_by_slug(slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("org"))
+    }
+
+    /// `OrgService.GetOrg` — look up an organization by slug.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::NotFound`] for an unknown slug and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn get_org(
+        &self,
+        _auth: Option<&str>,
+        req: pb::GetOrgRequest,
+    ) -> Result<pb::GetOrgResponse, RpcError> {
+        let org = self.org_or_not_found(&req.slug).await?;
+        Ok(pb::GetOrgResponse {
+            org: Some(org_message(&org)),
+        })
+    }
+
+    /// `OrgService.ListOrgs` — the organizations the caller is a member of,
+    /// ordered by slug.
+    ///
+    /// This is *not* a public directory: the caller must present a bearer JWT,
+    /// and each org is included only when that caller holds
+    /// [`Permission::Read`] covering its scope (soft-deleted orgs are already
+    /// excluded by [`Database::list_orgs`](crate::db::Database::list_orgs)).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::InvalidArgument`] for a malformed `page_token`, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_orgs(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListOrgsRequest,
+    ) -> Result<pb::ListOrgsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let all_orgs = self.db.list_orgs().await.map_err(RpcError::internal)?;
+        let mut orgs: Vec<pb::Org> = Vec::new();
+        for org in all_orgs.iter() {
+            if self
+                .claims_allow(Some(&claims), Permission::Read, &Scope::parse(&org.slug))
+                .await
+            {
+                orgs.push(org_message(org));
+            }
+        }
+        let (orgs, next_page_token) = paginate(orgs, req.page_size, &req.page_token)?;
+        Ok(pb::ListOrgsResponse {
+            orgs,
+            next_page_token,
+        })
+    }
+
+    /// `ProjectService.ListProjects` — an org's projects, ordered by path.
+    ///
+    /// The project tree is org-internal: the caller must present a bearer JWT
+    /// granting [`Permission::Read`] on the org scope. An anonymous or
+    /// non-member caller is denied, so the project layout never leaks across
+    /// tenants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::NotFound`] for an unknown org,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `Read` on the org
+    /// scope, and [`RpcError::Internal`] on database failure.
+    pub async fn list_projects(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListProjectsRequest,
+    ) -> Result<pb::ListProjectsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self.org_or_not_found(&req.org_slug).await?;
+        self.require_permission(&claims, Permission::Read, &Scope::parse(&org.slug))
+            .await?;
+        let projects: Vec<pb::Project> = self
+            .db
+            .list_projects(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|p| pb::Project {
+                org_slug: org.slug.clone(),
+                path: p.path,
+                name: p.name,
+            })
+            .collect();
+        Ok(pb::ListProjectsResponse { projects })
+    }
+
+    /// `StorageService.ListBindings` — an org's storage bindings, by name.
+    ///
+    /// The caller must present a bearer JWT granting [`Permission::Read`] on
+    /// the org scope. A binding's `root` is the on-disk path on the hub host,
+    /// so it is returned **only** to a caller who additionally holds
+    /// [`Permission::RegistryConfigure`] on the org; a plain member sees the
+    /// binding's name and kind, but `root` is redacted to the empty string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::NotFound`] for an unknown org,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `Read` on the org
+    /// scope, and [`RpcError::Internal`] on database failure.
+    pub async fn list_bindings(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListBindingsRequest,
+    ) -> Result<pb::ListBindingsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self.org_or_not_found(&req.org_slug).await?;
+        let scope = Scope::parse(&org.slug);
+        self.require_permission(&claims, Permission::Read, &scope)
+            .await?;
+        // The `root` host path is an admin-only detail: only a caller who could
+        // create or delete bindings (RegistryConfigure) sees it. A plain member
+        // gets an empty `root` so the hub's filesystem layout never leaks.
+        let expose_root = self
+            .claims_allow(Some(&claims), Permission::RegistryConfigure, &scope)
+            .await;
+        let bindings: Vec<pb::Binding> = self
+            .db
+            .list_storage_bindings(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|b| pb::Binding {
+                org_slug: org.slug.clone(),
+                name: b.name,
+                kind: b.kind,
+                root: if expose_root { b.root } else { String::new() },
+            })
+            .collect();
+        Ok(pb::ListBindingsResponse { bindings })
+    }
+
+    /// `AuditService.ListAudit` — recent audit entries at a scope, newest first.
+    ///
+    /// The caller must hold [`Permission::AuditRead`] (admin+) on the queried
+    /// scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `audit.read` on the
+    /// scope, [`RpcError::InvalidArgument`] for a malformed `page_token`, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_audit(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListAuditRequest,
+    ) -> Result<pb::ListAuditResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let scope = Scope::parse(&req.scope);
+        self.require_permission(&claims, Permission::AuditRead, &scope)
+            .await?;
+        let entries: Vec<pb::AuditEntry> = self
+            .db
+            .list_audit(&req.scope)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|row| pb::AuditEntry {
+                change_id: row.change_id.unwrap_or_default(),
+                actor_label: row.actor_label,
+                action: row.action,
+                scope: row.scope,
+                result_commit: row.result_commit.unwrap_or_default(),
+                result_tag: row.result_tag.unwrap_or_default(),
+                detail: row.detail.unwrap_or_default(),
+                created_at: row.created_at,
+            })
+            .collect();
+        let (entries, next_page_token) = paginate(entries, req.page_size, &req.page_token)?;
+        Ok(pb::ListAuditResponse {
+            entries,
+            next_page_token,
+        })
+    }
+
+    /// `ConfigService.ListChangesets` — change-sets at a scope, newest first.
+    ///
+    /// Reads require [`Permission::AuditRead`] on the scope (ConfigService
+    /// reads are an admin+ surface, same as the audit feed).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `audit.read` on the
+    /// scope, [`RpcError::InvalidArgument`] for a malformed `page_token`, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_changesets(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListChangesetsRequest,
+    ) -> Result<pb::ListChangesetsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let scope = Scope::parse(&req.scope);
+        self.require_permission(&claims, Permission::AuditRead, &scope)
+            .await?;
+        let changesets: Vec<pb::Changeset> = self
+            .db
+            .list_changesets(&req.scope)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(changeset_message)
+            .collect();
+        let (changesets, next_page_token) = paginate(changesets, req.page_size, &req.page_token)?;
+        Ok(pb::ListChangesetsResponse {
+            changesets,
+            next_page_token,
+        })
+    }
+
+    /// `ConfigService.GetChangeset` — one change-set's revisions and diffs.
+    ///
+    /// Loads the change-set summary plus its revisions, each rendered with the
+    /// field-level diff [`crate::config::semantic_diff`] produces (the
+    /// terraform-plan review view). Reads require [`Permission::AuditRead`] on
+    /// the change-set's recorded scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::NotFound`] for an unknown `change_id`,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `audit.read` on the
+    /// change-set's scope, and [`RpcError::Internal`] on database failure.
+    pub async fn get_changeset(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetChangesetRequest,
+    ) -> Result<pb::GetChangesetResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let summary = self
+            .db
+            .changeset(&req.change_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("changeset"))?;
+        self.require_permission(&claims, Permission::AuditRead, &Scope::parse(&summary.scope))
+            .await?;
+        let change_id = crate::config::ChangeId(summary.change_id.clone());
+        let revisions: Vec<pb::Revision> = crate::config::review(&self.db, &change_id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|(revision, diffs)| pb::Revision {
+                object_type: revision.object_type,
+                object_id: revision.object_id,
+                op: revision.op.as_str().to_string(),
+                diffs: diffs
+                    .into_iter()
+                    .map(|d| pb::FieldDiff {
+                        field: d.field,
+                        old: d.old.unwrap_or_default(),
+                        new: d.new.unwrap_or_default(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        Ok(pb::GetChangesetResponse {
+            changeset: Some(changeset_message(summary)),
+            revisions,
+        })
+    }
+
+    /// `WebhookService.ListWebhooks` — an org's webhook subscriptions.
+    ///
+    /// Secrets are omitted. Requires [`Permission::MembersManage`] on the org
+    /// scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `members.manage` on
+    /// the org, [`RpcError::NotFound`] for an unknown org, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_webhooks(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListWebhooksRequest,
+    ) -> Result<pb::ListWebhooksResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self.org_or_not_found(&req.org_slug).await?;
+        self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))
+            .await?;
+        let webhooks: Vec<pb::Webhook> = self
+            .db
+            .list_webhooks(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|w| pb::Webhook {
+                id: w.id,
+                org_slug: org.slug.clone(),
+                url: w.url,
+                events: w.events,
+                active: w.active,
+                created_at: w.created_at,
+            })
+            .collect();
+        Ok(pb::ListWebhooksResponse { webhooks })
     }
 }
