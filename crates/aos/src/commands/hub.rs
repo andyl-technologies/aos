@@ -55,6 +55,11 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
         HubCmd::Project { command } => project(printer, command).await,
         HubCmd::Binding { command } => binding(printer, command).await,
         HubCmd::Webhook { command } => webhook(printer, command).await,
+        HubCmd::RevertChangeset {
+            hub,
+            token,
+            change_id,
+        } => revert_changeset(printer, hub, token.as_deref(), change_id).await,
         HubCmd::MintUpload { hub, token, slug } => {
             mint_upload(printer, hub, token.as_deref(), slug).await
         }
@@ -333,6 +338,32 @@ async fn webhook(printer: &Printer, command: &HubWebhookCmd) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Handles `aos hub revert-changeset --change-id <id>`.
+async fn revert_changeset(
+    printer: &Printer,
+    hub: &str,
+    token: Option<&str>,
+    change_id: &str,
+) -> Result<()> {
+    let client = hub_client(hub, token)?;
+    let reverted = client.revert_changeset(change_id).await?;
+    if printer.json_if_active(&serde_json::json!({
+        "changeset": {
+            "change_id": reverted.change_id,
+            "status": reverted.status,
+            "summary": reverted.summary,
+            "scope": reverted.scope,
+        },
+    })) {
+        return Ok(());
+    }
+    printer.success(&format!(
+        "reverted '{change_id}' via change-set '{}' [{}]",
+        reverted.change_id, reverted.status
+    ));
+    Ok(())
 }
 
 /// Handles `aos hub mint-upload --slug <registry>`.
@@ -720,6 +751,106 @@ async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Result<()> {
                 ));
             }
             Ok(())
+        }
+        HubRegistryCmd::Package {
+            hub,
+            token,
+            slug,
+            name,
+        } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let package = client.get_package(slug, name).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "package": package.as_ref().map(|p| serde_json::json!({
+                    "name": p.name,
+                    "description": p.description,
+                    "homepage": p.homepage,
+                    "license": p.license,
+                    "maintainer": p.maintainer,
+                    "sysroot": p.sysroot,
+                    "versions": p.versions
+                        .iter()
+                        .map(|v| serde_json::json!({
+                            "version": v.version,
+                            "previous": v.previous,
+                            "platforms": v.platforms
+                                .iter()
+                                .map(|pl| serde_json::json!({
+                                    "platform": pl.platform,
+                                    "store_path": pl.store_path,
+                                    "nar_hash": pl.nar_hash,
+                                    "nar_size": pl.nar_size,
+                                    "closure_size": pl.closure_size,
+                                }))
+                                .collect::<Vec<_>>(),
+                        }))
+                        .collect::<Vec<_>>(),
+                })),
+            })) {
+                return Ok(());
+            }
+            match package {
+                Some(package) => {
+                    printer.header(&format!("{} ({slug})", package.name));
+                    printer.plain(&format!("  description: {}", package.description));
+                    printer.plain(&format!("  license:     {}", package.license));
+                    printer.plain(&format!("  maintainer:  {}", package.maintainer));
+                    printer.plain(&format!("  {} version(s):", package.versions.len()));
+                    for version in &package.versions {
+                        printer.plain(&format!(
+                            "    {}  ({} platform(s))",
+                            version.version,
+                            version.platforms.len()
+                        ));
+                    }
+                    Ok(())
+                }
+                None => {
+                    printer.info(&format!("no package '{name}' in '{slug}'"));
+                    Ok(())
+                }
+            }
+        }
+        HubRegistryCmd::Channel {
+            hub,
+            token,
+            slug,
+            name,
+        } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let channel = client.get_channel(slug, name).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "channel": channel.as_ref().map(|c| serde_json::json!({
+                    "name": c.name,
+                    "frontier": c.frontier,
+                    "partitions": c.partitions
+                        .iter()
+                        .map(|p| serde_json::json!({ "bucket": p.bucket, "release": p.release }))
+                        .collect::<Vec<_>>(),
+                })),
+            })) {
+                return Ok(());
+            }
+            match channel {
+                Some(channel) => {
+                    let frontier = if channel.frontier.is_empty() {
+                        "unset"
+                    } else {
+                        &channel.frontier
+                    };
+                    printer.header(&format!("channel {} ({slug})", channel.name));
+                    printer.plain(&format!("  frontier:   {frontier}"));
+                    printer.plain(&format!(
+                        "  assigned:   {}/256 partitions",
+                        channel.partitions.len()
+                    ));
+                    Ok(())
+                }
+                None => {
+                    printer.info(&format!("no channel '{name}' in '{slug}'"));
+                    Ok(())
+                }
+            }
         }
     }
 }
