@@ -454,35 +454,35 @@ unification) are the remaining work that wins parity.
    / guarded conditionals) so writes are batchable on D1. *Done.*
 3. ✅ **Flip `Backend` to async** and ship the native `sqlx` backend +
    `core::Database` (reads and writes) + the worker `D1Backend`. *Done.*
-4. **Handler unification** (in progress — the parity work):
+4. **Handler unification** (the parity work — RPC surface done; facade/console
+   relocation remains):
    - a. ✅ Worker read path + Cron indexer fold onto `core::Database`. *Done.*
-   - b. **Add `aos-proto-types`** — message structs generated from the `.proto`
-     with `prost-build` + `serde` derives (wasm-clean; no `buffa`/`connectrpc`),
-     the lingua franca of `RpcService`, the shared handlers, and the client.
-     `aos-proto` keeps its `connectrpc`/`buffa` generator for the *other* AOS
-     services.
-   - c. **Lift the handlers into `core`** as one shared `axum` router: facade,
-     browse UI, JSON API, auth, producer console — plain `axum` handlers
-     written once. Add the `Blobs` port and the `Lease`/`RateLimiter` ports;
-     wire `SecretSealer`/`Mailer` worker impls.
-   - d. **RPC as shared Connect-JSON handlers**: extract RPC method bodies into
-     a transport-free `RpcService` in `core`; serve them as plain `axum`
-     Connect-JSON handlers (`POST /aos.registry.v1.{Service}/{Method}`, JSON
-     in/out, `{code,message}` errors) mounted in the *same* shared router on
-     both targets. Delete the native `connectrpc` server impls
-     (`aos-registry-hub::rpc`); the connectrpc *runtime* leaves the registry
-     path entirely.
-   - e. **Fold the worker** onto the shared router via the hand-rolled
-     `worker`⇄`axum` bridge (no adapter dep — see the version-skew resolution in
-     Open questions) + the `SendWrapper` Send bridge, and **delete**
-     `handlers.rs`/`reads.rs`/`facade.rs`/`render.rs`/`keymap.rs` (the
-     duplicated read-only edge).
-   - f. **Port `aos-remote::RegistryHubClient`** to a Connect-JSON `reqwest`
-     client over `aos-proto-types`, replacing the connectrpc client (the
-     `aos hub …` CLI above it is unchanged).
-5. **Move the CLI to the API** under `aos hub …` (the `aos hub` client shipped
-   in PR #99; it re-points to the Connect-JSON client in 4f and then answers
-   identically from the native hub or the worker).
+   - b. ✅ **`aos-proto-types`** — wasm-clean `prost`+`serde` message structs,
+     the lingua franca of `RpcService`/the shared handlers/the client. *Done.*
+   - c. **Lift the handlers into `core`** — *partial.* Done: the shared
+     Connect-JSON `axum` router (`core::connect`), the `RpcService` (all 26
+     `aos.registry.v1` methods), and the ports — `RateLimiter` (`core::ratelimit`)
+     and the surface-read `SurfaceFetch`/`SurfaceProvider` (`core::fetch`).
+     **Remaining:** move the R2/fs **facade**, the **browse UI**, and the
+     **producer console** into the shared router (so the worker's `facade.rs`/
+     `reads.rs`/`render.rs`/`keymap.rs` and the hub's console can delete), plus
+     the `Mailer` worker impl.
+   - d. ✅ **RPC as shared Connect-JSON handlers** — `RpcService` + `core::connect`
+     serve all 26 methods (`POST /aos.registry.v1.{Service}/{Method}`, JSON
+     in/out, `{code,message}` errors) on both targets. *Done.*
+   - e. ✅ **Fold the worker** — the Worker serves the shared router for
+     `/aos.registry.v1.*` via the hand-rolled `worker`⇄`axum` bridge + the
+     `SendWrapper` Send bridge; its D1/R2/D1-limiter back the `RpcService`. *Done*
+     (its read-path `handlers.rs`/`facade.rs`/etc. stay until the 4c facade/browse
+     relocation; the worker dispatches non-RPC paths to them).
+   - f. ✅ **Port `aos-remote::RegistryHubClient`** to a Connect-JSON `reqwest`
+     client over `aos-proto-types`. *Done.*
+   - g. **Rewire the native hub** to mount `core::connect::router()` (the CLI now
+     speaks Connect-JSON) and unmount the connectrpc `rpc.rs` services. *In
+     progress.* Then retire `rpc.rs`.
+5. ✅ **Move the CLI to the API** under `aos hub …` — the client speaks
+   Connect-JSON; once 4g lands it answers identically from the native hub or the
+   worker. *Done* (client side).
 6. **Install-time root bootstrap** as the sole non-API mutation path.
 
 ## Open questions
