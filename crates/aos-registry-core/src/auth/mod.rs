@@ -12,6 +12,8 @@
 //!   delivery trait.
 //! - [`device`] — RFC 8628 device-code and user-code minting.
 //! - [`password`] — Argon2id password hashing and constant-time verification.
+//! - [`seal`] — the [`SecretSealer`](seal::SecretSealer) seam (AES-256-GCM
+//!   production sealer + the dev/test XOR placeholder) for at-rest secrets.
 //! - [`permission_from_str`] — the inverse of `Permission::as_str`.
 //!
 //! The HTTP-bound and database-bound halves (axum extractors, JWT minting, the
@@ -24,6 +26,7 @@
 pub mod device;
 pub mod magic;
 pub mod password;
+pub mod seal;
 pub mod session;
 pub mod token;
 
