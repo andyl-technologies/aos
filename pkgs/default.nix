@@ -29,7 +29,7 @@
     renderedExpose =
       if args ? expose
       then exposeRenderer.render {
-        inherit packageName;
+        inherit packageName drv;
         expose = args.expose;
       }
       else null;

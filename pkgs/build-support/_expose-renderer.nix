@@ -415,6 +415,63 @@
     "/etc/sysctl.d/"
     "/etc/nftables.d/"
   ];
+  systemLocationPrefixes = [
+    "/boot"
+    "/etc"
+    "/lib"
+    "/lib64"
+    "/nix"
+    "/sbin"
+    "/usr"
+    "/var"
+  ];
+
+  hasAnyPrefix = prefixes: path:
+    builtins.any (prefix: path == prefix || lib.hasPrefix "${prefix}/" path) prefixes;
+
+  syscallFilterFor = profile:
+    if profile == "privileged"
+    then {}
+    else {
+      SystemCallFilter = "@system-service";
+      SystemCallErrorNumber = "EPERM";
+    };
+
+  execKeys = [
+    "ExecStart"
+    "ExecStartPre"
+    "ExecStartPost"
+    "ExecReload"
+    "ExecStop"
+    "ExecStopPost"
+    "ExecCondition"
+  ];
+
+  asList = value:
+    if builtins.isList value
+    then value
+    else [value];
+
+  hasPrivilegedExecPrefix = command:
+    builtins.match "[-@:]*[!+].*" (builtins.toString command) != null;
+
+  validateNoPrivilegedExecPrefixes = packageName: unitName: serviceConfig: let
+    presentExecKeys = builtins.filter (key: serviceConfig ? ${key}) execKeys;
+    violations = lib.concatLists (
+      builtins.map (
+        key:
+          builtins.map (command: "${key}=${builtins.toString command}") (
+            builtins.filter hasPrivilegedExecPrefix (asList serviceConfig.${key})
+          )
+      )
+      presentExecKeys
+    );
+  in
+    throwIfNot
+    (violations == [])
+    "mkDerivation expose.units.${unitName} for package '${packageName}' uses systemd privileged exec prefixes that bypass generated sandboxing: ${builtins.concatStringsSep ", " violations}"
+    serviceConfig;
+
 in rec {
   assertNoGlobalScanDirStorage = packageName: storageLinks: let
     violations = builtins.filter (
@@ -430,6 +487,7 @@ in rec {
 
   render = {
     packageName,
+    drv ? null,
     expose,
   }: let
     checkedExpose =
@@ -482,10 +540,118 @@ in rec {
     permissions = validatePermissions packageName (checkedExpose.permissions or {});
     kernel = validateKernel (checkedExpose.kernel or {});
     firewall = validateFirewall (checkedExpose.firewall or {});
+    network = permissions.network or "private";
+    privateOutboundImplemented =
+      throwIfNot
+      (network != "private-outbound")
+      "mkDerivation expose for package '${packageName}' requests network = private-outbound, but the gated netns/veth unit is not implemented yet"
+      true;
+    capabilities = permissions.capabilities or [];
+    devices = permissions.devices or [];
+    hostPaths = permissions.host-paths or [];
+    cgroupDelegate = permissions.cgroup-delegate or false;
+    privilegedUsers = permissions.privileged-users or false;
+    syscallProfile = permissions.syscalls or "restricted";
+    manifestPermissions =
+      permissions
+      // {
+        security-label = permissions.security-label or "aos-pkg-${packageName}";
+      };
+
+    rwHostPaths = builtins.filter (hostPath: hostPath.mode == "rw") hostPaths;
+    rootEquivalent =
+      builtins.elem "CAP_SYS_ADMIN" capabilities
+      || privilegedUsers
+      || builtins.any (hostPath: hasAnyPrefix systemLocationPrefixes hostPath.path) rwHostPaths;
+    confinementHoles =
+      lib.optional (network != "private") "network:${network}"
+      ++ builtins.map (capability: "capability:${capability}") capabilities
+      ++ builtins.map (device: "device:${device}") devices
+      ++ builtins.map (hostPath: "host-path:${hostPath.mode}:${hostPath.path}") hostPaths
+      ++ lib.optional cgroupDelegate "cgroup-delegate"
+      ++ lib.optional privilegedUsers "privileged-users"
+      ++ lib.optional (syscallProfile != "restricted") "syscalls:${syscallProfile}";
+    confinementClass =
+      if rootEquivalent
+      then "unconfined"
+      else if confinementHoles == []
+      then "sandboxed"
+      else "sandboxed-with-holes";
+    confinementLabel =
+      if confinementClass == "sandboxed-with-holes"
+      then "sandboxed-with-holes (${builtins.concatStringsSep ", " confinementHoles})"
+      else confinementClass;
+    confinement = {
+      class = confinementClass;
+      label = confinementLabel;
+      holes = confinementHoles;
+    };
+    readOnlyHostPaths =
+      builtins.map (hostPath: hostPath.path) (
+        builtins.filter (hostPath: hostPath.mode == "read-only") hostPaths
+      );
+    readWriteHostPaths =
+      builtins.map (hostPath: hostPath.path) rwHostPaths;
+    deviceAllows = builtins.map (device: "${device} rwm") devices;
+    payloadRoot =
+      throwIfNot
+      (drv != null)
+      "mkDerivation expose for package '${packageName}' needs the payload derivation to render RootDirectory"
+      drv;
+    addressFamilies =
+      uniqueUnits (
+        ["AF_UNIX" "AF_INET" "AF_INET6"]
+        ++ lib.optional (network == "host" || builtins.elem "CAP_NET_ADMIN" capabilities) "AF_NETLINK"
+      );
+
+    sandboxServiceConfig = unitName: authoredServiceConfig: let
+      checkedAuthoredServiceConfig =
+        validateNoPrivilegedExecPrefixes packageName unitName authoredServiceConfig;
+    in
+      checkedAuthoredServiceConfig
+      // {
+        RootDirectory = "${payloadRoot}";
+        MountAPIVFS = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = "disconnected";
+        TemporaryFileSystem = ["/tmp" "/var/tmp"];
+        StateDirectory = authoredServiceConfig.StateDirectory or "aos-pkg-${packageName}";
+        NoNewPrivileges = true;
+        DynamicUser = !privilegedUsers;
+        PrivateUsers =
+          if privilegedUsers
+          then false
+          else "identity";
+        PrivateNetwork = network == "private";
+        DevicePolicy = "closed";
+        DeviceAllow = deviceAllows;
+        Delegate = cgroupDelegate;
+        CapabilityBoundingSet = builtins.concatStringsSep " " capabilities;
+        AmbientCapabilities = builtins.concatStringsSep " " capabilities;
+        BindReadOnlyPaths = uniqueUnits (["/nix/store"] ++ readOnlyHostPaths);
+        BindPaths = readWriteHostPaths;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectKernelLogs = true;
+        ProtectControlGroups = !cgroupDelegate;
+        SystemCallArchitectures = "native";
+        RestrictAddressFamilies = addressFamilies;
+        RestrictNamespaces = !privilegedUsers;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+      }
+      // syscallFilterFor syscallProfile
+      // lib.optionalAttrs (network == "private-outbound") {
+        PrivateNetwork = false;
+        NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";
+      };
 
     memberUnitNames = authoredUnitNames ++ sideEffectUnitNames;
 
-    addTargetMembership = _: unit:
+    addTargetMembership = name: unit:
       unit
       // {
         wantedBy = [target];
@@ -494,6 +660,9 @@ in rec {
         partOf = uniqueUnits ((unit.partOf or []) ++ [target]);
         after = uniqueUnits ((unit.after or []) ++ sideEffectUnitNames);
         requires = uniqueUnits ((unit.requires or []) ++ sideEffectUnitNames);
+      }
+      // lib.optionalAttrs (lib.hasSuffix ".service" name) {
+        serviceConfig = sandboxServiceConfig name (unit.serviceConfig or {});
       };
 
     trueCommand = "${pkgs.coreutils}/bin/true";
@@ -603,7 +772,7 @@ in rec {
       };
     };
     synthesizedUnits =
-      builtins.seq reservedUnitsAvailable (
+      builtins.seq reservedUnitsAvailable (builtins.seq privateOutboundImplemented (
         builtins.mapAttrs addTargetMembership units
         // sideEffectUnits
         // {
@@ -612,7 +781,7 @@ in rec {
             wants = uniqueUnits memberUnitNames;
           };
         }
-      );
+      ));
     typedSystemd = validateTypedUnits synthesizedUnits;
     renderedUnitNames = unitNamesFromTypedSystemd typedSystemd;
     manifestUnitNames =
@@ -632,7 +801,8 @@ in rec {
         units = manifestUnitNames;
       };
       inherit kernel firewall;
-      inherit permissions;
+      inherit confinement;
+      permissions = manifestPermissions;
     };
   in
     throwIfNot
