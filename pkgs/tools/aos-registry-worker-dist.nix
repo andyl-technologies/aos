@@ -88,7 +88,7 @@ in
     # `aos.nix`/`aos-registry-hub.nix` but its own FOD. Iterate fakeHash → real.
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-yd9vFfOB04dIRdbRlilPn5bYKcMj36gz3cIufKWwFcg=";
+      hash = "sha256-1TKoyD7zFfxuUgUTlDloUyjVB3y5E9B8SSgKKA4bu/U=";
     };
 
     phases = [
