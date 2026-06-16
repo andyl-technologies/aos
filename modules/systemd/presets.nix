@@ -9,7 +9,12 @@
   lib,
   pkgs,
   ...
-}: {
+}: let
+  imagePresetRules = config.systemd.systemPresetRules;
+  imagePresetText =
+    lib.optionalString (imagePresetRules != [])
+    "${lib.concatStringsSep "\n" imagePresetRules}\n";
+in {
   options.system.build.systemdSystemPresets = lib.mkOption {
     type = lib.types.package;
     description = ''
@@ -19,10 +24,17 @@
   };
 
   config = {
-    system.build.systemdSystemPresets = pkgs.runCommand "systemd-system-preset" {} ''
-      mkdir -p "$out"
-      printf 'disable *\n' > "$out/99-aos-default.preset"
-    '';
+    system.build.systemdSystemPresets =
+      pkgs.runCommand "systemd-system-preset" {
+        presetRules = imagePresetText;
+        passAsFile = ["presetRules"];
+      } ''
+        mkdir -p "$out"
+        ${lib.optionalString (imagePresetRules != []) ''
+          cp "$presetRulesPath" "$out/50-aos-image-packages.preset"
+        ''}
+        printf 'disable *\n' > "$out/99-aos-default.preset"
+      '';
 
     systemd.services.aos-preset = {
       description = "Apply AOS package preset policy";

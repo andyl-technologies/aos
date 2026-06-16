@@ -53,4 +53,4 @@ let
   in
     here ++ nested;
 in
-  builtins.concatMap discoverModules moduleDirs
+  [./packages.nix] ++ builtins.concatMap discoverModules moduleDirs

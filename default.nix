@@ -159,6 +159,9 @@
   packagePresetCheck = import ./lib/testing/package-preset.nix {
     inherit pkgs mkSystem testing;
   };
+  packageTestHttpServerCheck = import ./lib/testing/package-test-http-server.nix {
+    inherit pkgs lib mkSystem testing;
+  };
   apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
     inherit pkgs mkSystem testing;
   };
@@ -289,6 +292,7 @@ in {
     };
     package-expose-lifecycle = packageExposeLifecycleCheck;
     package-preset = packagePresetCheck;
+    package-test-http-server = packageTestHttpServerCheck;
     apm-install-at-boot = apmInstallAtBootCheck;
     # Module-level VM checks (from server system, for backwards compat)
     vm =
@@ -298,6 +302,7 @@ in {
         apm-install-at-boot = apmInstallAtBootCheck;
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;
+        package-test-http-server = packageTestHttpServerCheck;
       };
     integration = packageChecks // stdenvChecks;
     fleet = discoverFleetTests;
