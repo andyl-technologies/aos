@@ -14,6 +14,7 @@
 //! first-class primitive operations, and derivation boundaries.
 
 use std::{
+    collections::BTreeMap,
     ffi::OsStr,
     fs,
     os::unix::ffi::OsStrExt,
@@ -155,6 +156,7 @@ impl EvalOutcome {
 pub struct TreeWalkOptions {
     store_dir: Vec<u8>,
     current_system: Option<Vec<u8>>,
+    env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 impl Default for TreeWalkOptions {
@@ -162,6 +164,7 @@ impl Default for TreeWalkOptions {
         Self {
             store_dir: DEFAULT_STORE_DIR.to_vec(),
             current_system: None,
+            env_vars: BTreeMap::new(),
         }
     }
 }
@@ -185,8 +188,19 @@ impl TreeWalkOptions {
     pub fn with_store_dir(store_dir: impl Into<Vec<u8>>) -> Result<Self, TreeWalkOptionsError> {
         Ok(Self {
             store_dir: normalize_store_dir(store_dir.into())?,
-            current_system: None,
+            ..Self::default()
         })
+    }
+
+    /// Creates evaluator options with one configured environment variable.
+    ///
+    /// Only variables inserted into these options are visible to
+    /// `builtins.getEnv`; the evaluator never reads the ambient process
+    /// environment.
+    pub fn with_env_var(name: impl Into<Vec<u8>>, value: impl Into<Vec<u8>>) -> Self {
+        let mut options = Self::default();
+        options.set_env_var(name, value);
+        options
     }
 
     /// Creates evaluator options with a configured target system.
@@ -246,6 +260,19 @@ impl TreeWalkOptions {
         self.current_system = None;
     }
 
+    /// Replaces a configured environment variable.
+    ///
+    /// Only variables inserted into these options are visible to
+    /// `builtins.getEnv`; absent variables evaluate to an empty string.
+    pub fn set_env_var(&mut self, name: impl Into<Vec<u8>>, value: impl Into<Vec<u8>>) {
+        self.env_vars.insert(name.into(), value.into());
+    }
+
+    /// Clears a configured environment variable.
+    pub fn clear_env_var(&mut self, name: &[u8]) {
+        self.env_vars.remove(name);
+    }
+
     /// Returns the configured Nix store directory.
     pub fn store_dir(&self) -> &[u8] {
         &self.store_dir
@@ -254,6 +281,11 @@ impl TreeWalkOptions {
     /// Returns the configured target system, if one is available.
     pub fn current_system(&self) -> Option<&[u8]> {
         self.current_system.as_deref()
+    }
+
+    /// Returns the configured value for an environment variable.
+    pub fn env_var(&self, name: &[u8]) -> Option<&[u8]> {
+        self.env_vars.get(name).map(Vec::as_slice)
     }
 }
 
@@ -1738,6 +1770,9 @@ impl<'ir> TreeWalk<'ir> {
             StrictUnaryPrimOp::GetContext => {
                 self.eval_get_context_primop(id, span, argument, argument_span, value)
             }
+            StrictUnaryPrimOp::GetEnv => {
+                self.eval_get_env_primop(id, span, argument, argument_span, value)
+            }
             StrictUnaryPrimOp::AddDrvOutputDependencies => {
                 self.eval_add_drv_output_dependencies_primop(argument, argument_span, value)
             }
@@ -2048,6 +2083,19 @@ impl<'ir> TreeWalk<'ir> {
         self.heap
             .alloc_attrs(0, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_get_env_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let name = self.context_free_string_bytes(argument, argument_span, value, "getEnv")?;
+        let env_value = self.options.env_var(&name).unwrap_or_default().to_vec();
+        self.alloc_static_string(id, span, &env_value)
     }
 
     fn alloc_reflected_context_group(
@@ -8429,6 +8477,10 @@ macro_rules! builtin_registry {
         strict_unary_builtin!($ty, $name, $primop);
     };
 
+    (@declare effectful_strict_unary $ty:ident, $name:expr, $primop:expr) => {
+        strict_unary_builtin!($ty, $name, $primop);
+    };
+
     (@declare strict_binary $ty:ident, $name:expr, $primop:expr) => {
         strict_binary_builtin!($ty, $name, $primop);
     };
@@ -8663,6 +8715,7 @@ enum StrictUnaryPrimOp {
     Floor,
     HasContext,
     GetContext,
+    GetEnv,
     AddDrvOutputDependencies,
     UnsafeDiscardOutputDependency,
     UnsafeDiscardStringContext,
@@ -9915,6 +9968,24 @@ mod tests {
     }
 
     #[test]
+    fn tree_walk_options_configure_environment_variables() {
+        let defaulted = TreeWalkOptions::new();
+        assert_eq!(defaulted.env_var(b"HOME"), None);
+
+        let configured = TreeWalkOptions::with_env_var(b"HOME".to_vec(), b"/homeless".to_vec());
+        assert_eq!(configured.env_var(b"HOME"), Some(b"/homeless".as_slice()));
+        assert_eq!(configured.env_var(b"USER"), None);
+
+        let mut options = TreeWalkOptions::new();
+        options.set_env_var(b"USER".to_vec(), b"builder".to_vec());
+        assert_eq!(options.env_var(b"USER"), Some(b"builder".as_slice()));
+        options.set_env_var(b"USER".to_vec(), b"overridden".to_vec());
+        assert_eq!(options.env_var(b"USER"), Some(b"overridden".as_slice()));
+        options.clear_env_var(b"USER");
+        assert_eq!(options.env_var(b"USER"), None);
+    }
+
+    #[test]
     fn static_builtin_selects_are_first_class_functions() {
         assert_eq!(eval("builtins.true").as_bool(), Ok(true));
         assert_eq!(eval("builtins.false").as_bool(), Ok(false));
@@ -9949,6 +10020,7 @@ mod tests {
             b"string"
         );
         assert_eq!(eval("builtins ? length").as_bool(), Ok(true));
+        assert_eq!(eval("builtins ? getEnv").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? currentSystem").as_bool(), Ok(false));
         assert_eq!(
             eval_with_options(
@@ -10059,6 +10131,12 @@ mod tests {
         assert_eq!(
             eval_string_bytes(
                 "let builtins = { currentSystem = \"local\"; }; in builtins.currentSystem"
+            ),
+            b"local"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { getEnv = name: \"local\"; }; in builtins.getEnv \"HOME\""
             ),
             b"local"
         );
@@ -15639,8 +15717,105 @@ mod tests {
     }
 
     #[test]
+    fn get_env_primop_reads_configured_environment() {
+        assert_eq!(eval_string_bytes("builtins.getEnv \"HOME\""), b"");
+        assert_eq!(
+            eval_string_bytes("builtins.typeOf (builtins.getEnv \"HOME\")"),
+            b"string"
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                "builtins.getEnv \"HOME\"",
+                TreeWalkOptions::with_env_var(b"HOME".to_vec(), b"/home/aos".to_vec())
+            ),
+            b"/home/aos"
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                "let f = builtins.getEnv; in f \"HOME\"",
+                TreeWalkOptions::with_env_var(b"HOME".to_vec(), b"/home/aos".to_vec())
+            ),
+            b"/home/aos"
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                "builtins.getEnv \"MISSING\"",
+                TreeWalkOptions::with_env_var(b"HOME".to_vec(), b"/home/aos".to_vec())
+            ),
+            b""
+        );
+    }
+
+    #[test]
+    fn get_env_primop_type_checks_argument() {
+        let ir = lower("builtins.getEnv 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("getEnv requires a string");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn get_env_primop_rejects_context_bearing_names() {
+        let ir = lower("builtins.getEnv \"HOME\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("getEnv argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::with_options(
+            &ir,
+            TreeWalkOptions::with_env_var(b"HOME".to_vec(), b"/home/aos".to_vec()),
+        );
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"HOME".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing string allocates");
+
+        let error = evaluator
+            .eval_get_env_primop(ir.root, root.span, argument, argument_span, value)
+            .expect_err("getEnv rejects string context");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                id: argument,
+                op: "getEnv",
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
     fn unsupported_strict_primops_force_arguments_before_reporting_unsupported() {
-        let ir = lower("builtins.getEnv (1 / 0)");
+        let ir = lower("builtins.readFile (1 / 0)");
         let root = ir.arena.node(ir.root).expect("root exists");
         let IrData::PrimOp { args, .. } = root.data else {
             panic!("root is a primop");
@@ -15660,13 +15835,13 @@ mod tests {
 
     #[test]
     fn unsupported_primops_report_symbol_and_span() {
-        let ir = lower("builtins.getEnv \"HOME\"");
+        let ir = lower("builtins.readFile \"foo.txt\"");
         let root = ir.arena.node(ir.root).expect("root exists");
         let IrData::PrimOp { symbol, .. } = root.data else {
             panic!("root is a primop");
         };
 
-        let error = eval_whnf_owned(&ir).expect_err("getEnv remains unsupported");
+        let error = eval_whnf_owned(&ir).expect_err("readFile remains unsupported");
 
         assert_eq!(
             error.kind(),

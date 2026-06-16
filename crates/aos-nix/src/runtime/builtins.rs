@@ -59,7 +59,7 @@ macro_rules! builtin_definitions {
             unsupported GenericClosureBuiltin, b"genericClosure";
             direct_binary GetAttrBuiltin, b"getAttr", StrictBinaryPrimOp::GetAttr;
             strict_unary GetContextBuiltin, b"getContext", StrictUnaryPrimOp::GetContext;
-            effectful_unary_unsupported GetEnvBuiltin, b"getEnv";
+            effectful_strict_unary GetEnvBuiltin, b"getEnv", StrictUnaryPrimOp::GetEnv;
             unsupported GetFlakeBuiltin, b"getFlake";
             direct_binary GroupByBuiltin, b"groupBy", StrictBinaryPrimOp::GroupBy;
             direct_binary HasAttrBuiltin, b"hasAttr", StrictBinaryPrimOp::HasAttr;
@@ -189,6 +189,15 @@ macro_rules! builtin_direct_metadata {
     };
 
     (@record effectful_unary_unsupported, $name:expr) => {
+        Some((
+            $name,
+            BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful,
+            },
+        ))
+    };
+
+    (@record effectful_strict_unary, $name:expr, $primop:expr) => {
         Some((
             $name,
             BuiltinDirect::StrictUnary {
