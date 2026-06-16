@@ -18,12 +18,15 @@
 //!   parser as Phase 1 grows.
 //! - [`compile`] owns the frontend passes that turn parsed syntax into the
 //!   scope-resolved IR consumed by later evaluator tiers.
+//! - [`cache`] owns content-addressed frontend cache keys and on-disk entry
+//!   layout.
 //!
 //! Future Phase-1 modules land below this boundary in the order specified by
 //! the RFC: `value`, `heap`, `attrs`, `eval`, `runtime`, and `store`.
 
 #![forbid(unsafe_code)]
 
+pub mod cache;
 pub mod compile;
 pub mod error;
 pub mod native;
