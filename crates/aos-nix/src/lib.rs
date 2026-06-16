@@ -22,15 +22,18 @@
 //!   layout.
 //! - [`value`] owns the 16-byte tagged runtime value word used by the safe
 //!   tree-walk oracle.
+//! - [`heap`] owns the Phase-1 one-shot bump arena used for evaluator heap
+//!   objects.
 //!
 //! Future Phase-1 modules land below this boundary in the order specified by
-//! the RFC: `heap`, `attrs`, `eval`, `runtime`, and `store`.
+//! the RFC: `attrs`, `eval`, `runtime`, and `store`.
 
 #![forbid(unsafe_code)]
 
 pub mod cache;
 pub mod compile;
 pub mod error;
+pub mod heap;
 pub mod native;
 pub mod syntax;
 pub mod value;
