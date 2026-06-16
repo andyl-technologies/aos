@@ -2250,6 +2250,34 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
+    fn eval_read_file_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let path = self.coerce_to_path_bytes(argument, argument_span, value, "readFile")?;
+        let contents = fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FileRead {
+                    id: argument,
+                    path: path.clone(),
+                    message: source.to_string(),
+                },
+                argument_span,
+            )
+        })?;
+        if contents.contains(&0) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FileReadContainsNul { id: argument, path },
+                argument_span,
+            ));
+        }
+        self.alloc_static_string(id, span, &contents)
+    }
+
     fn eval_read_file_type_primop(
         &mut self,
         id: IrId,
@@ -8806,6 +8834,38 @@ impl Builtin for ReadDirBuiltin {
     }
 }
 
+impl Builtin for ReadFileBuiltin {
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
+    }
+
+    fn apply_direct(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        call: BuiltinCall,
+        _node: &IrNode,
+        args: &[IrId],
+    ) -> Result<Value, TreeWalkError> {
+        check_builtin_arity(call, 1, args.len())?;
+        let argument = args[0];
+        let argument_span = eval.node(argument)?.span;
+        let value = eval.eval_node(argument)?;
+        eval.eval_read_file_primop(call.id, call.span, argument, argument_span, value)
+    }
+
+    fn apply(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        call: BuiltinCall,
+        args: &[EvalPrimOpArg],
+    ) -> Result<Value, TreeWalkError> {
+        check_builtin_arity(call, 1, args.len())?;
+        let argument = args[0];
+        let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+        eval.eval_read_file_primop(call.id, call.span, argument.id(), argument.span(), value)
+    }
+}
+
 impl Builtin for ReadFileTypeBuiltin {
     fn metadata(&self) -> BuiltinMetadata {
         <Self as BuiltinInfo>::METADATA
@@ -9396,6 +9456,14 @@ pub enum TreeWalkErrorKind {
         path: Vec<u8>,
         /// The filesystem diagnostic.
         message: String,
+    },
+    /// A file-content primop read bytes that cannot be represented as a Nix string.
+    #[error("file at node {id:?} path {path:?} contains a NUL byte")]
+    FileReadContainsNul {
+        /// The path-valued node being read.
+        id: IrId,
+        /// The file path bytes.
+        path: Vec<u8>,
     },
     /// A filesystem-stat primop could not inspect its target path.
     #[error("failed to stat path at node {id:?} path {path:?}: {message}")]
@@ -10169,6 +10237,7 @@ mod tests {
         for name in [
             b"pathExists".as_slice(),
             b"readDir".as_slice(),
+            b"readFile".as_slice(),
             b"readFileType".as_slice(),
         ] {
             assert_eq!(
@@ -16465,8 +16534,249 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_strict_primops_force_arguments_before_reporting_unsupported() {
+    fn read_file_primop_reads_file_contents() {
+        let dir = unique_temp_dir("read-file");
+        let path = dir.join("data.txt");
+        let contents = b"hello\xff\n";
+        fs::write(&path, contents).expect("file writes");
+        let path = path_source(&path);
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&path, &link).expect("symlink creates");
+        let link_path = path_source(&link);
+
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.readFile {}", nix_string_literal(&path))),
+            contents
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.readFile {path}")),
+            contents
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.readFile {}",
+                nix_string_literal(&link_path)
+            )),
+            contents
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "let f = builtins.readFile; in f {}",
+                nix_string_literal(&path)
+            )),
+            contents
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { readFile = path: \"local\"; }; in builtins.readFile \"relative.txt\""
+            ),
+            b"local"
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn read_file_primop_returns_context_free_strings() {
+        let (dir, path) = temp_file_with_bytes(
+            "read-file-context-free",
+            b"/nix/store/00000000000000000000000000000000-name\n",
+        );
+        let path = path_source(&path);
+
+        assert_eq!(
+            eval(&format!(
+                "builtins.hasContext (builtins.readFile {})",
+                nix_string_literal(&path)
+            ))
+            .as_bool(),
+            Ok(false)
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn read_file_primop_rejects_relative_strings() {
+        let ir = lower("builtins.readFile \"relative.txt\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let path = args[0];
+        let path_span = ir.arena.node(path).expect("path exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("relative strings are rejected");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::PathNotAbsolute {
+                id: path,
+                path: b"relative.txt".to_vec(),
+            }
+        );
+        assert_eq!(error.span(), path_span);
+    }
+
+    #[test]
+    fn read_file_primop_rejects_context_bearing_path_strings() {
+        let (dir, path) = temp_file_with_bytes("read-file-context-path", b"data");
+        let path = path_source(&path);
+        let ir = lower(&format!("builtins.readFile {}", nix_string_literal(&path)));
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("readFile argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                path.as_bytes().to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing path allocates");
+
+        let error = evaluator
+            .eval_read_file_primop(ir.root, root.span, argument, argument_span, value)
+            .expect_err("readFile rejects string context");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                id: argument,
+                op: "readFile",
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn read_file_primop_is_strict_in_path_argument() {
         let ir = lower("builtins.readFile (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("readFile forces path argument");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: argument }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn read_file_primop_reports_file_read_errors() {
+        let dir = unique_temp_dir("read-file-missing");
+        let path = path_source(&dir.join("missing.txt"));
+        let ir = lower(&format!("builtins.readFile {}", nix_string_literal(&path)));
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let path_id = args[0];
+        let path_span = ir.arena.node(path_id).expect("path exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("missing file is reported");
+
+        match error.kind() {
+            TreeWalkErrorKind::FileRead {
+                id,
+                path: actual,
+                message,
+            } => {
+                assert_eq!(id, path_id);
+                assert_eq!(actual.as_slice(), path.as_bytes());
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected file-read error, got {other:?}"),
+        }
+        assert_eq!(error.span(), path_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn read_file_primop_reports_directory_read_errors() {
+        let dir = unique_temp_dir("read-file-directory");
+        let path = path_source(&dir);
+        let ir = lower(&format!("builtins.readFile {}", nix_string_literal(&path)));
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let path_id = args[0];
+        let path_span = ir.arena.node(path_id).expect("path exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("directory read is reported");
+
+        match error.kind() {
+            TreeWalkErrorKind::FileRead {
+                id,
+                path: actual,
+                message,
+            } => {
+                assert_eq!(id, path_id);
+                assert_eq!(actual.as_slice(), path.as_bytes());
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected file-read error, got {other:?}"),
+        }
+        assert_eq!(error.span(), path_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn read_file_primop_rejects_nul_bytes() {
+        let (dir, path) = temp_file_with_bytes("read-file-nul", b"a\0b");
+        let path = path_source(&path);
+        let ir = lower(&format!("builtins.readFile {}", nix_string_literal(&path)));
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let path_id = args[0];
+        let path_span = ir.arena.node(path_id).expect("path exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("NUL bytes are rejected");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::FileReadContainsNul {
+                id: path_id,
+                path: path.as_bytes().to_vec(),
+            }
+        );
+        assert_eq!(error.span(), path_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn unsupported_strict_primops_force_arguments_before_reporting_unsupported() {
+        let ir = lower("builtins.import (1 / 0)");
         let root = ir.arena.node(ir.root).expect("root exists");
         let IrData::PrimOp { args, .. } = root.data else {
             panic!("root is a primop");
@@ -16486,13 +16796,13 @@ mod tests {
 
     #[test]
     fn unsupported_primops_report_symbol_and_span() {
-        let ir = lower("builtins.readFile \"foo.txt\"");
+        let ir = lower("builtins.import \"/tmp/aos-nix-missing-import.nix\"");
         let root = ir.arena.node(ir.root).expect("root exists");
         let IrData::PrimOp { symbol, .. } = root.data else {
             panic!("root is a primop");
         };
 
-        let error = eval_whnf_owned(&ir).expect_err("readFile remains unsupported");
+        let error = eval_whnf_owned(&ir).expect_err("import remains unsupported");
 
         assert_eq!(
             error.kind(),

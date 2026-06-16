@@ -97,7 +97,7 @@ macro_rules! builtin_definitions {
             custom_effectful_strict_unary PathExistsBuiltin, b"pathExists";
             unsupported PlaceholderBuiltin, b"placeholder";
             custom_effectful_strict_unary ReadDirBuiltin, b"readDir";
-            effectful_unary_unsupported ReadFileBuiltin, b"readFile";
+            custom_effectful_strict_unary ReadFileBuiltin, b"readFile";
             custom_effectful_strict_unary ReadFileTypeBuiltin, b"readFileType";
             direct_binary RemoveAttrsBuiltin, b"removeAttrs", StrictBinaryPrimOp::RemoveAttrs;
             direct_ternary ReplaceStringsBuiltin, b"replaceStrings", StrictTernaryPrimOp::ReplaceStrings;
@@ -183,6 +183,10 @@ static PATH_EXISTS_DOCS: BuiltinDocs = BuiltinDocs {
 
 static READ_DIR_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns an attribute set describing a directory's entries.",
+};
+
+static READ_FILE_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns the contents of a file as a string.",
 };
 
 static READ_FILE_TYPE_DOCS: BuiltinDocs = BuiltinDocs {
@@ -374,6 +378,10 @@ macro_rules! builtin_metadata {
         &READ_DIR_DOCS
     };
 
+    (@docs ReadFileBuiltin) => {
+        &READ_FILE_DOCS
+    };
+
     (@docs ReadFileTypeBuiltin) => {
         &READ_FILE_TYPE_DOCS
     };
@@ -465,6 +473,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"readFile"),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
             direct_builtin(b"readFileType"),
             Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful
@@ -497,6 +511,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"pathExists").unwrap().first_class_arity(),
+            Some(1)
+        );
+        assert_eq!(
+            builtin_metadata(b"readFile").unwrap().first_class_arity(),
             Some(1)
         );
         assert_eq!(
@@ -542,6 +560,10 @@ mod tests {
         assert_eq!(
             builtin_metadata(b"readDir").unwrap().docs().summary(),
             "Returns an attribute set describing a directory's entries."
+        );
+        assert_eq!(
+            builtin_metadata(b"readFile").unwrap().docs().summary(),
+            "Returns the contents of a file as a string."
         );
         assert_eq!(
             builtin_metadata(b"readFileType").unwrap().docs().summary(),
