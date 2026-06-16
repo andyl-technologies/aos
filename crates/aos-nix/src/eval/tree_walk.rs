@@ -1,15 +1,15 @@
 //! Safe tree-walk evaluator over lowered IR.
 //!
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
-//! first slices evaluate scalar literals and `if` control flow to weak head
-//! normal form, establishing the arena access and diagnostic surface used by
-//! later slices for environments, thunks, functions, attribute sets, primitive
-//! operations, and derivation boundaries.
+//! first slices evaluate scalar literals, boolean control flow, and boolean
+//! operators to weak head normal form, establishing the arena access and
+//! diagnostic surface used by later slices for environments, thunks, functions,
+//! attribute sets, primitive operations, and derivation boundaries.
 
 use thiserror::Error;
 
 use crate::compile::{Ir, IrData, IrId, IrKind, IrNode};
-use crate::syntax::Span;
+use crate::syntax::{BinOpKind, Span, UnaryOpKind};
 use crate::value::{Value, ValueTag};
 
 /// Evaluates an IR root to weak head normal form with the tree-walk oracle.
@@ -47,9 +47,10 @@ impl<'ir> TreeWalk<'ir> {
     /// Evaluates a node to weak head normal form.
     ///
     /// This initial public node entry point is intentionally limited to
-    /// environment-free scalar literal and control-flow nodes. Environment-
-    /// dependent nodes return [`TreeWalkErrorKind::UnsupportedNode`] until later
-    /// slices add an explicit runtime and environment context.
+    /// environment-free scalar literal, control-flow, and boolean operator
+    /// nodes. Environment-dependent nodes return
+    /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add an explicit
+    /// runtime and environment context.
     ///
     /// # Errors
     ///
@@ -84,6 +85,8 @@ impl<'ir> TreeWalk<'ir> {
                 Ok(Value::null())
             }
             IrKind::If => self.eval_if(id, &node),
+            IrKind::UnaryOp => self.eval_unary(id, &node),
+            IrKind::BinOp => self.eval_binary(id, &node),
             kind => Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedNode { id, kind },
                 node.span,
@@ -117,14 +120,80 @@ impl<'ir> TreeWalk<'ir> {
         else {
             return Err(self.invalid_payload(id, node, "if payload"));
         };
-        let condition_span = self.node(first)?.span;
-        let condition = self.eval_node(first)?;
-        let selected = if self.expect_bool(first, condition, condition_span)? {
+        let selected = if self.eval_bool_node(first)? {
             second
         } else {
             third
         };
         self.eval_node(selected)
+    }
+
+    fn eval_unary(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Unary { op, operand } = node.data else {
+            return Err(self.invalid_payload(id, node, "unary payload"));
+        };
+        match op {
+            UnaryOpKind::Not => Ok(Value::bool(!self.eval_bool_node(operand)?)),
+            UnaryOpKind::Neg => Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedUnaryOp {
+                    id,
+                    op: UnaryOpKind::Neg,
+                },
+                node.span,
+            )),
+        }
+    }
+
+    fn eval_binary(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Binary { op, lhs, rhs } = node.data else {
+            return Err(self.invalid_payload(id, node, "binary payload"));
+        };
+        match op {
+            BinOpKind::And => {
+                if self.eval_bool_node(lhs)? {
+                    Ok(Value::bool(self.eval_bool_node(rhs)?))
+                } else {
+                    Ok(Value::bool(false))
+                }
+            }
+            BinOpKind::Or => {
+                if self.eval_bool_node(lhs)? {
+                    Ok(Value::bool(true))
+                } else {
+                    Ok(Value::bool(self.eval_bool_node(rhs)?))
+                }
+            }
+            BinOpKind::Impl => {
+                if self.eval_bool_node(lhs)? {
+                    Ok(Value::bool(self.eval_bool_node(rhs)?))
+                } else {
+                    Ok(Value::bool(true))
+                }
+            }
+            BinOpKind::Add
+            | BinOpKind::Sub
+            | BinOpKind::Mul
+            | BinOpKind::Div
+            | BinOpKind::Concat
+            | BinOpKind::Update
+            | BinOpKind::Lt
+            | BinOpKind::Gt
+            | BinOpKind::Le
+            | BinOpKind::Ge
+            | BinOpKind::Eq
+            | BinOpKind::Ne
+            | BinOpKind::PipeRight
+            | BinOpKind::PipeLeft => Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedBinaryOp { id, op },
+                node.span,
+            )),
+        }
+    }
+
+    fn eval_bool_node(&mut self, id: IrId) -> Result<bool, TreeWalkError> {
+        let span = self.node(id)?.span;
+        let value = self.eval_node(id)?;
+        self.expect_bool(id, value, span)
     }
 
     fn expect_bool(&self, id: IrId, value: Value, span: Span) -> Result<bool, TreeWalkError> {
@@ -214,6 +283,22 @@ pub enum TreeWalkErrorKind {
         /// The invalid boolean payload.
         payload: u64,
     },
+    /// The unary operator is outside this evaluator slice.
+    #[error("unsupported tree-walk unary operator {op:?} at {id:?}")]
+    UnsupportedUnaryOp {
+        /// The unsupported node id.
+        id: IrId,
+        /// The unsupported unary operator.
+        op: UnaryOpKind,
+    },
+    /// The binary operator is outside this evaluator slice.
+    #[error("unsupported tree-walk binary operator {op:?} at {id:?}")]
+    UnsupportedBinaryOp {
+        /// The unsupported node id.
+        id: IrId,
+        /// The unsupported binary operator.
+        op: BinOpKind,
+    },
     /// The node kind is outside this evaluator slice.
     #[error("unsupported tree-walk node {kind:?} at {id:?}")]
     UnsupportedNode {
@@ -267,17 +352,48 @@ mod tests {
 
     #[test]
     fn unsupported_nodes_report_kind_and_span() {
-        let ir = lower("1 + 2");
-        let error = eval_whnf(&ir).expect_err("binary op is not implemented yet");
+        let ir = lower("[]");
+        let error = eval_whnf(&ir).expect_err("list construction is not implemented yet");
 
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::UnsupportedNode {
                 id: ir.root,
-                kind: IrKind::BinOp,
+                kind: IrKind::List,
             }
         );
-        assert_eq!(error.span(), Span::new(0, 5));
+        assert_eq!(error.span(), Span::new(0, 2));
+    }
+
+    #[test]
+    fn unsupported_operators_report_operator_and_span() {
+        let unary = lower("-1");
+        let unary_error = eval_whnf(&unary).expect_err("negation is not implemented yet");
+        assert_eq!(
+            unary_error.kind(),
+            TreeWalkErrorKind::UnsupportedUnaryOp {
+                id: unary.root,
+                op: UnaryOpKind::Neg,
+            }
+        );
+        assert_eq!(
+            unary_error.span(),
+            unary.arena.node(unary.root).expect("root exists").span
+        );
+
+        let binary = lower("1 + 2");
+        let binary_error = eval_whnf(&binary).expect_err("addition is not implemented yet");
+        assert_eq!(
+            binary_error.kind(),
+            TreeWalkErrorKind::UnsupportedBinaryOp {
+                id: binary.root,
+                op: BinOpKind::Add,
+            }
+        );
+        assert_eq!(
+            binary_error.span(),
+            binary.arena.node(binary.root).expect("root exists").span
+        );
     }
 
     #[test]
@@ -386,5 +502,99 @@ mod tests {
             }
         );
         assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn unary_not_evaluates_boolean_operands() {
+        assert_eq!(eval("!true").as_bool(), Ok(false));
+        assert_eq!(eval("!false").as_bool(), Ok(true));
+    }
+
+    #[test]
+    fn unary_not_rejects_non_bool_operands() {
+        let ir = lower("!1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::Unary { operand, .. } = root.data else {
+            panic!("not root has unary payload");
+        };
+        let operand_span = ir.arena.node(operand).expect("operand exists").span;
+
+        let error = eval_whnf(&ir).expect_err("integer operand is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: operand,
+                expected: "bool",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), operand_span);
+    }
+
+    #[test]
+    fn boolean_binary_operators_short_circuit() {
+        assert_eq!(eval("true && true").as_bool(), Ok(true));
+        assert_eq!(eval("true && false").as_bool(), Ok(false));
+        assert_eq!(eval("false && (1 + 2)").as_bool(), Ok(false));
+
+        assert_eq!(eval("true || (1 + 2)").as_bool(), Ok(true));
+        assert_eq!(eval("false || true").as_bool(), Ok(true));
+        assert_eq!(eval("false || false").as_bool(), Ok(false));
+
+        assert_eq!(eval("false -> (1 + 2)").as_bool(), Ok(true));
+        assert_eq!(eval("true -> true").as_bool(), Ok(true));
+        assert_eq!(eval("true -> false").as_bool(), Ok(false));
+    }
+
+    #[test]
+    fn boolean_binary_operators_type_check_evaluated_rhs() {
+        let ir = lower("true && 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("and root has binary payload");
+        };
+        let rhs_span = ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf(&ir).expect_err("integer rhs is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: rhs,
+                expected: "bool",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), rhs_span);
+    }
+
+    #[test]
+    fn malformed_operator_payloads_are_reported() {
+        let cases = [
+            (IrKind::UnaryOp, "unary payload"),
+            (IrKind::BinOp, "binary payload"),
+        ];
+
+        for (index, (kind, expected)) in cases.into_iter().enumerate() {
+            let root = IrId::new(0);
+            let span = Span::new(20 + index as u32, 21 + index as u32);
+            let arena = IrArena::from_raw_parts(
+                vec![IrNode::new(kind, span, EffectClass::Pure, IrData::None)],
+                Vec::new(),
+            );
+            let ir = empty_ir(root, arena);
+            let error = eval_whnf(&ir).expect_err("malformed operator is invalid");
+
+            assert_eq!(
+                error.kind(),
+                TreeWalkErrorKind::InvalidPayload {
+                    id: root,
+                    kind,
+                    expected,
+                }
+            );
+            assert_eq!(error.span(), span);
+        }
     }
 }
