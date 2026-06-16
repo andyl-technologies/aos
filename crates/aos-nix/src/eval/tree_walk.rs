@@ -1395,6 +1395,38 @@ impl<'ir> TreeWalk<'ir> {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
                     })
             }
+            StrictUnaryPrimOp::Head => {
+                let argument_span = self.node(argument)?.span;
+                if value.tag() != ValueTag::List {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id: argument,
+                            expected: "list",
+                            actual: value.tag(),
+                        },
+                        argument_span,
+                    ));
+                }
+                let list = self.heap.get_list(value).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: argument,
+                            source,
+                        },
+                        argument_span,
+                    )
+                })?;
+                let Some(head) = list.get(0) else {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::EmptyListPrimOp {
+                            id: argument,
+                            op: "head",
+                        },
+                        argument_span,
+                    ));
+                };
+                Ok(head)
+            }
             StrictUnaryPrimOp::FunctionArgs => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_function_args_primop(id, node.span, argument, argument_span, value)
@@ -3001,6 +3033,7 @@ enum StrictUnaryPrimOp {
     AttrValues,
     Tail,
     FunctionArgs,
+    Head,
 }
 
 impl StrictUnaryPrimOp {
@@ -3021,6 +3054,7 @@ impl StrictUnaryPrimOp {
             b"attrValues" => Some(Self::AttrValues),
             b"tail" => Some(Self::Tail),
             b"functionArgs" => Some(Self::FunctionArgs),
+            b"head" => Some(Self::Head),
             _ => None,
         }
     }
@@ -4133,6 +4167,79 @@ mod tests {
             TreeWalkErrorKind::Type {
                 id: argument,
                 expected: "function",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn head_primop_returns_first_element_without_forcing_list_elements() {
+        let ir = lower("builtins.head [ (1 / 0) true ]");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let mut evaluator = TreeWalk::new(&ir);
+        let value = evaluator
+            .eval_primop(ir.root, &root)
+            .expect("head primop evaluates");
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        let thunk = evaluator
+            .heap
+            .get_thunk(value)
+            .expect("head result remains a heap-owned thunk");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(
+            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            IrKind::BinOp
+        );
+
+        assert_eq!(eval("builtins.head [ true (1 / 0) ]").as_bool(), Ok(true));
+        assert_eq!(
+            eval_string_bytes("let builtins = { head = x: \"local\"; }; in builtins.head [ 1 ]"),
+            b"local"
+        );
+    }
+
+    #[test]
+    fn head_primop_rejects_empty_lists() {
+        let ir = lower("builtins.head []");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("head requires a non-empty list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::EmptyListPrimOp {
+                id: argument,
+                op: "head"
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn head_primop_type_checks_argument() {
+        let ir = lower("builtins.head 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("head requires a list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "list",
                 actual: ValueTag::Int
             }
         );
