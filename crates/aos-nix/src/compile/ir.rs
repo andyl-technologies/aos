@@ -911,7 +911,7 @@ impl IrLowerer {
         match self.resolved.symbols.resolve(symbol) {
             Some(
                 b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs" | b"intersectAttrs"
-                | b"catAttrs" | b"elem" | b"lessThan",
+                | b"catAttrs" | b"elem" | b"lessThan" | b"add" | b"sub" | b"mul" | b"div",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1794,6 +1794,10 @@ mod tests {
             ),
             ("builtins.elem 1 [ 1 ]", b"elem".as_slice()),
             ("builtins.lessThan 1 2", b"lessThan".as_slice()),
+            ("builtins.add 1 2", b"add".as_slice()),
+            ("builtins.sub 2 1", b"sub".as_slice()),
+            ("builtins.mul 2 3", b"mul".as_slice()),
+            ("builtins.div 4 2", b"div".as_slice()),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -2287,6 +2291,36 @@ mod tests {
             panic!("apply payload expected");
         };
         assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        for name in ["add", "sub", "mul", "div"] {
+            let ir = lowered(&format!("{name} 1 2"));
+            let root = root_node(&ir);
+            assert_eq!(root.kind, IrKind::Apply);
+            let IrData::Pair { first, .. } = root.data else {
+                panic!("apply payload expected");
+            };
+            assert_eq!(node(&ir, first).kind, IrKind::Apply);
+            let IrData::Pair { first, .. } = node(&ir, first).data else {
+                panic!("inner apply payload expected");
+            };
+            assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+            let ir = lowered(&format!(
+                "let builtins = {{ {name} = left: right: false; }}; in builtins.{name} 1 2"
+            ));
+            let IrData::Let { body, .. } = root_node(&ir).data else {
+                panic!("let payload expected");
+            };
+            assert_eq!(node(&ir, body).kind, IrKind::Apply);
+            let IrData::Pair { first, .. } = node(&ir, body).data else {
+                panic!("apply payload expected");
+            };
+            assert_eq!(node(&ir, first).kind, IrKind::Apply);
+            let IrData::Pair { first, .. } = node(&ir, first).data else {
+                panic!("inner apply payload expected");
+            };
+            assert_eq!(node(&ir, first).kind, IrKind::Select);
+        }
     }
 
     #[test]

@@ -1215,6 +1215,18 @@ impl<'ir> TreeWalk<'ir> {
                 StrictBinaryPrimOp::LessThan => {
                     self.eval_comparison(id, node, ComparisonOp::Lt, first, second)
                 }
+                StrictBinaryPrimOp::Add => {
+                    self.eval_numeric_binary(id, node, BinaryArithmeticOp::Add, first, second)
+                }
+                StrictBinaryPrimOp::Sub => {
+                    self.eval_numeric_binary(id, node, BinaryArithmeticOp::Sub, first, second)
+                }
+                StrictBinaryPrimOp::Mul => {
+                    self.eval_numeric_binary(id, node, BinaryArithmeticOp::Mul, first, second)
+                }
+                StrictBinaryPrimOp::Div => {
+                    self.eval_numeric_binary(id, node, BinaryArithmeticOp::Div, first, second)
+                }
             };
         }
         if args.len() != 1 {
@@ -3320,8 +3332,12 @@ impl<'ir> TreeWalk<'ir> {
         lhs: IrId,
         rhs: IrId,
     ) -> Result<Value, TreeWalkError> {
-        let left = self.eval_number_node(lhs)?;
-        let right = self.eval_number_node(rhs)?;
+        let lhs_span = self.node(lhs)?.span;
+        let left = self.eval_node(lhs)?;
+        let rhs_span = self.node(rhs)?.span;
+        let right = self.eval_node(rhs)?;
+        let left = self.expect_number(lhs, left, lhs_span)?;
+        let right = self.expect_number(rhs, right, rhs_span)?;
         self.eval_numeric_values(id, node, op, left, right)
     }
 
@@ -3851,26 +3867,25 @@ impl<'ir> TreeWalk<'ir> {
         left: i64,
         right: i64,
     ) -> Result<Value, TreeWalkError> {
-        let value = match op {
-            BinaryArithmeticOp::Add => left.checked_add(right),
-            BinaryArithmeticOp::Sub => left.checked_sub(right),
-            BinaryArithmeticOp::Mul => left.checked_mul(right),
+        match op {
+            BinaryArithmeticOp::Add => Ok(Value::int(left.wrapping_add(right))),
+            BinaryArithmeticOp::Sub => Ok(Value::int(left.wrapping_sub(right))),
+            BinaryArithmeticOp::Mul => Ok(Value::int(left.wrapping_mul(right))),
             BinaryArithmeticOp::Div => {
                 if right == 0 {
                     return Err(self.division_by_zero(id, node));
                 }
-                left.checked_div(right)
+                left.checked_div(right).map(Value::int).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::ArithmeticOverflow {
+                            id,
+                            op: ArithmeticOp::Div,
+                        },
+                        node.span,
+                    )
+                })
             }
-        };
-        value.map(Value::int).ok_or_else(|| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::ArithmeticOverflow {
-                    id,
-                    op: op.into_arithmetic_op(),
-                },
-                node.span,
-            )
-        })
+        }
     }
 
     fn eval_float_binary(
@@ -4022,6 +4037,10 @@ impl StrictUnaryPrimOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StrictBinaryPrimOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
     ElemAt,
     GetAttr,
     HasAttr,
@@ -4035,6 +4054,10 @@ enum StrictBinaryPrimOp {
 impl StrictBinaryPrimOp {
     fn from_bytes(name: &[u8]) -> Option<Self> {
         match name {
+            b"add" => Some(Self::Add),
+            b"sub" => Some(Self::Sub),
+            b"mul" => Some(Self::Mul),
+            b"div" => Some(Self::Div),
             b"elemAt" => Some(Self::ElemAt),
             b"getAttr" => Some(Self::GetAttr),
             b"hasAttr" => Some(Self::HasAttr),
@@ -4095,17 +4118,6 @@ enum BinaryArithmeticOp {
     Sub,
     Mul,
     Div,
-}
-
-impl BinaryArithmeticOp {
-    fn into_arithmetic_op(self) -> ArithmeticOp {
-        match self {
-            Self::Add => ArithmeticOp::Add,
-            Self::Sub => ArithmeticOp::Sub,
-            Self::Mul => ArithmeticOp::Mul,
-            Self::Div => ArithmeticOp::Div,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5856,6 +5868,94 @@ mod tests {
             error.kind(),
             TreeWalkErrorKind::DivisionByZero { .. }
         ));
+    }
+
+    #[test]
+    fn arithmetic_primops_use_numeric_semantics() {
+        assert_eq!(eval("builtins.add 1 2").as_int(), Ok(3));
+        assert_eq!(eval("builtins.sub 5 8").as_int(), Ok(-3));
+        assert_eq!(eval("builtins.mul 2 3").as_int(), Ok(6));
+        assert_eq!(eval("builtins.div 7 2").as_int(), Ok(3));
+        assert_eq!(eval("builtins.add 1 2.5").as_float(), Ok(3.5));
+        assert_eq!(eval("builtins.sub 1 2.5").as_float(), Ok(-1.5));
+        assert_eq!(eval("builtins.mul 2 0.5").as_float(), Ok(1.0));
+        assert_eq!(eval("builtins.div 7 2.0").as_float(), Ok(3.5));
+        assert_eq!(
+            eval("builtins.add 9223372036854775807 1").as_int(),
+            Ok(i64::MIN)
+        );
+        assert_eq!(eval("builtins.mul 9223372036854775807 2").as_int(), Ok(-2));
+    }
+
+    #[test]
+    fn arithmetic_primops_are_strict_and_numeric_only() {
+        let ir = lower("builtins.add \"a\" (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let rhs = args[1];
+        let rhs_span = ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("rhs evaluation error wins before type check");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: rhs });
+        assert_eq!(error.span(), rhs_span);
+
+        let ir = lower("builtins.add \"a\" \"b\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let lhs = args[0];
+        let lhs_span = ir.arena.node(lhs).expect("lhs exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("strings are invalid for builtins.add");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: lhs,
+                expected: "number",
+                actual: ValueTag::String,
+            }
+        );
+        assert_eq!(error.span(), lhs_span);
+
+        let ir = lower("builtins.sub true (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let rhs = args[1];
+        let rhs_span = ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf(&ir).expect_err("sub forces rhs before lhs type check");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: rhs });
+        assert_eq!(error.span(), rhs_span);
+
+        let div_zero = lower("builtins.div 1 0");
+        let error = eval_whnf(&div_zero).expect_err("integer division by zero is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: div_zero.root }
+        );
+
+        let div_overflow = lower("builtins.div (-9223372036854775807 - 1) (-1)");
+        let error = eval_whnf(&div_overflow).expect_err("integer division overflow is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::ArithmeticOverflow {
+                id: div_overflow.root,
+                op: ArithmeticOp::Div,
+            }
+        );
     }
 
     #[test]
@@ -8907,32 +9007,38 @@ mod tests {
     }
 
     #[test]
-    fn integer_arithmetic_overflow_errors_at_operator_span() {
+    fn integer_add_sub_mul_wrap_on_overflow() {
         let cases = [
-            (BinOpKind::Add, i64::MAX, 1, ArithmeticOp::Add),
-            (BinOpKind::Sub, i64::MIN, 1, ArithmeticOp::Sub),
-            (BinOpKind::Mul, i64::MAX, 2, ArithmeticOp::Mul),
-            (BinOpKind::Div, i64::MIN, -1, ArithmeticOp::Div),
+            (BinOpKind::Add, i64::MAX, 1, i64::MIN),
+            (BinOpKind::Sub, i64::MIN, 1, i64::MAX),
+            (BinOpKind::Mul, i64::MAX, 2, -2),
         ];
 
-        for (op, left, right, arithmetic_op) in cases {
-            let ir = int_binary_ir(op, left, right);
-            let root_span = ir.arena.node(ir.root).expect("root exists").span;
-            let error = eval_whnf(&ir).expect_err("checked arithmetic overflows");
+        for (op, left, right, expected) in cases {
+            let value = eval_whnf(&int_binary_ir(op, left, right)).expect("arithmetic evaluates");
 
-            assert_eq!(
-                error.kind(),
-                TreeWalkErrorKind::ArithmeticOverflow {
-                    id: ir.root,
-                    op: arithmetic_op,
-                }
-            );
-            assert_eq!(error.span(), root_span);
+            assert_eq!(value.as_int(), Ok(expected));
         }
     }
 
     #[test]
-    fn numeric_operators_type_check_operands_left_to_right() {
+    fn integer_division_overflow_errors_at_operator_span() {
+        let ir = int_binary_ir(BinOpKind::Div, i64::MIN, -1);
+        let root_span = ir.arena.node(ir.root).expect("root exists").span;
+        let error = eval_whnf(&ir).expect_err("integer division overflows");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::ArithmeticOverflow {
+                id: ir.root,
+                op: ArithmeticOp::Div,
+            }
+        );
+        assert_eq!(error.span(), root_span);
+    }
+
+    #[test]
+    fn numeric_operators_force_rhs_before_type_checks() {
         let rhs_ir = lower("1 + true");
         let root = rhs_ir.arena.node(rhs_ir.root).expect("root exists");
         let IrData::Binary { rhs, .. } = root.data else {
@@ -8954,12 +9060,27 @@ mod tests {
 
         let lhs_ir = lower("true - (1 / 0)");
         let root = lhs_ir.arena.node(lhs_ir.root).expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("subtraction root has binary payload");
+        };
+        let rhs_span = lhs_ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf(&lhs_ir).expect_err("rhs evaluation error wins before lhs type");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: rhs });
+        assert_eq!(error.span(), rhs_span);
+
+        let lhs_type_ir = lower("true - false");
+        let root = lhs_type_ir
+            .arena
+            .node(lhs_type_ir.root)
+            .expect("root exists");
         let IrData::Binary { lhs, .. } = root.data else {
             panic!("subtraction root has binary payload");
         };
-        let lhs_span = lhs_ir.arena.node(lhs).expect("lhs exists").span;
+        let lhs_span = lhs_type_ir.arena.node(lhs).expect("lhs exists").span;
 
-        let error = eval_whnf(&lhs_ir).expect_err("boolean lhs is invalid before rhs");
+        let error = eval_whnf(&lhs_type_ir).expect_err("boolean lhs is invalid after rhs force");
 
         assert_eq!(
             error.kind(),
