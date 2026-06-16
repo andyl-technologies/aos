@@ -1432,7 +1432,8 @@ fn validate_ir_node_effect(ir: &Ir, node: IrNode) -> Result<(), String> {
 fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
     match name {
         Some(
-            b"getEnv" | b"import" | b"pathExists" | b"readDir" | b"readFile" | b"readFileType",
+            b"getEnv" | b"hashFile" | b"import" | b"pathExists" | b"readDir" | b"readFile"
+            | b"readFileType",
         ) => Some(EffectClass::Effectful),
         Some(
             b"isAttrs"

@@ -13,7 +13,13 @@
 //! and diagnostic surface used by later slices for full string coercion,
 //! first-class primitive operations, and derivation boundaries.
 
-use std::rc::Rc;
+use std::{
+    ffi::OsStr,
+    fs,
+    os::unix::ffi::OsStrExt,
+    path::{Component, Path, PathBuf},
+    rc::Rc,
+};
 
 use md5::{Digest as _, Md5};
 use serde_json::{Number as JsonNumber, Value as JsonValue};
@@ -191,6 +197,7 @@ impl<'ir> TreeWalk<'ir> {
                 Ok(Value::null())
             }
             IrKind::Str | IrKind::Uri => self.eval_string(id, &node),
+            IrKind::Path => self.eval_path(id, &node),
             IrKind::Interp => self.eval_interp(id, &node),
             IrKind::LocalVar => self.eval_local_var(id, &node),
             IrKind::UpvalVar => self.eval_upval_var(id, &node),
@@ -636,6 +643,19 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
+    fn eval_path(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Symbol(symbol) = node.data else {
+            return Err(self.invalid_payload(id, node, "path symbol payload"));
+        };
+        let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
+            TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+        })?;
+        let path = Self::absolute_path_bytes_for_node(id, node.span, bytes)?;
+        self.heap
+            .alloc_path(NixString::from_bytes(path))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
     fn eval_interp(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
         match node.data {
             IrData::Node(child) => {
@@ -815,6 +835,29 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         bytes.extend_from_slice(string.bytes());
+        Ok(bytes)
+    }
+
+    fn coerce_to_path_bytes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        op: &'static str,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let bytes = if value.tag() == ValueTag::Path {
+            let path = self.clone_path_value(id, span, value)?;
+            Self::copy_bytes_for_node(id, span, path.bytes())?
+        } else {
+            let string = self.coerce_to_string(id, value, span)?;
+            self.context_free_string_bytes(id, span, string, op)?
+        };
+        if !Path::new(OsStr::from_bytes(&bytes)).is_absolute() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::PathNotAbsolute { id, path: bytes },
+                span,
+            ));
+        }
         Ok(bytes)
     }
 
@@ -1310,6 +1353,9 @@ impl<'ir> TreeWalk<'ir> {
                 }
                 StrictBinaryPrimOp::HashString => {
                     self.eval_hash_string_primop(id, node.span, first, second)
+                }
+                StrictBinaryPrimOp::HashFile => {
+                    self.eval_hash_file_primop(id, node.span, first, second)
                 }
                 StrictBinaryPrimOp::ConcatStringsSep => {
                     self.eval_concat_strings_sep_primop(id, node.span, first, second)
@@ -2028,6 +2074,46 @@ impl<'ir> TreeWalk<'ir> {
         })?;
         copied.extend_from_slice(bytes);
         Ok(copied)
+    }
+
+    fn absolute_path_bytes_for_node(
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let raw = Path::new(OsStr::from_bytes(bytes));
+        if !raw.is_absolute() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::PathNotAbsolute {
+                    id,
+                    path: Self::copy_bytes_for_node(id, span, bytes)?,
+                },
+                span,
+            ));
+        }
+        let path = Self::normalize_path(raw.to_path_buf());
+        Self::copy_bytes_for_node(id, span, path.as_os_str().as_bytes())
+    }
+
+    fn normalize_path(path: PathBuf) -> PathBuf {
+        let mut normalized = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if !normalized.pop() && !normalized.has_root() {
+                        normalized.push("..");
+                    }
+                }
+                Component::Normal(part) => normalized.push(part),
+                Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+            }
+        }
+        if normalized.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            normalized
+        }
     }
 
     fn extend_bytes_for_node(
@@ -2926,7 +3012,8 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let algorithm_span = self.node(algorithm_id)?.span;
         let algorithm = self.eval_node(algorithm_id)?;
-        let algorithm = self.eval_hash_string_algorithm(algorithm_id, algorithm_span, algorithm)?;
+        let algorithm =
+            self.eval_hash_algorithm(algorithm_id, algorithm_span, algorithm, "hashString")?;
 
         let string_span = self.node(string_id)?.span;
         let string = self.eval_node(string_id)?;
@@ -2962,26 +3049,69 @@ impl<'ir> TreeWalk<'ir> {
                     string_span,
                 )
             })?;
-            match algorithm {
-                HashStringAlgorithm::Md5 => Md5::digest(string.bytes()).to_vec(),
-                HashStringAlgorithm::Sha1 => Sha1::digest(string.bytes()).to_vec(),
-                HashStringAlgorithm::Sha256 => Sha256::digest(string.bytes()).to_vec(),
-                HashStringAlgorithm::Sha512 => Sha512::digest(string.bytes()).to_vec(),
-            }
+            Self::hash_bytes(string.bytes(), algorithm)
         };
-        let bytes = Self::lower_hex_bytes(id, span, &digest)?;
+        self.alloc_hash_digest(id, span, &digest)
+    }
+
+    fn eval_hash_file_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        algorithm_id: IrId,
+        path_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let algorithm_span = self.node(algorithm_id)?.span;
+        let algorithm = self.eval_node(algorithm_id)?;
+        let algorithm =
+            self.eval_hash_algorithm(algorithm_id, algorithm_span, algorithm, "hashFile")?;
+
+        let path_span = self.node(path_id)?.span;
+        let path_value = self.eval_node(path_id)?;
+        let path = self.coerce_to_path_bytes(path_id, path_span, path_value, "hashFile")?;
+        let contents = fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FileRead {
+                    id: path_id,
+                    path: path.clone(),
+                    message: source.to_string(),
+                },
+                path_span,
+            )
+        })?;
+        let digest = Self::hash_bytes(&contents, algorithm);
+        self.alloc_hash_digest(id, span, &digest)
+    }
+
+    fn hash_bytes(bytes: &[u8], algorithm: HashStringAlgorithm) -> Vec<u8> {
+        match algorithm {
+            HashStringAlgorithm::Md5 => Md5::digest(bytes).to_vec(),
+            HashStringAlgorithm::Sha1 => Sha1::digest(bytes).to_vec(),
+            HashStringAlgorithm::Sha256 => Sha256::digest(bytes).to_vec(),
+            HashStringAlgorithm::Sha512 => Sha512::digest(bytes).to_vec(),
+        }
+    }
+
+    fn alloc_hash_digest(
+        &mut self,
+        id: IrId,
+        span: Span,
+        digest: &[u8],
+    ) -> Result<Value, TreeWalkError> {
+        let bytes = Self::lower_hex_bytes(id, span, digest)?;
         self.heap
             .alloc_string(NixString::from_bytes(bytes))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
-    fn eval_hash_string_algorithm(
+    fn eval_hash_algorithm(
         &self,
         id: IrId,
         span: Span,
         value: Value,
+        op: &'static str,
     ) -> Result<HashStringAlgorithm, TreeWalkError> {
-        let algorithm_bytes = self.context_free_string_bytes(id, span, value, "hashString")?;
+        let algorithm_bytes = self.context_free_string_bytes(id, span, value, op)?;
         HashStringAlgorithm::from_bytes(&algorithm_bytes).ok_or_else(|| {
             TreeWalkError::new(
                 TreeWalkErrorKind::UnknownHashAlgorithm {
@@ -3005,7 +3135,8 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let algorithm_span = self.node(algorithm_id)?.span;
         let algorithm = self.eval_node(algorithm_id)?;
-        let algorithm = self.eval_hash_string_algorithm(algorithm_id, algorithm_span, algorithm)?;
+        let algorithm =
+            self.eval_hash_algorithm(algorithm_id, algorithm_span, algorithm, "hashString")?;
         self.eval_hash_string_value(id, span, string_id, string_span, string, algorithm)
     }
 
@@ -3384,6 +3515,20 @@ impl<'ir> TreeWalk<'ir> {
             .union(&StringContext::empty())
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
         Ok(NixString::new(bytes, context))
+    }
+
+    fn clone_path_value(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<NixString, TreeWalkError> {
+        let path = self
+            .heap
+            .get_path(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let bytes = Self::copy_bytes_for_node(id, span, path.bytes())?;
+        Ok(NixString::from_bytes(bytes))
     }
 
     fn to_string_float_bytes(value: f64) -> Vec<u8> {
@@ -5830,6 +5975,7 @@ impl<'ir> TreeWalk<'ir> {
             (ValueTag::Bool, ValueTag::Bool) => Ok(left.payload_bits() == right.payload_bits()),
             (ValueTag::Null, ValueTag::Null) => Ok(true),
             (ValueTag::String, ValueTag::String) => self.strings_equal(id, node, left, right),
+            (ValueTag::Path, ValueTag::Path) => self.paths_equal(id, node, left, right),
             (ValueTag::List, ValueTag::List) => self.lists_equal(id, node, left, right),
             (ValueTag::Attrs, ValueTag::Attrs) => self.attrsets_equal(id, node, left, right),
             (ValueTag::Lambda | ValueTag::Primop, ValueTag::Lambda | ValueTag::Primop) => Ok(false),
@@ -5927,6 +6073,22 @@ impl<'ir> TreeWalk<'ir> {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
         let right = self.heap.get_string(right).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+        })?;
+        Ok(left.bytes() == right.bytes())
+    }
+
+    fn paths_equal(
+        &self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+    ) -> Result<bool, TreeWalkError> {
+        let left = self.heap.get_path(left).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+        })?;
+        let right = self.heap.get_path(right).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
         Ok(left.bytes() == right.bytes())
@@ -7074,6 +7236,7 @@ enum StrictBinaryPrimOp {
     Elem,
     LessThan,
     HashString,
+    HashFile,
     ConcatStringsSep,
     All,
     Any,
@@ -7103,6 +7266,7 @@ impl StrictBinaryPrimOp {
             b"elem" => Some(Self::Elem),
             b"lessThan" => Some(Self::LessThan),
             b"hashString" => Some(Self::HashString),
+            b"hashFile" => Some(Self::HashFile),
             b"concatStringsSep" => Some(Self::ConcatStringsSep),
             b"all" => Some(Self::All),
             b"any" => Some(Self::Any),
@@ -7508,6 +7672,24 @@ pub enum TreeWalkErrorKind {
         /// The requested byte length.
         len: usize,
     },
+    /// A path-taking primop received a relative string.
+    #[error("path at node {id:?} is not absolute: {path:?}")]
+    PathNotAbsolute {
+        /// The path-valued node being coerced.
+        id: IrId,
+        /// The rejected path bytes.
+        path: Vec<u8>,
+    },
+    /// A file-content primop could not read its target path.
+    #[error("failed to read file at node {id:?} path {path:?}: {message}")]
+    FileRead {
+        /// The path-valued node being read.
+        id: IrId,
+        /// The file path bytes.
+        path: Vec<u8>,
+        /// The filesystem diagnostic.
+        message: String,
+    },
     /// A list spine buffer could not be reserved.
     #[error("failed to reserve {len} list elements at node {id:?}")]
     ListAllocationFailed {
@@ -7831,7 +8013,12 @@ pub enum TreeWalkErrorKind {
 mod tests {
     use super::super::ThunkState;
     use super::*;
-    use std::ptr::NonNull;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        ptr::NonNull,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use crate::compile::{
         EffectClass, FrameInfo, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode, IrShape,
@@ -7857,6 +8044,44 @@ mod tests {
             .get_string(outcome.value())
             .expect("result is a heap-owned string");
         string.bytes().to_vec()
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("aos-nix-{prefix}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp directory creates");
+        dir
+    }
+
+    fn temp_file_with_bytes(prefix: &str, bytes: &[u8]) -> (PathBuf, PathBuf) {
+        let dir = unique_temp_dir(prefix);
+        let path = dir.join("data.txt");
+        fs::write(&path, bytes).expect("temp file writes");
+        (dir, path)
+    }
+
+    fn path_source(path: &Path) -> String {
+        path.to_str().expect("temp path is UTF-8").to_owned()
+    }
+
+    fn nix_string_literal(text: &str) -> String {
+        let mut out = String::from("\"");
+        for byte in text.bytes() {
+            match byte {
+                b'"' => out.push_str("\\\""),
+                b'\\' => out.push_str("\\\\"),
+                b'\n' => out.push_str("\\n"),
+                b'\r' => out.push_str("\\r"),
+                b'\t' => out.push_str("\\t"),
+                byte => out.push(char::from(byte)),
+            }
+        }
+        out.push('"');
+        out
     }
 
     fn eval_list_string_bytes(source: &str) -> Vec<Vec<u8>> {
@@ -12268,7 +12493,7 @@ mod tests {
             .expect("context-bearing algorithm allocates");
 
         let error = evaluator
-            .eval_hash_string_algorithm(algorithm, algorithm_span, value)
+            .eval_hash_algorithm(algorithm, algorithm_span, value, "hashString")
             .expect_err("hashString rejects algorithm string context");
 
         assert_eq!(
@@ -12365,6 +12590,222 @@ mod tests {
             }
         );
         assert_eq!(error.span(), string_span);
+    }
+
+    #[test]
+    fn path_literals_evaluate_as_paths_without_store_coercion() {
+        let (dir, path) = temp_file_with_bytes("path-literal", b"abc");
+        let path = path_source(&path);
+
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.typeOf {path}")),
+            b"path"
+        );
+        assert_eq!(eval(&format!("builtins.isPath {path}")).as_bool(), Ok(true));
+        assert_eq!(eval(&format!("{path} == {path}")).as_bool(), Ok(true));
+
+        let ir = lower(&format!("builtins.toJSON {path}"));
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let path_id = args[0];
+        let path_span = ir.arena.node(path_id).expect("path exists").span;
+        let error = eval_whnf_owned(&ir).expect_err("store-path JSON coercion is unsupported");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::JsonUnsupportedValue {
+                id: path_id,
+                actual: ValueTag::Path,
+            }
+        );
+        assert_eq!(error.span(), path_span);
+
+        let ir = lower("./relative-file");
+        let path_span = ir.arena.node(ir.root).expect("path exists").span;
+        let error = eval_whnf_owned(&ir).expect_err("relative path literals need a source base");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::PathNotAbsolute {
+                id: ir.root,
+                path: b"./relative-file".to_vec(),
+            }
+        );
+        assert_eq!(error.span(), path_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn hash_file_primop_hashes_file_contents() {
+        let (dir, path) = temp_file_with_bytes("hash-file", b"abc");
+        let path = path_source(&path);
+
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.hashFile \"md5\" {path}")),
+            b"900150983cd24fb0d6963f7d28e17f72"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.hashFile \"sha1\" {path}")),
+            b"a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.hashFile \"sha256\" {path}")),
+            b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.hashFile \"sha512\" {path}")),
+            b"ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.hashFile \"sha256\" {}",
+                nix_string_literal(&path)
+            )),
+            b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.hashFile \"sha256\" {{ outPath = {}; }}",
+                nix_string_literal(&path)
+            )),
+            b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { hashFile = type: path: \"local\"; }; in builtins.hashFile \"sha256\" \"relative.txt\""
+            ),
+            b"local"
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn hash_file_primop_rejects_context_bearing_algorithm() {
+        let ir = lower("builtins.hashFile \"sha256\" ./crates/Cargo.toml");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let algorithm = args[0];
+        let algorithm_span = ir.arena.node(algorithm).expect("algorithm exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"sha256".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing algorithm allocates");
+
+        let error = evaluator
+            .eval_hash_algorithm(algorithm, algorithm_span, value, "hashFile")
+            .expect_err("hashFile rejects algorithm string context");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                id: algorithm,
+                op: "hashFile",
+            }
+        );
+        assert_eq!(error.span(), algorithm_span);
+    }
+
+    #[test]
+    fn hash_file_primop_checks_algorithm_before_path() {
+        let ir = lower("builtins.hashFile \"bad\" (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let algorithm = args[0];
+        let algorithm_span = ir.arena.node(algorithm).expect("algorithm exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("unknown algorithm is rejected first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnknownHashAlgorithm {
+                id: algorithm,
+                algorithm: b"bad".to_vec(),
+            }
+        );
+        assert_eq!(error.span(), algorithm_span);
+
+        let error = eval_whnf_owned(&lower("builtins.hashFile \"sha256\" (1 / 0)"))
+            .expect_err("valid algorithm demands path argument");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+    }
+
+    #[test]
+    fn hash_file_primop_rejects_relative_strings() {
+        let ir = lower("builtins.hashFile \"sha256\" \"relative.txt\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let path = args[1];
+        let path_span = ir.arena.node(path).expect("path exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("relative strings are rejected");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::PathNotAbsolute {
+                id: path,
+                path: b"relative.txt".to_vec(),
+            }
+        );
+        assert_eq!(error.span(), path_span);
+    }
+
+    #[test]
+    fn hash_file_primop_reports_file_read_errors() {
+        let dir = unique_temp_dir("hash-file-missing");
+        let path = path_source(&dir.join("missing.txt"));
+        let ir = lower(&format!(
+            "builtins.hashFile \"sha256\" {}",
+            nix_string_literal(&path)
+        ));
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let path_id = args[1];
+        let path_span = ir.arena.node(path_id).expect("path exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("missing file is reported");
+
+        match error.kind() {
+            TreeWalkErrorKind::FileRead {
+                id,
+                path: actual,
+                message,
+            } => {
+                assert_eq!(id, path_id);
+                assert_eq!(actual.as_slice(), path.as_bytes());
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected file-read error, got {other:?}"),
+        }
+        assert_eq!(error.span(), path_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
     }
 
     #[test]
@@ -14506,14 +14947,14 @@ mod tests {
 
     #[test]
     fn unsupported_nodes_report_kind_and_span() {
-        let ir = lower("./foo");
-        let error = eval_whnf(&ir).expect_err("path values are not implemented yet");
+        let ir = lower("<nixpkgs>");
+        let error = eval_whnf(&ir).expect_err("search paths are not implemented yet");
 
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::UnsupportedNode {
                 id: ir.root,
-                kind: IrKind::Path,
+                kind: IrKind::SearchPath,
             }
         );
         assert_eq!(

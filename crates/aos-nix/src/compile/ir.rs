@@ -1001,6 +1001,7 @@ impl IrLowerer {
 
     fn strict_binary_primop_effect(&self, symbol: Symbol) -> Option<EffectClass> {
         match self.resolved.symbols.resolve(symbol) {
+            Some(b"hashFile") => Some(EffectClass::Effectful),
             Some(
                 b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs" | b"intersectAttrs"
                 | b"catAttrs" | b"elem" | b"lessThan" | b"hashString" | b"concatStringsSep"
@@ -2014,6 +2015,23 @@ mod tests {
     }
 
     #[test]
+    fn lowers_effectful_strict_binary_primops_directly() {
+        let ir = lowered("builtins.hashFile \"sha256\" ./crates/Cargo.toml");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::PrimOp);
+        assert_eq!(root.effect, EffectClass::Effectful);
+        let IrData::PrimOp { symbol, args } = root.data else {
+            panic!("primop payload expected");
+        };
+        assert_eq!(symbol_text(&ir, symbol), b"hashFile");
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        assert_eq!(args.len(), 2);
+        for arg in args {
+            assert_ne!(node(&ir, *arg).kind, IrKind::ThunkAlloc);
+        }
+    }
+
+    #[test]
     fn lowers_pure_strict_lazy_binary_primops_directly() {
         for name in ["deepSeq", "seq"] {
             let source = format!("builtins.{name} (let x = 1; in x) (let y = 2; in y)");
@@ -2919,6 +2937,20 @@ mod tests {
         };
         assert_eq!(node(&ir, first).kind, IrKind::LocalVar);
 
+        let ir = lowered("let hashFile = type: path: path; in hashFile \"sha256\" ./foo");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::LocalVar);
+
         let ir = lowered("let builtins = { readFile = x: x; }; in builtins.readFile ./foo");
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
@@ -2926,6 +2958,22 @@ mod tests {
         assert_eq!(node(&ir, body).kind, IrKind::Apply);
         let IrData::Pair { first, .. } = node(&ir, body).data else {
             panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered(
+            "let builtins = { hashFile = type: path: path; }; in builtins.hashFile \"sha256\" ./foo",
+        );
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
         };
         assert_eq!(node(&ir, first).kind, IrKind::Select);
     }

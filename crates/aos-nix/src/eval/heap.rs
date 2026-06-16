@@ -3,8 +3,8 @@
 //! Runtime [`Value`] words carry opaque [`HeapObject`] pointers. This registry
 //! owns the typed Rust-side objects behind those pointers for the safe tree-walk
 //! oracle: the bump arena provides stable opaque handles, while a side table
-//! maps those handles back to checked [`NixString`], [`NixList`], [`FlatAttrs`],
-//! [`EvalLambda`], and [`EvalThunk`] values.
+//! maps those handles back to checked [`NixString`], path [`NixString`],
+//! [`NixList`], [`FlatAttrs`], [`EvalLambda`], and [`EvalThunk`] values.
 
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -212,6 +212,30 @@ impl EvalHeap {
         Ok(value)
     }
 
+    /// Allocates a Nix path object and returns its opaque runtime value.
+    ///
+    /// The returned value is only meaningful while this [`EvalHeap`] remains
+    /// alive. Use [`EvalHeap::get_path`] to recover the typed path bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
+    /// bump arena cannot reserve a path handle, or if the resulting handle
+    /// violates the runtime value alignment contract.
+    pub fn alloc_path(&mut self, path: NixString) -> Result<Value, EvalHeapError> {
+        self.reserve_record_slot()?;
+        let allocation = self
+            .arena
+            .aos_alloc_string(path.len())
+            .map_err(EvalHeapError::Arena)?;
+        let value = Value::path(allocation.ptr).map_err(EvalHeapError::Value)?;
+        self.records.push(HeapRecord {
+            ptr: allocation.ptr,
+            object: HeapObjectValue::Path(path),
+        });
+        Ok(value)
+    }
+
     /// Allocates a Nix list object and returns its opaque runtime value.
     ///
     /// The returned value is only meaningful while this [`EvalHeap`] remains
@@ -334,6 +358,38 @@ impl EvalHeap {
             HeapObjectValue::String(string) => Ok(string),
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::String,
+                object.tag(),
+                ptr,
+            )),
+        }
+    }
+
+    /// Returns the path object referenced by `value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not a path value.
+    /// Returns [`EvalHeapError::UnknownPointer`] if the path handle does not
+    /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
+    /// the handle belongs to this heap but references a non-path record.
+    pub fn get_path(&self, value: Value) -> Result<&NixString, EvalHeapError> {
+        let ptr = value.as_path_ptr().map_err(EvalHeapError::Value)?;
+        self.get_path_ptr(ptr)
+    }
+
+    /// Returns the path object referenced by an opaque heap pointer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::UnknownPointer`] if `ptr` does not belong to
+    /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
+    /// belongs to this heap but references a non-path record.
+    pub fn get_path_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&NixString, EvalHeapError> {
+        let record = self.record_or_unknown(ValueTag::Path, ptr)?;
+        match &record.object {
+            HeapObjectValue::Path(path) => Ok(path),
+            object => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Path,
                 object.tag(),
                 ptr,
             )),
@@ -535,6 +591,7 @@ struct HeapRecord {
 #[derive(Debug)]
 enum HeapObjectValue {
     String(NixString),
+    Path(NixString),
     List(NixList),
     Attrs(FlatAttrs),
     Lambda(Rc<EvalLambda>),
@@ -545,6 +602,7 @@ impl HeapObjectValue {
     const fn tag(&self) -> ValueTag {
         match self {
             Self::String(_) => ValueTag::String,
+            Self::Path(_) => ValueTag::Path,
             Self::List(_) => ValueTag::List,
             Self::Attrs(_) => ValueTag::Attrs,
             Self::Lambda(_) => ValueTag::Lambda,
@@ -665,6 +723,22 @@ mod tests {
     }
 
     #[test]
+    fn allocates_path_values_and_recovers_bytes() {
+        let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+        let value = heap
+            .alloc_path(NixString::from_bytes(b"/tmp/source".to_vec()))
+            .expect("path allocates");
+
+        assert_eq!(value.tag(), ValueTag::Path);
+        assert_eq!(heap.len(), 1);
+        assert_eq!(
+            heap.get_path(value).expect("path exists").bytes(),
+            b"/tmp/source"
+        );
+        assert_eq!(heap.arena_stats().chunks, 1);
+    }
+
+    #[test]
     fn allocates_list_values_and_recovers_spine() {
         let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
         let value = heap
@@ -739,6 +813,9 @@ mod tests {
         let string = heap
             .alloc_string(NixString::from_bytes(b"name".to_vec()))
             .expect("string allocates");
+        let path = heap
+            .alloc_path(NixString::from_bytes(b"/tmp/name".to_vec()))
+            .expect("path allocates");
         let list = heap
             .alloc_list(NixList::new(vec![Value::int(7)]))
             .expect("list allocates");
@@ -749,16 +826,24 @@ mod tests {
             .alloc_thunk(EvalThunk::new(IrId::new(3)))
             .expect("thunk allocates");
 
+        assert_ne!(string.payload_bits(), path.payload_bits());
         assert_ne!(string.payload_bits(), list.payload_bits());
         assert_ne!(string.payload_bits(), attrs.payload_bits());
         assert_ne!(string.payload_bits(), thunk.payload_bits());
+        assert_ne!(path.payload_bits(), list.payload_bits());
+        assert_ne!(path.payload_bits(), attrs.payload_bits());
+        assert_ne!(path.payload_bits(), thunk.payload_bits());
         assert_ne!(list.payload_bits(), attrs.payload_bits());
         assert_ne!(list.payload_bits(), thunk.payload_bits());
         assert_ne!(attrs.payload_bits(), thunk.payload_bits());
-        assert_eq!(heap.len(), 4);
+        assert_eq!(heap.len(), 5);
         assert_eq!(
             heap.get_string(string).expect("string exists").bytes(),
             b"name"
+        );
+        assert_eq!(
+            heap.get_path(path).expect("path exists").bytes(),
+            b"/tmp/name"
         );
         assert_eq!(
             heap.get_list(list)
@@ -805,6 +890,21 @@ mod tests {
             .expect_err("foreign pointer is not in this heap");
 
         assert_eq!(error, EvalHeapError::unknown(ValueTag::String, ptr));
+    }
+
+    #[test]
+    fn rejects_path_values_from_another_live_heap() {
+        let heap = EvalHeap::new();
+        let mut other = EvalHeap::new();
+        let foreign = other
+            .alloc_path(NixString::from_bytes(b"/tmp/foreign".to_vec()))
+            .expect("foreign path allocates");
+        let ptr = foreign.as_path_ptr().expect("foreign is a path");
+        let error = heap
+            .get_path(foreign)
+            .expect_err("foreign pointer is not in this heap");
+
+        assert_eq!(error, EvalHeapError::unknown(ValueTag::Path, ptr));
     }
 
     #[test]
@@ -863,6 +963,22 @@ mod tests {
             error,
             EvalHeapError::Value(ValueError::Type {
                 expected: "string",
+                actual: ValueTag::Int,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_value_tags_for_path_lookup() {
+        let heap = EvalHeap::new();
+        let error = heap
+            .get_path(Value::int(1))
+            .expect_err("integer is not a path");
+
+        assert_eq!(
+            error,
+            EvalHeapError::Value(ValueError::Type {
+                expected: "path",
                 actual: ValueTag::Int,
             })
         );
@@ -929,6 +1045,18 @@ mod tests {
     }
 
     #[test]
+    fn reports_unknown_path_pointers() {
+        let heap = EvalHeap::new();
+        let ptr = NonNull::<HeapObject>::dangling();
+        let value = Value::path(ptr).expect("dangling pointer is aligned");
+        let error = heap
+            .get_path(value)
+            .expect_err("pointer does not belong to heap");
+
+        assert_eq!(error, EvalHeapError::unknown(ValueTag::Path, ptr));
+    }
+
+    #[test]
     fn reports_unknown_list_pointers() {
         let heap = EvalHeap::new();
         let ptr = NonNull::<HeapObject>::dangling();
@@ -991,6 +1119,16 @@ mod tests {
             error,
             EvalHeapError::record_type_mismatch(ValueTag::String, ValueTag::List, list_ptr)
         );
+        let mislabeled_path = Value::path(list_ptr).expect("same pointer can carry path tag");
+
+        let error = heap
+            .get_path(mislabeled_path)
+            .expect_err("record is not a path");
+
+        assert_eq!(
+            error,
+            EvalHeapError::record_type_mismatch(ValueTag::Path, ValueTag::List, list_ptr)
+        );
 
         let string = heap
             .alloc_string(NixString::from_bytes(b"payload".to_vec()))
@@ -1036,6 +1174,16 @@ mod tests {
         assert_eq!(
             error,
             EvalHeapError::record_type_mismatch(ValueTag::Attrs, ValueTag::String, string_ptr)
+        );
+        let mislabeled_path = Value::path(string_ptr).expect("same pointer can carry path tag");
+
+        let error = heap
+            .get_path(mislabeled_path)
+            .expect_err("record is not a path");
+
+        assert_eq!(
+            error,
+            EvalHeapError::record_type_mismatch(ValueTag::Path, ValueTag::String, string_ptr)
         );
 
         let thunk = heap
