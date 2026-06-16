@@ -4,12 +4,12 @@
 //! first slices evaluate scalar and list literals, boolean control flow,
 //! assertions, boolean operators, string literals and concatenation, list-spine
 //! concatenation, static and recursive static attribute-set literals, static
-//! attribute selection, lexical `let` environments, simple lambda application,
-//! lazy `with` scope lookup, thunk forcing, numeric arithmetic, numeric and
-//! string comparisons, and scalar/string equality to weak head normal form,
-//! establishing the arena access and diagnostic surface used by later slices for
-//! formal-set patterns, dynamic attribute sets, primitive operations, and
-//! derivation boundaries.
+//! attribute selection, lexical `let` environments, simple and formal-set lambda
+//! application, lazy `with` scope lookup, thunk forcing, numeric arithmetic,
+//! numeric and string comparisons, and scalar/string equality to weak head
+//! normal form, establishing the arena access and diagnostic surface used by
+//! later slices for dynamic attribute sets, primitive operations, and derivation
+//! boundaries.
 
 use std::rc::Rc;
 
@@ -134,10 +134,10 @@ impl<'ir> TreeWalk<'ir> {
     /// This initial public node entry point is intentionally limited to scalar
     /// literal, list literal, static attrset literal, string literal,
     /// control-flow, boolean operator, string/list concatenation, static
-    /// attribute selection, lexical `let` environment, simple lambda
-    /// application, numeric arithmetic, numeric and string comparison,
-    /// scalar/string equality, and conservative thunk allocation nodes.
-    /// Remaining environment-dependent nodes return
+    /// attribute selection, lexical `let` environment, simple and formal-set
+    /// lambda application, lazy `with` lookup, numeric arithmetic, numeric and
+    /// string comparison, scalar/string equality, and conservative thunk
+    /// allocation nodes. Remaining environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add their
     /// explicit runtime context.
     ///
@@ -909,18 +909,10 @@ impl<'ir> TreeWalk<'ir> {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id: first, source }, function_span)
         })?;
         let argument = self.eval_lazy_node(second)?;
-        let frame_info = self.frame_info(id, lambda.frame(), node.span)?;
-        let call_frame = EvalFrame::new(frame_info.slot_count as usize).map_err(|source| {
+        let slot_count = self.frame_info(id, lambda.frame(), node.span)?.slot_count as usize;
+        let call_frame = EvalFrame::new(slot_count).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
         })?;
-        self.bind_simple_lambda_argument(
-            id,
-            lambda.pattern(),
-            frame_info.slot_count as usize,
-            &call_frame,
-            argument,
-            node.span,
-        )?;
         let mut call_env = self.clone_env_frames(id, lambda.env(), node.span)?;
         let call_with_env = self.clone_with_scopes(id, lambda.with_scope_env(), node.span)?;
         call_env.try_reserve_exact(1).map_err(|_| {
@@ -937,59 +929,243 @@ impl<'ir> TreeWalk<'ir> {
         call_env.push(call_frame);
         let saved_env = std::mem::replace(&mut self.env, call_env);
         let saved_with_scopes = std::mem::replace(&mut self.with_scopes, call_with_env);
-        let result = self.eval_node(lambda.body());
+        let result = (|| {
+            let call_frame = self.env.last().cloned().ok_or_else(|| {
+                TreeWalkError::new(TreeWalkErrorKind::MissingEnvironment { id }, node.span)
+            })?;
+            self.bind_lambda_argument(
+                id,
+                lambda.pattern(),
+                slot_count,
+                &call_frame,
+                second,
+                argument,
+                node.span,
+            )?;
+            self.eval_node(lambda.body())
+        })();
         self.env = saved_env;
         self.with_scopes = saved_with_scopes;
         result
     }
 
-    fn bind_simple_lambda_argument(
-        &self,
+    fn bind_lambda_argument(
+        &mut self,
         id: IrId,
         pattern: IrId,
         slot_count: usize,
         frame: &EvalFrame,
+        argument_id: IrId,
         argument: Value,
         span: Span,
     ) -> Result<(), TreeWalkError> {
-        let pattern_node = self.node(pattern)?;
-        let IrData::Formal {
-            name: _,
-            default: None,
+        let pattern_node = *self.node(pattern)?;
+        match pattern_node.kind {
+            IrKind::Formal => {
+                let IrData::Formal {
+                    name: _,
+                    default: None,
+                } = pattern_node.data
+                else {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::UnsupportedLambdaPattern {
+                            id,
+                            pattern,
+                            kind: pattern_node.kind,
+                        },
+                        pattern_node.span,
+                    ));
+                };
+                if slot_count != 1 {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::LambdaFrameSlotMismatch {
+                            id,
+                            frame_slots: slot_count,
+                            pattern_slots: 1,
+                        },
+                        span,
+                    ));
+                }
+                frame.set(0, argument).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+                })
+            }
+            IrKind::FormalSet => self.bind_formal_set_argument(
+                id,
+                pattern,
+                &pattern_node,
+                slot_count,
+                frame,
+                argument_id,
+                argument,
+                span,
+            ),
+            kind => Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedLambdaPattern { id, pattern, kind },
+                pattern_node.span,
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn bind_formal_set_argument(
+        &mut self,
+        id: IrId,
+        pattern: IrId,
+        pattern_node: &IrNode,
+        slot_count: usize,
+        frame: &EvalFrame,
+        argument_id: IrId,
+        argument: Value,
+        span: Span,
+    ) -> Result<(), TreeWalkError> {
+        let IrData::FormalSet {
+            formals,
+            ellipsis,
+            alias,
         } = pattern_node.data
         else {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedLambdaPattern {
-                    id,
-                    pattern,
-                    kind: pattern_node.kind,
-                },
-                pattern_node.span,
-            ));
+            return Err(self.invalid_payload(pattern, pattern_node, "formal-set payload"));
         };
-        if pattern_node.kind != IrKind::Formal {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedLambdaPattern {
-                    id,
-                    pattern,
-                    kind: pattern_node.kind,
+        let formal_slice = self.ir.arena.child_slice(formals).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidChildSlice {
+                    id: pattern,
+                    slice: formals,
                 },
                 pattern_node.span,
-            ));
+            )
+        })?;
+        let mut formal_ids = Vec::new();
+        formal_ids
+            .try_reserve_exact(formal_slice.len())
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: pattern,
+                        len: formal_slice.len(),
+                    },
+                    pattern_node.span,
+                )
+            })?;
+        formal_ids.extend_from_slice(formal_slice);
+
+        let mut names = Vec::new();
+        names.try_reserve_exact(formal_ids.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id: pattern,
+                    len: formal_ids.len(),
+                },
+                pattern_node.span,
+            )
+        })?;
+        for formal in &formal_ids {
+            let formal_node = *self.node(*formal)?;
+            let IrData::Formal { name, .. } = formal_node.data else {
+                return Err(self.invalid_payload(*formal, &formal_node, "formal payload"));
+            };
+            if self.ir.symbols.resolve(name).is_none() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id: *formal,
+                        symbol: name,
+                    },
+                    formal_node.span,
+                ));
+            }
+            names.push(name);
         }
-        if slot_count != 1 {
+        if let Some(alias) = alias {
+            if self.ir.symbols.resolve(alias).is_none() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id: pattern,
+                        symbol: alias,
+                    },
+                    pattern_node.span,
+                ));
+            }
+        }
+        let alias_slot = alias.filter(|alias| !names.contains(alias));
+        let pattern_slots = names.len() + usize::from(alias_slot.is_some());
+        if slot_count != pattern_slots {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::LambdaFrameSlotMismatch {
                     id,
                     frame_slots: slot_count,
-                    pattern_slots: 1,
+                    pattern_slots,
                 },
                 span,
             ));
         }
-        frame
-            .set(0, argument)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))
+
+        let argument_span = self.node(argument_id)?.span;
+        let attrs_value = self.force_value(argument_id, argument_span, argument)?;
+        if attrs_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument_id,
+                    expected: "attrs",
+                    actual: attrs_value.tag(),
+                },
+                argument_span,
+            ));
+        }
+
+        if !ellipsis {
+            let unexpected = {
+                let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                attrs
+                    .iter_lexicographic()
+                    .find(|entry| !names.contains(&entry.key))
+                    .map(|entry| entry.key)
+            };
+            if let Some(symbol) = unexpected {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnexpectedFormalAttribute { id, symbol },
+                    span,
+                ));
+            }
+        }
+
+        for (slot, formal) in formal_ids.into_iter().enumerate() {
+            let formal_node = *self.node(formal)?;
+            let IrData::Formal { name, default } = formal_node.data else {
+                return Err(self.invalid_payload(formal, &formal_node, "formal payload"));
+            };
+            let selected = {
+                let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                attrs.get(name)
+            };
+            let value = match (selected, default) {
+                (Some(value), _) => value,
+                (None, Some(default)) => self.eval_lazy_node(default)?,
+                (None, None) => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::MissingFormalAttribute { id, symbol: name },
+                        span,
+                    ));
+                }
+            };
+            frame.set(slot as u32, value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+            })?;
+        }
+
+        if alias_slot.is_some() {
+            frame
+                .set(names.len() as u32, attrs_value)
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+                })?;
+        }
+
+        Ok(())
     }
 
     fn eval_attrset(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -2060,6 +2236,22 @@ pub enum TreeWalkErrorKind {
         /// The missing static attribute symbol.
         symbol: Symbol,
     },
+    /// A formal-set lambda argument missed a required attribute.
+    #[error("missing required formal attribute {symbol:?} at node {id:?}")]
+    MissingFormalAttribute {
+        /// The application node id.
+        id: IrId,
+        /// The missing formal attribute symbol.
+        symbol: Symbol,
+    },
+    /// A formal-set lambda argument carried an unexpected attribute.
+    #[error("unexpected formal attribute {symbol:?} at node {id:?}")]
+    UnexpectedFormalAttribute {
+        /// The application node id.
+        id: IrId,
+        /// The unexpected argument attribute symbol.
+        symbol: Symbol,
+    },
     /// A dynamic with lookup found no attribute and no supported global fallback.
     #[error("unresolved with variable {symbol:?} at node {id:?}")]
     UnresolvedWithVar {
@@ -2793,27 +2985,75 @@ mod tests {
     }
 
     #[test]
-    fn formal_set_lambda_patterns_wait_for_later_slices() {
-        let ir = lower("({ x }: x) { x = 1; }");
-        let root = ir.arena.node(ir.root).expect("root exists");
-        let IrData::Pair { first, .. } = root.data else {
-            panic!("application root has pair payload");
-        };
-        let lambda = ir.arena.node(first).expect("lambda exists");
-        let IrData::Lambda { pattern, .. } = lambda.data else {
-            panic!("function is a lambda");
-        };
-        let pattern_kind = ir.arena.node(pattern).expect("pattern exists").kind;
-        let error = eval_whnf(&ir).expect_err("formal-set patterns are later");
+    fn formal_set_lambdas_bind_attrs_defaults_ellipsis_and_aliases() {
+        assert_eq!(eval("({ x }: x) { x = 1; }").as_int(), Ok(1));
+        assert_eq!(eval("({ x, y }: x + y) { x = 1; y = 2; }").as_int(), Ok(3));
+        assert_eq!(
+            eval("({ x, ... }: x) { x = 1; y = 1 / 0; }").as_int(),
+            Ok(1)
+        );
+        assert_eq!(eval("({ x ? 1 + 2 }: x) {}").as_int(), Ok(3));
+        assert_eq!(eval("({ x ? 1 / 0 }: 7) {}").as_int(), Ok(7));
+        assert_eq!(eval("({ x ? 1 / 0 }: x) { x = 7; }").as_int(), Ok(7));
+        assert_eq!(eval("({ a, b ? a + 1 }: b) { a = 2; }").as_int(), Ok(3));
+        assert_eq!(
+            eval("(args@{ x, ... }: args.x) { x = 1; y = 2; }").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("({ x, ... }@args: args.y) { x = 1; y = 2; }").as_int(),
+            Ok(2)
+        );
+        assert_eq!(eval("({ x ? 1 }@args: args ? x) {}").as_bool(), Ok(false));
+        assert_eq!(
+            eval("({ x ? 1 }@args: args ? x) { x = 2; }").as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn formal_set_lambdas_report_match_errors() {
+        let missing = lower("({ x }: x) {}");
+        let missing_symbol = symbol_for(&missing, b"x");
+        let error = eval_whnf(&missing).expect_err("required formal is missing");
 
         assert_eq!(
             error.kind(),
-            TreeWalkErrorKind::UnsupportedLambdaPattern {
-                id: ir.root,
-                pattern,
-                kind: pattern_kind,
+            TreeWalkErrorKind::MissingFormalAttribute {
+                id: missing.root,
+                symbol: missing_symbol,
             }
         );
+
+        let extra = lower("({ x }: x) { x = 1; z = 2; a = 3; }");
+        let extra_symbol = symbol_for(&extra, b"a");
+        let error = eval_whnf(&extra).expect_err("extra attr without ellipsis is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnexpectedFormalAttribute {
+                id: extra.root,
+                symbol: extra_symbol,
+            }
+        );
+
+        let non_attr = lower("({ x }: x) 1");
+        let root = non_attr.arena.node(non_attr.root).expect("root exists");
+        let IrData::Pair { second, .. } = root.data else {
+            panic!("application root has pair payload");
+        };
+        let second_span = non_attr.arena.node(second).expect("argument exists").span;
+        let error = eval_whnf(&non_attr).expect_err("formal-set argument must be attrs");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: second,
+                expected: "attrs",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), second_span);
     }
 
     #[test]
