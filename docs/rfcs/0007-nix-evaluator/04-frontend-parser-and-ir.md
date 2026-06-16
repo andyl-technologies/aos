@@ -961,7 +961,7 @@ Frontend is the **P1** foundation (decision `S-11`): every item below lands unde
 
 ### Parser (§4)
 
-- [ ] Compact arena AST: single `Vec<Node>`, `u32` `NodeId` cross-references, side child pool for variable-arity children — no `Box`/`Rc` (§4.1) — **P1**, `S-11`; differential parser tests vs the rnix oracle (`C-7`).
+- [x] Compact arena AST: single `Vec<Node>`, `u32` `NodeId` cross-references, side child pool for variable-arity children — no `Box`/`Rc` (§4.1) — **P1**, `S-11`; differential parser tests vs the rnix oracle (`C-7`).
 - [ ] Recursive-descent statement skeleton (`let`/`with`/`assert`/`if`, lambda patterns, attrset/list bodies) (§4.2) — **P1**.
 - [ ] Bounded-lookahead lambda-vs-attrset disambiguation reproducing C++ Nix's yacc ambiguity (§4.2) — **P1**; dedicated parity tests.
 - [ ] Pratt operator sub-parser with the exact Nix binding-power table, incl. non-associative chaining rejection and `+` overload deferral (§4.3) — **P1**; full precedence/associativity conformance (§8, doc 20).

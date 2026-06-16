@@ -4,6 +4,11 @@
 //! arena AST, recursive-descent parser, scope resolver, and parse cache required
 //! by RFC-0007 Phase 1.
 
+pub mod ast;
 pub mod lexer;
 
+pub use ast::{
+    AstArena, AstError, AstErrorKind, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind,
+    Symbol, UnaryOpKind,
+};
 pub use lexer::{LexError, LexErrorKind, Lexer, Span, Token, TokenKind};
