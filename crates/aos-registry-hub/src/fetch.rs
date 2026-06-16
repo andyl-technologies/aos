@@ -146,7 +146,7 @@ pub async fn read_text_capped(response: reqwest::Response, cap: u64, what: &str)
 /// are complementary — the resolver covers names (and DNS rebinding), the
 /// call-site check covers literals — and together they reject every
 /// local/internal target uniformly regardless of whether the host is a name or
-/// an IP. The [`AOS_HUB_ALLOW_LOCAL_REMOTES`](allow_local_remotes) debug hatch
+/// an IP. The `AOS_HUB_ALLOW_LOCAL_REMOTES` debug hatch
 /// relaxes both consistently.
 pub async fn hardened_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -175,7 +175,7 @@ pub async fn hardened_client() -> reqwest::Client {
 /// public answer at validation time to an internal answer at connect time
 /// (DNS rebinding) cannot be reached.
 ///
-/// The test/dev escape hatch ([`allow_local_remotes`]) relaxes the
+/// The test/dev escape hatch (`url_guard::allow_local_remotes`) relaxes the
 /// address check here exactly as it does in [`is_safe_remote_url`], so
 /// integration tests that point the client at `127.0.0.1` upstreams still
 /// connect when running in a debug build.
@@ -202,7 +202,7 @@ impl reqwest::dns::Resolve for ValidatingResolver {
             let addrs =
                 lookup.map_err(|err| -> Box<dyn std::error::Error + Send + Sync> { err.into() })?;
 
-            if !allow_local_remotes() {
+            if !url_guard::allow_local_remotes() {
                 if let Some(bad) = addrs.iter().find(|addr| !is_global_ip(addr.ip())) {
                     return Err(format!(
                         "refusing to connect: host resolved to a local/internal address {}",
@@ -365,50 +365,6 @@ pub async fn fetch_for_url(source_url: &str) -> Result<Box<dyn SurfaceFetch>> {
     );
 }
 
-/// Whether the SSRF local/internal-address guard is currently relaxed by the
-/// test/dev escape hatch.
-///
-/// The hatch exists only to let integration tests stand up upstream servers
-/// on `127.0.0.1`. It is deliberately impossible for it to weaken a release
-/// binary: the env var is consulted **only when `debug_assertions` is on**
-/// (debug/test builds), so in an optimized production build this function is
-/// a compile-time constant `false` and the SSRF guard can never be turned
-/// off, regardless of the process environment.
-///
-/// Even in a debug build the variable must be set to a *truthy* value —
-/// merely being present (e.g. `=0`, `=false`, empty) does not enable it, so a
-/// stray export cannot silently disarm the guard. Truthy values are `1`,
-/// `true`, `yes`, and `on` (case-insensitive).
-fn allow_local_remotes() -> bool {
-    // Compiled out entirely in release: a production binary never honors the
-    // hatch no matter what is in the environment.
-    if !cfg!(debug_assertions) {
-        return false;
-    }
-    match std::env::var("AOS_HUB_ALLOW_LOCAL_REMOTES") {
-        Ok(value) => {
-            let value = value.trim();
-            let on = matches!(
-                value.to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            );
-            if on {
-                // Loud, one-time breadcrumb: this should only ever appear in
-                // test/dev logs, never in production (where it is unreachable).
-                static WARNED: std::sync::Once = std::sync::Once::new();
-                WARNED.call_once(|| {
-                    eprintln!(
-                        "aos-registry-hub: SSRF local-remote guard RELAXED via \
-                         AOS_HUB_ALLOW_LOCAL_REMOTES (debug build only)"
-                    );
-                });
-            }
-            on
-        }
-        Err(_) => false,
-    }
-}
-
 /// Reject a network-origin URL that is local, internal, or non-HTTP — an SSRF
 /// guard for operator-configured mirror upstreams and frontend domains.
 ///
@@ -436,7 +392,7 @@ fn allow_local_remotes() -> bool {
 /// internal answer later cannot be reached. This function remains a cheap,
 /// fail-fast pre-check at configuration and call time.
 ///
-/// **Test/dev escape hatch:** [`allow_local_remotes`] (the
+/// **Test/dev escape hatch:** `url_guard::allow_local_remotes` (the
 /// `AOS_HUB_ALLOW_LOCAL_REMOTES` variable, honored only in debug builds)
 /// skips the local/internal address rejection; the non-HTTP scheme rejection
 /// still applies. The integration tests stand up upstream servers on
@@ -450,7 +406,7 @@ fn allow_local_remotes() -> bool {
 pub fn is_safe_remote_url(raw: &str) -> Result<()> {
     // The test/dev hatch relaxes the local/internal address rejection but never
     // the non-HTTP scheme rejection: enforce the scheme even when it is on.
-    if allow_local_remotes() {
+    if url_guard::allow_local_remotes() {
         url_guard::require_http_scheme(raw)?;
         return Ok(());
     }

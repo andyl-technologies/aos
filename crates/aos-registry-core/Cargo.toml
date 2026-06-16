@@ -15,6 +15,7 @@ base64 = { workspace = true }
 # explicitly here). RFC-0004 Phase 5.
 password-hash = { version = "0.5", features = ["getrandom"] }
 async-trait = { workspace = true }
+ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
@@ -24,6 +25,11 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
+# The package-manifest schema (PackageToml etc., shared by the indexer/Database)
+# and the trusted-key fingerprint line; aos-registry-surface is the wasm-clean
+# surface reader already shared with the Worker.
+aos-registry-surface = { workspace = true }
 
 [features]
 default = []
@@ -45,6 +51,11 @@ sqlx = { workspace = true, features = ["sqlite"] }
 [dev-dependencies]
 # The native SqlxBackend batch tests are async; drive them on a tokio runtime.
 tokio = { workspace = true }
+# The Database migration tests stage old-schema sqlite files with raw rusqlite,
+# then reopen them through the sqlx Database to assert the upgrade path; other
+# tests use a temp dir for a file-backed hub.db (RFC-0004 Phase 5).
+rusqlite = { workspace = true }
+tempfile = { workspace = true }
 
 # The OS CSPRNG (argon2 salt, and the secret/token generators to come) reaches
 # the browser/Workers `crypto.getRandomValues` through getrandom's JS backend on
@@ -57,3 +68,6 @@ getrandom = { version = "0.2", features = ["js"] }
 # rand 0.9 pulls getrandom 0.3; its wasm backend also needs the
 # `--cfg getrandom_backend="wasm_js"` rustflag set in .cargo/config.toml.
 getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+# uuid::Uuid::new_v4 draws from getrandom; the `js` feature routes it to
+# crypto.getRandomValues on the Workers target.
+uuid = { workspace = true, features = ["js"] }
