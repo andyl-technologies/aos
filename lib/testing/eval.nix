@@ -227,11 +227,18 @@
   exposeEnumeration =
     if !(builtins.elem "expose-smoke" exposedPackageNames)
     then throw "packagesWithExpose must include pkgs.expose-smoke"
+    else if !(builtins.elem "test-http-server" exposedPackageNames)
+    then throw "packagesWithExpose must include pkgs.test-http-server"
     else exposedPackagePathsJson;
 
   packagePolicySystem = mkSystem [
     ../../systems/server.nix
     {
+      aos.packages.expose-smoke = {
+        package = pkgs.expose-smoke;
+        bundle = true;
+        preset = false;
+      };
       aos.packages.test-http-server = {
         package = pkgs.test-http-server;
         bundle = true;
@@ -246,9 +253,31 @@
     then throw "aos.packages must add bundled package payloads to environment.systemPackages"
     else if !(builtins.elem (builtins.toString pkgs.test-http-server.expose) packagePolicySystemPackageStrings)
     then throw "aos.packages must add bundled expose artifacts to environment.systemPackages"
+    else if !(builtins.elem (builtins.toString pkgs.expose-smoke) packagePolicySystemPackageStrings)
+    then throw "aos.packages must add preset=false bundled package payloads to environment.systemPackages"
+    else if !(builtins.elem (builtins.toString pkgs.expose-smoke.expose) packagePolicySystemPackageStrings)
+    then throw "aos.packages must add preset=false bundled expose artifacts to environment.systemPackages"
     else if !(builtins.elem "enable aos-pkg-test-http-server.target" packagePolicySystem.config.systemd.systemPresetRules)
     then throw "aos.packages must emit image preset enablement for preset=true packages"
+    else if builtins.elem "enable aos-pkg-expose-smoke.target" packagePolicySystem.config.systemd.systemPresetRules
+    then throw "aos.packages must not emit image preset enablement for preset=false packages"
     else builtins.seq packagePolicySystem.config.system.build.aosPackageProfileSeed.name "ok";
+
+  packagePolicyBadPresetSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.packages.test-http-server = {
+        package = pkgs.test-http-server;
+        preset = true;
+      };
+    }
+  ];
+  packagePolicyRejectsPresetWithoutBundle = let
+    forced = builtins.tryEval (packagePolicyBadPresetSystem.config.system.build.toplevel.outPath);
+  in
+    if forced.success
+    then throw "aos.packages must reject preset=true when bundle=true is not set"
+    else "ok";
 
   packagePolicyBadTargetSystem = mkSystem [
     ../../systems/server.nix
@@ -287,7 +316,7 @@ in
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       no package drop-in include (${firewallNoNftablesDropin}), scan-dir storage rejected (${scanDirStorageRejected})"
         echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"
-        echo "package policy: baked profile (${packagePolicyModule}), target mismatch (${packagePolicyRejectsWrongTarget})"
+        echo "package policy: baked profile (${packagePolicyModule}), preset requires bundle (${packagePolicyRejectsPresetWithoutBundle}), target mismatch (${packagePolicyRejectsWrongTarget})"
 
         # Force the build attributes to ensure they evaluate
         echo "toplevel:       ${system.config.system.build.toplevel.name}"
