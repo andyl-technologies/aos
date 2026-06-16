@@ -1186,6 +1186,10 @@ impl<'ir> TreeWalk<'ir> {
             let second = args[1];
             return match primop {
                 StrictBinaryPrimOp::ElemAt => self.eval_elem_at_primop(first, second),
+                StrictBinaryPrimOp::GetAttr => {
+                    self.eval_get_attr_primop(id, node.span, first, second)
+                }
+                StrictBinaryPrimOp::HasAttr => self.eval_has_attr_primop(first, second),
             };
         }
         if args.len() != 1 {
@@ -1591,6 +1595,95 @@ impl<'ir> TreeWalk<'ir> {
             ));
         };
         Ok(value)
+    }
+
+    fn eval_get_attr_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        name_id: IrId,
+        attrs_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let key = self.eval_attr_name_primop_argument(name_id)?;
+        let attrs_span = self.node(attrs_id)?.span;
+        let attrs_value = self.eval_node(attrs_id)?;
+        if attrs_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: attrs_id,
+                    expected: "attrs",
+                    actual: attrs_value.tag(),
+                },
+                attrs_span,
+            ));
+        }
+        let selected = {
+            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs_id,
+                        source,
+                    },
+                    attrs_span,
+                )
+            })?;
+            attrs.get(key)
+        };
+        selected.ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::MissingAttribute { id, symbol: key },
+                span,
+            )
+        })
+    }
+
+    fn eval_has_attr_primop(
+        &mut self,
+        name_id: IrId,
+        attrs_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let key = self.eval_attr_name_primop_argument(name_id)?;
+        let attrs_span = self.node(attrs_id)?.span;
+        let attrs_value = self.eval_node(attrs_id)?;
+        if attrs_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: attrs_id,
+                    expected: "attrs",
+                    actual: attrs_value.tag(),
+                },
+                attrs_span,
+            ));
+        }
+        let has_attr = {
+            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs_id,
+                        source,
+                    },
+                    attrs_span,
+                )
+            })?;
+            attrs.contains_key(key)
+        };
+        Ok(Value::bool(has_attr))
+    }
+
+    fn eval_attr_name_primop_argument(&mut self, id: IrId) -> Result<Symbol, TreeWalkError> {
+        let span = self.node(id)?.span;
+        let value = self.eval_node(id)?;
+        if value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        self.intern_string_value(id, value, span)
     }
 
     fn eval_function_args_primop(
@@ -3228,12 +3321,16 @@ impl StrictUnaryPrimOp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StrictBinaryPrimOp {
     ElemAt,
+    GetAttr,
+    HasAttr,
 }
 
 impl StrictBinaryPrimOp {
     fn from_bytes(name: &[u8]) -> Option<Self> {
         match name {
             b"elemAt" => Some(Self::ElemAt),
+            b"getAttr" => Some(Self::GetAttr),
+            b"hasAttr" => Some(Self::HasAttr),
             _ => None,
         }
     }
@@ -4578,6 +4675,158 @@ mod tests {
             );
             assert_eq!(error.span(), index_span);
         }
+    }
+
+    #[test]
+    fn get_attr_primop_returns_attr_without_forcing_selected_value() {
+        assert_eq!(
+            eval("builtins.getAttr \"a\" { a = 1; b = 1 / 0; }").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let builtins = { getAttr = name: set: 42; }; in builtins.getAttr \"a\" {}")
+                .as_int(),
+            Ok(42)
+        );
+
+        let ir = lower("builtins.getAttr \"a\" { a = 1 / 0; }");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let mut evaluator = TreeWalk::new(&ir);
+        let value = evaluator
+            .eval_primop(ir.root, &root)
+            .expect("getAttr primop evaluates");
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        let thunk = evaluator
+            .heap
+            .get_thunk(value)
+            .expect("selected attr remains a heap-owned thunk");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(
+            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            IrKind::BinOp
+        );
+    }
+
+    #[test]
+    fn get_attr_primop_reports_missing_attrs() {
+        let ir = lower("builtins.getAttr \"missing\" { a = 1; }");
+        let root = ir.arena.node(ir.root).expect("root exists");
+
+        let error = eval_whnf(&ir).expect_err("getAttr requires the attribute to exist");
+
+        let TreeWalkErrorKind::MissingAttribute { id, symbol } = error.kind() else {
+            panic!("expected a missing attribute error");
+        };
+        assert_eq!(id, ir.root);
+        assert_eq!(ir.symbols.resolve(symbol), Some(b"missing".as_slice()));
+        assert_eq!(error.span(), root.span);
+    }
+
+    #[test]
+    fn get_attr_primop_type_checks_arguments_in_order() {
+        let ir = lower("builtins.getAttr 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let name = args[0];
+        let name_span = ir.arena.node(name).expect("name argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("getAttr checks the name before the attrset");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: name,
+                expected: "string",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), name_span);
+
+        let ir = lower("builtins.getAttr \"a\" 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let attrs = args[1];
+        let attrs_span = ir.arena.node(attrs).expect("attrset argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("getAttr requires an attrset");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: attrs,
+                expected: "attrs",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), attrs_span);
+    }
+
+    #[test]
+    fn has_attr_primop_reports_presence_without_forcing_values() {
+        assert_eq!(
+            eval("builtins.hasAttr \"a\" { a = 1 / 0; }").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.hasAttr \"b\" { a = 1 / 0; }").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval("let builtins = { hasAttr = name: set: false; }; in builtins.hasAttr \"a\" { a = true; }")
+                .as_bool(),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn has_attr_primop_type_checks_name_before_attrset() {
+        let ir = lower("builtins.hasAttr 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let name = args[0];
+        let name_span = ir.arena.node(name).expect("name argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("hasAttr checks the name before the attrset");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: name,
+                expected: "string",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), name_span);
+
+        let ir = lower("builtins.hasAttr \"a\" 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let attrs = args[1];
+        let attrs_span = ir.arena.node(attrs).expect("attrset argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("hasAttr requires an attrset");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: attrs,
+                expected: "attrs",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), attrs_span);
     }
 
     #[test]

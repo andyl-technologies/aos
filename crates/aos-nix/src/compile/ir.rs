@@ -909,7 +909,7 @@ impl IrLowerer {
 
     fn strict_binary_primop_effect(&self, symbol: Symbol) -> Option<EffectClass> {
         match self.resolved.symbols.resolve(symbol) {
-            Some(b"elemAt") => Some(EffectClass::Pure),
+            Some(b"elemAt" | b"getAttr" | b"hasAttr") => Some(EffectClass::Pure),
             _ => None,
         }
     }
@@ -1768,7 +1768,11 @@ mod tests {
 
     #[test]
     fn lowers_pure_strict_binary_primops_directly() {
-        for (source, name) in [("builtins.elemAt [ 1 ] 0", b"elemAt".as_slice())] {
+        for (source, name) in [
+            ("builtins.elemAt [ 1 ] 0", b"elemAt".as_slice()),
+            ("builtins.getAttr \"a\" { a = 1; }", b"getAttr".as_slice()),
+            ("builtins.hasAttr \"a\" { a = 1; }", b"hasAttr".as_slice()),
+        ] {
             let ir = lowered(source);
             let root = root_node(&ir);
             assert_eq!(root.kind, IrKind::PrimOp);
@@ -2049,6 +2053,41 @@ mod tests {
             panic!("apply payload expected");
         };
         assert_eq!(node(&ir, first).kind, IrKind::Apply);
+
+        let ir = lowered("getAttr \"a\" { a = 1; }");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir =
+            lowered("let builtins = { getAttr = name: set: 42; }; in builtins.getAttr \"a\" {}");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered("builtins.hasAttr \"a\"");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
     }
 
     #[test]
