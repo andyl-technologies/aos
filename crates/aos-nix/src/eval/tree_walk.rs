@@ -1198,6 +1198,9 @@ impl<'ir> TreeWalk<'ir> {
                 StrictBinaryPrimOp::IntersectAttrs => {
                     self.eval_intersect_attrs_primop(id, node.span, first, second)
                 }
+                StrictBinaryPrimOp::CatAttrs => {
+                    self.eval_cat_attrs_primop(id, node.span, first, second)
+                }
             };
         }
         if args.len() != 1 {
@@ -2054,6 +2057,92 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
         self.heap
             .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_cat_attrs_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        name_id: IrId,
+        list_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let key = self.eval_attr_name_primop_argument(name_id)?;
+        let list_span = self.node(list_id)?.span;
+        let list_value = self.eval_node(list_id)?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list_id,
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list_span,
+            ));
+        }
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            let mut elements = Vec::new();
+            elements.try_reserve_exact(list.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: list_id,
+                        len: list.len(),
+                    },
+                    list_span,
+                )
+            })?;
+            elements.extend_from_slice(list.as_slice());
+            elements
+        };
+        let mut values = Vec::new();
+        values.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: elements.len(),
+                },
+                span,
+            )
+        })?;
+        for element in elements {
+            let element = self.force_value(list_id, list_span, element)?;
+            if element.tag() != ValueTag::Attrs {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: list_id,
+                        expected: "attrs",
+                        actual: element.tag(),
+                    },
+                    list_span,
+                ));
+            }
+            let selected = {
+                let attrs = self.heap.get_attrs(element).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: list_id,
+                            source,
+                        },
+                        list_span,
+                    )
+                })?;
+                attrs.get(key)
+            };
+            if let Some(value) = selected {
+                values.push(value);
+            }
+        }
+        self.heap
+            .alloc_list(NixList::new(values))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
@@ -3698,6 +3787,7 @@ enum StrictBinaryPrimOp {
     HasAttr,
     RemoveAttrs,
     IntersectAttrs,
+    CatAttrs,
 }
 
 impl StrictBinaryPrimOp {
@@ -3708,6 +3798,7 @@ impl StrictBinaryPrimOp {
             b"hasAttr" => Some(Self::HasAttr),
             b"removeAttrs" => Some(Self::RemoveAttrs),
             b"intersectAttrs" => Some(Self::IntersectAttrs),
+            b"catAttrs" => Some(Self::CatAttrs),
             _ => None,
         }
     }
@@ -5539,6 +5630,123 @@ mod tests {
             }
         );
         assert_eq!(error.span(), right_span);
+    }
+
+    #[test]
+    fn cat_attrs_primop_collects_present_attrs_in_list_order() {
+        let outcome = eval_whnf_owned(&lower(
+            "builtins.catAttrs \"a\" [ { a = 1; } { b = 1 / 0; } { a = 2; } ]",
+        ))
+        .expect("catAttrs evaluates");
+        let list = outcome
+            .heap()
+            .get_list(outcome.value())
+            .expect("catAttrs returns a list");
+
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.get(0).expect("first").as_int(), Ok(1));
+        assert_eq!(list.get(1).expect("second").as_int(), Ok(2));
+        let shadowed = eval_whnf_owned(&lower(
+            "let builtins = { catAttrs = name: list: [ true ]; }; in builtins.catAttrs \"a\" []",
+        ))
+        .expect("shadowed catAttrs evaluates");
+        let shadowed_list = shadowed
+            .heap()
+            .get_list(shadowed.value())
+            .expect("shadowed catAttrs returns a list");
+        assert_eq!(
+            shadowed_list.get(0).expect("first local value").as_bool(),
+            Ok(true)
+        );
+
+        let ir = lower("builtins.catAttrs \"a\" [ { a = 1 / 0; } { b = 2; } ]");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let mut evaluator = TreeWalk::new(&ir);
+        let value = evaluator
+            .eval_primop(ir.root, &root)
+            .expect("catAttrs primop evaluates");
+        let list = evaluator
+            .heap
+            .get_list(value)
+            .expect("catAttrs returns a heap-owned list");
+        assert_eq!(list.len(), 1);
+        let value = list.get(0).expect("selected attr exists");
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        let thunk = evaluator
+            .heap
+            .get_thunk(value)
+            .expect("selected attr value remains a heap-owned thunk");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(
+            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            IrKind::BinOp
+        );
+    }
+
+    #[test]
+    fn cat_attrs_primop_type_checks_arguments_and_elements_in_order() {
+        let ir = lower("builtins.catAttrs 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let name = args[0];
+        let name_span = ir.arena.node(name).expect("name argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("catAttrs checks the name before the list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: name,
+                expected: "string",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), name_span);
+
+        let ir = lower("builtins.catAttrs \"a\" 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("catAttrs requires a list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: list,
+                expected: "list",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), list_span);
+
+        let ir = lower("builtins.catAttrs \"a\" [ 1 ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("catAttrs requires attrset elements");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: list,
+                expected: "attrs",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), list_span);
     }
 
     #[test]
