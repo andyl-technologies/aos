@@ -1008,6 +1008,29 @@ pub enum ProfileScope {
 }
 
 impl ProfileScope {
+    /// Lowercase human name for this scope (`"system"` or `"user"`).
+    ///
+    /// Used in diagnostics that name the scope a command searched, such as the
+    /// unsynced-registry warning emitted by query commands.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ProfileScope::User => "user",
+            ProfileScope::System => "system",
+        }
+    }
+
+    /// The opposite scope.
+    ///
+    /// System scope returns [`ProfileScope::User`] and vice versa. Used to
+    /// point an operator at the scope they probably meant when a query finds a
+    /// registry unsynced in the current one.
+    pub fn other(&self) -> ProfileScope {
+        match self {
+            ProfileScope::User => ProfileScope::System,
+            ProfileScope::System => ProfileScope::User,
+        }
+    }
+
     /// Base path for profiles of this scope.
     ///
     /// User scope resolves to `<profiles>/per-user/$USER` (with `"unknown"`
@@ -2345,5 +2368,13 @@ pin = "v2026.02"
 "#;
         let rf: RegistryFile = toml::from_str(toml_str).unwrap();
         assert_eq!(rf.registry.pin.as_deref(), Some("v2026.02"));
+    }
+
+    #[test]
+    fn profile_scope_name_and_other() {
+        assert_eq!(ProfileScope::User.name(), "user");
+        assert_eq!(ProfileScope::System.name(), "system");
+        assert_eq!(ProfileScope::User.other(), ProfileScope::System);
+        assert_eq!(ProfileScope::System.other(), ProfileScope::User);
     }
 }
