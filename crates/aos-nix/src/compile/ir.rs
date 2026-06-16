@@ -909,7 +909,9 @@ impl IrLowerer {
 
     fn strict_binary_primop_effect(&self, symbol: Symbol) -> Option<EffectClass> {
         match self.resolved.symbols.resolve(symbol) {
-            Some(b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs") => Some(EffectClass::Pure),
+            Some(b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs" | b"intersectAttrs") => {
+                Some(EffectClass::Pure)
+            }
             _ => None,
         }
     }
@@ -1776,6 +1778,10 @@ mod tests {
                 "builtins.removeAttrs { a = 1; } [ \"a\" ]",
                 b"removeAttrs".as_slice(),
             ),
+            (
+                "builtins.intersectAttrs { a = 1; } { a = 2; }",
+                b"intersectAttrs".as_slice(),
+            ),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -2013,6 +2019,34 @@ mod tests {
 
         let ir = lowered(
             "let builtins = { removeAttrs = set: names: { local = true; }; }; in builtins.removeAttrs {} []",
+        );
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered("intersectAttrs { a = 1; } { a = 2; }");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir = lowered(
+            "let builtins = { intersectAttrs = left: right: { local = true; }; }; in builtins.intersectAttrs {} {}",
         );
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");

@@ -1193,6 +1193,9 @@ impl<'ir> TreeWalk<'ir> {
                 StrictBinaryPrimOp::RemoveAttrs => {
                     self.eval_remove_attrs_primop(id, node.span, first, second)
                 }
+                StrictBinaryPrimOp::IntersectAttrs => {
+                    self.eval_intersect_attrs_primop(id, node.span, first, second)
+                }
             };
         }
         if args.len() != 1 {
@@ -1794,6 +1797,96 @@ impl<'ir> TreeWalk<'ir> {
             })?;
             for entry in attrs.entries_by_symbol() {
                 if !remove.contains(&entry.key) {
+                    entries.push(*entry);
+                }
+            }
+            entries
+        };
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_intersect_attrs_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        left_id: IrId,
+        right_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let left_span = self.node(left_id)?.span;
+        let left_value = self.eval_node(left_id)?;
+        if left_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: left_id,
+                    expected: "attrs",
+                    actual: left_value.tag(),
+                },
+                left_span,
+            ));
+        }
+
+        let right_span = self.node(right_id)?.span;
+        let right_value = self.eval_node(right_id)?;
+        if right_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: right_id,
+                    expected: "attrs",
+                    actual: right_value.tag(),
+                },
+                right_span,
+            ));
+        }
+
+        let left_keys = {
+            let left = self.heap.get_attrs(left_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: left_id,
+                        source,
+                    },
+                    left_span,
+                )
+            })?;
+            let mut keys = Vec::new();
+            keys.try_reserve_exact(left.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: left_id,
+                        len: left.len(),
+                    },
+                    left_span,
+                )
+            })?;
+            keys.extend(left.entries_by_symbol().iter().map(|entry| entry.key));
+            keys
+        };
+        let entries = {
+            let right = self.heap.get_attrs(right_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: right_id,
+                        source,
+                    },
+                    right_span,
+                )
+            })?;
+            let mut entries = Vec::new();
+            entries.try_reserve_exact(right.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id,
+                        len: right.len(),
+                    },
+                    span,
+                )
+            })?;
+            for entry in right.entries_by_symbol() {
+                if left_keys.contains(&entry.key) {
                     entries.push(*entry);
                 }
             }
@@ -3444,6 +3537,7 @@ enum StrictBinaryPrimOp {
     GetAttr,
     HasAttr,
     RemoveAttrs,
+    IntersectAttrs,
 }
 
 impl StrictBinaryPrimOp {
@@ -3453,6 +3547,7 @@ impl StrictBinaryPrimOp {
             b"getAttr" => Some(Self::GetAttr),
             b"hasAttr" => Some(Self::HasAttr),
             b"removeAttrs" => Some(Self::RemoveAttrs),
+            b"intersectAttrs" => Some(Self::IntersectAttrs),
             _ => None,
         }
     }
@@ -5034,6 +5129,97 @@ mod tests {
             }
         );
         assert_eq!(error.span(), names_span);
+    }
+
+    #[test]
+    fn intersect_attrs_primop_takes_names_from_left_and_values_from_right() {
+        assert_eq!(
+            eval_list_string_bytes(
+                "builtins.attrNames (builtins.intersectAttrs { z = 1; a = 1 / 0; b = 3; } { z = 4; a = 5; c = 6; })"
+            ),
+            vec![b"a".to_vec(), b"z".to_vec()]
+        );
+        assert_eq!(
+            eval("let r = builtins.intersectAttrs { a = 1 / 0; } { a = 2; }; in r.a").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("let builtins = { intersectAttrs = left: right: { local = true; }; }; in (builtins.intersectAttrs {} {}).local")
+                .as_bool(),
+            Ok(true)
+        );
+
+        let ir = lower("builtins.intersectAttrs { a = 1; } { a = 1 / 0; }");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let mut evaluator = TreeWalk::new(&ir);
+        let value = evaluator
+            .eval_primop(ir.root, &root)
+            .expect("intersectAttrs primop evaluates");
+        let attrs = evaluator
+            .heap
+            .get_attrs(value)
+            .expect("intersectAttrs result is attrs");
+        let entry = attrs
+            .iter_lexicographic()
+            .next()
+            .expect("intersectAttrs result has one attr");
+        assert_eq!(ir.symbols.resolve(entry.key), Some(b"a".as_slice()));
+        let value = entry.value;
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        let thunk = evaluator
+            .heap
+            .get_thunk(value)
+            .expect("selected right value remains a heap-owned thunk");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(
+            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            IrKind::BinOp
+        );
+    }
+
+    #[test]
+    fn intersect_attrs_primop_type_checks_arguments_in_order() {
+        let ir = lower("builtins.intersectAttrs 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let left = args[0];
+        let left_span = ir.arena.node(left).expect("left argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("intersectAttrs checks the left set first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: left,
+                expected: "attrs",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), left_span);
+
+        let ir = lower("builtins.intersectAttrs {} 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let right = args[1];
+        let right_span = ir.arena.node(right).expect("right argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("intersectAttrs requires a right attrset");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: right,
+                expected: "attrs",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), right_span);
     }
 
     #[test]
