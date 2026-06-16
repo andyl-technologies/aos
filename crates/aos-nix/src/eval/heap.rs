@@ -11,6 +11,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
+use super::env::EvalEnv;
 use super::thunk::ThunkCell;
 use crate::attrs::FlatAttrs;
 use crate::compile::IrId;
@@ -21,20 +22,26 @@ use crate::value::{HeapObject, Value, ValueError, ValueTag};
 
 /// A suspended tree-walk thunk heap record.
 ///
-/// The record stores the lowered thunk body plus the serial state/result cell.
-/// It does not yet carry an environment; later evaluator slices extend this
-/// typed record when lexical frame evaluation lands.
+/// The record stores the lowered thunk body, captured lexical environment, and
+/// serial state/result cell.
 #[derive(Debug)]
 pub struct EvalThunk {
     body: IrId,
+    env: EvalEnv,
     cell: ThunkCell,
 }
 
 impl EvalThunk {
-    /// Creates a suspended thunk record for `body`.
-    pub const fn new(body: IrId) -> Self {
+    /// Creates a suspended environment-free thunk record for `body`.
+    pub fn new(body: IrId) -> Self {
+        Self::with_env(body, EvalEnv::default())
+    }
+
+    /// Creates a suspended thunk record for `body` and `env`.
+    pub fn with_env(body: IrId, env: EvalEnv) -> Self {
         Self {
             body,
+            env,
             cell: ThunkCell::new(),
         }
     }
@@ -42,6 +49,11 @@ impl EvalThunk {
     /// Returns the lowered body this thunk will evaluate when forced.
     pub const fn body(&self) -> IrId {
         self.body
+    }
+
+    /// Returns the lexical environment captured when this thunk was allocated.
+    pub const fn env(&self) -> &EvalEnv {
+        &self.env
     }
 
     /// Returns the serial state/result cell for this thunk.

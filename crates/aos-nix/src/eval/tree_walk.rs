@@ -4,20 +4,23 @@
 //! first slices evaluate scalar and list literals, boolean control flow,
 //! assertions, boolean operators, string literals and concatenation, list-spine
 //! concatenation, non-recursive static attribute-set literals, static attribute
-//! selection, thunk forcing, numeric arithmetic, numeric and string comparisons,
-//! and scalar/string equality to weak head normal form, establishing the arena
-//! access and diagnostic surface used by later slices for environments, thunks,
-//! functions, dynamic/recursive attribute sets, primitive operations, and
-//! derivation boundaries.
+//! selection, lexical `let` environments, thunk forcing, numeric arithmetic,
+//! numeric and string comparisons, and scalar/string equality to weak head
+//! normal form, establishing the arena access and diagnostic surface used by
+//! later slices for functions, dynamic/recursive attribute sets, primitive
+//! operations, and derivation boundaries.
+
+use std::rc::Rc;
 
 use thiserror::Error;
 
+use super::env::{EvalEnv, EvalEnvError, EvalFrame};
 use super::heap::{EvalHeap, EvalHeapError, EvalThunk};
 use super::thunk::{ForceClaim, ForceError};
 use crate::attrs::{AttrEntry, AttrError, FlatAttrs};
 use crate::compile::{
-    Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId, IrKind,
-    IrNode, IrShapeId,
+    FrameId, Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId,
+    IrKind, IrNode, IrShapeId,
 };
 use crate::list::{NixList, NixListError};
 use crate::string::{NixString, NixStringError};
@@ -96,6 +99,7 @@ impl EvalOutcome {
 pub struct TreeWalk<'ir> {
     ir: &'ir Ir,
     heap: EvalHeap,
+    env: Vec<Rc<EvalFrame>>,
 }
 
 impl<'ir> TreeWalk<'ir> {
@@ -104,6 +108,7 @@ impl<'ir> TreeWalk<'ir> {
         Self {
             ir,
             heap: EvalHeap::new(),
+            env: Vec::new(),
         }
     }
 
@@ -123,14 +128,14 @@ impl<'ir> TreeWalk<'ir> {
 
     /// Evaluates a node to weak head normal form.
     ///
-    /// This initial public node entry point is intentionally limited to
-    /// environment-free scalar literal, list literal, static attrset literal,
-    /// string literal, control-flow, boolean operator, string/list concatenation,
-    /// static attribute selection, numeric arithmetic, numeric and string
-    /// comparison, scalar/string equality, and conservative thunk allocation
-    /// nodes. Environment-dependent nodes return
-    /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add an explicit
-    /// runtime and environment context.
+    /// This initial public node entry point is intentionally limited to scalar
+    /// literal, list literal, static attrset literal, string literal,
+    /// control-flow, boolean operator, string/list concatenation, static
+    /// attribute selection, lexical `let` environment, numeric arithmetic,
+    /// numeric and string comparison, scalar/string equality, and conservative
+    /// thunk allocation nodes. Remaining environment-dependent nodes return
+    /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add their
+    /// explicit runtime context.
     ///
     /// # Errors
     ///
@@ -166,8 +171,11 @@ impl<'ir> TreeWalk<'ir> {
                 Ok(Value::null())
             }
             IrKind::Str => self.eval_string(id, &node),
+            IrKind::LocalVar => self.eval_local_var(id, &node),
+            IrKind::UpvalVar => self.eval_upval_var(id, &node),
             IrKind::List => self.eval_list(id, &node),
             IrKind::AttrSet => self.eval_attrset(id, &node),
+            IrKind::Let => self.eval_let(id, &node),
             IrKind::If => self.eval_if(id, &node),
             IrKind::Assert => self.eval_assert(id, &node),
             IrKind::UnaryOp => self.eval_unary(id, &node),
@@ -206,6 +214,51 @@ impl<'ir> TreeWalk<'ir> {
             ));
         }
         Ok(start..end)
+    }
+
+    fn frame_info(
+        &self,
+        id: IrId,
+        frame: FrameId,
+        span: Span,
+    ) -> Result<&crate::compile::FrameInfo, TreeWalkError> {
+        self.ir.frames.get(frame.index()).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidFrameId {
+                    id,
+                    frame: frame.as_u32(),
+                },
+                span,
+            )
+        })
+    }
+
+    fn capture_env(&self, id: IrId, span: Span) -> Result<EvalEnv, TreeWalkError> {
+        EvalEnv::capture(&self.env)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))
+    }
+
+    fn clone_env_frames(
+        &self,
+        id: IrId,
+        env: &EvalEnv,
+        span: Span,
+    ) -> Result<Vec<Rc<EvalFrame>>, TreeWalkError> {
+        let frames = env.frames();
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(frames.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Env {
+                    id,
+                    source: EvalEnvError::CaptureAllocationFailed {
+                        frames: frames.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        cloned.extend_from_slice(frames);
+        Ok(cloned)
     }
 
     fn validate_attrset_shape(
@@ -497,6 +550,42 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
+    fn eval_local_var(&self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Local { slot } = node.data else {
+            return Err(self.invalid_payload(id, node, "local payload"));
+        };
+        let Some(frame) = self.env.last() else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::MissingEnvironment { id },
+                node.span,
+            ));
+        };
+        frame
+            .get(slot)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span))
+    }
+
+    fn eval_upval_var(&self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Upval { depth, slot } = node.data else {
+            return Err(self.invalid_payload(id, node, "upvalue payload"));
+        };
+        let depth = depth as usize;
+        if depth >= self.env.len() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidUpvalueDepth {
+                    id,
+                    depth,
+                    frames: self.env.len(),
+                },
+                node.span,
+            ));
+        }
+        let index = self.env.len() - 1 - depth;
+        self.env[index]
+            .get(slot)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span))
+    }
+
     fn eval_lazy_node(&mut self, id: IrId) -> Result<Value, TreeWalkError> {
         let node = *self.node(id)?;
         if node.kind == IrKind::ThunkAlloc {
@@ -510,8 +599,9 @@ impl<'ir> TreeWalk<'ir> {
             return Err(self.invalid_payload(id, node, "thunk body"));
         };
         self.node(body)?;
+        let env = self.capture_env(id, node.span)?;
         self.heap
-            .alloc_thunk(EvalThunk::new(body))
+            .alloc_thunk(EvalThunk::with_env(body, env))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
@@ -531,12 +621,67 @@ impl<'ir> TreeWalk<'ir> {
         {
             ForceClaim::AlreadyForced(value) => Ok(value),
             ForceClaim::Claimed(guard) => {
-                let value = self.eval_node(body)?;
+                let thunk_env = self.clone_env_frames(id, thunk.env(), span)?;
+                let saved_env = std::mem::replace(&mut self.env, thunk_env);
+                let result = self.eval_node(body);
+                self.env = saved_env;
+                let value = result?;
                 guard.finish(value).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
                 })
             }
         }
+    }
+
+    fn eval_let(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Let {
+            bindings,
+            body,
+            frame,
+        } = node.data
+        else {
+            return Err(self.invalid_payload(id, node, "let payload"));
+        };
+        let Some(frame) = frame else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::MissingFrameMetadata { id },
+                node.span,
+            ));
+        };
+        let slot_count = self.frame_info(id, frame, node.span)?.slot_count as usize;
+        let binding_range = self.binding_range(id, bindings, node.span)?;
+        if binding_range.len() != slot_count {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::LetFrameSlotMismatch {
+                    id,
+                    frame_slots: slot_count,
+                    bindings: binding_range.len(),
+                },
+                node.span,
+            ));
+        }
+        let frame_values = EvalFrame::new(slot_count).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+        })?;
+        self.env.push(Rc::clone(&frame_values));
+        let result = (|| {
+            for (slot, binding_index) in binding_range.enumerate() {
+                let binding = self.ir.bindings[binding_index];
+                if !matches!(binding.key, IrAttrPathSegment::Static(_)) {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::UnsupportedLetBindingKey { id },
+                        node.span,
+                    ));
+                }
+                let value = self.eval_lazy_node(binding.value)?;
+                frame_values.set(slot as u32, value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+                })?;
+            }
+            self.eval_node(body)
+        })();
+        let _ = self.env.pop();
+        result
     }
 
     fn eval_attrset(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -1336,6 +1481,52 @@ pub enum TreeWalkErrorKind {
         /// The invalid shape id payload.
         shape: IrShapeId,
     },
+    /// A let node referenced no resolver frame.
+    #[error("missing frame metadata at let node {id:?}")]
+    MissingFrameMetadata {
+        /// The malformed let node id.
+        id: IrId,
+    },
+    /// A resolver frame id did not resolve through the IR.
+    #[error("invalid frame id {frame} at node {id:?}")]
+    InvalidFrameId {
+        /// The node id carrying the invalid frame id.
+        id: IrId,
+        /// The invalid frame id payload.
+        frame: u32,
+    },
+    /// A let frame's slot count did not match its binding table.
+    #[error("let frame at node {id:?} has {frame_slots} slots for {bindings} bindings")]
+    LetFrameSlotMismatch {
+        /// The malformed let node id.
+        id: IrId,
+        /// The resolver frame slot count.
+        frame_slots: usize,
+        /// The number of lowered bindings.
+        bindings: usize,
+    },
+    /// A local variable was evaluated without an active environment frame.
+    #[error("missing lexical environment at node {id:?}")]
+    MissingEnvironment {
+        /// The variable node id.
+        id: IrId,
+    },
+    /// An upvalue depth did not resolve through the active environment stack.
+    #[error("upvalue depth {depth} at node {id:?} exceeds {frames} active frames")]
+    InvalidUpvalueDepth {
+        /// The upvalue node id.
+        id: IrId,
+        /// The requested parent depth.
+        depth: usize,
+        /// The number of active frames.
+        frames: usize,
+    },
+    /// A let binding carried an unsupported dynamic key.
+    #[error("unsupported let binding key at node {id:?}")]
+    UnsupportedLetBindingKey {
+        /// The malformed let node id.
+        id: IrId,
+    },
     /// An attrset shape has a different number of keys than its binding slice.
     #[error(
         "attrset shape {shape:?} at node {id:?} has {shape_keys} keys for {binding_keys} binding keys"
@@ -1405,6 +1596,14 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The underlying heap failure.
         source: EvalHeapError,
+    },
+    /// Lexical environment access failed.
+    #[error("environment operation failed at node {id:?}: {source}")]
+    Env {
+        /// The node id associated with the environment operation.
+        id: IrId,
+        /// The underlying environment failure.
+        source: EvalEnvError,
     },
     /// Thunk forcing failed.
     #[error("thunk force failed at node {id:?}: {source}")]
@@ -1748,6 +1947,35 @@ mod tests {
     }
 
     #[test]
+    fn list_element_thunks_capture_let_environments() {
+        let ir = lower("let x = 1 + 2; in [ x ]");
+        let outcome = eval_whnf_owned(&ir).expect("list evaluates");
+        let heap = outcome.heap();
+        let list = heap.get_list(outcome.value()).expect("list is heap-owned");
+        let element = list.get(0).expect("first");
+        let element_thunk = heap
+            .get_thunk(element)
+            .expect("list element thunk is heap-owned");
+
+        assert_eq!(element_thunk.env().frames().len(), 1);
+        let captured_x = element_thunk.env().frames()[0]
+            .get(0)
+            .expect("captured frame slot exists");
+        assert_eq!(captured_x.tag(), ValueTag::Thunk);
+        let x_thunk = heap
+            .get_thunk(captured_x)
+            .expect("captured binding thunk is heap-owned");
+        assert_eq!(x_thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(
+            ir.arena
+                .node(x_thunk.body())
+                .expect("thunk body exists")
+                .kind,
+            IrKind::BinOp
+        );
+    }
+
+    #[test]
     fn list_concat_concatenates_empty_lists() {
         let ir = lower("[] ++ []");
         let outcome = eval_whnf_owned(&ir).expect("list concat evaluates");
@@ -2017,6 +2245,35 @@ mod tests {
                 .expect("root exists")
                 .span
         );
+    }
+
+    #[test]
+    fn let_bindings_are_lazy_and_self_visible() {
+        assert_eq!(eval("let x = 1 + 2; in x").as_int(), Ok(3));
+        assert_eq!(eval("let a = 1; b = 2; in a + b").as_int(), Ok(3));
+        assert_eq!(
+            eval("let a = 1; b = 2; in let c = a + b; in c").as_int(),
+            Ok(3)
+        );
+        assert_eq!(eval("let x = 1 / 0; in 7").as_int(), Ok(7));
+        assert_eq!(eval("let p = ./foo; in 7").as_int(), Ok(7));
+
+        let ir = lower("let x = x; in x");
+        let error = eval_whnf(&ir).expect_err("self-recursive let blackholes");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Force {
+                source: ForceError::InfiniteRecursion,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn let_environment_captures_survive_escaping_thunks() {
+        assert_eq!(eval("(let x = 1 + 2; in { a = x; }).a").as_int(), Ok(3));
+        assert_eq!(eval("let x = 1; in let y = x + 2; in y").as_int(), Ok(3));
     }
 
     #[test]
@@ -2604,6 +2861,125 @@ mod tests {
             );
             assert_eq!(error.span(), span);
         }
+    }
+
+    #[test]
+    fn malformed_variable_and_let_payloads_are_reported() {
+        let cases = [
+            (IrKind::LocalVar, "local payload"),
+            (IrKind::UpvalVar, "upvalue payload"),
+            (IrKind::Let, "let payload"),
+        ];
+
+        for (index, (kind, expected)) in cases.into_iter().enumerate() {
+            let root = IrId::new(0);
+            let span = Span::new(10 + index as u32, 11 + index as u32);
+            let ir = manual_ir(root, vec![pure_node(kind, span, IrData::None)]);
+            let error = eval_whnf(&ir).expect_err("malformed variable or let is invalid");
+
+            assert_eq!(
+                error.kind(),
+                TreeWalkErrorKind::InvalidPayload {
+                    id: root,
+                    kind,
+                    expected,
+                }
+            );
+            assert_eq!(error.span(), span);
+        }
+    }
+
+    #[test]
+    fn invalid_environment_accesses_are_reported() {
+        let root = IrId::new(0);
+        let span = Span::new(0, 1);
+        let local_ir = manual_ir(
+            root,
+            vec![pure_node(IrKind::LocalVar, span, IrData::Local { slot: 0 })],
+        );
+        let local_error = eval_whnf(&local_ir).expect_err("local needs an environment");
+
+        assert_eq!(
+            local_error.kind(),
+            TreeWalkErrorKind::MissingEnvironment { id: root }
+        );
+        assert_eq!(local_error.span(), span);
+
+        let upval_ir = manual_ir(
+            root,
+            vec![pure_node(
+                IrKind::UpvalVar,
+                span,
+                IrData::Upval { depth: 0, slot: 0 },
+            )],
+        );
+        let upval_error = eval_whnf(&upval_ir).expect_err("upvalue needs an environment");
+
+        assert_eq!(
+            upval_error.kind(),
+            TreeWalkErrorKind::InvalidUpvalueDepth {
+                id: root,
+                depth: 0,
+                frames: 0,
+            }
+        );
+        assert_eq!(upval_error.span(), span);
+    }
+
+    #[test]
+    fn invalid_let_frame_metadata_is_reported() {
+        let root = IrId::new(0);
+        let body = IrId::new(1);
+        let span = Span::new(0, 10);
+        let missing_frame = manual_ir(
+            root,
+            vec![
+                pure_node(
+                    IrKind::Let,
+                    span,
+                    IrData::Let {
+                        bindings: IrBindingSlice::new(0, 0),
+                        body,
+                        frame: None,
+                    },
+                ),
+                pure_node(IrKind::Int, Span::new(9, 10), IrData::Int(1)),
+            ],
+        );
+        let missing_error = eval_whnf(&missing_frame).expect_err("let frame metadata must exist");
+
+        assert_eq!(
+            missing_error.kind(),
+            TreeWalkErrorKind::MissingFrameMetadata { id: root }
+        );
+        assert_eq!(missing_error.span(), span);
+
+        let frame = FrameId::new(0);
+        let invalid_frame = manual_ir(
+            root,
+            vec![
+                pure_node(
+                    IrKind::Let,
+                    span,
+                    IrData::Let {
+                        bindings: IrBindingSlice::new(0, 0),
+                        body,
+                        frame: Some(frame),
+                    },
+                ),
+                pure_node(IrKind::Int, Span::new(9, 10), IrData::Int(1)),
+            ],
+        );
+        let invalid_error = eval_whnf(&invalid_frame).expect_err("frame id must resolve");
+
+        assert_eq!(
+            invalid_error.kind(),
+            TreeWalkErrorKind::InvalidFrameId {
+                id: root,
+                frame: frame.as_u32(),
+            }
+        );
+        assert_eq!(invalid_error.span(), span);
     }
 
     #[test]

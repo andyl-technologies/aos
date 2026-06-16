@@ -1358,14 +1358,7 @@ fn effect_for(kind: IrKind) -> EffectClass {
 fn is_trivial_value(kind: IrKind) -> bool {
     matches!(
         kind,
-        IrKind::Int
-            | IrKind::Float
-            | IrKind::Bool
-            | IrKind::Null
-            | IrKind::Str
-            | IrKind::Path
-            | IrKind::SearchPath
-            | IrKind::Uri
+        IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null | IrKind::Str
     )
 }
 
@@ -1648,6 +1641,31 @@ mod tests {
         assert_eq!(node(&ir, elements[0]).kind, IrKind::ThunkAlloc);
         assert_eq!(node(&ir, elements[1]).kind, IrKind::Int);
         assert_eq!(node(&ir, elements[2]).kind, IrKind::Str);
+    }
+
+    #[test]
+    fn unsupported_literal_values_stay_lazy() {
+        let ir = lowered("let p = ./foo; s = <nixpkgs>; u = http://example.test; in 1");
+        let root = node(&ir, ir.root);
+        let IrData::Let { bindings, .. } = root.data else {
+            panic!("let payload expected");
+        };
+        let start = bindings.start as usize;
+        let end = start + bindings.len();
+        let bindings = ir.bindings[start..end]
+            .iter()
+            .map(|binding| binding.value)
+            .collect::<Vec<_>>();
+
+        assert_eq!(node(&ir, bindings[0]).kind, IrKind::ThunkAlloc);
+        assert_eq!(node(&ir, thunk_inner(&ir, bindings[0])).kind, IrKind::Path);
+        assert_eq!(node(&ir, bindings[1]).kind, IrKind::ThunkAlloc);
+        assert_eq!(
+            node(&ir, thunk_inner(&ir, bindings[1])).kind,
+            IrKind::SearchPath
+        );
+        assert_eq!(node(&ir, bindings[2]).kind, IrKind::ThunkAlloc);
+        assert_eq!(node(&ir, thunk_inner(&ir, bindings[2])).kind, IrKind::Uri);
     }
 
     #[test]
