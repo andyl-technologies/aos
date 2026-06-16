@@ -36,9 +36,11 @@
 //! the write/publish path, the producer console, authentication
 //! (tokens/sessions/SSO/device-flow), private-registry access control, and the
 //! `aos.registry.v1` RPC surface. These run in the native hub today and become
-//! the *same* shared `axum` handlers on the Worker once the unification lands;
-//! the `connectrpc` server runtime cannot target wasm, so RPC arrives via a
-//! hand-rolled Connect-unary handler over wasm-clean `prost` messages. See
+//! the *same* shared `axum` handlers on the Worker once the unification lands.
+//! The `connectrpc` server runtime cannot target wasm, so the registry hub
+//! serves a single **Connect-JSON** transport (plain JSON over HTTP —
+//! `POST /aos.registry.v1.{Service}/{Method}`) as ordinary `axum` handlers on
+//! both targets, with no `connectrpc` runtime on the registry path. See
 //! `README.md` and the RFC for the migration plan.
 //!
 //! # Module map

@@ -65,8 +65,9 @@ Two of these have since dissolved: `rusqlite` can target wasm via the
 false`) runs on Workers through `axum-cloudflare-adapter` — both **verified by
 the spike below**. The third splits: `tokio`/`axum` are fine, but the
 `connectrpc` *server runtime* specifically is **not** wasm-portable (it drags
-in `hyper`/`hyper-util`/`tokio`+`mio`/`zstd-sys`), so RPC keeps a thin
-per-target transport adapter over shared logic. The sync-vs-async constraint —
+in `hyper`/`hyper-util`/`tokio`+`mio`/`zstd-sys`), so the registry hub leaves
+the connectrpc runtime and serves a single **Connect-JSON** transport as plain
+`axum` handlers on both targets. The sync-vs-async constraint —
 the thing that forced the *whole read path* to be rebuilt — is removed by going
 **async everywhere**.
 
@@ -240,48 +241,52 @@ empirical:
 | **`connectrpc` 0.3 server runtime** | ❌ **hard blocker** | unconditional `hyper` + `hyper-util` + `tokio`(+`mio`) + `tower`; `default` pulls `zstd-sys` (C + amd64 `.S`). Not portable even with `default-features = false, features = ["server","axum"]`. |
 | `prost` message types (in isolation) | ✅ (pure Rust) | wasm-clean as a standalone codec; **today's `aos-proto` crate is not** — it depends on `connectrpc`, hence the split below |
 
-**Consequence — the one amendment to "shared router incl. RPC":** the
-`connectrpc` server cannot be mounted into the worker's router. RPC therefore
-keeps its method bodies as transport-free functions in `core` (a shared
-`RpcService` trait), with a thin per-target *transport adapter*:
+**Consequence — RPC drops the `connectrpc` runtime on *both* sides, and the hub
+serves one transport: Connect-JSON over plain `axum` (decision 2026-06-16).**
+The `connectrpc` server is hyper/tokio and cannot mount on the worker. Running
+two different RPC transports (connectrpc natively, something hand-rolled on the
+worker) would defeat "a single hub," so the registry hub serves **one**
+transport on both targets: **Connect-JSON**.
 
-- **Native:** the existing `connectrpc` server (`#[connectrpc]` trait impls in
-  `aos-registry-hub::rpc`) becomes a thin delegate to `RpcService` — unchanged
-  wire behavior, mature runtime.
-- **Worker:** a small hand-rolled **Connect-unary** `axum` handler decodes the
-  request (proto or JSON per `Content-Type`), calls the same `RpcService`, and
-  encodes the Connect response — all over the wasm-clean `prost` messages.
+Connect-JSON is the Connect protocol's JSON encoding — `POST
+/aos.registry.v1.{Service}/{Method}` with a JSON request body, a JSON response
+body, and a JSON error envelope `{ "code": …, "message": … }`. It is ordinary
+JSON-over-HTTP that compiles and runs anywhere `axum` does: no `buffa`, no
+proto-binary framing, no `connectrpc` runtime, callable from browsers with
+`fetch`. Because it is just `axum` handlers, the registry RPC surface is the
+**same shared handlers** as every other route — *there is no per-target RPC
+adapter*. The native hub moves off the connectrpc *server* too; method bodies
+live once in a transport-free `RpcService` in `core` that the shared handlers
+call.
 
-This requires a wasm-clean home for the **message types without the
-`connectrpc` runtime**. `connectrpc-build` 0.3 can't provide it: it generates
-`buffa`-based types through its own `buffa_codegen` (not `prost-build`) and
-exposes no `extern_path`/message-reuse knob, so its output can't be imported
-piecemeal. The split is therefore:
+The schema stays in `.proto` (the contract, consistent with the rest of AOS);
+only the runtime path changes:
 
 - **`aos-proto-types`** (new, wasm-clean) — the request/response structs
-  generated **independently with `prost-build`** (`prost` + `serde`, no
-  `buffa`, no `connectrpc`). This is the lingua franca of the shared
-  `RpcService`.
-- **`aos-proto`** (native, unchanged generator) — keeps its `connectrpc`/`buffa`
-  client+server codegen for the native transport.
+  generated from the `.proto` with `prost-build` + `serde` derives (no `buffa`,
+  no `connectrpc`). `connectrpc-build` 0.3 can't supply these (it emits
+  `buffa`-based types via its own `buffa_codegen`, with no `extern_path`/reuse
+  knob), so they are generated separately. These serde structs are the lingua
+  franca of `RpcService`, the shared handlers, and the client; JSON is the only
+  wire encoding, so the structs' serde shape is the contract both ends agree on.
+- **`aos-proto`** keeps its `connectrpc`/`buffa` codegen for the *other* AOS
+  services (cache/build/gc/auth), which are unaffected — the registry hub simply
+  stops using the connectrpc runtime.
+- **`aos-remote`** — `RegistryHubClient` becomes a small Connect-JSON client
+  (`reqwest` natively) over `aos-proto-types`, replacing the connectrpc client.
+  The `aos hub …` CLI is unchanged above that client.
 
-The native RPC adapter converts the `buffa` view it receives into the
-`aos-proto-types` struct (it already reads buffa views field-by-field in
-`rpc.rs` — this just lands the fields in a struct), calls `RpcService`, and
-converts the struct back to a `buffa` response. The worker adapter does the
-same struct ↔ bytes mapping with `prost` (binary) / `serde_json` (JSON) per
-`Content-Type`. Every *other* route — facade, browse, JSON read API, auth,
-console — is the byte-identical shared `axum` handler on both targets; only RPC
-carries a second (thin) transport adapter, and **no service logic is written
-twice** (only mechanical, per-message field mapping at each transport edge).
+Every route — facade, browse, JSON read API, auth, console, **and RPC** — is
+the byte-identical shared `axum` handler on both targets. **No transport or
+service logic is written twice.**
 
 `RpcService` carries the same **target-conditional `Send` bound** the shipped
 `Backend` trait already uses — `#[cfg_attr(not(target_arch = "wasm32"),
 async_trait)]` (Send) natively, `async_trait(?Send)` on wasm — so the native
-`connectrpc`/hyper server gets the `Send + 'static` futures it requires while
-the worker's single-threaded handler stays `?Send`. The `?Send` shown in the
-illustrative trait sketches above is the wasm arm of that same `cfg_attr`, not
-an unconditional bound; the method bodies remain single-source.
+tokio server gets the `Send + 'static` futures it requires while the worker's
+single-threaded handler stays `?Send`. The `?Send` in the illustrative trait
+sketches above is the wasm arm of that same `cfg_attr`, not an unconditional
+bound; the method bodies remain single-source.
 
 > Reality note: the shipped data layer holds the backend as `Box<dyn Backend>`
 > on `Database` (not the generic `Router<State<B: Backend>>` this file
@@ -311,12 +316,14 @@ async fn scheduled(_e: ScheduledEvent, env: Env, _: ScheduleContext) {
 ```
 
 `facade.rs`, `keymap.rs`, `render.rs`, the inline JSON API, and the query
-methods in `d1.rs` all **delete** — they become the shared
-`handlers`/`render` over `D1Backend`. The lone exception is RPC: the spike
-showed the `connectrpc` server cannot mount on wasm, so the `/aos.registry.v1/*`
-routes are *not* the identical handler across targets — the worker adds the
-Connect-unary transport adapter (spike amendment above) over the same
-`RpcService`. Every other route in the sketch is byte-identical on both.
+methods in `d1.rs` all **delete** — they become the shared `handlers`/`render`
+over `D1Backend`. RPC joins them: with the Connect-JSON decision above, the
+`/aos.registry.v1.{Service}/{Method}` routes are *also* plain shared `axum`
+handlers (calling `RpcService`), byte-identical on both targets — the
+`connectrpc` server runtime is dropped, not adapted. Natively this replaces the
+`#[connectrpc]` trait impls in `aos-registry-hub::rpc` with the same shared
+handlers; `aos-registry-hub::rpc.rs` deletes too. Every route in the sketch is
+byte-identical on both.
 
 ### Dispatch
 
@@ -346,10 +353,12 @@ bypass of the API.
 
 ## CLI over the API, folded into `aos hub …`
 
-The CLI stops opening the database and becomes a ConnectRPC client of the
-hub's existing `aos.registry.v1` services (`RegistryService`, `OrgService`,
-`ConfigService`, …), reusing the `aos-remote` connectrpc client pattern
-already used by `aos build --remote` / `aos gc --remote`. The standalone
+The CLI stops opening the database and becomes a **Connect-JSON** client of the
+hub's `aos.registry.v1` services (`RegistryService`, `OrgService`,
+`ConfigService`, …) — a small `reqwest` client over `aos-proto-types`, posting
+JSON to `/aos.registry.v1.{Service}/{Method}`. (The other AOS surfaces —
+`aos build --remote` / `aos gc --remote` — keep their `aos-remote` connectrpc
+clients; only the registry hub leaves the connectrpc runtime.) The standalone
 `aos-registry-hub` subcommands move under `aos hub …`:
 
 ```text
@@ -358,14 +367,13 @@ aos hub registry create <org>/<proj>/<name> …  # RPC call, --hub <url> --token
 aos hub instance set-signup-policy invite_only # RPC call
 ```
 
-Once handler unification lands (step 4), the Worker serves the *same* router
-for every non-RPC route and answers the RPC surface through its Connect-unary
-transport adapter (the spike amendment above), so `aos hub … --hub
-https://…workers.dev` will configure a Cloudflare deployment identically to a
-native one — no raw D1 SQL, no `wrangler` seeding beyond the one-time
-`migrations apply`. Same code path yields the same config path. *Today the
-worker serves only the read path; the admin/RPC routes answer on the native
-hub.*
+Once handler unification lands (step 4), the Worker serves the *same* router for
+every route — RPC included, as shared Connect-JSON handlers (the decision
+above) — so `aos hub … --hub https://…workers.dev` will configure a Cloudflare
+deployment identically to a native one — no raw D1 SQL, no `wrangler` seeding
+beyond the one-time `migrations apply`. Same code path yields the same config
+path. *Today the worker serves only the read path; the admin/RPC routes answer
+on the native hub.*
 
 ## The D1 transaction audit (the gate)
 
@@ -443,24 +451,31 @@ unification) are the remaining work that wins parity.
    `core::Database` (reads and writes) + the worker `D1Backend`. *Done.*
 4. **Handler unification** (in progress — the parity work):
    - a. ✅ Worker read path + Cron indexer fold onto `core::Database`. *Done.*
-   - b. **Add `aos-proto-types`** — message structs generated independently
-     with `prost-build` (`prost` + `serde`, wasm-clean), the lingua franca of
-     `RpcService`. `aos-proto` keeps its `connectrpc`/`buffa` generator for the
-     native transport (it has no `extern_path` to share types).
+   - b. **Add `aos-proto-types`** — message structs generated from the `.proto`
+     with `prost-build` + `serde` derives (wasm-clean; no `buffa`/`connectrpc`),
+     the lingua franca of `RpcService`, the shared handlers, and the client.
+     `aos-proto` keeps its `connectrpc`/`buffa` generator for the *other* AOS
+     services.
    - c. **Lift the handlers into `core`** as one shared `axum` router: facade,
      browse UI, JSON API, auth, producer console — plain `axum` handlers
      written once. Add the `Blobs` port and the `Lease`/`RateLimiter` ports;
      wire `SecretSealer`/`Mailer` worker impls.
-   - d. **RPC transport adapter**: extract RPC method bodies into a
-     transport-free `RpcService` in `core`; native delegates from the
-     `connectrpc` server, the worker mounts a hand-rolled Connect-unary `axum`
-     handler over `aos-proto-types` (see the spike amendment above).
+   - d. **RPC as shared Connect-JSON handlers**: extract RPC method bodies into
+     a transport-free `RpcService` in `core`; serve them as plain `axum`
+     Connect-JSON handlers (`POST /aos.registry.v1.{Service}/{Method}`, JSON
+     in/out, `{code,message}` errors) mounted in the *same* shared router on
+     both targets. Delete the native `connectrpc` server impls
+     (`aos-registry-hub::rpc`); the connectrpc *runtime* leaves the registry
+     path entirely.
    - e. **Fold the worker** onto the shared router via `axum-cloudflare-adapter`
      and **delete** `handlers.rs`/`reads.rs`/`facade.rs`/`render.rs`/`keymap.rs`
      (the duplicated read-only edge).
-5. **Move the CLI to the API** under `aos hub …` (largely shipped in PR #99 as
-   the `aos hub` ConnectRPC client against the native hub; the worker answers
-   the same calls only once step 4d lands).
+   - f. **Port `aos-remote::RegistryHubClient`** to a Connect-JSON `reqwest`
+     client over `aos-proto-types`, replacing the connectrpc client (the
+     `aos hub …` CLI above it is unchanged).
+5. **Move the CLI to the API** under `aos hub …` (the `aos hub` client shipped
+   in PR #99; it re-points to the Connect-JSON client in 4f and then answers
+   identically from the native hub or the worker).
 6. **Install-time root bootstrap** as the sole non-API mutation path.
 
 ## Open questions
@@ -475,8 +490,15 @@ unification) are the remaining work that wins parity.
   by default or gates it behind configuration (parity in code; policy in
   config).
 - ~~Can the shared `axum` router (incl. RPC) run on wasm?~~ **Resolved by the
-  spike:** the router yes, the `connectrpc` *server* no — hence the RPC
-  transport adapter (above).
+  spike:** the router yes, the `connectrpc` *server* no — hence the single
+  Connect-JSON transport over shared `axum` handlers (above).
+- **Connect-JSON body shape: plain `serde` vs canonical proto3-JSON.** Since we
+  own both ends (the hub and `aos-remote`'s client), the `aos-proto-types` serde
+  derives can define the JSON shape directly — simplest, no `pbjson`. The cost
+  is that a *stock* Buf/Connect client (camelCase, int64-as-string, base64
+  bytes) would not interop out of the box. If third-party Connect clients become
+  a requirement, switch the codec to canonical proto3-JSON (`pbjson-build`)
+  without changing any handler or service logic. Defaulting to plain `serde`.
 - **`axum-cloudflare-adapter` ↔ `worker` version skew.** The adapter's latest
   (0.14) tracks `worker` 0.5.x, while the worker crate currently pins
   `worker` 0.4.2. The adapter's `to_axum_request` / `to_worker_response` take
