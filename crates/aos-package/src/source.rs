@@ -30,7 +30,7 @@ use super::store::{filter_missing, import_nar};
 use super::types::{InstalledMeta, PackageMeta};
 use super::verify as hash_verify;
 use aos_core::error::AosError;
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::aos_tokio_nix_command;
 use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
@@ -405,8 +405,7 @@ pub async fn run_source(
         // Now dump and hash the built output.
         printer.info("Hashing rebuilt output...");
 
-        let dump_output = tokio::process::Command::new("nix-store")
-            .envs(aos_nix_env())
+        let dump_output = aos_tokio_nix_command("nix-store")
             .args(["--dump", &built_path])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -484,8 +483,7 @@ async fn realise_source_path(
 
 /// Run `nix-store --realise` and return its realised path.
 async fn realise_with_nix_store(source_drv: &str) -> Result<String> {
-    let output = tokio::process::Command::new("nix-store")
-        .envs(aos_nix_env())
+    let output = aos_tokio_nix_command("nix-store")
         .args(["--realise", source_drv])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

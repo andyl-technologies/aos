@@ -22,9 +22,8 @@
 use sha2::{Digest, Sha256};
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::{aos_nix_command, aos_tokio_nix_command};
 
 const MAGIC: &[u8; 4] = b"AOSP";
 const VERSION: u32 = 1;
@@ -205,8 +204,7 @@ pub fn validate_imported_path(store_path: &str) -> Result<(), String> {
     // process exits non-zero with `error: experimental Nix feature
     // 'nix-command' is disabled` on stderr. The aos rootfs ships no
     // system-wide `nix.conf`, so we have to opt in per-invocation.
-    let output = std::process::Command::new("nix")
-        .envs(aos_nix_env())
+    let output = aos_nix_command("nix")
         .args([
             "--extra-experimental-features",
             "nix-command",
@@ -268,8 +266,7 @@ pub async fn import_pack(entries: &[PackEntry]) -> Result<Vec<String>, String> {
     let mut paths = Vec::with_capacity(entries.len());
 
     for (i, entry) in entries.iter().enumerate() {
-        let mut child = Command::new("nix-store")
-            .envs(aos_nix_env())
+        let mut child = aos_tokio_nix_command("nix-store")
             .arg("--import")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -3,6 +3,10 @@ name = "aos-core"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+native-eval = ["dep:aos-nix"]
+
 [dependencies]
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -21,6 +25,8 @@ humantime = { workspace = true }
 alejandra = { workspace = true }
 tokio = { workspace = true }
 atty = { workspace = true }
+tracing = { workspace = true }
+aos-nix = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "aos",
     "aos-core",
+    "aos-nix",
     "aos-net",
     "aos-proto",
     "aos-server",
@@ -32,6 +33,9 @@ humantime = "2"
 humantime-serde = "1"
 tracing = "0.1"
 alejandra = "3.1.0"
+blake3 = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+nix-compat = { git = "https://git.snix.dev/snix/snix.git", rev = "f9a731021455c402430af1aa1ab749fd2f66293d", package = "nix-compat", default-features = false }
 
 # HTTP / networking
 http = "1"
@@ -96,6 +100,7 @@ rcgen = "0.14"
 
 # Internal crates
 aos-core = { path = "aos-core" }
+aos-nix = { path = "aos-nix" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
 aos-server = { path = "aos-server" }

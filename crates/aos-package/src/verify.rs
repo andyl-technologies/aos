@@ -33,7 +33,7 @@ use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 use aos_core::error::AosError;
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::aos_tokio_nix_command;
 use aos_core::output::Printer;
 
 use crate::download::DownloadResult;
@@ -378,8 +378,7 @@ pub async fn store_path_nar_hash(store_path: &str) -> Result<String> {
 
 /// Dump a store path as a NAR and return its SHA-256 hash and size.
 async fn dump_store_path(store_path: &str) -> Result<(String, u64)> {
-    let output = tokio::process::Command::new("nix-store")
-        .envs(aos_nix_env())
+    let output = aos_tokio_nix_command("nix-store")
         .args(["--dump", store_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

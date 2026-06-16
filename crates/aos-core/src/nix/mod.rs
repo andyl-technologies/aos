@@ -9,6 +9,8 @@
 //! - [`store`] -- [`NixCli`], a thinner per-path wrapper around
 //!   `nix-store` queries, realisation, dump/export/import, plus the
 //!   [`PathInfo`] metadata record.
+//! - [`eval`] -- [`NixEval`], the narrow evaluation seam that defaults to
+//!   [`NixCli`] and can be implemented by the native `aos-nix` crate.
 //! - [`drv`] -- a hand-rolled parser for `.drv` files (ATerm format)
 //!   that extracts fixed-output derivation metadata.
 //! - [`env`](mod@env) -- [`aos_nix_env`], the `AOS_ROOT`-derived environment
@@ -16,9 +18,11 @@
 
 pub mod drv;
 pub mod env;
+pub mod eval;
 pub mod runner;
 pub mod store;
 
-pub use env::aos_nix_env;
+pub use env::{aos_nix_command, aos_nix_env, aos_tokio_nix_command};
+pub use eval::{NativeMode, NixEval, native_mode_from_env, select_evaluator};
 pub use runner::NixRunner;
 pub use store::{NixCli, PathInfo};

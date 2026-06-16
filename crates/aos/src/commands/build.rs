@@ -10,7 +10,7 @@
 use anyhow::{Context, Result, bail};
 
 use aos_core::error::AosError;
-use aos_core::nix::NixRunner;
+use aos_core::nix::{NixRunner, aos_nix_command};
 use aos_core::output::{Printer, create_spinner};
 use aos_remote::AosClient;
 
@@ -132,7 +132,7 @@ pub async fn run_remote(
         let mut large_paths = Vec::new();
 
         for path in &missing {
-            let output = std::process::Command::new("nix-store")
+            let output = aos_nix_command("nix-store")
                 .args(["--export", path])
                 .output()
                 .with_context(|| format!("exporting {path}"))?;

@@ -14,11 +14,12 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 
 use anyhow::{Context, Result};
 
-use super::env::aos_nix_env;
+use super::env::aos_nix_command;
+use super::eval::NixEval;
 
 /// Metadata for a store path, from nix-store queries or Nix DB.
 #[derive(Debug, Clone)]
@@ -64,12 +65,8 @@ impl NixCli {
     /// Returns an error if `nix-instantiate` cannot be spawned, exits
     /// non-zero, or prints non-UTF-8 output.
     pub fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
-        let mut cmd = Command::new("nix-instantiate");
-        cmd.envs(aos_nix_env())
-            .arg("-f")
-            .arg(file)
-            .arg("-A")
-            .arg(attr);
+        let mut cmd = aos_nix_command("nix-instantiate");
+        cmd.arg("-f").arg(file).arg("-A").arg(attr);
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -97,8 +94,8 @@ impl NixCli {
     /// Returns an error if `nix-instantiate` cannot be spawned, exits
     /// non-zero, or prints non-UTF-8 output.
     pub fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
-        let mut cmd = Command::new("nix-instantiate");
-        cmd.envs(aos_nix_env()).arg("-E").arg(expr);
+        let mut cmd = aos_nix_command("nix-instantiate");
+        cmd.arg("-E").arg(expr);
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -116,6 +113,35 @@ impl NixCli {
         Ok(PathBuf::from(drv))
     }
 
+    /// Evaluates a raw Nix expression with strict JSON rendering.
+    ///
+    /// Runs `nix-instantiate --eval --strict --json -E <expr>` and
+    /// returns the raw JSON text emitted by Nix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nix-instantiate` cannot be spawned, exits
+    /// non-zero, or prints non-UTF-8 output.
+    pub fn eval_expr(&self, expr: &str) -> Result<String> {
+        let mut cmd = aos_nix_command("nix-instantiate");
+        cmd.args(["--eval", "--strict", "--json", "-E"]).arg(expr);
+        if self.verbose > 0 {
+            cmd.arg("--show-trace");
+        }
+        let output = cmd
+            .stderr(Stdio::inherit())
+            .output()
+            .context("failed to run nix-instantiate --eval --json -E")?;
+        if !output.status.success() {
+            anyhow::bail!("nix-instantiate --eval --json -E failed");
+        }
+        let value = String::from_utf8(output.stdout)
+            .context("invalid utf-8 from nix-instantiate --eval --json")?
+            .trim()
+            .to_string();
+        Ok(value)
+    }
+
     /// Builds an attribute from a Nix file, returning the output store path.
     ///
     /// Runs `nix-build <file> -A <attr> --no-out-link`, so no `result`
@@ -126,12 +152,8 @@ impl NixCli {
     /// Returns an error if `nix-build` cannot be spawned, exits
     /// non-zero (i.e. the build failed), or prints non-UTF-8 output.
     pub fn build(&self, file: &Path, attr: &str) -> Result<PathBuf> {
-        let mut cmd = Command::new("nix-build");
-        cmd.envs(aos_nix_env())
-            .arg(file)
-            .arg("-A")
-            .arg(attr)
-            .arg("--no-out-link");
+        let mut cmd = aos_nix_command("nix-build");
+        cmd.arg(file).arg("-A").arg(attr).arg("--no-out-link");
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -157,8 +179,7 @@ impl NixCli {
     /// Returns an error if `nix-store` cannot be spawned, the
     /// realisation fails, or the output is not UTF-8.
     pub fn realise(&self, drv: &str) -> Result<String> {
-        let output = Command::new("nix-store")
-            .envs(aos_nix_env())
+        let output = aos_nix_command("nix-store")
             .args(["--realise", drv])
             .stderr(Stdio::inherit())
             .output()
@@ -181,8 +202,7 @@ impl NixCli {
     /// Returns an error if `nix-store` cannot be spawned, the query
     /// fails (e.g. the path is not valid), or the output is not UTF-8.
     pub fn closure(&self, path: &str) -> Result<Vec<String>> {
-        let output = Command::new("nix-store")
-            .envs(aos_nix_env())
+        let output = aos_nix_command("nix-store")
             .args(["-qR", path])
             .stderr(Stdio::inherit())
             .output()
@@ -261,8 +281,7 @@ impl NixCli {
     /// Returns an error only if `nix-store` cannot be spawned; an
     /// invalid path yields `Ok(false)`.
     pub fn is_valid(&self, path: &str) -> Result<bool> {
-        let status = Command::new("nix-store")
-            .envs(aos_nix_env())
+        let status = aos_nix_command("nix-store")
             .args(["--check-validity", path])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -283,8 +302,7 @@ impl NixCli {
     /// failure surfaces later through the child's exit status.
     #[allow(dead_code)] // public API
     pub fn nar_dump(&self, path: &str) -> Result<Child> {
-        Command::new("nix-store")
-            .envs(aos_nix_env())
+        aos_nix_command("nix-store")
             .args(["--dump", path])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -305,8 +323,7 @@ impl NixCli {
     /// failure surfaces later through the child's exit status.
     #[allow(dead_code)] // public API
     pub fn nar_export(&self, path: &str) -> Result<Child> {
-        Command::new("nix-store")
-            .envs(aos_nix_env())
+        aos_nix_command("nix-store")
             .args(["--export", path])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -328,8 +345,7 @@ impl NixCli {
     /// is not UTF-8.
     #[allow(dead_code)] // public API
     pub fn nar_import(&self, mut data: impl Read) -> Result<Vec<String>> {
-        let mut child = Command::new("nix-store")
-            .envs(aos_nix_env())
+        let mut child = aos_nix_command("nix-store")
             .arg("--import")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -362,11 +378,28 @@ impl NixCli {
     }
 }
 
+impl NixEval for NixCli {
+    fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
+        Self::instantiate(self, file, attr)
+    }
+
+    fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
+        Self::instantiate_expr(self, expr)
+    }
+
+    fn eval_expr(&self, expr: &str) -> Result<String> {
+        Self::eval_expr(self, expr)
+    }
+
+    fn name(&self) -> &'static str {
+        "nix-cli"
+    }
+}
+
 /// Runs a single `nix-store -q <flag> <path>` query and returns its
 /// trimmed stdout. Stderr is discarded; failures map to an error.
 fn run_nix_store_query(path: &str, flag: &str) -> Result<String> {
-    let output = Command::new("nix-store")
-        .envs(aos_nix_env())
+    let output = aos_nix_command("nix-store")
         .args(["-q", flag, path])
         .stderr(Stdio::null())
         .output()

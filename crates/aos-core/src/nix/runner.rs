@@ -19,17 +19,19 @@
 use std::env;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::process::{Child, ExitStatus, Output, Stdio};
 
 use anyhow::{Context, Result};
 
 use crate::error::AosError;
+use crate::nix::{NixEval, aos_nix_command, select_evaluator};
 
 /// Wraps interactions with the Nix CLI tools (`nix-build`, `nix-instantiate`,
 /// `nix-store`, `nix-collect-garbage`, `nix-shell`).
 pub struct NixRunner {
     /// Path to the directory containing `default.nix`.
     root: PathBuf,
+    evaluator: Box<dyn NixEval>,
     verbose: u8,
     quiet: bool,
 }
@@ -48,9 +50,11 @@ impl NixRunner {
         which("nix-build").map_err(|_| AosError::NixNotFound)?;
 
         let root = Self::find_root()?;
+        let evaluator = select_evaluator(verbose)?;
 
         Ok(Self {
             root,
+            evaluator,
             verbose,
             quiet,
         })
@@ -222,16 +226,7 @@ impl NixRunner {
     /// error if `nix-instantiate` cannot be spawned or its output is
     /// not valid JSON.
     pub fn eval_expr_json(&self, expr: &str) -> Result<serde_json::Value> {
-        let args: Vec<String> = vec![
-            "--eval".to_string(),
-            "--strict".to_string(),
-            "--json".to_string(),
-            "-E".to_string(),
-            expr.to_string(),
-        ];
-
-        let output = self.run_nix("nix-instantiate", &args)?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = self.evaluator.eval_expr(expr)?;
         let value: serde_json::Value = serde_json::from_str(stdout.trim())
             .context("failed to parse JSON from nix-instantiate expression")?;
 
@@ -287,21 +282,7 @@ impl NixRunner {
     /// another error if `nix-instantiate` cannot be spawned or prints
     /// no output.
     pub fn instantiate(&self, attr: &str) -> Result<PathBuf> {
-        let args: Vec<String> = vec![
-            self.default_nix().to_string_lossy().to_string(),
-            "-A".to_string(),
-            attr.to_string(),
-        ];
-
-        let output = self.run_nix("nix-instantiate", &args)?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let path = stdout
-            .lines()
-            .last()
-            .map(|l| PathBuf::from(l.trim()))
-            .context("nix-instantiate produced no output")?;
-
-        Ok(path)
+        self.evaluator.instantiate(&self.default_nix(), attr)
     }
 
     /// Runs garbage collection via `nix-collect-garbage`, optionally
@@ -355,7 +336,7 @@ impl NixRunner {
     /// Returns an error if `nix` cannot be started or the repl exits
     /// with a non-zero status.
     pub fn repl(&self, nix_file: &Path) -> Result<()> {
-        let status = Command::new("nix")
+        let status = aos_nix_command("nix")
             .args(["repl", "--file"])
             .arg(nix_file)
             .current_dir(&self.root)
@@ -437,7 +418,7 @@ impl NixRunner {
             Stdio::piped()
         };
 
-        let child = Command::new(cmd)
+        let child = aos_nix_command(cmd)
             .args(args)
             .current_dir(&self.root)
             .stdout(Stdio::piped())

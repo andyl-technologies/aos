@@ -21,7 +21,6 @@
 use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use aos_cache::backend::{self, AuthOptions};
@@ -30,7 +29,7 @@ use aos_core::nar::cache::{
     render_static_narinfo,
 };
 use aos_core::nar::info::{basename, store_hash};
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::aos_nix_command;
 use aos_core::output::Printer;
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -380,8 +379,7 @@ fn store_dir_of(store_path: &str) -> Result<String> {
 /// alone if the query returns nothing.
 fn collect_store_path_closure(store_path: &str, paths: &mut BTreeSet<String>) -> Result<()> {
     let store_dir = store_dir_of(store_path)?;
-    let output = Command::new("nix-store")
-        .envs(aos_nix_env())
+    let output = aos_nix_command("nix-store")
         .args(["-qR", store_path])
         .output()
         .with_context(|| format!("running nix-store -qR {store_path}"))?;
@@ -463,8 +461,7 @@ fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<Stri
 
 /// Assert that a store path is valid in the local Nix store.
 fn check_store_path_valid(path: &str) -> Result<()> {
-    let output = Command::new("nix-store")
-        .envs(aos_nix_env())
+    let output = aos_nix_command("nix-store")
         .args(["--check-validity", path])
         .output()
         .with_context(|| format!("running nix-store --check-validity {path}"))?;
@@ -476,8 +473,7 @@ fn check_store_path_valid(path: &str) -> Result<()> {
 
 /// Query NAR metadata for one path via `nix path-info --json`.
 fn query_path_info(path: &str) -> Result<CachePathInfo> {
-    let output = Command::new("nix")
-        .envs(aos_nix_env())
+    let output = aos_nix_command("nix")
         .args(["path-info", "--json", path])
         .output()
         .with_context(|| format!("running nix path-info on {path}"))?;
@@ -584,8 +580,7 @@ fn select_path_info(json: &JsonValue) -> JsonValue {
 
 /// Dump a store path as a NAR (`nix-store --dump`) and zstd-compress it.
 fn dump_zstd_nar(path: &str) -> Result<Vec<u8>> {
-    let output = Command::new("nix-store")
-        .envs(aos_nix_env())
+    let output = aos_nix_command("nix-store")
         .args(["--dump", path])
         .output()
         .with_context(|| format!("running nix-store --dump {path}"))?;

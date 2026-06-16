@@ -458,11 +458,11 @@ AOS package set. Build it in this order.
 
 **Crate skeleton (`crates/aos-nix/`).**
 
-- [ ] Add `aos-nix` to the workspace (`crates/Cargo.toml` members) with pinned
+- [x] Add `aos-nix` to the workspace (`crates/Cargo.toml` members) with pinned
       `nix-compat` (git rev) and the `xxhash-rust`/`blake3`/`sha2` deps. No
       Cranelift dependency yet — Phase 1 is tree-walk only.
-- [ ] `lib.rs` `//!` crate overview + module map, to the AOS Rust doc standard.
-- [ ] Wire the `NixEval` trait in `aos-core` ([14](14-integration-with-aos.md)):
+- [x] `lib.rs` `//!` crate overview + module map, to the AOS Rust doc standard.
+- [x] Wire the `NixEval` trait in `aos-core` ([14](14-integration-with-aos.md)):
       define the trait, keep `NixCli` as its first impl, add a stub `NixNative`
       behind `AOS_NIX_NATIVE` (off by default).
 

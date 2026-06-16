@@ -903,15 +903,15 @@ The seam itself is the *least clever* part of the RFC and is **P1** scope (`S-16
 
 ### The `NixEval` trait and `NixCli` fallback (§2–§4)
 
-- [ ] `NixEval` trait in `aos-core` (`instantiate`, `instantiate_expr`, `eval_expr`, `name`) — object-safe, returns a `.drv` `PathBuf` (not an in-memory value graph) so the harness diffs exact bytes; `aos-core` never depends on the heavy `aos-nix` crate in its default build (§3, §3.1, §3.3) — **P1**, `S-16`.
-- [ ] `impl NixEval for NixCli` by delegating to the existing subprocess wrappers, adding the `eval_expr` arm wrapping `nix-instantiate --eval --strict --json`; `NixCli` is the **permanent** default + oracle + runtime fallback, never removed (§4.1) — **P1**, `S-16`; the tier `-1` of the trust gradient.
+- [x] `NixEval` trait in `aos-core` (`instantiate`, `instantiate_expr`, `eval_expr`, `name`) — object-safe, returns a `.drv` `PathBuf` (not an in-memory value graph) so the harness diffs exact bytes; `aos-core` never depends on the heavy `aos-nix` crate in its default build (§3, §3.1, §3.3) — **P1**, `S-16`.
+- [x] `impl NixEval for NixCli` by delegating to the existing subprocess wrappers, adding the `eval_expr` arm wrapping `nix-instantiate --eval --strict --json`; `NixCli` is the **permanent** default + oracle + runtime fallback, never removed (§4.1) — **P1**, `S-16`; the tier `-1` of the trust gradient.
 - [ ] `NixNative` shim over the `aos-nix` public API, owning the long-lived evaluator context (interned symbols, parsed-IR cache, hash-cons tables, incremental-cache handle) reused across `instantiate` calls; `.drv` serialization/store-path hashing come from pinned `nix-compat`, never reimplemented (§4.2) — `NixNative` stub **P1**, real impl grows across **P1–P7**; `S-13`/`C-5`.
 
 ### Gating: `AOS_NIX_NATIVE` and the selection factory (§5)
 
-- [ ] `select_evaluator` factory reading `AOS_NIX_NATIVE` once at process start; three states `Off`/`On`/`Shadow`, defaulting `Off`; `native-eval` feature-gate with warn-and-fall-back when the flag requests native but the crate is not compiled in (§5) — **P1**, `S-16`/`S-2`.
+- [x] `select_evaluator` factory reading `AOS_NIX_NATIVE` once at process start; three states `Off`/`On`/`Shadow`, defaulting `Off`; `native-eval` feature-gate with warn-and-fall-back when the flag requests native but the crate is not compiled in (§5) — **P1**, `S-16`/`S-2`.
 - [ ] `Shadow` mode: run both evaluators, return `NixCli` (authoritative), diff `NixNative` byte-for-byte in the background, never let native output reach the store — the rollout workhorse turning the CI fleet into an always-on differential harness (§5.1) — **P2-hardened**, rollout **Phase B** ([15](15-differential-testing-and-benchmarking.md) §2.6).
-- [ ] Process-global, per-invocation granularity (no mid-closure evaluator mixing); `AOS_NIX_NATIVE` never forwarded into Nix subprocesses (`aos_nix_env()`) so the build half is unaware native eval happened (§5.2, §5.3) — **P1**, `S-16`.
+- [x] Process-global, per-invocation granularity (no mid-closure evaluator mixing); `AOS_NIX_NATIVE` never forwarded into Nix subprocesses (`aos_nix_env()`) so the build half is unaware native eval happened (§5.2, §5.3) — **P1**, `S-16`.
 
 ### Failure model and fallback (§6)
 

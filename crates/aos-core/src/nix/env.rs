@@ -23,6 +23,8 @@
 //! lives in `aos-core` so the CLI side (`aos-cache`, `aos`) doesn't
 //! pull in `aos-server` as a dependency.
 
+use std::process::Command;
+
 /// Returns the Nix store/state env bindings derived from `AOS_ROOT`.
 ///
 /// Produces `NIX_STORE_DIR`, `NIX_STATE_DIR`, and `NIX_LOG_DIR` pairs pointing
@@ -50,6 +52,26 @@ pub fn aos_nix_env() -> Vec<(&'static str, String)> {
         ("NIX_STATE_DIR", state_dir),
         ("NIX_LOG_DIR", log_dir),
     ]
+}
+
+/// Creates a real-Nix subprocess command with AOS store env bindings applied.
+///
+/// The private rollout flag `AOS_NIX_NATIVE` is removed so evaluator selection
+/// never leaks into C++ Nix subprocesses. `AOS_ROOT`-derived store bindings are
+/// then applied through [`aos_nix_env`].
+pub fn aos_nix_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    command.env_remove("AOS_NIX_NATIVE").envs(aos_nix_env());
+    command
+}
+
+/// Creates a Tokio real-Nix subprocess command with AOS store env bindings.
+///
+/// This is the async equivalent of [`aos_nix_command`].
+pub fn aos_tokio_nix_command(program: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(program);
+    command.env_remove("AOS_NIX_NATIVE").envs(aos_nix_env());
+    command
 }
 
 #[cfg(test)]
@@ -89,6 +111,14 @@ mod tests {
         // SAFETY: see module-level note on parallelism.
         unsafe { std::env::remove_var("AOS_NIX_LOG_DIR") };
         assert!(aos_nix_env().is_empty());
+        let command = aos_nix_command("nix-store");
+        assert!(
+            matches!(
+                command.get_envs().find(|(key, _)| *key == "AOS_NIX_NATIVE"),
+                Some((_, None))
+            ),
+            "AOS_NIX_NATIVE should be explicitly removed from real-Nix commands"
+        );
 
         // Set → both store and state dirs derived from the root.
         // SAFETY: see module-level note on parallelism.

@@ -33,7 +33,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::{Notify, Semaphore, broadcast};
 
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::aos_tokio_nix_command;
 
 use crate::drain::BuildState;
 use crate::routes::AppState;
@@ -450,9 +450,7 @@ where
 /// Returns a `nix-store` command pre-populated with the AOS Nix
 /// environment (store root, daemon socket, etc.).
 fn nix_store_command() -> Command {
-    let mut command = Command::new("nix-store");
-    command.envs(aos_nix_env());
-    command
+    aos_tokio_nix_command("nix-store")
 }
 
 /// Manages active builds with deduplication and per-view concurrency

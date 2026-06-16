@@ -109,7 +109,7 @@ fn tiny_store_path_fixture() -> Result<Option<String>> {
         .prefix("aos-cache-fixture-")
         .tempfile_in("/private/tmp")?;
     fs::write(tmp.path(), b"aos static cache fixture\n")?;
-    let output = Command::new("nix-store")
+    let output = aos_core::nix::aos_nix_command("nix-store")
         .args(["--add-fixed", "sha256"])
         .arg(tmp.path())
         .output()
@@ -279,7 +279,7 @@ async fn assert_uploaded_static_cache_round_trips(
 }
 
 fn nix_store_dump(store_path: &str) -> Result<Vec<u8>> {
-    let output = Command::new("nix-store")
+    let output = aos_core::nix::aos_nix_command("nix-store")
         .args(["--dump", store_path])
         .output()
         .with_context(|| format!("running nix-store --dump {store_path}"))?;
@@ -309,7 +309,7 @@ fn assert_stock_nix_can_query_signed_cache(
         return Ok(());
     }
 
-    let mut command = Command::new("nix");
+    let mut command = aos_core::nix::aos_nix_command("nix");
     command.args([
         "--extra-experimental-features",
         "nix-command",

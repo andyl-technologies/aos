@@ -1,0 +1,16 @@
+[package]
+name = "aos-nix"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+
+[dependencies]
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+nix-compat = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+xxhash-rust = { workspace = true }

@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::profile::Profile;
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::{aos_nix_env, aos_tokio_nix_command};
 use aos_core::output::{OutputMode, Printer};
 
 /// Outcome of clearing the NAR download cache.
@@ -177,8 +177,7 @@ async fn run_gc_impl(printer: &Printer, emit_json: bool) -> Result<()> {
     printer.info("Running garbage collection...");
 
     let nix_env = aos_nix_env();
-    let output = tokio::process::Command::new("nix-store")
-        .envs(nix_env.iter().cloned())
+    let output = aos_tokio_nix_command("nix-store")
         .arg("--gc")
         .output()
         .await

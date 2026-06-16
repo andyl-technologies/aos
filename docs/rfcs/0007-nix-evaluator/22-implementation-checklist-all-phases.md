@@ -156,9 +156,9 @@ hold invariant.
 
 **Deliverables (rollup of [17](17-roadmap-and-risks.md) §6).**
 
-- [ ] Crate skeleton: `crates/aos-nix/` in the workspace; pinned `nix-compat`
+- [x] Crate skeleton: `crates/aos-nix/` in the workspace; pinned `nix-compat`
       git rev (`C-5`); `lib.rs` `//!` overview to the AOS doc standard.
-- [ ] `NixEval` seam wired in `aos-core` ([14](14-integration-with-aos.md) §3):
+- [x] `NixEval` seam wired in `aos-core` ([14](14-integration-with-aos.md) §3):
       trait defined, `NixCli` as first impl, stub `NixNative` behind
       `AOS_NIX_NATIVE` (default off).
 - [ ] Frontend: `syntax/lexer.rs`, `syntax/ast.rs` (compact arena AST, `u32`

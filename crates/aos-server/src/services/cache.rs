@@ -14,7 +14,7 @@ use connectrpc::{ConnectError, Context, ErrorCode};
 use futures_util::{Stream, StreamExt};
 
 use aos_core::nar::info as core_narinfo;
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::aos_tokio_nix_command;
 use aos_proto::aos::cache::v1::*;
 
 use crate::access;
@@ -398,10 +398,8 @@ fn parse_narinfo_to_proto(narinfo_text: &str) -> Result<NarInfo, ConnectError> {
 async fn import_nar_data(data: &[u8]) -> Result<String, String> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
-    use tokio::process::Command;
 
-    let mut child = Command::new("nix-store")
-        .envs(aos_nix_env())
+    let mut child = aos_tokio_nix_command("nix-store")
         .arg("--import")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

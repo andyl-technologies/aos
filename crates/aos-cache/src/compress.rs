@@ -21,7 +21,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 
 use aos_core::nar::export::ExportTrailer;
-use aos_core::nix::{NixCli, aos_nix_env};
+use aos_core::nix::{NixCli, aos_nix_command};
 
 /// Runs `nix-store --export <path>` and collects the resulting
 /// export-format stream (raw NAR + Nix export trailer, uncompressed).
@@ -38,8 +38,7 @@ use aos_core::nix::{NixCli, aos_nix_env};
 /// Returns an error if `nix-store` cannot be spawned or exits with a
 /// non-zero status (e.g. the path is not valid in the local store).
 pub fn streaming_export(store_path: &str) -> Result<Vec<u8>> {
-    let output = Command::new("nix-store")
-        .envs(aos_nix_env())
+    let output = aos_nix_command("nix-store")
         .args(["--export", store_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -73,8 +72,7 @@ pub fn streaming_compress(store_path: &str, algorithm: &str, level: i32) -> Resu
     match algorithm {
         "zstd" => {
             // Pipe: nix-store --dump <path> -> zstd -c -<level>
-            let mut dump = Command::new("nix-store")
-                .envs(aos_nix_env())
+            let mut dump = aos_nix_command("nix-store")
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -101,8 +99,7 @@ pub fn streaming_compress(store_path: &str, algorithm: &str, level: i32) -> Resu
             Ok(zstd_output.stdout)
         }
         "xz" => {
-            let mut dump = Command::new("nix-store")
-                .envs(aos_nix_env())
+            let mut dump = aos_nix_command("nix-store")
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -130,8 +127,7 @@ pub fn streaming_compress(store_path: &str, algorithm: &str, level: i32) -> Resu
         }
         "none" => {
             // No compression: read directly from nix-store --dump.
-            let output = Command::new("nix-store")
-                .envs(aos_nix_env())
+            let output = aos_nix_command("nix-store")
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -200,8 +196,7 @@ pub fn streaming_import(
     let trailer = ExportTrailer::new(store_path, full_refs, full_deriver);
 
     // Spawn nix-store --import and pipe the export data.
-    let mut child = std::process::Command::new("nix-store")
-        .envs(aos_nix_env())
+    let mut child = aos_nix_command("nix-store")
         .arg("--import")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

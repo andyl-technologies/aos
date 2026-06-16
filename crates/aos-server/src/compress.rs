@@ -15,7 +15,7 @@
 use std::process::Stdio;
 
 use anyhow::{Context as _, Result};
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::{aos_nix_command, aos_tokio_nix_command};
 use axum::body::Body;
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
@@ -76,8 +76,7 @@ impl Compression {
 pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Body> {
     match compression {
         Compression::None => {
-            let mut child = Command::new("nix-store")
-                .envs(aos_nix_env())
+            let mut child = aos_tokio_nix_command("nix-store")
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -95,8 +94,7 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
         Compression::Zstd { level } => {
             // Use std::process for the dump command so we can pipe its
             // ChildStdout directly into the zstd process as Stdio.
-            let mut dump = std::process::Command::new("nix-store")
-                .envs(aos_nix_env())
+            let mut dump = aos_nix_command("nix-store")
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -127,8 +125,7 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
             Ok(Body::from_stream(stream))
         }
         Compression::Xz { level } => {
-            let mut dump = std::process::Command::new("nix-store")
-                .envs(aos_nix_env())
+            let mut dump = aos_nix_command("nix-store")
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -202,16 +199,14 @@ pub fn nar_bytes(store_path: &str, compression: Compression) -> Result<Vec<u8>> 
     use std::process::Command as StdCommand;
 
     let output = match compression {
-        Compression::None => StdCommand::new("nix-store")
-            .envs(aos_nix_env())
+        Compression::None => aos_nix_command("nix-store")
             .args(["--dump", store_path])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
             .with_context(|| format!("nix-store --dump {store_path}"))?,
         Compression::Zstd { level } => {
-            let mut dump = StdCommand::new("nix-store")
-                .envs(aos_nix_env())
+            let mut dump = aos_nix_command("nix-store")
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -230,8 +225,7 @@ pub fn nar_bytes(store_path: &str, compression: Compression) -> Result<Vec<u8>> 
             out
         }
         Compression::Xz { level } => {
-            let mut dump = StdCommand::new("nix-store")
-                .envs(aos_nix_env())
+            let mut dump = aos_nix_command("nix-store")
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())

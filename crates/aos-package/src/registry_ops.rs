@@ -52,7 +52,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use aos_cache::AuthOptions;
 use aos_core::nar::info as narinfo;
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::aos_nix_command;
 use clap::ValueEnum as _;
 use serde_json::Value;
 
@@ -229,9 +229,7 @@ fn git_failure_details(output: &std::process::Output) -> String {
 
 /// Build a `nix`/`nix-store` command with the AOS Nix environment applied.
 fn nix_command(program: &str) -> Command {
-    let mut command = Command::new(program);
-    command.envs(aos_nix_env());
-    command
+    aos_nix_command(program)
 }
 
 /// Run a git command that is allowed to fail, returning (success, stdout, stderr).

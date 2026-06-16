@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::aos_nix_command;
 use aos_core::output::Printer;
 use aos_server::{self, bootstrap, build, config, drain, routes, sign, store, tls, tokens, views};
 
@@ -289,8 +289,7 @@ async fn serve_h2(
 /// Runs `nix-store -q --outputs <drv>` to get output paths, then
 /// `nix-store --check-validity` to see if they actually exist.
 fn check_store_outputs(drv: &str) -> bool {
-    let output = match std::process::Command::new("nix-store")
-        .envs(aos_nix_env())
+    let output = match aos_nix_command("nix-store")
         .args(["-q", "--outputs", drv])
         .output()
     {
@@ -304,8 +303,7 @@ fn check_store_outputs(drv: &str) -> bool {
         return false;
     }
 
-    let mut cmd = std::process::Command::new("nix-store");
-    cmd.envs(aos_nix_env());
+    let mut cmd = aos_nix_command("nix-store");
     cmd.arg("--check-validity");
     for p in &paths {
         cmd.arg(p);

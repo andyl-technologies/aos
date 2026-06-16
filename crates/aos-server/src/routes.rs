@@ -48,12 +48,11 @@ use axum::{
 };
 use serde::Deserialize;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::process::Command;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
 use aos_core::nar::cache::nix_cache_info;
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::aos_tokio_nix_command;
 
 use crate::access;
 use crate::auth::{self, AuthClaims, AuthResult};
@@ -722,8 +721,7 @@ async fn upload_path_handler(
 /// error responses (`500` for process errors, `400` for import or
 /// validation rejections).
 async fn import_nar(data: &[u8]) -> Result<String, Response> {
-    let mut child = Command::new("nix-store")
-        .envs(aos_nix_env())
+    let mut child = aos_tokio_nix_command("nix-store")
         .arg("--import")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1302,8 +1300,7 @@ async fn gc_handler(
 
     // Step 3: Run `nix-store --gc` when collect is true and not a dry run.
     let collected = if body.collect && !body.dry_run {
-        match Command::new("nix-store")
-            .envs(aos_nix_env())
+        match aos_tokio_nix_command("nix-store")
             .arg("--gc")
             .arg("--print-freed")
             .stdout(Stdio::piped())

@@ -8,9 +8,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use connectrpc::{ConnectError, Context, ErrorCode};
-use tokio::process::Command;
 
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::aos_tokio_nix_command;
 use aos_proto::aos::gc::v1::*;
 
 use crate::evict;
@@ -77,8 +76,7 @@ impl GcService for GcServiceImpl {
 
         // Step 3: Run `nix-store --gc` if collect_store is true and not dry run.
         let collected_bytes = if collect_store && !dry_run {
-            let child = Command::new("nix-store")
-                .envs(aos_nix_env())
+            let child = aos_tokio_nix_command("nix-store")
                 .arg("--gc")
                 .arg("--print-freed")
                 .stdout(Stdio::piped())
