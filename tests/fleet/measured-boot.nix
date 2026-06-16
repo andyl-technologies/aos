@@ -128,8 +128,31 @@ in {
           ).strip()
           return out
 
+      def wait_multi_user(label):
+          # The swtpm-backed enforcing/seal boot is slow (argon2 luksFormat
+          # + many TPM PCR round-trips through the emulator), and 180s was
+          # marginal — multi-user occasionally landed just past it. Give it
+          # the same generous budget as the harness boot timeout. The agent
+          # autologins, so it stays reachable even if multi-user.target is
+          # blocked; on timeout, dump what is still pending so an opaque
+          # "deadline fired" becomes a named culprit.
+          try:
+              target.wait_until_succeeds(
+                  "systemctl is-active multi-user.target", timeout=420
+              )
+          except Exception:
+              print(f"=== {label}: multi-user.target stalled — diagnostics ===")
+              for cmd in (
+                  "systemctl list-jobs --no-pager",
+                  "systemctl --failed --no-pager",
+                  "journalctl -b --no-pager | tail -n 80",
+              ):
+                  print(f"--- {cmd} ---")
+                  print(target.succeed(f"{cmd} 2>&1 || true"))
+              raise
+
       # ════ 1. First boot — Setup Mode; vTPM present ════════════════════
-      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=180)
+      wait_multi_user("boot1 (setup)")
       assert efivar_byte("SetupMode") == 1, "expected Setup Mode before enrollment"
       assert efivar_byte("SecureBoot") == 0, "SB should not be enforcing yet"
       # The emulated TPM is wired in and the kernel TCG driver bound it.
@@ -147,7 +170,7 @@ in {
       target.reboot()
 
       # ════ 3. First enforcing boot — /var sealed to the signed policy ══
-      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=180)
+      wait_multi_user("boot2 (enforcing seal)")
       assert efivar_byte("SecureBoot") == 1, "Secure Boot should be enforcing"
       # /var is now a LUKS2 device, mounted via the device-mapper node.
       # isLuks confirms LUKS; the systemd-tpm2 token (a LUKS2-only feature)
@@ -167,7 +190,7 @@ in {
 
       # ════ 4. Reboot — /var must unlock UNATTENDED via the TPM2 token ══
       target.reboot()
-      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=180)
+      wait_multi_user("boot3 (unattended unlock)")
       assert efivar_byte("SecureBoot") == 1
       src = var_source()
       assert src == "/dev/mapper/var", (
