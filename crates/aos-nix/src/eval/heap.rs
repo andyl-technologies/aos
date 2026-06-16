@@ -3,14 +3,15 @@
 //! Runtime [`Value`] words carry opaque [`HeapObject`] pointers. This registry
 //! owns the typed Rust-side objects behind those pointers for the safe tree-walk
 //! oracle: the bump arena provides stable opaque handles, while a side table
-//! maps those handles back to checked [`NixString`], [`NixList`], and
-//! [`EvalThunk`] values.
+//! maps those handles back to checked [`NixString`], [`NixList`], [`FlatAttrs`],
+//! and [`EvalThunk`] values.
 
 use std::ptr::NonNull;
 
 use thiserror::Error;
 
 use super::thunk::ThunkCell;
+use crate::attrs::FlatAttrs;
 use crate::compile::IrId;
 use crate::heap::arena::{ArenaError, ArenaStats, BumpArena};
 use crate::list::NixList;
@@ -147,6 +148,33 @@ impl EvalHeap {
         Ok(value)
     }
 
+    /// Allocates an attribute-set object and returns its opaque runtime value.
+    ///
+    /// The returned value is only meaningful while this [`EvalHeap`] remains
+    /// alive. Use [`EvalHeap::get_attrs`] to recover the typed attrset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
+    /// attrset length cannot fit the runtime slot count, if the bump arena
+    /// cannot reserve an attrset handle, or if the resulting handle violates
+    /// the runtime value alignment contract.
+    pub fn alloc_attrs(&mut self, shape: u32, attrs: FlatAttrs) -> Result<Value, EvalHeapError> {
+        self.reserve_record_slot()?;
+        let slots = u32::try_from(attrs.len())
+            .map_err(|_| EvalHeapError::Arena(ArenaError::SizeOverflow))?;
+        let allocation = self
+            .arena
+            .aos_alloc_attrs(shape, slots)
+            .map_err(EvalHeapError::Arena)?;
+        let value = Value::attrs(allocation.ptr).map_err(EvalHeapError::Value)?;
+        self.records.push(HeapRecord {
+            ptr: allocation.ptr,
+            object: HeapObjectValue::Attrs(attrs),
+        });
+        Ok(value)
+    }
+
     /// Allocates a suspended thunk object and returns its opaque runtime value.
     ///
     /// The returned value is only meaningful while this [`EvalHeap`] remains
@@ -232,6 +260,38 @@ impl EvalHeap {
         }
     }
 
+    /// Returns the attribute-set object referenced by `value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not an attrset value.
+    /// Returns [`EvalHeapError::UnknownPointer`] if the attrset handle does not
+    /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
+    /// the handle belongs to this heap but references a non-attrset record.
+    pub fn get_attrs(&self, value: Value) -> Result<&FlatAttrs, EvalHeapError> {
+        let ptr = value.as_attrs_ptr().map_err(EvalHeapError::Value)?;
+        self.get_attrs_ptr(ptr)
+    }
+
+    /// Returns the attribute-set object referenced by an opaque heap pointer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::UnknownPointer`] if `ptr` does not belong to
+    /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
+    /// belongs to this heap but references a non-attrset record.
+    pub fn get_attrs_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&FlatAttrs, EvalHeapError> {
+        let record = self.record_or_unknown(ValueTag::Attrs, ptr)?;
+        match &record.object {
+            HeapObjectValue::Attrs(attrs) => Ok(attrs),
+            object => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Attrs,
+                object.tag(),
+                ptr,
+            )),
+        }
+    }
+
     /// Returns the suspended thunk object referenced by `value`.
     ///
     /// # Errors
@@ -302,6 +362,7 @@ struct HeapRecord {
 enum HeapObjectValue {
     String(NixString),
     List(NixList),
+    Attrs(FlatAttrs),
     Thunk(EvalThunk),
 }
 
@@ -310,6 +371,7 @@ impl HeapObjectValue {
         match self {
             Self::String(_) => ValueTag::String,
             Self::List(_) => ValueTag::List,
+            Self::Attrs(_) => ValueTag::Attrs,
             Self::Thunk(_) => ValueTag::Thunk,
         }
     }
@@ -378,7 +440,15 @@ impl EvalHeapError {
 mod tests {
     use super::super::ThunkState;
     use super::*;
+    use crate::attrs::AttrEntry;
     use crate::string::{ContextElement, StringContext};
+    use crate::syntax::SymbolTable;
+
+    fn attrs_with_one_entry() -> FlatAttrs {
+        let mut symbols = SymbolTable::new();
+        let key = symbols.intern(b"name").expect("symbol interns");
+        FlatAttrs::new(vec![AttrEntry::new(key, Value::int(7))], &symbols).expect("attrset builds")
+    }
 
     #[test]
     fn allocates_string_values_and_recovers_contents() {
@@ -451,22 +521,45 @@ mod tests {
     }
 
     #[test]
+    fn allocates_attr_values_and_recovers_entries() {
+        let mut symbols = SymbolTable::new();
+        let key = symbols.intern(b"name").expect("symbol interns");
+        let attrs = FlatAttrs::new(vec![AttrEntry::new(key, Value::int(7))], &symbols)
+            .expect("attrs build");
+        let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+        let value = heap.alloc_attrs(42, attrs).expect("attrs allocate");
+
+        assert_eq!(value.tag(), ValueTag::Attrs);
+        assert_eq!(heap.len(), 1);
+        let attrs = heap.get_attrs(value).expect("attrs exist");
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs.get(key).expect("name exists").as_int(), Ok(7));
+        assert_eq!(heap.arena_stats().chunks, 1);
+    }
+
+    #[test]
     fn mixed_heap_object_types_keep_distinct_records() {
-        let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+        let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
         let string = heap
             .alloc_string(NixString::from_bytes(b"name".to_vec()))
             .expect("string allocates");
         let list = heap
             .alloc_list(NixList::new(vec![Value::int(7)]))
             .expect("list allocates");
+        let attrs = heap
+            .alloc_attrs(9, attrs_with_one_entry())
+            .expect("attrs allocate");
         let thunk = heap
             .alloc_thunk(EvalThunk::new(IrId::new(3)))
             .expect("thunk allocates");
 
         assert_ne!(string.payload_bits(), list.payload_bits());
+        assert_ne!(string.payload_bits(), attrs.payload_bits());
         assert_ne!(string.payload_bits(), thunk.payload_bits());
+        assert_ne!(list.payload_bits(), attrs.payload_bits());
         assert_ne!(list.payload_bits(), thunk.payload_bits());
-        assert_eq!(heap.len(), 3);
+        assert_ne!(attrs.payload_bits(), thunk.payload_bits());
+        assert_eq!(heap.len(), 4);
         assert_eq!(
             heap.get_string(string).expect("string exists").bytes(),
             b"name"
@@ -479,6 +572,7 @@ mod tests {
                 .as_int(),
             Ok(7)
         );
+        assert_eq!(heap.get_attrs(attrs).expect("attrs exist").len(), 1);
         assert_eq!(
             heap.get_thunk(thunk).expect("thunk exists").body(),
             IrId::new(3)
@@ -530,6 +624,21 @@ mod tests {
             .expect_err("foreign pointer is not in this heap");
 
         assert_eq!(error, EvalHeapError::unknown(ValueTag::List, ptr));
+    }
+
+    #[test]
+    fn rejects_attr_values_from_another_live_heap() {
+        let heap = EvalHeap::new();
+        let mut other = EvalHeap::new();
+        let foreign = other
+            .alloc_attrs(0, attrs_with_one_entry())
+            .expect("foreign attrs allocate");
+        let ptr = foreign.as_attrs_ptr().expect("foreign is an attrset");
+        let error = heap
+            .get_attrs(foreign)
+            .expect_err("foreign pointer is not in this heap");
+
+        assert_eq!(error, EvalHeapError::unknown(ValueTag::Attrs, ptr));
     }
 
     #[test]
@@ -596,6 +705,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_wrong_value_tags_for_attrs_lookup() {
+        let heap = EvalHeap::new();
+        let error = heap
+            .get_attrs(Value::int(1))
+            .expect_err("integer is not an attrset");
+
+        assert_eq!(
+            error,
+            EvalHeapError::Value(ValueError::Type {
+                expected: "attrs",
+                actual: ValueTag::Int,
+            })
+        );
+    }
+
+    #[test]
     fn reports_unknown_string_pointers() {
         let heap = EvalHeap::new();
         let ptr = NonNull::<HeapObject>::dangling();
@@ -629,6 +754,18 @@ mod tests {
             .expect_err("pointer does not belong to heap");
 
         assert_eq!(error, EvalHeapError::unknown(ValueTag::Thunk, ptr));
+    }
+
+    #[test]
+    fn reports_unknown_attrs_pointers() {
+        let heap = EvalHeap::new();
+        let ptr = NonNull::<HeapObject>::dangling();
+        let value = Value::attrs(ptr).expect("dangling pointer is aligned");
+        let error = heap
+            .get_attrs(value)
+            .expect_err("pointer does not belong to heap");
+
+        assert_eq!(error, EvalHeapError::unknown(ValueTag::Attrs, ptr));
     }
 
     #[test]
@@ -670,6 +807,16 @@ mod tests {
         assert_eq!(
             error,
             EvalHeapError::record_type_mismatch(ValueTag::Thunk, ValueTag::String, string_ptr)
+        );
+        let mislabeled_attrs = Value::attrs(string_ptr).expect("same pointer can carry attrs tag");
+
+        let error = heap
+            .get_attrs(mislabeled_attrs)
+            .expect_err("record is not an attrset");
+
+        assert_eq!(
+            error,
+            EvalHeapError::record_type_mismatch(ValueTag::Attrs, ValueTag::String, string_ptr)
         );
 
         let thunk = heap

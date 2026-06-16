@@ -3,15 +3,19 @@
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
 //! first slices evaluate scalar and list literals, boolean control flow,
 //! assertions, boolean operators, string literals and concatenation, list-spine
-//! concatenation, numeric arithmetic, numeric and string comparisons, and
-//! scalar/string equality to weak head normal form, establishing the arena
-//! access and diagnostic surface used by later slices for environments, thunks,
-//! functions, attribute sets, primitive operations, and derivation boundaries.
+//! concatenation, non-recursive static attribute-set literals, numeric
+//! arithmetic, numeric and string comparisons, and scalar/string equality to
+//! weak head normal form, establishing the arena access and diagnostic surface
+//! used by later slices for environments, thunks, functions, dynamic/recursive
+//! attribute sets, primitive operations, and derivation boundaries.
 
 use thiserror::Error;
 
 use super::heap::{EvalHeap, EvalHeapError, EvalThunk};
-use crate::compile::{Ir, IrChildSlice, IrData, IrId, IrKind, IrNode};
+use crate::attrs::{AttrEntry, AttrError, FlatAttrs};
+use crate::compile::{
+    Ir, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId, IrKind, IrNode, IrShapeId,
+};
 use crate::list::{NixList, NixListError};
 use crate::string::{NixString, NixStringError};
 use crate::syntax::{BinOpKind, Span, Symbol, UnaryOpKind};
@@ -117,9 +121,9 @@ impl<'ir> TreeWalk<'ir> {
     /// Evaluates a node to weak head normal form.
     ///
     /// This initial public node entry point is intentionally limited to
-    /// environment-free scalar literal, list literal, string literal,
-    /// control-flow, boolean operator, string/list concatenation, numeric
-    /// arithmetic, numeric and string comparison, and scalar/string equality nodes.
+    /// environment-free scalar literal, list literal, static attrset literal,
+    /// string literal, control-flow, boolean operator, string/list concatenation,
+    /// numeric arithmetic, numeric and string comparison, and scalar/string equality nodes.
     /// Environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add an explicit
     /// runtime and environment context.
@@ -158,6 +162,7 @@ impl<'ir> TreeWalk<'ir> {
             }
             IrKind::Str => self.eval_string(id, &node),
             IrKind::List => self.eval_list(id, &node),
+            IrKind::AttrSet => self.eval_attrset(id, &node),
             IrKind::If => self.eval_if(id, &node),
             IrKind::Assert => self.eval_assert(id, &node),
             IrKind::UnaryOp => self.eval_unary(id, &node),
@@ -173,6 +178,91 @@ impl<'ir> TreeWalk<'ir> {
         self.ir.arena.node(id).ok_or_else(|| {
             TreeWalkError::new(TreeWalkErrorKind::InvalidNodeId { id }, Span::default())
         })
+    }
+
+    fn binding_range(
+        &self,
+        id: IrId,
+        slice: IrBindingSlice,
+        span: Span,
+    ) -> Result<std::ops::Range<usize>, TreeWalkError> {
+        let start = slice.start as usize;
+        let end = start.checked_add(slice.len()).ok_or_else(|| {
+            TreeWalkError::new(TreeWalkErrorKind::InvalidBindingSlice { id, slice }, span)
+        })?;
+        if self.ir.bindings.get(start..end).is_none() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidBindingSlice { id, slice },
+                span,
+            ));
+        }
+        Ok(start..end)
+    }
+
+    fn validate_attrset_shape(
+        &self,
+        id: IrId,
+        shape: IrShapeId,
+        shape_keys: &[Symbol],
+        binding_range: std::ops::Range<usize>,
+        recursive: bool,
+        span: Span,
+    ) -> Result<(), TreeWalkError> {
+        let mut binding_keys = 0usize;
+        for binding_index in binding_range {
+            let binding = self.ir.bindings[binding_index];
+            let actual = match binding.key {
+                IrAttrPathSegment::Static(symbol) => symbol,
+                IrAttrPathSegment::Dynamic(_) => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::UnsupportedAttrSetForm {
+                            id,
+                            recursive,
+                            has_dynamic: true,
+                        },
+                        span,
+                    ));
+                }
+            };
+            let Some(expected) = shape_keys.get(binding_keys).copied() else {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::AttrSetShapeLengthMismatch {
+                        id,
+                        shape,
+                        shape_keys: shape_keys.len(),
+                        binding_keys: binding_keys + 1,
+                    },
+                    span,
+                ));
+            };
+            if expected != actual {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::AttrSetShapeKeyMismatch {
+                        id,
+                        shape,
+                        index: binding_keys,
+                        expected,
+                        actual,
+                    },
+                    span,
+                ));
+            }
+            binding_keys += 1;
+        }
+
+        if binding_keys != shape_keys.len() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::AttrSetShapeLengthMismatch {
+                    id,
+                    shape,
+                    shape_keys: shape_keys.len(),
+                    binding_keys,
+                },
+                span,
+            ));
+        }
+
+        Ok(())
     }
 
     fn invalid_payload(&self, id: IrId, node: &IrNode, expected: &'static str) -> TreeWalkError {
@@ -339,6 +429,86 @@ impl<'ir> TreeWalk<'ir> {
         self.node(body)?;
         self.heap
             .alloc_thunk(EvalThunk::new(body))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    fn eval_attrset(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::AttrSet {
+            shape,
+            bindings,
+            recursive,
+            has_dynamic,
+            ..
+        } = node.data
+        else {
+            return Err(self.invalid_payload(id, node, "attrset payload"));
+        };
+        if recursive || has_dynamic {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedAttrSetForm {
+                    id,
+                    recursive,
+                    has_dynamic,
+                },
+                node.span,
+            ));
+        }
+
+        let binding_range = self.binding_range(id, bindings, node.span)?;
+        {
+            let shape_keys = self
+                .ir
+                .shapes
+                .get(shape.index())
+                .ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidShapeId { id, shape }, node.span)
+                })?
+                .keys
+                .as_ref();
+            self.validate_attrset_shape(
+                id,
+                shape,
+                shape_keys,
+                binding_range.clone(),
+                recursive,
+                node.span,
+            )?;
+        }
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(binding_range.len())
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::AllocationFailed {
+                            entries: binding_range.len(),
+                        },
+                    },
+                    node.span,
+                )
+            })?;
+        for binding_index in binding_range {
+            let binding = self.ir.bindings[binding_index];
+            let IrAttrPathSegment::Static(key) = binding.key else {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedAttrSetForm {
+                        id,
+                        recursive,
+                        has_dynamic: true,
+                    },
+                    node.span,
+                ));
+            };
+            let value = self.eval_lazy_node(binding.value)?;
+            entries.push(AttrEntry::new(key, value));
+        }
+
+        let attrs = FlatAttrs::new(entries, &self.ir.symbols).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, node.span)
+        })?;
+        self.heap
+            .alloc_attrs(shape.as_u32(), attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
@@ -894,6 +1064,52 @@ pub enum TreeWalkErrorKind {
         /// The invalid child slice payload.
         slice: IrChildSlice,
     },
+    /// A binding-table slice payload did not resolve through the IR.
+    #[error("invalid binding slice {slice:?} at node {id:?}")]
+    InvalidBindingSlice {
+        /// The node id carrying the invalid binding slice.
+        id: IrId,
+        /// The invalid binding slice payload.
+        slice: IrBindingSlice,
+    },
+    /// An attrset shape id payload did not resolve through the IR.
+    #[error("invalid attrset shape {shape:?} at node {id:?}")]
+    InvalidShapeId {
+        /// The node id carrying the invalid shape id.
+        id: IrId,
+        /// The invalid shape id payload.
+        shape: IrShapeId,
+    },
+    /// An attrset shape has a different number of keys than its binding slice.
+    #[error(
+        "attrset shape {shape:?} at node {id:?} has {shape_keys} keys for {binding_keys} binding keys"
+    )]
+    AttrSetShapeLengthMismatch {
+        /// The attrset node id carrying the mismatched metadata.
+        id: IrId,
+        /// The shape id carrying the mismatched key table.
+        shape: IrShapeId,
+        /// The number of keys recorded in the shape table.
+        shape_keys: usize,
+        /// The number of static keys found in the binding slice.
+        binding_keys: usize,
+    },
+    /// An attrset shape key does not match the corresponding binding key.
+    #[error(
+        "attrset shape {shape:?} at node {id:?} key {index} is {expected:?}, but binding key is {actual:?}"
+    )]
+    AttrSetShapeKeyMismatch {
+        /// The attrset node id carrying the mismatched metadata.
+        id: IrId,
+        /// The shape id carrying the mismatched key table.
+        shape: IrShapeId,
+        /// The mismatched key index.
+        index: usize,
+        /// The symbol recorded by the shape table.
+        expected: Symbol,
+        /// The symbol found in the binding slice.
+        actual: Symbol,
+    },
     /// A symbol payload did not resolve through the IR symbol table.
     #[error("invalid symbol {symbol:?} at node {id:?}")]
     InvalidSymbol {
@@ -950,6 +1166,14 @@ pub enum TreeWalkErrorKind {
         /// The underlying list failure.
         source: NixListError,
     },
+    /// A flat attribute-set operation failed.
+    #[error("attribute-set operation failed at node {id:?}: {source}")]
+    Attr {
+        /// The node id associated with the attrset operation.
+        id: IrId,
+        /// The underlying attrset failure.
+        source: AttrError,
+    },
     /// A scalar operation received a value of the wrong Nix type.
     #[error("type error at node {id:?}: expected {expected}, got {actual:?}")]
     Type {
@@ -989,6 +1213,18 @@ pub enum TreeWalkErrorKind {
         /// The right operand's runtime value tag.
         right: ValueTag,
     },
+    /// The attrset form requires dynamic-name or recursive-scope support.
+    #[error(
+        "unsupported tree-walk attrset form at {id:?}: recursive={recursive}, has_dynamic={has_dynamic}"
+    )]
+    UnsupportedAttrSetForm {
+        /// The attrset node id.
+        id: IrId,
+        /// Whether the source attrset was recursive.
+        recursive: bool,
+        /// Whether the source attrset has dynamic keys.
+        has_dynamic: bool,
+    },
     /// A checked integer arithmetic operation overflowed.
     #[error("arithmetic overflow for {op:?} at node {id:?}")]
     ArithmeticOverflow {
@@ -1026,7 +1262,8 @@ mod tests {
     use std::ptr::NonNull;
 
     use crate::compile::{
-        EffectClass, IrArena, IrData, IrNode, lower as lower_ir, resolve as resolve_ast,
+        EffectClass, IrArena, IrBinding, IrData, IrNode, IrShape, lower as lower_ir,
+        resolve as resolve_ast,
     };
     use crate::string::{ContextElement, StringContext};
     use crate::syntax::{Symbol, SymbolTable, parse_str};
@@ -1039,6 +1276,16 @@ mod tests {
 
     fn eval(source: &str) -> Value {
         eval_whnf(&lower(source)).expect("source evaluates")
+    }
+
+    fn symbol_for(ir: &Ir, name: &[u8]) -> Symbol {
+        let index = ir
+            .symbols
+            .symbols()
+            .iter()
+            .position(|symbol| symbol.as_slice() == name)
+            .expect("symbol exists");
+        Symbol::new(index as u32)
     }
 
     fn empty_ir(root: IrId, arena: IrArena) -> Ir {
@@ -1060,6 +1307,25 @@ mod tests {
 
     fn manual_ir(root: IrId, nodes: Vec<IrNode>) -> Ir {
         empty_ir(root, IrArena::from_raw_parts(nodes, Vec::new()))
+    }
+
+    fn manual_ir_with_attr_tables(
+        root: IrId,
+        nodes: Vec<IrNode>,
+        symbols: SymbolTable,
+        bindings: Vec<IrBinding>,
+        shapes: Vec<IrShape>,
+    ) -> Ir {
+        Ir {
+            root,
+            arena: IrArena::from_raw_parts(nodes, Vec::new()),
+            symbols,
+            frames: Vec::new().into_boxed_slice(),
+            with_chains: Vec::new().into_boxed_slice(),
+            attr_paths: Vec::new().into_boxed_slice(),
+            bindings: bindings.into_boxed_slice(),
+            shapes: shapes.into_boxed_slice(),
+        }
     }
 
     fn int_binary_ir(op: BinOpKind, left: i64, right: i64) -> Ir {
@@ -1247,6 +1513,92 @@ mod tests {
         assert!(list.get(1).expect("second").raw_eq(left_thunk));
         assert!(list.get(2).expect("third").raw_eq(right_thunk));
         assert_eq!(list.get(3).expect("fourth").as_bool(), Ok(true));
+    }
+
+    #[test]
+    fn evaluates_empty_attrsets_with_owned_heap() {
+        let ir = lower("{}");
+        let outcome = eval_whnf_owned(&ir).expect("empty attrset evaluates");
+        let value = outcome.value();
+
+        assert_eq!(value.tag(), ValueTag::Attrs);
+        assert!(
+            outcome
+                .heap()
+                .get_attrs(value)
+                .expect("attrset is heap-owned")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn evaluates_static_attrsets_with_lazy_values() {
+        let ir = lower("{ a = 1; b = (1 / 0); }");
+        let a = symbol_for(&ir, b"a");
+        let b = symbol_for(&ir, b"b");
+        let outcome = eval_whnf_owned(&ir).expect("static attrset evaluates");
+        let heap = outcome.heap();
+        let attrs = heap
+            .get_attrs(outcome.value())
+            .expect("attrset is heap-owned");
+
+        assert_eq!(attrs.len(), 2);
+        assert_eq!(attrs.get(a).expect("a exists").as_int(), Ok(1));
+
+        let lazy_division = attrs.get(b).expect("b exists");
+        assert_eq!(lazy_division.tag(), ValueTag::Thunk);
+        let thunk = heap
+            .get_thunk(lazy_division)
+            .expect("attr value thunk is heap-owned");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(
+            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            IrKind::BinOp
+        );
+    }
+
+    #[test]
+    fn recursive_and_dynamic_attrsets_wait_for_later_slices() {
+        let recursive_ir = lower("rec { a = 1; }");
+        let error =
+            eval_whnf_owned(&recursive_ir).expect_err("recursive attrsets need environments");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedAttrSetForm {
+                id: recursive_ir.root,
+                recursive: true,
+                has_dynamic: false,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            recursive_ir
+                .arena
+                .node(recursive_ir.root)
+                .expect("root exists")
+                .span
+        );
+
+        let dynamic_ir = lower("{ ${\"a\"} = 1; }");
+        let error = eval_whnf_owned(&dynamic_ir).expect_err("dynamic attrsets need key eval");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedAttrSetForm {
+                id: dynamic_ir.root,
+                recursive: false,
+                has_dynamic: true,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            dynamic_ir
+                .arena
+                .node(dynamic_ir.root)
+                .expect("root exists")
+                .span
+        );
     }
 
     #[test]
@@ -1516,21 +1868,43 @@ mod tests {
                 .expect("root exists")
                 .span
         );
+
+        let attrs_ir = lower("{}");
+        let error = eval_whnf(&attrs_ir).expect_err("attrset value needs owning heap");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::HeapValueRequiresOwner {
+                id: attrs_ir.root,
+                tag: ValueTag::Attrs,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            attrs_ir
+                .arena
+                .node(attrs_ir.root)
+                .expect("root exists")
+                .span
+        );
     }
 
     #[test]
     fn unsupported_nodes_report_kind_and_span() {
-        let ir = lower("{}");
-        let error = eval_whnf(&ir).expect_err("attrset construction is not implemented yet");
+        let ir = lower("x: x");
+        let error = eval_whnf(&ir).expect_err("lambda construction is not implemented yet");
 
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::UnsupportedNode {
                 id: ir.root,
-                kind: IrKind::AttrSet,
+                kind: IrKind::Lambda,
             }
         );
-        assert_eq!(error.span(), Span::new(0, 2));
+        assert_eq!(
+            error.span(),
+            ir.arena.node(ir.root).expect("root exists").span
+        );
     }
 
     #[test]
@@ -1576,6 +1950,7 @@ mod tests {
             (IrKind::Null, IrData::Bool(false), "empty payload"),
             (IrKind::Str, IrData::None, "string symbol payload"),
             (IrKind::List, IrData::None, "list children"),
+            (IrKind::AttrSet, IrData::None, "attrset payload"),
         ];
 
         for (index, (kind, data, expected)) in cases.into_iter().enumerate() {
@@ -1632,6 +2007,196 @@ mod tests {
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::InvalidChildSlice { id: root, slice }
+        );
+        assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn invalid_attrset_binding_slices_are_reported() {
+        let root = IrId::new(0);
+        let slice = IrBindingSlice::new(7, 1);
+        let span = Span::new(0, 2);
+        let ir = manual_ir(
+            root,
+            vec![pure_node(
+                IrKind::AttrSet,
+                span,
+                IrData::AttrSet {
+                    shape: IrShapeId::new(0),
+                    bindings: slice,
+                    recursive: false,
+                    has_dynamic: false,
+                    frame: None,
+                },
+            )],
+        );
+        let error = eval_whnf_owned(&ir).expect_err("attrset binding slice must exist");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidBindingSlice { id: root, slice }
+        );
+        assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn invalid_attrset_shape_ids_are_reported() {
+        let root = IrId::new(0);
+        let shape = IrShapeId::new(0);
+        let span = Span::new(0, 2);
+        let ir = manual_ir(
+            root,
+            vec![pure_node(
+                IrKind::AttrSet,
+                span,
+                IrData::AttrSet {
+                    shape,
+                    bindings: IrBindingSlice::new(0, 0),
+                    recursive: false,
+                    has_dynamic: false,
+                    frame: None,
+                },
+            )],
+        );
+        let error = eval_whnf_owned(&ir).expect_err("attrset shape must exist");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidShapeId { id: root, shape }
+        );
+        assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn attrset_shape_length_mismatches_are_reported() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern(b"a").expect("symbol interns");
+        let value = IrId::new(0);
+        let root = IrId::new(1);
+        let shape = IrShapeId::new(0);
+        let span = Span::new(0, 8);
+        let ir = manual_ir_with_attr_tables(
+            root,
+            vec![
+                pure_node(IrKind::Int, Span::new(6, 7), IrData::Int(1)),
+                pure_node(
+                    IrKind::AttrSet,
+                    span,
+                    IrData::AttrSet {
+                        shape,
+                        bindings: IrBindingSlice::new(0, 1),
+                        recursive: false,
+                        has_dynamic: false,
+                        frame: None,
+                    },
+                ),
+            ],
+            symbols,
+            vec![IrBinding {
+                key: IrAttrPathSegment::Static(a),
+                value,
+            }],
+            vec![IrShape::new(Vec::new().into_boxed_slice())],
+        );
+        let error = eval_whnf_owned(&ir).expect_err("attrset shape length must match bindings");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::AttrSetShapeLengthMismatch {
+                id: root,
+                shape,
+                shape_keys: 0,
+                binding_keys: 1,
+            }
+        );
+        assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn attrset_shape_key_mismatches_are_reported() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern(b"a").expect("a symbol interns");
+        let b = symbols.intern(b"b").expect("b symbol interns");
+        let value = IrId::new(0);
+        let root = IrId::new(1);
+        let shape = IrShapeId::new(0);
+        let span = Span::new(0, 8);
+        let ir = manual_ir_with_attr_tables(
+            root,
+            vec![
+                pure_node(IrKind::Int, Span::new(6, 7), IrData::Int(1)),
+                pure_node(
+                    IrKind::AttrSet,
+                    span,
+                    IrData::AttrSet {
+                        shape,
+                        bindings: IrBindingSlice::new(0, 1),
+                        recursive: false,
+                        has_dynamic: false,
+                        frame: None,
+                    },
+                ),
+            ],
+            symbols,
+            vec![IrBinding {
+                key: IrAttrPathSegment::Static(a),
+                value,
+            }],
+            vec![IrShape::new(vec![b].into_boxed_slice())],
+        );
+        let error = eval_whnf_owned(&ir).expect_err("attrset shape keys must match bindings");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::AttrSetShapeKeyMismatch {
+                id: root,
+                shape,
+                index: 0,
+                expected: b,
+                actual: a,
+            }
+        );
+        assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn dynamic_attrset_bindings_are_rejected_even_with_false_dynamic_flag() {
+        let value = IrId::new(0);
+        let root = IrId::new(1);
+        let shape = IrShapeId::new(0);
+        let span = Span::new(0, 12);
+        let ir = manual_ir_with_attr_tables(
+            root,
+            vec![
+                pure_node(IrKind::Int, Span::new(9, 10), IrData::Int(1)),
+                pure_node(
+                    IrKind::AttrSet,
+                    span,
+                    IrData::AttrSet {
+                        shape,
+                        bindings: IrBindingSlice::new(0, 1),
+                        recursive: false,
+                        has_dynamic: false,
+                        frame: None,
+                    },
+                ),
+            ],
+            SymbolTable::new(),
+            vec![IrBinding {
+                key: IrAttrPathSegment::Dynamic(value),
+                value,
+            }],
+            vec![IrShape::new(Vec::new().into_boxed_slice())],
+        );
+        let error = eval_whnf_owned(&ir).expect_err("dynamic key must remain unsupported");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedAttrSetForm {
+                id: root,
+                recursive: false,
+                has_dynamic: true,
+            }
         );
         assert_eq!(error.span(), span);
     }
