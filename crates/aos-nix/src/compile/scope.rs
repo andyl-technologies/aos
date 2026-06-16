@@ -1461,6 +1461,24 @@ mod tests {
     }
 
     #[test]
+    fn attr_path_merges_preserve_order_sensitive_rec_scope() {
+        let ast = resolved("{ a = rec { c = c; }; a.b = 1; }");
+        let NodeData::Children(bindings) = node(&ast, ast.root).data else {
+            panic!("attrset payload expected");
+        };
+        let a_value = binding_value(&ast, child_ids(&ast, bindings)[0]);
+        let NodeData::Children(nested_bindings) = node(&ast, a_value).data else {
+            panic!("nested attrset payload expected");
+        };
+        let c_value = binding_value(&ast, child_ids(&ast, nested_bindings)[0]);
+        assert_eq!(node(&ast, c_value).kind, NodeKind::LocalVar);
+
+        let error = resolve(parse_str("{ a.b = 1; a = rec { c = c; }; }").expect("source parses"))
+            .expect_err("later rec attrset is merged into the earlier plain prefix");
+        assert!(matches!(error.kind(), ScopeErrorKind::UndefinedSymbol(_)));
+    }
+
+    #[test]
     fn recursive_dynamic_attr_names_do_not_enter_the_rec_scope() {
         let ast = resolved("let outer = 1; in rec { ${outer} = 2; a = 3; b = a; }");
         let NodeData::LetIn { body, .. } = node(&ast, ast.root).data else {

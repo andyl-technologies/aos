@@ -10,8 +10,8 @@ use std::str;
 use thiserror::Error;
 
 use super::{
-    AstArena, AstError, AstErrorKind, BinOpKind, ChildSlice, LexError, Lexer, NodeData, NodeId,
-    NodeKind, ParsedAst, Span, Symbol, SymbolTable, Token, TokenKind, UnaryOpKind,
+    AstArena, AstError, AstErrorKind, BinOpKind, ChildSlice, LexError, Lexer, Node, NodeData,
+    NodeId, NodeKind, ParsedAst, Span, Symbol, SymbolTable, Token, TokenKind, UnaryOpKind,
 };
 
 const BP_IMPL: u8 = 20;
@@ -703,6 +703,7 @@ impl<'a> Parser<'a> {
             }
             bindings.push(self.parse_binding()?);
         }
+        let bindings = self.normalize_bindings(bindings)?;
         self.push_child_slice(&bindings)
     }
 
@@ -753,6 +754,165 @@ impl<'a> Parser<'a> {
             segments.push(self.parse_attr_segment()?);
         }
         self.push_child_slice(&segments)
+    }
+
+    fn normalize_bindings(&mut self, bindings: Vec<NodeId>) -> Result<Vec<NodeId>, ParseError> {
+        let mut merged = Vec::new();
+        for binding in bindings {
+            let binding = self.normalize_binding_path(binding)?;
+            let Some(symbol) = self.binding_target_symbol(binding)? else {
+                merged.push(binding);
+                continue;
+            };
+
+            let mut merged_binding = Some(binding);
+            for existing in &mut merged {
+                if self.binding_target_symbol(*existing)? == Some(symbol) {
+                    *existing = self.merge_binding_nodes(*existing, binding)?;
+                    merged_binding = None;
+                    break;
+                }
+            }
+            if let Some(binding) = merged_binding {
+                merged.push(binding);
+            }
+        }
+        Ok(merged)
+    }
+
+    fn normalize_binding_path(&mut self, binding: NodeId) -> Result<NodeId, ParseError> {
+        let node = self.node(binding)?;
+        if node.kind != NodeKind::Binding {
+            return Ok(binding);
+        }
+        let NodeData::Binding { path, value } = node.data else {
+            return Ok(binding);
+        };
+        let segments = self.child_ids(path)?;
+        if segments.len() <= 1 {
+            return Ok(binding);
+        }
+        self.nested_binding(&segments, value, Some(node.span))
+    }
+
+    fn nested_binding(
+        &mut self,
+        segments: &[NodeId],
+        value: NodeId,
+        span_override: Option<Span>,
+    ) -> Result<NodeId, ParseError> {
+        let Some((&head, tail)) = segments.split_first() else {
+            return Err(self.error_at(self.node_span(value)?, ParseErrorKind::InvalidBindingPath));
+        };
+        let path = self.push_child_slice(&[head])?;
+        let value = if tail.is_empty() {
+            value
+        } else {
+            let nested = self.nested_binding(tail, value, None)?;
+            let children = self.push_child_slice(&[nested])?;
+            let span = self.join_span(self.node_span(tail[0])?, self.node_span(value)?);
+            self.push(NodeKind::AttrSet, span, NodeData::Children(children))?
+        };
+        let span = if let Some(span) = span_override {
+            span
+        } else {
+            self.join_span(self.node_span(head)?, self.node_span(value)?)
+        };
+        self.push(NodeKind::Binding, span, NodeData::Binding { path, value })
+    }
+
+    fn merge_binding_nodes(
+        &mut self,
+        existing: NodeId,
+        incoming: NodeId,
+    ) -> Result<NodeId, ParseError> {
+        let existing_node = self.node(existing)?;
+        let incoming_node = self.node(incoming)?;
+        let NodeData::Binding {
+            path,
+            value: existing_value,
+        } = existing_node.data
+        else {
+            return Ok(incoming);
+        };
+        let NodeData::Binding {
+            value: incoming_value,
+            ..
+        } = incoming_node.data
+        else {
+            return Ok(incoming);
+        };
+
+        let value =
+            self.merge_binding_values(existing_value, incoming_value, incoming_node.span)?;
+        self.push(
+            NodeKind::Binding,
+            self.join_span(existing_node.span, incoming_node.span),
+            NodeData::Binding { path, value },
+        )
+    }
+
+    fn merge_binding_values(
+        &mut self,
+        existing: NodeId,
+        incoming: NodeId,
+        conflict_span: Span,
+    ) -> Result<NodeId, ParseError> {
+        let existing_node = self.node(existing)?;
+        let incoming_node = self.node(incoming)?;
+        if !Self::is_attrset_kind(existing_node.kind) || !Self::is_attrset_kind(incoming_node.kind)
+        {
+            return Err(self.error_at(conflict_span, ParseErrorKind::DuplicateAttribute));
+        }
+
+        let NodeData::Children(existing_bindings) = existing_node.data else {
+            return Err(self.error_at(existing_node.span, ParseErrorKind::InvalidBindingPath));
+        };
+        let NodeData::Children(incoming_bindings) = incoming_node.data else {
+            return Err(self.error_at(incoming_node.span, ParseErrorKind::InvalidBindingPath));
+        };
+
+        let mut bindings = self.child_ids(existing_bindings)?;
+        bindings.extend(self.child_ids(incoming_bindings)?);
+        let bindings = self.normalize_bindings(bindings)?;
+        let bindings = self.push_child_slice(&bindings)?;
+        // Nix preserves the first attrset's recursive/plain scope when later
+        // bindings merge into the same prefix.
+        self.push(
+            existing_node.kind,
+            self.join_span(existing_node.span, incoming_node.span),
+            NodeData::Children(bindings),
+        )
+    }
+
+    fn binding_target_symbol(&self, binding: NodeId) -> Result<Option<Symbol>, ParseError> {
+        let node = self.node(binding)?;
+        let NodeData::Binding { path, .. } = node.data else {
+            return Ok(None);
+        };
+        let Some(segment) = self.child_ids(path)?.first().copied() else {
+            return Ok(None);
+        };
+        self.static_attr_symbol(segment)
+    }
+
+    fn static_attr_symbol(&self, node: NodeId) -> Result<Option<Symbol>, ParseError> {
+        let node = self.node(node)?;
+        match node.kind {
+            NodeKind::Ident | NodeKind::Str => self.symbol_payload(node).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    fn symbol_payload(&self, node: Node) -> Result<Symbol, ParseError> {
+        let NodeData::Symbol(symbol) = node.data else {
+            return Err(self.error_at(node.span, ParseErrorKind::InvalidBindingPath));
+        };
+        Ok(symbol)
+    }
+
+    fn is_attrset_kind(kind: NodeKind) -> bool {
+        matches!(kind, NodeKind::AttrSet | NodeKind::RecAttrSet)
     }
 
     fn parse_attr_segment(&mut self) -> Result<NodeId, ParseError> {
@@ -1076,6 +1236,23 @@ impl<'a> Parser<'a> {
     fn token_text(&self, token: Token) -> Result<&'a str, ParseError> {
         str::from_utf8(self.token_bytes(token)?)
             .map_err(|_| self.error_at(token.span, ParseErrorKind::InvalidUtf8Literal))
+    }
+
+    fn node(&self, node: NodeId) -> Result<Node, ParseError> {
+        self.arena.node(node).copied().ok_or_else(|| {
+            self.error_at(
+                Span::new(u32::MAX, u32::MAX),
+                ParseErrorKind::InvalidNodeId(node.as_u32()),
+            )
+        })
+    }
+
+    fn child_ids(&self, slice: ChildSlice) -> Result<Vec<NodeId>, ParseError> {
+        Ok(self
+            .arena
+            .child_slice(slice)
+            .map_err(ParseError::from_ast)?
+            .to_vec())
     }
 
     fn node_span(&self, node: NodeId) -> Result<Span, ParseError> {
@@ -1622,6 +1799,12 @@ pub enum ParseErrorKind {
         /// The operator spelling.
         operator: &'static str,
     },
+    /// A binding path could not be normalized into parser-side bindings.
+    #[error("invalid binding path")]
+    InvalidBindingPath,
+    /// Two bindings define the same non-mergeable attribute.
+    #[error("attribute already defined")]
+    DuplicateAttribute,
     /// A formal argument pattern violates Nix's shape restrictions.
     #[error("invalid formal argument pattern: {reason}")]
     InvalidFormalPattern {
@@ -1647,6 +1830,26 @@ mod tests {
             panic!("string node should carry a symbol");
         };
         ast.symbols.resolve(symbol).expect("string symbol resolves")
+    }
+
+    fn child_ids(ast: &ParsedAst, slice: ChildSlice) -> &[NodeId] {
+        ast.arena.child_slice(slice).expect("child slice exists")
+    }
+
+    fn binding_path_and_value(ast: &ParsedAst, binding: NodeId) -> (&[NodeId], NodeId) {
+        let NodeData::Binding { path, value } = node(ast, binding).data else {
+            panic!("binding payload expected");
+        };
+        (child_ids(ast, path), value)
+    }
+
+    fn binding_name<'a>(ast: &'a ParsedAst, binding: NodeId) -> &'a [u8] {
+        let (path, _) = binding_path_and_value(ast, binding);
+        assert_eq!(path.len(), 1);
+        let NodeData::Symbol(symbol) = node(ast, path[0]).data else {
+            panic!("binding path should carry a symbol");
+        };
+        ast.symbols.resolve(symbol).expect("symbol resolves")
     }
 
     #[test]
@@ -1814,6 +2017,75 @@ mod tests {
         assert_eq!(bindings.len(), 2);
         assert_eq!(node(&ast, bindings[0]).kind, NodeKind::Inherit);
         assert_eq!(node(&ast, bindings[1]).kind, NodeKind::Binding);
+    }
+
+    #[test]
+    fn merges_static_attr_path_bindings_into_nested_attrsets() {
+        let ast = parse("{ a.b = 1; a.c = 2; }");
+        let root = node(&ast, ast.root);
+        let NodeData::Children(bindings) = root.data else {
+            panic!("attrset children expected");
+        };
+        let bindings = child_ids(&ast, bindings);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(binding_name(&ast, bindings[0]), b"a");
+
+        let (_, nested) = binding_path_and_value(&ast, bindings[0]);
+        assert_eq!(node(&ast, nested).kind, NodeKind::AttrSet);
+        let NodeData::Children(nested_bindings) = node(&ast, nested).data else {
+            panic!("nested attrset children expected");
+        };
+        let nested_bindings = child_ids(&ast, nested_bindings);
+        assert_eq!(nested_bindings.len(), 2);
+        assert_eq!(binding_name(&ast, nested_bindings[0]), b"b");
+        assert_eq!(binding_name(&ast, nested_bindings[1]), b"c");
+    }
+
+    #[test]
+    fn attr_path_bindings_normalize_let_bindings_too() {
+        let ast = parse("let a.b = 1; a.c = 2; in a");
+        let NodeData::LetIn { bindings, .. } = node(&ast, ast.root).data else {
+            panic!("let-in payload expected");
+        };
+        let bindings = child_ids(&ast, bindings);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(binding_name(&ast, bindings[0]), b"a");
+    }
+
+    #[test]
+    fn attr_path_merging_uses_static_string_names() {
+        let ast = parse("{ \"a\".b = 1; a.c = 2; }");
+        let NodeData::Children(bindings) = node(&ast, ast.root).data else {
+            panic!("attrset children expected");
+        };
+        let bindings = child_ids(&ast, bindings);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(binding_name(&ast, bindings[0]), b"a");
+    }
+
+    #[test]
+    fn duplicate_static_attr_paths_are_parse_errors() {
+        for source in ["{ a.b = 1; a.b = 2; }", "{ a = 1; a.b = 2; }"] {
+            let error = parse_str(source).expect_err("duplicate attr path errors");
+            assert_eq!(error.kind(), &ParseErrorKind::DuplicateAttribute);
+        }
+    }
+
+    #[test]
+    fn attr_path_merging_preserves_first_attrset_recursiveness() {
+        let ast = parse("{ a = rec { c = c; }; a.b = 1; }");
+        let NodeData::Children(bindings) = node(&ast, ast.root).data else {
+            panic!("attrset children expected");
+        };
+        let (_, value) = binding_path_and_value(&ast, child_ids(&ast, bindings)[0]);
+        assert_eq!(node(&ast, value).kind, NodeKind::RecAttrSet);
+
+        let ast = parse("{ a.b = 1; a = rec { c = c; }; }");
+        let NodeData::Children(bindings) = node(&ast, ast.root).data else {
+            panic!("attrset children expected");
+        };
+        let (_, value) = binding_path_and_value(&ast, child_ids(&ast, bindings)[0]);
+        assert_eq!(node(&ast, value).kind, NodeKind::AttrSet);
     }
 
     #[test]
