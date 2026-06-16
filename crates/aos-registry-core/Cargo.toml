@@ -23,6 +23,7 @@ password-hash = { version = "0.5", features = ["getrandom"] }
 async-trait = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
+hmac = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
