@@ -55,8 +55,9 @@ reframes how the phases below are read:
   content-addressed, signed registry; getting them wrong is expensive to
   migrate. They land first and are then held invariant.
 - **Phase 3 is the single implementation gate.** The Decision 17 validation
-  spike (materialize `test-http-server` and `k3s` as per-unit sandboxed
-  services) must pass before Phases 4–7 build on the per-unit substrate. It is
+  spike (materialize the default `expose-minimal` proving package, the
+  side-effect `expose-smoke` package, and `k3s` as per-unit services) must pass
+  before Phases 4–7 build on the per-unit substrate. It is
   *validation* of a resolved direction, not an open decision.
 - **Every "needs verification" item in the set is collected in the
   [Needs-verification register](#needs-verification-register) below** and tagged
@@ -90,7 +91,7 @@ reframes how the phases below are read:
 | **P0** | Schema & policy foundation: registry metadata, policy file, `requires`, the fail-closed capability gate, the permission surface | — (do first) | D2, D12, D18, D19; D1(a) | ☑ |
 | **P1** | `expose` authoring + build-time renderer (eval-free artifacts via `passthru`) | P0 schema pinned | authoring.md mechanics | ☑ |
 | **P2** | Target sandbox + gated side-effect services + nftables reload coherence + eval assertion | P1 | D15; activation.md | ☑ |
-| **P3** | Per-unit sandboxing materialization + confinement label + **the Decision 17 validation spike** (the gate) | P1, P2 | D2, D4, D10, D17; D1(b) | ☐ |
+| **P3** | Per-unit sandboxing materialization + confinement label + **the Decision 17 validation spike** (the gate) | P1, P2 | D2, D4, D10, D17; D1(b) | ☑ |
 | **P4** | Preset enablement (image `disable *`; Ignition per-host preset; every-boot `aos-preset.service`) | P2 | D8 (enable half) | ☐ |
 | **P5** | `apm install` + install-at-boot + **declarative reconciliation (install + prune)** + upgrade/rollback + **layered config** (TPM2 creds / schema'd artifact / EnvironmentFile) + **hot-reload plumbing** | P3, P4 | D8 (install half), D9, D11, D16, D24, D25 | ☐ |
 | **P6** | Container roots (`RootDirectory=` store path) + the three network modes | P3 | D3, D5, D6 | ☐ |
@@ -254,22 +255,26 @@ approach against the two proving packages before anything builds on it.
 
 **Deliverables.**
 
-- [ ] **Manifest → directive materialization** (the P0 table), with the package
+- [x] **Manifest → directive materialization** (the P0 table), with the package
       root delivered as a **store path via `RootDirectory=`** (D5; no image, no
       loop device, no udev ordering). `ProtectSystem=strict` + `MountAPIVFS=` +
       `TemporaryFileSystem=` for scratch; persistent state in `StateDirectory=`.
-- [ ] **`kernel-modules` as an allowlisted, host-fulfilled permission (D2).**
+- [x] **`kernel-modules` as an allowlisted, host-fulfilled permission (D2).**
       `aos-pkg-<name>-modules.service` loads **only** modules in the host
       allowlist (D1(a)); admission fails clearly otherwise; kernel module-signing
       is the backstop. Non-reversibility (modules persist after stop) documented.
-- [ ] **Computed confinement label (D10).** `sandboxed` / `sandboxed-with-holes
+- [x] **Computed confinement label (D10).** `sandboxed` / `sandboxed-with-holes
       (<grants>)` / `unconfined`, derived by fixed rules, never authored.
       Root-equivalent grants force `unconfined` (`CAP_SYS_ADMIN`,
       `privileged-users`, rw `host-paths` into system locations). Surface in
-      `apm info <pkg> --permissions` and `aos describe <pkg>`.
-- [ ] **★ The Decision 17 validation spike (the gate).** Materialize
-      `test-http-server`'s empty manifest and k3s's manifest as per-unit services
-      and confirm all three:
+      `apm info <pkg> --permissions` for registry/install metadata published
+      with `apr publish --expose-manifest`, and in `aos describe <pkg>` from
+      local expose passthru metadata.
+- [x] **★ The Decision 17 validation spike (the gate).** Materialize
+      `expose-minimal`'s default manifest (the test-http-server-equivalent
+      proving package before the P7 role migration), `expose-smoke`'s
+      side-effect manifest, and k3s's manifest as per-unit services and confirm
+      all three:
       1. **teardown semantics** behave (start / inspect / stop) under the per-unit
          substrate;
       2. **the generated k3s unit matches today's working unit** — `KillMode=process`
@@ -279,17 +284,18 @@ approach against the two proving packages before anything builds on it.
       3. **the one flagged plumbing cost:** `network = "private"` *with outbound*
          needs a gated `aos-pkg-<n>-netns.service` oneshot (named netns + veth,
          `NetworkNamespacePath=`) — validate it works (D3).
-- [ ] **Per-unit lifecycle VM test (D4).** `RootDirectory=` + `PrivateUsers=` +
+- [x] **Per-unit lifecycle VM test (D4).** `RootDirectory=` + `PrivateUsers=` +
       `PrivateNetwork=` inside the VM harness; introspection via `systemctl` /
       `systemd-run` / `nsenter`, **not** `machinectl` (machined stays disabled,
-      D7). Helpers `vm.exec_in_container` / `vm.container_status` built on those.
+      D7). The lifecycle check exercises those paths directly.
 
 **Closes.** D17, D10, D2, D4; D1(b). **Unblocks Phases 4–7.**
 
 **EXIT CRITERIA.** The spike passes its three confirmations; the confinement
-label is correct for both packages (`sandboxed` for test-http-server,
-`unconfined` for k3s); the per-unit lifecycle VM test is green. Recorded in
-[`container-model.md`](container-model.md) §"Substrate decision".
+label is correct for the proving packages (`sandboxed` for the default
+`expose-minimal` package, `sandboxed` for `expose-smoke`'s host-fulfilled module
+load, and `unconfined` for k3s); the per-unit lifecycle VM test is green.
+Recorded in [`container-model.md`](container-model.md) §"Substrate decision".
 
 ---
 
@@ -673,9 +679,10 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
 - [x] **`CAP_SYS_MODULE` policy (P0/P3).** Confirm module loading is *always*
       host-side via `kernel-modules` and `CAP_SYS_MODULE` is never granted into a
       container (lean: always host-side).
-- [ ] **k3s strawman completeness (P3).** Desk-check against kind / k3d / Incus
-      requirement sets; the current strawman likely misses `/lib/modules` (ro) and
-      `/dev/fuse`.
+- [x] **k3s strawman completeness (P3).** Desk-check against kind / k3d / Incus
+      requirement sets; the package spike includes `/lib/modules` (ro),
+      `/dev/fuse`, `/dev/kmsg`, host networking, cgroup delegation, and the
+      host-fulfilled `br_netfilter` / `vxlan` / `ip_set` module loads.
 - [ ] **Re-confirm investigation-reported facts (all phases).** The
       machined/portabled/importd disable flags, the kernel namespace configs, and
       the exact `aos-seed-profiles` ordering were read once and should be

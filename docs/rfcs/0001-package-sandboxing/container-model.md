@@ -148,10 +148,12 @@ needs — `CONFIG_DM_VERITY`, `CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG`,
 (image build, signature chain, attestation) live in
 [attestation.md](attestation.md). Caveat: `RootImage=` is loop-device backed,
 auto-adds `After=systemd-udevd.service` (so not early-boot), and must **not** be
-combined with `PrivateDevices=yes`. The remaining spike is **validation, not
-decision input**: materialize `test-http-server`'s empty manifest and k3s's
-manifest as per-unit services and confirm teardown semantics and harness
-cost. Everything below specifies the **deferred nspawn materialization** —
+combined with `PrivateDevices=yes`. The P3 spike validated the decision by
+materializing `expose-minimal`'s default manifest (the
+test-http-server-equivalent proving package before the P7 role migration),
+`expose-smoke`'s side-effect manifest, and k3s's manifest as per-unit services,
+including teardown semantics and the private-outbound netns plumbing cost.
+Everything below specifies the **deferred nspawn materialization** —
 retained as the spec for if/when a package needs an init tree; the *boundary
 semantics* (what an empty manifest isolates, what a grant opens) stand either
 way.

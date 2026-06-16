@@ -219,42 +219,43 @@
     throwIfNot
     (builtins.isAttrs image)
     "expose.images entries must be attrsets"
-    (let
-      allowedImageKeys = [
-        "format"
-        "store_path"
-        "nar_hash"
-        "nar_size"
-        "sb_signer_cert_sha256"
-        "sbat"
-        "expected_pcr11"
-      ];
-      extraImageKeys = builtins.filter (
-        key: !(builtins.elem key allowedImageKeys)
-      ) (builtins.attrNames image);
-    in
-      throwIfNot
-      (extraImageKeys == [])
-      "expose.images entry contains unknown keys: ${builtins.concatStringsSep ", " extraImageKeys}"
-      (
+    (
+      let
+        allowedImageKeys = [
+          "format"
+          "store_path"
+          "nar_hash"
+          "nar_size"
+          "sb_signer_cert_sha256"
+          "sbat"
+          "expected_pcr11"
+        ];
+        extraImageKeys = builtins.filter (
+          key: !(builtins.elem key allowedImageKeys)
+        ) (builtins.attrNames image);
+      in
         throwIfNot
-        (image ? format && image ? store_path && image ? nar_hash && image ? nar_size)
-        "expose.images entries must include format, store_path, nar_hash, and nar_size"
+        (extraImageKeys == [])
+        "expose.images entry contains unknown keys: ${builtins.concatStringsSep ", " extraImageKeys}"
         (
           throwIfNot
-          (builtins.isString image.format && builtins.match kernelModuleType image.format != null)
-          "invalid expose image format '${builtins.toString image.format}'"
+          (image ? format && image ? store_path && image ? nar_hash && image ? nar_size)
+          "expose.images entries must include format, store_path, nar_hash, and nar_size"
           (
             throwIfNot
+            (builtins.isString image.format && builtins.match kernelModuleType image.format != null)
+            "invalid expose image format '${builtins.toString image.format}'"
             (
-              builtins.isString image.nar_hash
-              && (lib.hasPrefix "sha256:" image.nar_hash || lib.hasPrefix "sha256-" image.nar_hash)
+              throwIfNot
+              (
+                builtins.isString image.nar_hash
+                && (lib.hasPrefix "sha256:" image.nar_hash || lib.hasPrefix "sha256-" image.nar_hash)
+              )
+              "expose image '${builtins.toString image.store_path}' has invalid NAR hash"
+              (image // {store_path = validateAbsolutePath "image store path" image.store_path;})
             )
-            "expose image '${builtins.toString image.store_path}' has invalid NAR hash"
-            (image // {store_path = validateAbsolutePath "image store path" image.store_path;})
           )
         )
-      )
     );
 
   validatePermissions = packageName: permissions: let
@@ -496,14 +497,14 @@
     (violations == [])
     "mkDerivation expose.units.${unitName} for package '${packageName}' uses systemd privileged exec prefixes that bypass generated sandboxing: ${builtins.concatStringsSep ", " violations}"
     serviceConfig;
-
 in rec {
   assertNoGlobalScanDirStorage = packageName: storageLinks: let
-    violations = builtins.filter (
-      link:
-        builtins.any (prefix: lib.hasPrefix prefix link.path) forbiddenGlobalScanDirs
-    )
-    storageLinks;
+    violations =
+      builtins.filter (
+        link:
+          builtins.any (prefix: lib.hasPrefix prefix link.path) forbiddenGlobalScanDirs
+      )
+      storageLinks;
   in
     throwIfNot
     (violations == [])
@@ -544,10 +545,11 @@ in rec {
     sysctlUnit = "aos-pkg-${packageName}-sysctl.service";
     firewallUnit = "aos-pkg-${packageName}-firewall.service";
     netnsUnit = "aos-pkg-${packageName}-netns.service";
-    reservedCollisions = builtins.filter (
-      unit: builtins.elem unit authoredUnitNames
-    )
-    reservedUnitNames;
+    reservedCollisions =
+      builtins.filter (
+        unit: builtins.elem unit authoredUnitNames
+      )
+      reservedUnitNames;
     reservedUnitsAvailable =
       throwIfNot
       (reservedCollisions == [])
@@ -565,6 +567,19 @@ in rec {
     kernel = validateKernel (checkedExpose.kernel or {});
     firewall = validateFirewall (checkedExpose.firewall or {});
     network = permissions.network or "private";
+    legacyKernelModules = kernel.modules;
+    permissionKernelModules = permissions.kernel-modules or [];
+    sameKernelModules =
+      lib.sort builtins.lessThan legacyKernelModules
+      == lib.sort builtins.lessThan permissionKernelModules;
+    kernelModules =
+      if legacyKernelModules == []
+      then permissionKernelModules
+      else
+        throwIfNot
+        sameKernelModules
+        "mkDerivation expose for package '${packageName}' declares expose.kernel.modules that do not match permissions.kernel-modules; kernel module loads must be declared in the signed permissions manifest"
+        permissionKernelModules;
     sideEffectUnitNames =
       [modulesUnit sysctlUnit firewallUnit]
       ++ lib.optional (network == "private-outbound") netnsUnit;
@@ -575,11 +590,6 @@ in rec {
     cgroupDelegate = permissions.cgroup-delegate or false;
     privilegedUsers = permissions.privileged-users or false;
     syscallProfile = permissions.syscalls or "restricted";
-    manifestPermissions =
-      permissions
-      // {
-        security-label = permissions.security-label or "aos-pkg-${packageName}";
-      };
 
     rwHostPaths = builtins.filter (hostPath: hostPath.mode == "rw") hostPaths;
     rootEquivalent =
@@ -609,10 +619,16 @@ in rec {
       label = confinementLabel;
       holes = confinementHoles;
     };
-    readOnlyHostPaths =
-      builtins.map (hostPath: hostPath.path) (
-        builtins.filter (hostPath: hostPath.mode == "read-only") hostPaths
-      );
+    manifestKernel = kernel // {modules = kernelModules;};
+    manifestPermissions =
+      permissions
+      // {
+        security-label = permissions.security-label or "aos-pkg-${packageName}";
+        inherit confinement;
+      };
+    readOnlyHostPaths = builtins.map (hostPath: hostPath.path) (
+      builtins.filter (hostPath: hostPath.mode == "read-only") hostPaths
+    );
     readWriteHostPaths =
       builtins.map (hostPath: hostPath.path) rwHostPaths;
     deviceAllows = builtins.map (device: "${device} rwm") devices;
@@ -621,11 +637,10 @@ in rec {
       (drv != null)
       "mkDerivation expose for package '${packageName}' needs the payload derivation to render RootDirectory"
       drv;
-    addressFamilies =
-      uniqueUnits (
-        ["AF_UNIX" "AF_INET" "AF_INET6"]
-        ++ lib.optional (network == "host" || builtins.elem "CAP_NET_ADMIN" capabilities) "AF_NETLINK"
-      );
+    addressFamilies = uniqueUnits (
+      ["AF_UNIX" "AF_INET" "AF_INET6"]
+      ++ lib.optional (network == "host" || builtins.elem "CAP_NET_ADMIN" capabilities) "AF_NETLINK"
+    );
     netnsHash = builtins.substring 0 8 (builtins.hashString "sha256" packageName);
     netnsName = "aos-pkg-${packageName}";
     netnsHostIf = "aos${netnsHash}h";
@@ -706,9 +721,9 @@ in rec {
 
     trueCommand = "${pkgs.coreutils}/bin/true";
     moduleCommand =
-      if kernel.modules == []
+      if kernelModules == []
       then trueCommand
-      else "${pkgs.kmod}/sbin/modprobe -a ${builtins.concatStringsSep " " kernel.modules}";
+      else "${pkgs.kmod}/sbin/modprobe -a ${builtins.concatStringsSep " " kernelModules}";
     sysctlAssignments =
       lib.mapAttrsToList (key: value: "${key}=${value}") kernel.sysctl;
     sysctlCommand =
@@ -747,9 +762,11 @@ in rec {
       "aos-pkg-${packageName}-firewall-forward-stop"
       forwardDeleteScript;
     forwardDeleteCommand = "${forwardDeleteTool}/bin/aos-pkg-${packageName}-firewall-forward-stop";
-    forwardAddScript = forwardDeleteScript + ''
-      ${nft} add rule inet filter forward accept comment ${lib.escapeShellArg forwardComment}
-    '';
+    forwardAddScript =
+      forwardDeleteScript
+      + ''
+        ${nft} add rule inet filter forward accept comment ${lib.escapeShellArg forwardComment}
+      '';
     forwardAddTool =
       pkgs.writeShellScriptBin
       "aos-pkg-${packageName}-firewall-forward-start"
@@ -972,17 +989,16 @@ in rec {
           };
         };
       };
-    synthesizedUnits =
-      builtins.seq reservedUnitsAvailable (
-        builtins.mapAttrs addTargetMembership units
-        // sideEffectUnits
-        // {
-          "${target}" = {
-            description = "Activation target for ${packageName}";
-            wants = uniqueUnits memberUnitNames;
-          };
-        }
-      );
+    synthesizedUnits = builtins.seq reservedUnitsAvailable (
+      builtins.mapAttrs addTargetMembership units
+      // sideEffectUnits
+      // {
+        "${target}" = {
+          description = "Activation target for ${packageName}";
+          wants = uniqueUnits memberUnitNames;
+        };
+      }
+    );
     typedSystemd = validateTypedUnits synthesizedUnits;
     renderedUnitNames = unitNamesFromTypedSystemd typedSystemd;
     manifestUnitNames =
@@ -1001,7 +1017,8 @@ in rec {
         inherit target requires images;
         units = manifestUnitNames;
       };
-      inherit kernel firewall;
+      kernel = manifestKernel;
+      inherit firewall;
       inherit confinement;
       permissions = manifestPermissions;
     };
@@ -1013,6 +1030,10 @@ in rec {
       pkgs.runCommand "expose-${packageName}" {
         unitsDrv = rendered.unitsDrv;
         manifest = builtins.toJSON manifest;
+        passthru = {
+          inherit manifest confinement;
+          permissions = manifestPermissions;
+        };
         passAsFile = ["manifest"];
         preferLocalBuild = true;
         allowSubstitutes = false;

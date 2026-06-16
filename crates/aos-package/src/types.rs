@@ -47,6 +47,10 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_REQUIRES_V1,
 ];
 
+const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
+    "/boot", "/etc", "/lib", "/lib64", "/nix", "/sbin", "/usr", "/var",
+];
+
 // ---------------------------------------------------------------------------
 // Well-known paths
 // ---------------------------------------------------------------------------
@@ -579,6 +583,9 @@ pub struct PermissionsMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub security_label: Option<String>,
+    /// Computed package confinement summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confinement: Option<ConfinementMeta>,
 }
 
 impl PermissionsMeta {
@@ -593,6 +600,127 @@ impl PermissionsMeta {
             && self.kernel_modules.is_empty()
             && self.syscalls.is_none()
             && self.security_label.is_none()
+            && self.confinement.is_none()
+    }
+
+    /// Returns whether the manifest requests host-policy-admitted grants.
+    pub fn requires_policy_admission(&self) -> bool {
+        self.network
+            .is_some_and(|network| network != NetworkPermission::Private)
+            || !self.capabilities.is_empty()
+            || !self.devices.is_empty()
+            || !self.host_paths.is_empty()
+            || self.cgroup_delegate
+            || self.privileged_users
+            || !self.kernel_modules.is_empty()
+            || self
+                .syscalls
+                .is_some_and(|syscalls| syscalls != SyscallProfile::Restricted)
+    }
+
+    /// Returns whether this manifest needs host policy for a package name.
+    pub fn requires_policy_admission_for_package(&self, package_name: &str) -> bool {
+        self.requires_policy_admission()
+            || self
+                .security_label
+                .as_ref()
+                .is_some_and(|label| label != &format!("aos-pkg-{package_name}"))
+    }
+
+    /// Computes the RFC-0001 confinement summary from permission grants.
+    pub fn computed_confinement(&self) -> ConfinementMeta {
+        let network = self.network.unwrap_or(NetworkPermission::Private);
+        let syscall_profile = self.syscalls.unwrap_or(SyscallProfile::Restricted);
+        let mut holes = Vec::new();
+
+        if network != NetworkPermission::Private {
+            holes.push(format!("network:{}", network.as_manifest_str()));
+        }
+        holes.extend(
+            self.capabilities
+                .iter()
+                .map(|capability| format!("capability:{capability}")),
+        );
+        holes.extend(self.devices.iter().map(|device| format!("device:{device}")));
+        holes.extend(self.host_paths.iter().map(|host_path| {
+            format!(
+                "host-path:{}:{}",
+                host_path.mode.as_manifest_str(),
+                host_path.path
+            )
+        }));
+        if self.cgroup_delegate {
+            holes.push("cgroup-delegate".into());
+        }
+        if self.privileged_users {
+            holes.push("privileged-users".into());
+        }
+        if syscall_profile != SyscallProfile::Restricted {
+            holes.push(format!("syscalls:{}", syscall_profile.as_manifest_str()));
+        }
+
+        let root_equivalent = self
+            .capabilities
+            .iter()
+            .any(|capability| capability == "CAP_SYS_ADMIN")
+            || self.privileged_users
+            || self.host_paths.iter().any(|host_path| {
+                host_path.mode == HostPathMode::Rw && has_system_location_prefix(&host_path.path)
+            });
+
+        let class = if root_equivalent {
+            ConfinementClass::Unconfined
+        } else if holes.is_empty() {
+            ConfinementClass::Sandboxed
+        } else {
+            ConfinementClass::SandboxedWithHoles
+        };
+        let label = if class == ConfinementClass::SandboxedWithHoles {
+            format!("sandboxed-with-holes ({})", holes.join(", "))
+        } else {
+            class.as_manifest_str().to_string()
+        };
+
+        ConfinementMeta {
+            class,
+            label,
+            holes,
+        }
+    }
+}
+
+/// Computed RFC-0001 package confinement summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfinementMeta {
+    /// Coarse confinement class computed from generated unit permissions.
+    pub class: ConfinementClass,
+    /// Human-readable confinement label shown by package tools.
+    pub label: String,
+    /// Permission holes that prevent the package from being fully sandboxed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holes: Vec<String>,
+}
+
+/// Coarse RFC-0001 package confinement class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConfinementClass {
+    /// Generated units have the default sandbox and no explicit holes.
+    Sandboxed,
+    /// Generated units keep the default sandbox but include explicit holes.
+    SandboxedWithHoles,
+    /// Generated units request root-equivalent or host-level privileges.
+    Unconfined,
+}
+
+impl ConfinementClass {
+    fn as_manifest_str(self) -> &'static str {
+        match self {
+            ConfinementClass::Sandboxed => "sandboxed",
+            ConfinementClass::SandboxedWithHoles => "sandboxed-with-holes",
+            ConfinementClass::Unconfined => "unconfined",
+        }
     }
 }
 
@@ -606,6 +734,16 @@ pub enum NetworkPermission {
     PrivateOutbound,
     /// Host network namespace.
     Host,
+}
+
+impl NetworkPermission {
+    fn as_manifest_str(self) -> &'static str {
+        match self {
+            NetworkPermission::Private => "private",
+            NetworkPermission::PrivateOutbound => "private-outbound",
+            NetworkPermission::Host => "host",
+        }
+    }
 }
 
 /// Host path permission requested by a package.
@@ -628,6 +766,15 @@ pub enum HostPathMode {
     Rw,
 }
 
+impl HostPathMode {
+    fn as_manifest_str(self) -> &'static str {
+        match self {
+            HostPathMode::ReadOnly => "read-only",
+            HostPathMode::Rw => "rw",
+        }
+    }
+}
+
 /// Named syscall profile pinned to systemd syscall groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -638,6 +785,16 @@ pub enum SyscallProfile {
     SystemService,
     /// Privileged syscall profile for infrastructure packages.
     Privileged,
+}
+
+impl SyscallProfile {
+    fn as_manifest_str(self) -> &'static str {
+        match self {
+            SyscallProfile::Restricted => "restricted",
+            SyscallProfile::SystemService => "system-service",
+            SyscallProfile::Privileged => "privileged",
+        }
+    }
 }
 
 /// Named host policy tier for RFC-0001 permission admission.
@@ -788,6 +945,21 @@ pub fn validate_permissions_meta(package_name: &str, permissions: &PermissionsMe
     if let Some(label) = &permissions.security_label {
         validate_security_label(label)?;
     }
+    if let Some(confinement) = &permissions.confinement {
+        validate_confinement_meta(confinement)?;
+        let computed = permissions.computed_confinement();
+        if confinement != &computed {
+            bail!(
+                "package '{package_name}' permissions.confinement does not match computed confinement: expected class {:?}, label '{}', holes {:?}; got class {:?}, label '{}', holes {:?}",
+                computed.class,
+                computed.label,
+                computed.holes,
+                confinement.class,
+                confinement.label,
+                confinement.holes
+            );
+        }
+    }
     Ok(())
 }
 
@@ -877,6 +1049,27 @@ pub(crate) fn validate_security_label(label: &str) -> Result<()> {
         bail!("invalid security label '{label}'");
     }
     Ok(())
+}
+
+fn validate_confinement_meta(confinement: &ConfinementMeta) -> Result<()> {
+    validate_display_ascii("confinement label", &confinement.label)?;
+    for hole in &confinement.holes {
+        validate_display_ascii("confinement hole", hole)?;
+    }
+    Ok(())
+}
+
+fn validate_display_ascii(kind: &str, value: &str) -> Result<()> {
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ') {
+        bail!("invalid {kind} '{value}'");
+    }
+    Ok(())
+}
+
+fn has_system_location_prefix(path: &str) -> bool {
+    SYSTEM_LOCATION_PREFIXES
+        .iter()
+        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
 }
 
 // ---------------------------------------------------------------------------
@@ -2405,6 +2598,17 @@ last_update = "2026-02-13T10:30:00Z"
                     mode: HostPathMode::ReadOnly,
                 }],
                 syscalls: Some(SyscallProfile::SystemService),
+                confinement: Some(ConfinementMeta {
+                    class: ConfinementClass::SandboxedWithHoles,
+                    label: "sandboxed-with-holes (network:private-outbound, capability:CAP_NET_BIND_SERVICE, host-path:read-only:/srv/webapp, syscalls:system-service)"
+                        .into(),
+                    holes: vec![
+                        "network:private-outbound".into(),
+                        "capability:CAP_NET_BIND_SERVICE".into(),
+                        "host-path:read-only:/srv/webapp".into(),
+                        "syscalls:system-service".into(),
+                    ],
+                }),
                 ..PermissionsMeta::default()
             },
         };
@@ -2450,6 +2654,51 @@ last_update = "2026-02-13T10:30:00Z"
         let err =
             validate_supported_package_meta_with(&meta, PACKAGE_META_FORMAT, &[]).unwrap_err();
         assert!(err.to_string().contains(FEATURE_PERMISSIONS_V1));
+    }
+
+    #[test]
+    fn package_meta_rejects_mismatched_confinement() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_PERMISSIONS_V1.into()],
+            expose: None,
+            permissions: PermissionsMeta {
+                network: Some(NetworkPermission::Host),
+                confinement: Some(ConfinementMeta {
+                    class: ConfinementClass::Sandboxed,
+                    label: "sandboxed".into(),
+                    holes: Vec::new(),
+                }),
+                ..PermissionsMeta::default()
+            },
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("permissions.confinement does not match computed confinement"),
+            "got: {err}"
+        );
+
+        meta.permissions.confinement = Some(meta.permissions.computed_confinement());
+        validate_supported_package_meta(&meta).unwrap();
     }
 
     // -----------------------------------------------------------------------
