@@ -473,7 +473,9 @@ dependencies = [
  "connectrpc",
  "http 1.4.1",
  "prost",
+ "reqwest",
  "rustls-native-certs",
+ "serde",
  "webpki-roots",
 ]
 

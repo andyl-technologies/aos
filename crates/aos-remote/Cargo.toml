@@ -12,3 +12,7 @@ http = { workspace = true }
 prost = { workspace = true }
 webpki-roots = { workspace = true }
 rustls-native-certs = { workspace = true }
+# REST client for the hub's `POST /oauth2/token` exchange (the provisioning
+# secret -> JWT login), which is a plain JSON endpoint, not a ConnectRPC service.
+reqwest = { workspace = true }
+serde = { workspace = true }

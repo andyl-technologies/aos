@@ -2,10 +2,11 @@
 //!
 //! These subcommands interact with a running `aos-registry-hub` purely through
 //! its public ConnectRPC API (RFC-0004), never by touching the hub's database
-//! directly. Public browse reads (registries, releases, packages, channels) run
-//! anonymously; tenancy and audit reads (orgs, projects, bindings, audit,
-//! change-sets) take a `--token` hub access JWT. Write operations are layered on
-//! in later RFC-0004 Phase 5 increments.
+//! directly. `login` exchanges a provisioning secret for that JWT. Public browse
+//! reads (registries, releases, packages, channels) run anonymously; tenancy and
+//! audit reads (orgs, projects, bindings, audit, change-sets) take a `--token`
+//! hub access JWT. Write operations are layered on in later RFC-0004 Phase 5
+//! increments.
 //!
 //! Doc comments here are clap `--help` text; the implementation lives in
 //! `commands::hub`, which drives `aos_remote::RegistryHubClient`.
@@ -14,6 +15,15 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum HubCmd {
+    /// Exchange a provisioning secret for a hub access JWT
+    Login {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// The `aos_`-prefixed provisioning secret to exchange
+        #[arg(long)]
+        provisioning_token: String,
+    },
     /// Inspect registries on a hub
     Registry {
         #[command(subcommand)]

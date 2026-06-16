@@ -25,8 +25,12 @@ pub mod client;
 /// `aos hub …` CLI subcommands.
 pub mod hub;
 
+/// The hub's REST `POST /oauth2/token` login exchange (provisioning secret -> JWT).
+pub mod login;
+
 pub use client::AosClient;
 pub use hub::RegistryHubClient;
+pub use login::{exchange_token, TokenGrant};
 
 // Re-export proto types that consumers need.
 pub use aos_proto::aos::build::v1::BuildEvent;
