@@ -162,99 +162,11 @@ fn parse_role_map(json: &str) -> BTreeMap<String, Role> {
         .collect()
 }
 
-/// Seals and unseals client secrets at rest.
-///
-/// The hub stores OIDC client secrets *sealed* and unseals them only at the
-/// instant of the token exchange. Production uses
-/// [`AesGcmSealer`](crate::auth::seal::AesGcmSealer); the placeholder
-/// [`XorSealer`] is reachable only under `--dev` and in tests.
-pub trait SecretSealer: Send + Sync {
-    /// Seals a plaintext secret into the at-rest form stored in
-    /// `org_idp_configs.client_secret_enc`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if sealing fails (never, for [`XorSealer`]).
-    fn seal(&self, plaintext: &str) -> Result<String>;
-
-    /// Unseals an at-rest secret back to plaintext.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the sealed value is malformed or cannot be
-    /// unsealed.
-    fn unseal(&self, sealed: &str) -> Result<String>;
-}
-
-/// A **placeholder** [`SecretSealer`]: XOR with an instance key, base64url.
-///
-/// # ⚠️ Not real encryption
-///
-/// This is **not** confidentiality-grade. XOR with a repeating key is trivially
-/// reversible by anyone who can read both the database and the instance key,
-/// and offers no integrity. It exists only so phase 3d can store client
-/// secrets in a *non-plaintext* form behind the [`SecretSealer`] seam. It is
-/// now **test/dev-only**: production `serve` uses
-/// [`AesGcmSealer`](crate::auth::seal::AesGcmSealer) instead, and `XorSealer`
-/// is reachable only under `--dev` (where reproducibility, not confidentiality,
-/// is the goal) and in tests via [`dev_sealer`].
-#[derive(Debug, Clone)]
-pub struct XorSealer {
-    key: Vec<u8>,
-}
-
-impl XorSealer {
-    /// Builds a placeholder sealer from an instance key.
-    ///
-    /// The key should be high-entropy and at least a few bytes; an empty key
-    /// is rejected so a misconfiguration cannot produce a no-op "seal".
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `key` is empty.
-    pub fn new(key: &[u8]) -> Result<XorSealer> {
-        if key.is_empty() {
-            bail!("XorSealer instance key must not be empty");
-        }
-        Ok(XorSealer { key: key.to_vec() })
-    }
-
-    fn xor(&self, bytes: &[u8]) -> Vec<u8> {
-        bytes
-            .iter()
-            .enumerate()
-            .map(|(i, b)| b ^ self.key[i % self.key.len()])
-            .collect()
-    }
-}
-
-impl SecretSealer for XorSealer {
-    fn seal(&self, plaintext: &str) -> Result<String> {
-        Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(self.xor(plaintext.as_bytes())))
-    }
-
-    fn unseal(&self, sealed: &str) -> Result<String> {
-        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(sealed)
-            .context("decoding sealed client secret")?;
-        String::from_utf8(self.xor(&bytes)).context("unsealed client secret is not valid UTF-8")
-    }
-}
-
-/// The fixed instance key the dev/test placeholder sealer uses.
-const DEV_SEALER_KEY: &[u8] = b"aos-hub-dev-instance-key";
-
-/// Builds the placeholder [`XorSealer`] used in dev mode and tests.
-///
-/// Uses a fixed non-empty instance key, so construction is infallible and no
-/// panic path is introduced. **Never** use this in production — see
-/// [`XorSealer`] for the (large) caveat.
-#[must_use]
-pub fn dev_sealer() -> std::sync::Arc<dyn SecretSealer> {
-    std::sync::Arc::new(XorSealer {
-        key: DEV_SEALER_KEY.to_vec(),
-    })
-}
+// The secret-sealing crypto moved to aos-registry-core (RFC-0004 Phase 5) so the
+// Worker shares it; re-exported here so `crate::auth::oidc::{SecretSealer,
+// XorSealer, dev_sealer}` paths are unchanged. The canonical home is now
+// `crate::auth::seal`.
+pub use aos_registry_core::auth::seal::{dev_sealer, SecretSealer, XorSealer};
 
 /// A redirect to the IdP's authorization endpoint.
 #[derive(Debug, Clone)]
@@ -711,22 +623,6 @@ mod tests {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
         assert_ne!(a, new_code_verifier());
-    }
-
-    #[test]
-    fn xor_sealer_roundtrips() {
-        let sealer = XorSealer::new(b"instance-key-0123456789").unwrap();
-        let sealed = sealer.seal("super-secret-client-secret").unwrap();
-        assert_ne!(sealed, "super-secret-client-secret");
-        assert_eq!(
-            sealer.unseal(&sealed).unwrap(),
-            "super-secret-client-secret"
-        );
-    }
-
-    #[test]
-    fn xor_sealer_rejects_empty_key() {
-        assert!(XorSealer::new(b"").is_err());
     }
 
     #[test]

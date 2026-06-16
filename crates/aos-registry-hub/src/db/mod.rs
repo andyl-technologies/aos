@@ -246,7 +246,7 @@
 //!                       hosted_key_id = 1   -- NULL = BYO-key (the default)
 //! ```
 //!
-//! The seed is held **sealed** by a [`crate::auth::oidc::SecretSealer`] and
+//! The seed is held **sealed** by a [`crate::auth::seal::SecretSealer`] and
 //! unsealed only at the instant of a signature
 //! ([`Database::load_hosted_signing_key`]). The `public_key` is the
 //! registry trusted-key line operators pin as a trust anchor, so the hub's
@@ -703,7 +703,7 @@ const MIGRATIONS: &[&str] = &[
     //
     // - org_idp_configs: one IdP per org. The authorization-code + PKCE
     //   endpoints, client id, and the sealed client secret (client_secret_enc;
-    //   see crate::auth::oidc::SecretSealer), plus the groups->role mapping
+    //   see crate::auth::seal::SecretSealer), plus the groups->role mapping
     //   (role_map_json) re-evaluated on every SSO login, and the enforce_sso /
     //   allow_jit policy flags. Encrypted at rest; the column never holds the
     //   plaintext secret.
@@ -1233,7 +1233,7 @@ pub struct InvitationRecord {
 ///
 /// Mirrors the `org_idp_configs` row one-to-one. The client secret is held
 /// **sealed** in [`IdpConfigRecord::client_secret_enc`]; unseal it through a
-/// [`crate::auth::oidc::SecretSealer`] only at the moment of the token
+/// [`crate::auth::seal::SecretSealer`] only at the moment of the token
 /// exchange, never store or log the plaintext.
 #[derive(Debug, Clone)]
 pub struct IdpConfigRecord {
@@ -1251,7 +1251,7 @@ pub struct IdpConfigRecord {
     pub client_id: String,
     /// The sealed client secret, or `None` for a public client.
     ///
-    /// Sealed by a [`crate::auth::oidc::SecretSealer`]; never the plaintext.
+    /// Sealed by a [`crate::auth::seal::SecretSealer`]; never the plaintext.
     pub client_secret_enc: Option<String>,
     /// The space-separated scope string requested at authorization.
     pub scopes: String,
@@ -4881,7 +4881,7 @@ impl Database {
     /// when sealing fails, or on database failure.
     pub async fn create_hosted_key(
         &self,
-        sealer: &dyn crate::auth::oidc::SecretSealer,
+        sealer: &dyn crate::auth::seal::SecretSealer,
         org_id: i64,
         key_id: &str,
     ) -> Result<String> {
@@ -4977,7 +4977,7 @@ impl Database {
     /// failure.
     pub async fn load_hosted_signing_key(
         &self,
-        sealer: &dyn crate::auth::oidc::SecretSealer,
+        sealer: &dyn crate::auth::seal::SecretSealer,
         id: i64,
     ) -> Result<(String, ed25519_dalek::SigningKey, String)> {
         let record = self
@@ -5352,7 +5352,7 @@ impl Database {
     /// mismatch).
     pub async fn get_or_create_draft_signing_key(
         &self,
-        sealer: &dyn crate::auth::oidc::SecretSealer,
+        sealer: &dyn crate::auth::seal::SecretSealer,
     ) -> Result<(ed25519_dalek::SigningKey, String)> {
         let seed: [u8; 32] = match self.instance_config_get(Self::DRAFT_SIGNING_KEY).await? {
             Some(sealed) => {
@@ -6706,7 +6706,7 @@ impl Database {
     ///
     /// One IdP per org (the `org_id` primary key); re-calling overwrites the
     /// existing configuration and bumps `updated_at`. `client_secret_enc`
-    /// must already be **sealed** by a [`crate::auth::oidc::SecretSealer`] —
+    /// must already be **sealed** by a [`crate::auth::seal::SecretSealer`] —
     /// this method stores the value verbatim and never sees the plaintext.
     ///
     /// # Errors
@@ -8990,7 +8990,7 @@ mod tests {
     #[tokio::test]
     async fn draft_signing_key_is_generated_once_and_persists() {
         let db = Database::open_in_memory().await.unwrap();
-        let sealer = crate::auth::oidc::dev_sealer();
+        let sealer = crate::auth::seal::dev_sealer();
         let (key1, line1) = db
             .get_or_create_draft_signing_key(sealer.as_ref())
             .await

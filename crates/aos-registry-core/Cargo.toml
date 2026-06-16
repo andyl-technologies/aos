@@ -5,8 +5,10 @@ edition = "2021"
 description = "Runtime-agnostic core of the AOS registry hub (RFC-0004 Phase 5): the async database backend abstraction, SQL dialect translation, and value/row marshalling shared by the native hub and the Cloudflare Worker — compiles to wasm32"
 
 [dependencies]
+aes-gcm = { workspace = true }
 anyhow = { workspace = true }
 argon2 = { workspace = true }
+base64 = { workspace = true }
 # argon2 re-exports `password_hash::rand_core::OsRng` only when password-hash's
 # `getrandom` feature is on (the native build picks it up via workspace feature
 # unification; the standalone wasm build of this crate does not, so enable it
