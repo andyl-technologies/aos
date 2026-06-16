@@ -41,17 +41,33 @@
     gzip = bootstrap.gzip;
   };
 
+  lib = import ../../../lib {
+    system = buildPlatform.system;
+    bash = prev.bash;
+  };
+
+  phases = import ../../phases.nix;
+
+  mkTierStdenv = import ../../tier-stdenv.nix {
+    inherit
+      lib
+      buildPlatform
+      hostPlatform
+      targetPlatform
+      ;
+  };
+
   # callPackage: import a file, auto-fill `prev` and platform attrs, pass `this`
   # for intra-tier references, plus any overrides.
   callPackage = path: overrides: let
     fn = import path;
+    auto = builtins.intersectAttrs (builtins.functionArgs fn) this;
   in
     fn (
       {
-        inherit prev;
-        inherit this;
-        inherit buildPlatform hostPlatform targetPlatform;
+        inherit prev this buildPlatform hostPlatform targetPlatform;
       }
+      // auto
       // overrides
     );
 
@@ -59,6 +75,13 @@
   # Phase 1-3 tools can reference each other; Phase 4-5 tools reference
   # earlier phases through `this`.
   this = {
+    inherit
+      prev
+      buildPlatform
+      hostPlatform
+      targetPlatform
+      ;
+
     # Phase 1: GCC 3.4.6
     gcc = callPackage ./gcc.nix {};
 
@@ -69,20 +92,87 @@
     linuxHeaders = callPackage ./linux-headers.nix {};
     glibc = callPackage ./glibc.nix {};
 
+    # Phase 4 still needs bootstrap tar/gzip to unpack and build the first
+    # rebuilt tar/gzip pair. Phase 5 can then use this tier's tar/gzip.
+    phase4Stdenv = mkTierStdenv {
+      tc = {
+        inherit (this) gcc binutils glibc;
+        inherit
+          (prev)
+          bash
+          coreutils
+          gnumake
+          sed
+          grep
+          gawk
+          findutils
+          tar
+          gzip
+          diffutils
+          patch
+          ;
+      };
+      staticDefault = true;
+    };
+
+    phase5Stdenv = mkTierStdenv {
+      tc = {
+        inherit (this) gcc binutils glibc tar gzip;
+        inherit
+          (prev)
+          bash
+          coreutils
+          gnumake
+          sed
+          grep
+          gawk
+          findutils
+          diffutils
+          patch
+          ;
+      };
+      staticDefault = true;
+    };
+
+    mkPhase4Tool = import ../lib/mk-autotools-tool.nix {
+      inherit
+        lib
+        phases
+        buildPlatform
+        hostPlatform
+        ;
+      tierStdenv = this.phase4Stdenv;
+    };
+
+    mkPhase5Tool = import ../lib/mk-autotools-tool.nix {
+      inherit
+        lib
+        phases
+        buildPlatform
+        hostPlatform
+        ;
+      tierStdenv = this.phase5Stdenv;
+    };
+
+    manifest = import ./manifest.nix {
+      inherit buildPlatform hostPlatform;
+      inherit (this) gcc binutils glibc;
+    };
+
     # Phase 4: tar + gzip (enables tarball extraction)
-    tar = callPackage ./tar.nix {};
-    gzip = callPackage ./gzip.nix {};
+    tar = this.mkPhase4Tool this.manifest.tar;
+    gzip = this.mkPhase4Tool this.manifest.gzip;
 
     # Phase 5: all remaining POSIX tools
-    bash = callPackage ./bash.nix {};
-    coreutils = callPackage ./coreutils.nix {};
-    gnumake = callPackage ./gnumake.nix {};
-    sed = callPackage ./sed.nix {};
-    grep = callPackage ./grep.nix {};
-    gawk = callPackage ./gawk.nix {};
-    findutils = callPackage ./findutils.nix {};
-    diffutils = callPackage ./diffutils.nix {};
-    patch = callPackage ./patch.nix {};
+    bash = this.mkPhase5Tool this.manifest.bash;
+    coreutils = this.mkPhase5Tool this.manifest.coreutils;
+    gnumake = this.mkPhase5Tool this.manifest.gnumake;
+    sed = this.mkPhase5Tool this.manifest.sed;
+    grep = this.mkPhase5Tool this.manifest.grep;
+    gawk = this.mkPhase5Tool this.manifest.gawk;
+    findutils = this.mkPhase5Tool this.manifest.findutils;
+    diffutils = this.mkPhase5Tool this.manifest.diffutils;
+    patch = this.mkPhase5Tool this.manifest.patch;
   };
 in
   # Export complete toolchain with unversioned names
