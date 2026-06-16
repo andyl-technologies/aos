@@ -3,11 +3,11 @@
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
 //! first slices evaluate scalar and list literals, boolean control flow,
 //! assertions, boolean operators, string literals and concatenation, list-spine
-//! concatenation, non-recursive static attribute-set literals, static attribute
-//! selection, lexical `let` environments, thunk forcing, numeric arithmetic,
-//! numeric and string comparisons, and scalar/string equality to weak head
-//! normal form, establishing the arena access and diagnostic surface used by
-//! later slices for functions, dynamic/recursive attribute sets, primitive
+//! concatenation, static and recursive static attribute-set literals, static
+//! attribute selection, lexical `let` environments, thunk forcing, numeric
+//! arithmetic, numeric and string comparisons, and scalar/string equality to
+//! weak head normal form, establishing the arena access and diagnostic surface
+//! used by later slices for functions, dynamic attribute sets, primitive
 //! operations, and derivation boundaries.
 
 use std::rc::Rc;
@@ -690,12 +690,12 @@ impl<'ir> TreeWalk<'ir> {
             bindings,
             recursive,
             has_dynamic,
-            ..
+            frame,
         } = node.data
         else {
             return Err(self.invalid_payload(id, node, "attrset payload"));
         };
-        if recursive || has_dynamic {
+        if has_dynamic {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedAttrSetForm {
                     id,
@@ -726,6 +726,30 @@ impl<'ir> TreeWalk<'ir> {
                 node.span,
             )?;
         }
+        let frame_values = if recursive {
+            let Some(frame) = frame else {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::MissingFrameMetadata { id },
+                    node.span,
+                ));
+            };
+            let slot_count = self.frame_info(id, frame, node.span)?.slot_count as usize;
+            if slot_count != binding_range.len() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::AttrSetFrameSlotMismatch {
+                        id,
+                        frame_slots: slot_count,
+                        bindings: binding_range.len(),
+                    },
+                    node.span,
+                ));
+            }
+            Some(EvalFrame::new(slot_count).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+            })?)
+        } else {
+            None
+        };
         let mut entries = Vec::new();
         entries
             .try_reserve_exact(binding_range.len())
@@ -740,21 +764,36 @@ impl<'ir> TreeWalk<'ir> {
                     node.span,
                 )
             })?;
-        for binding_index in binding_range {
-            let binding = self.ir.bindings[binding_index];
-            let IrAttrPathSegment::Static(key) = binding.key else {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::UnsupportedAttrSetForm {
-                        id,
-                        recursive,
-                        has_dynamic: true,
-                    },
-                    node.span,
-                ));
-            };
-            let value = self.eval_lazy_node(binding.value)?;
-            entries.push(AttrEntry::new(key, value));
+        if let Some(frame_values) = &frame_values {
+            self.env.push(Rc::clone(frame_values));
         }
+        let result = (|| {
+            for (slot, binding_index) in binding_range.enumerate() {
+                let binding = self.ir.bindings[binding_index];
+                let IrAttrPathSegment::Static(key) = binding.key else {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::UnsupportedAttrSetForm {
+                            id,
+                            recursive,
+                            has_dynamic: true,
+                        },
+                        node.span,
+                    ));
+                };
+                let value = self.eval_lazy_node(binding.value)?;
+                if let Some(frame_values) = &frame_values {
+                    frame_values.set(slot as u32, value).map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+                    })?;
+                }
+                entries.push(AttrEntry::new(key, value));
+            }
+            Ok(entries)
+        })();
+        if recursive {
+            let _ = self.env.pop();
+        }
+        let entries = result?;
 
         let attrs = FlatAttrs::new(entries, &self.ir.symbols).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, node.span)
@@ -1481,10 +1520,10 @@ pub enum TreeWalkErrorKind {
         /// The invalid shape id payload.
         shape: IrShapeId,
     },
-    /// A let node referenced no resolver frame.
-    #[error("missing frame metadata at let node {id:?}")]
+    /// A node that needs a resolver frame referenced none.
+    #[error("missing frame metadata at node {id:?}")]
     MissingFrameMetadata {
-        /// The malformed let node id.
+        /// The malformed node id.
         id: IrId,
     },
     /// A resolver frame id did not resolve through the IR.
@@ -1499,6 +1538,18 @@ pub enum TreeWalkErrorKind {
     #[error("let frame at node {id:?} has {frame_slots} slots for {bindings} bindings")]
     LetFrameSlotMismatch {
         /// The malformed let node id.
+        id: IrId,
+        /// The resolver frame slot count.
+        frame_slots: usize,
+        /// The number of lowered bindings.
+        bindings: usize,
+    },
+    /// A recursive attrset frame's slot count did not match its binding table.
+    #[error(
+        "recursive attrset frame at node {id:?} has {frame_slots} slots for {bindings} bindings"
+    )]
+    AttrSetFrameSlotMismatch {
+        /// The malformed attrset node id.
         id: IrId,
         /// The resolver frame slot count.
         frame_slots: usize,
@@ -1684,7 +1735,7 @@ pub enum TreeWalkErrorKind {
         /// The right operand's runtime value tag.
         right: ValueTag,
     },
-    /// The attrset form requires dynamic-name or recursive-scope support.
+    /// The attrset form requires dynamic-name support.
     #[error(
         "unsupported tree-walk attrset form at {id:?}: recursive={recursive}, has_dynamic={has_dynamic}"
     )]
@@ -1747,7 +1798,7 @@ mod tests {
     use std::ptr::NonNull;
 
     use crate::compile::{
-        EffectClass, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode, IrShape,
+        EffectClass, FrameInfo, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode, IrShape,
         lower as lower_ir, resolve as resolve_ast,
     };
     use crate::string::{ContextElement, StringContext};
@@ -2090,6 +2141,24 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_static_recursive_attrsets_with_lazy_self_scope() {
+        assert_eq!(eval("(rec { a = 1; b = a + 2; }).b").as_int(), Ok(3));
+        assert_eq!(eval("(rec { a = b; b = 1; }).a").as_int(), Ok(1));
+        assert_eq!(eval("(rec { a = 1 / 0; }).b or 2").as_int(), Ok(2));
+
+        let ir = lower("(rec { a = a; }).a");
+        let error = eval_whnf(&ir).expect_err("recursive attr self-reference blackholes");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Force {
+                source: ForceError::InfiniteRecursion,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn forcing_attr_value_thunks_memoizes_whnf_results() {
         let ir = lower("{ a = 1 + 2; }");
         let a = symbol_for(&ir, b"a");
@@ -2204,28 +2273,7 @@ mod tests {
     }
 
     #[test]
-    fn recursive_and_dynamic_attrsets_wait_for_later_slices() {
-        let recursive_ir = lower("rec { a = 1; }");
-        let error =
-            eval_whnf_owned(&recursive_ir).expect_err("recursive attrsets need environments");
-
-        assert_eq!(
-            error.kind(),
-            TreeWalkErrorKind::UnsupportedAttrSetForm {
-                id: recursive_ir.root,
-                recursive: true,
-                has_dynamic: false,
-            }
-        );
-        assert_eq!(
-            error.span(),
-            recursive_ir
-                .arena
-                .node(recursive_ir.root)
-                .expect("root exists")
-                .span
-        );
-
+    fn dynamic_attrsets_wait_for_later_slices() {
         let dynamic_ir = lower("{ ${\"a\"} = 1; }");
         let error = eval_whnf_owned(&dynamic_ir).expect_err("dynamic attrsets need key eval");
 
@@ -3208,6 +3256,86 @@ mod tests {
             TreeWalkErrorKind::InvalidShapeId { id: root, shape }
         );
         assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn invalid_recursive_attrset_frame_metadata_is_reported() {
+        fn recursive_attrset_ir(frame: Option<FrameId>, frames: Vec<FrameInfo>) -> Ir {
+            let mut symbols = SymbolTable::new();
+            let a = symbols.intern(b"a").expect("symbol interns");
+            let value = IrId::new(0);
+            let root = IrId::new(1);
+            let mut ir = manual_ir_with_attr_tables(
+                root,
+                vec![
+                    pure_node(IrKind::Int, Span::new(8, 9), IrData::Int(1)),
+                    pure_node(
+                        IrKind::AttrSet,
+                        Span::new(0, 10),
+                        IrData::AttrSet {
+                            shape: IrShapeId::new(0),
+                            bindings: IrBindingSlice::new(0, 1),
+                            recursive: true,
+                            has_dynamic: false,
+                            frame,
+                        },
+                    ),
+                ],
+                symbols,
+                vec![IrBinding {
+                    key: IrAttrPathSegment::Static(a),
+                    value,
+                }],
+                vec![IrShape::new(vec![a].into_boxed_slice())],
+            );
+            ir.frames = frames.into_boxed_slice();
+            ir
+        }
+
+        let missing_frame = recursive_attrset_ir(None, Vec::new());
+        let missing_error =
+            eval_whnf_owned(&missing_frame).expect_err("recursive attrset frame must exist");
+
+        assert_eq!(
+            missing_error.kind(),
+            TreeWalkErrorKind::MissingFrameMetadata { id: IrId::new(1) }
+        );
+        assert_eq!(missing_error.span(), Span::new(0, 10));
+
+        let frame = FrameId::new(0);
+        let invalid_frame = recursive_attrset_ir(Some(frame), Vec::new());
+        let invalid_error = eval_whnf_owned(&invalid_frame).expect_err("frame id must resolve");
+
+        assert_eq!(
+            invalid_error.kind(),
+            TreeWalkErrorKind::InvalidFrameId {
+                id: IrId::new(1),
+                frame: frame.as_u32(),
+            }
+        );
+        assert_eq!(invalid_error.span(), Span::new(0, 10));
+
+        let mismatch = recursive_attrset_ir(
+            Some(frame),
+            vec![FrameInfo {
+                slot_count: 2,
+                captures: Vec::new().into_boxed_slice(),
+                rec: true,
+                has_with: false,
+            }],
+        );
+        let mismatch_error =
+            eval_whnf_owned(&mismatch).expect_err("frame slots must match bindings");
+
+        assert_eq!(
+            mismatch_error.kind(),
+            TreeWalkErrorKind::AttrSetFrameSlotMismatch {
+                id: IrId::new(1),
+                frame_slots: 2,
+                bindings: 1,
+            }
+        );
+        assert_eq!(mismatch_error.span(), Span::new(0, 10));
     }
 
     #[test]
