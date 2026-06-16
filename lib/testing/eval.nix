@@ -13,6 +13,10 @@
   mkSystem,
   packagesWithExpose,
 }: let
+  exposeRenderer = import ../../pkgs/build-support/_expose-renderer.nix {
+    inherit lib pkgs;
+  };
+
   # The kernel-lockdown option was removed: SECURITY_LOCKDOWN_LSM selects
   # MODULE_SIG, whose default key generation breaks third-party
   # bit-reproducibility of the public base image. Fail loudly at eval time
@@ -99,6 +103,28 @@
     then throw "aos.apm.registries must reject an empty trustKeys list"
     else "ok";
 
+  containsStr = needle: haystack:
+    builtins.stringLength (builtins.replaceStrings [needle] [""] haystack)
+    != builtins.stringLength haystack;
+  firewallNoNftablesDropin =
+    if containsStr "nftables.d" system.config.environment.etc."nftables.conf".text
+    then throw "modules/security/firewall.nix must not include /etc/nftables.d drop-ins"
+    else "ok";
+  scanDirStorageRejected = let
+    forced = builtins.tryEval (
+      exposeRenderer.assertNoGlobalScanDirStorage "bad-package" [
+        {
+          path = "/etc/sysctl.d/70-bad-package.conf";
+          target = "/nix/store/bad-package-sysctl.conf";
+          overwrite = true;
+        }
+      ]
+    );
+  in
+    if forced.success
+    then throw "expose renderer must reject storage links under global scan dirs"
+    else "ok";
+
   exposedPackageNames = builtins.attrNames packagesWithExpose;
   exposedPackagePathsJson = builtins.toJSON (
     builtins.map (name: packagesWithExpose.${name}.expose.outPath) exposedPackageNames
@@ -125,6 +151,7 @@ in
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
+        echo "firewall:       no package drop-in include (${firewallNoNftablesDropin}), scan-dir storage rejected (${scanDirStorageRejected})"
         echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"
 
         # Force the build attributes to ensure they evaluate

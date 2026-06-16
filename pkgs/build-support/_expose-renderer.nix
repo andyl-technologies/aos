@@ -33,6 +33,8 @@
   packageNameType = "^[A-Za-z0-9][A-Za-z0-9+._=-]*$";
   capabilityType = "^CAP_[A-Z0-9_]+$";
   kernelModuleType = "^[A-Za-z0-9_-]+$";
+  sysctlKeyType = "^[A-Za-z0-9_.-]+$";
+  sysctlValueType = "^[^[:space:]]+$";
   securityLabelType = "^[A-Za-z0-9._-]+$";
 
   throwIfNot = lib.throwIfNot;
@@ -122,6 +124,90 @@
     (builtins.isString module && builtins.match kernelModuleType module != null)
     "invalid kernel module name '${builtins.toString module}'"
     module;
+
+  validateSysctlKey = key:
+    throwIfNot
+    (builtins.isString key && builtins.match sysctlKeyType key != null)
+    "invalid sysctl key '${builtins.toString key}'"
+    key;
+
+  validateSysctlValue = key: value: let
+    stringValue = builtins.toString value;
+  in
+    throwIfNot
+    ((builtins.isString value || builtins.isInt value) && builtins.match sysctlValueType stringValue != null)
+    "invalid sysctl value for '${builtins.toString key}': ${stringValue}"
+    stringValue;
+
+  validateSysctls = sysctls: let
+    checkedSysctls =
+      throwIfNot
+      (builtins.isAttrs sysctls)
+      "expose.kernel.sysctl must be an attrset"
+      sysctls;
+  in
+    builtins.mapAttrs (
+      key: value: validateSysctlValue (validateSysctlKey key) value
+    )
+    checkedSysctls;
+
+  validateKernel = kernel: let
+    checkedKernel =
+      throwIfNot
+      (builtins.isAttrs kernel)
+      "expose.kernel must be an attrset"
+      kernel;
+    allowedKeys = ["modules" "sysctl"];
+    extraKeys = builtins.filter (
+      key: !(builtins.elem key allowedKeys)
+    ) (builtins.attrNames checkedKernel);
+  in
+    throwIfNot
+    (extraKeys == [])
+    "expose.kernel contains unknown keys: ${builtins.concatStringsSep ", " extraKeys}"
+    {
+      modules =
+        builtins.map
+        validateKernelModule
+        (validateList "expose.kernel.modules" (checkedKernel.modules or []));
+      sysctl = validateSysctls (checkedKernel.sysctl or {});
+    };
+
+  validatePort = field: port:
+    throwIfNot
+    (builtins.isInt port && port >= 1 && port <= 65535)
+    "${field} contains invalid port '${builtins.toString port}'"
+    port;
+
+  validateFirewall = firewall: let
+    checkedFirewall =
+      throwIfNot
+      (builtins.isAttrs firewall)
+      "expose.firewall must be an attrset"
+      firewall;
+    allowedKeys = ["allowedTCP" "allowedUDP" "forwardPolicy"];
+    extraKeys = builtins.filter (
+      key: !(builtins.elem key allowedKeys)
+    ) (builtins.attrNames checkedFirewall);
+  in
+    throwIfNot
+    (extraKeys == [])
+    "expose.firewall contains unknown keys: ${builtins.concatStringsSep ", " extraKeys}"
+    {
+      allowedTCP =
+        builtins.map
+        (validatePort "expose.firewall.allowedTCP")
+        (validateList "expose.firewall.allowedTCP" (checkedFirewall.allowedTCP or []));
+      allowedUDP =
+        builtins.map
+        (validatePort "expose.firewall.allowedUDP")
+        (validateList "expose.firewall.allowedUDP" (checkedFirewall.allowedUDP or []));
+      forwardPolicy =
+        throwIfNot
+        (builtins.elem (checkedFirewall.forwardPolicy or "drop") ["drop" "accept"])
+        "expose.firewall.forwardPolicy must be `drop` or `accept`"
+        (checkedFirewall.forwardPolicy or "drop");
+    };
 
   validateSecurityLabel = label:
     throwIfNot
@@ -322,7 +408,26 @@
       ++ builtins.map (unit: unit.name) systemd.mounts
       ++ builtins.map (unit: unit.name) systemd.automounts
     );
-in {
+
+  uniqueUnits = units: lib.unique (validateList "systemd unit list" units);
+  forbiddenGlobalScanDirs = [
+    "/etc/modules-load.d/"
+    "/etc/sysctl.d/"
+    "/etc/nftables.d/"
+  ];
+in rec {
+  assertNoGlobalScanDirStorage = packageName: storageLinks: let
+    violations = builtins.filter (
+      link:
+        builtins.any (prefix: lib.hasPrefix prefix link.path) forbiddenGlobalScanDirs
+    )
+    storageLinks;
+  in
+    throwIfNot
+    (violations == [])
+    "mkDerivation expose for package '${packageName}' emits forbidden global scan-dir storage links: ${builtins.toJSON violations}"
+    storageLinks;
+
   render = {
     packageName,
     expose,
@@ -335,6 +440,8 @@ in {
     allowedExposeKeys = [
       "target"
       "units"
+      "kernel"
+      "firewall"
       "images"
       "requires"
       "permissions"
@@ -348,8 +455,22 @@ in {
       (builtins.isAttrs (checkedExpose.units or {}))
       "mkDerivation expose.units for package '${packageName}' must be an attrset"
       (checkedExpose.units or {});
-    unitNames = builtins.map validateUnitName (builtins.attrNames units);
+    authoredUnitNames = builtins.map validateUnitName (builtins.attrNames units);
     target = validateTargetName (checkedExpose.target or "aos-pkg-${packageName}.target");
+    modulesUnit = "aos-pkg-${packageName}-modules.service";
+    sysctlUnit = "aos-pkg-${packageName}-sysctl.service";
+    firewallUnit = "aos-pkg-${packageName}-firewall.service";
+    sideEffectUnitNames = [modulesUnit sysctlUnit firewallUnit];
+    reservedUnitNames = [target] ++ sideEffectUnitNames;
+    reservedCollisions = builtins.filter (
+      unit: builtins.elem unit authoredUnitNames
+    )
+    reservedUnitNames;
+    reservedUnitsAvailable =
+      throwIfNot
+      (reservedCollisions == [])
+      "mkDerivation expose.units for package '${packageName}' must not define synthesized units: ${builtins.concatStringsSep ", " reservedCollisions}"
+      true;
     requires =
       builtins.map
       validatePackageName
@@ -359,30 +480,165 @@ in {
       validateImage
       (validateList "expose.images" (checkedExpose.images or []));
     permissions = validatePermissions packageName (checkedExpose.permissions or {});
-    typedSystemd = validateTypedUnits units;
+    kernel = validateKernel (checkedExpose.kernel or {});
+    firewall = validateFirewall (checkedExpose.firewall or {});
+
+    memberUnitNames = authoredUnitNames ++ sideEffectUnitNames;
+
+    addTargetMembership = _: unit:
+      unit
+      // {
+        wantedBy = [target];
+        requiredBy = [];
+        upheldBy = [];
+        partOf = uniqueUnits ((unit.partOf or []) ++ [target]);
+        after = uniqueUnits ((unit.after or []) ++ sideEffectUnitNames);
+        requires = uniqueUnits ((unit.requires or []) ++ sideEffectUnitNames);
+      };
+
+    trueCommand = "${pkgs.coreutils}/bin/true";
+    moduleCommand =
+      if kernel.modules == []
+      then trueCommand
+      else "${pkgs.kmod}/sbin/modprobe -a ${builtins.concatStringsSep " " kernel.modules}";
+    sysctlAssignments =
+      lib.mapAttrsToList (key: value: "${key}=${value}") kernel.sysctl;
+    sysctlCommand =
+      if sysctlAssignments == []
+      then trueCommand
+      else "${pkgs.procps-ng}/sbin/sysctl -w ${builtins.concatStringsSep " " sysctlAssignments}";
+
+    formatPorts = ports:
+      builtins.concatStringsSep ", " (builtins.map builtins.toString ports);
+    nft = "${pkgs.nftables}/sbin/nft";
+    addElements = set: ports:
+      lib.optional (ports != [])
+      "${nft} add element inet filter ${set} { ${formatPorts ports} }";
+    deleteElements = set: ports:
+      lib.optional (ports != [])
+      "${nft} delete element inet filter ${set} { ${formatPorts ports} }";
+    forwardComment = "aos-pkg-${packageName}-forward";
+    forwardDeleteScript = ''
+      set -eu
+      ${nft} -a list chain inet filter forward \
+        | ${pkgs.gawk}/bin/gawk -v comment=${lib.escapeShellArg forwardComment} \
+          '$0 ~ "comment \"" comment "\"" { for (i = 1; i <= NF; i++) if ($i == "handle") print $(i + 1) }' \
+        | while read -r handle; do
+            if [ -n "$handle" ]; then
+              ${nft} delete rule inet filter forward handle "$handle"
+            fi
+          done
+    '';
+    forwardDeleteTool =
+      pkgs.writeShellScriptBin
+      "aos-pkg-${packageName}-firewall-forward-stop"
+      forwardDeleteScript;
+    forwardDeleteCommand = "${forwardDeleteTool}/bin/aos-pkg-${packageName}-firewall-forward-stop";
+    forwardAddScript = forwardDeleteScript + ''
+      ${nft} add rule inet filter forward accept comment ${lib.escapeShellArg forwardComment}
+    '';
+    forwardAddTool =
+      pkgs.writeShellScriptBin
+      "aos-pkg-${packageName}-firewall-forward-start"
+      forwardAddScript;
+    forwardAddCommand = "${forwardAddTool}/bin/aos-pkg-${packageName}-firewall-forward-start";
+    firewallStartCommands =
+      addElements "allowed_tcp" firewall.allowedTCP
+      ++ addElements "allowed_udp" firewall.allowedUDP
+      ++ lib.optional (firewall.forwardPolicy == "accept") forwardAddCommand;
+    firewallStopCommands =
+      deleteElements "allowed_tcp" firewall.allowedTCP
+      ++ deleteElements "allowed_udp" firewall.allowedUDP
+      ++ lib.optional (firewall.forwardPolicy == "accept") forwardDeleteCommand;
+    firewallStart =
+      if firewallStartCommands == []
+      then trueCommand
+      else firewallStartCommands;
+    firewallStop =
+      if firewallStopCommands == []
+      then trueCommand
+      else firewallStopCommands;
+    firewallActive = firewallStartCommands != [];
+
+    sideEffectUnits = {
+      "${modulesUnit}" = {
+        description = "Apply kernel modules for ${packageName}";
+        wantedBy = [target];
+        partOf = [target];
+        before = authoredUnitNames;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = moduleCommand;
+        };
+      };
+      "${sysctlUnit}" = {
+        description = "Apply sysctl settings for ${packageName}";
+        wantedBy = [target];
+        partOf = [target];
+        before = authoredUnitNames;
+        after = [modulesUnit];
+        requires = [modulesUnit];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = sysctlCommand;
+        };
+      };
+      "${firewallUnit}" = {
+        description = "Apply firewall rules for ${packageName}";
+        wantedBy = [target];
+        partOf = [target];
+        before = authoredUnitNames;
+        after = lib.optional firewallActive "nftables.service";
+        requires = lib.optional firewallActive "nftables.service";
+        unitConfig.ReloadPropagatedFrom = "nftables.service";
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = firewallStart;
+          ExecReload = firewallStart;
+          ExecStop = firewallStop;
+        };
+      };
+    };
+    synthesizedUnits =
+      builtins.seq reservedUnitsAvailable (
+        builtins.mapAttrs addTargetMembership units
+        // sideEffectUnits
+        // {
+          "${target}" = {
+            description = "Activation target for ${packageName}";
+            wants = uniqueUnits memberUnitNames;
+          };
+        }
+      );
+    typedSystemd = validateTypedUnits synthesizedUnits;
     renderedUnitNames = unitNamesFromTypedSystemd typedSystemd;
     manifestUnitNames =
       throwIfNot
-      (unitNames == renderedUnitNames)
-      "mkDerivation expose.units for package '${packageName}' has keys that differ from rendered unit names; authored ${builtins.toJSON unitNames}, rendered ${builtins.toJSON renderedUnitNames}"
+      (lib.sort builtins.lessThan (builtins.attrNames synthesizedUnits) == renderedUnitNames)
+      "mkDerivation expose.units for package '${packageName}' has keys that differ from rendered unit names; authored ${builtins.toJSON (builtins.attrNames synthesizedUnits)}, rendered ${builtins.toJSON renderedUnitNames}"
       renderedUnitNames;
     rendered = renderRole {
       name = packageName;
       systemd = typedSystemd;
     };
+    storageLinks = assertNoGlobalScanDirStorage packageName rendered.storageLinks;
 
     manifest = {
       expose = {
         inherit target requires images;
         units = manifestUnitNames;
       };
+      inherit kernel firewall;
       inherit permissions;
     };
   in
     throwIfNot
     (exposeExtraKeys == [])
     "mkDerivation expose for package '${packageName}' contains unknown keys: ${builtins.concatStringsSep ", " exposeExtraKeys}"
-    (
+    (builtins.seq storageLinks (
       pkgs.runCommand "expose-${packageName}" {
         unitsDrv = rendered.unitsDrv;
         manifest = builtins.toJSON manifest;
@@ -395,5 +651,5 @@ in {
         cp -a "$unitsDrv"/. "$out/units/"
         cp "$manifestPath" "$out/manifest.json"
       ''
-    );
+    ));
 }
