@@ -313,26 +313,33 @@
     LIBCXX_INC="${llvm}/include/c++/v1"
     LIBCXX_INC_TARGET="${llvm}/include/x86_64-unknown-linux-gnu/c++/v1"
 
-    # COMPILE with AOS clang (codegen + libc++); LINK with the AOS cc-wrapper
-    # gcc/g++ (${bootstrapTools} is stdenv.cc). A clang-driven link on this
-    # toolchain mis-selects the runtime (dynamic libgcc_s + lazy binding) and
-    # produces host tools that segfault at startup (a GOT relocation is written
-    # after RELRO marks the page read-only). The cc-wrapper gcc links the SAME
-    # clang objects into working binaries (it picks the static libgcc + BIND_NOW
-    # the AOS glibc expects). So the wrapper routes by phase, and the link path
-    # strips clang-only flags the bazelrc/.bazelrc inject (gcc rejects them).
+    # COMPILE *and* LINK with AOS clang/clang++ + lld, on the LLVM-native
+    # runtime: compiler-rt builtins (the AOS GCC ships no static libgcc_eh.a, so
+    # `--rtlib=libgcc` cannot link C++ exceptions) plus libunwind for unwinding.
+    # The earlier "clang/lld is broken" diagnosis was wrong: AOS clang+lld links
+    # working native binaries given a correct library search path.
+    #
+    # The host tools crashed at startup for a concrete, deterministic reason: the
+    # AOS gcc-14 *stage2* install dir ships a stray *static* `libc.a`, and
+    # `--gcc-install-dir`/`-B$GCC_DIR` puts it on the linker search path. Without
+    # an *earlier* `-L` into the dynamic glibc, the implicit `-lc`/`-lm` resolve
+    # to that static `libc.a` — so `libc-start.o`/`libc-tls.o` get linked
+    # statically into a binary that is otherwise a dynamically-interpreted PIE.
+    # That static/dynamic libc mismatch breaks `__libc_start_main`/TLS setup and
+    # SIGSEGVs before `main` (which looks like a GOT-after-RELRO fault). The fix
+    # is to lead the link line with `-L$REAL_LIBC/lib` so `-lc`/`-lm` bind to the
+    # dynamic glibc `.so`, exactly as the cc-wrapper gcc's `cc-ldflags` do. The
+    # wrapper also pins the AOS glibc dynamic linker + rpath and the libc++ rpath
+    # on every link. ${bootstrapTools} (stdenv.cc) is no longer on the link path.
+    LINK_COMMON="-L$REAL_LIBC/lib --gcc-install-dir=$GCC_DIR -B$REAL_LIBC/lib -B$GCC_DIR -fuse-ld=lld --rtlib=compiler-rt --unwindlib=libunwind -L${llvm}/lib/x86_64-unknown-linux-gnu -Wl,-dynamic-linker=$DL -Wl,-rpath,$REAL_LIBC/lib -Wl,-rpath,${llvm}/lib/x86_64-unknown-linux-gnu"
+
     {
       printf '%s\n' '#!${bash}/bin/bash'
       printf '%s\n' 'case " $* " in'
       printf '%s\n' '  *" -c "*|*" -E "*|*" -S "*|*" -fsyntax-only "*)'
       printf '%s\n' "    exec ${llvm}/bin/clang -isystem $LIBCXX_INC_TARGET -isystem $LIBCXX_INC --gcc-install-dir=$GCC_DIR -idirafter $REAL_LIBC_DEV/include -B$REAL_LIBC/lib -B$GCC_DIR \"\$@\" ;;"
       printf '%s\n' 'esac'
-      printf '%s\n' 'largs=()'
-      printf '%s\n' 'for a in "$@"; do case "$a" in'
-      printf '%s\n' '  --rtlib=*|--unwindlib=*|-static-libgcc|-stdlib=*|--ld-path=*|--gcc-install-dir=*) ;;'
-      printf '%s\n' '  *) largs+=("$a") ;;'
-      printf '%s\n' 'esac; done'
-      printf '%s\n' 'exec ${bootstrapTools}/bin/gcc "''${largs[@]}"'
+      printf '%s\n' "exec ${llvm}/bin/clang $LINK_COMMON \"\$@\""
     } > "$SRCDIR/aos-toolchain/clang"
     chmod +x "$SRCDIR/aos-toolchain/clang"
 
@@ -342,14 +349,10 @@
       printf '%s\n' '  *" -c "*|*" -E "*|*" -S "*|*" -fsyntax-only "*)'
       printf '%s\n' "    exec ${llvm}/bin/clang++ -isystem $LIBCXX_INC_TARGET -isystem $LIBCXX_INC --gcc-install-dir=$GCC_DIR -idirafter $REAL_LIBC_DEV/include -B$REAL_LIBC/lib -B$GCC_DIR \"\$@\" ;;"
       printf '%s\n' 'esac'
-      printf '%s\n' 'largs=()'
-      printf '%s\n' 'for a in "$@"; do case "$a" in'
-      printf '%s\n' '  --rtlib=*|--unwindlib=*|-static-libgcc|-stdlib=*|--ld-path=*|--gcc-install-dir=*) ;;'
-      printf '%s\n' '  *) largs+=("$a") ;;'
-      printf '%s\n' 'esac; done'
-      # -nostdlib++: link the explicit libc++ (passed via .bazelrc -l:libc++.a),
-      # not g++'s default libstdc++, so the two C++ runtimes never collide.
-      printf '%s\n' 'exec ${bootstrapTools}/bin/g++ -nostdlib++ "''${largs[@]}"'
+      # -nostdlib++: link the explicit static libc++ (.bazelrc -l:libc++.a) plus
+      # libc++abi/libunwind appended as linkopts, never clang's default
+      # libstdc++, so the two C++ runtimes never collide.
+      printf '%s\n' "exec ${llvm}/bin/clang++ -nostdlib++ $LINK_COMMON \"\$@\""
     } > "$SRCDIR/aos-toolchain/clang++"
     chmod +x "$SRCDIR/aos-toolchain/clang++"
 
@@ -400,13 +403,13 @@
     sed -i '/-D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES/d' .bazelrc
 
     # Drop the `-stdlib=libc++` *linkopt* (workerd's .bazelrc adds it to both
-    # cxxopt and linkopt). The link is routed to the AOS cc-wrapper gcc (see
-    # toolchainSetup), which rejects the clang-only `-stdlib=` driver flag — and
-    # it is unnecessary at link time anyway, since libc++ is pulled in
-    # explicitly via `-l:libc++.a`. The *compile* `-stdlib=libc++` (cxxopt /
-    # host_cxxopt) stays, so clang still builds against libc++. Likewise drop
-    # `-static-libgcc`: the AOS gcc ships no static libgcc_eh.a, and the
-    # cc-wrapper gcc's default (dynamic libgcc_s) links the host tools fine.
+    # cxxopt and linkopt). The link wrapper passes `-nostdlib++` and links the
+    # static libc++ explicitly via `-l:libc++.a`, so the link-time `-stdlib=`
+    # is redundant; the *compile* `-stdlib=libc++` (cxxopt / host_cxxopt) stays,
+    # so clang still builds against libc++. Likewise drop `-static-libgcc`: the
+    # AOS GCC ships no static libgcc_eh.a, so the LLVM-native runtime
+    # (compiler-rt + libunwind, forced by the link wrapper) handles builtins and
+    # unwinding instead — `-static-libgcc` would be meaningless to it.
     sed -i "/linkopt='-stdlib=libc++'/d" .bazelrc
     sed -i "s/ --linkopt='-static-libgcc'//g; s/ --host_linkopt='-static-libgcc'//g" .bazelrc
 
@@ -492,8 +495,8 @@ in
       # processwrapper-sandbox where possible, falling back to standalone for the
       # few genrules tagged local/no-sandbox (e.g. v8 generated_inspector_files),
       # which cannot run sandboxed. The earlier genrule "races" were really the
-      # toolchain segfault (now fixed by routing links through the cc-wrapper
-      # gcc), so standalone is safe for those.
+      # host-tool startup crash (now fixed by pinning a consistent clang+lld
+      # runtime in the link wrapper), so standalone is safe for those.
       "--spawn_strategy=processwrapper-sandbox,standalone"
       # Still keep going past any straggler so one build caches everything that
       # passes and resumes converge.
@@ -576,13 +579,13 @@ in
                 echo "build --$cfg=-B$GCC_DIR"
                 echo "build --$cfg=-B$REAL_LIBC/lib"
               done
-              # Link: the link is routed to the AOS cc-wrapper gcc/g++ (see
-              # toolchainSetup), which supplies the crt, glibc, libgcc, dynamic
-              # linker and glibc rpath itself. Passing AOS's own
-              # -B/-L/-Wl,-dynamic-linker here would OVERRIDE that with the
-              # incomplete wrapped-gcc crt dir and re-break the host tools
-              # (startup segfault). So add ONLY what the cc-wrapper gcc does not
-              # already know about:
+              # Link: the link is routed to AOS clang++ + lld (see
+              # toolchainSetup), which already pins the crt (--gcc-install-dir),
+              # glibc, compiler-rt, dynamic linker, and glibc + libc++ rpaths.
+              # These linkopts only need to supply the static C++ ABI runtime
+              # that workerd's own .bazelrc leaves out (it relies on CI's *shared*
+              # libc++ to drag them in); the -L/rpath below are belt-and-braces
+              # duplicates of LINK_COMMON and harmless.
               for cfg in linkopt host_linkopt; do
                 # the LLVM dir holding the static libc++ runtime,
                 echo "build --$cfg=-L${llvm}/lib/x86_64-unknown-linux-gnu"
