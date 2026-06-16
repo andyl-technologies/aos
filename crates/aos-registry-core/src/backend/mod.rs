@@ -36,10 +36,27 @@
 //! crates (`SqlxBackend` in the native hub, the D1 backend in the Worker).
 
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 
 use crate::dialect::{order_params, Dialect};
 use crate::value::{Row, Value};
+
+/// The marker bounds the [`Backend`] trait carries, which differ by target.
+///
+/// On a native build a `Backend` (and therefore the [`Database`](crate::db::Database)
+/// that holds one) must be `Send + Sync` so the multi-threaded tokio server can
+/// move request futures across worker threads. On `wasm32-unknown-unknown` the
+/// Cloudflare Worker is single-threaded and its D1 futures are `!Send`, so the
+/// bound is dropped there. This blanket-impl alias lets the one [`Backend`]
+/// definition carry the right bound on each target.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait BackendBounds: Send + Sync {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + Sync> BackendBounds for T {}
+/// See the native definition above — unbounded on wasm32 (single-threaded Worker).
+#[cfg(target_arch = "wasm32")]
+pub trait BackendBounds {}
+#[cfg(target_arch = "wasm32")]
+impl<T> BackendBounds for T {}
 
 /// One statement in a [`Backend::batch`]: source SQL and its bound parameters.
 ///
@@ -83,9 +100,11 @@ impl Statement {
 /// (sqlite-flavored) SQL the `Database` methods write.
 ///
 /// The trait is **async** (RFC-0004 Phase 5): every query is a future driven on
-/// the host runtime by the underlying engine.
-#[async_trait]
-pub trait Backend: Send + Sync {
+/// the host runtime by the underlying engine. It is `Send`-bounded on native
+/// (via [`BackendBounds`]) and `?Send` on the single-threaded Worker.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait Backend: BackendBounds {
     /// The SQL dialect this backend speaks.
     fn dialect(&self) -> Dialect;
 
