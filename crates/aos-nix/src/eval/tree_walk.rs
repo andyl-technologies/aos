@@ -7,10 +7,10 @@
 //! string-valued attribute names, static and dynamic string-valued
 //! attribute selection, lexical `let` environments, simple and formal-set lambda
 //! application, lazy `with` scope lookup, attrset update, thunk forcing, numeric
-//! arithmetic, numeric and string comparisons, and scalar/string/function
-//! equality to weak head normal form, establishing the arena access and
-//! diagnostic surface used by later slices for full string coercion, primitive
-//! operations, and derivation boundaries.
+//! arithmetic, numeric and string comparisons, and scalar/string/function plus
+//! structural list/attrset equality to weak head normal form, establishing the
+//! arena access and diagnostic surface used by later slices for full string
+//! coercion, primitive operations, and derivation boundaries.
 
 use std::rc::Rc;
 
@@ -143,8 +143,8 @@ impl<'ir> TreeWalk<'ir> {
     /// update, static
     /// attribute selection, lexical `let` environment, simple and formal-set
     /// lambda application, lazy `with` lookup, numeric arithmetic, numeric and
-    /// string comparison, scalar/string/function equality, and conservative thunk
-    /// allocation nodes. Remaining environment-dependent nodes return
+    /// string comparison, scalar/string/function/list/attrset equality, and
+    /// conservative thunk allocation nodes. Remaining environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add their
     /// explicit runtime context.
     ///
@@ -494,6 +494,26 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         cloned.extend_from_slice(entries);
+        Ok(cloned)
+    }
+
+    fn clone_list_elements(
+        id: IrId,
+        span: Span,
+        list: &NixList,
+    ) -> Result<Vec<Value>, TreeWalkError> {
+        let elements = list.as_slice();
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: elements.len(),
+                },
+                span,
+            )
+        })?;
+        cloned.extend_from_slice(elements);
         Ok(cloned)
     }
 
@@ -1768,17 +1788,25 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let left = self.eval_node(lhs)?;
         let right = self.eval_node(rhs)?;
-        let equal = self.scalar_equal(id, node, left, right)?;
+        let equal = self.values_equal(id, node, left, right, EqualityContext::Direct)?;
         Ok(Value::bool(if invert { !equal } else { equal }))
     }
 
-    fn scalar_equal(
-        &self,
+    fn values_equal(
+        &mut self,
         id: IrId,
         node: &IrNode,
         left: Value,
         right: Value,
+        context: EqualityContext,
     ) -> Result<bool, TreeWalkError> {
+        if context == EqualityContext::Nested
+            && left.raw_eq(right)
+            && matches!(left.tag(), ValueTag::Lambda | ValueTag::Primop)
+        {
+            return Ok(true);
+        }
+
         match (left.tag(), right.tag()) {
             (ValueTag::Int, ValueTag::Int) => {
                 Ok((left.payload_bits() as i64) == (right.payload_bits() as i64))
@@ -1795,6 +1823,8 @@ impl<'ir> TreeWalk<'ir> {
             (ValueTag::Bool, ValueTag::Bool) => Ok(left.payload_bits() == right.payload_bits()),
             (ValueTag::Null, ValueTag::Null) => Ok(true),
             (ValueTag::String, ValueTag::String) => self.strings_equal(id, node, left, right),
+            (ValueTag::List, ValueTag::List) => self.lists_equal(id, node, left, right),
+            (ValueTag::Attrs, ValueTag::Attrs) => self.attrsets_equal(id, node, left, right),
             (ValueTag::Lambda | ValueTag::Primop, ValueTag::Lambda | ValueTag::Primop) => Ok(false),
             (left_tag, right_tag) if left_tag == right_tag => Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedEqualityType {
@@ -1822,6 +1852,77 @@ impl<'ir> TreeWalk<'ir> {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
         Ok(left.bytes() == right.bytes())
+    }
+
+    fn lists_equal(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+    ) -> Result<bool, TreeWalkError> {
+        let left_elements = {
+            let list = self.heap.get_list(left).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            Self::clone_list_elements(id, node.span, list)?
+        };
+        let right_elements = {
+            let list = self.heap.get_list(right).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            Self::clone_list_elements(id, node.span, list)?
+        };
+        if left_elements.len() != right_elements.len() {
+            return Ok(false);
+        }
+
+        for (left, right) in left_elements.into_iter().zip(right_elements) {
+            let left = self.force_value(id, node.span, left)?;
+            let right = self.force_value(id, node.span, right)?;
+            if !self.values_equal(id, node, left, right, EqualityContext::Nested)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn attrsets_equal(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+    ) -> Result<bool, TreeWalkError> {
+        let left_entries = {
+            let attrs = self.heap.get_attrs(left).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            Self::clone_attr_entries(id, node.span, attrs)?
+        };
+        let right_entries = {
+            let attrs = self.heap.get_attrs(right).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            Self::clone_attr_entries(id, node.span, attrs)?
+        };
+        if left_entries.len() != right_entries.len() {
+            return Ok(false);
+        }
+
+        for (left, right) in left_entries.iter().zip(&right_entries) {
+            if left.key != right.key {
+                return Ok(false);
+            }
+        }
+        for (left, right) in left_entries.into_iter().zip(right_entries) {
+            let left = self.force_value(id, node.span, left.value)?;
+            let right = self.force_value(id, node.span, right.value)?;
+            if !self.values_equal(id, node, left, right, EqualityContext::Nested)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn eval_numeric_negation(
@@ -2215,6 +2316,12 @@ enum Number {
 enum DynamicAttrNullPolicy {
     SkipNull,
     RejectNull,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EqualityContext {
+    Direct,
+    Nested,
 }
 
 impl Number {
@@ -5439,9 +5546,48 @@ mod tests {
 
         assert_eq!(
             evaluator
-                .scalar_equal(ir.root, &node, left, right)
+                .values_equal(ir.root, &node, left, right, EqualityContext::Direct)
                 .expect("strings compare"),
             true
+        );
+    }
+
+    #[test]
+    fn list_equality_is_structural_and_short_circuits() {
+        assert_eq!(eval("[1 \"a\" null] == [1 \"a\" null]").as_bool(), Ok(true));
+        assert_eq!(eval("[1] != [1 2]").as_bool(), Ok(true));
+        assert_eq!(eval("[1 2] == [1 3]").as_bool(), Ok(false));
+        assert_eq!(eval("[1 (1 / 0)] == [2 (1 / 0)]").as_bool(), Ok(false));
+        assert_eq!(eval("let f = x: x; in [ f ] == [ f ]").as_bool(), Ok(true));
+        assert_eq!(eval("[ (x: x) ] == [ (x: x) ]").as_bool(), Ok(false));
+    }
+
+    #[test]
+    fn attrset_equality_is_structural_and_short_circuits() {
+        assert_eq!(
+            eval("{ b = 2; a = 1; } == { a = 1; b = 2; }").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("{ a = 1; } == { a = 1; b = 1 / 0; }").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval("{ a = 1; z = 1 / 0; } == { a = 2; z = 1 / 0; }").as_bool(),
+            Ok(false)
+        );
+        let z_first = lower("{ z = 1 / 0; a = 1; } == { a = 2; z = 1 / 0; }");
+        let z_error = eval_whnf(&z_first).expect_err("symbol-order comparison forces z first");
+        let TreeWalkErrorKind::DivisionByZero { .. } = z_error.kind() else {
+            panic!("expected division by zero from z value");
+        };
+        assert_eq!(
+            eval("{ a = { x = 1; }; } == { a = { x = 1; }; }").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let f = x: x; in { inherit f; } == { inherit f; }").as_bool(),
+            Ok(true)
         );
     }
 
@@ -5456,17 +5602,17 @@ mod tests {
         assert_eq!(eval("(x: x) == 1").as_bool(), Ok(false));
 
         let ir = lower("1");
-        let evaluator = TreeWalk::new(&ir);
+        let mut evaluator = TreeWalk::new(&ir);
         let node = ir.arena.node(ir.root).expect("root exists");
         let ptr = NonNull::<HeapObject>::dangling();
         let lambda = Value::lambda(ptr).expect("aligned lambda pointer");
         let primop = Value::primop(ptr).expect("aligned primop pointer");
         assert_eq!(
-            evaluator.scalar_equal(ir.root, node, primop, primop),
+            evaluator.values_equal(ir.root, node, primop, primop, EqualityContext::Direct),
             Ok(false)
         );
         assert_eq!(
-            evaluator.scalar_equal(ir.root, node, lambda, primop),
+            evaluator.values_equal(ir.root, node, lambda, primop, EqualityContext::Direct),
             Ok(false)
         );
     }
@@ -5505,24 +5651,24 @@ mod tests {
     }
 
     #[test]
-    fn non_string_heap_equality_is_unsupported_until_structural_equality_lands() {
+    fn raw_thunk_equality_is_unsupported() {
         let ir = lower("1");
-        let evaluator = TreeWalk::new(&ir);
+        let mut evaluator = TreeWalk::new(&ir);
         let node = ir.arena.node(ir.root).expect("root exists");
         let ptr = NonNull::<HeapObject>::dangling();
-        let left = Value::list(ptr).expect("aligned list pointer");
-        let right = Value::list(ptr).expect("aligned list pointer");
+        let left = Value::thunk(ptr).expect("aligned thunk pointer");
+        let right = Value::thunk(ptr).expect("aligned thunk pointer");
 
         let error = evaluator
-            .scalar_equal(ir.root, node, left, right)
-            .expect_err("list equality is not implemented yet");
+            .values_equal(ir.root, node, left, right, EqualityContext::Direct)
+            .expect_err("raw thunk equality is not supported");
 
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::UnsupportedEqualityType {
                 id: ir.root,
-                left: ValueTag::List,
-                right: ValueTag::List,
+                left: ValueTag::Thunk,
+                right: ValueTag::Thunk,
             }
         );
         assert_eq!(error.span(), node.span);
