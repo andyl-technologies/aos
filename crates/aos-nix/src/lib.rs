@@ -25,9 +25,10 @@
 //! - [`heap`] owns the Phase-1 one-shot bump arena used for evaluator heap
 //!   objects.
 //! - [`attrs`] owns the Phase-1 flat immutable attribute-set representation.
+//! - [`eval`] owns the safe tree-walk oracle and its thunk-forcing state.
 //!
 //! Future Phase-1 modules land below this boundary in the order specified by
-//! the RFC: `eval`, `runtime`, and `store`.
+//! the RFC: `runtime` and `store`.
 
 #![forbid(unsafe_code)]
 
@@ -35,6 +36,7 @@ pub mod attrs;
 pub mod cache;
 pub mod compile;
 pub mod error;
+pub mod eval;
 pub mod heap;
 pub mod native;
 pub mod syntax;
