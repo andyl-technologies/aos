@@ -18,16 +18,28 @@
 //! - The native hub's facade classification — [`keymap`] is a faithful copy of
 //!   `compat::{is_machine_path, cache_control, content_type}`.
 //!
-//! # What is and isn't here
+//! # What is and isn't here (yet)
 //!
-//! Ported (the read path): the R2 machine facade ([`facade`]), the D1-backed
-//! browse UI ([`render`]) and JSON read API ([`handlers`]), and the
-//! Cron-trigger indexer ([`indexer`]). **Not ported** (native-only for now):
-//! the write/publish path, the producer console, all authentication
-//! (tokens/sessions/SSO/device-flow), private-registry access control, and full
-//! `aos.registry.v1` Connect framing. The Worker serves `public` registries
+//! This crate is mid-migration to **full native parity** (RFC-0004 Phase 5,
+//! `docs/rfcs/0004-registry-hub/10-unified-runtime.md`). The data layer is
+//! already shared with the native hub (`aos_registry_core::Database` over the
+//! D1 [`d1backend`]); the *handler* layer is being lifted into a single shared
+//! `axum` router that both targets serve. Until that lands, this crate still
+//! exposes only the read path through its own fetch router:
+//!
+//! Present today (the read path): the R2 machine facade ([`facade`]), the
+//! D1-backed browse UI ([`render`]) and JSON read API ([`handlers`]), and the
+//! Cron-trigger indexer ([`indexer`]). The Worker serves `public` registries
 //! anonymously; the JSON API is a simple JSON shape, not a Connect envelope.
-//! See `README.md` for the full deferred list and the deploy/validate gap.
+//!
+//! Not yet folded in (tracked by Phase 5, no longer a permanent limitation):
+//! the write/publish path, the producer console, authentication
+//! (tokens/sessions/SSO/device-flow), private-registry access control, and the
+//! `aos.registry.v1` RPC surface. These run in the native hub today and become
+//! the *same* shared `axum` handlers on the Worker once the unification lands;
+//! the `connectrpc` server runtime cannot target wasm, so RPC arrives via a
+//! hand-rolled Connect-unary handler over wasm-clean `prost` messages. See
+//! `README.md` and the RFC for the migration plan.
 //!
 //! # Module map
 //!
