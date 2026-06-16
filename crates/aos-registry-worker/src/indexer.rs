@@ -33,15 +33,31 @@
 //! verify is the registry's pinned trust anchors only (the in-band roster
 //! rotation that extends trust from the committed `keys.toml` is part of the
 //! tree walk and is deferred with it).
+//!
+//! # D1 access
+//!
+//! All D1 reads and writes go through the shared
+//! [`Backend`](aos_registry_core::backend::Backend) over the
+//! [`D1Backend`](crate::d1backend::D1Backend), exactly as the read path does
+//! ([`crate::reads`]). This is deliberate: the backend binds integers as JS
+//! numbers (not the `worker` crate's BigInt, which the pinned 2024-09-09 workerd
+//! D1 rejects) and reads NULL columns cleanly, so the indexer's writes and
+//! floor reads run on the same engine the hub's `Database` uses. The indexer
+//! keeps its own SQL (the deferred-package scope writes only `releases` /
+//! `channels` / `channel_partitions` and the index head, never the whole-index
+//! `apply_snapshot`, which would clear the separately-populated `packages`).
 
 use anyhow::{anyhow, Context as _, Result};
-use worker::{Bucket, D1Database};
+use worker::Bucket;
 
+use aos_registry_core::backend::Backend;
+use aos_registry_core::value::Value;
 use aos_registry_surface::object::{decode_loose, parse_commit, ObjectKind, Oid};
 use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
 use aos_registry_surface::tag::verify_signed_tag;
 use aos_registry_surface::tagobject::TagTarget;
 
+use crate::d1backend::D1Backend;
 use crate::indexlogic::{
     advance_frontier, floor_decision, resolve_partition_release, should_raise_floor, FloorDecision,
 };
@@ -59,12 +75,12 @@ const PARTITIONS: usize = 256;
 /// # Errors
 ///
 /// Returns an error only if the registry list cannot be read from D1.
-pub async fn index_all(db: &D1Database, bucket: &Bucket) -> Result<()> {
-    let registries = list_public_registries(db).await?;
+pub async fn index_all(backend: &D1Backend, bucket: &Bucket) -> Result<()> {
+    let registries = list_public_registries(backend).await?;
     for registry in registries {
-        if let Err(err) = index_one(db, bucket, &registry).await {
+        if let Err(err) = index_one(backend, bucket, &registry).await {
             worker::console_log!("index {} failed: {err:#}", registry.slug);
-            let _ = mark_state(db, registry.id, "failed", Some(&format!("{err:#}"))).await;
+            let _ = mark_state(backend, registry.id, "failed", Some(&format!("{err:#}"))).await;
         }
     }
     Ok(())
@@ -76,7 +92,7 @@ pub async fn index_all(db: &D1Database, bucket: &Bucket) -> Result<()> {
 ///
 /// Returns an error on a verification failure or an R2/D1 access failure; the
 /// caller records it as the registry's `failed` index state.
-pub async fn index_one(db: &D1Database, bucket: &Bucket, registry: &Registry) -> Result<()> {
+pub async fn index_one(backend: &D1Backend, bucket: &Bucket, registry: &Registry) -> Result<()> {
     let trust_keys = parse_trust_keys(&registry.trust_keys)?;
 
     // 1. HEAD + info/refs -> the default branch commit.
@@ -107,13 +123,13 @@ pub async fn index_one(db: &D1Database, bucket: &Bucket, registry: &Registry) ->
     }
 
     // 3. Verify and record release tags.
-    let releases = index_releases(db, bucket, registry, &refs, &trust_keys).await?;
+    let releases = index_releases(backend, bucket, registry, &refs, &trust_keys).await?;
 
     // 4. Resolve and record channels (the branch heads).
-    index_channels(db, bucket, registry, &refs, &trust_keys, &releases).await?;
+    index_channels(backend, bucket, registry, &refs, &trust_keys, &releases).await?;
 
     // 5. Record the fresh index head.
-    record_index(db, registry.id, &head_commit).await?;
+    record_index(backend, registry.id, &head_commit).await?;
     Ok(())
 }
 
@@ -122,13 +138,13 @@ pub async fn index_one(db: &D1Database, bucket: &Bucket, registry: &Registry) ->
 /// Returns a map of verified tag-object oid -> semver, used to resolve channel
 /// partitions (which point at tag objects) to releases.
 async fn index_releases(
-    db: &D1Database,
+    backend: &D1Backend,
     bucket: &Bucket,
     registry: &Registry,
     refs: &Refs,
     trust_keys: &[String],
 ) -> Result<std::collections::BTreeMap<String, String>> {
-    clear_table(db, "releases", registry.id).await?;
+    clear_table(backend, "releases", registry.id).await?;
     let mut by_oid = std::collections::BTreeMap::new();
     for (name, oid) in &refs.tags {
         // Only semver tags are releases; others are ignored (mirrors native).
@@ -144,7 +160,7 @@ async fn index_releases(
             return Err(anyhow!("release tag '{name}' does not target a commit"));
         }
         let commit_oid = signed.tag.object.clone();
-        write_release(db, registry.id, name, &oid.to_hex(), &commit_oid).await?;
+        write_release(backend, registry.id, name, &oid.to_hex(), &commit_oid).await?;
         by_oid.insert(oid.to_hex(), name.clone());
     }
     Ok(by_oid)
@@ -161,14 +177,14 @@ async fn index_releases(
 /// its floor fails the index (fail closed); after a clean write the floor is
 /// raised (only ever upward) to the new frontier.
 async fn index_channels(
-    db: &D1Database,
+    backend: &D1Backend,
     bucket: &Bucket,
     registry: &Registry,
     refs: &Refs,
     trust_keys: &[String],
     releases: &std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
-    clear_table(db, "channels", registry.id).await?;
+    clear_table(backend, "channels", registry.id).await?;
     for name in refs.branches.keys() {
         // Resolve and verify the channel fully in memory first, so the
         // anti-rollback floor is enforced *before* any row is written.
@@ -192,7 +208,7 @@ async fn index_channels(
 
         // Anti-rollback floor: reject a channel whose frontier fell below the
         // recorded floor before touching the index (fail closed).
-        let floor = channel_floor(db, registry.id, name).await?;
+        let floor = channel_floor(backend, registry.id, name).await?;
         if floor_decision(frontier.as_deref(), floor.as_deref()) == FloorDecision::Rollback {
             // Both are Some here (Rollback requires it), but format defensively.
             return Err(anyhow!(
@@ -203,15 +219,15 @@ async fn index_channels(
         }
 
         // Write the verified channel, its partitions, and its frontier.
-        let channel_id = write_channel(db, registry.id, name).await?;
+        let channel_id = write_channel(backend, registry.id, name).await?;
         for (bucket_idx, release) in &buckets {
-            write_partition(db, channel_id, *bucket_idx, release).await?;
+            write_partition(backend, channel_id, *bucket_idx, release).await?;
         }
         if let Some(frontier) = &frontier {
-            set_channel_frontier(db, channel_id, frontier).await?;
+            set_channel_frontier(backend, channel_id, frontier).await?;
             // Raise (never lower) the floor to the new frontier.
             if should_raise_floor(frontier, floor.as_deref()) {
-                set_channel_floor(db, registry.id, name, frontier).await?;
+                set_channel_floor(backend, registry.id, name, frontier).await?;
             }
         }
     }
@@ -259,7 +275,8 @@ async fn read_loose(
     expect: ObjectKind,
 ) -> Result<Vec<u8>> {
     let oid = Oid::from_hex(oid_hex)?;
-    let path = format!("objects/{}", oid.loose_path());
+    // `loose_path()` already yields `objects/ab/cdef…` — do not re-prefix.
+    let path = oid.loose_path();
     let compressed = fetch_bytes(bucket, registry, &path)
         .await?
         .ok_or_else(|| anyhow!("missing object {oid_hex}"))?;
@@ -282,133 +299,117 @@ fn parse_trust_keys(json: &str) -> Result<Vec<String>> {
 
 // -- D1 writes --------------------------------------------------------------
 //
-// The write side of the index. Each helper runs one D1 prepared statement. D1
-// is sqlite, so these are the sqlite-flavored DML the native indexer would run.
+// The write side of the index, issued through the shared D1Backend (sqlite
+// dialect; integers bind as JS numbers, NULL columns read cleanly). The SQL is
+// the sqlite-flavored DML the native indexer's writes reduce to, scoped to the
+// surface-derivable tables (releases / channels / channel_partitions / the
+// index head) — never the whole-index snapshot.
 
-async fn list_public_registries(db: &D1Database) -> Result<Vec<Registry>> {
-    let rows = db
-        .prepare(crate::sql::LIST_PUBLIC_REGISTRIES)
-        .all()
+/// List every public registry, mapped to the worker's [`Registry`].
+async fn list_public_registries(backend: &D1Backend) -> Result<Vec<Registry>> {
+    let rows = backend
+        .query(crate::sql::LIST_PUBLIC_REGISTRIES, &[])
         .await
-        .map_err(|e| anyhow!("listing registries: {e}"))?;
-    // Deserialize via the d1 layer's row mapping by going through serde_json
-    // values would be redundant; reuse the typed results() path.
-    rows.results::<RegistryRow>()
-        .map(|rows| rows.into_iter().map(Registry::from).collect())
-        .map_err(|e| anyhow!("decoding registries: {e}"))
+        .context("listing registries")?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(Registry {
+                id: row.get(0)?,
+                slug: row.get(1)?,
+                source_url: row.get(2)?,
+                trust_keys: row.get(3)?,
+                require_signatures: row.get(4)?,
+                visibility: row.get(5)?,
+                prefix: row.get(6)?,
+            })
+        })
+        .collect()
 }
 
-#[derive(serde::Deserialize)]
-struct RegistryRow {
-    id: i64,
-    slug: String,
-    source_url: String,
-    trust_keys: String,
-    require_signatures: i64,
-    visibility: String,
-    prefix: String,
-}
-
-impl From<RegistryRow> for Registry {
-    fn from(r: RegistryRow) -> Self {
-        Registry {
-            id: r.id,
-            slug: r.slug,
-            source_url: r.source_url,
-            trust_keys: r.trust_keys,
-            require_signatures: r.require_signatures,
-            visibility: r.visibility,
-            prefix: r.prefix,
-        }
-    }
-}
-
-async fn run(db: &D1Database, sql: &str, binds: &[worker::wasm_bindgen::JsValue]) -> Result<()> {
-    db.prepare(sql)
-        .bind(binds)
-        .map_err(|e| anyhow!("bind {sql}: {e}"))?
-        .run()
-        .await
-        .map_err(|e| anyhow!("run {sql}: {e}"))?;
+async fn clear_table(backend: &D1Backend, table: &str, registry_id: i64) -> Result<()> {
+    // `table` is a fixed internal literal, never user input.
+    let sql = format!("DELETE FROM {table} WHERE registry_id = ?1");
+    backend.execute(&sql, &[Value::Int(registry_id)]).await?;
     Ok(())
 }
 
-async fn clear_table(db: &D1Database, table: &str, registry_id: i64) -> Result<()> {
-    // `table` is a fixed internal literal, never user input.
-    let sql = format!("DELETE FROM {table} WHERE registry_id = ?1");
-    run(db, &sql, &[registry_id.into()]).await
-}
-
 async fn write_release(
-    db: &D1Database,
+    backend: &D1Backend,
     registry_id: i64,
     semver: &str,
     tag_oid: &str,
     commit_oid: &str,
 ) -> Result<()> {
-    run(
-        db,
-        "INSERT INTO releases (registry_id, semver, tag_oid, commit_oid, pack_present) \
-         VALUES (?1, ?2, ?3, ?4, 0)",
-        &[
-            registry_id.into(),
-            semver.into(),
-            tag_oid.into(),
-            commit_oid.into(),
-        ],
-    )
-    .await
+    backend
+        .execute(
+            "INSERT INTO releases (registry_id, semver, tag_oid, commit_oid, pack_present) \
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            &[
+                Value::Int(registry_id),
+                Value::Text(semver.to_string()),
+                Value::Text(tag_oid.to_string()),
+                Value::Text(commit_oid.to_string()),
+            ],
+        )
+        .await?;
+    Ok(())
 }
 
-async fn write_channel(db: &D1Database, registry_id: i64, name: &str) -> Result<i64> {
-    run(
-        db,
-        "INSERT INTO channels (registry_id, name) VALUES (?1, ?2)",
-        &[registry_id.into(), name.into()],
-    )
-    .await?;
-    let id: Option<i64> = db
-        .prepare("SELECT id FROM channels WHERE registry_id = ?1 AND name = ?2")
-        .bind(&[registry_id.into(), name.into()])
-        .map_err(|e| anyhow!("bind channel id: {e}"))?
-        .first(Some("id"))
+/// Insert a channel row and return its new id (D1's `last_row_id`).
+async fn write_channel(backend: &D1Backend, registry_id: i64, name: &str) -> Result<i64> {
+    backend
+        .execute_insert(
+            "INSERT INTO channels (registry_id, name) VALUES (?1, ?2)",
+            &[Value::Int(registry_id), Value::Text(name.to_string())],
+        )
         .await
-        .map_err(|e| anyhow!("channel id: {e}"))?;
-    id.ok_or_else(|| anyhow!("channel id not found after insert"))
+        .context("inserting channel")
 }
 
 async fn write_partition(
-    db: &D1Database,
+    backend: &D1Backend,
     channel_id: i64,
     bucket: usize,
     release: &str,
 ) -> Result<()> {
-    run(
-        db,
-        "INSERT INTO channel_partitions (channel_id, bucket, release) VALUES (?1, ?2, ?3)",
-        &[channel_id.into(), (bucket as i64).into(), release.into()],
-    )
-    .await
+    backend
+        .execute(
+            "INSERT INTO channel_partitions (channel_id, bucket, release) VALUES (?1, ?2, ?3)",
+            &[
+                Value::Int(channel_id),
+                Value::Int(bucket as i64),
+                Value::Text(release.to_string()),
+            ],
+        )
+        .await?;
+    Ok(())
 }
 
-async fn set_channel_frontier(db: &D1Database, channel_id: i64, frontier: &str) -> Result<()> {
-    run(
-        db,
-        "UPDATE channels SET frontier = ?2 WHERE id = ?1",
-        &[channel_id.into(), frontier.into()],
-    )
-    .await
+async fn set_channel_frontier(backend: &D1Backend, channel_id: i64, frontier: &str) -> Result<()> {
+    backend
+        .execute(
+            "UPDATE channels SET frontier = ?2 WHERE id = ?1",
+            &[Value::Int(channel_id), Value::Text(frontier.to_string())],
+        )
+        .await?;
+    Ok(())
 }
 
 /// Read a channel's recorded anti-rollback floor (the highest frontier ever
 /// indexed for it), or `None` if it has never been indexed.
-async fn channel_floor(db: &D1Database, registry_id: i64, channel: &str) -> Result<Option<String>> {
-    db.prepare("SELECT floor FROM channel_floors WHERE registry_id = ?1 AND channel = ?2")
-        .bind(&[registry_id.into(), channel.into()])
-        .map_err(|e| anyhow!("bind channel floor: {e}"))?
-        .first(Some("floor"))
+async fn channel_floor(
+    backend: &D1Backend,
+    registry_id: i64,
+    channel: &str,
+) -> Result<Option<String>> {
+    let row = backend
+        .query_opt(
+            "SELECT floor FROM channel_floors WHERE registry_id = ?1 AND channel = ?2",
+            &[Value::Int(registry_id), Value::Text(channel.to_string())],
+        )
         .await
-        .map_err(|e| anyhow!("channel floor: {e}"))
+        .context("reading channel floor")?;
+    row.map(|r| r.get::<String>(0)).transpose()
 }
 
 /// Raise (overwrite) a channel's anti-rollback floor.
@@ -416,49 +417,57 @@ async fn channel_floor(db: &D1Database, registry_id: i64, channel: &str) -> Resu
 /// The caller only ever passes a frontier that is strictly greater than the
 /// recorded floor (see [`should_raise_floor`]); the floor only moves upward.
 async fn set_channel_floor(
-    db: &D1Database,
+    backend: &D1Backend,
     registry_id: i64,
     channel: &str,
     floor: &str,
 ) -> Result<()> {
-    run(
-        db,
-        "INSERT INTO channel_floors (registry_id, channel, floor) VALUES (?1, ?2, ?3) \
-         ON CONFLICT(registry_id, channel) DO UPDATE SET floor = excluded.floor",
-        &[registry_id.into(), channel.into(), floor.into()],
-    )
-    .await
+    backend
+        .execute(
+            "INSERT INTO channel_floors (registry_id, channel, floor) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(registry_id, channel) DO UPDATE SET floor = excluded.floor",
+            &[
+                Value::Int(registry_id),
+                Value::Text(channel.to_string()),
+                Value::Text(floor.to_string()),
+            ],
+        )
+        .await?;
+    Ok(())
 }
 
-async fn record_index(db: &D1Database, registry_id: i64, commit: &str) -> Result<()> {
+async fn record_index(backend: &D1Backend, registry_id: i64, commit: &str) -> Result<()> {
     let now = worker::Date::now().as_millis() as i64 / 1000;
-    run(
-        db,
-        "INSERT INTO registry_index (registry_id, state, last_indexed_commit, indexed_at) \
-         VALUES (?1, 'fresh', ?2, ?3) \
-         ON CONFLICT(registry_id) DO UPDATE SET \
-           state = 'fresh', last_indexed_commit = excluded.last_indexed_commit, \
-           indexed_at = excluded.indexed_at, error = NULL",
-        &[registry_id.into(), commit.into(), now.into()],
-    )
-    .await
+    backend
+        .execute(
+            "INSERT INTO registry_index (registry_id, state, last_indexed_commit, indexed_at) \
+             VALUES (?1, 'fresh', ?2, ?3) \
+             ON CONFLICT(registry_id) DO UPDATE SET \
+               state = 'fresh', last_indexed_commit = excluded.last_indexed_commit, \
+               indexed_at = excluded.indexed_at, error = NULL",
+            &[
+                Value::Int(registry_id),
+                Value::Text(commit.to_string()),
+                Value::Int(now),
+            ],
+        )
+        .await?;
+    Ok(())
 }
 
 async fn mark_state(
-    db: &D1Database,
+    backend: &D1Backend,
     registry_id: i64,
     state: &str,
     error: Option<&str>,
 ) -> Result<()> {
-    let err_val: worker::wasm_bindgen::JsValue = match error {
-        Some(e) => e.into(),
-        None => worker::wasm_bindgen::JsValue::NULL,
-    };
-    run(
-        db,
-        "INSERT INTO registry_index (registry_id, state, error) VALUES (?1, ?2, ?3) \
-         ON CONFLICT(registry_id) DO UPDATE SET state = excluded.state, error = excluded.error",
-        &[registry_id.into(), state.into(), err_val],
-    )
-    .await
+    let error = error.map_or(Value::Null, |e| Value::Text(e.to_string()));
+    backend
+        .execute(
+            "INSERT INTO registry_index (registry_id, state, error) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(registry_id) DO UPDATE SET state = excluded.state, error = excluded.error",
+            &[Value::Int(registry_id), Value::Text(state.to_string()), error],
+        )
+        .await?;
+    Ok(())
 }
