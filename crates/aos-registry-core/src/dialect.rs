@@ -85,7 +85,7 @@
 //! - **Upserts.** `INSERT … ON CONFLICT(col) DO UPDATE/NOTHING` is native on
 //!   sqlite and postgres; mysql spells it `ON DUPLICATE KEY UPDATE` /
 //!   `INSERT IGNORE`. `translate` rewrites the common single-target cases it
-//!   can recognize (see [`Dialect::rewrite_upsert`]); methods with more
+//!   can recognize (the private `rewrite_upsert` step); methods with more
 //!   elaborate upserts pass already-appropriate SQL.
 //! - **`RETURNING`.** Supported by sqlite and postgres and by mysql for the
 //!   `DELETE … RETURNING` and `UPDATE … RETURNING` the hub uses (MariaDB) —
