@@ -911,7 +911,7 @@ impl IrLowerer {
         match self.resolved.symbols.resolve(symbol) {
             Some(
                 b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs" | b"intersectAttrs"
-                | b"catAttrs",
+                | b"catAttrs" | b"elem",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1791,6 +1791,7 @@ mod tests {
                 "builtins.catAttrs \"a\" [ { a = 1; } ]",
                 b"catAttrs".as_slice(),
             ),
+            ("builtins.elem 1 [ 1 ]", b"elem".as_slice()),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -2105,6 +2106,32 @@ mod tests {
         let ir = lowered(
             "let builtins = { catAttrs = name: list: [ true ]; }; in builtins.catAttrs \"a\" []",
         );
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered("elem 1 []");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir = lowered("let builtins = { elem = value: list: false; }; in builtins.elem 1 []");
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
         };

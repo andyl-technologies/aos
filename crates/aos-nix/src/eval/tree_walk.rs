@@ -932,6 +932,16 @@ impl<'ir> TreeWalk<'ir> {
         self.eval_node(id)
     }
 
+    fn eval_nested_equality_operand(&mut self, id: IrId) -> Result<Value, TreeWalkError> {
+        let node = *self.node(id)?;
+        match node.kind {
+            IrKind::LocalVar => self.eval_local_var(id, &node),
+            IrKind::UpvalVar => self.eval_upval_var(id, &node),
+            IrKind::ThunkAlloc => self.eval_thunk_alloc(id, &node),
+            _ => self.eval_node(id),
+        }
+    }
+
     fn eval_thunk_alloc(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
         let IrData::Node(body) = node.data else {
             return Err(self.invalid_payload(id, node, "thunk body"));
@@ -1201,6 +1211,7 @@ impl<'ir> TreeWalk<'ir> {
                 StrictBinaryPrimOp::CatAttrs => {
                     self.eval_cat_attrs_primop(id, node.span, first, second)
                 }
+                StrictBinaryPrimOp::Elem => self.eval_elem_primop(id, node, first, second),
             };
         }
         if args.len() != 1 {
@@ -1762,6 +1773,60 @@ impl<'ir> TreeWalk<'ir> {
             ));
         };
         Ok(value)
+    }
+
+    fn eval_elem_primop(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        candidate_id: IrId,
+        list_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let list_span = self.node(list_id)?.span;
+        let list_value = self.eval_node(list_id)?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list_id,
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list_span,
+            ));
+        }
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            Self::clone_list_elements(list_id, list_span, list)?
+        };
+        if elements.is_empty() {
+            return Ok(Value::bool(false));
+        }
+
+        let candidate_span = self.node(candidate_id)?.span;
+        let candidate = self.eval_nested_equality_operand(candidate_id)?;
+        for element in elements {
+            if self.values_equal_nested_lazy(
+                id,
+                node,
+                candidate_id,
+                candidate_span,
+                candidate,
+                list_id,
+                list_span,
+                element,
+            )? {
+                return Ok(Value::bool(true));
+            }
+        }
+        Ok(Value::bool(false))
     }
 
     fn eval_get_attr_primop(
@@ -2938,15 +3003,8 @@ impl<'ir> TreeWalk<'ir> {
         node: &IrNode,
         left: Value,
         right: Value,
-        context: EqualityContext,
+        _context: EqualityContext,
     ) -> Result<bool, TreeWalkError> {
-        if context == EqualityContext::Nested
-            && left.raw_eq(right)
-            && matches!(left.tag(), ValueTag::Lambda | ValueTag::Primop)
-        {
-            return Ok(true);
-        }
-
         match (left.tag(), right.tag()) {
             (ValueTag::Int, ValueTag::Int) => {
                 Ok((left.payload_bits() as i64) == (right.payload_bits() as i64))
@@ -2976,6 +3034,77 @@ impl<'ir> TreeWalk<'ir> {
             )),
             _ => Ok(false),
         }
+    }
+
+    fn values_equal_nested_lazy(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left_id: IrId,
+        left_span: Span,
+        left: Value,
+        right_id: IrId,
+        right_span: Span,
+        right: Value,
+    ) -> Result<bool, TreeWalkError> {
+        let left_identity = self.nested_identity_value(id, node.span, left)?;
+        let right_identity = self.nested_identity_value(id, node.span, right)?;
+        let shared_heap_identity =
+            left_identity.raw_eq(right_identity) && left_identity.tag().is_heap();
+        if shared_heap_identity && left_identity.tag() != ValueTag::Thunk {
+            return Ok(true);
+        }
+
+        let left = self.force_value(left_id, left_span, left_identity)?;
+        let right = self.force_value(right_id, right_span, right_identity)?;
+        if shared_heap_identity
+            && left.raw_eq(right)
+            && left.tag().is_heap()
+            && left.tag() != ValueTag::Thunk
+        {
+            return Ok(true);
+        }
+        if shared_heap_identity
+            && left.tag() == ValueTag::Float
+            && right.tag() == ValueTag::Float
+            && f64::from_bits(left.payload_bits()).is_nan()
+            && f64::from_bits(right.payload_bits()).is_nan()
+        {
+            return Ok(true);
+        }
+        self.values_equal(id, node, left, right, EqualityContext::Nested)
+    }
+
+    fn nested_identity_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if value.tag() != ValueTag::Thunk {
+            return Ok(value);
+        }
+        let thunk = self
+            .heap
+            .clone_thunk(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let body = thunk.body();
+        let body_node = *self.node(body)?;
+        if !matches!(
+            body_node.kind,
+            IrKind::LocalVar | IrKind::UpvalVar | IrKind::ThunkAlloc
+        ) {
+            return Ok(value);
+        }
+
+        let thunk_env = self.clone_env_frames(id, thunk.env(), span)?;
+        let thunk_with_env = self.clone_with_scopes(id, thunk.with_scope_env(), span)?;
+        let saved_env = std::mem::replace(&mut self.env, thunk_env);
+        let saved_with_scopes = std::mem::replace(&mut self.with_scopes, thunk_with_env);
+        let result = self.eval_nested_equality_operand(body);
+        self.env = saved_env;
+        self.with_scopes = saved_with_scopes;
+        result
     }
 
     fn strings_equal(
@@ -3018,9 +3147,9 @@ impl<'ir> TreeWalk<'ir> {
         }
 
         for (left, right) in left_elements.into_iter().zip(right_elements) {
-            let left = self.force_value(id, node.span, left)?;
-            let right = self.force_value(id, node.span, right)?;
-            if !self.values_equal(id, node, left, right, EqualityContext::Nested)? {
+            if !self
+                .values_equal_nested_lazy(id, node, id, node.span, left, id, node.span, right)?
+            {
                 return Ok(false);
             }
         }
@@ -3056,9 +3185,16 @@ impl<'ir> TreeWalk<'ir> {
             }
         }
         for (left, right) in left_entries.into_iter().zip(right_entries) {
-            let left = self.force_value(id, node.span, left.value)?;
-            let right = self.force_value(id, node.span, right.value)?;
-            if !self.values_equal(id, node, left, right, EqualityContext::Nested)? {
+            if !self.values_equal_nested_lazy(
+                id,
+                node,
+                id,
+                node.span,
+                left.value,
+                id,
+                node.span,
+                right.value,
+            )? {
                 return Ok(false);
             }
         }
@@ -3788,6 +3924,7 @@ enum StrictBinaryPrimOp {
     RemoveAttrs,
     IntersectAttrs,
     CatAttrs,
+    Elem,
 }
 
 impl StrictBinaryPrimOp {
@@ -3799,6 +3936,7 @@ impl StrictBinaryPrimOp {
             b"removeAttrs" => Some(Self::RemoveAttrs),
             b"intersectAttrs" => Some(Self::IntersectAttrs),
             b"catAttrs" => Some(Self::CatAttrs),
+            b"elem" => Some(Self::Elem),
             _ => None,
         }
     }
@@ -5302,6 +5440,119 @@ mod tests {
             );
             assert_eq!(error.span(), index_span);
         }
+    }
+
+    #[test]
+    fn elem_primop_scans_list_with_structural_equality() {
+        assert_eq!(eval("builtins.elem 2 [ 1 2 (1 / 0) ]").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.elem 3 [ 1 2 ]").as_bool(), Ok(false));
+        assert_eq!(
+            eval("builtins.elem { a = 1; } [ { a = 1; } { a = 1 / 0; } ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let f = x: x; in builtins.elem f [ f ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(eval("builtins.elem (x: x) [ (x: x) ]").as_bool(), Ok(false));
+        assert_eq!(
+            eval("let v = { a = x: x; }; in builtins.elem v.a [ v.a ]").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval("let xs = [ xs ]; in builtins.elem xs xs").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let s = rec { a = s; }; in builtins.elem s [ s ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let xs = [ (1 / 0) ]; in builtins.elem xs [ xs ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval(
+                "let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in builtins.elem nan [ nan ]"
+            )
+            .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval(
+                "builtins.elem ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)) [ ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)) ]"
+            )
+            .as_bool(),
+            Ok(false)
+        );
+        assert_eq!(eval("builtins.elem (1 / 0) []").as_bool(), Ok(false));
+        assert_eq!(
+            eval("let builtins = { elem = value: list: false; }; in builtins.elem 1 [ 1 ]")
+                .as_bool(),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn elem_primop_type_checks_list_before_candidate() {
+        let ir = lower("builtins.elem (1 / 0) 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("elem checks list type before candidate");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: list,
+                expected: "list",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), list_span);
+
+        let ir = lower("builtins.elem 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("elem forces the list before the candidate");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: list });
+        assert_eq!(error.span(), list_span);
+
+        let ir = lower("builtins.elem 2 [ 1 (1 / 0) ]");
+        let error = eval_whnf_owned(&ir).expect_err("elem scans until match or error");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let ir = lower("let x = 1 / 0; in builtins.elem x [ x ]");
+        let error = eval_whnf_owned(&ir).expect_err("elem forces shared throwing candidates");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let ir = lower("let s = { x = 1 / 0; }; v = { a = s; }; in builtins.elem v.a [ v.a ]");
+        let error = eval_whnf_owned(&ir).expect_err("elem does not hide selected attrset errors");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
     }
 
     #[test]
@@ -8482,6 +8733,30 @@ mod tests {
         assert_eq!(eval("[1 (1 / 0)] == [2 (1 / 0)]").as_bool(), Ok(false));
         assert_eq!(eval("let f = x: x; in [ f ] == [ f ]").as_bool(), Ok(true));
         assert_eq!(eval("[ (x: x) ] == [ (x: x) ]").as_bool(), Ok(false));
+        assert_eq!(
+            eval("let v = { a = x: x; }; in [ v.a ] == [ v.a ]").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval("let v = { a = x: x; }; xs = [ v.a ]; in xs == xs").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let xs = [ (1 / 0) ]; in [ xs ] == [ xs ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in [ nan ] == [ nan ]")
+                .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval(
+                "[ ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)) ] == [ ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)) ]"
+            )
+            .as_bool(),
+            Ok(false)
+        );
     }
 
     #[test]
@@ -8509,6 +8784,10 @@ mod tests {
         );
         assert_eq!(
             eval("let f = x: x; in { inherit f; } == { inherit f; }").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let s = { a = 1 / 0; }; in [ s ] == [ s ]").as_bool(),
             Ok(true)
         );
     }
