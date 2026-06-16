@@ -12,6 +12,22 @@
   hostPlatform,
   targetPlatform,
 }: let
+  lib = import ../../../lib {
+    system = buildPlatform.system;
+    bash = prev.bash;
+  };
+
+  phases = import ../../phases.nix;
+
+  mkTierStdenv = import ../../tier-stdenv.nix {
+    inherit
+      lib
+      buildPlatform
+      hostPlatform
+      targetPlatform
+      ;
+  };
+
   callPackage = path: overrides: let
     fn = import path;
     auto = builtins.intersectAttrs (builtins.functionArgs fn) scope;
@@ -36,31 +52,85 @@
     linuxHeaders = callPackage ./linux-headers.nix {};
     glibc = callPackage ./glibc.nix {};
 
-    # Phase 3.5: Autotools rebuilt with THIS tier's gcc + binutils + prev.glibc
+    # Shared mini-stdenv for gcc4_1's manifest-backed tools. The default
+    # profile matches the Phase 3.5 raw derivations: this tier's GCC with the
+    # previous tier binutils/libc and previous POSIX tools in PATH. Phase 4
+    # POSIX tools override the compiler profile to this tier's binutils/libc.
+    tierBuildStdenv = mkTierStdenv {
+      tc = {
+        inherit (scope) gcc;
+        inherit (prev) binutils glibc;
+        inherit
+          (prev)
+          coreutils
+          findutils
+          gnumake
+          gawk
+          grep
+          sed
+          tar
+          gzip
+          diffutils
+          patch
+          bash
+          ;
+      };
+      staticDefault = true;
+    };
+
+    mkAutotoolsTool = import ../lib/mk-autotools-tool.nix {
+      inherit
+        lib
+        phases
+        buildPlatform
+        hostPlatform
+        ;
+      tierStdenv = scope.tierBuildStdenv;
+    };
+
+    manifest = import ./manifest.nix {
+      inherit buildPlatform hostPlatform prev;
+      inherit
+        (scope)
+        gcc
+        binutils
+        glibc
+        perl
+        texinfo
+        help2man
+        m4
+        flex
+        bison
+        autoconf
+        automake
+        ;
+    };
+
+    # Phase 3.5: Autotools rebuilt with THIS tier's gcc + prev binutils/glibc
     # Order: perl/texinfo/help2man first (no m4/flex/bison deps),
     # then m4/flex/bison/autoconf/automake (can use real texinfo/help2man)
-    perl = callPackage ./perl.nix {};
-    texinfo = callPackage ./texinfo.nix {};
-    help2man = callPackage ./help2man.nix {};
-    m4 = callPackage ./m4.nix {};
-    flex = callPackage ./flex.nix {};
-    bison = callPackage ./bison.nix {};
-    autoconf = callPackage ./autoconf.nix {};
-    automake = callPackage ./automake.nix {};
+    perl = scope.mkAutotoolsTool scope.manifest.perl;
+    texinfo = scope.mkAutotoolsTool scope.manifest.texinfo;
+    help2man = scope.mkAutotoolsTool scope.manifest.help2man;
+    m4 = scope.mkAutotoolsTool scope.manifest.m4;
+    flex = scope.mkAutotoolsTool scope.manifest.flex;
+    bison = scope.mkAutotoolsTool scope.manifest.bison;
+    autoconf = scope.mkAutotoolsTool scope.manifest.autoconf;
+    automake = scope.mkAutotoolsTool scope.manifest.automake;
 
     # Phase 4: POSIX tools built with THIS.gcc + THIS.binutils + THIS.glibc
-    bash = callPackage ./bash.nix {};
-    coreutils = callPackage ./coreutils.nix {};
-    gnumake = callPackage ./gnumake.nix {};
-    sed = callPackage ./sed.nix {};
-    grep = callPackage ./grep.nix {};
-    gawk = callPackage ./gawk.nix {};
-    findutils = callPackage ./findutils.nix {};
-    diffutils = callPackage ./diffutils.nix {};
-    tar = callPackage ./tar.nix {};
-    gzip = callPackage ./gzip.nix {};
+    bash = scope.mkAutotoolsTool scope.manifest.bash;
+    coreutils = scope.mkAutotoolsTool scope.manifest.coreutils;
+    gnumake = scope.mkAutotoolsTool scope.manifest.gnumake;
+    sed = scope.mkAutotoolsTool scope.manifest.sed;
+    grep = scope.mkAutotoolsTool scope.manifest.grep;
+    gawk = scope.mkAutotoolsTool scope.manifest.gawk;
+    findutils = scope.mkAutotoolsTool scope.manifest.findutils;
+    diffutils = scope.mkAutotoolsTool scope.manifest.diffutils;
+    tar = scope.mkAutotoolsTool scope.manifest.tar;
+    gzip = scope.mkAutotoolsTool scope.manifest.gzip;
     bzip2 = callPackage ./bzip2.nix {};
-    patch = callPackage ./patch.nix {};
+    patch = scope.mkAutotoolsTool scope.manifest.patch;
   };
 in {
   inherit
