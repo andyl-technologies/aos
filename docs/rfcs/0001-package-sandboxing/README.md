@@ -2,11 +2,11 @@
 
 - **Status:** Proposed — 25 tracked decisions ([`open-questions.md`](open-questions.md));
   Decisions 1–19 are the core design and 20–25 are the state-of-the-art additions
-  committed under the budget mandate. Two items are left for the maintainer: the
-  secrets path of D9 (config) and whether the threat model includes untrusted
-  tenants (the microVM tier). The phased build is in
-  [`implementation-plan.md`](implementation-plan.md); implementation is gated on
-  the Decision 17 validation spike (Phase 3).
+  committed under the budget mandate. Both maintainer decisions are answered:
+  D9 (config) secrets path signed off (TPM2-sealed creds), and the microVM tier
+  is a planned future effort (current threat model is first-party confinement).
+  The phased build is in [`implementation-plan.md`](implementation-plan.md);
+  implementation is gated on the Decision 17 validation spike (Phase 3).
 - **Mandate:** unlimited engineering budget, no corners cut — the target is the
   state of the art ([`state-of-the-art.md`](state-of-the-art.md)). Cost-based
   deferrals are lifted; what stays out is out **on merit** (dominated, no

@@ -1,17 +1,22 @@
-# Configuration delivery to packages (OPEN design)
+# Configuration delivery to packages
 
-Status: planning
+Status: RESOLVED (direction)
 
-> **DECISION: TBD — but with a recommendation on the table.** This document
-> still surveys the full option space, maps each option against a fixed set of
-> criteria, and records the open questions; it does **not** unilaterally rule.
-> What has changed: the architecture review now identifies a clear front-runner
-> — **TPM2-sealed systemd credentials** (see *Recommended direction* below) —
-> because RFC-0006 shipped the measured-boot/TPM2 substrate that closed the one
-> gap the original caution rested on ("no credential backend exists in AOS
-> today"). Treat that as the **recommended resolution pending the maintainer's
-> explicit sign-off**, not as already-decided. The other six options remain
-> documented as the alternatives the sign-off is chosen against.
+> **DECISION: RESOLVED — layered, three tiers.** Config has three distinct
+> needs, and the answer is one per need, not one channel for all:
+> - **Secrets → TPM2-sealed systemd credentials** (signed-PCR-11/UKI policy) —
+>   **signed off** (2026-06). This rides RFC-0006's measured-boot/TPM2 substrate
+>   and satisfies the original "do not settle on credstore" caution: it is
+>   *TPM-sealed*, not the bare host-key credstore that caution was about. See
+>   *Recommended direction* below for the mechanism.
+> - **Structured config → an apm config artifact validated against a
+>   manifest-declared schema** before the service starts.
+> - **Simple / non-secret → `EnvironmentFile=` + Ignition `storage.files`**
+>   (k3s's pattern), the zero-ceremony tier.
+>
+> The other options below remain documented as the alternatives this was chosen
+> against. **Hot reload** is built (D25): the manifest declares reload support; a
+> config change runs `systemctl reload-or-restart`.
 
 This is one of the package docs. Siblings:
 [README.md](README.md), [permissions.md](permissions.md),
@@ -339,12 +344,9 @@ Two honest patterns fall out of the matrix and are worth stating plainly:
 
 ## Recommended direction: TPM2-sealed systemd credentials
 
-> This section names a **front-runner**, not a final ruling. It exists because
-> the architecture review, under RFC-0001's unlimited-engineering-budget +
-> state-of-the-art mandate, found one option that is both the upstream SOTA for
-> exactly this problem *and* already underpinned by infrastructure AOS has
-> shipped. The "DECISION" below is still pending the maintainer's explicit
-> sign-off.
+> This is the **decided** secrets path (signed off 2026-06): the upstream SOTA
+> for exactly this problem *and* already underpinned by infrastructure AOS has
+> shipped (RFC-0006).
 
 The earlier "do not settle on credstore" caution (top of this doc) rested on a
 specific, now-closed gap: *AOS had no credential backend (TPM/sealed/LUKS)*. That
@@ -591,25 +593,19 @@ requirements vs. nice-to-haves — that prioritization is itself open.
 
 ---
 
-**DECISION: DECIDE (recommendation on the table).** No option is *ratified* yet
-— this is **not** marked Resolved, and it requires the maintainer's explicit
-sign-off. But under RFC-0001's unlimited-engineering-budget + state-of-the-art
-mandate the research and AOS's own measured-boot work (RFC-0006) now point the
-same way: the recommended resolution for **workload (isolated) packages** is
-**TPM2-sealed systemd credentials** with a **signed-PCR (PCR 11 / UKI) policy**
-(see *Recommended direction*), provisioned at first boot via SMBIOS OEM strings
-rather than the cmdline. The earlier "do not settle on credstore" caution was
-about not foreclosing prematurely *while AOS lacked a credential backend* — that
-backend now exists (RFC-0006), so the caution is satisfied, not violated. k3s
-and other **host-privileged infrastructure** packages likely keep the plain
-Ignition-file + bind-mount path (Option 2/6) regardless; a single mechanism need
-not serve both shapes.
+**DECISION: RESOLVED (direction) — signed off 2026-06.** Secrets for **workload
+(isolated) packages** use **TPM2-sealed systemd credentials** with a **signed-PCR
+(PCR 11 / UKI) policy** (see *Recommended direction*), provisioned at first boot
+via SMBIOS OEM strings rather than the cmdline. The earlier "do not settle on
+credstore" caution was about not foreclosing *while AOS lacked a credential
+backend* — that backend now exists (RFC-0006), so the caution is satisfied. k3s
+and other **host-privileged infrastructure** packages keep the plain
+Ignition-file + bind-mount path (Option 2/6); a single mechanism need not serve
+both shapes. Structured config rides an apm artifact + manifest-declared schema;
+simple/non-secret config stays on `EnvironmentFile=`.
 
-The next phase should (a) get the maintainer's sign-off on the recommendation,
-(b) pick the hard requirements from the criteria above, (c) resolve the open
-questions — especially #1 (one mechanism or two), #2 (hot-reload scope), #3
-(secrets-at-rest layer, now answerable via the TPM2 substrate), and #4 (verify
-the systemd build exposes `systemd-creds`/credstore/TPM2). Cross-link the
-outcome back into [apm-integration.md](apm-integration.md),
+Remaining implementer work (not decisions): verify the systemd build exposes
+`systemd-creds`/credstore/TPM2; wire the manifest-declared config schema; carry
+the outcome into [apm-integration.md](apm-integration.md),
 [container-model.md](container-model.md), and the TPM substrate in
 [../0006-secure-boot/README.md](../0006-secure-boot/README.md).

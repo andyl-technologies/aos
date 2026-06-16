@@ -98,7 +98,7 @@ reframes how the phases below are read:
 | **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☐ |
 | **P9** | Runtime integrity & attestation: dm-verity package roots (`RootImage=`+`RootHashSignature=` vs the `.platform` keyring), measure package+manifest into PCR 15, TPM quote + registry golden-measurements catalog | P6, P8 (+ RFC-0006) | D5, D6, D21, D22 | ☐ |
 | **P10** | Supply-chain provenance: in-toto/SLSA attestation (NAR + manifest), transparency log, TUF roles/thresholds | P0 | D23 | ☐ |
-| **P11** | Out of scope **on merit** (not cost): nspawn (dominated), microVM tier (threat-model gated), machined/portabled/importd (attack surface), L2 zones, perf measurement | — (merit / maintainer decision) | D7, D13, D17 | ☐ |
+| **P11** | Out of scope **on merit** (not cost): nspawn (dominated), microVM tier (planned future effort — untrusted workloads), machined/portabled/importd (attack surface), L2 zones, perf measurement | — (merit / scheduled later) | D7, D13, D17 | ☐ |
 
 Legend: ☐ not started · ◐ in progress · ☑ exit criterion met. Phases 8–10 are
 the state-of-the-art additions under the [budget mandate](#budget-mandate);
@@ -350,11 +350,10 @@ apm at first boot; define upgrade/rollback.
       the desired set: install additions **and uninstall packages removed from
       `desired.toml`** (disable target, remove attach units + preset lines, gc the
       generation). Replaces additive-only — the Nix/Talos/K8s declarative idiom.
-- [ ] **Layered config (D9).** Secrets via TPM2-sealed systemd-creds
-      (`SetCredentialEncrypted=`, signed-PCR-11 policy — awaiting sign-off);
-      structured config via an apm config artifact validated against the
-      manifest-declared schema before start; simple via `EnvironmentFile=`
-      ([`config.md`](config.md)).
+- [ ] **Layered config (D9, signed off).** Secrets via TPM2-sealed systemd-creds
+      (`SetCredentialEncrypted=`, signed-PCR-11 policy); structured config via an
+      apm config artifact validated against the manifest-declared schema before
+      start; simple via `EnvironmentFile=` ([`config.md`](config.md)).
 - [ ] **Hot-reload plumbing (D25).** The manifest declares whether the service
       supports reload; a config change runs `systemctl reload-or-restart`
       (`Type=notify-reload`/`RELOADING=1` where supported, restart otherwise).
@@ -562,14 +561,15 @@ building it would make the OS *worse*. Everything cost-deferred moved into Phase
       second service manager with zero consumer. Not built. The deferred template
       in [`container-model.md`](container-model.md) is the spec *if* a multi-unit-
       init package ever appears.
-- [ ] **microVM isolation tier (Firecracker/Kata) — *threat-model gated*.** The
-      genuinely-stronger-than-namespace boundary. **If** the threat model includes
-      untrusted / multi-tenant code, build it from AOS's existing from-source QEMU
-      + `lib/testing/firecracker.nix` infra (a manifest-selectable substrate,
-      `substrate = "microvm"`), **not** nspawn. If AOS only confines first-party
-      packages, the per-unit + Landlock + MAC + attestation stack is sufficient and
-      this is gold-plating. **Maintainer decision** ([`open-questions.md`](open-questions.md)
-      §"Why anything is still out of scope").
+- [ ] **microVM isolation tier (Firecracker/Kata) — *planned future effort*.** The
+      genuinely-stronger-than-namespace boundary. **Decided (2026-06): not yet** —
+      the current threat model is first-party confinement, for which the per-unit +
+      Landlock + MAC + attestation stack is sufficient. Built when untrusted /
+      multi-tenant workloads enter scope, from AOS's existing from-source QEMU +
+      `lib/testing/firecracker.nix` infra (a manifest-selectable
+      `substrate = "microvm"`), **not** nspawn. The substrate gradient (per-unit
+      now → microVM later) is the recorded direction; only the timing is deferred,
+      on a real future need.
 - [ ] **machined / portabled / importd stay disabled (D7) — *attack surface*.**
       Enabling unused daemons enlarges the TCB for no capability; introspection via
       `systemctl`.
@@ -592,9 +592,9 @@ The following moved **out of "deferred" into committed phases** under this pass:
   renderer wires each as a least-privilege fd-pass / `BindReadOnlyPaths=` /
   `JoinsNamespaceOf=` (flat ordering ships first as the subset). See
   [`open-questions.md`](open-questions.md) §18.
-- **Config layering (D9)** → **Phase 5 / [`config.md`](config.md)**: secrets via
-  TPM2-sealed systemd-creds (awaiting sign-off), structured config via apm
-  artifact + manifest schema, simple via `EnvironmentFile=`.
+- **Config layering (D9, signed off)** → **Phase 5 / [`config.md`](config.md)**:
+  secrets via TPM2-sealed systemd-creds, structured config via apm artifact +
+  manifest schema, simple via `EnvironmentFile=`.
 
 ---
 
