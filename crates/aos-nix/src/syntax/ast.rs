@@ -49,7 +49,11 @@ impl Symbol {
     }
 }
 
-/// A dense file-local symbol table.
+/// A dense append-only symbol table.
+///
+/// Parsers can start from an empty table for isolated file-local ids or thread
+/// an existing table across files for process-wide ids. Cache serialization
+/// remaps process-wide ids back to deterministic file-local tables.
 #[derive(Clone, Debug, Default)]
 pub struct SymbolTable {
     by_text: BTreeMap<Vec<u8>, Symbol>,
@@ -407,7 +411,10 @@ pub struct ParsedAst {
     pub root: NodeId,
     /// The arena containing the root and every referenced node.
     pub arena: AstArena,
-    /// File-local symbols referenced by the arena.
+    /// Symbols referenced by the arena.
+    ///
+    /// This table may also contain earlier symbols when parsing with a shared
+    /// append-only table.
     pub symbols: SymbolTable,
 }
 

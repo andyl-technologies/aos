@@ -13,4 +13,7 @@ pub use ast::{
     ParsedAst, Symbol, SymbolTable, UnaryOpKind,
 };
 pub use lexer::{LexError, LexErrorKind, Lexer, Span, Token, TokenKind};
-pub use parser::{ParseError, ParseErrorKind, Parser, parse_bytes, parse_str};
+pub use parser::{
+    ParseError, ParseErrorKind, Parser, parse_bytes, parse_bytes_with_symbols, parse_str,
+    parse_str_with_symbols,
+};

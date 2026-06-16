@@ -58,6 +58,23 @@ pub fn parse_str(source: &str) -> Result<ParsedAst, ParseError> {
     Parser::from_source_str(source).parse()
 }
 
+/// Parses a UTF-8 Nix source string using an existing symbol table.
+///
+/// This entry point lets callers thread one append-only table across multiple
+/// source files while preserving the default [`parse_str`] convenience API for
+/// isolated parses. The table is consumed and returned in [`ParsedAst`] only on
+/// success; speculative callers that need rollback should clone the table before
+/// parsing.
+///
+/// # Errors
+///
+/// Returns [`ParseError`] when lexing fails, when the token stream is not valid
+/// Nix syntax for the implemented grammar, or when arena/symbol allocation
+/// exceeds `u32` addressability.
+pub fn parse_str_with_symbols(source: &str, symbols: SymbolTable) -> Result<ParsedAst, ParseError> {
+    Parser::from_source_str_with_symbols(source, symbols).parse()
+}
+
 /// Parses Nix source bytes into an AST.
 ///
 /// # Errors
@@ -67,6 +84,24 @@ pub fn parse_str(source: &str) -> Result<ParsedAst, ParseError> {
 /// exceeds `u32` addressability.
 pub fn parse_bytes(source: &[u8]) -> Result<ParsedAst, ParseError> {
     Parser::new(source).parse()
+}
+
+/// Parses Nix source bytes using an existing symbol table.
+///
+/// The table is consumed and returned in [`ParsedAst`] only on success;
+/// speculative callers that need rollback should clone the table before
+/// parsing.
+///
+/// # Errors
+///
+/// Returns [`ParseError`] when lexing fails, when the token stream is not valid
+/// Nix syntax for the implemented grammar, or when arena/symbol allocation
+/// exceeds `u32` addressability.
+pub fn parse_bytes_with_symbols(
+    source: &[u8],
+    symbols: SymbolTable,
+) -> Result<ParsedAst, ParseError> {
+    Parser::with_symbols(source, symbols).parse()
 }
 
 /// A hand-written Nix parser.
@@ -82,18 +117,29 @@ pub struct Parser<'a> {
 impl<'a> Parser<'a> {
     /// Creates a parser over source bytes.
     pub fn new(source: &'a [u8]) -> Self {
+        Self::with_symbols(source, SymbolTable::new())
+    }
+
+    /// Creates a parser over source bytes using an existing symbol table.
+    pub fn with_symbols(source: &'a [u8], symbols: SymbolTable) -> Self {
         Self {
             source,
             lexer: Lexer::new(source),
             lookahead: None,
             arena: AstArena::new(),
-            symbols: SymbolTable::new(),
+            symbols,
         }
     }
 
     /// Creates a parser over a UTF-8 source string.
     pub fn from_source_str(source: &'a str) -> Self {
         Self::new(source.as_bytes())
+    }
+
+    /// Creates a parser over a UTF-8 source string using an existing symbol
+    /// table.
+    pub fn from_source_str_with_symbols(source: &'a str, symbols: SymbolTable) -> Self {
+        Self::with_symbols(source.as_bytes(), symbols)
     }
 
     /// Parses the full source and requires end-of-file after the root
@@ -1614,6 +1660,38 @@ mod tests {
         };
         assert_eq!(ast.arena.child_slice(bindings).expect("bindings").len(), 2);
         assert_eq!(node(&ast, body).kind, NodeKind::Apply);
+    }
+
+    #[test]
+    fn parser_can_thread_shared_symbol_table_across_files() {
+        let first = parse("alpha");
+        let second = parse_str_with_symbols("beta", first.symbols).expect("second source parses");
+
+        assert_eq!(
+            second.symbols.resolve(Symbol::new(0)),
+            Some(b"alpha".as_slice())
+        );
+        assert_eq!(
+            second.symbols.resolve(Symbol::new(1)),
+            Some(b"beta".as_slice())
+        );
+
+        let NodeData::Symbol(symbol) = node(&second, second.root).data else {
+            panic!("root should be an identifier symbol");
+        };
+        assert_eq!(symbol.as_u32(), 1);
+
+        let third = parse_str_with_symbols("alpha", second.symbols).expect("third source parses");
+        let NodeData::Symbol(symbol) = node(&third, third.root).data else {
+            panic!("root should be an identifier symbol");
+        };
+        assert_eq!(symbol.as_u32(), 0);
+
+        let isolated = parse("beta");
+        assert_eq!(
+            isolated.symbols.resolve(Symbol::new(0)),
+            Some(b"beta".as_slice())
+        );
     }
 
     #[test]
