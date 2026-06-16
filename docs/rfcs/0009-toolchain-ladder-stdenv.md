@@ -1,6 +1,6 @@
 # RFC-0009: A coherent toolchain-ladder stdenv — per-tier mini-stdenv, manifest-driven packages, stock `make bootstrap`
 
-- **Status:** Proposed
+- **Status:** In progress — Phase 0 implemented
 - **Date:** 2026-06-15
 - **PR:** _(to be filled)_
 - **Audience:** anyone working on `stdenv/` — the bootstrap chain
@@ -263,23 +263,26 @@ Phased, lowest-risk-first; the ladder stays green at every step because
 each migrated package produces a store path that must still build under
 its successor.
 
-- **Phase 0 — machinery.** Add `mkTierStdenv`, the cc-wrapper static
+- [x] **Phase 0 — machinery. Implemented.** Add `mkTierStdenv`, the cc-wrapper static
   profile, and the `unpackMode`/`freezeAutotoolsTimestamps` phase flags.
   No package changes yet; refactor `mkStdenvFromTier` to call
   `mkTierStdenv`. Verify `nix-build -A stdenv` is byte-identical (`.drv`
-  diff) to before.
-- **Phase 1 — POSIX tools, one tier.** Convert a single mid-ladder tier's
+  diff) to before. Verified for Phase 0: the final `aos-cc-wrapper.drv`
+  and `aos-stdenv.drv` paths match the pre-change baseline, remote
+  `checks.eval` passes, the stdenv wrapper builds, and adversarial review
+  findings were addressed.
+- [ ] **Phase 1 — POSIX tools, one tier.** Convert a single mid-ladder tier's
   ~20 tools (e.g. gcc8) to `mkAutotoolsTool` + manifest. Diff the
   resulting store paths against the current build; investigate any
   difference before proceeding.
-- **Phase 2 — POSIX tools, all tiers.** Roll the manifest conversion
+- [ ] **Phase 2 — POSIX tools, all tiers.** Roll the manifest conversion
   across the remaining native tiers, then the cross tiers.
-- **Phase 3 — `mkGlibc`.** Unify glibc across tiers; it is lower-variance
+- [ ] **Phase 3 — `mkGlibc`.** Unify glibc across tiers; it is lower-variance
   than gcc.
-- **Phase 4 — `mkGcc`.** Unify gcc across tiers; switch the final tier to
+- [ ] **Phase 4 — `mkGcc`.** Unify gcc across tiers; switch the final tier to
   `bootstrap = true` (stock `make bootstrap`) and retire the disabled
   self-recompile TODO.
-- **Phase 5 — cleanup.** Delete the per-tier `default.nix` `callPackage`
+- [ ] **Phase 5 — cleanup.** Delete the per-tier `default.nix` `callPackage`
   boilerplate where the manifest subsumes it; update `docs/` and this
   RFC's status.
 
