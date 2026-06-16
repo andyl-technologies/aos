@@ -23,7 +23,9 @@ use super::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     resolve_mirror, resolved_downloads_json,
 };
-use super::exposed_units::{rebuild_generation_expose_roots, reconcile_system_profile};
+use super::exposed_units::{
+    rebuild_generation_expose_roots, reconcile_system_profile, validate_generation_exposed_units,
+};
 use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
@@ -393,6 +395,7 @@ pub async fn run(
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
     let future_installed = list_meta(&profile)?;
     rebuild_generation_expose_roots(&new_gen, &future_installed)?;
+    validate_generation_exposed_units(&new_gen, &future_installed)?;
 
     // Build FHS tree for the new generation.
     build_generation_fhs_tree(&new_gen, printer)?;
@@ -1137,6 +1140,9 @@ nar_size = 42
             units: vec!["curl.service".into()],
             images: Vec::new(),
             requires: Vec::new(),
+            config: Default::default(),
+            provides: Vec::new(),
+            uses: Vec::new(),
         });
         apm.expose_artifact = Some(ExposeArtifactMeta {
             store_path: "/var/lib/store/oldartifacthash-curl-expose".into(),

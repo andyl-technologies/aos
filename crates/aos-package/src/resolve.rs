@@ -221,7 +221,7 @@ fn visit_dependencies_first(
 // Multi-package resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve multiple packages and package-level `expose.requires`.
+/// Resolve multiple packages and package-level exposure dependencies.
 ///
 /// Package roots are deduplicated by name while resolving. Store-path members
 /// are still deduplicated later by [`collect_unique_metas`].
@@ -274,13 +274,8 @@ fn resolve_with_requires(
     let closure = resolve_closure(registries, name, registry_filter)
         .with_context(|| format!("resolving package '{name}'"))?;
 
-    let requires = closure
-        .root
-        .expose
-        .as_ref()
-        .map(|expose| expose.requires.clone())
-        .unwrap_or_default();
-    for required in &requires {
+    let expose_dependencies = expose_dependencies(&closure.root);
+    for required in &expose_dependencies {
         resolve_with_requires(
             registries,
             required,
@@ -297,6 +292,25 @@ fn resolve_with_requires(
     resolved.insert(name.to_string());
     closures.push(closure);
     Ok(())
+}
+
+fn expose_dependencies(meta: &PackageMeta) -> Vec<String> {
+    let Some(expose) = meta.expose.as_ref() else {
+        return Vec::new();
+    };
+    let mut dependencies = Vec::new();
+    let mut seen = HashSet::new();
+    for required in &expose.requires {
+        if seen.insert(required.as_str()) {
+            dependencies.push(required.clone());
+        }
+    }
+    for route in &expose.uses {
+        if route.provider != meta.name && seen.insert(route.provider.as_str()) {
+            dependencies.push(route.provider.clone());
+        }
+    }
+    dependencies
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +398,40 @@ requires-features = ["expose-v1", "requires-v1"]
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-consumer.target"
 requires = ["provider"]
+"#;
+
+    const CONSUMER_USES_TOML: &str = r#"
+[package]
+name = "consumer-uses"
+description = "Consumes provider capability"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/consumeruseshash-consumer-uses-1.0.0"
+nar_hash = "sha256:consumeruses"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["expose-v1", "capability-routes-v1"]
+
+[versions.platforms.x86_64-linux.expose]
+target = "aos-pkg-consumer-uses.target"
+units = ["consumer-uses.service"]
+
+[[versions.platforms.x86_64-linux.expose.uses]]
+provider = "provider"
+name = "data"
+kind = "directory"
+unit = "consumer-uses.service"
 "#;
 
     const CYCLE_A_TOML: &str = r#"
@@ -538,6 +586,29 @@ requires = ["cycle-a"]
             .collect();
 
         assert_eq!(names, vec!["provider", "consumer"]);
+    }
+
+    #[test]
+    fn resolve_multiple_pulls_in_expose_uses_providers() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry(
+            &tmp,
+            "aos-core",
+            500,
+            &[
+                ("consumer-uses", CONSUMER_USES_TOML),
+                ("provider", PROVIDER_TOML),
+            ],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        let closures = resolve_multiple(&set, &["consumer-uses".to_string()], None).unwrap();
+        let names: Vec<&str> = closures
+            .iter()
+            .map(|closure| closure.root.name.as_str())
+            .collect();
+
+        assert_eq!(names, vec!["provider", "consumer-uses"]);
     }
 
     #[test]

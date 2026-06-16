@@ -18,7 +18,9 @@ use std::io::Write;
 use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
-use super::exposed_units::{rebuild_generation_expose_roots, reconcile_system_profile};
+use super::exposed_units::{
+    rebuild_generation_expose_roots, reconcile_system_profile, validate_generation_exposed_units,
+};
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{delete_meta, list_meta, snapshot_profile_meta_to_generation};
@@ -131,6 +133,7 @@ pub async fn run(
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
     let future_installed = list_meta(&profile)?;
     rebuild_generation_expose_roots(&new_gen, &future_installed)?;
+    validate_generation_exposed_units(&new_gen, &future_installed)?;
 
     // Step 9: Rebuild FHS tree on the new generation.
     printer.step(2, 3, "Rebuilding file tree...");
@@ -253,6 +256,7 @@ pub async fn run_autoremove(
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
     let future_installed = list_meta(&profile)?;
     rebuild_generation_expose_roots(&new_gen, &future_installed)?;
+    validate_generation_exposed_units(&new_gen, &future_installed)?;
 
     // Step 7: Rebuild FHS tree.
     printer.step(2, 3, "Rebuilding file tree...");
@@ -714,6 +718,9 @@ mod tests {
             units: Vec::new(),
             images: Vec::new(),
             requires: requires.iter().map(|name| (*name).to_string()).collect(),
+            config: Default::default(),
+            provides: Vec::new(),
+            uses: Vec::new(),
         });
         installed
     }

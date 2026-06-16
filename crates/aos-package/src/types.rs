@@ -44,11 +44,23 @@ pub const FEATURE_PERMISSIONS_V1: &str = "permissions-v1";
 /// Registry feature flag for RFC-0001 name-based package requirements.
 pub const FEATURE_REQUIRES_V1: &str = "requires-v1";
 
+/// Registry feature flag for RFC-0001 package config metadata.
+pub const FEATURE_CONFIG_V1: &str = "config-v1";
+
+/// Registry feature flag for RFC-0001 package config reload metadata.
+pub const FEATURE_RELOAD_V1: &str = "reload-v1";
+
+/// Registry feature flag for RFC-0001 typed package capability routing.
+pub const FEATURE_CAPABILITY_ROUTES_V1: &str = "capability-routes-v1";
+
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EXPOSE_V1,
     FEATURE_EXPOSE_ARTIFACT_V1,
     FEATURE_PERMISSIONS_V1,
     FEATURE_REQUIRES_V1,
+    FEATURE_CONFIG_V1,
+    FEATURE_RELOAD_V1,
+    FEATURE_CAPABILITY_ROUTES_V1,
 ];
 
 const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
@@ -549,6 +561,153 @@ pub struct ExposeMeta {
     /// Package names that must be installed atomically with this package.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
+    /// Package-scoped config declarations and hot-reload policy.
+    #[serde(default, skip_serializing_if = "ExposeConfigMeta::is_empty")]
+    pub config: ExposeConfigMeta,
+    /// Typed capabilities this package offers to other packages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provides: Vec<ProvidedCapabilityMeta>,
+    /// Typed capabilities this package consumes from other packages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<RequiredCapabilityMeta>,
+}
+
+/// RFC-0001 package config metadata signed with exposure metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExposeConfigMeta {
+    /// Structured config artifacts `apm` validates and materializes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ConfigArtifactMeta>,
+    /// TPM2/systemd credential declarations consumed by package units.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<CredentialMeta>,
+}
+
+impl ExposeConfigMeta {
+    /// Returns whether the package declares no config inputs.
+    pub fn is_empty(&self) -> bool {
+        self.artifacts.is_empty() && self.credentials.is_empty()
+    }
+
+    /// Returns whether config metadata asks runtime reconciliation to touch units.
+    pub fn has_unit_reconciliation(&self) -> bool {
+        self.artifacts
+            .iter()
+            .any(|artifact| !artifact.units.is_empty())
+    }
+}
+
+/// Structured config artifact materialized from host desired-package config.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigArtifactMeta {
+    /// Stable artifact name inside the package config namespace.
+    pub name: String,
+    /// Absolute `/etc` path where `apm` materializes the artifact.
+    pub path: String,
+    /// Serialization format for the materialized artifact.
+    pub format: ConfigArtifactFormat,
+    /// Field names that must be present in desired config.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+    /// Field names that may be present in desired config.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional: Vec<String>,
+    /// Service units whose config changes should reconcile.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub units: Vec<String>,
+    /// Whether changed content reloads, restarts, or leaves units untouched.
+    #[serde(default, skip_serializing_if = "ConfigReloadPolicy::is_default")]
+    pub reload: ConfigReloadPolicy,
+}
+
+/// Materialized config artifact serialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConfigArtifactFormat {
+    /// systemd-compatible `KEY=VALUE` environment file.
+    Env,
+    /// JSON object.
+    Json,
+    /// TOML table.
+    Toml,
+}
+
+/// Config-change reconciliation policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConfigReloadPolicy {
+    /// Restart affected units on content change.
+    #[default]
+    Restart,
+    /// Reload affected units on content change, falling back to restart if unsupported.
+    Reload,
+    /// Materialize the artifact without service reconciliation.
+    None,
+}
+
+impl ConfigReloadPolicy {
+    fn is_default(policy: &Self) -> bool {
+        *policy == Self::Restart
+    }
+}
+
+/// TPM2/systemd credential declaration for an exposed package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialMeta {
+    /// systemd credential name.
+    pub name: String,
+    /// Service units expected to consume this credential.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub units: Vec<String>,
+    /// Whether the credential is expected to be TPM2/systemd encrypted.
+    #[serde(default, rename = "encrypted", skip_serializing_if = "is_false")]
+    pub encrypted: bool,
+}
+
+/// Typed package capability kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapabilityKind {
+    /// A provider-owned directory exposed read-only to consumers.
+    Directory,
+    /// A provider service namespace joined by consumer units.
+    Namespace,
+    /// Socket/fd-passing capability. Declared for schema stability; activation
+    /// rejects consumer routes until generated socket units are implemented.
+    Socket,
+}
+
+/// Capability a package exposes to other packages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvidedCapabilityMeta {
+    /// Capability name unique within the provider package.
+    pub name: String,
+    /// Capability materialization kind.
+    pub kind: CapabilityKind,
+    /// Provider path for [`CapabilityKind::Directory`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Provider unit for [`CapabilityKind::Namespace`] or future socket routes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+}
+
+/// Capability a package consumes from another installed package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequiredCapabilityMeta {
+    /// Provider package name.
+    pub provider: String,
+    /// Capability name on the provider package.
+    pub name: String,
+    /// Expected capability kind.
+    pub kind: CapabilityKind,
+    /// Consumer unit that receives the generated route drop-in.
+    pub unit: String,
 }
 
 /// Store metadata for rendered RFC-0001 exposure artifacts.
@@ -894,6 +1053,15 @@ pub fn validate_supported_package_meta_with(
         if !expose.requires.is_empty() {
             require_feature(meta, FEATURE_REQUIRES_V1)?;
         }
+        if !expose.config.is_empty() {
+            require_feature(meta, FEATURE_CONFIG_V1)?;
+        }
+        if expose.config.has_unit_reconciliation() {
+            require_feature(meta, FEATURE_RELOAD_V1)?;
+        }
+        if !expose.provides.is_empty() || !expose.uses.is_empty() {
+            require_feature(meta, FEATURE_CAPABILITY_ROUTES_V1)?;
+        }
         for required in &expose.requires {
             validate_package_name(required)
                 .with_context(|| format!("invalid requires entry in package '{}'", meta.name))?;
@@ -938,8 +1106,10 @@ fn require_feature(meta: &PackageMeta, feature: &str) -> Result<()> {
 /// package names are malformed.
 pub fn validate_expose_meta(expose: &ExposeMeta) -> Result<()> {
     validate_target_name(&expose.target)?;
+    let mut unit_names = std::collections::BTreeSet::new();
     for unit in &expose.units {
         validate_unit_name(unit)?;
+        unit_names.insert(unit.as_str());
     }
     for image in &expose.images {
         validate_image_entry(image)?;
@@ -947,6 +1117,115 @@ pub fn validate_expose_meta(expose: &ExposeMeta) -> Result<()> {
     for required in &expose.requires {
         validate_package_name(required)?;
     }
+    validate_expose_config_meta(&expose.config)?;
+    validate_capability_routes(expose)?;
+    validate_expose_unit_references(expose, &unit_names)?;
+    Ok(())
+}
+
+fn validate_expose_unit_references(
+    expose: &ExposeMeta,
+    unit_names: &std::collections::BTreeSet<&str>,
+) -> Result<()> {
+    for artifact in &expose.config.artifacts {
+        for unit in &artifact.units {
+            if !unit_names.contains(unit.as_str()) {
+                bail!(
+                    "config artifact '{}' references unknown expose unit '{}'",
+                    artifact.name,
+                    unit
+                );
+            }
+        }
+    }
+    for credential in &expose.config.credentials {
+        for unit in &credential.units {
+            if !unit_names.contains(unit.as_str()) {
+                bail!(
+                    "credential '{}' references unknown expose unit '{}'",
+                    credential.name,
+                    unit
+                );
+            }
+        }
+    }
+    for provided in &expose.provides {
+        if let Some(unit) = &provided.unit
+            && !unit_names.contains(unit.as_str())
+        {
+            bail!(
+                "provided capability '{}' references unknown expose unit '{}'",
+                provided.name,
+                unit
+            );
+        }
+    }
+    for required in &expose.uses {
+        if !required.unit.ends_with(".service") {
+            bail!(
+                "required capability '{}.{}' references non-service expose unit '{}'",
+                required.provider,
+                required.name,
+                required.unit
+            );
+        }
+        if !unit_names.contains(required.unit.as_str()) {
+            bail!(
+                "required capability '{}.{}' references unknown expose unit '{}'",
+                required.provider,
+                required.name,
+                required.unit
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Validate RFC-0001 package config metadata.
+///
+/// # Errors
+///
+/// Returns an error when an artifact, credential, field name, or target unit is
+/// malformed.
+pub fn validate_expose_config_meta(config: &ExposeConfigMeta) -> Result<()> {
+    let mut artifact_names = std::collections::BTreeSet::new();
+    let mut artifact_paths = std::collections::BTreeSet::new();
+    for artifact in &config.artifacts {
+        validate_config_artifact_name(&artifact.name)?;
+        if !artifact_names.insert(&artifact.name) {
+            bail!("duplicate config artifact name '{}'", artifact.name);
+        }
+        validate_config_artifact_path(&artifact.path)?;
+        if !artifact_paths.insert(&artifact.path) {
+            bail!("duplicate config artifact path '{}'", artifact.path);
+        }
+        let mut fields = std::collections::BTreeSet::new();
+        for field in artifact.required.iter().chain(&artifact.optional) {
+            validate_config_field_name(field)?;
+            if !fields.insert(field) {
+                bail!(
+                    "config artifact '{}' declares field '{}' more than once",
+                    artifact.name,
+                    field
+                );
+            }
+        }
+        for unit in &artifact.units {
+            validate_unit_name(unit)?;
+        }
+    }
+
+    let mut credential_names = std::collections::BTreeSet::new();
+    for credential in &config.credentials {
+        validate_credential_name(&credential.name)?;
+        if !credential_names.insert(&credential.name) {
+            bail!("duplicate credential name '{}'", credential.name);
+        }
+        for unit in &credential.units {
+            validate_unit_name(unit)?;
+        }
+    }
+
     Ok(())
 }
 
@@ -1051,6 +1330,112 @@ pub(crate) fn validate_absolute_path(path: &str, kind: &str) -> Result<()> {
         return Ok(());
     }
     bail!("{kind} must be an absolute path: {path}")
+}
+
+fn validate_config_artifact_name(name: &str) -> Result<()> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+        && !name.contains("..")
+    {
+        return Ok(());
+    }
+    bail!("invalid config artifact name '{name}'")
+}
+
+fn validate_config_artifact_path(path: &str) -> Result<()> {
+    validate_absolute_path(path, "config artifact path")?;
+    let p = Path::new(path);
+    if p.starts_with("/etc/aos/packages") && p.components().all(|c| c.as_os_str() != "..") {
+        return Ok(());
+    }
+    bail!("config artifact path must be under /etc/aos/packages: {path}")
+}
+
+pub(crate) fn validate_config_field_name(field: &str) -> Result<()> {
+    if !field.is_empty()
+        && field.chars().enumerate().all(|(idx, ch)| {
+            ch == '_' || ch.is_ascii_alphanumeric() && (idx > 0 || !ch.is_ascii_digit())
+        })
+    {
+        return Ok(());
+    }
+    bail!("invalid config field name '{field}'")
+}
+
+fn validate_credential_name(name: &str) -> Result<()> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+    {
+        return Ok(());
+    }
+    bail!("invalid credential name '{name}'")
+}
+
+fn validate_capability_routes(expose: &ExposeMeta) -> Result<()> {
+    let mut provided_names = std::collections::BTreeSet::new();
+    for provided in &expose.provides {
+        validate_capability_route_name(&provided.name)?;
+        if !provided_names.insert(&provided.name) {
+            bail!("duplicate provided capability '{}'", provided.name);
+        }
+        match provided.kind {
+            CapabilityKind::Directory => {
+                let Some(path) = provided.path.as_ref() else {
+                    bail!(
+                        "directory capability '{}' must declare a path",
+                        provided.name
+                    );
+                };
+                validate_absolute_path(path, "provided directory capability path")?;
+                if provided.unit.is_some() {
+                    bail!(
+                        "directory capability '{}' must not declare a unit",
+                        provided.name
+                    );
+                }
+            }
+            CapabilityKind::Namespace | CapabilityKind::Socket => {
+                let Some(unit) = provided.unit.as_ref() else {
+                    bail!(
+                        "{:?} capability '{}' must declare a unit",
+                        provided.kind,
+                        provided.name
+                    );
+                };
+                validate_unit_name(unit)?;
+                if provided.path.is_some() {
+                    bail!(
+                        "{:?} capability '{}' must not declare a path",
+                        provided.kind,
+                        provided.name
+                    );
+                }
+            }
+        }
+    }
+
+    for required in &expose.uses {
+        validate_package_name(&required.provider)?;
+        validate_capability_route_name(&required.name)?;
+        validate_unit_name(&required.unit)?;
+    }
+
+    Ok(())
+}
+
+fn validate_capability_route_name(name: &str) -> Result<()> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+    {
+        return Ok(());
+    }
+    bail!("invalid capability route name '{name}'")
 }
 
 fn validate_target_name(target: &str) -> Result<()> {
@@ -2686,6 +3071,9 @@ last_update = "2026-02-13T10:30:00Z"
                     expected_pcr11: None,
                 }],
                 requires: vec!["provider".into()],
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
             }),
             expose_artifact: Some(ExposeArtifactMeta {
                 store_path: "/var/lib/store/exposehash11-expose-webapp".into(),
@@ -2804,6 +3192,213 @@ last_update = "2026-02-13T10:30:00Z"
 
         meta.permissions.confinement = Some(meta.permissions.computed_confinement());
         validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_requires_config_and_reload_feature_gates() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_EXPOSE_V1.into(), FEATURE_CONFIG_V1.into()],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: ExposeConfigMeta {
+                    artifacts: vec![ConfigArtifactMeta {
+                        name: "env".into(),
+                        path: "/etc/aos/packages/webapp/config.env".into(),
+                        format: ConfigArtifactFormat::Env,
+                        required: vec!["TOKEN".into()],
+                        optional: Vec::new(),
+                        units: vec!["webapp.service".into()],
+                        reload: ConfigReloadPolicy::Reload,
+                    }],
+                    credentials: Vec::new(),
+                },
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_RELOAD_V1));
+
+        meta.requires_features.push(FEATURE_RELOAD_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_unknown_config_unit_references() {
+        let meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_CONFIG_V1.into(),
+                FEATURE_RELOAD_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: ExposeConfigMeta {
+                    artifacts: vec![ConfigArtifactMeta {
+                        name: "env".into(),
+                        path: "/etc/aos/packages/webapp/config.env".into(),
+                        format: ConfigArtifactFormat::Env,
+                        required: vec!["TOKEN".into()],
+                        optional: Vec::new(),
+                        units: vec!["missing.service".into()],
+                        reload: ConfigReloadPolicy::Reload,
+                    }],
+                    credentials: Vec::new(),
+                },
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("unknown expose unit"));
+    }
+
+    #[test]
+    fn package_meta_requires_capability_route_feature_gate() {
+        let mut meta = PackageMeta {
+            name: "consumer".into(),
+            version: "1.0.0".into(),
+            description: "Consumer".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/consumerhash-consumer-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_EXPOSE_V1.into()],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-consumer.target".into(),
+                units: vec!["consumer.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: vec![RequiredCapabilityMeta {
+                    provider: "provider".into(),
+                    name: "data".into(),
+                    kind: CapabilityKind::Directory,
+                    unit: "consumer.service".into(),
+                }],
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_CAPABILITY_ROUTES_V1));
+
+        meta.requires_features
+            .push(FEATURE_CAPABILITY_ROUTES_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_unknown_or_non_service_capability_units() {
+        let mut meta = PackageMeta {
+            name: "consumer".into(),
+            version: "1.0.0".into(),
+            description: "Consumer".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/consumerhash-consumer-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_CAPABILITY_ROUTES_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-consumer.target".into(),
+                units: vec!["consumer.service".into(), "consumer.target".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: vec![RequiredCapabilityMeta {
+                    provider: "provider".into(),
+                    name: "data".into(),
+                    kind: CapabilityKind::Directory,
+                    unit: "missing.service".into(),
+                }],
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("unknown expose unit"));
+
+        let expose = meta.expose.as_mut().unwrap();
+        expose.uses[0].unit = "consumer.target".into();
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("non-service expose unit"));
     }
 
     // -----------------------------------------------------------------------

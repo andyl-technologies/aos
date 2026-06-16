@@ -41,6 +41,7 @@
 
 pub mod clean;
 pub mod config;
+pub(crate) mod config_artifact;
 pub mod deps;
 pub mod desired;
 pub mod download;
