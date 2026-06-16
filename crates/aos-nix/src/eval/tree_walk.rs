@@ -2,10 +2,10 @@
 //!
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
 //! first slices evaluate scalar literals, boolean control flow, assertions,
-//! boolean operators, and numeric arithmetic to weak head normal form,
-//! establishing the arena access and diagnostic surface used by later slices
-//! for environments, thunks, functions, attribute sets, primitive operations,
-//! and derivation boundaries.
+//! boolean operators, numeric arithmetic, numeric comparisons, and scalar
+//! equality to weak head normal form, establishing the arena access and
+//! diagnostic surface used by later slices for environments, thunks, functions,
+//! attribute sets, primitive operations, and derivation boundaries.
 
 use thiserror::Error;
 
@@ -48,8 +48,9 @@ impl<'ir> TreeWalk<'ir> {
     /// Evaluates a node to weak head normal form.
     ///
     /// This initial public node entry point is intentionally limited to
-    /// environment-free scalar literal, control-flow, boolean operator, and
-    /// numeric arithmetic nodes. Environment-dependent nodes return
+    /// environment-free scalar literal, control-flow, boolean operator, numeric
+    /// arithmetic, numeric comparison, and scalar equality nodes.
+    /// Environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add an explicit
     /// runtime and environment context.
     ///
@@ -184,19 +185,66 @@ impl<'ir> TreeWalk<'ir> {
             BinOpKind::Sub => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Sub, lhs, rhs),
             BinOpKind::Mul => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Mul, lhs, rhs),
             BinOpKind::Div => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Div, lhs, rhs),
-            BinOpKind::Concat
-            | BinOpKind::Update
-            | BinOpKind::Lt
-            | BinOpKind::Gt
-            | BinOpKind::Le
-            | BinOpKind::Ge
-            | BinOpKind::Eq
-            | BinOpKind::Ne
-            | BinOpKind::PipeRight
-            | BinOpKind::PipeLeft => Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedBinaryOp { id, op },
+            BinOpKind::Lt => self.eval_numeric_comparison(ComparisonOp::Lt, lhs, rhs),
+            BinOpKind::Gt => self.eval_numeric_comparison(ComparisonOp::Gt, lhs, rhs),
+            BinOpKind::Le => self.eval_numeric_comparison(ComparisonOp::Le, lhs, rhs),
+            BinOpKind::Ge => self.eval_numeric_comparison(ComparisonOp::Ge, lhs, rhs),
+            BinOpKind::Eq => self.eval_equality(id, node, lhs, rhs, false),
+            BinOpKind::Ne => self.eval_equality(id, node, lhs, rhs, true),
+            BinOpKind::Concat | BinOpKind::Update | BinOpKind::PipeRight | BinOpKind::PipeLeft => {
+                Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedBinaryOp { id, op },
+                    node.span,
+                ))
+            }
+        }
+    }
+
+    fn eval_equality(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        lhs: IrId,
+        rhs: IrId,
+        invert: bool,
+    ) -> Result<Value, TreeWalkError> {
+        let left = self.eval_node(lhs)?;
+        let right = self.eval_node(rhs)?;
+        let equal = self.scalar_equal(id, node, left, right)?;
+        Ok(Value::bool(if invert { !equal } else { equal }))
+    }
+
+    fn scalar_equal(
+        &self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+    ) -> Result<bool, TreeWalkError> {
+        match (left.tag(), right.tag()) {
+            (ValueTag::Int, ValueTag::Int) => {
+                Ok((left.payload_bits() as i64) == (right.payload_bits() as i64))
+            }
+            (ValueTag::Float, ValueTag::Float) => {
+                Ok(f64::from_bits(left.payload_bits()) == f64::from_bits(right.payload_bits()))
+            }
+            (ValueTag::Int, ValueTag::Float) => {
+                Ok((left.payload_bits() as i64) as f64 == f64::from_bits(right.payload_bits()))
+            }
+            (ValueTag::Float, ValueTag::Int) => {
+                Ok(f64::from_bits(left.payload_bits()) == (right.payload_bits() as i64) as f64)
+            }
+            (ValueTag::Bool, ValueTag::Bool) => Ok(left.payload_bits() == right.payload_bits()),
+            (ValueTag::Null, ValueTag::Null) => Ok(true),
+            (left_tag, right_tag) if left_tag == right_tag => Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedEqualityType {
+                    id,
+                    left: left_tag,
+                    right: right_tag,
+                },
                 node.span,
             )),
+            _ => Ok(false),
         }
     }
 
@@ -292,6 +340,21 @@ impl<'ir> TreeWalk<'ir> {
         Ok(Value::float(value))
     }
 
+    fn eval_numeric_comparison(
+        &mut self,
+        op: ComparisonOp,
+        lhs: IrId,
+        rhs: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let left = self.eval_number_node(lhs)?;
+        let right = self.eval_number_node(rhs)?;
+        let result = match (left, right) {
+            (Number::Int(left), Number::Int(right)) => op.compare_ints(left, right),
+            (left, right) => op.compare_floats(left.to_float(), right.to_float()),
+        };
+        Ok(Value::bool(result))
+    }
+
     fn division_by_zero(&self, id: IrId, node: &IrNode) -> TreeWalkError {
         TreeWalkError::new(TreeWalkErrorKind::DivisionByZero { id }, node.span)
     }
@@ -375,6 +438,34 @@ impl BinaryArithmeticOp {
             Self::Sub => ArithmeticOp::Sub,
             Self::Mul => ArithmeticOp::Mul,
             Self::Div => ArithmeticOp::Div,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComparisonOp {
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+impl ComparisonOp {
+    const fn compare_ints(self, left: i64, right: i64) -> bool {
+        match self {
+            Self::Lt => left < right,
+            Self::Gt => left > right,
+            Self::Le => left <= right,
+            Self::Ge => left >= right,
+        }
+    }
+
+    fn compare_floats(self, left: f64, right: f64) -> bool {
+        match self {
+            Self::Lt => left < right,
+            Self::Gt => left > right,
+            Self::Le => left <= right,
+            Self::Ge => left >= right,
         }
     }
 }
@@ -467,6 +558,16 @@ pub enum TreeWalkErrorKind {
         /// The unsupported binary operator.
         op: BinOpKind,
     },
+    /// Structural equality for this runtime value type is outside this evaluator slice.
+    #[error("unsupported tree-walk equality between {left:?} and {right:?} at {id:?}")]
+    UnsupportedEqualityType {
+        /// The equality operator node id.
+        id: IrId,
+        /// The left operand's runtime value tag.
+        left: ValueTag,
+        /// The right operand's runtime value tag.
+        right: ValueTag,
+    },
     /// A checked integer arithmetic operation overflowed.
     #[error("arithmetic overflow for {op:?} at node {id:?}")]
     ArithmeticOverflow {
@@ -500,10 +601,13 @@ pub enum TreeWalkErrorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ptr::NonNull;
+
     use crate::compile::{
         EffectClass, IrArena, IrData, IrNode, lower as lower_ir, resolve as resolve_ast,
     };
     use crate::syntax::{SymbolTable, parse_str};
+    use crate::value::HeapObject;
 
     fn lower(source: &str) -> Ir {
         lower_ir(resolve_ast(parse_str(source).expect("source parses")).expect("source resolves"))
@@ -581,13 +685,13 @@ mod tests {
 
     #[test]
     fn unsupported_operators_report_operator_and_span() {
-        let binary = lower("1 == 2");
-        let binary_error = eval_whnf(&binary).expect_err("equality is not implemented yet");
+        let binary = lower("1 ++ 2");
+        let binary_error = eval_whnf(&binary).expect_err("list concat is not implemented yet");
         assert_eq!(
             binary_error.kind(),
             TreeWalkErrorKind::UnsupportedBinaryOp {
                 id: binary.root,
-                op: BinOpKind::Eq,
+                op: BinOpKind::Concat,
             }
         );
         assert_eq!(
@@ -648,10 +752,10 @@ mod tests {
         assert_eq!(eval("if true then 1 else 2").as_int(), Ok(1));
         assert_eq!(eval("if false then 1 else 2").as_int(), Ok(2));
 
-        let lazy_else = eval("if true then 7 else (1 == 2)");
+        let lazy_else = eval("if true then 7 else (1 ++ 2)");
         assert_eq!(lazy_else.as_int(), Ok(7));
 
-        let lazy_then = eval("if false then (1 == 2) else 9");
+        let lazy_then = eval("if false then (1 ++ 2) else 9");
         assert_eq!(lazy_then.as_int(), Ok(9));
     }
 
@@ -904,16 +1008,137 @@ mod tests {
     }
 
     #[test]
+    fn scalar_equality_handles_inline_values() {
+        assert_eq!(eval("1 == 1").as_bool(), Ok(true));
+        assert_eq!(eval("1 == 2").as_bool(), Ok(false));
+        assert_eq!(eval("1 == 1.0").as_bool(), Ok(true));
+        assert_eq!(eval("1 != 1.5").as_bool(), Ok(true));
+        assert_eq!(eval("true == true").as_bool(), Ok(true));
+        assert_eq!(eval("true != false").as_bool(), Ok(true));
+        assert_eq!(eval("null == null").as_bool(), Ok(true));
+        assert_eq!(eval("null == false").as_bool(), Ok(false));
+        assert_eq!(eval("1 == true").as_bool(), Ok(false));
+    }
+
+    #[test]
+    fn scalar_equality_evaluates_operands_left_to_right() {
+        let rhs_ir = lower("false == (1 / 0)");
+        let root = rhs_ir.arena.node(rhs_ir.root).expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("equality root has binary payload");
+        };
+        let rhs_id = rhs;
+        let rhs_span = rhs_ir.arena.node(rhs_id).expect("rhs exists").span;
+        let error = eval_whnf(&rhs_ir).expect_err("rhs division by zero is evaluated");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: rhs_id }
+        );
+        assert_eq!(error.span(), rhs_span);
+
+        let lhs_ir = lower("(1 / 0) == false");
+        let root = lhs_ir.arena.node(lhs_ir.root).expect("root exists");
+        let IrData::Binary { lhs, .. } = root.data else {
+            panic!("equality root has binary payload");
+        };
+        let lhs_id = lhs;
+        let lhs_span = lhs_ir.arena.node(lhs_id).expect("lhs exists").span;
+        let error = eval_whnf(&lhs_ir).expect_err("lhs division by zero is evaluated first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: lhs_id }
+        );
+        assert_eq!(error.span(), lhs_span);
+    }
+
+    #[test]
+    fn same_tag_heap_equality_is_unsupported_until_structural_equality_lands() {
+        let ir = lower("1");
+        let evaluator = TreeWalk::new(&ir);
+        let node = ir.arena.node(ir.root).expect("root exists");
+        let ptr = NonNull::<HeapObject>::dangling();
+        let left = Value::string(ptr).expect("aligned string pointer");
+        let right = Value::string(ptr).expect("aligned string pointer");
+
+        let error = evaluator
+            .scalar_equal(ir.root, node, left, right)
+            .expect_err("same-tag heap equality is not implemented yet");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedEqualityType {
+                id: ir.root,
+                left: ValueTag::String,
+                right: ValueTag::String,
+            }
+        );
+        assert_eq!(error.span(), node.span);
+    }
+
+    #[test]
+    fn numeric_comparisons_handle_ints_floats_and_promotion() {
+        assert_eq!(eval("1 < 2").as_bool(), Ok(true));
+        assert_eq!(eval("2 > 1").as_bool(), Ok(true));
+        assert_eq!(eval("2 <= 2").as_bool(), Ok(true));
+        assert_eq!(eval("2 >= 3").as_bool(), Ok(false));
+        assert_eq!(eval("1 < 1.5").as_bool(), Ok(true));
+        assert_eq!(eval("1.5 >= 2").as_bool(), Ok(false));
+    }
+
+    #[test]
+    fn numeric_comparisons_type_check_operands_left_to_right() {
+        let rhs_ir = lower("1 < true");
+        let root = rhs_ir.arena.node(rhs_ir.root).expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("comparison root has binary payload");
+        };
+        let rhs_span = rhs_ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf(&rhs_ir).expect_err("boolean rhs is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: rhs,
+                expected: "number",
+                actual: ValueTag::Bool,
+            }
+        );
+        assert_eq!(error.span(), rhs_span);
+
+        let lhs_ir = lower("false < (1 / 0)");
+        let root = lhs_ir.arena.node(lhs_ir.root).expect("root exists");
+        let IrData::Binary { lhs, .. } = root.data else {
+            panic!("comparison root has binary payload");
+        };
+        let lhs_span = lhs_ir.arena.node(lhs).expect("lhs exists").span;
+
+        let error = eval_whnf(&lhs_ir).expect_err("boolean lhs is invalid before rhs");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: lhs,
+                expected: "number",
+                actual: ValueTag::Bool,
+            }
+        );
+        assert_eq!(error.span(), lhs_span);
+    }
+
+    #[test]
     fn boolean_binary_operators_short_circuit() {
         assert_eq!(eval("true && true").as_bool(), Ok(true));
         assert_eq!(eval("true && false").as_bool(), Ok(false));
-        assert_eq!(eval("false && (1 == 2)").as_bool(), Ok(false));
+        assert_eq!(eval("false && (1 ++ 2)").as_bool(), Ok(false));
 
-        assert_eq!(eval("true || (1 == 2)").as_bool(), Ok(true));
+        assert_eq!(eval("true || (1 ++ 2)").as_bool(), Ok(true));
         assert_eq!(eval("false || true").as_bool(), Ok(true));
         assert_eq!(eval("false || false").as_bool(), Ok(false));
 
-        assert_eq!(eval("false -> (1 == 2)").as_bool(), Ok(true));
+        assert_eq!(eval("false -> (1 ++ 2)").as_bool(), Ok(true));
         assert_eq!(eval("true -> true").as_bool(), Ok(true));
         assert_eq!(eval("true -> false").as_bool(), Ok(false));
     }
@@ -973,7 +1198,7 @@ mod tests {
     fn assert_evaluates_body_only_when_condition_is_true() {
         assert_eq!(eval("assert true; 5").as_int(), Ok(5));
 
-        let ir = lower("assert false; (1 == 2)");
+        let ir = lower("assert false; (1 ++ 2)");
         let lazy_body = eval_whnf(&ir).expect_err("false assertion stops before body");
         assert_eq!(
             lazy_body.kind(),
