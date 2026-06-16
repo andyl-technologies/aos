@@ -1245,6 +1245,62 @@ impl<'ir> TreeWalk<'ir> {
                 })?;
                 Ok(Value::int(len))
             }
+            StrictUnaryPrimOp::AttrNames => {
+                let argument_span = self.node(argument)?.span;
+                if value.tag() != ValueTag::Attrs {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id: argument,
+                            expected: "attrs",
+                            actual: value.tag(),
+                        },
+                        argument_span,
+                    ));
+                }
+                let names = {
+                    let attrs = self.heap.get_attrs(value).map_err(|source| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::Heap {
+                                id: argument,
+                                source,
+                            },
+                            argument_span,
+                        )
+                    })?;
+                    let mut names = Vec::new();
+                    names.try_reserve_exact(attrs.len()).map_err(|_| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::ListAllocationFailed {
+                                id,
+                                len: attrs.len(),
+                            },
+                            node.span,
+                        )
+                    })?;
+                    for entry in attrs.iter_lexicographic() {
+                        names.push(entry.key);
+                    }
+                    names
+                };
+                let mut elements = Vec::new();
+                elements.try_reserve_exact(names.len()).map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::ListAllocationFailed {
+                            id,
+                            len: names.len(),
+                        },
+                        node.span,
+                    )
+                })?;
+                for symbol in names {
+                    elements.push(self.alloc_symbol_string(id, node.span, symbol)?);
+                }
+                self.heap
+                    .alloc_list(NixList::new(elements))
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                    })
+            }
         }
     }
 
@@ -1254,6 +1310,31 @@ impl<'ir> TreeWalk<'ir> {
         span: Span,
         bytes: &[u8],
     ) -> Result<Value, TreeWalkError> {
+        let mut owned = Vec::new();
+        owned.try_reserve_exact(bytes.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: bytes.len(),
+                },
+                span,
+            )
+        })?;
+        owned.extend_from_slice(bytes);
+        self.heap
+            .alloc_string(NixString::from_bytes(owned))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn alloc_symbol_string(
+        &mut self,
+        id: IrId,
+        span: Span,
+        symbol: Symbol,
+    ) -> Result<Value, TreeWalkError> {
+        let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
+            TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, span)
+        })?;
         let mut owned = Vec::new();
         owned.try_reserve_exact(bytes.len()).map_err(|_| {
             TreeWalkError::new(
@@ -2721,6 +2802,7 @@ enum StrictUnaryPrimOp {
     IsPath,
     TypeOf,
     Length,
+    AttrNames,
 }
 
 impl StrictUnaryPrimOp {
@@ -2737,6 +2819,7 @@ impl StrictUnaryPrimOp {
             b"isPath" => Some(Self::IsPath),
             b"typeOf" => Some(Self::TypeOf),
             b"length" => Some(Self::Length),
+            b"attrNames" => Some(Self::AttrNames),
             _ => None,
         }
     }
@@ -3343,6 +3426,24 @@ mod tests {
         string.bytes().to_vec()
     }
 
+    fn eval_list_string_bytes(source: &str) -> Vec<Vec<u8>> {
+        let outcome = eval_whnf_owned(&lower(source)).expect("source evaluates");
+        let list = outcome
+            .heap()
+            .get_list(outcome.value())
+            .expect("result is a heap-owned list");
+        list.iter()
+            .map(|value| {
+                outcome
+                    .heap()
+                    .get_string(*value)
+                    .expect("element is a heap-owned string")
+                    .bytes()
+                    .to_vec()
+            })
+            .collect()
+    }
+
     fn symbol_for(ir: &Ir, name: &[u8]) -> Symbol {
         let index = ir
             .symbols
@@ -3572,6 +3673,48 @@ mod tests {
             TreeWalkErrorKind::Type {
                 id: argument,
                 expected: "list",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn attr_names_primop_returns_sorted_names_without_forcing_values() {
+        assert_eq!(
+            eval_list_string_bytes("builtins.attrNames { z = 1 / 0; a = 2; b = true; }"),
+            vec![b"a".to_vec(), b"b".to_vec(), b"z".to_vec()]
+        );
+        assert_eq!(
+            eval_list_string_bytes("builtins.attrNames { a = 1; A = 1; aa = 1; _ = 1; }"),
+            vec![b"A".to_vec(), b"_".to_vec(), b"a".to_vec(), b"aa".to_vec()]
+        );
+        assert_eq!(
+            eval_list_string_bytes(
+                "let builtins = { attrNames = x: [ \"local\" ]; }; in builtins.attrNames { a = 1; }"
+            ),
+            vec![b"local".to_vec()]
+        );
+    }
+
+    #[test]
+    fn attr_names_primop_type_checks_argument() {
+        let ir = lower("builtins.attrNames 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("attrNames requires an attrset");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "attrs",
                 actual: ValueTag::Int
             }
         );
