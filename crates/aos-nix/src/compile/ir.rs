@@ -996,7 +996,7 @@ impl IrLowerer {
             Some(
                 b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs" | b"intersectAttrs"
                 | b"catAttrs" | b"elem" | b"lessThan" | b"add" | b"sub" | b"mul" | b"div"
-                | b"bitAnd" | b"bitOr" | b"bitXor",
+                | b"bitAnd" | b"bitOr" | b"bitXor" | b"all" | b"any",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1939,6 +1939,8 @@ mod tests {
             ("builtins.bitAnd 6 3", b"bitAnd".as_slice()),
             ("builtins.bitOr 4 1", b"bitOr".as_slice()),
             ("builtins.bitXor 6 3", b"bitXor".as_slice()),
+            ("builtins.all (x: true) [ 1 ]", b"all".as_slice()),
+            ("builtins.any (x: false) [ 1 ]", b"any".as_slice()),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -2538,8 +2540,18 @@ mod tests {
         };
         assert_eq!(node(&ir, first).kind, IrKind::Select);
 
-        for name in ["add", "sub", "mul", "div", "bitAnd", "bitOr", "bitXor"] {
-            let ir = lowered(&format!("{name} 1 2"));
+        for (name, left, right) in [
+            ("add", "1", "2"),
+            ("sub", "1", "2"),
+            ("mul", "1", "2"),
+            ("div", "1", "2"),
+            ("bitAnd", "1", "2"),
+            ("bitOr", "1", "2"),
+            ("bitXor", "1", "2"),
+            ("all", "(x: true)", "[ 1 ]"),
+            ("any", "(x: false)", "[ 1 ]"),
+        ] {
+            let ir = lowered(&format!("{name} {left} {right}"));
             let root = root_node(&ir);
             assert_eq!(root.kind, IrKind::Apply);
             let IrData::Pair { first, .. } = root.data else {
@@ -2552,7 +2564,7 @@ mod tests {
             assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
 
             let ir = lowered(&format!(
-                "let builtins = {{ {name} = left: right: false; }}; in builtins.{name} 1 2"
+                "let builtins = {{ {name} = left: right: false; }}; in builtins.{name} {left} {right}"
             ));
             let IrData::Let { body, .. } = root_node(&ir).data else {
                 panic!("let payload expected");
