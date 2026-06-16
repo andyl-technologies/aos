@@ -13,7 +13,7 @@ This is one of the package docs. Siblings:
 [README.md](README.md), [permissions.md](permissions.md),
 [container-model.md](container-model.md),
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
-[migration.md](migration.md), [open-questions.md](open-questions.md).
+[activation.md](activation.md), [open-questions.md](open-questions.md).
 
 > **Unified model.** Every package is a systemd-nspawn container; what differs is
 > *privilege*, declared in a signed `[permissions]` manifest (see
@@ -43,8 +43,7 @@ The current, working config path for k3s is plain and worth stating exactly,
 because every option below is measured against it.
 
 k3s reaches config via a systemd `EnvironmentFile`, and the file is written
-by Ignition at first boot. From `modules/roles/kubernetes/k3s-worker.nix`
-(soon `modules/packages/...`, see [migration.md](migration.md)):
+by Ignition at first boot. From `modules/roles/kubernetes/k3s-worker.nix`:
 
 ```nix
 serviceConfig.EnvironmentFile = "/etc/rancher/k3s/k3s.env";
@@ -410,7 +409,7 @@ requirements vs. nice-to-haves — that prioritization is itself open.
    config schemas (Option 3 partial) or per-instance config + audit (Option 5)?
 10. **Backward compatibility.** k3s expects `/etc/rancher/k3s/k3s.env` today.
     If the model shifts, keep the old path as a fallback, migrate to a
-    per-package path, or support both? (Ties to [migration.md](migration.md).)
+    per-package path, or support both? (Ties to [activation.md](activation.md).)
 
 ---
 

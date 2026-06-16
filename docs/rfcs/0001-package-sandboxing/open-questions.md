@@ -1,25 +1,23 @@
 # Packages: open questions, risks & decisions
 
 Status: planning
-Audience: anyone planning the roles→packages rename, the systemd-nspawn
+Audience: anyone planning the package model, the systemd-nspawn
 container model, apm/registry integration, or the boot-time activation path
 (`modules/roles/`, `crates/aos-package/`, `modules/services/ignition.nix`,
 `lib/testing/`, `pkgs/system/systemd.nix`).
 
-This is the "what we must decide" doc for the packages direction: fold the
-existing "roles" concept (`modules/roles/`) into AOS's apm/registry **package**
-system, where a package is the registry-installable unit (`apm install`) and
+This is the "what we must decide" doc for the packages direction: every unit of
+software AOS runs is a registry-installable **package** (`apm install`), and
 **every** package exposes a systemd-nspawn container plus an `aos-pkg-<pkg>.target`
 handle, with its privilege declared in a signed `[permissions]` manifest
-(see [permissions.md](permissions.md)). It consolidates the open risks,
+(see [permissions.md](permissions.md)). It collects the open risks,
 unknowns, and pending decisions surfaced across the investigation. Each entry has
 a statement, why it matters, the options, and a proposed owner / next step. It
 deliberately leaves the **config delivery** decision open. Sibling docs:
 [README.md](README.md), [permissions.md](permissions.md),
 [container-model.md](container-model.md),
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
-[config.md](config.md), [migration.md](migration.md). The prior design this
-builds on is `docs/rfcs/0001-roles-as-targets.md`.
+[config.md](config.md), [migration.md](migration.md), [activation.md](activation.md).
 
 A quick note on honesty up front: two things in this plan do **not** fit the
 clean model and are called out throughout. (1) **k3s is a high-privilege
@@ -39,7 +37,7 @@ Each decision is tagged with a rough disposition:
 - **DECIDE-EARLY** — shapes the schema/API; expensive to change later.
 - **DEFER** — can ship a placeholder and revisit; must be explicitly tracked.
 
-Owners are roles, not people: *packages-core* (the rename + module synthesis),
+Owners are roles, not people: *packages-core* (the module synthesis),
 *apm* (`crates/aos-package/`), *boot* (`modules/services/ignition.nix`),
 *test-infra* (`lib/testing/`), *pkgs* (`pkgs/system/systemd.nix`,
 container-root builders).
@@ -127,15 +125,14 @@ services. **DECIDE-BEFORE-MVP** (gates the first high-privilege package).
 ## 2. Kernel modules are global — there is no per-container module namespace
 
 **Statement.** k3s needs `br_netfilter`, `vxlan`, `ip_set`. Kernel modules load
-into the single host kernel; containers inherit them and cannot scope them. In
-the `targets-and-sandbox.md` model these load via a synthesized
-`aos-<pkg>-modules.service` (`modprobe -a …`) gated by the package target.
+into the single host kernel; containers inherit them and cannot scope them. These
+load via a synthesized `aos-pkg-<pkg>-modules.service` (`modprobe -a …`) gated by
+the package target ([activation.md](activation.md)).
 
 **Why it matters.** It undercuts the "package is self-contained" story: enabling
-a package mutates global kernel state that does not cleanly reverse (the
-`targets-and-sandbox.md` teardown trade-off — modules stay loaded after
-`systemctl stop`). For a containerized workload this is a leak out of the
-sandbox.
+a package mutates global kernel state that does not cleanly reverse (the teardown
+trade-off — modules stay loaded after `systemctl stop`). For a containerized
+workload this is a leak out of the sandbox.
 
 **Options.**
 - Keep module loading host-side, gated by the package target (current design).
@@ -610,39 +607,35 @@ workload package exists rather than guessing. **DEFER** (measure first).
 
 ---
 
-## 14. The rename itself — RESOLVED (superseded by the dissolve)
+## 14. Dissolving the module tree into `pkgs/` — RESOLVED (dissolve)
 
-> **Resolved.** Superseded by the revised direction in
-> [migration.md](migration.md): the module tree is **dissolved** into `pkgs/`
-> `expose` blocks + a thin policy module, not renamed. The rename tables
-> survive as the touchpoint inventory; sequencing is the revised increment
-> plan (mkDerivation `expose` → test-http-server end-to-end → dissolve
-> per-package → policy module + preset wiring).
+> **Resolved.** Per the direction in [migration.md](migration.md): the
+> `modules/roles/` module tree is **dissolved** into `pkgs/` `expose` blocks +
+> a thin policy module. The touchpoint tables survive as the inventory;
+> sequencing is the increment plan (mkDerivation `expose` → test-http-server
+> end-to-end → dissolve per-package → policy module + preset wiring).
 
-**Statement.** Renaming `roles` → `packages` touches the option tree
-(`aos.roles.*` → `aos.packages.*`), the module dir (`modules/roles/` →
-`modules/packages/`), the bundle (`system.build.ignitionRolesBundle` →
-`packagesBundle`), the Ignition path (`/etc/aos/ignition-roles/<name>` →
-`/etc/aos/packages/<name>`), `lib/testing/fleet-spec.nix` (`roles` →
-`packages`), `lib/modules/systemd/render-role.nix`, and ~6 fleet test files.
-Per the investigation it is a **pure rename** with **zero logic change** (~15
-files renamed, ~10 edited, ~200–300 lines).
+**Statement.** The current option tree (`aos.roles.*`), module dir
+(`modules/roles/`), the bundle (`system.build.ignitionRolesBundle`), the
+Ignition path (`/etc/aos/ignition-roles/<name>`), `lib/testing/fleet-spec.nix`,
+`lib/modules/systemd/render-role.nix`, and ~6 fleet test files must all move to
+the package model. The mechanical surface is well-understood (~15 files moved,
+~10 edited, ~200–300 lines).
 
-**Why it matters.** It is the prerequisite for everything else, but it collides
-with the in-flight `targets-and-sandbox.md` work on the `roles-as-targets`
-branch (PR #28). Doing the rename and the container model in one change would be
-hard to review; doing them out of order risks churn.
+**Why it matters.** This is the prerequisite for everything else. Folding the
+dissolve and the container model into one change would be hard to review; doing
+them out of order risks churn — synthesized unit names must not be reworked
+twice (`aos-<pkg>` → `aos-pkg-<package>`).
 
 **Options.**
-- Land `targets-and-sandbox.md` first (target synthesis on the `roles` name),
-  then a mechanical rename, then the container/apm work. Smaller reviewable
-  steps.
-- Rename first, then targets, then containers. Risks reworking the target naming
-  twice (`aos-<role>` → `aos-pkg-<package>`).
+- Land target synthesis on `pkgs/` `expose` blocks first, then the per-package
+  dissolve, then the container/apm work. Smaller reviewable steps.
+- Dissolve first, then targets, then containers. Risks reworking the target
+  naming twice.
 
-**Proposed next step.** *packages-core*: sequence as targets → rename →
+**Proposed next step.** *packages-core*: sequence as targets → dissolve →
 container-model to avoid renaming synthesized unit names twice; capture the
-mechanical rename table and validation gates (`aos fmt --check`,
+touchpoint inventory and validation gates (`aos fmt --check`,
 `checks.eval`, `checks.vm.boot`, fleet) in [migration.md](migration.md).
 **DECIDE-BEFORE-MVP** (sequencing).
 
@@ -650,10 +643,9 @@ mechanical rename table and validation gates (`aos fmt --check`,
 
 ## 15. Systemd unit naming under the package model
 
-**Statement.** The `targets-and-sandbox.md` model synthesizes `aos-<role>.target`
-plus `aos-<role>-{modules,sysctl,firewall}.service`. Under packages these become
-`aos-pkg-<package>.target` and `aos-pkg-<package>-{modules,sysctl,firewall}.service`,
-plus a container unit (e.g. `aos-pkg-<package>` nspawn service).
+**Statement.** Each package synthesizes `aos-pkg-<package>.target` plus
+`aos-pkg-<package>-{modules,sysctl,firewall}.service`, plus a container unit
+(e.g. `aos-pkg-<package>` nspawn service).
 
 **Why it matters.** Unit names land in the global systemd namespace and are
 referenced by Ignition fragments, fleet-test assertions, and operator muscle
@@ -665,7 +657,7 @@ memory. Changing them later is a breaking change.
 - Shorter prefixes (`pkg-`, `sys-`) — risk collision / less clarity.
 
 **Proposed next step.** *packages-core*: fix the naming convention **once**,
-before Decision 14's rename, and assert it. **RESOLVED: `aos-pkg-<name>`** —
+before Decision 14's dissolve, and assert it. **RESOLVED: `aos-pkg-<name>`** —
 the majority usage across the doc set; [migration.md](migration.md) §4 has been
 updated to match (its earlier claim that the set had standardized on the
 shorter `aos-<pkg>` was wrong). The nspawn template stays
@@ -702,7 +694,7 @@ shorter `aos-<pkg>` was wrong). The nspawn template stays
 >   mechanism, less tidy separation.
 
 **Statement.** [apm-integration.md](apm-integration.md) §4.1 calls this **the
-single biggest unresolved mechanism**. Role/package units are baked into the
+single biggest unresolved mechanism**. Package units are baked into the
 EROFS `/etc` lower as inert regular files, but an `apm install` that happens
 *after* first boot **cannot rewrite the EROFS lower**. So a runtime-installed
 package's systemd units (its `aos-pkg-<package>.target` and member units) must
@@ -867,7 +859,7 @@ the next schema change, before any `expose` work ships.
 | 11 | Upgrade/rollback — **RESOLVED (direction)** under D17: unit-semantics restarts, `KillMode=process` preserved for k3s | RESOLVED (direction) | apm / packages-core |
 | 12 | Package metadata — **RESOLVED (hybrid)**: TOML carries target/requires/permissions; units ride the closure | RESOLVED | apm / packages-core |
 | 13 | Performance & init strategy — largely mooted for MVP by D17 | DEFER | pkgs / test-infra |
-| 14 | Rename sequencing — **RESOLVED**: superseded by the dissolve ([migration.md](migration.md)) | RESOLVED | packages-core |
+| 14 | Module-tree dissolve sequencing — **RESOLVED**: dissolve into `pkgs/` `expose` blocks ([migration.md](migration.md)) | RESOLVED | packages-core |
 | 15 | Unit naming — **RESOLVED: `aos-pkg-<name>`** | RESOLVED | packages-core |
 | 16 | Runtime unit placement — **RESOLVED**: `/var/etc` attach dir + preset lines (tmpfs upper forced it) | RESOLVED | boot / apm |
 | 17 | Execution substrate — **RESOLVED (direction)**: per-unit default, nspawn deferred; spike = validation | validate | packages-core / pkgs |

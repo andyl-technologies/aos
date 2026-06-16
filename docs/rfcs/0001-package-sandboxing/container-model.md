@@ -1,7 +1,7 @@
 # The systemd-nspawn container model
 
 Status: planning
-Audience: anyone working on `modules/packages/` (the renamed `modules/roles/`),
+Audience: anyone working on `modules/roles/`,
 `lib/build/`, `pkgs/system/systemd.nix`, `modules/services/ignition.nix`, and the
 `apm`/registry surface in `crates/aos-package/`.
 
@@ -14,20 +14,20 @@ template, the namespace/networking/cgroup choices, the ephemeral overlay that
 gives us a cheap fs-revert, teardown semantics, and the host→container PID1
 credential boundary. It is deliberately honest that **k3s is a high-privilege
 container** whose isolation is *nominal* — it declares host network, broad
-capabilities, cgroup delegation, and host paths, and that privilege is now
-visible in its manifest rather than hidden behind a "not really a container"
+capabilities, cgroup delegation, and host paths, and that privilege is
+visible in its manifest, not behind a "not really a container"
 carve-out. Config delivery across the boundary is **left open** — see
 [config.md](config.md). Sibling docs: [README.md](README.md),
 [permissions.md](permissions.md),
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
 [migration.md](migration.md), [open-questions.md](open-questions.md). The
-target-sandbox invariants this builds on are in
-[../0001-roles-as-targets.md](../0001-roles-as-targets.md).
+target-sandbox invariants are in
+[activation.md](activation.md).
 
-## Where this sits in the new model
+## Where this sits in the model
 
-The new direction (see [README.md](README.md)) folds "roles" into AOS's
-existing registry/`apm` package system. A **package** is the registry-installable
+The model (see [README.md](README.md)) builds on AOS's
+registry/`apm` package system. A **package** is the registry-installable
 unit (`apm install`). Under the unified model **every** package exposes a
 `systemd-nspawn` container plus an `aos-pkg-<name>.target` handle. This doc is
 about that container. There is **one shape** — a container — with a *privilege
@@ -45,11 +45,11 @@ The boundary strength is a *gradient set by the manifest*, from "full sandbox"
 workload/infra split. See [permissions.md](permissions.md) for the full
 permission surface and how each grant maps onto an nspawn flag.
 
-The target sandbox from [../0001-roles-as-targets.md](../0001-roles-as-targets.md)
-is unchanged as the *activation* mechanism: `aos-pkg-<name>.target` is still the one
-switch, gated `*-modules`/`*-sysctl`/`*-firewall` oneshots are still members,
-and the disabled case is still the strict guarantee. What this doc adds is one
-more kind of member unit — the nspawn instance — that every package now carries.
+The target sandbox ([activation.md](activation.md))
+is the *activation* mechanism: `aos-pkg-<name>.target` is the one
+switch, gated `*-modules`/`*-sysctl`/`*-firewall` oneshots are members,
+and the disabled case is the strict guarantee. What this doc adds is one
+more kind of member unit — the nspawn instance — that every package carries.
 
 ## Permissions
 
@@ -480,7 +480,7 @@ container cannot, so they persist one-way after stop (see
 [permissions.md](permissions.md) for the allowlist + signing model). The strict
 guarantee remains the
 *disabled* (never-enabled) case, identical to
-[../0001-roles-as-targets.md](../0001-roles-as-targets.md).
+[activation.md](activation.md).
 
 ## Security / isolation
 
@@ -541,8 +541,7 @@ state, and every one of these grants is an explicit entry in its
   `/var/lib/kubelet`, `/var/lib/rancher` (declared `host-paths`).
 
 Wrapped in nspawn it is a **nominal** container — mount + UTS isolation only —
-around a process with effectively full host privilege. The difference from the
-old "k3s isn't really a container" framing is that the privilege is now
+around a process with effectively full host privilege. The privilege is
 **visible in the manifest** rather than buried in the implementation. The unit
 its manifest generates makes the privilege explicit and ugly (illustrative,
 **needs verification** of the exact flag set):
@@ -577,7 +576,7 @@ The isolation benefit is near zero. The honest recommendation:
 > manifest declares host network, broad caps, cgroup-delegate, host-paths, and
 > kernel-modules, so the container is a packaging/lifecycle wrapper, not a
 > sandbox. It must be labelled as cosmetic isolation, not a security boundary —
-> and now that labelling lives in the signed manifest, not in tribal knowledge.
+> and that labelling lives in the signed manifest, not in tribal knowledge.
 
 ### The `KillMode=process` regression (restart kills every pod)
 
@@ -614,7 +613,7 @@ container model spans "full sandbox" (empty manifest) to "packaging wrapper"
 
 ## Relation to the target-sandbox invariants
 
-Nothing here weakens [../0001-roles-as-targets.md](../0001-roles-as-targets.md):
+Nothing here weakens the target sandbox ([activation.md](activation.md)):
 
 - **Single activation root** — still `aos-pkg-<name>.target`. The nspawn instance is
   `WantedBy=`/`PartOf=` the target, never `WantedBy=multi-user.target`
@@ -628,8 +627,7 @@ Nothing here weakens [../0001-roles-as-targets.md](../0001-roles-as-targets.md):
   is owned by [boot-activation.md](boot-activation.md) §3.2 (canonical:
   systemd presets — image `disable *`, Ignition-written host preset file, an
   every-boot `aos-preset.service` pass, `systemctl preset` for runtime
-  installs) — the roles-era single Ignition `systemd.units[]` entry described
-  in the precursor doc is superseded for packages. The container template and
+  installs). The container template and
   its drop-in ship inert in EROFS either way.
 
 ## Open items (carried to [open-questions.md](open-questions.md))

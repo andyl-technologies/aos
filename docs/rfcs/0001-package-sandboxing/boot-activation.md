@@ -2,9 +2,9 @@
 
 Status: planning
 
-This doc specifies the boot-time flow for the new **packages** model (the
-rename and refold of today's `roles` into AOS's `apm`/registry system — see
-[README.md](README.md) and [migration.md](migration.md)). The shape is:
+This doc specifies the boot-time flow for the **packages** model, which folds
+into AOS's `apm`/registry system — see [README.md](README.md) and
+[migration.md](migration.md). The shape is:
 Ignition **declares** the package set, a boot-stage step runs **apm** to
 **install** those packages into the system profile, and then each package is
 **enabled** — for plain packages that means reaching `aos-pkg-<name>.target`,
@@ -35,15 +35,13 @@ which packages actually come up.
 | **Installed** | The package's store closure is present in the local `/nix/store`, recorded in the system profile generation, and (for container packages) its container root image is available under `/var/lib/machines`. | `apm install` at boot |
 | **Enabled** | The package is *running*: `aos-pkg-<name>.target` is reached, pulling member units; for container packages the `systemd-nspawn` service behind the target is started. | systemd activation, triggered by the Ignition-written enable hook |
 
-The in-flight roles-as-targets design (`docs/rfcs/0001-roles-as-targets.md`,
-PR #28 — **not yet on this branch**, cite as in-flight) already establishes the
-"inert in EROFS, one activation root per role" half: member units are baked into
-EROFS as plain files with no `multi-user.target.wants` symlink, and a single
-synthesized target is the sole activation root. The packages work inherits that
-directly; the new part here is the **installed** state in the middle, supplied
-by `apm`.
+The target/activation design ([activation.md](activation.md)) establishes the
+"inert in EROFS, one activation root per package" half: member units are baked
+into EROFS as plain files with no `multi-user.target.wants` symlink, and a single
+synthesized target is the sole activation root. The boot flow builds on that
+directly; the **installed** state in the middle is supplied by `apm`.
 
-> **Honest gap.** Today these two halves are not connected. The targets/sandbox
+> **Honest gap.** Today these two halves are not connected. The activation
 > design assumes the units are baked into the image and merely *enabled* via
 > Ignition; it does **not** run `apm install` at boot. There is currently **no**
 > boot-stage step that installs *additional* apm packages — `aos-seed-profiles`
@@ -83,7 +81,7 @@ Key services and their wiring (real, from `modules/services/ignition.nix`):
   (`stage = "files"`, ~line 354). It writes to the per-generation `/etc` tmpfs
   lower (`/run/etc/ignition-<gen>/...`), which persists through switch-root into
   stage 2 (comment ~line 377). This is where role/package Ignition fragments are
-  materialized — units, and (under the *old* roles model) the global drop-ins.
+  materialized — units, and the global drop-ins.
 
 Network: `network-online.target` is **not** a static dependency of the Ignition
 stages — the module notes (~line 112–135) that on cloud platforms networking is
@@ -140,23 +138,21 @@ Ignition's existing idempotent files stage rather than inventing a new Ignition
 section. **Needs verification:** whether to reuse `registries.d/` verbatim plus a
 separate `packages.d/desired.toml`, or fold both into one document.
 
-### 3.2 The systemd.units[].enabled removal — how "enabled" is expressed now
+### 3.2 How "enabled" is expressed
 
 > **Canonical statement.** This section is the doc set's single source of truth
-> for how enable is expressed. `../0001-roles-as-targets.md` §"Activation"
-> and [container-model.md](container-model.md)'s invariant list describe the
-> roles-era single `systemd.units[]` entry; for packages that path is
-> superseded by the **preset mechanism** below. Where the docs disagree, this
-> section wins.
+> for how enable is expressed. For packages, enable is expressed through the
+> **preset mechanism** below — see [activation.md](activation.md) §"Activation"
+> and [container-model.md](container-model.md)'s invariant list. Where the docs
+> disagree, this section wins.
 
-The original roles design enabled a role by emitting **one**
-`systemd.units[]` entry per role in the Ignition config with `enabled: true`,
-relying on Ignition to read the unit's `[Install]` section and synthesize the
-`multi-user.target.wants/<unit>` symlink. **That field was removed** for the
-packages direction: per Ignition spec **v12 §5.6.4**, `systemd.units[].enabled`
-(and the implicit enable-by-`[Install]` behavior it drove) is no longer
-available to us for roles/packages. So "enable" can no longer be a single
-`enabled: true` toggle in the fetched/merged Ignition fragment.
+A single `systemd.units[]` entry per package with `enabled: true` — relying on
+Ignition to read the unit's `[Install]` section and synthesize the
+`multi-user.target.wants/<unit>` symlink — is **not** available to us: per
+Ignition spec **v12 §5.6.4**, `systemd.units[].enabled` (and the implicit
+enable-by-`[Install]` behavior it drove) is no longer present for packages. So
+"enable" can no longer be a single `enabled: true` toggle in the fetched/merged
+Ignition fragment.
 
 **Enable is expressed through systemd presets** — the mechanism every major
 distro converged on. Repo verification (below) ruled out relying on systemd's
@@ -232,10 +228,10 @@ Fedora-style per-host allowlist written by Ignition.
 - **`-Dfirst-boot-full-preset` is irrelevant** under the explicit-oneshot
   mechanism; the AOS systemd build sets no preset-related flags and need not.
 
-The earlier strawmen — **Option A** (re-implement `[Install]`→symlink via
-`storage.links`) and **Option B** (`apm` runs `systemctl enable`) — are
-**superseded**: presets subsume both with one oneshot plus one
-Ignition-written file, and the policy lives in declarative files rather than
+Two alternatives — **Option A** (re-implement `[Install]`→symlink via
+`storage.links`) and **Option B** (`apm` runs `systemctl enable`) — are both
+**ruled out** in favor of presets: presets subsume both with one oneshot plus
+one Ignition-written file, and the policy lives in declarative files rather than
 in symlink state. Either way the enable *decision* still originates in the
 Ignition-declared set — the host that lists `k3s-worker` in `desired.toml` is
 the host whose preset file enables it.
@@ -304,8 +300,9 @@ install (apm install ...) → expose (units + target) → systemctl preset aos-p
 ```
 
 For plain packages, "enable" reaches the target and its member units (the
-gated `aos-pkg-<name>-modules/sysctl/firewall.service` from the targets-and-
-sandbox design) come up under it. For **container** packages, the target's
+gated `aos-pkg-<name>-modules/sysctl/firewall.service` from the
+[activation.md](activation.md) design) come up under it. For **container**
+packages, the target's
 `Wants=` pulls the `systemd-nspawn` instance — see
 [container-model.md](container-model.md) for the unit shape. The boot flow does
 not need to know which kind it is; it enables the target and the package's own
@@ -385,7 +382,7 @@ that may not exist.
 
 ## 5. End-to-end boot sequence
 
-Putting it together (stage-2 placement, Option B enable):
+Putting it together (stage-2 placement, preset-based enable):
 
 ```
 initrd:
@@ -411,7 +408,7 @@ The package's system units were **inert in EROFS** the whole time (built in);
 `aos-install-packages` moved them to **installed**; the enable hook moved them to
 **enabled**. Disabled hosts (package not in `desired.toml`) never install or
 enable it — its units sit inert in EROFS, wanted by nothing, exactly as the
-targets-and-sandbox "strict disabled = inert" guarantee requires.
+[activation.md](activation.md) "strict disabled = inert" guarantee requires.
 
 ---
 
@@ -472,5 +469,5 @@ findings; harness files under `lib/testing/`):
 - [container-model.md](container-model.md) — nspawn containers, the nominal-vs-real boundary, k3s
 - [apm-integration.md](apm-integration.md) — registry metadata, target/container declaration, install/enable/remove
 - [config.md](config.md) — config-delivery design space (open)
-- [migration.md](migration.md) — roles → packages rename and the k3s mapping
+- [migration.md](migration.md) — migration onto the packages model and the k3s mapping
 - [open-questions.md](open-questions.md) — unresolved decisions (prune, enable mechanism, config backend)
