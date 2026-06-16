@@ -28,9 +28,10 @@
 //! - [`eval`] owns the safe tree-walk oracle and its thunk-forcing state.
 //! - [`list`] owns the Phase-1 immutable list-spine representation.
 //! - [`string`] owns byte-oriented Nix strings and string contexts.
+//! - [`runtime`] owns shared runtime metadata such as builtin declarations.
 //!
 //! Future Phase-1 modules land below this boundary in the order specified by
-//! the RFC: `runtime` and `store`.
+//! the RFC: `store`.
 
 #![forbid(unsafe_code)]
 
@@ -42,6 +43,7 @@ pub mod eval;
 pub mod heap;
 pub mod list;
 pub mod native;
+pub mod runtime;
 pub mod string;
 pub mod syntax;
 pub mod value;

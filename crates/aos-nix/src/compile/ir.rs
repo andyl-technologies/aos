@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use super::{FrameInfo, ResolvedAst};
+use crate::runtime::builtins::{BuiltinDirect, BuiltinEffect, direct_builtin};
 use crate::syntax::{
     AstErrorKind, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind, Span, Symbol,
     SymbolTable, UnaryOpKind,
@@ -785,7 +786,7 @@ impl IrLowerer {
         let Some(symbol) = self.direct_builtin_ref_symbol(id)? else {
             return Ok(false);
         };
-        Ok(self.symbol_is(symbol, b"derivationStrict"))
+        Ok(self.direct_builtin(symbol) == Some(BuiltinDirect::DerivationStrict))
     }
 
     fn strict_unary_primop_ref(
@@ -803,9 +804,10 @@ impl IrLowerer {
         {
             return Ok(None);
         }
-        Ok(self
-            .strict_unary_primop_effect(symbol)
-            .map(|effect| (symbol, effect)))
+        let Some(BuiltinDirect::StrictUnary { effect }) = self.direct_builtin(symbol) else {
+            return Ok(None);
+        };
+        Ok(Some((symbol, Self::effect_class(effect))))
     }
 
     fn strict_binary_primop_ref(
@@ -829,9 +831,10 @@ impl IrLowerer {
         let Some(symbol) = self.direct_builtin_ref_symbol(function)? else {
             return Ok(None);
         };
-        Ok(self
-            .strict_binary_primop_effect(symbol)
-            .map(|effect| (symbol, effect, first_argument)))
+        let Some(BuiltinDirect::StrictBinary { effect }) = self.direct_builtin(symbol) else {
+            return Ok(None);
+        };
+        Ok(Some((symbol, Self::effect_class(effect), first_argument)))
     }
 
     fn strict_lazy_binary_primop_ref(
@@ -855,9 +858,10 @@ impl IrLowerer {
         let Some(symbol) = self.direct_builtin_ref_symbol(function)? else {
             return Ok(None);
         };
-        Ok(self
-            .strict_lazy_binary_primop_effect(symbol)
-            .map(|effect| (symbol, effect, first_argument)))
+        let Some(BuiltinDirect::StrictLazyBinary { effect }) = self.direct_builtin(symbol) else {
+            return Ok(None);
+        };
+        Ok(Some((symbol, Self::effect_class(effect), first_argument)))
     }
 
     fn strict_ternary_primop_ref(
@@ -892,9 +896,15 @@ impl IrLowerer {
         let Some(symbol) = self.direct_builtin_ref_symbol(function)? else {
             return Ok(None);
         };
-        Ok(self
-            .strict_ternary_primop_effect(symbol)
-            .map(|effect| (symbol, effect, first_argument, second_argument)))
+        let Some(BuiltinDirect::StrictTernary { effect }) = self.direct_builtin(symbol) else {
+            return Ok(None);
+        };
+        Ok(Some((
+            symbol,
+            Self::effect_class(effect),
+            first_argument,
+            second_argument,
+        )))
     }
 
     fn direct_builtin_ref_symbol(&self, id: NodeId) -> Result<Option<Symbol>, IrError> {
@@ -955,76 +965,17 @@ impl IrLowerer {
         self.resolved.symbols.resolve(symbol) == Some(expected)
     }
 
-    fn strict_unary_primop_effect(&self, symbol: Symbol) -> Option<EffectClass> {
-        match self.resolved.symbols.resolve(symbol) {
-            Some(
-                b"getEnv" | b"import" | b"pathExists" | b"readDir" | b"readFile" | b"readFileType",
-            ) => Some(EffectClass::Effectful),
-            Some(
-                b"isAttrs"
-                | b"isList"
-                | b"isFunction"
-                | b"isString"
-                | b"isInt"
-                | b"isFloat"
-                | b"isBool"
-                | b"isNull"
-                | b"isPath"
-                | b"typeOf"
-                | b"length"
-                | b"attrNames"
-                | b"attrValues"
-                | b"tail"
-                | b"functionArgs"
-                | b"head"
-                | b"ceil"
-                | b"floor"
-                | b"hasContext"
-                | b"getContext"
-                | b"addDrvOutputDependencies"
-                | b"unsafeDiscardOutputDependency"
-                | b"listToAttrs"
-                | b"concatLists"
-                | b"stringLength"
-                | b"baseNameOf"
-                | b"dirOf"
-                | b"parseDrvName"
-                | b"splitVersion"
-                | b"fromJSON"
-                | b"toString"
-                | b"toJSON"
-                | b"convertHash"
-                | b"unsafeDiscardStringContext",
-            ) => Some(EffectClass::Pure),
-            _ => None,
-        }
+    fn direct_builtin(&self, symbol: Symbol) -> Option<BuiltinDirect> {
+        self.resolved
+            .symbols
+            .resolve(symbol)
+            .and_then(direct_builtin)
     }
 
-    fn strict_binary_primop_effect(&self, symbol: Symbol) -> Option<EffectClass> {
-        match self.resolved.symbols.resolve(symbol) {
-            Some(b"hashFile") => Some(EffectClass::Effectful),
-            Some(
-                b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs" | b"intersectAttrs"
-                | b"catAttrs" | b"elem" | b"lessThan" | b"hashString" | b"concatStringsSep"
-                | b"add" | b"sub" | b"mul" | b"div" | b"bitAnd" | b"bitOr" | b"bitXor"
-                | b"compareVersions" | b"all" | b"any" | b"filter" | b"partition" | b"concatMap"
-                | b"groupBy",
-            ) => Some(EffectClass::Pure),
-            _ => None,
-        }
-    }
-
-    fn strict_lazy_binary_primop_effect(&self, symbol: Symbol) -> Option<EffectClass> {
-        match self.resolved.symbols.resolve(symbol) {
-            Some(b"deepSeq" | b"seq") => Some(EffectClass::Pure),
-            _ => None,
-        }
-    }
-
-    fn strict_ternary_primop_effect(&self, symbol: Symbol) -> Option<EffectClass> {
-        match self.resolved.symbols.resolve(symbol) {
-            Some(b"substring" | b"foldl'" | b"replaceStrings") => Some(EffectClass::Pure),
-            _ => None,
+    fn effect_class(effect: BuiltinEffect) -> EffectClass {
+        match effect {
+            BuiltinEffect::Pure => EffectClass::Pure,
+            BuiltinEffect::Effectful => EffectClass::Effectful,
         }
     }
 
