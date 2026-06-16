@@ -26,11 +26,15 @@
   on Workers via `axum-cloudflare-adapter`, deleting the worker's hand-written
   read-only fetch router. A wasm-feasibility spike (2026-06-16) confirmed the
   shared router compiles to wasm but the `connectrpc` *server* runtime does
-  not, so RPC keeps a thin per-target transport adapter over shared logic
-  (and `aos-proto` splits into a wasm-clean message-types crate). Phase 5 folds
-  the standalone hub CLI into `aos hub …` (API-driven, no direct DB access);
-  once the unification lands the worker answers the same `aos.registry.v1`
-  calls. Gated on the D1 batch-only transaction audit recorded in that file.
+  not, so the registry hub serves a single **Connect-JSON** transport (plain
+  JSON over HTTP — `POST /aos.registry.v1.{Service}/{Method}`) as shared `axum`
+  handlers on both targets, dropping the `connectrpc` runtime from the registry
+  path entirely (a new wasm-clean `aos-proto-types` crate holds the message
+  structs; `aos-remote`'s hub client becomes a Connect-JSON client). Phase 5
+  folds the standalone hub CLI into `aos hub …` (API-driven, no direct DB
+  access); once the unification lands the worker answers the same
+  `aos.registry.v1` calls. Gated on the D1 batch-only transaction audit
+  recorded in that file.
 
   Still deferred to RFC-future: the Leptos-CSR WASM SPA web surface (the
   no-JS static tier ships); passkeys/WebAuthn beyond phase 2; mirroring
@@ -62,4 +66,4 @@ is a live proposal and its own file carries its working status.
 | [07-data-ops-and-testing.md](07-data-ops-and-testing.md) | Database schema sketch, operations (migrations/backup/quotas/observability), testing, changes outside the hub crate |
 | [08-sequencing.md](08-sequencing.md) | Implementation sequencing of the shipped phases |
 | [09-alternatives-and-open-questions.md](09-alternatives-and-open-questions.md) | Alternatives considered and open questions |
-| [10-unified-runtime.md](10-unified-runtime.md) | **Phase 5 (In progress):** one async codebase, full Cloudflare/native parity, sqlx + D1 backends, `aos hub` CLI-over-API, the wasm-feasibility spike + RPC transport adapter, the D1 transaction audit |
+| [10-unified-runtime.md](10-unified-runtime.md) | **Phase 5 (In progress):** one async codebase, full Cloudflare/native parity, sqlx + D1 backends, `aos hub` CLI-over-API, the wasm-feasibility spike + Connect-JSON transport decision, the D1 transaction audit |
