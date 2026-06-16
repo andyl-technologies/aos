@@ -17,11 +17,12 @@ use anyhow::Result;
 use connectrpc::client::{ClientConfig, HttpClient};
 
 use aos_proto::aos::registry::v1::{
-    Binding, Channel, ChannelServiceClient, GetRegistryRequest, ListBindingsRequest,
-    ListChannelsRequest, ListOrgsRequest, ListPackagesRequest, ListProjectsRequest,
-    ListRegistriesRequest, ListReleasesRequest, Org, OrgServiceClient, PackageServiceClient,
-    PackageSummary, Project, ProjectServiceClient, Registry, RegistryServiceClient, Release,
-    StorageServiceClient,
+    AuditEntry, AuditServiceClient, Binding, Changeset, Channel, ChannelServiceClient,
+    ConfigServiceClient, GetRegistryRequest, ListAuditRequest, ListBindingsRequest,
+    ListChangesetsRequest, ListChannelsRequest, ListOrgsRequest, ListPackagesRequest,
+    ListProjectsRequest, ListRegistriesRequest, ListReleasesRequest, Org, OrgServiceClient,
+    PackageServiceClient, PackageSummary, Project, ProjectServiceClient, Registry,
+    RegistryServiceClient, Release, StorageServiceClient,
 };
 
 use crate::client::{make_http_client, validate_base_url};
@@ -43,6 +44,8 @@ pub struct RegistryHubClient {
     orgs: OrgServiceClient<HttpClient>,
     projects: ProjectServiceClient<HttpClient>,
     bindings: StorageServiceClient<HttpClient>,
+    audit: AuditServiceClient<HttpClient>,
+    config: ConfigServiceClient<HttpClient>,
 }
 
 impl RegistryHubClient {
@@ -87,7 +90,9 @@ impl RegistryHubClient {
             channels: ChannelServiceClient::new(http.clone(), config.clone()),
             orgs: OrgServiceClient::new(http.clone(), config.clone()),
             projects: ProjectServiceClient::new(http.clone(), config.clone()),
-            bindings: StorageServiceClient::new(http, config),
+            bindings: StorageServiceClient::new(http.clone(), config.clone()),
+            audit: AuditServiceClient::new(http.clone(), config.clone()),
+            config: ConfigServiceClient::new(http, config),
         })
     }
 
@@ -228,5 +233,45 @@ impl RegistryHubClient {
             .await
             .map_err(|e| anyhow::anyhow!("listing bindings for org '{org_slug}': {e}"))?;
         Ok(response.into_owned().bindings)
+    }
+
+    /// Lists audit-log entries at a scope (the root scope `""` is instance-wide),
+    /// newest first.
+    ///
+    /// Requires an authenticated client with `audit.read` on the scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn list_audit(&self, scope: &str) -> Result<Vec<AuditEntry>> {
+        let response = self
+            .audit
+            .list_audit(ListAuditRequest {
+                scope: scope.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("listing audit entries for scope '{scope}': {e}"))?;
+        Ok(response.into_owned().entries)
+    }
+
+    /// Lists configuration change-sets at a scope (the root scope `""` is
+    /// instance-wide), newest first.
+    ///
+    /// Requires an authenticated client with `audit.read` on the scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn list_changesets(&self, scope: &str) -> Result<Vec<Changeset>> {
+        let response = self
+            .config
+            .list_changesets(ListChangesetsRequest {
+                scope: scope.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("listing change-sets for scope '{scope}': {e}"))?;
+        Ok(response.into_owned().changesets)
     }
 }

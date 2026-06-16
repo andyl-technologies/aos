@@ -29,6 +29,21 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
         HubCmd::Bindings { hub, token, org } => {
             bindings(printer, hub, token.as_deref(), org).await
         }
+        HubCmd::Audit { hub, token, scope } => {
+            audit(printer, hub, token.as_deref(), scope).await
+        }
+        HubCmd::Changesets { hub, token, scope } => {
+            changesets(printer, hub, token.as_deref(), scope).await
+        }
+    }
+}
+
+/// Renders a scope path for display, naming the empty root scope.
+fn scope_label(scope: &str) -> &str {
+    if scope.is_empty() {
+        "<instance root>"
+    } else {
+        scope
     }
 }
 
@@ -115,6 +130,87 @@ async fn bindings(printer: &Printer, hub: &str, token: Option<&str>, org: &str) 
     printer.header(&format!("{} binding(s) in {org}", bindings.len()));
     for binding in &bindings {
         printer.plain(&format!("  {}  [{}]  {}", binding.name, binding.kind, binding.root));
+    }
+    Ok(())
+}
+
+/// Handles `aos hub audit [--scope <s>]`.
+async fn audit(printer: &Printer, hub: &str, token: Option<&str>, scope: &str) -> Result<()> {
+    let client = hub_client(hub, token)?;
+    let entries = client.list_audit(scope).await?;
+    if printer.json_if_active(&serde_json::json!({
+        "entries": entries
+            .iter()
+            .map(|e| serde_json::json!({
+                "change_id": e.change_id,
+                "actor_label": e.actor_label,
+                "action": e.action,
+                "scope": e.scope,
+                "detail": e.detail,
+                "created_at": e.created_at,
+            }))
+            .collect::<Vec<_>>(),
+    })) {
+        return Ok(());
+    }
+    if entries.is_empty() {
+        printer.info(&format!(
+            "no audit entries at scope {}",
+            scope_label(scope)
+        ));
+        return Ok(());
+    }
+    printer.header(&format!(
+        "{} audit entr{} at scope {}",
+        entries.len(),
+        if entries.len() == 1 { "y" } else { "ies" },
+        scope_label(scope)
+    ));
+    for entry in &entries {
+        printer.plain(&format!(
+            "  {}  {}  {}",
+            entry.actor_label, entry.action, entry.scope
+        ));
+    }
+    Ok(())
+}
+
+/// Handles `aos hub changesets [--scope <s>]`.
+async fn changesets(printer: &Printer, hub: &str, token: Option<&str>, scope: &str) -> Result<()> {
+    let client = hub_client(hub, token)?;
+    let changesets = client.list_changesets(scope).await?;
+    if printer.json_if_active(&serde_json::json!({
+        "changesets": changesets
+            .iter()
+            .map(|c| serde_json::json!({
+                "change_id": c.change_id,
+                "actor_label": c.actor_label,
+                "scope": c.scope,
+                "status": c.status,
+                "summary": c.summary,
+                "created_at": c.created_at,
+            }))
+            .collect::<Vec<_>>(),
+    })) {
+        return Ok(());
+    }
+    if changesets.is_empty() {
+        printer.info(&format!(
+            "no change-sets at scope {}",
+            scope_label(scope)
+        ));
+        return Ok(());
+    }
+    printer.header(&format!(
+        "{} change-set(s) at scope {}",
+        changesets.len(),
+        scope_label(scope)
+    ));
+    for changeset in &changesets {
+        printer.plain(&format!(
+            "  {}  [{}]  {}",
+            changeset.change_id, changeset.status, changeset.summary
+        ));
     }
     Ok(())
 }
