@@ -50,7 +50,7 @@ Siblings: [README.md](README.md) · [enforcement.md](enforcement.md) ·
 | Single-key supply chain, no transparency | Sigstore/Rekor, TUF, in-toto/SLSA; Nix's own Trustix | [apm-integration.md](apm-integration.md) — provenance + transparency log + TUF hardening |
 | Host-global firewall set mutation | Cilium/eBPF per-identity, Android per-UID, Landlock TCP rules | [container-model.md](container-model.md) — per-package eBPF + Landlock egress |
 | Partial systemd hardening | the `systemd-analyze security` consensus baseline | [enforcement.md](enforcement.md) — full baseline + per-package CI gate |
-| Open secret delivery | TPM2-sealed systemd-creds (signed-PCR policy) | [config.md](config.md) — recommended direction (Decision 9, awaiting sign-off) |
+| Open secret delivery | TPM2-sealed systemd-creds (signed-PCR policy) | [config.md](config.md) — Decision 9 RESOLVED (signed off): layered (TPM2 creds / schema'd artifact / EnvironmentFile) |
 
 ## The novel result
 

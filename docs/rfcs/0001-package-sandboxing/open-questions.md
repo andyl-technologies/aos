@@ -426,7 +426,7 @@ when the registry is unreachable (air-gapped / on-prem must not hard-fail boot).
 
 ---
 
-## 9. Config & credential delivery — RESOLVED (direction): layered, not one mechanism
+## 9. Config & credential delivery — RESOLVED: layered, secrets path signed off
 
 > **Resolved (direction).** The "pick one option" framing was the mistake —
 > config has three distinct needs, and the budget mandate says build all three
@@ -445,8 +445,8 @@ when the registry is unreachable (air-gapped / on-prem must not hard-fail boot).
 >
 > **Hot reload is built (D25), not skipped:** the manifest declares whether the
 > service supports reload; a config change triggers `systemctl reload-or-restart`
-> (`Type=notify-reload`/`RELOADING=1` where supported). Only the secrets path
-> awaits maintainer sign-off; the layering is decided. *packages-core* / *apm*.
+> (`Type=notify-reload`/`RELOADING=1` where supported). **Secrets path signed off
+> (2026-06) — fully RESOLVED.** *packages-core* / *apm*.
 
 **Statement.** How per-instance config and secrets reach a package is answered by
 the layered model above. The working baseline is k3s today: Ignition writes
@@ -900,7 +900,7 @@ the next schema change, before any `expose` work ships.
 | 6 | Bake vs. fetch — **RESOLVED by 5**: ordinary closure delivery; bake k3s, fetch workloads | RESOLVED | pkgs / boot |
 | 7 | machined/portabled/importd — **RESOLVED: stay disabled** | RESOLVED | pkgs |
 | 8 | Install-at-boot — enable **RESOLVED: presets via every-boot `aos-preset.service`** (machine-id + tmpfs-upper + apm idempotency all verified) | install unit remains BEFORE-MVP | boot / apm |
-| 9 | Config & credential delivery — **RESOLVED (direction): layered** — secrets via TPM2-sealed systemd-creds (RFC-0006 substrate; satisfies the credstore caution), structured config via apm artifact + manifest schema, simple via `EnvironmentFile=`; hot reload built (D25). Only the secrets path awaits sign-off | RESOLVED (direction) | packages-core / apm |
+| 9 | Config & credential delivery — **RESOLVED (signed off 2026-06): layered** — secrets via TPM2-sealed systemd-creds (RFC-0006 substrate; satisfies the credstore caution), structured config via apm artifact + manifest schema, simple via `EnvironmentFile=`; hot reload built (D25) | RESOLVED | packages-core / apm |
 | 10 | Boundary labeling — **RESOLVED**: computed confinement label | RESOLVED | packages-core |
 | 11 | Upgrade/rollback — **RESOLVED (direction)** under D17: unit-semantics restarts, `KillMode=process` preserved for k3s | RESOLVED (direction) | apm / packages-core |
 | 12 | Package metadata — **RESOLVED (hybrid)**: TOML carries target/requires/permissions; units ride the closure | RESOLVED | apm / packages-core |
@@ -938,14 +938,17 @@ classes remain genuinely out, each justified on merit:
   substrate — no per-package PID 1).
 
 **The one genuine capability gap — stronger-than-namespace isolation — is a
-threat-model question, not a cost one.** If AOS must host *untrusted / multi-
-tenant* code, the SOTA answer is a **microVM tier (Firecracker/Kata)**, which AOS
-is positioned to build from its existing from-source QEMU + `lib/testing/firecracker.nix`
-infrastructure — **not nspawn**. If AOS only confines *first-party* packages
-(the current threat model), the per-unit + Landlock + MAC + attestation stack is
-sufficient and a microVM tier would be gold-plating. This is the substrate
-*gradient*: per-unit (default) → microVM (untrusted), nspawn skipped entirely.
-**Decision for the maintainer: does the threat model include untrusted tenants?**
+threat-model question, and it is now ANSWERED: not yet.** The current threat
+model is **first-party package confinement**, for which the per-unit + Landlock +
+MAC + attestation stack is sufficient; a microVM tier would be gold-plating
+today. **Decided (2026-06): the microVM tier is a planned future effort, built
+when untrusted / multi-tenant workloads enter scope** — and when it is, the SOTA
+answer is a **microVM tier (Firecracker/Kata)** built from AOS's existing
+from-source QEMU + `lib/testing/firecracker.nix` infrastructure as a
+manifest-selectable `substrate = "microvm"`, **not nspawn**. The substrate
+*gradient* — per-unit (default, now) → microVM (untrusted, later), nspawn skipped
+entirely — is the recorded direction; only the timing is deferred, on a real
+future need rather than on cost.
 
 ## State-of-the-art additions (Decisions 20–25)
 
@@ -955,9 +958,10 @@ mandate ([state-of-the-art.md](state-of-the-art.md)) — they are **committed
 deliverables, not open questions**, with full implementer detail in
 [enforcement.md](enforcement.md), [attestation.md](attestation.md), and
 [apm-integration.md](apm-integration.md). They are listed here so the register
-is the single index of everything to build. The one decision the budget mandate
-explicitly does **not** force is D9 (config), which carries a recommendation
-awaiting sign-off; and D17 (nspawn) stays deferred on merit, not cost.
+is the single index of everything to build. Both maintainer decisions are now
+answered: D9 (config) — secrets path signed off (TPM2-sealed creds); and the
+microVM tier — **not yet** (first-party threat model; a planned future effort).
+D17 (nspawn) stays skipped on merit, not cost.
 
 ---
 
