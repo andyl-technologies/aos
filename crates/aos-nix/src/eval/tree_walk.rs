@@ -1344,6 +1344,57 @@ impl<'ir> TreeWalk<'ir> {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
                     })
             }
+            StrictUnaryPrimOp::Tail => {
+                let argument_span = self.node(argument)?.span;
+                if value.tag() != ValueTag::List {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id: argument,
+                            expected: "list",
+                            actual: value.tag(),
+                        },
+                        argument_span,
+                    ));
+                }
+                let values = {
+                    let list = self.heap.get_list(value).map_err(|source| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::Heap {
+                                id: argument,
+                                source,
+                            },
+                            argument_span,
+                        )
+                    })?;
+                    if list.is_empty() {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::EmptyListPrimOp {
+                                id: argument,
+                                op: "tail",
+                            },
+                            argument_span,
+                        ));
+                    }
+                    let tail = &list.as_slice()[1..];
+                    let mut values = Vec::new();
+                    values.try_reserve_exact(tail.len()).map_err(|_| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::ListAllocationFailed {
+                                id,
+                                len: tail.len(),
+                            },
+                            node.span,
+                        )
+                    })?;
+                    values.extend_from_slice(tail);
+                    values
+                };
+                self.heap
+                    .alloc_list(NixList::new(values))
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                    })
+            }
         }
     }
 
@@ -2847,6 +2898,7 @@ enum StrictUnaryPrimOp {
     Length,
     AttrNames,
     AttrValues,
+    Tail,
 }
 
 impl StrictUnaryPrimOp {
@@ -2865,6 +2917,7 @@ impl StrictUnaryPrimOp {
             b"length" => Some(Self::Length),
             b"attrNames" => Some(Self::AttrNames),
             b"attrValues" => Some(Self::AttrValues),
+            b"tail" => Some(Self::Tail),
             _ => None,
         }
     }
@@ -3239,6 +3292,14 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The overflowing list length.
         len: usize,
+    },
+    /// A list primop received an empty list where it requires an element.
+    #[error("{op} received an empty list at node {id:?}")]
+    EmptyListPrimOp {
+        /// The list-valued node that was empty.
+        id: IrId,
+        /// The primop that rejected the empty list.
+        op: &'static str,
     },
     /// The active with-scope stack could not reserve another entry.
     #[error("failed to reserve {scopes} active with scopes at node {id:?}")]
@@ -3823,6 +3884,86 @@ mod tests {
             TreeWalkErrorKind::Type {
                 id: argument,
                 expected: "attrs",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn tail_primop_returns_tail_without_forcing_elements() {
+        let ir = lower("builtins.tail [ 1 (1 / 0) true ]");
+        let outcome = eval_whnf_owned(&ir).expect("tail evaluates");
+        let heap = outcome.heap();
+        let list = heap
+            .get_list(outcome.value())
+            .expect("tail result is heap-owned");
+
+        assert_eq!(list.len(), 2);
+        let lazy_division = list.get(0).expect("first tail element");
+        assert_eq!(lazy_division.tag(), ValueTag::Thunk);
+        let thunk = heap
+            .get_thunk(lazy_division)
+            .expect("first tail element remains a heap-owned thunk");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(
+            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            IrKind::BinOp
+        );
+        assert_eq!(
+            list.get(1).expect("second tail element").as_bool(),
+            Ok(true)
+        );
+
+        assert_eq!(
+            eval_list_string_bytes(
+                "let builtins = { tail = x: [ \"local\" ]; }; in builtins.tail [ 1 ]"
+            ),
+            vec![b"local".to_vec()]
+        );
+    }
+
+    #[test]
+    fn tail_primop_rejects_empty_lists() {
+        let ir = lower("builtins.tail []");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("tail requires a non-empty list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::EmptyListPrimOp {
+                id: argument,
+                op: "tail"
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn tail_primop_type_checks_argument() {
+        let ir = lower("builtins.tail 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("tail requires a list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "list",
                 actual: ValueTag::Int
             }
         );
