@@ -194,12 +194,10 @@ impl JwtKeys {
     }
 }
 
-/// Returns the current Unix time in seconds.
+/// Returns the current Unix time in seconds (native `SystemTime`, or the
+/// Worker's JS `Date.now()` clock on wasm32 — see [`crate::clock`]).
 fn unix_now() -> Result<i64> {
-    Ok(std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .context("system clock before Unix epoch")?
-        .as_secs() as i64)
+    Ok(crate::clock::now_unix_secs())
 }
 
 #[cfg(test)]

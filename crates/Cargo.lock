@@ -342,6 +342,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "hmac 0.12.1",
+ "js-sys",
  "p256",
  "password-hash",
  "rand 0.9.4",
