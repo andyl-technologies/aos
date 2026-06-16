@@ -15,6 +15,7 @@
 
 use std::rc::Rc;
 
+use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 use super::env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
@@ -1640,6 +1641,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_split_version_primop(id, node.span, argument, argument_span, value)
             }
+            StrictUnaryPrimOp::FromJson => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_from_json_primop(argument, argument_span, value)
+            }
             StrictUnaryPrimOp::FunctionArgs => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_function_args_primop(id, node.span, argument, argument_span, value)
@@ -2037,6 +2042,105 @@ impl<'ir> TreeWalk<'ir> {
         let right =
             self.context_free_string_bytes(right_id, right_span, right, "compareVersions")?;
         Ok(Value::int(compare_version_bytes(&left, &right)))
+    }
+
+    fn eval_from_json_primop(
+        &mut self,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let bytes = self.context_free_string_bytes(argument, argument_span, value, "fromJSON")?;
+        let json: JsonValue = serde_json::from_slice(&bytes).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::JsonParse {
+                    id: argument,
+                    message: source.to_string(),
+                },
+                argument_span,
+            )
+        })?;
+        self.value_from_json(argument, argument_span, json)
+    }
+
+    fn value_from_json(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: JsonValue,
+    ) -> Result<Value, TreeWalkError> {
+        match value {
+            JsonValue::Null => Ok(Value::null()),
+            JsonValue::Bool(value) => Ok(Value::bool(value)),
+            JsonValue::Number(value) => {
+                if let Some(value) = value.as_i64() {
+                    Ok(Value::int(value))
+                } else if let Some(value) = value.as_u64() {
+                    Ok(Value::int(value as i64))
+                } else if let Some(value) = value.as_f64() {
+                    Ok(Value::float(value))
+                } else {
+                    Err(TreeWalkError::new(
+                        TreeWalkErrorKind::JsonNumberUnsupported { id },
+                        span,
+                    ))
+                }
+            }
+            JsonValue::String(value) => self.alloc_static_string(id, span, value.as_bytes()),
+            JsonValue::Array(values) => {
+                let mut elements = Vec::new();
+                elements.try_reserve_exact(values.len()).map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::ListAllocationFailed {
+                            id,
+                            len: values.len(),
+                        },
+                        span,
+                    )
+                })?;
+                for value in values {
+                    elements.push(self.value_from_json(id, span, value)?);
+                }
+                self.heap
+                    .alloc_list(NixList::new(elements))
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                    })
+            }
+            JsonValue::Object(values) => {
+                let mut entries = Vec::new();
+                entries.try_reserve_exact(values.len()).map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Attr {
+                            id,
+                            source: AttrError::AllocationFailed {
+                                entries: values.len(),
+                            },
+                        },
+                        span,
+                    )
+                })?;
+                for (key, value) in values {
+                    let symbol = self.symbols.intern(key.as_bytes()).map_err(|source| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::SymbolIntern {
+                                id,
+                                source: source.kind().clone(),
+                            },
+                            span,
+                        )
+                    })?;
+                    let value = self.value_from_json(id, span, value)?;
+                    entries.push(AttrEntry::new(symbol, value));
+                }
+                let attrs = FlatAttrs::new(entries, &self.symbols).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span)
+                })?;
+                self.heap.alloc_attrs(0, attrs).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })
+            }
+        }
     }
 
     fn eval_list_to_attrs_primop(
@@ -5277,6 +5381,7 @@ enum StrictUnaryPrimOp {
     DirOf,
     ParseDrvName,
     SplitVersion,
+    FromJson,
     ListToAttrs,
     ConcatLists,
 }
@@ -5309,6 +5414,7 @@ impl StrictUnaryPrimOp {
             b"dirOf" => Some(Self::DirOf),
             b"parseDrvName" => Some(Self::ParseDrvName),
             b"splitVersion" => Some(Self::SplitVersion),
+            b"fromJSON" => Some(Self::FromJson),
             b"listToAttrs" => Some(Self::ListToAttrs),
             b"concatLists" => Some(Self::ConcatLists),
             _ => None,
@@ -5892,6 +5998,20 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The primop rejecting the string context.
         op: &'static str,
+    },
+    /// A JSON string failed to parse.
+    #[error("JSON parse failed at node {id:?}: {message}")]
+    JsonParse {
+        /// The string-valued node that was parsed as JSON.
+        id: IrId,
+        /// The parser diagnostic.
+        message: String,
+    },
+    /// A parsed JSON number did not fit any supported evaluator number shape.
+    #[error("unsupported JSON number at node {id:?}")]
+    JsonNumberUnsupported {
+        /// The string-valued node that produced the unsupported number.
+        id: IrId,
     },
     /// A Nix list operation failed.
     #[error("list operation failed at node {id:?}: {source}")]
@@ -9442,6 +9562,151 @@ mod tests {
             TreeWalkErrorKind::StringContextNotAllowed {
                 id: argument,
                 op: "splitVersion",
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn from_json_primop_decodes_json_values() {
+        let json = r#"''{"b":1,"a":[true,false,null,"x"],"c":{"n":2.5}}''"#;
+        assert_eq!(
+            eval_list_string_bytes(&format!("builtins.attrNames (builtins.fromJSON {json})")),
+            [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
+        );
+        assert_eq!(
+            eval(&format!("builtins.elemAt (builtins.fromJSON {json}).a 0")).as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval(&format!("builtins.elemAt (builtins.fromJSON {json}).a 1")).as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval(&format!("builtins.elemAt (builtins.fromJSON {json}).a 2")).as_null(),
+            Ok(())
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.elemAt (builtins.fromJSON {json}).a 3")),
+            b"x"
+        );
+        assert_eq!(
+            eval(&format!("(builtins.fromJSON {json}).b")).as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval(&format!("(builtins.fromJSON {json}).c.n")).as_float(),
+            Ok(2.5)
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.fromJSON ''"é"''"#),
+            "é".as_bytes()
+        );
+        assert_eq!(
+            eval(r#"let builtins = { fromJSON = x: 42; }; in builtins.fromJSON "{}""#).as_int(),
+            Ok(42)
+        );
+    }
+
+    #[test]
+    fn from_json_primop_matches_number_edges_and_duplicate_keys() {
+        assert_eq!(
+            eval(r#"builtins.fromJSON "9223372036854775808""#).as_int(),
+            Ok(i64::MIN)
+        );
+        assert_eq!(
+            eval(r#"builtins.fromJSON "18446744073709551615""#).as_int(),
+            Ok(-1)
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.typeOf (builtins.fromJSON "-9223372036854775809")"#),
+            b"float"
+        );
+        assert_eq!(
+            eval(r#"(builtins.fromJSON ''{"a":1,"a":2}'').a"#).as_int(),
+            Ok(2)
+        );
+    }
+
+    #[test]
+    fn from_json_primop_checks_argument_and_json() {
+        let ir = lower("builtins.fromJSON 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("fromJSON requires a string");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower(r#"builtins.fromJSON "01""#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("fromJSON rejects invalid JSON");
+
+        match error.kind() {
+            TreeWalkErrorKind::JsonParse { id, message } => {
+                assert_eq!(id, argument);
+                assert!(!message.is_empty());
+            }
+            kind => panic!("unexpected error kind: {kind:?}"),
+        }
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn from_json_primop_rejects_string_context() {
+        let ir = lower("builtins.fromJSON \"{}\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("fromJSON argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"{}".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing string allocates");
+
+        let error = evaluator
+            .eval_from_json_primop(argument, argument_span, value)
+            .expect_err("fromJSON rejects string context");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                id: argument,
+                op: "fromJSON",
             }
         );
         assert_eq!(error.span(), argument_span);

@@ -987,6 +987,7 @@ impl IrLowerer {
                 | b"dirOf"
                 | b"parseDrvName"
                 | b"splitVersion"
+                | b"fromJSON"
                 | b"unsafeDiscardStringContext",
             ) => Some(EffectClass::Pure),
             _ => None,
@@ -1905,6 +1906,10 @@ mod tests {
                 b"splitVersion".as_slice(),
             ),
             (
+                "builtins.fromJSON \"{\\\"a\\\":1}\"",
+                b"fromJSON".as_slice(),
+            ),
+            (
                 "builtins.unsafeDiscardStringContext \"abc\"",
                 b"unsafeDiscardStringContext".as_slice(),
             ),
@@ -2244,6 +2249,18 @@ mod tests {
 
         let ir = lowered(
             "let builtins = { splitVersion = x: [ \"local\" ]; }; in builtins.splitVersion \"1.0\"",
+        );
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered(
+            "let builtins = { fromJSON = x: { local = true; }; }; in builtins.fromJSON \"{}\"",
         );
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");

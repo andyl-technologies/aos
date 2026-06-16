@@ -1477,6 +1477,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"dirOf"
             | b"parseDrvName"
             | b"splitVersion"
+            | b"fromJSON"
             | b"substring"
             | b"foldl'"
             | b"unsafeDiscardStringContext"
