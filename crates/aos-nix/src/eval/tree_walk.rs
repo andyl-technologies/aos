@@ -7,10 +7,11 @@
 //! string-valued attribute names, static and dynamic string-valued
 //! attribute selection, lexical `let` environments, simple and formal-set lambda
 //! application, lazy `with` scope lookup, attrset update, thunk forcing, numeric
-//! arithmetic, numeric and string comparisons, and scalar/string/function plus
-//! structural list/attrset equality to weak head normal form, establishing the
-//! arena access and diagnostic surface used by later slices for full string
-//! coercion, primitive operations, and derivation boundaries.
+//! arithmetic, numeric and string/list comparisons, direct unary type
+//! introspection primops, and scalar/string/function plus structural
+//! list/attrset equality to weak head normal form, establishing the arena access
+//! and diagnostic surface used by later slices for full string coercion,
+//! first-class primitive operations, and derivation boundaries.
 
 use std::rc::Rc;
 
@@ -143,10 +144,11 @@ impl<'ir> TreeWalk<'ir> {
     /// update, static
     /// attribute selection, lexical `let` environment, simple and formal-set
     /// lambda application, lazy `with` lookup, numeric arithmetic, numeric and
-    /// string/list comparison, scalar/string/function/list/attrset equality,
-    /// and conservative thunk allocation nodes. Remaining environment-dependent
-    /// nodes return [`TreeWalkErrorKind::UnsupportedNode`] until later slices
-    /// add their explicit runtime context.
+    /// string/list comparison, direct unary type introspection primops,
+    /// scalar/string/function/list/attrset equality, and conservative thunk
+    /// allocation nodes. Remaining environment-dependent nodes return
+    /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add their
+    /// explicit runtime context.
     ///
     /// # Errors
     ///
@@ -190,6 +192,7 @@ impl<'ir> TreeWalk<'ir> {
             IrKind::AttrSet => self.eval_attrset(id, &node),
             IrKind::Lambda => self.eval_lambda(id, &node),
             IrKind::Apply => self.eval_apply(id, &node),
+            IrKind::PrimOp => self.eval_primop(id, &node),
             IrKind::Let => self.eval_let(id, &node),
             IrKind::With => self.eval_with(id, &node),
             IrKind::If => self.eval_if(id, &node),
@@ -1148,6 +1151,91 @@ impl<'ir> TreeWalk<'ir> {
             second,
             argument,
         )
+    }
+
+    fn eval_primop(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::PrimOp { symbol, args } = node.data else {
+            return Err(self.invalid_payload(id, node, "primop payload"));
+        };
+        let name = self.symbols.resolve(symbol).ok_or_else(|| {
+            TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+        })?;
+        let primop = StrictUnaryPrimOp::from_bytes(name);
+        let args = self.ir.arena.child_slice(args).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidChildSlice { id, slice: args },
+                node.span,
+            )
+        })?;
+        if args.len() != 1 {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidPrimOpArity {
+                    id,
+                    symbol,
+                    expected: 1,
+                    actual: args.len(),
+                },
+                node.span,
+            ));
+        }
+
+        let argument = args[0];
+        let value = self.eval_node(argument)?;
+        let Some(primop) = primop else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
+                node.span,
+            ));
+        };
+        match primop {
+            StrictUnaryPrimOp::IsAttrs => Ok(Value::bool(value.tag() == ValueTag::Attrs)),
+            StrictUnaryPrimOp::IsList => Ok(Value::bool(value.tag() == ValueTag::List)),
+            StrictUnaryPrimOp::IsFunction => Ok(Value::bool(matches!(
+                value.tag(),
+                ValueTag::Lambda | ValueTag::Primop
+            ))),
+            StrictUnaryPrimOp::IsString => Ok(Value::bool(value.tag() == ValueTag::String)),
+            StrictUnaryPrimOp::IsInt => Ok(Value::bool(value.tag() == ValueTag::Int)),
+            StrictUnaryPrimOp::IsFloat => Ok(Value::bool(value.tag() == ValueTag::Float)),
+            StrictUnaryPrimOp::IsBool => Ok(Value::bool(value.tag() == ValueTag::Bool)),
+            StrictUnaryPrimOp::IsNull => Ok(Value::bool(value.tag() == ValueTag::Null)),
+            StrictUnaryPrimOp::IsPath => Ok(Value::bool(value.tag() == ValueTag::Path)),
+            StrictUnaryPrimOp::TypeOf => {
+                let Some(name) = value.tag().nix_type_name() else {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id: argument,
+                            expected: "weak head normal form",
+                            actual: value.tag(),
+                        },
+                        self.node(argument)?.span,
+                    ));
+                };
+                self.alloc_static_string(id, node.span, name.as_bytes())
+            }
+        }
+    }
+
+    fn alloc_static_string(
+        &mut self,
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+    ) -> Result<Value, TreeWalkError> {
+        let mut owned = Vec::new();
+        owned.try_reserve_exact(bytes.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: bytes.len(),
+                },
+                span,
+            )
+        })?;
+        owned.extend_from_slice(bytes);
+        self.heap
+            .alloc_string(NixString::from_bytes(owned))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
     fn apply_lambda_value(
@@ -2588,6 +2676,38 @@ enum EqualityContext {
     Nested,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StrictUnaryPrimOp {
+    IsAttrs,
+    IsList,
+    IsFunction,
+    IsString,
+    IsInt,
+    IsFloat,
+    IsBool,
+    IsNull,
+    IsPath,
+    TypeOf,
+}
+
+impl StrictUnaryPrimOp {
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        match bytes {
+            b"isAttrs" => Some(Self::IsAttrs),
+            b"isList" => Some(Self::IsList),
+            b"isFunction" => Some(Self::IsFunction),
+            b"isString" => Some(Self::IsString),
+            b"isInt" => Some(Self::IsInt),
+            b"isFloat" => Some(Self::IsFloat),
+            b"isBool" => Some(Self::IsBool),
+            b"isNull" => Some(Self::IsNull),
+            b"isPath" => Some(Self::IsPath),
+            b"typeOf" => Some(Self::TypeOf),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct EqualityPairGuard {
     active: Vec<(Value, Value)>,
@@ -3075,6 +3195,26 @@ pub enum TreeWalkErrorKind {
         /// The unsupported binary operator.
         op: BinOpKind,
     },
+    /// A primitive operation exists in IR but is outside this evaluator slice.
+    #[error("unsupported tree-walk primop symbol {symbol:?} at {id:?}")]
+    UnsupportedPrimOp {
+        /// The primop node id.
+        id: IrId,
+        /// The unsupported primop symbol.
+        symbol: Symbol,
+    },
+    /// A primitive operation carries the wrong number of lowered arguments.
+    #[error("invalid primop arity at {id:?}: expected {expected}, got {actual}")]
+    InvalidPrimOpArity {
+        /// The primop node id.
+        id: IrId,
+        /// The primop symbol whose argument list is malformed.
+        symbol: Symbol,
+        /// The expected number of arguments.
+        expected: usize,
+        /// The actual number of arguments in the IR child slice.
+        actual: usize,
+    },
     /// Structural equality for this runtime value type is outside this evaluator slice.
     #[error("unsupported tree-walk equality between {left:?} and {right:?} at {id:?}")]
     UnsupportedEqualityType {
@@ -3328,6 +3468,93 @@ mod tests {
             eval("https://example.test == \"https://example.test\"").as_bool(),
             Ok(true)
         );
+    }
+
+    #[test]
+    fn unary_type_predicate_primops_classify_whnf_values() {
+        assert_eq!(eval("builtins.isAttrs { a = 1; }").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.isAttrs [ 1 ]").as_bool(), Ok(false));
+        assert_eq!(eval("builtins.isList [ 1 ]").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.isFunction (x: x)").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.isString \"x\"").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.isInt 1").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.isInt 1.0").as_bool(), Ok(false));
+        assert_eq!(eval("builtins.isFloat 1.0").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.isBool false").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.isNull null").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.isPath \"not-path\"").as_bool(), Ok(false));
+    }
+
+    #[test]
+    fn type_of_primop_returns_nix_type_names() {
+        assert_eq!(eval_string_bytes("builtins.typeOf 1"), b"int");
+        assert_eq!(eval_string_bytes("builtins.typeOf 1.0"), b"float");
+        assert_eq!(eval_string_bytes("builtins.typeOf false"), b"bool");
+        assert_eq!(eval_string_bytes("builtins.typeOf null"), b"null");
+        assert_eq!(eval_string_bytes("builtins.typeOf \"x\""), b"string");
+        assert_eq!(eval_string_bytes("builtins.typeOf [ 1 ]"), b"list");
+        assert_eq!(eval_string_bytes("builtins.typeOf { a = 1; }"), b"set");
+        assert_eq!(eval_string_bytes("builtins.typeOf (x: x)"), b"lambda");
+    }
+
+    #[test]
+    fn unary_type_primops_force_arguments() {
+        let ir = lower("builtins.isInt (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("predicate forces argument");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: argument }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn unsupported_strict_primops_force_arguments_before_reporting_unsupported() {
+        let ir = lower("builtins.getEnv (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("unsupported primop still forces argument");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: argument }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn unsupported_primops_report_symbol_and_span() {
+        let ir = lower("builtins.getEnv \"HOME\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { symbol, .. } = root.data else {
+            panic!("root is a primop");
+        };
+
+        let error = eval_whnf_owned(&ir).expect_err("getEnv remains unsupported");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedPrimOp {
+                id: ir.root,
+                symbol,
+            }
+        );
+        assert_eq!(error.span(), root.span);
     }
 
     #[test]

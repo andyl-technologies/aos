@@ -1355,7 +1355,7 @@ fn validate_lowered_ir_artifact(ir: &Ir) -> Result<(), String> {
 
 fn validate_ir_node(ir: &Ir, node: IrNode) -> Result<(), String> {
     validate_ir_node_shape(node)?;
-    validate_ir_node_effect(node)?;
+    validate_ir_node_effect(ir, node)?;
     validate_ir_data(ir, node.data)?;
     if let IrData::AttrSet {
         shape,
@@ -1412,15 +1412,33 @@ fn validate_ir_node_shape(node: IrNode) -> Result<(), String> {
     }
 }
 
-fn validate_ir_node_effect(node: IrNode) -> Result<(), String> {
+fn validate_ir_node_effect(ir: &Ir, node: IrNode) -> Result<(), String> {
     let expected = match node.kind {
-        IrKind::DerivationStrict | IrKind::PrimOp => EffectClass::Effectful,
+        IrKind::PrimOp => match node.data {
+            IrData::PrimOp { symbol, .. } => primop_effect(ir.symbols.resolve(symbol))
+                .ok_or_else(|| format!("unknown IR primop symbol {symbol:?}"))?,
+            _ => node.effect,
+        },
+        IrKind::DerivationStrict => EffectClass::Effectful,
         _ => EffectClass::Pure,
     };
     if node.effect == expected {
         Ok(())
     } else {
         Err(format!("invalid IR effect for {:?} node", node.kind))
+    }
+}
+
+fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
+    match name {
+        Some(
+            b"getEnv" | b"import" | b"pathExists" | b"readDir" | b"readFile" | b"readFileType",
+        ) => Some(EffectClass::Effectful),
+        Some(
+            b"isAttrs" | b"isList" | b"isFunction" | b"isString" | b"isInt" | b"isFloat"
+            | b"isBool" | b"isNull" | b"isPath" | b"typeOf",
+        ) => Some(EffectClass::Pure),
+        _ => None,
     }
 }
 
@@ -2872,6 +2890,77 @@ mod tests {
         let error = decode_lowered_ir(&bytes, SymbolTable::new())
             .expect_err("invalid node effect is rejected");
         assert!(error.contains("invalid IR effect"));
+
+        let mut symbols = SymbolTable::new();
+        let type_of = symbols.intern(b"typeOf").expect("typeOf interns");
+        let invalid_primop_effect = Ir {
+            root: IrId::new(1),
+            arena: IrArena::from_raw_parts(
+                vec![
+                    IrNode::new(
+                        IrKind::Bool,
+                        Span::new(16, 20),
+                        EffectClass::Pure,
+                        IrData::Bool(true),
+                    ),
+                    IrNode::new(
+                        IrKind::PrimOp,
+                        Span::new(0, 20),
+                        EffectClass::Effectful,
+                        IrData::PrimOp {
+                            symbol: type_of,
+                            args: IrChildSlice::new(0, 1),
+                        },
+                    ),
+                ],
+                vec![IrId::new(0)],
+            ),
+            symbols: symbols.clone(),
+            frames: Vec::new().into_boxed_slice(),
+            with_chains: Vec::new().into_boxed_slice(),
+            attr_paths: Vec::new().into_boxed_slice(),
+            bindings: Vec::new().into_boxed_slice(),
+            shapes: Vec::new().into_boxed_slice(),
+        };
+        let bytes =
+            encode_lowered_ir(&invalid_primop_effect).expect("invalid primop effect encodes");
+        let error = decode_lowered_ir(&bytes, symbols).expect_err("pure primop effect is rejected");
+        assert!(error.contains("invalid IR effect"));
+
+        let mut symbols = SymbolTable::new();
+        let future = symbols.intern(b"futurePrimop").expect("future interns");
+        let unknown_primop = Ir {
+            root: IrId::new(1),
+            arena: IrArena::from_raw_parts(
+                vec![
+                    IrNode::new(
+                        IrKind::Bool,
+                        Span::new(20, 24),
+                        EffectClass::Pure,
+                        IrData::Bool(false),
+                    ),
+                    IrNode::new(
+                        IrKind::PrimOp,
+                        Span::new(0, 24),
+                        EffectClass::Pure,
+                        IrData::PrimOp {
+                            symbol: future,
+                            args: IrChildSlice::new(0, 1),
+                        },
+                    ),
+                ],
+                vec![IrId::new(0)],
+            ),
+            symbols: symbols.clone(),
+            frames: Vec::new().into_boxed_slice(),
+            with_chains: Vec::new().into_boxed_slice(),
+            attr_paths: Vec::new().into_boxed_slice(),
+            bindings: Vec::new().into_boxed_slice(),
+            shapes: Vec::new().into_boxed_slice(),
+        };
+        let bytes = encode_lowered_ir(&unknown_primop).expect("unknown primop encodes");
+        let error = decode_lowered_ir(&bytes, symbols).expect_err("unknown primop is rejected");
+        assert!(error.contains("unknown IR primop symbol"));
     }
 
     #[test]
@@ -2992,6 +3081,7 @@ mod tests {
               ${name} = builtins.getEnv "HOME";
               drv = derivationStrict { name = "x"; };
               flag = true;
+              kind = builtins.typeOf flag;
               none = null;
               picked = with { fallback = 2; }; fallback;
             }
