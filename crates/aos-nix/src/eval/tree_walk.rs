@@ -1,24 +1,24 @@
 //! Safe tree-walk evaluator over lowered IR.
 //!
-//! The tree-walk evaluator is the permanent Phase-1 correctness oracle. This
-//! first slice evaluates scalar literal nodes to weak head normal form and
-//! establishes the arena access and diagnostic surface used by later slices for
-//! environments, thunks, functions, attribute sets, primitive operations, and
-//! derivation boundaries.
+//! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
+//! first slices evaluate scalar literals and `if` control flow to weak head
+//! normal form, establishing the arena access and diagnostic surface used by
+//! later slices for environments, thunks, functions, attribute sets, primitive
+//! operations, and derivation boundaries.
 
 use thiserror::Error;
 
 use crate::compile::{Ir, IrData, IrId, IrKind, IrNode};
 use crate::syntax::Span;
-use crate::value::Value;
+use crate::value::{Value, ValueTag};
 
 /// Evaluates an IR root to weak head normal form with the tree-walk oracle.
 ///
 /// # Errors
 ///
 /// Returns [`TreeWalkError`] if the root node is missing, malformed for its IR
-/// kind, or belongs to a part of the interpreter that this Phase-1 slice has not
-/// implemented yet.
+/// kind, fails a scalar type check, or belongs to a part of the interpreter that
+/// this Phase-1 slice has not implemented yet.
 pub fn eval_whnf(ir: &Ir) -> Result<Value, TreeWalkError> {
     TreeWalk::new(ir).eval_root()
 }
@@ -47,42 +47,43 @@ impl<'ir> TreeWalk<'ir> {
     /// Evaluates a node to weak head normal form.
     ///
     /// This initial public node entry point is intentionally limited to
-    /// environment-free scalar literal nodes. Environment-dependent nodes return
-    /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add an explicit
-    /// runtime and environment context.
+    /// environment-free scalar literal and control-flow nodes. Environment-
+    /// dependent nodes return [`TreeWalkErrorKind::UnsupportedNode`] until later
+    /// slices add an explicit runtime and environment context.
     ///
     /// # Errors
     ///
     /// Returns [`TreeWalkError`] if `id` does not address a node in this IR, if
-    /// the node payload does not match its kind, or if the node kind is not yet
-    /// implemented by this evaluator slice.
+    /// the node payload does not match its kind, if a scalar type check fails,
+    /// or if the node kind is not yet implemented by this evaluator slice.
     pub fn eval_node(&mut self, id: IrId) -> Result<Value, TreeWalkError> {
-        let node = self.node(id)?;
+        let node = *self.node(id)?;
         match node.kind {
             IrKind::Int => {
                 let IrData::Int(value) = node.data else {
-                    return Err(self.invalid_payload(id, node, "integer payload"));
+                    return Err(self.invalid_payload(id, &node, "integer payload"));
                 };
                 Ok(Value::int(value))
             }
             IrKind::Float => {
                 let IrData::Float(value) = node.data else {
-                    return Err(self.invalid_payload(id, node, "float payload"));
+                    return Err(self.invalid_payload(id, &node, "float payload"));
                 };
                 Ok(Value::float(value))
             }
             IrKind::Bool => {
                 let IrData::Bool(value) = node.data else {
-                    return Err(self.invalid_payload(id, node, "boolean payload"));
+                    return Err(self.invalid_payload(id, &node, "boolean payload"));
                 };
                 Ok(Value::bool(value))
             }
             IrKind::Null => {
                 if node.data != IrData::None {
-                    return Err(self.invalid_payload(id, node, "empty payload"));
+                    return Err(self.invalid_payload(id, &node, "empty payload"));
                 }
                 Ok(Value::null())
             }
+            IrKind::If => self.eval_if(id, &node),
             kind => Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedNode { id, kind },
                 node.span,
@@ -105,6 +106,46 @@ impl<'ir> TreeWalk<'ir> {
             },
             node.span,
         )
+    }
+
+    fn eval_if(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Triple {
+            first,
+            second,
+            third,
+        } = node.data
+        else {
+            return Err(self.invalid_payload(id, node, "if payload"));
+        };
+        let condition_span = self.node(first)?.span;
+        let condition = self.eval_node(first)?;
+        let selected = if self.expect_bool(first, condition, condition_span)? {
+            second
+        } else {
+            third
+        };
+        self.eval_node(selected)
+    }
+
+    fn expect_bool(&self, id: IrId, value: Value, span: Span) -> Result<bool, TreeWalkError> {
+        if value.tag() != ValueTag::Bool {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "bool",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        match value.payload_bits() {
+            0 => Ok(false),
+            1 => Ok(true),
+            payload => Err(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidBoolPayload { id, payload },
+                span,
+            )),
+        }
     }
 }
 
@@ -151,6 +192,27 @@ pub enum TreeWalkErrorKind {
         kind: IrKind,
         /// The expected payload contract.
         expected: &'static str,
+    },
+    /// A scalar operation received a value of the wrong Nix type.
+    #[error("type error at node {id:?}: expected {expected}, got {actual:?}")]
+    Type {
+        /// The node id associated with the type check.
+        id: IrId,
+        /// The expected user-visible value type.
+        expected: &'static str,
+        /// The actual runtime value tag.
+        actual: ValueTag,
+    },
+    /// A boolean-tagged value had an invalid payload.
+    ///
+    /// Current safe constructors cannot create this state; the check is a
+    /// defensive guard for later runtime fast paths and heap-backed values.
+    #[error("invalid boolean payload {payload} at node {id:?}")]
+    InvalidBoolPayload {
+        /// The node id associated with the invalid payload.
+        id: IrId,
+        /// The invalid boolean payload.
+        payload: u64,
     },
     /// The node kind is outside this evaluator slice.
     #[error("unsupported tree-walk node {kind:?} at {id:?}")]
@@ -263,5 +325,66 @@ mod tests {
             );
             assert_eq!(error.span(), span);
         }
+    }
+
+    #[test]
+    fn if_evaluates_only_the_selected_branch() {
+        assert_eq!(eval("if true then 1 else 2").as_int(), Ok(1));
+        assert_eq!(eval("if false then 1 else 2").as_int(), Ok(2));
+
+        let lazy_else = eval("if true then 7 else (1 + 2)");
+        assert_eq!(lazy_else.as_int(), Ok(7));
+
+        let lazy_then = eval("if false then (1 + 2) else 9");
+        assert_eq!(lazy_then.as_int(), Ok(9));
+    }
+
+    #[test]
+    fn if_condition_must_be_bool() {
+        let ir = lower("if 1 then 2 else 3");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::Triple { first, .. } = root.data else {
+            panic!("if root has triple payload");
+        };
+        let condition_span = ir.arena.node(first).expect("condition exists").span;
+
+        let error = eval_whnf(&ir).expect_err("integer condition is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: first,
+                expected: "bool",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), condition_span);
+    }
+
+    #[test]
+    fn malformed_if_payloads_are_reported() {
+        let root = IrId::new(0);
+        let span = Span::new(10, 12);
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::If,
+                span,
+                EffectClass::Pure,
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+        let ir = empty_ir(root, arena);
+        let error = eval_whnf(&ir).expect_err("malformed if is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidPayload {
+                id: root,
+                kind: IrKind::If,
+                expected: "if payload",
+            }
+        );
+        assert_eq!(error.span(), span);
     }
 }
