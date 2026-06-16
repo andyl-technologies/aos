@@ -1479,7 +1479,8 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"seq"
             | b"all"
             | b"any"
-            | b"filter",
+            | b"filter"
+            | b"partition",
         ) => Some(EffectClass::Pure),
         _ => None,
     }

@@ -1278,6 +1278,9 @@ impl<'ir> TreeWalk<'ir> {
                 StrictBinaryPrimOp::All => self.eval_all_any_primop(AllAnyOp::All, first, second),
                 StrictBinaryPrimOp::Any => self.eval_all_any_primop(AllAnyOp::Any, first, second),
                 StrictBinaryPrimOp::Filter => self.eval_filter_primop(id, node.span, first, second),
+                StrictBinaryPrimOp::Partition => {
+                    self.eval_partition_primop(id, node.span, first, second)
+                }
             };
         }
         if args.len() != 1 {
@@ -2778,6 +2781,124 @@ impl<'ir> TreeWalk<'ir> {
 
         self.heap
             .alloc_list(NixList::new(selected))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_partition_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        predicate_id: IrId,
+        list_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let predicate_span = self.node(predicate_id)?.span;
+        let predicate = self.eval_node(predicate_id)?;
+        if predicate.tag() != ValueTag::Lambda {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: predicate_id,
+                    expected: "lambda",
+                    actual: predicate.tag(),
+                },
+                predicate_span,
+            ));
+        }
+
+        let list_span = self.node(list_id)?.span;
+        let list_value = self.eval_node(list_id)?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list_id,
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list_span,
+            ));
+        }
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            Self::clone_list_elements(list_id, list_span, list)?
+        };
+
+        let mut right = Vec::new();
+        right.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: elements.len(),
+                },
+                span,
+            )
+        })?;
+        let mut wrong = Vec::new();
+        wrong.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: elements.len(),
+                },
+                span,
+            )
+        })?;
+        for element in elements {
+            let element = self.force_value(list_id, list_span, element)?;
+            let result = self.apply_lambda_value(
+                predicate_id,
+                predicate_span,
+                predicate_id,
+                predicate,
+                predicate_span,
+                list_id,
+                element,
+            )?;
+            let result = self.force_value(predicate_id, predicate_span, result)?;
+            let actual = result.tag();
+            let ValueTag::Bool = actual else {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: predicate_id,
+                        expected: "bool",
+                        actual,
+                    },
+                    predicate_span,
+                ));
+            };
+            if self.expect_bool(predicate_id, result, predicate_span)? {
+                right.push(element);
+            } else {
+                wrong.push(element);
+            }
+        }
+
+        let right = self
+            .heap
+            .alloc_list(NixList::new(right))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let wrong = self
+            .heap
+            .alloc_list(NixList::new(wrong))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let right_key = self.intern_builtin_attr_symbol(id, b"right", span)?;
+        let wrong_key = self.intern_builtin_attr_symbol(id, b"wrong", span)?;
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(2).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len: 2 }, span)
+        })?;
+        entries.push(AttrEntry::new(right_key, right));
+        entries.push(AttrEntry::new(wrong_key, wrong));
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
@@ -4640,6 +4761,7 @@ enum StrictBinaryPrimOp {
     All,
     Any,
     Filter,
+    Partition,
 }
 
 impl StrictBinaryPrimOp {
@@ -4663,6 +4785,7 @@ impl StrictBinaryPrimOp {
             b"all" => Some(Self::All),
             b"any" => Some(Self::Any),
             b"filter" => Some(Self::Filter),
+            b"partition" => Some(Self::Partition),
             _ => None,
         }
     }
@@ -6685,6 +6808,151 @@ mod tests {
             .span;
 
         let error = eval_whnf_owned(&ir).expect_err("filter requires bool predicate result");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: predicate,
+                expected: "bool",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), predicate_span);
+    }
+
+    #[test]
+    fn partition_primop_splits_forced_elements_into_right_and_wrong() {
+        assert_eq!(
+            eval_list_string_bytes("builtins.attrNames (builtins.partition (x: true) [])"),
+            vec![b"right".to_vec(), b"wrong".to_vec()]
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.partition (x: x < 3) [ 1 2 3 ]).right").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.partition (x: x < 3) [ 1 2 3 ]).right 0").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.partition (x: x < 3) [ 1 2 3 ]).right 1").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.partition (x: x < 3) [ 1 2 3 ]).wrong").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.partition (x: x < 3) [ 1 2 3 ]).wrong 0").as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.partition (x: true) [ { a = 1 / 0; } ]).right")
+                .as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let builtins = { partition = pred: list: { right = [ 42 ]; wrong = []; }; }; in builtins.partition (x: false) [] == { right = [ 42 ]; wrong = []; }")
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn partition_primop_checks_predicate_before_list() {
+        let ir = lower("builtins.partition (1 / 0) []");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let predicate = args[0];
+        let predicate_span = ir
+            .arena
+            .node(predicate)
+            .expect("predicate argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("partition forces predicate before list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: predicate }
+        );
+        assert_eq!(error.span(), predicate_span);
+
+        let ir = lower("builtins.partition 1 []");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let predicate = args[0];
+        let predicate_span = ir
+            .arena
+            .node(predicate)
+            .expect("predicate argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("partition requires predicate first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: predicate,
+                expected: "lambda",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), predicate_span);
+
+        let ir = lower("builtins.partition (x: true) 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("partition checks list after predicate");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: list,
+                expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), list_span);
+    }
+
+    #[test]
+    fn partition_primop_forces_elements_before_predicate_application() {
+        let ir = lower("builtins.partition (x: true) [ (1 / 0) ]");
+
+        let error = eval_whnf_owned(&ir).expect_err("partition forces elements");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let ir = lower("builtins.partition (x: 1) [ \"a\" ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let predicate = args[0];
+        let predicate_span = ir
+            .arena
+            .node(predicate)
+            .expect("predicate argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("partition requires bool predicate result");
 
         assert_eq!(
             error.kind(),
