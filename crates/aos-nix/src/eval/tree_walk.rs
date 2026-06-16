@@ -1227,6 +1227,13 @@ impl<'ir> TreeWalk<'ir> {
                 StrictBinaryPrimOp::Div => {
                     self.eval_numeric_binary(id, node, BinaryArithmeticOp::Div, first, second)
                 }
+                StrictBinaryPrimOp::BitAnd => {
+                    self.eval_bitwise_primop(BitwiseOp::And, first, second)
+                }
+                StrictBinaryPrimOp::BitOr => self.eval_bitwise_primop(BitwiseOp::Or, first, second),
+                StrictBinaryPrimOp::BitXor => {
+                    self.eval_bitwise_primop(BitwiseOp::Xor, first, second)
+                }
             };
         }
         if args.len() != 1 {
@@ -3341,6 +3348,18 @@ impl<'ir> TreeWalk<'ir> {
         self.eval_numeric_values(id, node, op, left, right)
     }
 
+    fn eval_bitwise_primop(
+        &mut self,
+        op: BitwiseOp,
+        lhs: IrId,
+        rhs: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let left = self.eval_int_node(lhs)?;
+        let right = self.eval_int_node(rhs)?;
+
+        Ok(Value::int(op.apply(left, right)))
+    }
+
     fn eval_numeric_values(
         &self,
         id: IrId,
@@ -3926,6 +3945,12 @@ impl<'ir> TreeWalk<'ir> {
         self.expect_number(id, value, span)
     }
 
+    fn eval_int_node(&mut self, id: IrId) -> Result<i64, TreeWalkError> {
+        let span = self.node(id)?.span;
+        let value = self.eval_node(id)?;
+        self.expect_int(id, value, span)
+    }
+
     fn expect_bool(&self, id: IrId, value: Value, span: Span) -> Result<bool, TreeWalkError> {
         if value.tag() != ValueTag::Bool {
             return Err(TreeWalkError::new(
@@ -3960,6 +3985,20 @@ impl<'ir> TreeWalk<'ir> {
                 span,
             )),
         }
+    }
+
+    fn expect_int(&self, id: IrId, value: Value, span: Span) -> Result<i64, TreeWalkError> {
+        if value.tag() != ValueTag::Int {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "int",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        Ok(value.payload_bits() as i64)
     }
 }
 
@@ -4041,6 +4080,9 @@ enum StrictBinaryPrimOp {
     Sub,
     Mul,
     Div,
+    BitAnd,
+    BitOr,
+    BitXor,
     ElemAt,
     GetAttr,
     HasAttr,
@@ -4058,6 +4100,9 @@ impl StrictBinaryPrimOp {
             b"sub" => Some(Self::Sub),
             b"mul" => Some(Self::Mul),
             b"div" => Some(Self::Div),
+            b"bitAnd" => Some(Self::BitAnd),
+            b"bitOr" => Some(Self::BitOr),
+            b"bitXor" => Some(Self::BitXor),
             b"elemAt" => Some(Self::ElemAt),
             b"getAttr" => Some(Self::GetAttr),
             b"hasAttr" => Some(Self::HasAttr),
@@ -4118,6 +4163,23 @@ enum BinaryArithmeticOp {
     Sub,
     Mul,
     Div,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BitwiseOp {
+    And,
+    Or,
+    Xor,
+}
+
+impl BitwiseOp {
+    const fn apply(self, left: i64, right: i64) -> i64 {
+        match self {
+            Self::And => left & right,
+            Self::Or => left | right,
+            Self::Xor => left ^ right,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5956,6 +6018,77 @@ mod tests {
                 op: ArithmeticOp::Div,
             }
         );
+    }
+
+    #[test]
+    fn bitwise_primops_apply_signed_integer_ops() {
+        assert_eq!(eval("builtins.bitAnd 6 3").as_int(), Ok(2));
+        assert_eq!(eval("builtins.bitOr 4 1").as_int(), Ok(5));
+        assert_eq!(eval("builtins.bitXor 6 3").as_int(), Ok(5));
+        assert_eq!(eval("builtins.bitXor (-1) 1").as_int(), Ok(-2));
+        assert_eq!(
+            eval("let builtins = { bitAnd = left: right: 42; }; in builtins.bitAnd 6 3").as_int(),
+            Ok(42)
+        );
+    }
+
+    #[test]
+    fn bitwise_primops_type_check_arguments_left_to_right() {
+        let ir = lower("builtins.bitAnd true (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let lhs = args[0];
+        let lhs_span = ir.arena.node(lhs).expect("lhs exists").span;
+
+        let error = eval_whnf(&ir).expect_err("bitAnd checks lhs before rhs");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: lhs,
+                expected: "int",
+                actual: ValueTag::Bool,
+            }
+        );
+        assert_eq!(error.span(), lhs_span);
+
+        let ir = lower("builtins.bitAnd 1 true");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let rhs = args[1];
+        let rhs_span = ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf(&ir).expect_err("bitAnd checks rhs after valid lhs");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: rhs,
+                expected: "int",
+                actual: ValueTag::Bool,
+            }
+        );
+        assert_eq!(error.span(), rhs_span);
+
+        let ir = lower("builtins.bitAnd 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let rhs = args[1];
+        let rhs_span = ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf(&ir).expect_err("bitAnd forces rhs after valid lhs");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: rhs });
+        assert_eq!(error.span(), rhs_span);
     }
 
     #[test]

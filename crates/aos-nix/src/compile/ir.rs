@@ -911,7 +911,8 @@ impl IrLowerer {
         match self.resolved.symbols.resolve(symbol) {
             Some(
                 b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs" | b"intersectAttrs"
-                | b"catAttrs" | b"elem" | b"lessThan" | b"add" | b"sub" | b"mul" | b"div",
+                | b"catAttrs" | b"elem" | b"lessThan" | b"add" | b"sub" | b"mul" | b"div"
+                | b"bitAnd" | b"bitOr" | b"bitXor",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1798,6 +1799,9 @@ mod tests {
             ("builtins.sub 2 1", b"sub".as_slice()),
             ("builtins.mul 2 3", b"mul".as_slice()),
             ("builtins.div 4 2", b"div".as_slice()),
+            ("builtins.bitAnd 6 3", b"bitAnd".as_slice()),
+            ("builtins.bitOr 4 1", b"bitOr".as_slice()),
+            ("builtins.bitXor 6 3", b"bitXor".as_slice()),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -2292,7 +2296,7 @@ mod tests {
         };
         assert_eq!(node(&ir, first).kind, IrKind::Select);
 
-        for name in ["add", "sub", "mul", "div"] {
+        for name in ["add", "sub", "mul", "div", "bitAnd", "bitOr", "bitXor"] {
             let ir = lowered(&format!("{name} 1 2"));
             let root = root_node(&ir);
             assert_eq!(root.kind, IrKind::Apply);

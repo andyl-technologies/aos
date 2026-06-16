@@ -1440,7 +1440,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"attrValues" | b"tail" | b"functionArgs" | b"head" | b"ceil" | b"floor"
             | b"hasContext" | b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs"
             | b"intersectAttrs" | b"listToAttrs" | b"catAttrs" | b"elem" | b"concatLists"
-            | b"lessThan" | b"add" | b"sub" | b"mul" | b"div",
+            | b"lessThan" | b"add" | b"sub" | b"mul" | b"div" | b"bitAnd" | b"bitOr" | b"bitXor",
         ) => Some(EffectClass::Pure),
         _ => None,
     }
