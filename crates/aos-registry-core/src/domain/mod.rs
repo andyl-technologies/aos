@@ -8,7 +8,7 @@
 //!
 //! Its core, [`iam`], is **IO-free and wasm-clean**: pure functions over
 //! roles, permissions, and scope paths. The thin database bridge that
-//! reads a principal's effective grants lives in [`crate::db`], which
+//! reads a principal's effective grants lives in the hub's `db` layer, which
 //! returns the same [`Scope`]/[`Role`] pairs [`iam::allow`] consumes — so
 //! the decision itself never touches a connection.
 //!
@@ -64,7 +64,7 @@ impl PrincipalKind {
 /// A principal: a grantable actor identified by its kind and database id.
 ///
 /// The pair `(kind, id)` is the foreign key into `memberships`; it is what
-/// [`crate::db::Database::list_memberships_for`] keys on when resolving the
+/// the hub's `Database::list_memberships_for` keys on when resolving the
 /// effective grants fed to [`allow`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Principal {
