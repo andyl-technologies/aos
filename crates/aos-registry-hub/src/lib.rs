@@ -77,7 +77,9 @@ pub mod compat;
 pub mod config;
 pub mod console;
 pub mod db;
-pub mod domain;
+/// The tenancy/IAM domain model, re-exported from [`aos_registry_core::domain`]
+/// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::domain::…` stable.
+pub use aos_registry_core::domain;
 pub mod export;
 pub mod facade;
 pub mod fetch;

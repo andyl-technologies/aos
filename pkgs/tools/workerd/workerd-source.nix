@@ -560,38 +560,23 @@ in
                 echo "build --$cfg=-B$GCC_DIR"
                 echo "build --$cfg=-B$REAL_LIBC/lib"
               done
-              # Link: library dirs, dynamic linker, rpaths for glibc/libgcc/libc++.
+              # Link: the link is routed to the AOS cc-wrapper gcc/g++ (see
+              # toolchainSetup), which supplies the crt, glibc, libgcc, dynamic
+              # linker and glibc rpath itself. Passing AOS's own
+              # -B/-L/-Wl,-dynamic-linker here would OVERRIDE that with the
+              # incomplete wrapped-gcc crt dir and re-break the host tools
+              # (startup segfault). So add ONLY what the cc-wrapper gcc does not
+              # already know about:
               for cfg in linkopt host_linkopt; do
-                echo "build --$cfg=-B$GCC_DIR"
-                echo "build --$cfg=-B$REAL_LIBC/lib"
-                # Use LLVM's own runtime (compiler-rt builtins + libunwind), not
-                # GCC's libgcc/libgcc_eh. workerd's .bazelrc sets `-static-libgcc`
-                # which makes clang emit `-lgcc_eh`, but the AOS gcc ships no
-                # static libgcc_eh.a; substituting libunwind for it produced
-                # *broken* host-tool binaries that segfaulted at runtime. This is
-                # a clang + libc++ toolchain, so the correct runtime is
-                # compiler-rt + libunwind — it makes `-static-libgcc` a no-op and
-                # drops the libgcc_eh dependency entirely. (Fixes the from-source
-                # host tools — lemon, mkkeywordhash, the V8 generators — that all
-                # crashed when run.)
-                echo "build --$cfg=--rtlib=compiler-rt"
-                echo "build --$cfg=--unwindlib=libunwind"
-                echo "build --$cfg=-L$GCC_DIR"
-                echo "build --$cfg=-L$REAL_LIBC/lib"
-                echo "build --$cfg=-L$REAL_CC/lib"
-                echo "build --$cfg=-L$REAL_CC/lib64"
+                # the LLVM dir holding the static libc++ runtime,
                 echo "build --$cfg=-L${llvm}/lib/x86_64-unknown-linux-gnu"
-                echo "build --$cfg=-Wl,-dynamic-linker,$DL"
-                echo "build --$cfg=-Wl,-rpath,$REAL_LIBC/lib"
-                echo "build --$cfg=-Wl,-rpath,$REAL_CC/lib"
                 echo "build --$cfg=-Wl,-rpath,${llvm}/lib/x86_64-unknown-linux-gnu"
-                # workerd's .bazelrc links `-l:libc++.a` but NOT libc++abi /
-                # libunwind, relying on the CI's *shared* libc++ to drag those
-                # in. AOS libc++ is static, so the C++ ABI runtime
-                # (`operator new`, `__cxa_*`, vtables for std::exception,
-                # `std::terminate`) and the unwinder are unresolved at link
-                # time. Append the static libc++abi + libunwind *after*
-                # libc++.a so ld resolves them left-to-right.
+                # and the static libc++abi + unwinder. workerd's .bazelrc links
+                # `-l:libc++.a` but NOT libc++abi/libunwind (it relies on CI's
+                # *shared* libc++ to drag those in); AOS libc++ is static, so the
+                # C++ ABI runtime (`operator new`, `__cxa_*`, std::exception
+                # vtables, `std::terminate`) and the unwinder must be appended
+                # *after* libc++.a so ld resolves them left-to-right.
                 echo "build --$cfg=-l:libc++abi.a"
                 echo "build --$cfg=-l:libunwind.a"
               done

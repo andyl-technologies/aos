@@ -358,7 +358,7 @@ pub enum SlugError {
     /// The slug was the empty string.
     Empty,
     /// The slug collides with a reserved top-level route or the `/-/`
-    /// namespace (see [`RESERVED_SLUGS`]).
+    /// namespace (see the `RESERVED_SLUGS` list).
     Reserved,
     /// The slug contained a character outside the allowed
     /// `[a-z0-9_-]` set — including any `/`, whitespace, control, or
@@ -397,7 +397,7 @@ impl std::error::Error for SlugError {}
 /// Connect RPC `CreateOrg`, the web console's new-org form, and the `aos`
 /// CLI, so the three surfaces can never drift apart.
 ///
-/// A valid slug is non-empty, is not a [reserved name](RESERVED_SLUGS), and
+/// A valid slug is non-empty, is not a reserved name (`RESERVED_SLUGS`), and
 /// consists only of lowercase ASCII letters, ASCII digits, `-`, and `_`.
 /// Crucially it contains **no** `/`, so it cannot smuggle a multi-segment or
 /// leading-slash path (such as `"/"` or `"/victimorg"`) that
@@ -413,7 +413,7 @@ impl std::error::Error for SlugError {}
 /// # Examples
 ///
 /// ```
-/// use aos_registry_hub::domain::iam::{validate_org_slug, SlugError};
+/// use aos_registry_core::domain::iam::{validate_org_slug, SlugError};
 ///
 /// assert!(validate_org_slug("acme").is_ok());
 /// assert!(validate_org_slug("cdn-edge_2").is_ok());
