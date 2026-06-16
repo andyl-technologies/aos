@@ -14,6 +14,9 @@
 //! - [`password`] — Argon2id password hashing and constant-time verification.
 //! - [`seal`] — the [`SecretSealer`](seal::SecretSealer) seam (AES-256-GCM
 //!   production sealer + the dev/test XOR placeholder) for at-rest secrets.
+//! - [`webauthn`] — the in-house WebAuthn relying-party verifier
+//!   (`attestation: none`): COSE key decode and ES256/Ed25519/RS256 assertion
+//!   verification, over [`Database`](crate::db::Database) credential rows.
 //! - [`permission_from_str`] — the inverse of `Permission::as_str`.
 //!
 //! The HTTP-bound and database-bound halves (axum extractors, JWT minting, the
@@ -29,6 +32,7 @@ pub mod password;
 pub mod seal;
 pub mod session;
 pub mod token;
+pub mod webauthn;
 
 use crate::domain::Permission;
 

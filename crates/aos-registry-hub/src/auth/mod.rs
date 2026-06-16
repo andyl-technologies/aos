@@ -50,12 +50,11 @@ pub mod extract;
 pub mod jwt;
 pub mod oidc;
 pub mod seal;
-pub mod webauthn;
 
 // The runtime-agnostic auth primitives moved to aos-registry-core (RFC-0004
 // Phase 5) so the Worker shares them; re-exported here so every
-// `crate::auth::{token,session,magic,device,password,permission_from_str}::…`
-// path is unchanged.
+// `crate::auth::{token,session,magic,device,password,permission_from_str,
+// webauthn}::…` path is unchanged.
 pub use aos_registry_core::auth::{
-    device, magic, password, permission_from_str, session, token,
+    device, magic, password, permission_from_str, session, token, webauthn,
 };
