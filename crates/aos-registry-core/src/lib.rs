@@ -47,6 +47,7 @@ pub mod dialect;
 pub mod domain;
 pub mod fetch;
 pub mod filter;
+pub mod git;
 pub mod ratelimit;
 pub mod service;
 pub mod stack;
