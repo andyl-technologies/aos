@@ -20,6 +20,16 @@ crate-type = ["cdylib", "rlib"]
 # signature verification in the Cron indexer, so the Worker's read of the
 # surface cannot drift from the rest of AOS.
 aos-registry-surface = { workspace = true }
+# The shared runtime-agnostic core (RFC-0004 Phase 5): the Database/Backend
+# abstraction the Worker drives over D1, so the Worker runs the exact same
+# read/write logic as the native hub rather than a divergent reimplementation.
+aos-registry-core = { workspace = true }
+# The D1 Backend impl is async over the trait; #[async_trait(?Send)] because the
+# Worker is single-threaded and D1 futures are !Send.
+async-trait = { workspace = true }
+# JsValue marshalling for D1 bind/raw (param ↔ JS value).
+wasm-bindgen = "0.2"
+js-sys = "0.3"
 
 serde = { workspace = true }
 serde_json = { workspace = true }
