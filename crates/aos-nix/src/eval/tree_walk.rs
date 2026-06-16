@@ -1625,6 +1625,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_add_drv_output_dependencies_primop(argument, argument_span, value)
             }
+            StrictUnaryPrimOp::UnsafeDiscardOutputDependency => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_unsafe_discard_output_dependency_primop(argument, argument_span, value)
+            }
             StrictUnaryPrimOp::UnsafeDiscardStringContext => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_unsafe_discard_string_context_primop(argument, argument_span, value)
@@ -2010,6 +2014,81 @@ impl<'ir> TreeWalk<'ir> {
                 )
             })?;
             NixString::new(bytes, context)
+        };
+        self.heap.alloc_string(result).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: argument,
+                    source,
+                },
+                argument_span,
+            )
+        })
+    }
+
+    fn eval_unsafe_discard_output_dependency_primop(
+        &mut self,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let string_value = self.coerce_to_string(argument, value, argument_span)?;
+        let result = {
+            let string = self.heap.get_string(string_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            let mut elements = Vec::new();
+            elements
+                .try_reserve_exact(string.context().len())
+                .map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: argument,
+                            source: NixStringError::ContextAllocationFailed {
+                                len: string.context().len(),
+                            },
+                        },
+                        argument_span,
+                    )
+                })?;
+            for element in string.context() {
+                let path = Self::copy_bytes_for_node(argument, argument_span, element.path())?;
+                let rewritten = match element.kind() {
+                    ContextKind::OpaquePath | ContextKind::DeepDerivation => {
+                        ContextElement::opaque_path(path)
+                    }
+                    ContextKind::SingleOutput => {
+                        let output = element.output().ok_or_else(|| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::InvalidStringContext { id: argument },
+                                argument_span,
+                            )
+                        })?;
+                        ContextElement::single_output(
+                            path,
+                            Self::copy_bytes_for_node(argument, argument_span, output)?,
+                        )
+                    }
+                }
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: argument,
+                            source,
+                        },
+                        argument_span,
+                    )
+                })?;
+                elements.push(rewritten);
+            }
+            let bytes = Self::copy_bytes_for_node(argument, argument_span, string.bytes())?;
+            NixString::new(bytes, StringContext::new(elements))
         };
         self.heap.alloc_string(result).map_err(|source| {
             TreeWalkError::new(
@@ -5690,6 +5769,7 @@ enum StrictUnaryPrimOp {
     HasContext,
     GetContext,
     AddDrvOutputDependencies,
+    UnsafeDiscardOutputDependency,
     UnsafeDiscardStringContext,
     StringLength,
     BaseNameOf,
@@ -5725,6 +5805,7 @@ impl StrictUnaryPrimOp {
             b"hasContext" => Some(Self::HasContext),
             b"getContext" => Some(Self::GetContext),
             b"addDrvOutputDependencies" => Some(Self::AddDrvOutputDependencies),
+            b"unsafeDiscardOutputDependency" => Some(Self::UnsafeDiscardOutputDependency),
             b"unsafeDiscardStringContext" => Some(Self::UnsafeDiscardStringContext),
             b"stringLength" => Some(Self::StringLength),
             b"baseNameOf" => Some(Self::BaseNameOf),
@@ -9703,6 +9784,103 @@ mod tests {
             TreeWalkErrorKind::StringContextElementCount {
                 id: argument,
                 len: 0,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn unsafe_discard_output_dependency_primop_downgrades_deep_contexts() {
+        assert_eq!(
+            eval_string_bytes("builtins.unsafeDiscardOutputDependency \"abc\""),
+            b"abc"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.unsafeDiscardOutputDependency { outPath = \"abc\"; }"),
+            b"abc"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { unsafeDiscardOutputDependency = value: \"shadow\"; }; in builtins.unsafeDiscardOutputDependency \"abc\""
+            ),
+            b"shadow"
+        );
+
+        let ir = lower("builtins.unsafeDiscardOutputDependency \"x\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("unsafeDiscardOutputDependency argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source_path = b"/nix/store/source";
+        let deep_path = b"/nix/store/deep.drv";
+        let output_path = b"/nix/store/output.drv";
+        let context = StringContext::new(vec![
+            ContextElement::deep_derivation(deep_path.to_vec()).expect("deep context is valid"),
+            ContextElement::opaque_path(deep_path.to_vec()).expect("opaque context is valid"),
+            ContextElement::opaque_path(source_path.to_vec()).expect("source context is valid"),
+            ContextElement::single_output(output_path.to_vec(), b"out".to_vec())
+                .expect("output context is valid"),
+        ]);
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(b"x".to_vec(), context))
+            .expect("context-bearing string allocates");
+
+        let result = evaluator
+            .eval_unsafe_discard_output_dependency_primop(argument, argument_span, value)
+            .expect("unsafeDiscardOutputDependency evaluates");
+        let string = evaluator
+            .heap
+            .get_string(result)
+            .expect("result string exists");
+
+        assert_eq!(string.bytes(), b"x");
+        assert_eq!(string.context().len(), 3);
+        assert!(string.context().contains(
+            &ContextElement::opaque_path(source_path.to_vec()).expect("source context builds")
+        ));
+        assert!(string.context().contains(
+            &ContextElement::opaque_path(deep_path.to_vec()).expect("deep path context builds")
+        ));
+        assert!(
+            string.context().contains(
+                &ContextElement::single_output(output_path.to_vec(), b"out".to_vec())
+                    .expect("output context builds")
+            )
+        );
+        assert!(!string.context().contains(
+            &ContextElement::deep_derivation(deep_path.to_vec()).expect("deep context builds")
+        ));
+    }
+
+    #[test]
+    fn unsafe_discard_output_dependency_primop_coerces_argument() {
+        let ir = lower("builtins.unsafeDiscardOutputDependency 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("integer coercion is rejected");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
             }
         );
         assert_eq!(error.span(), argument_span);
