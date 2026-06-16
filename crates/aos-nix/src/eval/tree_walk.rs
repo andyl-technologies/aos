@@ -3,7 +3,7 @@
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
 //! first slices evaluate scalar literals, boolean control flow, assertions,
 //! boolean operators, string literals and concatenation, numeric arithmetic,
-//! numeric comparisons, and scalar equality to weak head normal form,
+//! numeric and string comparisons, and scalar equality to weak head normal form,
 //! establishing the arena access and diagnostic surface used by later slices
 //! for environments, thunks, functions, attribute sets, primitive operations,
 //! and derivation boundaries.
@@ -117,8 +117,8 @@ impl<'ir> TreeWalk<'ir> {
     ///
     /// This initial public node entry point is intentionally limited to
     /// environment-free scalar literal, string literal, control-flow, boolean
-    /// operator, string concatenation, numeric arithmetic, numeric comparison,
-    /// and scalar equality nodes.
+    /// operator, string concatenation, numeric arithmetic, numeric and string
+    /// comparison, and scalar equality nodes.
     /// Environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add an explicit
     /// runtime and environment context.
@@ -255,10 +255,10 @@ impl<'ir> TreeWalk<'ir> {
             BinOpKind::Sub => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Sub, lhs, rhs),
             BinOpKind::Mul => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Mul, lhs, rhs),
             BinOpKind::Div => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Div, lhs, rhs),
-            BinOpKind::Lt => self.eval_numeric_comparison(ComparisonOp::Lt, lhs, rhs),
-            BinOpKind::Gt => self.eval_numeric_comparison(ComparisonOp::Gt, lhs, rhs),
-            BinOpKind::Le => self.eval_numeric_comparison(ComparisonOp::Le, lhs, rhs),
-            BinOpKind::Ge => self.eval_numeric_comparison(ComparisonOp::Ge, lhs, rhs),
+            BinOpKind::Lt => self.eval_comparison(id, node, ComparisonOp::Lt, lhs, rhs),
+            BinOpKind::Gt => self.eval_comparison(id, node, ComparisonOp::Gt, lhs, rhs),
+            BinOpKind::Le => self.eval_comparison(id, node, ComparisonOp::Le, lhs, rhs),
+            BinOpKind::Ge => self.eval_comparison(id, node, ComparisonOp::Ge, lhs, rhs),
             BinOpKind::Eq => self.eval_equality(id, node, lhs, rhs, false),
             BinOpKind::Ne => self.eval_equality(id, node, lhs, rhs, true),
             BinOpKind::Concat | BinOpKind::Update | BinOpKind::PipeRight | BinOpKind::PipeLeft => {
@@ -458,6 +458,67 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
+    fn eval_comparison(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        op: ComparisonOp,
+        lhs: IrId,
+        rhs: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let lhs_span = self.node(lhs)?.span;
+        let left = self.eval_node(lhs)?;
+        match left.tag() {
+            ValueTag::Int | ValueTag::Float => {
+                let rhs_span = self.node(rhs)?.span;
+                let right = self.eval_node(rhs)?;
+                let left = self.expect_number(lhs, left, lhs_span)?;
+                let right = self.expect_number(rhs, right, rhs_span)?;
+                Ok(Value::bool(compare_numbers(op, left, right)))
+            }
+            ValueTag::String => {
+                let rhs_span = self.node(rhs)?.span;
+                let right = self.eval_node(rhs)?;
+                if right.tag() != ValueTag::String {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id: rhs,
+                            expected: "string",
+                            actual: right.tag(),
+                        },
+                        rhs_span,
+                    ));
+                }
+                self.compare_strings(id, node, op, left, right)
+            }
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: lhs,
+                    expected: "number or string",
+                    actual,
+                },
+                lhs_span,
+            )),
+        }
+    }
+
+    fn compare_strings(
+        &self,
+        id: IrId,
+        node: &IrNode,
+        op: ComparisonOp,
+        left: Value,
+        right: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let left = self.heap.get_string(left).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+        })?;
+        let right = self.heap.get_string(right).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+        })?;
+        Ok(Value::bool(op.compare_bytes(left.bytes(), right.bytes())))
+    }
+
     fn eval_integer_binary(
         &self,
         id: IrId,
@@ -508,21 +569,6 @@ impl<'ir> TreeWalk<'ir> {
             }
         };
         Ok(Value::float(value))
-    }
-
-    fn eval_numeric_comparison(
-        &mut self,
-        op: ComparisonOp,
-        lhs: IrId,
-        rhs: IrId,
-    ) -> Result<Value, TreeWalkError> {
-        let left = self.eval_number_node(lhs)?;
-        let right = self.eval_number_node(rhs)?;
-        let result = match (left, right) {
-            (Number::Int(left), Number::Int(right)) => op.compare_ints(left, right),
-            (left, right) => op.compare_floats(left.to_float(), right.to_float()),
-        };
-        Ok(Value::bool(result))
     }
 
     fn division_by_zero(&self, id: IrId, node: &IrNode) -> TreeWalkError {
@@ -593,6 +639,13 @@ impl Number {
     }
 }
 
+fn compare_numbers(op: ComparisonOp, left: Number, right: Number) -> bool {
+    match (left, right) {
+        (Number::Int(left), Number::Int(right)) => op.compare_ints(left, right),
+        (left, right) => op.compare_floats(left.to_float(), right.to_float()),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BinaryArithmeticOp {
     Add,
@@ -631,6 +684,15 @@ impl ComparisonOp {
     }
 
     fn compare_floats(self, left: f64, right: f64) -> bool {
+        match self {
+            Self::Lt => left < right,
+            Self::Gt => left > right,
+            Self::Le => left <= right,
+            Self::Ge => left >= right,
+        }
+    }
+
+    fn compare_bytes(self, left: &[u8], right: &[u8]) -> bool {
         match self {
             Self::Lt => left < right,
             Self::Gt => left > right,
@@ -1517,7 +1579,65 @@ mod tests {
     }
 
     #[test]
-    fn numeric_comparisons_type_check_operands_left_to_right() {
+    fn string_comparisons_use_byte_order() {
+        assert_eq!(eval("\"a\" < \"b\"").as_bool(), Ok(true));
+        assert_eq!(eval("\"b\" > \"a\"").as_bool(), Ok(true));
+        assert_eq!(eval("\"a\" <= \"a\"").as_bool(), Ok(true));
+        assert_eq!(eval("\"a\" >= \"b\"").as_bool(), Ok(false));
+        assert_eq!(eval("\"Z\" < \"a\"").as_bool(), Ok(true));
+        assert_eq!(eval("\"a\\n\" < \"aa\"").as_bool(), Ok(true));
+    }
+
+    #[test]
+    fn string_comparisons_use_bytes_not_contexts() {
+        let ir = lower("1");
+        let mut evaluator = TreeWalk::new(&ir);
+        let node = *ir.arena.node(ir.root).expect("root exists");
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let output =
+            ContextElement::single_output(b"/nix/store/derivation.drv".to_vec(), b"out".to_vec())
+                .expect("output context is valid");
+        let left = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"same".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("left string allocates");
+        let right = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"same".to_vec(),
+                StringContext::singleton(output).expect("output context allocates"),
+            ))
+            .expect("right string allocates");
+
+        assert_eq!(
+            evaluator
+                .compare_strings(ir.root, &node, ComparisonOp::Le, left, right)
+                .expect("strings compare")
+                .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            evaluator
+                .compare_strings(ir.root, &node, ComparisonOp::Ge, left, right)
+                .expect("strings compare")
+                .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            evaluator
+                .compare_strings(ir.root, &node, ComparisonOp::Lt, left, right)
+                .expect("strings compare")
+                .as_bool(),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn comparisons_type_check_operands_left_to_right() {
         let rhs_ir = lower("1 < true");
         let root = rhs_ir.arena.node(rhs_ir.root).expect("root exists");
         let IrData::Binary { rhs, .. } = root.data else {
@@ -1537,6 +1657,65 @@ mod tests {
         );
         assert_eq!(error.span(), rhs_span);
 
+        let string_rhs_ir = lower("1 < \"a\"");
+        let root = string_rhs_ir
+            .arena
+            .node(string_rhs_ir.root)
+            .expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("comparison root has binary payload");
+        };
+        let rhs_span = string_rhs_ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf_owned(&string_rhs_ir).expect_err("string rhs is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: rhs,
+                expected: "number",
+                actual: ValueTag::String,
+            }
+        );
+        assert_eq!(error.span(), rhs_span);
+
+        let string_left_ir = lower("\"a\" < true");
+        let root = string_left_ir
+            .arena
+            .node(string_left_ir.root)
+            .expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("comparison root has binary payload");
+        };
+        let rhs_span = string_left_ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf_owned(&string_left_ir).expect_err("boolean rhs is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: rhs,
+                expected: "string",
+                actual: ValueTag::Bool,
+            }
+        );
+        assert_eq!(error.span(), rhs_span);
+
+        let rhs_error_ir = lower("\"a\" < (1 / 0)");
+        let root = rhs_error_ir
+            .arena
+            .node(rhs_error_ir.root)
+            .expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("comparison root has binary payload");
+        };
+        let rhs_span = rhs_error_ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf_owned(&rhs_error_ir).expect_err("rhs evaluation error wins");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: rhs });
+        assert_eq!(error.span(), rhs_span);
+
         let lhs_ir = lower("false < (1 / 0)");
         let root = lhs_ir.arena.node(lhs_ir.root).expect("root exists");
         let IrData::Binary { lhs, .. } = root.data else {
@@ -1550,7 +1729,7 @@ mod tests {
             error.kind(),
             TreeWalkErrorKind::Type {
                 id: lhs,
-                expected: "number",
+                expected: "number or string",
                 actual: ValueTag::Bool,
             }
         );
