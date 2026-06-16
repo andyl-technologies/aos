@@ -36,6 +36,6 @@ pub use login::{exchange_token, TokenGrant};
 pub use aos_proto::aos::build::v1::BuildEvent;
 pub use aos_proto::aos::gc::v1::{EvictionCandidate, GcResponse};
 pub use aos_proto::aos::registry::v1::{
-    AuditEntry, Binding, Changeset, Channel, Org, PackageSummary, Project, Registry, Release,
-    Webhook,
+    AuditEntry, Binding, ChangeRequest, Changeset, Channel, GitCommit, Org, PackageSummary,
+    Project, Registry, Release, Webhook,
 };
