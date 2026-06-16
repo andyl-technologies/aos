@@ -22,7 +22,12 @@ carve-out. Config delivery across the boundary is **left open** — see
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
 [migration.md](migration.md), [open-questions.md](open-questions.md). The
 target-sandbox invariants are in
-[activation.md](activation.md).
+[activation.md](activation.md). Runtime-integrity siblings:
+[attestation.md](attestation.md) (dm-verity + hardware attestation),
+[enforcement.md](enforcement.md) (Landlock/MAC/eBPF-LSM layering),
+[state-of-the-art.md](state-of-the-art.md). Under the
+**unlimited-engineering-budget mandate, nothing here is deferred for cost** —
+only correctness-driven deferrals (nspawn) remain.
 
 ## Where this sits in the model
 
@@ -90,7 +95,9 @@ Why this must be evaluated head-to-head before implementation:
   `network`→`PrivateNetwork=`, `devices`→`DeviceAllow=`,
   `host-paths`→`BindPaths=`, `privileged-users`→`PrivateUsers=`,
   `syscalls`→`SystemCallFilter=`). The manifest is the architecture; nspawn is
-  one possible materialization.
+  one possible materialization. Each field **also** derives a Landlock rule and
+  a MAC profile (defense in depth, applied on top of the unit directives) — see
+  [enforcement.md](enforcement.md).
 - **It dissolves the k3s `KillMode=process` regression** (see the k3s section
   below): a high-privilege package becomes a host unit with few restrictions,
   and non-disruptive restart keeps working.
@@ -108,11 +115,18 @@ Why this must be evaluated head-to-head before implementation:
   RFE, systemd#17764), needing `systemd-socket-proxyd` as a bridge. And
   `RootImage=` carries dm-verity natively (`RootHash=`, `RootVerity=`,
   `RootHashSignature=`, v246+) — signed container roots extending the registry
-  trust chain to runtime integrity. The `RootImage=` + `DynamicUser=` +
+  trust chain to runtime integrity (now in scope and built — see
+  [attestation.md](attestation.md)). The `RootImage=` + `DynamicUser=` +
   `PrivateUsers=` + `MountAPIVFS=` stack is upstream's own portable-services
   **default profile** — the flagship-supported composition, not an experiment.
   (Caveats: loop-device based, auto-adds `After=systemd-udevd.service` so not
   early-boot, and must not be combined with `PrivateDevices=yes`.)
+- **Per-package UID identity by default.** The per-unit substrate defaults to
+  `DynamicUser=yes` + `PrivateUsers=identity` (systemd v257), giving every
+  sandboxed package its own host UID identity. Two sandboxed packages then
+  cannot reach each other's state **even via a shared host path** — the kernel
+  ownership check fails across distinct UIDs. This matches Android's
+  per-app-UID foundation. See [enforcement.md](enforcement.md).
 
 Prior-art note: NixOS's declarative nspawn `containers.*` is the closest
 precedent for "module system generates nspawn units," and it is widely
@@ -120,11 +134,21 @@ considered one of NixOS's weaker subsystems (machined coupling,
 restart-on-switch semantics, networking friction); much of that ecosystem moved
 to podman-systemd (quadlet) or per-unit hardening. The landing (Decision 17):
 **per-unit sandboxing as the default materialization, nspawn deferred** until
-a package genuinely needs an init tree. The MVP "container root" is simply a
+a package genuinely needs an init tree. The simple **default** "container root" is a
 **store path consumed via `RootDirectory=`** — no image build, no loop
-device, no udev ordering (`CONFIG_DM_VERITY` is also absent from the AOS
-kernel config today, so the verity-signed `RootImage=` upgrade is future work
-behind a kernel-config change). The remaining spike is **validation, not
+device, no udev ordering — and stays the default for early-boot and minimal
+packages. The signed-verity **`RootImage=` path is now IN SCOPE**: the
+cost-based deferral is **lifted by the unlimited-engineering-budget mandate**,
+and verity-signed package roots are a **built deliverable**, not future work.
+A `RootImage=` carries `RootHash=`/`RootVerity=`/`RootHashSignature=` validated
+against the `.platform` keyring (populated from the UEFI db at boot), extending
+the registry trust chain to runtime integrity. The kernel-config additions this
+needs — `CONFIG_DM_VERITY`, `CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG`,
+`CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG_PLATFORM_KEYRING` — and the full design
+(image build, signature chain, attestation) live in
+[attestation.md](attestation.md). Caveat: `RootImage=` is loop-device backed,
+auto-adds `After=systemd-udevd.service` (so not early-boot), and must **not** be
+combined with `PrivateDevices=yes`. The remaining spike is **validation, not
 decision input**: materialize `test-http-server`'s empty manifest and k3s's
 manifest as per-unit services and confirm teardown semantics and harness
 cost. Everything below specifies the **deferred nspawn materialization** —
@@ -296,6 +320,15 @@ manifest turns user-ns off (`--private-users=no`); k3s does (see below).
 
 ## Networking
 
+Beyond the host-global nftables base-set mutation described below (which is
+**L3/L4 and host-global** — it mutates a shared host table), per-package network
+policy SHOULD additionally use **per-package eBPF policy** (Cilium-style
+per-identity attachment — the SOTA, vs. mutating a host-global set) and
+**Landlock TCP bind/connect rules** (ABI 4+) to restrict egress from *inside*
+the sandbox. These are identity-aware (keyed to the package's UID identity, see
+above) and stack on top of the L3/L4 base table as defense in depth — see
+[enforcement.md](enforcement.md) (layer 4).
+
 Three modes, selected by the manifest's `network` permission:
 
 - **`--network-veth` (default, `network = "private"`).** nspawn creates a veth pair; the
@@ -313,7 +346,11 @@ Three modes, selected by the manifest's `network` permission:
   in systemd's own `io.systemd.nat` table, so AOS's base table — whose forward
   chain defaults to `policy drop` — can still eat the DNATed traffic. The
   gated firewall service must add the matching forward accept, or install the
-  DNAT in the base table itself instead of using `--port=`.
+  DNAT in the base table itself instead of using `--port=`. This
+  `network = "private"`-with-outbound path additionally gains **Landlock TCP
+  bind/connect rules** (ABI 4+) scoped to the allowed ports, restricting egress
+  from inside the sandbox even where the host base table would permit it — see
+  [enforcement.md](enforcement.md).
 - **`--network-zone=<zone>` (multi-container L2).** nspawn maintains a virtual
   zone hub so several containers share an isolated L2 without an external
   bridge. Available, less-documented; veth+managed-network is the more

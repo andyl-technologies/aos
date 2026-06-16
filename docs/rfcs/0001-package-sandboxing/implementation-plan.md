@@ -11,10 +11,34 @@ Per RFC discipline the maturity claim lives only in the set's
 two documents and must not contradict them:
 
 - [`open-questions.md`](open-questions.md) — the **decision register**
-  (Decisions 1–19, each with disposition and owner). Every box below cites the
-  decisions it closes by number (`D1`–`D19`).
+  (Decisions 1–23, each with disposition and owner). Every box below cites the
+  decisions it closes by number (`D1`–`D23`).
 - [`migration.md`](migration.md) — the cutover plan (the module tree is
   dissolved into `pkgs/` `expose` blocks).
+
+## Budget mandate
+
+This plan is governed by an **unlimited-engineering-budget, no-corners-cut**
+mandate: the goal is the **state-of-the-art** package-sandboxing OS
+([`state-of-the-art.md`](state-of-the-art.md)), not a cost-bounded MVP. That
+reframes how the phases below are read:
+
+- **The full stack is committed.** The state-of-the-art additions —
+  hardware-rooted runtime attestation ([`attestation.md`](attestation.md)),
+  dm-verity package roots, the layered Landlock + MAC + eBPF-LSM enforcement
+  stack ([`enforcement.md`](enforcement.md)), and the in-toto/SLSA + transparency
+  supply chain — are **in scope, built, not "ship if we have time."**
+- **Cost is never a reason to defer.** Items the earlier draft deferred on
+  engineering-cost grounds (notably dm-verity / `CONFIG_DM_VERITY` and the
+  verity-signed `RootImage=` path) are **un-deferred** and now have phases.
+- **Correctness-driven deferrals still hold.** The one deferral the budget does
+  *not* lift is the **nspawn substrate** (Decision 17): it stays deferred because
+  it would regress k3s's `KillMode=process` and no multi-unit-init package
+  exists — a *merit* reason, not a *cost* reason.
+- **The correctness gates remain absolute.** The Decision 17 spike (Phase 3), the
+  `systemd-analyze security` per-package CI gate (Phase 8), the byte-stable schema
+  (Phase 0), and the fail-closed capability gate (D19) gate every feature,
+  always. Budget does not waive them.
 
 ## How to use this plan
 
@@ -71,9 +95,15 @@ two documents and must not contradict them:
 | **P5** | `apm install` + install-at-boot + upgrade/rollback (attach dir, idempotency) | P3, P4 | D8 (install half), D11, D16 | ☐ |
 | **P6** | Container roots (`RootDirectory=` store path) + the three network modes | P3 | D3, D5, D6 | ☐ |
 | **P7** | Dissolve `modules/roles/` into `pkgs/` `expose`; `modules/` shrinks to policy | P1–P6 green per package | D14; migration.md | ☐ |
-| **P8** | Deferred / out of scope: config delivery, nspawn substrate, verity `RootImage=`, L2 zones, hot-reload | — (tracked, not built for MVP) | D9 (open), D7 (stays disabled), D13 | ☐ |
+| **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☐ |
+| **P9** | Runtime integrity & attestation: dm-verity package roots (`RootImage=`+`RootHashSignature=` vs the `.platform` keyring), measure package+manifest into PCR 15, TPM quote + registry golden-measurements catalog | P6, P8 (+ RFC-0006) | D5, D6, D21, D22 | ☐ |
+| **P10** | Supply-chain provenance: in-toto/SLSA attestation (NAR + manifest), transparency log, TUF roles/thresholds | P0 | D23 | ☐ |
+| **P11** | Deferred / out of scope: config delivery (recommendation on the table), nspawn substrate, L2 zones, hot-reload | — (tracked, not built for MVP) | D9 (recommend), D7 (stays disabled), D13 | ☐ |
 
-Legend: ☐ not started · ◐ in progress · ☑ exit criterion met.
+Legend: ☐ not started · ◐ in progress · ☑ exit criterion met. Phases 8–10 are
+the state-of-the-art additions under the [budget mandate](#budget-mandate);
+they gate on the per-unit substrate (P3) / container roots (P6) but are
+otherwise independent workstreams that proceed in parallel.
 
 ---
 
@@ -344,12 +374,19 @@ the prior generation's units.
       socket units pass **named** fds into the sandboxed unit (`PrivateNetwork=`
       on both + socket `JoinsNamespaceOf=`). *private with outbound*: the gated
       `aos-pkg-<n>-netns.service` from P3 (named netns + veth, host side
-      systemd-networkd) + `NetworkNamespacePath=`. *host*: k3s and peers.
+      systemd-networkd) + `NetworkNamespacePath=`, **plus Landlock TCP
+      bind/connect rules on the allowed ports** ([`enforcement.md`](enforcement.md)).
+      *host*: k3s and peers.
+- [ ] **Per-package network policy via eBPF** (Cilium-style per-identity), not
+      only host-global nftables base-set mutation — the SOTA for per-package L3/L4
+      ([`container-model.md`](container-model.md) networking).
 - [ ] **Naming without `nss-mymachines`** (not shipped): explicit `/etc/hosts`
       or DNS for container reachability.
-- [ ] **Future (behind a kernel-config change, not MVP):** add `CONFIG_DM_VERITY`
-      (absent today) and offer a verity-signed `RootImage=` variant
-      (`RootHash=`/`RootVerity=`/`RootHashSignature=`).
+
+> The verity-signed `RootImage=` package root is **no longer deferred** — it is
+> built in **Phase 9** ([`attestation.md`](attestation.md)) under the budget
+> mandate. Phase 6 ships the `RootDirectory=` store-path root; Phase 9 adds the
+> signed-verity image on top of the same closure.
 
 **Closes.** D3, D5, D6.
 
@@ -389,29 +426,137 @@ the fleet suite are green; the k3s fleet test asserts `aos-pkg-k3s-worker.target
 
 ---
 
-## Phase 8 — Deferred / out of scope (tracked, not built for MVP)
+## Phase 8 — Layered enforcement (defense in depth)
 
-These are **explicitly not built for the MVP** but are tracked so they are not
-silently dropped.
+**GOAL.** Add the kernel-enforcement layers under the per-unit sandbox so a
+breach of any one layer still meets another — all generated from the manifest.
+Full spec: [`enforcement.md`](enforcement.md).
 
-- [ ] **Config & secret delivery (D9) — OPEN, deliberately.** Do **not** settle
-      on credstore. The 7-option matrix + decision criteria are ready in
-      [`config.md`](config.md); the MVP placeholder is the per-package
-      `/etc/aos/<pkg>/` overlay extending today's k3s `EnvironmentFile=` pattern.
-      Resolve the three independent sub-questions first (hot-reload in v1?;
-      secrets-at-rest layer?; boundary-crossing mechanism?) then choose.
-- [ ] **nspawn substrate (D17 deferral).** Built only if a package genuinely
-      needs its own multi-unit init tree (currently none). The deferred template
-      in [`container-model.md`](container-model.md) (`--keep-unit --register=no`,
-      `Slice=aos-pkg-%i.slice`, the DevicePolicy block) is the spec if it lands.
-- [ ] **Verity-signed `RootImage=`** — behind the `CONFIG_DM_VERITY` kernel
-      change (P6).
-- [ ] **machined / portabled / importd stay disabled (D7).** No `machinectl`,
-      no `nss-mymachines`; all introspection via `systemctl`.
-- [ ] **Zone-style multi-container L2 (D3 defer); hot config reload; secrets-at-
-      rest encryption; prune-on-removal reconciliation** (install-at-boot is
-      additive-only today). Performance/init-strategy measurement (D13) only if
-      the nspawn path materializes.
+**Deliverables.**
+
+- [ ] **Landlock layer (D20).** The `expose` renderer emits a Landlock ruleset
+      from the manifest (`host-paths` → `LANDLOCK_ACCESS_FS_*`, `network` →
+      `LANDLOCK_ACCESS_NET_{BIND,CONNECT}_TCP`); empty manifest = deny-all-but-own
+      root. Applied via an `aos-landlock` exec-prefix wrapper (or the upstream
+      `LandlockPaths=` directive — pin in the spike). ABI feature-detect
+      (`LANDLOCK_CREATE_RULESET_VERSION`); target ≥ ABI 4. Holds even when a
+      namespace is shared — the layer for `sandboxed-with-holes` packages.
+- [ ] **Generated MAC profile (D20).** Render a default-deny per-package
+      SELinux/AppArmor profile named `aos-pkg-<name>` from the manifest (AppArmor
+      for MVP unless an SELinux base policy ships); loaded by `apm` at install.
+      The profile name is part of the measured manifest digest (P9).
+- [ ] **eBPF-LSM channel (D20, MVP-optional).** Kernel config
+      (`CONFIG_BPF_LSM`, `bpf` in `lsm=`, BTF) + a signed-policy channel through
+      the registry trust chain for fleet-managed dynamic policy (CVE live-patch).
+- [ ] **Full systemd hardening baseline** on every generated unit (the
+      `systemd-analyze security` consensus set — see [`enforcement.md`](enforcement.md));
+      relaxations computed from the manifest, never hand-written.
+- [ ] **Per-package UID identity.** `DynamicUser=yes` + `PrivateUsers=identity`
+      default so two sandboxed packages can't touch each other's state via a
+      shared host path.
+- [ ] **CI gate.** `checks.eval` runs `systemd-analyze security --threshold=<N>`
+      per generated unit; a unit worse than its tier allows fails the build
+      (k3s/`unconfined` is the documented exception, not a silent pass).
+
+**Closes.** D20; strengthens D2, D10.
+
+**EXIT CRITERIA.** A default-manifest package's unit scores within its tier's
+`systemd-analyze` threshold; its Landlock ruleset denies an out-of-manifest path
+in a VM test *with a host-path hole present* (proves namespace-independence); its
+MAC profile loads and denies a default-denied operation.
+
+---
+
+## Phase 9 — Runtime integrity & attestation
+
+**GOAL.** Bind each package's content digest **and its signed manifest** into a
+hardware-rooted, attestable chain, extending [RFC-0006](../0006-secure-boot/README.md).
+Full spec: [`attestation.md`](attestation.md).
+
+**Deliverables.**
+
+- [ ] **dm-verity package roots (D21).** Build the package-set root (prefer one
+      consolidated composefs/EROFS digest per generation) as a dm-verity image,
+      hermetically (`veritysetup format`, no host tools). Consume via
+      `RootImage=`+`RootHash=`+`RootVerity=`+`RootHashSignature=`; the PKCS#7
+      `.roothash.p7s` is validated by the kernel against the **`.platform`
+      keyring** populated from the UEFI db (RFC-0006). Kernel config:
+      `CONFIG_DM_VERITY`, `CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG`,
+      `..._PLATFORM_KEYRING` (via `pkgs.linuxWith`). Reconcile the `RootImage=`
+      caveats (loop-backed, `After=systemd-udevd.service`, no `PrivateDevices=yes`).
+- [ ] **Measure into the TPM (D22).** At package-set activation, extend **PCR 15**
+      with `H(name ‖ version ‖ root-digest ‖ manifest-digest)` per enabled package
+      and record a TCG canonical event log (`/run/log/aos-packages.cel`). The
+      **manifest digest is measured** — privilege becomes attested state.
+- [ ] **Quote + verify (D22).** `aos-attest` unit produces a `TPM2_Quote` over
+      {PCR 7,11,12,15} with a verifier nonce, AK←EK. A fleet verifier (Keylime-
+      shaped) replays the event log and checks each tuple against the **registry
+      golden-measurements catalog**.
+- [ ] **Registry golden catalog (D22).** The registry records the expected
+      measurement tuple per package/version and serves the `.roothash.p7s` +
+      provenance — the catalog/oracle role, **never a runtime signer**
+      ([`apm-integration.md`](apm-integration.md), [`attestation.md`](attestation.md)).
+      Key custody: registry key ≠ UEFI-db/verity key ≠ TPM AK/EK.
+
+**Closes.** D5 (verity variant), D6, D21, D22.
+
+**EXIT CRITERIA.** A node mounts a tampered package root → kernel refuses
+(verity); an untampered node produces a quote a verifier accepts and whose event
+log matches the registry catalog; flipping one package's manifest changes the
+measured PCR 15 and the quote reflects it.
+
+---
+
+## Phase 10 — Supply-chain provenance & transparency
+
+**GOAL.** Make the publication chain externally auditable and provenance-bound,
+beyond the single registry signing key. ([`apm-integration.md`](apm-integration.md) §7.)
+
+**Deliverables.**
+
+- [ ] **in-toto/SLSA provenance (D23).** Emit a SLSA v1.2 provenance attestation
+      per build binding the NAR hash **and the manifest hash** to the build
+      inputs (`.drv`/source); serve from the registry alongside the narinfo;
+      `apm install` verifies it.
+- [ ] **Transparency log (D23).** Append every published binding to a
+      Merkle/append-only log (Trustix-style multi-builder consensus or a
+      Rekor-style log) so a compromised registry key cannot silently taint or
+      equivocate.
+- [ ] **TUF hardening (D23).** Roles + thresholds + timestamping over the catalog
+      (the anti-rollback floor is the TUF rollback defense already; add the rest);
+      audit against freeze / mix-and-match / fast-forward / key-rotation.
+
+**Closes.** D23.
+
+**EXIT CRITERIA.** A package fetched via `apm install` carries a verifiable SLSA
+provenance binding its NAR + manifest to its build; the publication appears in
+the transparency log; a rollback/mix-and-match attempt is refused.
+
+---
+
+## Phase 11 — Deferred / out of scope (tracked, not built)
+
+Only **correctness-driven** deferrals and genuinely-open decisions remain here;
+the budget mandate moved every cost-based deferral into Phases 8–10.
+
+- [ ] **Config & secret delivery (D9) — recommendation on the table.** The
+      SOTA-aligned answer (TPM2-sealed systemd credentials, signed-PCR policy) is
+      documented in [`config.md`](config.md) as the recommended resolution,
+      **pending the maintainer's explicit sign-off** (the earlier "don't settle on
+      credstore" caution is satisfied now that RFC-0006 supplies the TPM backend).
+      Not built until that decision is confirmed.
+- [ ] **nspawn substrate (D17 deferral — *merit*, not cost).** Built only if a
+      package needs its own multi-unit init tree (currently none); the budget
+      mandate does **not** lift this. Deferred template in
+      [`container-model.md`](container-model.md).
+- [ ] **machined / portabled / importd stay disabled (D7).** Introspection via
+      `systemctl`, not `machinectl`.
+- [ ] **Typed capability routing for `requires` (D18).** Evaluate Fuchsia-style
+      typed routing vs. the flat `After=`/`Wants=` model ([`authoring.md`](authoring.md));
+      flat may still be the right server/fleet call, but the decision is now on
+      merit, not cost.
+- [ ] **Zone-style multi-container L2 (D3 defer); hot config reload;
+      prune-on-removal reconciliation; performance/init measurement (D13).**
 
 ---
 
@@ -429,19 +574,23 @@ Every tracked decision and where it is discharged. Statuses are from
 | D4 nspawn-in-VM / lifecycle test | mooted; per-unit test remains | P3 |
 | D5 container roots = `RootDirectory=` store path | RESOLVED | P6 |
 | D6 bake vs fetch | RESOLVED by D5 | P6 |
-| D7 machined/portabled/importd disabled | RESOLVED (stay) | P8 |
+| D7 machined/portabled/importd disabled | RESOLVED (stay) | P11 |
 | D8 install-at-boot + enable | enable resolved (presets) | P4 (enable) + P5 (install) |
-| D9 config & credential delivery | OPEN (deliberately) | P8 |
-| D10 boundary labeling | RESOLVED (computed label) | P3 |
+| D9 config & credential delivery | recommendation on the table (TPM2 creds); awaiting sign-off | P11 |
+| D10 boundary labeling | RESOLVED (computed label); now also attestable | P3 + P8 + P9 |
 | D11 upgrade/rollback | RESOLVED (direction) | P5 |
 | D12 package metadata (hybrid) | RESOLVED | P0 |
-| D13 performance / init strategy | DEFER | P8 |
+| D13 performance / init strategy | DEFER | P11 |
 | D14 module-tree dissolve | RESOLVED | P7 |
 | D15 unit naming `aos-pkg-<name>` | RESOLVED | P2 |
 | D16 runtime unit placement (`/var/etc` attach) | RESOLVED | P5 |
 | D17 execution substrate (per-unit default) | RESOLVED (direction); spike = validation | P3 (gate) |
-| D18 `requires` resolver semantics | DECIDE-EARLY | P0 |
+| D18 `requires` resolver semantics | DECIDE-EARLY; typed-routing option open (merit, not cost) | P0 + P11 |
 | D19 registry capability gate (fail-closed) | DECIDE-BEFORE-MVP | P0 (first) |
+| D20 layered enforcement (Landlock + MAC + eBPF-LSM) | committed (budget mandate) | P8 |
+| D21 dm-verity package roots | committed (budget mandate; un-deferred) | P9 |
+| D22 runtime attestation (PCR measure + quote + registry golden catalog) | committed (budget mandate); extends RFC-0006 | P9 |
+| D23 supply-chain provenance + transparency (in-toto/SLSA, TUF) | committed (budget mandate) | P10 |
 
 ---
 
@@ -484,3 +633,22 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       machined/portabled/importd disable flags, the kernel namespace configs, and
       the exact `aos-seed-profiles` ordering were read once and should be
       re-confirmed against the tree before the MVP lands.
+- [ ] **Landlock apply mechanism (P8).** Whether to use an `aos-landlock`
+      exec-prefix wrapper or the upstream `LandlockPaths=` directive (if present in
+      the AOS systemd build); the built kernel's max Landlock ABI.
+      ([`enforcement.md`](enforcement.md))
+- [ ] **MAC backend choice (P8).** SELinux vs AppArmor for the generated
+      per-package profile — depends on whether the kernel ships an SELinux base
+      policy. ([`enforcement.md`](enforcement.md))
+- [ ] **PCR index for the package set (P9).** Confirm PCR 15 is free / the right
+      convention on the AOS measured-boot layout (RFC-0006 uses 11/12); confirm the
+      event-log format and the activation point that performs the measurement.
+      ([`attestation.md`](attestation.md))
+- [ ] **Consolidated vs per-package verity root (P9).** Whether one composefs/EROFS
+      digest per generation or per-package `RootImage=` images; composefs maturity
+      in the AOS kernel/userspace. ([`attestation.md`](attestation.md))
+- [ ] **Verifier hosting (P9).** Whether the fleet attestation verifier is a
+      registry-adjacent service or standalone — it is a *separate role* from the
+      registry catalog and must not hold the registry key.
+- [ ] **Transparency-log substrate (P10).** Trustix-style multi-builder consensus
+      vs a Rekor-style log; reuse vs build. ([`apm-integration.md`](apm-integration.md))

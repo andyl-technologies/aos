@@ -2,12 +2,16 @@
 
 Status: planning
 
-> **DECISION: TBD.** This document does **not** pick a config-delivery
-> mechanism. It surveys the option space, maps each option against a fixed
-> set of criteria, and records the open questions. **Do not read a winner
-> into this doc.** In particular, do **not** treat systemd credentials /
-> credstore as the chosen path — it is one option among several, with real
-> gaps (no credential backend exists in AOS today).
+> **DECISION: TBD — but with a recommendation on the table.** This document
+> still surveys the full option space, maps each option against a fixed set of
+> criteria, and records the open questions; it does **not** unilaterally rule.
+> What has changed: the architecture review now identifies a clear front-runner
+> — **TPM2-sealed systemd credentials** (see *Recommended direction* below) —
+> because RFC-0006 shipped the measured-boot/TPM2 substrate that closed the one
+> gap the original caution rested on ("no credential backend exists in AOS
+> today"). Treat that as the **recommended resolution pending the maintainer's
+> explicit sign-off**, not as already-decided. The other six options remain
+> documented as the alternatives the sign-off is chosen against.
 
 This is one of the package docs. Siblings:
 [README.md](README.md), [permissions.md](permissions.md),
@@ -303,16 +307,16 @@ this. The option the original survey missed.
 Scoring: ✓ good · △ partial / caveated · ✗ poor. These are *relative*
 positions to aid discussion, **not** a scorecard that names a winner.
 
-| Criterion | 1 Credentials | 2 EnvFile+Ignition | 3 apm schema | 4 cmdline/SMBIOS | 5 registry-hosted | 6 /etc overlay | 7 confext |
-|---|---|---|---|---|---|---|---|
-| Boundary crossing (host→nspawn) | △ (needs systemd PID1) | ✓ | ✓ | △ (RO/global) | △ (2-step) | ✓ | ✓ |
-| Reloadability (no restart) | ✗ | ✗ | ✗ | ✗ | △ (push/poll) | ✗ | ✗ |
-| Secret-safety | ✓ (tmpfs/iso) | △ | △ | ✗ | ✓ (transport) | △ | △ (signed/verity at rest; integrity, not secrecy) |
-| Per-instance override | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | △ (image mint) |
-| Schema enforcement | ✗ | ✗ | ✓ | ✗ | ✓ | △ | ✗ |
-| Introspection | ✓ | ✓ | ✓ | ✓ | △ | ✓ | ✓ |
-| Offline / air-gapped | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
-| Maturity / ecosystem | △ | ✓ | ✗ | ✓ | ✗ | ✓ | △ |
+| Criterion | 1 Credentials | 1T creds+TPM2 (signed-PCR) | 2 EnvFile+Ignition | 3 apm schema | 4 cmdline/SMBIOS | 5 registry-hosted | 6 /etc overlay | 7 confext |
+|---|---|---|---|---|---|---|---|---|
+| Boundary crossing (host→nspawn) | △ (needs systemd PID1) | △ (needs systemd PID1) | ✓ | ✓ | △ (RO/global) | △ (2-step) | ✓ | ✓ |
+| Reloadability (no restart) | ✗ | ✗ | ✗ | ✗ | ✗ | △ (push/poll) | ✗ | ✗ |
+| Secret-safety | ✓ (tmpfs/iso) | ✓✓ (TPM-bound at rest + tmpfs/iso) | △ | △ | ✗ | ✓ (transport) | △ | △ (signed/verity at rest; integrity, not secrecy) |
+| Per-instance override | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | △ (image mint) |
+| Schema enforcement | ✗ | ✗ | ✗ | ✓ | ✗ | ✓ | △ | ✗ |
+| Introspection | ✓ | ✓ | ✓ | ✓ | ✓ | △ | ✓ | ✓ |
+| Offline / air-gapped | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| Maturity / ecosystem | △ | ✓ (current SOTA) | ✓ | ✗ | ✓ | ✗ | ✓ | △ |
 
 Two honest patterns fall out of the matrix and are worth stating plainly:
 
@@ -322,13 +326,187 @@ Two honest patterns fall out of the matrix and are worth stating plainly:
   trust boundary. If live config without restart is a requirement, **none of
   these options satisfies it as-is** — it becomes its own workstream (a
   watch-file reloader, or a registry push path).
-- **At-rest secrecy is unsolved.** "Secret-safe" above is mostly about
-  *runtime* isolation (who can read the live value), not *at-rest* encryption.
-  AOS has no sealed/TPM/LUKS credential backend today, so every option stores
-  secrets as plaintext on `/var` and leans on file permissions and mount
-  namespaces. That gap is independent of which delivery mechanism wins.
-  (Option 7 adds at-rest *integrity* — signed/verity config images — but not
-  secrecy.)
+- **At-rest secrecy is unsolved by the *plain* options.** "Secret-safe" for
+  options 1–7 above is mostly about *runtime* isolation (who can read the live
+  value), not *at-rest* encryption. Those options store secrets as plaintext on
+  `/var` and lean on file permissions and mount namespaces. (Option 7 adds
+  at-rest *integrity* — signed/verity config images — but not secrecy.)
+  **However**, this gap is no longer "AOS has no backend": RFC-0006 shipped a
+  measured-boot/TPM2 substrate (see
+  [../0006-secure-boot/README.md](../0006-secure-boot/README.md)), which the
+  column **1T** above exploits to seal secrets at rest to attested boot state.
+  That is the basis for the recommended direction below.
+
+## Recommended direction: TPM2-sealed systemd credentials
+
+> This section names a **front-runner**, not a final ruling. It exists because
+> the architecture review, under RFC-0001's unlimited-engineering-budget +
+> state-of-the-art mandate, found one option that is both the upstream SOTA for
+> exactly this problem *and* already underpinned by infrastructure AOS has
+> shipped. The "DECISION" below is still pending the maintainer's explicit
+> sign-off.
+
+The earlier "do not settle on credstore" caution (top of this doc) rested on a
+specific, now-closed gap: *AOS had no credential backend (TPM/sealed/LUKS)*. That
+is no longer true. **RFC-0006 shipped a measured-boot + TPM2 substrate** (UEFI
+Secure Boot, UKI measurement into PCR 11, unattended `/var` LUKS unlock via a
+TPM2-bound key — see [../0006-secure-boot/README.md](../0006-secure-boot/README.md)).
+With that substrate in place, the SOTA answer to "deliver a secret to a service
+on an immutable, measured system" is **systemd credentials encrypted to the
+TPM2**, and it is the recommended resolution for *workload* (isolated) packages.
+
+This is the column **1T** in the matrix above — Option 1's transport
+(`$CREDENTIALS_DIRECTORY`, host→nspawn `--load-credential`) upgraded with an
+*at-rest* seal, which is precisely the dimension the plain options leave open.
+
+### How secrets are shipped
+
+Two ship vectors, both immutable-image-friendly (no plaintext in the read-write
+overlay, nothing for an operator to hand-edit):
+
+1. **Inline in the signed unit** via `SetCredentialEncrypted=`. The ciphertext
+   lives directly in the (signed, read-only) unit file, so the secret travels
+   and is integrity-protected with the unit itself:
+
+   ```ini
+   [Service]
+   SetCredentialEncrypted=k3s-token: \
+           k6iUCUh0RJCQyvL8k8q1UyAAAAABAAAADAAAABAAAAASfFsh7VNUUw4...
+   ExecStart=/usr/bin/k3s server
+   ```
+
+2. **As encrypted blobs in the credstore**, dropped at
+   `/usr/lib/credstore.encrypted/<name>` (the immutable, vendor/image-owned
+   credstore — distinct from the mutable `/etc/credstore.encrypted/`), consumed
+   by name with `ImportCredential=` / `LoadCredentialEncrypted=`.
+
+Both are produced offline with `systemd-creds encrypt`. Crucially the *plaintext*
+never lands on the target's writable disk: the artifact that ships is already
+ciphertext, decryptable only on a host whose TPM2 satisfies the sealing policy.
+
+### How secrets are sealed (the policy that matters)
+
+Encrypt with the TPM2 as the sealing authority:
+
+```text
+# host+TPM2 (default when a TPM2 is present and /var is persistent):
+systemd-creds encrypt --name=k3s-token \
+    --with-key=host+tpm2 plaintext.txt k3s-token.cred
+
+# signed-PCR policy (RECOMMENDED for fleets + software updates):
+systemd-creds encrypt --name=k3s-token \
+    --with-key=tpm2 \
+    --tpm2-public-key=/etc/aos/pcr-sign.pem \
+    --tpm2-public-key-pcrs=11 \
+    plaintext.txt k3s-token.cred
+```
+
+- `--with-key=host+tpm2` is the default when a TPM2 is present and persistent
+  state exists; it mixes a host-local secret with a TPM2 seal. Good for the
+  single-machine case.
+- **`--tpm2-public-key` + `--tpm2-public-key-pcrs` (signed-PCR policy) is the
+  recommended fleet path.** Instead of binding the secret to *literal* current
+  PCR values (brittle — any legitimate kernel/UKI/firmware update changes the
+  measurement and **bricks unsealing**), it binds to a **signature** over the
+  expected PCR policy. The expected PCR value (`--tpm2-public-key-pcrs` defaults
+  to **PCR 11 = the UKI measurement**, the same register RFC-0006 attests) is
+  signed offline with a private key; at unseal time systemd accepts any PCR
+  state for which it holds a valid signed policy. So a new signed UKI ships its
+  own signed PCR-11 policy and the secret keeps unsealing across software
+  updates, while a *tampered* boot (unmeasured/unsigned state) still cannot
+  release it. This is the same shape RFC-0006 uses to keep `/var` unlocking
+  across UKI updates.
+
+The result: secret release is **tied to attested boot state** (a machine booted
+into a non-AOS/unsigned/tampered image cannot decrypt the credential) **and
+survives legitimate software updates** — the property that makes direct-PCR
+binding unusable in a fleet.
+
+### How the service consumes it
+
+The unit declares its appetite with `LoadCredentialEncrypted=` (from a credstore
+blob or path) or `ImportCredential=` (by name, with `SetCredentialEncrypted=`
+inline); systemd decrypts at service start and surfaces the plaintext under
+`$CREDENTIALS_DIRECTORY`:
+
+```ini
+[Service]
+LoadCredentialEncrypted=k3s-token:/usr/lib/credstore.encrypted/k3s-token
+# service reads ${CREDENTIALS_DIRECTORY}/k3s-token
+Environment=K3S_TOKEN_FILE=%d/k3s-token
+```
+
+`$CREDENTIALS_DIRECTORY` is a **per-service `ramfs`/tmpfs** (non-swappable, so
+the decrypted secret never hits disk or swap), mounted **owner-only** (`0400`,
+the service's user), and is **not inherited down the process tree** and
+**invisible to other services**. `%d` is the unit specifier for it.
+
+### Why this beats the status-quo `EnvironmentFile=` / `/etc` secrets
+
+The baseline (Option 2) and the `/etc`-overlay variants (Option 6) leak in ways
+the credential path closes:
+
+- **At rest:** `EnvironmentFile=` / `/etc` secrets land as *plaintext* in the
+  `/var/etc` overlay and can be paged to **swap**. Encrypted credentials are
+  ciphertext at rest (TPM-sealed) and the decrypted form lives only in
+  non-swappable tmpfs.
+- **Process-tree leakage:** values from `EnvironmentFile=` become the service's
+  environment, readable by anyone who can see `/proc/PID/environ` and
+  **inherited by every child/exec** in the tree. Credentials are *not* environment
+  and are *not* inherited — only the owning service sees its
+  `$CREDENTIALS_DIRECTORY`.
+- **Path-holder exposure:** any process that can read the `/etc` file (or that
+  the mode/ACL accidentally exposes) gets the secret; the credentials dir is
+  owner-only and per-service.
+
+### Why it fits AOS specifically
+
+- **Immutable-image-friendly.** Ciphertext ships inside signed units or the
+  vendor credstore; nothing requires a writable, hand-edited plaintext secret in
+  the `/etc` overlay. Aligns with the read-only/signed-image direction.
+- **Works in initrd.** `systemd-creds` and credential import are available in the
+  initrd (`auto-initrd`), so early-boot secrets (e.g. a `/var` unlock helper, a
+  remote-attestation token) are covered with the same mechanism rather than a
+  bespoke initrd path.
+- **Reuses RFC-0006.** No new trust root: the TPM2, the PCR-11 UKI measurement,
+  and the offline signing key are exactly what RFC-0006 already established.
+
+### First-boot / VM provisioning of the *sealing inputs*
+
+Sealed credentials answer at-rest secrecy, but a freshly provisioned instance
+still needs its *per-instance* plaintext (or a bootstrap token) to seal in the
+first place. The SOTA path for injecting **system credentials** at first boot is
+**SMBIOS OEM strings**, not the kernel cmdline:
+
+```text
+# QEMU / Firecracker: inject a system credential at boot
+-smbios type=11,value=io.systemd.credential:vmm.notify_socket=...
+-smbios type=11,value=io.systemd.credential.binary:k3s-token=<base64>
+```
+
+systemd reads `type=11` strings prefixed `io.systemd.credential:` (text) or
+`io.systemd.credential.binary:` (base64) as **system credentials**, visible to
+PID 1 and passable to units. **Prefer SMBIOS over the kernel cmdline** for this:
+the cmdline (`/proc/cmdline`) is **world-readable to every process**, so a secret
+placed there leaks immediately; SMBIOS OEM strings are not exposed in the same
+world-readable surface. For non-VM hardware, Ignition still writes the
+per-instance plaintext to a path that is then sealed at first boot, or ships the
+already-sealed ciphertext keyed to that machine's TPM2.
+
+### Residual work (so this is honest, not done)
+
+- **Verify the systemd build.** `pkgs/system/systemd.nix` must expose
+  `systemd-creds` and the credstore/TPM2 paths (Open Question #4). Costing
+  depends on this.
+- **AOS module surface.** No first-class module option wraps
+  `SetCredentialEncrypted=` / `LoadCredentialEncrypted=` /
+  `--tpm2-public-key-pcrs` yet (the existing `assertKeyIsSystemdCredential`
+  helper only validates `@<name>` field markers). A `mkDerivation`/module-side
+  `systemd-creds encrypt` step and an offline PCR-policy signing key need wiring.
+- **nspawn handoff.** The host→container `--load-credential` path for full-init
+  containers (the Option 1 caveat: container must run systemd as PID 1) still
+  needs an end-to-end test; k3s, being a nominal/host-privileged container, is
+  *not* the target for this path (see below).
 
 ## Where this does not fit: k3s
 
@@ -413,9 +591,25 @@ requirements vs. nice-to-haves — that prioritization is itself open.
 
 ---
 
-**DECISION: TBD.** No option is selected. The next phase should pick the hard
-requirements from the criteria above, resolve the open questions (especially
-#1, #2, and #3, which can be decided independently of delivery), and only then
-choose. Cross-link the outcome back into
-[apm-integration.md](apm-integration.md) and
-[container-model.md](container-model.md).
+**DECISION: DECIDE (recommendation on the table).** No option is *ratified* yet
+— this is **not** marked Resolved, and it requires the maintainer's explicit
+sign-off. But under RFC-0001's unlimited-engineering-budget + state-of-the-art
+mandate the research and AOS's own measured-boot work (RFC-0006) now point the
+same way: the recommended resolution for **workload (isolated) packages** is
+**TPM2-sealed systemd credentials** with a **signed-PCR (PCR 11 / UKI) policy**
+(see *Recommended direction*), provisioned at first boot via SMBIOS OEM strings
+rather than the cmdline. The earlier "do not settle on credstore" caution was
+about not foreclosing prematurely *while AOS lacked a credential backend* — that
+backend now exists (RFC-0006), so the caution is satisfied, not violated. k3s
+and other **host-privileged infrastructure** packages likely keep the plain
+Ignition-file + bind-mount path (Option 2/6) regardless; a single mechanism need
+not serve both shapes.
+
+The next phase should (a) get the maintainer's sign-off on the recommendation,
+(b) pick the hard requirements from the criteria above, (c) resolve the open
+questions — especially #1 (one mechanism or two), #2 (hot-reload scope), #3
+(secrets-at-rest layer, now answerable via the TPM2 substrate), and #4 (verify
+the systemd build exposes `systemd-creds`/credstore/TPM2). Cross-link the
+outcome back into [apm-integration.md](apm-integration.md),
+[container-model.md](container-model.md), and the TPM substrate in
+[../0006-secure-boot/README.md](../0006-secure-boot/README.md).

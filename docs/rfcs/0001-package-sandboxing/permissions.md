@@ -68,7 +68,7 @@ the package module emits.
 | `privileged-users` | `--private-users=no` (UID 0 == host UID 0) | userns on | "runs unsandboxed" |
 | `kernel-modules` | host-fulfilled: `aos-pkg-<name>-modules.service` `modprobe`s allowlisted modules (see Limits) | none | system/OEM-level |
 | `syscalls` | `--system-call-filter=` (or `SystemCallFilter=`) with **named profiles defined as pinned sets of systemd syscall groups** (`@system-service`, `@privileged`, …) — never free-form adjectives; cf. the versioned OCI/Docker default seccomp profile | default seccomp | — |
-| `security-label` | SELinux/AppArmor context (`--selinux-context=`) | inherit | — |
+| `security-label` | SELinux/AppArmor context (`--selinux-context=`) — now **backed by a generated, enforced `aos-pkg-<name>` MAC profile**, see below | generated default-deny | — |
 
 `needs verification`: which of these the AOS systemd build's `systemd-nspawn`
 actually supports end-to-end (the investigation found nspawn is shipped but
@@ -76,6 +76,56 @@ actually supports end-to-end (the investigation found nspawn is shipped but
 [open-questions.md](open-questions.md) Decision 7). cgroup-v2 delegation,
 `--private-users` mapping, and custom seccomp profiles each need a feature
 check on the built `systemd-nspawn`.
+
+## Layered enforcement (defense in depth)
+
+The single-directive view above is the *floor*, not the ceiling. Under the
+unlimited-engineering-budget mandate, each manifest field now maps onto
+**multiple, independent enforcement layers** rather than one systemd directive.
+The layers are stacked so that **defeating one still hits the next** — a
+namespace escape lands inside a Landlock confinement; a Landlock bypass lands
+inside the generated MAC profile; a MAC mislabel is still caught by the
+eBPF-LSM observer. Every layer is derived from the *same* signed manifest, so
+they cannot drift apart.
+
+| Manifest field | Layer 1: namespaces + caps + seccomp | Layer 2: Landlock (namespace-independent) | Layer 3: generated MAC profile | Layer 4: eBPF-LSM |
+|---|---|---|---|---|
+| `host-paths` | `BindPaths=` / `--bind=`/`--bind-ro=` | Landlock filesystem rule (path + access bits) | path rule in `aos-pkg-<name>` profile | LSM hook observes/denies off-policy opens |
+| `network` | `PrivateNetwork=` / `--private-network` | Landlock TCP bind/connect rules | network rules in `aos-pkg-<name>` profile | socket-hook coverage |
+| `syscalls` | `SystemCallFilter=` (named profiles) | — | — | LSM backstop on filtered classes |
+| `capabilities` | `CapabilityBoundingSet=` / `--capability=` | — | capability rules in `aos-pkg-<name>` profile | LSM cap-hook coverage |
+| `devices` | `DeviceAllow=` / `--bind=/dev/…` | Landlock filesystem rule on the device node | device rules in `aos-pkg-<name>` profile | LSM hook coverage |
+| `security-label` | (was inert — see below) | — | **the** generated `aos-pkg-<name>` SELinux/AppArmor profile | label-aware hooks |
+
+The point is not that any single layer is perfect — it is that they are
+**independent and overlapping**. Namespaces and capabilities are kernel
+isolation; Landlock is a namespace-independent, unprivileged-sandbox
+confinement that holds even when a package runs with `privileged-users` or
+breaks out of its userns; the generated MAC profile is a default-deny policy
+the kernel enforces regardless of namespace topology; the eBPF-LSM layer is the
+last-resort observer/enforcer that catches anything the static layers missed.
+
+> **Authoritative spec:** [enforcement.md](enforcement.md) is the normative
+> definition of the layered stack — namespaces+caps+seccomp + Landlock +
+> generated MAC profile + eBPF-LSM, all derived from the manifest. It also owns
+> the **full systemd hardening baseline** every generated unit inherits and the
+> **per-package `systemd-analyze security --threshold` CI gate** that fails the
+> build if a unit's exposure score regresses. This doc defines the manifest and
+> the field→layer mapping; `enforcement.md` defines how each layer is rendered.
+
+### `security-label` is no longer an inert field
+
+Previously `security-label` was just a field that set an nspawn SELinux/AppArmor
+*context* with **no enforced policy behind it** — a label pointing at nothing.
+That is gone. The renderer now **generates a default-deny SELinux/AppArmor
+profile from the whole manifest**, named `aos-pkg-<name>`, following the Android
+**per-app-domain** model: each package gets its own confinement domain, derived
+from exactly the privileges it declared, denying everything else by default.
+`host-paths`, `network`, `devices`, and `capabilities` each emit the
+corresponding allow rules into that profile; everything not declared is denied.
+So `security-label` stops being an unenforced annotation and becomes the name of
+a real, generated, kernel-enforced MAC policy — the third layer of the stack
+above. (Profile rendering details live in [enforcement.md](enforcement.md).)
 
 ## Default-deny, least privilege
 
@@ -230,6 +280,15 @@ interface is the precedent). Full composition rules:
   under-inform — both developers over-request and reviewers cannot evaluate raw
   lists (Felt et al., "Android Permissions Demystified", CCS 2011). The label
   guarantees a k3s-shaped manifest can never present as sandboxed.
+- **Attestable, not just introspectable:** the **signed manifest digest is
+  measured into the TPM** (see [attestation.md](attestation.md)). A node's
+  *declared + granted* privilege is hashed into a PCR at activation, so the
+  confinement label is not merely something `apm info` can show — it becomes
+  part of the node's **attested state**. A remote verifier can confirm that the
+  privilege a node *actually* runs under matches the signed manifest it
+  *claims*, closing the gap between "introspectable on the box" and "provable to
+  a third party." Any post-publish privilege change is a new signed version with
+  a new digest, which changes the measurement.
 - **Policy gate:** a host/fleet policy can allow-list or cap permissions
   ("this fleet refuses `CAP_SYS_ADMIN`/`privileged-users` packages"). The
   enforcement model — who decides, when, and how it is mechanically guaranteed —
