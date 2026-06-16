@@ -316,6 +316,13 @@ pub enum IrData {
         /// The lowered attribute path.
         path: IrAttrPathId,
     },
+    /// The node represents a direct primitive operation call.
+    PrimOp {
+        /// The statically known primitive operation symbol.
+        symbol: Symbol,
+        /// The lowered argument nodes.
+        args: IrChildSlice,
+    },
     /// The node represents a lambda closure.
     Lambda {
         /// The lowered parameter pattern.
@@ -665,9 +672,32 @@ impl IrLowerer {
     }
 
     fn is_derivation_strict_ref(&self, id: NodeId) -> Result<bool, IrError> {
+        let Some(symbol) = self.direct_builtin_ref_symbol(id)? else {
+            return Ok(false);
+        };
+        Ok(self.symbol_is(symbol, b"derivationStrict"))
+    }
+
+    fn effectful_unary_primop_ref(&self, id: NodeId) -> Result<Option<Symbol>, IrError> {
+        let Some(symbol) = self.direct_builtin_ref_symbol(id)? else {
+            return Ok(None);
+        };
+        if self.is_effectful_unary_primop(symbol) {
+            Ok(Some(symbol))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn direct_builtin_ref_symbol(&self, id: NodeId) -> Result<Option<Symbol>, IrError> {
         let node = self.node(id)?;
         match node.kind {
-            NodeKind::GlobalVar => Ok(self.symbol_payload_is(node, b"derivationStrict")),
+            NodeKind::GlobalVar => {
+                let NodeData::Symbol(symbol) = node.data else {
+                    return Err(self.invalid_shape(node, "global symbol payload"));
+                };
+                Ok(Some(symbol))
+            }
             NodeKind::Select => {
                 let NodeData::Select {
                     receiver,
@@ -678,26 +708,31 @@ impl IrLowerer {
                     return Err(self.invalid_shape(node, "select payload"));
                 };
                 if default.is_some() {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 let receiver = self.node(receiver)?;
                 if receiver.kind != NodeKind::GlobalVar
                     || !self.symbol_payload_is(receiver, b"builtins")
                 {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 let segments = self.child_ids(path)?;
                 let Some(segment) = segments.first().copied() else {
-                    return Ok(false);
+                    return Ok(None);
                 };
                 if segments.len() != 1 {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 let segment = self.node(segment)?;
-                Ok(matches!(segment.kind, NodeKind::Ident | NodeKind::Str)
-                    && self.symbol_payload_is(segment, b"derivationStrict"))
+                if !matches!(segment.kind, NodeKind::Ident | NodeKind::Str) {
+                    return Ok(None);
+                }
+                let NodeData::Symbol(symbol) = segment.data else {
+                    return Err(self.invalid_shape(segment, "attribute symbol payload"));
+                };
+                Ok(Some(symbol))
             }
-            _ => Ok(false),
+            _ => Ok(None),
         }
     }
 
@@ -705,7 +740,20 @@ impl IrLowerer {
         let NodeData::Symbol(symbol) = node.data else {
             return false;
         };
+        self.symbol_is(symbol, expected)
+    }
+
+    fn symbol_is(&self, symbol: Symbol, expected: &[u8]) -> bool {
         self.resolved.symbols.resolve(symbol) == Some(expected)
+    }
+
+    fn is_effectful_unary_primop(&self, symbol: Symbol) -> bool {
+        matches!(
+            self.resolved.symbols.resolve(symbol),
+            Some(
+                b"getEnv" | b"import" | b"pathExists" | b"readDir" | b"readFile" | b"readFileType"
+            )
+        )
     }
 
     fn lower_list(&mut self, node: Node) -> Result<IrId, IrError> {
@@ -855,6 +903,16 @@ impl IrLowerer {
         if self.is_derivation_strict_ref(function)? {
             let argument = self.lower_expr(argument)?;
             return self.push(IrKind::DerivationStrict, node.span, IrData::Node(argument));
+        }
+        if let Some(symbol) = self.effectful_unary_primop_ref(function)? {
+            let argument = self.lower_expr(argument)?;
+            let args = self.arena.push_child_slice(&[argument], node.span)?;
+            return self.push_with_effect(
+                IrKind::PrimOp,
+                node.span,
+                EffectClass::Effectful,
+                IrData::PrimOp { symbol, args },
+            );
         }
         self.lower_pair(node, IrKind::Apply, LazySecond::Yes)
     }
@@ -1150,6 +1208,16 @@ impl IrLowerer {
         self.arena.push_node(kind, span, effect_for(kind), data)
     }
 
+    fn push_with_effect(
+        &mut self,
+        kind: IrKind,
+        span: Span,
+        effect: EffectClass,
+        data: IrData,
+    ) -> Result<IrId, IrError> {
+        self.arena.push_node(kind, span, effect, data)
+    }
+
     fn push_binding_slice(&mut self, bindings: &[IrBinding]) -> Result<IrBindingSlice, IrError> {
         let span = Span::default();
         let start = u32::try_from(self.bindings.len())
@@ -1251,6 +1319,10 @@ mod tests {
             IrData::Select { site, .. } | IrData::HasAttr { site, .. } => site,
             _ => panic!("lookup payload expected"),
         }
+    }
+
+    fn symbol_text<'a>(ir: &'a Ir, symbol: Symbol) -> &'a [u8] {
+        ir.symbols.resolve(symbol).expect("symbol exists")
     }
 
     #[test]
@@ -1387,6 +1459,88 @@ mod tests {
     #[test]
     fn select_default_derivation_strict_stays_a_select_application() {
         let ir = lowered("(builtins.derivationStrict or (x: x)) { name = \"x\"; }");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+    }
+
+    #[test]
+    fn lowers_effectful_unary_primops_directly() {
+        for (source, name) in [
+            ("import ./foo.nix", b"import".as_slice()),
+            ("builtins.readFile ./foo.txt", b"readFile".as_slice()),
+            ("builtins.readDir ./foo", b"readDir".as_slice()),
+            ("builtins.pathExists ./foo", b"pathExists".as_slice()),
+            ("builtins.readFileType ./foo", b"readFileType".as_slice()),
+            ("builtins.getEnv \"HOME\"", b"getEnv".as_slice()),
+        ] {
+            let ir = lowered(source);
+            let root = root_node(&ir);
+            assert_eq!(root.kind, IrKind::PrimOp);
+            assert_eq!(root.effect, EffectClass::Effectful);
+            let IrData::PrimOp { symbol, args } = root.data else {
+                panic!("primop payload expected");
+            };
+            assert_eq!(symbol_text(&ir, symbol), name);
+            let args = ir.arena.child_slice(args).expect("primop args exist");
+            assert_eq!(args.len(), 1);
+            assert_ne!(node(&ir, args[0]).kind, IrKind::ThunkAlloc);
+        }
+    }
+
+    #[test]
+    fn effectful_unary_primop_arguments_are_strict() {
+        let ir = lowered("builtins.getEnv (let x = \"HOME\"; in x)");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::PrimOp);
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("primop payload expected");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        assert_eq!(args.len(), 1);
+        assert_eq!(node(&ir, args[0]).kind, IrKind::Let);
+    }
+
+    #[test]
+    fn shadowed_effectful_primops_stay_ordinary_applications() {
+        let ir = lowered("let import = x: x; in import ./foo.nix");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::LocalVar);
+
+        let ir = lowered("let builtins = { readFile = x: x; }; in builtins.readFile ./foo");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+    }
+
+    #[test]
+    fn effectful_primop_select_defaults_stay_ordinary_applications() {
+        let ir = lowered("(builtins.readFile or (x: x)) ./foo");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+    }
+
+    #[test]
+    fn pure_builtins_remain_apply_until_primop_strictness_is_modeled() {
+        let ir = lowered("builtins.length [ 1 ]");
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::Apply);
         let IrData::Pair { first, .. } = root.data else {
