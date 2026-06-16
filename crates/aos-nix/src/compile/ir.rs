@@ -834,6 +834,43 @@ impl IrLowerer {
             .map(|effect| (symbol, effect, first_argument)))
     }
 
+    fn strict_ternary_primop_ref(
+        &self,
+        id: NodeId,
+    ) -> Result<Option<(Symbol, EffectClass, NodeId, NodeId)>, IrError> {
+        let node = self.node(id)?;
+        if node.kind != NodeKind::Apply {
+            return Ok(None);
+        }
+        let NodeData::Pair {
+            first: function,
+            second: second_argument,
+        } = node.data
+        else {
+            return Err(self.invalid_shape(node, "application pair"));
+        };
+        let function = self.node(function)?;
+        if function.kind != NodeKind::Apply {
+            return Ok(None);
+        }
+        let NodeData::Pair {
+            first: function,
+            second: first_argument,
+        } = function.data
+        else {
+            return Err(self.invalid_shape(function, "application pair"));
+        };
+        if self.node(function)?.kind == NodeKind::GlobalVar {
+            return Ok(None);
+        }
+        let Some(symbol) = self.direct_builtin_ref_symbol(function)? else {
+            return Ok(None);
+        };
+        Ok(self
+            .strict_ternary_primop_effect(symbol)
+            .map(|effect| (symbol, effect, first_argument, second_argument)))
+    }
+
     fn direct_builtin_ref_symbol(&self, id: NodeId) -> Result<Option<Symbol>, IrError> {
         let node = self.node(id)?;
         match node.kind {
@@ -915,6 +952,13 @@ impl IrLowerer {
                 | b"catAttrs" | b"elem" | b"lessThan" | b"add" | b"sub" | b"mul" | b"div"
                 | b"bitAnd" | b"bitOr" | b"bitXor",
             ) => Some(EffectClass::Pure),
+            _ => None,
+        }
+    }
+
+    fn strict_ternary_primop_effect(&self, symbol: Symbol) -> Option<EffectClass> {
+        match self.resolved.symbols.resolve(symbol) {
+            Some(b"substring") => Some(EffectClass::Pure),
             _ => None,
         }
     }
@@ -1085,6 +1129,23 @@ impl IrLowerer {
             let args = self
                 .arena
                 .push_child_slice(&[first_argument, second_argument], node.span)?;
+            return self.push_with_effect(
+                IrKind::PrimOp,
+                node.span,
+                effect,
+                IrData::PrimOp { symbol, args },
+            );
+        }
+        if let Some((symbol, effect, first_argument, second_argument)) =
+            self.strict_ternary_primop_ref(function)?
+        {
+            let first_argument = self.lower_expr(first_argument)?;
+            let second_argument = self.lower_expr(second_argument)?;
+            let third_argument = self.lower_expr(argument)?;
+            let args = self.arena.push_child_slice(
+                &[first_argument, second_argument, third_argument],
+                node.span,
+            )?;
             return self.push_with_effect(
                 IrKind::PrimOp,
                 node.span,
@@ -1820,6 +1881,49 @@ mod tests {
             for arg in args {
                 assert_ne!(node(&ir, *arg).kind, IrKind::ThunkAlloc);
             }
+        }
+    }
+
+    #[test]
+    fn lowers_pure_strict_ternary_primops_directly() {
+        let ir = lowered("builtins.substring 1 2 \"abcd\"");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::PrimOp);
+        assert_eq!(root.effect, EffectClass::Pure);
+        let IrData::PrimOp { symbol, args } = root.data else {
+            panic!("primop payload expected");
+        };
+        assert_eq!(symbol_text(&ir, symbol), b"substring");
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        assert_eq!(args.len(), 3);
+        for arg in args {
+            assert_ne!(node(&ir, *arg).kind, IrKind::ThunkAlloc);
+        }
+    }
+
+    #[test]
+    fn shadowed_pure_strict_ternary_primops_stay_ordinary_applications() {
+        for source in [
+            "substring 1 2 \"abcd\"",
+            "let substring = start: len: value: \"local\"; in substring 1 2 \"abcd\"",
+            "let builtins = { substring = start: len: value: \"local\"; }; in builtins.substring 1 2 \"abcd\"",
+            "(builtins.substring or (start: len: value: \"default\")) 1 2 \"abcd\"",
+        ] {
+            let ir = lowered(source);
+            let root = root_node(&ir);
+            let root = if root.kind == IrKind::Let {
+                let IrData::Let { body, .. } = root.data else {
+                    panic!("let payload expected");
+                };
+                node(&ir, body)
+            } else {
+                root
+            };
+            assert_eq!(root.kind, IrKind::Apply);
+            let IrData::Pair { first, .. } = root.data else {
+                panic!("apply payload expected");
+            };
+            assert_eq!(node(&ir, first).kind, IrKind::Apply);
         }
     }
 

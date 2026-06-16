@@ -1173,6 +1173,7 @@ impl<'ir> TreeWalk<'ir> {
         let name = self.symbols.resolve(symbol).ok_or_else(|| {
             TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
         })?;
+        let strict_ternary = StrictTernaryPrimOp::from_bytes(name);
         let strict_binary = StrictBinaryPrimOp::from_bytes(name);
         let strict_unary = StrictUnaryPrimOp::from_bytes(name);
         let args = self.ir.arena.child_slice(args).ok_or_else(|| {
@@ -1181,6 +1182,26 @@ impl<'ir> TreeWalk<'ir> {
                 node.span,
             )
         })?;
+        if let Some(primop) = strict_ternary {
+            if args.len() != 3 {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidPrimOpArity {
+                        id,
+                        symbol,
+                        expected: 3,
+                        actual: args.len(),
+                    },
+                    node.span,
+                ));
+            }
+
+            let first = args[0];
+            let second = args[1];
+            let third = args[2];
+            return match primop {
+                StrictTernaryPrimOp::Substring => self.eval_substring_primop(first, second, third),
+            };
+        }
         if let Some(primop) = strict_binary {
             if args.len() != 2 {
                 return Err(TreeWalkError::new(
@@ -1623,6 +1644,66 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         Ok(Value::int(string.len() as i64))
+    }
+
+    fn eval_substring_primop(
+        &mut self,
+        start: IrId,
+        len: IrId,
+        string_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let start_span = self.node(start)?.span;
+        let start_offset = self.eval_int_node(start)? as u32 as i32;
+        // C++ Nix truncates to the builtin's signed 32-bit start parameter
+        // before reporting the negative-start class.
+        if start_offset < 0 {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::NegativeSubstringStart {
+                    id: start,
+                    start: start_offset.into(),
+                },
+                start_span,
+            ));
+        }
+
+        let len = self.eval_int_node(len)? as u32 as usize;
+        // Length uses the builtin's unsigned 32-bit parameter, so large and
+        // negative Nix integers wrap before substring clamping.
+
+        let string_span = self.node(string_id)?.span;
+        let value = self.eval_node(string_id)?;
+        let string = self.coerce_to_string(string_id, value, string_span)?;
+        let result = {
+            let string = self.heap.get_string(string).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: string_id,
+                        source,
+                    },
+                    string_span,
+                )
+            })?;
+            string
+                .substring_preserve_context(start_offset as usize, len)
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: string_id,
+                            source,
+                        },
+                        string_span,
+                    )
+                })?
+        };
+        self.heap.alloc_string(result).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: string_id,
+                    source,
+                },
+                string_span,
+            )
+        })
     }
 
     fn eval_base_name_of_primop(
@@ -4248,6 +4329,20 @@ impl StrictUnaryPrimOp {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StrictTernaryPrimOp {
+    Substring,
+}
+
+impl StrictTernaryPrimOp {
+    fn from_bytes(name: &[u8]) -> Option<Self> {
+        match name {
+            b"substring" => Some(Self::Substring),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StrictBinaryPrimOp {
     Add,
     Sub,
@@ -4686,6 +4781,14 @@ pub enum TreeWalkErrorKind {
         index: i64,
         /// The list spine length.
         len: usize,
+    },
+    /// A substring start offset was negative or overflowed the builtin offset type.
+    #[error("negative substring start {start} at node {id:?}")]
+    NegativeSubstringStart {
+        /// The start-valued node whose offset was invalid.
+        id: IrId,
+        /// The effective signed 32-bit start offset.
+        start: i64,
     },
     /// The active with-scope stack could not reserve another entry.
     #[error("failed to reserve {scopes} active with scopes at node {id:?}")]
@@ -6890,6 +6993,180 @@ mod tests {
             }
         );
         assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn substring_primop_slices_coerced_string_bytes() {
+        assert_eq!(eval_string_bytes("builtins.substring 1 2 \"abcd\""), b"bc");
+        assert_eq!(eval_string_bytes("builtins.substring 10 2 \"abcd\""), b"");
+        assert_eq!(
+            eval_string_bytes("builtins.substring 1 999 \"abcd\""),
+            b"bcd"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.substring 1 (-1) \"abcd\""),
+            b"bcd"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.substring 2147483647 1 \"abcd\""),
+            b""
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.substring 4294967296 1 \"abcd\""),
+            b"a"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.substring 4294967297 1 \"abcd\""),
+            b"b"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.substring (-9223372036854775807) 1 \"abcd\""),
+            b"b"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.substring 0 4294967296 \"abcd\""),
+            b""
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.substring 0 4294967298 \"abcd\""),
+            b"ab"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.substring 0 (-4294967295) \"abcd\""),
+            b"a"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.substring 1 2 { outPath = \"abcd\"; }"),
+            b"bc"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { substring = start: len: value: \"shadow\"; }; in builtins.substring 1 2 \"abcd\""
+            ),
+            b"shadow"
+        );
+    }
+
+    #[test]
+    fn substring_primop_checks_arguments_left_to_right() {
+        let ir = lower("builtins.substring true (1 / 0) \"abcd\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let start = args[0];
+        let start_span = ir.arena.node(start).expect("start exists").span;
+
+        let error = eval_whnf(&ir).expect_err("substring type-checks start first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: start,
+                expected: "int",
+                actual: ValueTag::Bool,
+            }
+        );
+        assert_eq!(error.span(), start_span);
+
+        let ir = lower("builtins.substring (-1) (1 / 0) \"abcd\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let start = args[0];
+        let start_span = ir.arena.node(start).expect("start exists").span;
+
+        let error = eval_whnf(&ir).expect_err("negative start rejects before length");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::NegativeSubstringStart {
+                id: start,
+                start: -1,
+            }
+        );
+        assert_eq!(error.span(), start_span);
+
+        let ir = lower("builtins.substring 2147483648 1 \"abcd\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let start = args[0];
+        let start_span = ir.arena.node(start).expect("start exists").span;
+
+        let error = eval_whnf(&ir).expect_err("oversized start matches Nix start rejection");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::NegativeSubstringStart {
+                id: start,
+                start: -2_147_483_648,
+            }
+        );
+        assert_eq!(error.span(), start_span);
+
+        let ir = lower("builtins.substring 4294967295 1 \"abcd\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let start = args[0];
+        let start_span = ir.arena.node(start).expect("start exists").span;
+
+        let error = eval_whnf(&ir).expect_err("wrapped negative start rejects");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::NegativeSubstringStart {
+                id: start,
+                start: -1,
+            }
+        );
+        assert_eq!(error.span(), start_span);
+
+        let ir = lower("builtins.substring 1 true (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let len = args[1];
+        let len_span = ir.arena.node(len).expect("length exists").span;
+
+        let error = eval_whnf(&ir).expect_err("substring type-checks length before string");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: len,
+                expected: "int",
+                actual: ValueTag::Bool,
+            }
+        );
+        assert_eq!(error.span(), len_span);
+
+        let ir = lower("builtins.substring 1 (-1) (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let string = args[2];
+        let string_span = ir.arena.node(string).expect("string exists").span;
+
+        let error = eval_whnf(&ir).expect_err("accepted negative length still forces string");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: string }
+        );
+        assert_eq!(error.span(), string_span);
     }
 
     #[test]

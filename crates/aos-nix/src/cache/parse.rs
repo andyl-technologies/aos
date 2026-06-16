@@ -1441,7 +1441,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"hasContext" | b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs"
             | b"intersectAttrs" | b"listToAttrs" | b"catAttrs" | b"elem" | b"concatLists"
             | b"lessThan" | b"add" | b"sub" | b"mul" | b"div" | b"bitAnd" | b"bitOr" | b"bitXor"
-            | b"stringLength" | b"baseNameOf" | b"dirOf",
+            | b"stringLength" | b"baseNameOf" | b"dirOf" | b"substring",
         ) => Some(EffectClass::Pure),
         _ => None,
     }
