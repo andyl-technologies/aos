@@ -14,5 +14,6 @@ pub use env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
 pub use heap::{EvalHeap, EvalHeapError, EvalLambda, EvalThunk};
 pub use thunk::{ForceClaim, ForceError, ForceGuard, ThunkCell, ThunkState};
 pub use tree_walk::{
-    EvalOutcome, TreeWalk, TreeWalkError, TreeWalkErrorKind, eval_whnf, eval_whnf_owned,
+    EvalOutcome, TreeWalk, TreeWalkError, TreeWalkErrorKind, TreeWalkOptions, TreeWalkOptionsError,
+    eval_whnf, eval_whnf_owned, eval_whnf_owned_with_options, eval_whnf_with_options,
 };

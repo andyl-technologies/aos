@@ -106,7 +106,7 @@ macro_rules! builtin_definitions {
             unsupported SortBuiltin, b"sort";
             unsupported SplitBuiltin, b"split";
             strict_unary SplitVersionBuiltin, b"splitVersion", StrictUnaryPrimOp::SplitVersion;
-            unsupported StoreDirBuiltin, b"storeDir";
+            custom_value StoreDirBuiltin, b"storeDir";
             unsupported StorePathBuiltin, b"storePath";
             strict_unary StringLengthBuiltin, b"stringLength", StrictUnaryPrimOp::StringLength;
             strict_binary SubBuiltin, b"sub", StrictBinaryPrimOp::Sub;

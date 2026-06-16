@@ -49,6 +49,7 @@ const VALUE_ATTR: &[u8] = b"value";
 const HASH_ATTR: &[u8] = b"hash";
 const HASH_ALGO_ATTR: &[u8] = b"hashAlgo";
 const TO_HASH_FORMAT_ATTR: &[u8] = b"toHashFormat";
+const DEFAULT_STORE_DIR: &[u8] = b"/nix/store";
 const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
 const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
@@ -63,7 +64,21 @@ const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 /// heap-backed value; use [`eval_whnf_owned`] for those values so their
 /// evaluator heap stays alive.
 pub fn eval_whnf(ir: &Ir) -> Result<Value, TreeWalkError> {
-    let outcome = eval_whnf_owned(ir)?;
+    eval_whnf_with_options(ir, TreeWalkOptions::default())
+}
+
+/// Evaluates an IR root to weak head normal form with explicit evaluator options.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] if the root node is missing, malformed for its IR
+/// kind, fails a scalar type check, or belongs to a part of the interpreter that
+/// this Phase-1 slice has not implemented yet. Returns
+/// [`TreeWalkErrorKind::HeapValueRequiresOwner`] if the root evaluates to a
+/// heap-backed value; use [`eval_whnf_owned_with_options`] for those values so
+/// their evaluator heap stays alive.
+pub fn eval_whnf_with_options(ir: &Ir, options: TreeWalkOptions) -> Result<Value, TreeWalkError> {
+    let outcome = eval_whnf_owned_with_options(ir, options)?;
     if outcome.value.tag().is_heap() {
         let span = ir
             .arena
@@ -87,7 +102,19 @@ pub fn eval_whnf(ir: &Ir) -> Result<Value, TreeWalkError> {
 ///
 /// Returns [`TreeWalkError`] if root evaluation fails.
 pub fn eval_whnf_owned(ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
-    let mut evaluator = TreeWalk::new(ir);
+    eval_whnf_owned_with_options(ir, TreeWalkOptions::default())
+}
+
+/// Evaluates an IR root with explicit options while returning the owning heap.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] if root evaluation fails.
+pub fn eval_whnf_owned_with_options(
+    ir: &Ir,
+    options: TreeWalkOptions,
+) -> Result<EvalOutcome, TreeWalkError> {
+    let mut evaluator = TreeWalk::with_options(ir, options);
     let value = evaluator.eval_root()?;
     Ok(EvalOutcome {
         value,
@@ -119,6 +146,111 @@ impl EvalOutcome {
     }
 }
 
+/// Runtime options used by the tree-walk evaluator.
+///
+/// These options carry interpreter settings that C++ Nix normally reads from
+/// its process configuration, while keeping the Phase-1 oracle deterministic
+/// and independent from ambient host state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeWalkOptions {
+    store_dir: Vec<u8>,
+}
+
+impl Default for TreeWalkOptions {
+    fn default() -> Self {
+        Self {
+            store_dir: DEFAULT_STORE_DIR.to_vec(),
+        }
+    }
+}
+
+impl TreeWalkOptions {
+    /// Creates evaluator options using Nix-compatible defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates evaluator options with a configured Nix store directory.
+    ///
+    /// Empty store directories fall back to `/nix/store`. Absolute store
+    /// directories are normalized by removing repeated separators, trailing
+    /// separators, `.` path components, and reducible `..` path components
+    /// before they become visible through `builtins.storeDir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `store_dir` is relative.
+    pub fn with_store_dir(store_dir: impl Into<Vec<u8>>) -> Result<Self, TreeWalkOptionsError> {
+        Ok(Self {
+            store_dir: normalize_store_dir(store_dir.into())?,
+        })
+    }
+
+    /// Replaces the configured Nix store directory.
+    ///
+    /// Empty store directories fall back to `/nix/store`. Absolute store
+    /// directories are normalized by removing repeated separators, trailing
+    /// separators, `.` path components, and reducible `..` path components
+    /// before they become visible through `builtins.storeDir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `store_dir` is relative.
+    pub fn set_store_dir(
+        &mut self,
+        store_dir: impl Into<Vec<u8>>,
+    ) -> Result<(), TreeWalkOptionsError> {
+        self.store_dir = normalize_store_dir(store_dir.into())?;
+        Ok(())
+    }
+
+    /// Returns the configured Nix store directory.
+    pub fn store_dir(&self) -> &[u8] {
+        &self.store_dir
+    }
+}
+
+/// Errors raised while configuring a tree-walk evaluator.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum TreeWalkOptionsError {
+    /// The configured Nix store directory is not an absolute path.
+    #[error("Nix store directory must be absolute")]
+    RelativeStoreDir,
+}
+
+fn normalize_store_dir(store_dir: Vec<u8>) -> Result<Vec<u8>, TreeWalkOptionsError> {
+    if store_dir.is_empty() {
+        return Ok(DEFAULT_STORE_DIR.to_vec());
+    }
+    if !store_dir.starts_with(b"/") {
+        return Err(TreeWalkOptionsError::RelativeStoreDir);
+    }
+
+    let mut components = Vec::new();
+    for component in store_dir.split(|byte| *byte == b'/') {
+        if component.is_empty() || component == b"." {
+            continue;
+        }
+        if component == b".." {
+            components.pop();
+            continue;
+        }
+        components.push(component);
+    }
+
+    let mut normalized = Vec::with_capacity(store_dir.len());
+    for component in components {
+        normalized.push(b'/');
+        normalized.extend_from_slice(component);
+    }
+
+    if normalized.is_empty() {
+        normalized.push(b'/');
+    }
+
+    Ok(normalized)
+}
+
 /// A safe recursive evaluator for lowered IR.
 #[derive(Debug)]
 pub struct TreeWalk<'ir> {
@@ -127,17 +259,24 @@ pub struct TreeWalk<'ir> {
     heap: EvalHeap,
     env: Vec<Rc<EvalFrame>>,
     with_scopes: Vec<EvalWithScope>,
+    options: TreeWalkOptions,
 }
 
 impl<'ir> TreeWalk<'ir> {
     /// Creates a tree-walk evaluator over `ir`.
     pub fn new(ir: &'ir Ir) -> Self {
+        Self::with_options(ir, TreeWalkOptions::default())
+    }
+
+    /// Creates a tree-walk evaluator over `ir` with explicit runtime options.
+    pub fn with_options(ir: &'ir Ir, options: TreeWalkOptions) -> Self {
         Self {
             ir,
             symbols: ir.symbols.clone(),
             heap: EvalHeap::new(),
             env: Vec::new(),
             with_scopes: Vec::new(),
+            options,
         }
     }
 
@@ -8301,6 +8440,25 @@ impl Builtin for NullBuiltin {
     }
 }
 
+struct StoreDirBuiltin;
+
+impl Builtin for StoreDirBuiltin {
+    fn name(&self) -> &'static [u8] {
+        b"storeDir"
+    }
+
+    fn select(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        id: IrId,
+        span: Span,
+        _symbol: Symbol,
+    ) -> Result<Value, TreeWalkError> {
+        let store_dir = eval.options.store_dir().to_vec();
+        eval.alloc_static_string(id, span, &store_dir)
+    }
+}
+
 struct SeqBuiltin;
 
 impl Builtin for SeqBuiltin {
@@ -9305,6 +9463,16 @@ mod tests {
         string.bytes().to_vec()
     }
 
+    fn eval_string_bytes_with_options(source: &str, options: TreeWalkOptions) -> Vec<u8> {
+        let outcome =
+            eval_whnf_owned_with_options(&lower(source), options).expect("source evaluates");
+        let string = outcome
+            .heap()
+            .get_string(outcome.value())
+            .expect("result is a heap-owned string");
+        string.bytes().to_vec()
+    }
+
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -9587,12 +9755,58 @@ mod tests {
     }
 
     #[test]
+    fn tree_walk_options_normalize_store_dir() {
+        let defaulted =
+            TreeWalkOptions::with_store_dir(Vec::new()).expect("empty store dir defaults");
+        assert_eq!(defaulted.store_dir(), b"/nix/store");
+
+        let normalized = TreeWalkOptions::with_store_dir(b"//tmp//aos-store/./".to_vec())
+            .expect("absolute store dir normalizes");
+        assert_eq!(normalized.store_dir(), b"/tmp/aos-store");
+
+        let parent_normalized = TreeWalkOptions::with_store_dir(b"/tmp/../aos-store".to_vec())
+            .expect("parent components reduce");
+        assert_eq!(parent_normalized.store_dir(), b"/aos-store");
+
+        let nested_parent_normalized =
+            TreeWalkOptions::with_store_dir(b"/tmp/aos-store/../other".to_vec())
+                .expect("nested parent components reduce");
+        assert_eq!(nested_parent_normalized.store_dir(), b"/tmp/other");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_store_dir(b"/var//aos/store//".to_vec())
+            .expect("absolute store dir sets");
+        assert_eq!(options.store_dir(), b"/var/aos/store");
+
+        assert_eq!(
+            TreeWalkOptions::with_store_dir(b"relative/store".to_vec())
+                .expect_err("relative store dir is rejected"),
+            TreeWalkOptionsError::RelativeStoreDir
+        );
+    }
+
+    #[test]
     fn static_builtin_selects_are_first_class_functions() {
         assert_eq!(eval("builtins.true").as_bool(), Ok(true));
         assert_eq!(eval("builtins.false").as_bool(), Ok(false));
         assert_eq!(eval("builtins.null").as_null(), Ok(()));
+        assert_eq!(eval_string_bytes("builtins.storeDir"), b"/nix/store");
+        assert_eq!(
+            eval_string_bytes_with_options(
+                "builtins.storeDir",
+                TreeWalkOptions::with_store_dir(b"/tmp/aos-store".to_vec())
+                    .expect("store dir is valid")
+            ),
+            b"/tmp/aos-store"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.typeOf builtins.storeDir"),
+            b"string"
+        );
         assert_eq!(eval("builtins ? length").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? currentSystem").as_bool(), Ok(true));
+        assert_eq!(eval("builtins ? storeDir").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? __missing").as_bool(), Ok(false));
         assert_eq!(eval("builtins ? length.foo").as_bool(), Ok(false));
         assert_eq!(
@@ -9618,6 +9832,10 @@ mod tests {
         assert_eq!(eval("builtins.__missing or 42").as_int(), Ok(42));
         assert_eq!(eval("builtins.__missing.foo or 42").as_int(), Ok(42));
         assert_eq!(eval("builtins.length.foo or 42").as_int(), Ok(42));
+        assert_eq!(
+            eval_string_bytes("builtins.storeDir or \"fallback\""),
+            b"/nix/store"
+        );
     }
 
     #[test]
@@ -9655,6 +9873,10 @@ mod tests {
         assert_eq!(
             eval("let builtins = {}; in builtins.length or 42").as_int(),
             Ok(42)
+        );
+        assert_eq!(
+            eval_string_bytes("let builtins = { storeDir = \"local\"; }; in builtins.storeDir"),
+            b"local"
         );
     }
 
