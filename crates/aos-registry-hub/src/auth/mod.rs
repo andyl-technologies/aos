@@ -51,7 +51,9 @@ pub mod extract;
 pub mod jwt;
 pub mod magic;
 pub mod oidc;
-pub mod password;
+/// Argon2id password hashing, re-exported from [`aos_registry_core::auth::password`]
+/// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::auth::password::…` stable.
+pub use aos_registry_core::auth::password;
 pub mod seal;
 pub mod session;
 pub mod token;
