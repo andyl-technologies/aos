@@ -911,7 +911,7 @@ impl IrLowerer {
         match self.resolved.symbols.resolve(symbol) {
             Some(
                 b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs" | b"intersectAttrs"
-                | b"catAttrs" | b"elem",
+                | b"catAttrs" | b"elem" | b"lessThan",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1793,6 +1793,7 @@ mod tests {
                 b"catAttrs".as_slice(),
             ),
             ("builtins.elem 1 [ 1 ]", b"elem".as_slice()),
+            ("builtins.lessThan 1 2", b"lessThan".as_slice()),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -2153,6 +2154,33 @@ mod tests {
         assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
 
         let ir = lowered("let builtins = { elem = value: list: false; }; in builtins.elem 1 []");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered("lessThan 1 2");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir =
+            lowered("let builtins = { lessThan = left: right: false; }; in builtins.lessThan 1 2");
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
         };

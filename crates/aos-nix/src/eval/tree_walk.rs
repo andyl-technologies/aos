@@ -1212,6 +1212,9 @@ impl<'ir> TreeWalk<'ir> {
                     self.eval_cat_attrs_primop(id, node.span, first, second)
                 }
                 StrictBinaryPrimOp::Elem => self.eval_elem_primop(id, node, first, second),
+                StrictBinaryPrimOp::LessThan => {
+                    self.eval_comparison(id, node, ComparisonOp::Lt, first, second)
+                }
             };
         }
         if args.len() != 1 {
@@ -4015,6 +4018,7 @@ enum StrictBinaryPrimOp {
     IntersectAttrs,
     CatAttrs,
     Elem,
+    LessThan,
 }
 
 impl StrictBinaryPrimOp {
@@ -4027,6 +4031,7 @@ impl StrictBinaryPrimOp {
             b"intersectAttrs" => Some(Self::IntersectAttrs),
             b"catAttrs" => Some(Self::CatAttrs),
             b"elem" => Some(Self::Elem),
+            b"lessThan" => Some(Self::LessThan),
             _ => None,
         }
     }
@@ -5746,6 +5751,81 @@ mod tests {
 
         let ir = lower("let s = { x = 1 / 0; }; v = { a = s; }; in builtins.elem v.a [ v.a ]");
         let error = eval_whnf_owned(&ir).expect_err("elem does not hide selected attrset errors");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+    }
+
+    #[test]
+    fn less_than_primop_uses_language_comparison_semantics() {
+        assert_eq!(eval("builtins.lessThan 1 2").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.lessThan 2 1").as_bool(), Ok(false));
+        assert_eq!(eval("builtins.lessThan 1 1").as_bool(), Ok(false));
+        assert_eq!(eval("builtins.lessThan 1 1.5").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.lessThan \"a\" \"b\"").as_bool(), Ok(true));
+        assert_eq!(
+            eval("builtins.lessThan [ 1 2 ] [ 1 3 ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.lessThan [ 1 (1 / 0) ] [ 2 (1 / 0) ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let builtins = { lessThan = left: right: false; }; in builtins.lessThan 1 2")
+                .as_bool(),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn less_than_primop_type_checks_operands_left_to_right() {
+        let ir = lower("builtins.lessThan true (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let lhs = args[0];
+        let lhs_span = ir.arena.node(lhs).expect("lhs exists").span;
+
+        let error = eval_whnf(&ir).expect_err("lessThan checks lhs before rhs");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: lhs,
+                expected: "number, string, or list",
+                actual: ValueTag::Bool
+            }
+        );
+        assert_eq!(error.span(), lhs_span);
+
+        let ir = lower("builtins.lessThan 1 true");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let rhs = args[1];
+        let rhs_span = ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf(&ir).expect_err("lessThan checks rhs against lhs type");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: rhs,
+                expected: "number",
+                actual: ValueTag::Bool
+            }
+        );
+        assert_eq!(error.span(), rhs_span);
+
+        let ir = lower("builtins.lessThan [ 1 (1 / 0) ] [ 1 2 ]");
+        let error = eval_whnf_owned(&ir).expect_err("equal list prefix forces next element");
 
         assert!(matches!(
             error.kind(),
