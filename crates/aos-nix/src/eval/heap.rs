@@ -3,16 +3,50 @@
 //! Runtime [`Value`] words carry opaque [`HeapObject`] pointers. This registry
 //! owns the typed Rust-side objects behind those pointers for the safe tree-walk
 //! oracle: the bump arena provides stable opaque handles, while a side table
-//! maps those handles back to checked [`NixString`] and [`NixList`] values.
+//! maps those handles back to checked [`NixString`], [`NixList`], and
+//! [`EvalThunk`] values.
 
 use std::ptr::NonNull;
 
 use thiserror::Error;
 
+use super::thunk::ThunkCell;
+use crate::compile::IrId;
 use crate::heap::arena::{ArenaError, ArenaStats, BumpArena};
 use crate::list::NixList;
 use crate::string::NixString;
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
+
+/// A suspended tree-walk thunk heap record.
+///
+/// The record stores the lowered thunk body plus the serial state/result cell.
+/// It does not yet carry an environment; later evaluator slices extend this
+/// typed record when lexical frame evaluation lands.
+#[derive(Debug)]
+pub struct EvalThunk {
+    body: IrId,
+    cell: ThunkCell,
+}
+
+impl EvalThunk {
+    /// Creates a suspended thunk record for `body`.
+    pub const fn new(body: IrId) -> Self {
+        Self {
+            body,
+            cell: ThunkCell::new(),
+        }
+    }
+
+    /// Returns the lowered body this thunk will evaluate when forced.
+    pub const fn body(&self) -> IrId {
+        self.body
+    }
+
+    /// Returns the serial state/result cell for this thunk.
+    pub const fn cell(&self) -> &ThunkCell {
+        &self.cell
+    }
+}
 
 /// Owns typed heap values allocated by one tree-walk evaluation.
 #[derive(Debug)]
@@ -113,6 +147,27 @@ impl EvalHeap {
         Ok(value)
     }
 
+    /// Allocates a suspended thunk object and returns its opaque runtime value.
+    ///
+    /// The returned value is only meaningful while this [`EvalHeap`] remains
+    /// alive. Use [`EvalHeap::get_thunk`] to recover the typed thunk record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
+    /// bump arena cannot reserve a thunk handle, or if the resulting handle
+    /// violates the runtime value alignment contract.
+    pub fn alloc_thunk(&mut self, thunk: EvalThunk) -> Result<Value, EvalHeapError> {
+        self.reserve_record_slot()?;
+        let allocation = self.arena.aos_alloc_thunk().map_err(EvalHeapError::Arena)?;
+        let value = Value::thunk(allocation.ptr).map_err(EvalHeapError::Value)?;
+        self.records.push(HeapRecord {
+            ptr: allocation.ptr,
+            object: HeapObjectValue::Thunk(thunk),
+        });
+        Ok(value)
+    }
+
     /// Returns the string object referenced by `value`.
     ///
     /// # Errors
@@ -177,6 +232,38 @@ impl EvalHeap {
         }
     }
 
+    /// Returns the suspended thunk object referenced by `value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not a thunk value.
+    /// Returns [`EvalHeapError::UnknownPointer`] if the thunk handle does not
+    /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
+    /// the handle belongs to this heap but references a non-thunk record.
+    pub fn get_thunk(&self, value: Value) -> Result<&EvalThunk, EvalHeapError> {
+        let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
+        self.get_thunk_ptr(ptr)
+    }
+
+    /// Returns the suspended thunk object referenced by an opaque heap pointer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::UnknownPointer`] if `ptr` does not belong to
+    /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
+    /// belongs to this heap but references a non-thunk record.
+    pub fn get_thunk_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&EvalThunk, EvalHeapError> {
+        let record = self.record_or_unknown(ValueTag::Thunk, ptr)?;
+        match &record.object {
+            HeapObjectValue::Thunk(thunk) => Ok(thunk),
+            object => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Thunk,
+                object.tag(),
+                ptr,
+            )),
+        }
+    }
+
     fn reserve_record_slot(&mut self) -> Result<(), EvalHeapError> {
         let records = self
             .records
@@ -215,6 +302,7 @@ struct HeapRecord {
 enum HeapObjectValue {
     String(NixString),
     List(NixList),
+    Thunk(EvalThunk),
 }
 
 impl HeapObjectValue {
@@ -222,6 +310,7 @@ impl HeapObjectValue {
         match self {
             Self::String(_) => ValueTag::String,
             Self::List(_) => ValueTag::List,
+            Self::Thunk(_) => ValueTag::Thunk,
         }
     }
 }
@@ -287,6 +376,7 @@ impl EvalHeapError {
 
 #[cfg(test)]
 mod tests {
+    use super::super::ThunkState;
     use super::*;
     use crate::string::{ContextElement, StringContext};
 
@@ -345,6 +435,22 @@ mod tests {
     }
 
     #[test]
+    fn allocates_thunk_values_and_recovers_body() {
+        let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+        let body = IrId::new(7);
+        let value = heap
+            .alloc_thunk(EvalThunk::new(body))
+            .expect("thunk allocates");
+
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        assert_eq!(heap.len(), 1);
+        let thunk = heap.get_thunk(value).expect("thunk exists");
+        assert_eq!(thunk.body(), body);
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(heap.arena_stats().chunks, 1);
+    }
+
+    #[test]
     fn mixed_heap_object_types_keep_distinct_records() {
         let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
         let string = heap
@@ -353,9 +459,14 @@ mod tests {
         let list = heap
             .alloc_list(NixList::new(vec![Value::int(7)]))
             .expect("list allocates");
+        let thunk = heap
+            .alloc_thunk(EvalThunk::new(IrId::new(3)))
+            .expect("thunk allocates");
 
         assert_ne!(string.payload_bits(), list.payload_bits());
-        assert_eq!(heap.len(), 2);
+        assert_ne!(string.payload_bits(), thunk.payload_bits());
+        assert_ne!(list.payload_bits(), thunk.payload_bits());
+        assert_eq!(heap.len(), 3);
         assert_eq!(
             heap.get_string(string).expect("string exists").bytes(),
             b"name"
@@ -367,6 +478,10 @@ mod tests {
                 .expect("first element")
                 .as_int(),
             Ok(7)
+        );
+        assert_eq!(
+            heap.get_thunk(thunk).expect("thunk exists").body(),
+            IrId::new(3)
         );
     }
 
@@ -418,6 +533,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_thunk_values_from_another_live_heap() {
+        let heap = EvalHeap::new();
+        let mut other = EvalHeap::new();
+        let foreign = other
+            .alloc_thunk(EvalThunk::new(IrId::new(1)))
+            .expect("foreign thunk allocates");
+        let ptr = foreign.as_thunk_ptr().expect("foreign is a thunk");
+        let error = heap
+            .get_thunk(foreign)
+            .expect_err("foreign pointer is not in this heap");
+
+        assert_eq!(error, EvalHeapError::unknown(ValueTag::Thunk, ptr));
+    }
+
+    #[test]
     fn rejects_wrong_value_tags_for_string_lookup() {
         let heap = EvalHeap::new();
         let error = heap
@@ -450,6 +580,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_wrong_value_tags_for_thunk_lookup() {
+        let heap = EvalHeap::new();
+        let error = heap
+            .get_thunk(Value::int(1))
+            .expect_err("integer is not a thunk");
+
+        assert_eq!(
+            error,
+            EvalHeapError::Value(ValueError::Type {
+                expected: "thunk",
+                actual: ValueTag::Int,
+            })
+        );
+    }
+
+    #[test]
     fn reports_unknown_string_pointers() {
         let heap = EvalHeap::new();
         let ptr = NonNull::<HeapObject>::dangling();
@@ -471,6 +617,18 @@ mod tests {
             .expect_err("pointer does not belong to heap");
 
         assert_eq!(error, EvalHeapError::unknown(ValueTag::List, ptr));
+    }
+
+    #[test]
+    fn reports_unknown_thunk_pointers() {
+        let heap = EvalHeap::new();
+        let ptr = NonNull::<HeapObject>::dangling();
+        let value = Value::thunk(ptr).expect("dangling pointer is aligned");
+        let error = heap
+            .get_thunk(value)
+            .expect_err("pointer does not belong to heap");
+
+        assert_eq!(error, EvalHeapError::unknown(ValueTag::Thunk, ptr));
     }
 
     #[test]
@@ -502,6 +660,31 @@ mod tests {
         assert_eq!(
             error,
             EvalHeapError::record_type_mismatch(ValueTag::List, ValueTag::String, string_ptr)
+        );
+        let mislabeled_thunk = Value::thunk(string_ptr).expect("same pointer can carry thunk tag");
+
+        let error = heap
+            .get_thunk(mislabeled_thunk)
+            .expect_err("record is not a thunk");
+
+        assert_eq!(
+            error,
+            EvalHeapError::record_type_mismatch(ValueTag::Thunk, ValueTag::String, string_ptr)
+        );
+
+        let thunk = heap
+            .alloc_thunk(EvalThunk::new(IrId::new(0)))
+            .expect("thunk allocates");
+        let thunk_ptr = thunk.as_thunk_ptr().expect("thunk pointer");
+        let mislabeled_list = Value::list(thunk_ptr).expect("same pointer can carry list tag");
+
+        let error = heap
+            .get_list(mislabeled_list)
+            .expect_err("record is not a list");
+
+        assert_eq!(
+            error,
+            EvalHeapError::record_type_mismatch(ValueTag::List, ValueTag::Thunk, thunk_ptr)
         );
     }
 

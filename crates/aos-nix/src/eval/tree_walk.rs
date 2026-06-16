@@ -1,7 +1,7 @@
 //! Safe tree-walk evaluator over lowered IR.
 //!
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
-//! first slices evaluate scalar and empty list literals, boolean control flow,
+//! first slices evaluate scalar and list literals, boolean control flow,
 //! assertions, boolean operators, string literals and concatenation, list-spine
 //! concatenation, numeric arithmetic, numeric and string comparisons, and
 //! scalar/string equality to weak head normal form, establishing the arena
@@ -10,7 +10,7 @@
 
 use thiserror::Error;
 
-use super::heap::{EvalHeap, EvalHeapError};
+use super::heap::{EvalHeap, EvalHeapError, EvalThunk};
 use crate::compile::{Ir, IrChildSlice, IrData, IrId, IrKind, IrNode};
 use crate::list::{NixList, NixListError};
 use crate::string::{NixString, NixStringError};
@@ -117,7 +117,7 @@ impl<'ir> TreeWalk<'ir> {
     /// Evaluates a node to weak head normal form.
     ///
     /// This initial public node entry point is intentionally limited to
-    /// environment-free scalar literal, empty list literal, string literal,
+    /// environment-free scalar literal, list literal, string literal,
     /// control-flow, boolean operator, string/list concatenation, numeric
     /// arithmetic, numeric and string comparison, and scalar/string equality nodes.
     /// Environment-dependent nodes return
@@ -306,17 +306,39 @@ impl<'ir> TreeWalk<'ir> {
                 node.span,
             )
         })?;
-        if !children.is_empty() {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedListElements {
+        let mut elements = Vec::new();
+        elements.try_reserve_exact(children.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
                     id,
                     len: children.len(),
                 },
                 node.span,
-            ));
+            )
+        })?;
+        for child in children.iter().copied() {
+            elements.push(self.eval_lazy_node(child)?);
         }
         self.heap
-            .alloc_list(NixList::empty())
+            .alloc_list(NixList::new(elements))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    fn eval_lazy_node(&mut self, id: IrId) -> Result<Value, TreeWalkError> {
+        let node = *self.node(id)?;
+        if node.kind == IrKind::ThunkAlloc {
+            return self.eval_thunk_alloc(id, &node);
+        }
+        self.eval_node(id)
+    }
+
+    fn eval_thunk_alloc(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Node(body) = node.data else {
+            return Err(self.invalid_payload(id, node, "thunk body"));
+        };
+        self.node(body)?;
+        self.heap
+            .alloc_thunk(EvalThunk::new(body))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
@@ -888,6 +910,14 @@ pub enum TreeWalkErrorKind {
         /// The requested byte length.
         len: usize,
     },
+    /// A list spine buffer could not be reserved.
+    #[error("failed to reserve {len} list elements at node {id:?}")]
+    ListAllocationFailed {
+        /// The list node id.
+        id: IrId,
+        /// The requested list length.
+        len: usize,
+    },
     /// A heap-backed value was produced by the non-owning convenience API.
     #[error("heap-backed {tag:?} value at node {id:?} requires an owning evaluation result")]
     HeapValueRequiresOwner {
@@ -959,14 +989,6 @@ pub enum TreeWalkErrorKind {
         /// The right operand's runtime value tag.
         right: ValueTag,
     },
-    /// Non-empty list spines require thunk allocation support.
-    #[error("unsupported tree-walk non-empty list with {len} elements at {id:?}")]
-    UnsupportedListElements {
-        /// The list node id.
-        id: IrId,
-        /// The number of list elements in the spine.
-        len: usize,
-    },
     /// A checked integer arithmetic operation overflowed.
     #[error("arithmetic overflow for {op:?} at node {id:?}")]
     ArithmeticOverflow {
@@ -999,6 +1021,7 @@ pub enum TreeWalkErrorKind {
 
 #[cfg(test)]
 mod tests {
+    use super::super::ThunkState;
     use super::*;
     use std::ptr::NonNull;
 
@@ -1123,20 +1146,34 @@ mod tests {
     }
 
     #[test]
-    fn non_empty_list_literals_wait_for_thunk_allocation() {
-        let ir = lower("[ (1 / 0) ]");
-        let error = eval_whnf_owned(&ir).expect_err("non-empty list needs thunks");
+    fn evaluates_non_empty_list_literals_with_lazy_elements() {
+        let ir = lower("[ true (1 / 0) \"s\" ]");
+        let outcome = eval_whnf_owned(&ir).expect("non-empty list evaluates");
+        let value = outcome.value();
+        let heap = outcome.heap();
+        let list = heap.get_list(value).expect("list is heap-owned");
 
+        assert_eq!(value.tag(), ValueTag::List);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list.get(0).expect("first").as_bool(), Ok(true));
+
+        let lazy_division = list.get(1).expect("second");
+        assert_eq!(lazy_division.tag(), ValueTag::Thunk);
+        let thunk = heap
+            .get_thunk(lazy_division)
+            .expect("list element thunk is heap-owned");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            error.kind(),
-            TreeWalkErrorKind::UnsupportedListElements {
-                id: ir.root,
-                len: 1,
-            }
+            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            IrKind::BinOp
         );
+
+        let string = list.get(2).expect("third");
         assert_eq!(
-            error.span(),
-            ir.arena.node(ir.root).expect("root exists").span
+            heap.get_string(string)
+                .expect("string element is heap-owned")
+                .bytes(),
+            b"s"
         );
     }
 
@@ -1154,6 +1191,29 @@ mod tests {
                 .expect("concat result is heap-owned")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn list_concat_concatenates_non_empty_lists_without_forcing_elements() {
+        let ir = lower("[ (1 / 0) ] ++ [ true ]");
+        let outcome = eval_whnf_owned(&ir).expect("list concat evaluates");
+        let heap = outcome.heap();
+        let list = heap
+            .get_list(outcome.value())
+            .expect("concat result is heap-owned");
+
+        assert_eq!(list.len(), 2);
+        let lazy_division = list.get(0).expect("first");
+        assert_eq!(lazy_division.tag(), ValueTag::Thunk);
+        let thunk = heap
+            .get_thunk(lazy_division)
+            .expect("left element thunk is heap-owned");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(
+            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            IrKind::BinOp
+        );
+        assert_eq!(list.get(1).expect("second").as_bool(), Ok(true));
     }
 
     #[test]
@@ -1437,6 +1497,25 @@ mod tests {
             error.span(),
             list_ir.arena.node(list_ir.root).expect("root exists").span
         );
+
+        let non_empty_list_ir = lower("[ 1 ]");
+        let error = eval_whnf(&non_empty_list_ir).expect_err("non-empty list needs owning heap");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::HeapValueRequiresOwner {
+                id: non_empty_list_ir.root,
+                tag: ValueTag::List,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            non_empty_list_ir
+                .arena
+                .node(non_empty_list_ir.root)
+                .expect("root exists")
+                .span
+        );
     }
 
     #[test]
@@ -1555,6 +1634,71 @@ mod tests {
             TreeWalkErrorKind::InvalidChildSlice { id: root, slice }
         );
         assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn malformed_thunk_payloads_are_reported_through_list_children() {
+        let root = IrId::new(0);
+        let child = IrId::new(1);
+        let root_span = Span::new(0, 7);
+        let child_span = Span::new(2, 5);
+        let ir = empty_ir(
+            root,
+            IrArena::from_raw_parts(
+                vec![
+                    pure_node(
+                        IrKind::List,
+                        root_span,
+                        IrData::Children(IrChildSlice::new(0, 1)),
+                    ),
+                    pure_node(IrKind::ThunkAlloc, child_span, IrData::None),
+                ],
+                vec![child],
+            ),
+        );
+
+        let error = eval_whnf_owned(&ir).expect_err("malformed thunk child is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidPayload {
+                id: child,
+                kind: IrKind::ThunkAlloc,
+                expected: "thunk body",
+            }
+        );
+        assert_eq!(error.span(), child_span);
+    }
+
+    #[test]
+    fn malformed_thunk_body_ids_are_reported_through_list_children() {
+        let root = IrId::new(0);
+        let child = IrId::new(1);
+        let missing = IrId::new(99);
+        let root_span = Span::new(0, 7);
+        let child_span = Span::new(2, 5);
+        let ir = empty_ir(
+            root,
+            IrArena::from_raw_parts(
+                vec![
+                    pure_node(
+                        IrKind::List,
+                        root_span,
+                        IrData::Children(IrChildSlice::new(0, 1)),
+                    ),
+                    pure_node(IrKind::ThunkAlloc, child_span, IrData::Node(missing)),
+                ],
+                vec![child],
+            ),
+        );
+
+        let error = eval_whnf_owned(&ir).expect_err("missing thunk body is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidNodeId { id: missing }
+        );
+        assert_eq!(error.span(), Span::default());
     }
 
     #[test]
