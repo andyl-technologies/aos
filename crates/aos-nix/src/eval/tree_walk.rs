@@ -144,7 +144,7 @@ impl<'ir> TreeWalk<'ir> {
     /// update, static
     /// attribute selection, lexical `let` environment, simple and formal-set
     /// lambda application, lazy `with` lookup, numeric arithmetic, numeric and
-    /// string/list comparison, direct unary type introspection primops,
+    /// string/list comparison, direct strict unary primops,
     /// scalar/string/function/list/attrset equality, and conservative thunk
     /// allocation nodes. Remaining environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add their
@@ -1212,6 +1212,38 @@ impl<'ir> TreeWalk<'ir> {
                     ));
                 };
                 self.alloc_static_string(id, node.span, name.as_bytes())
+            }
+            StrictUnaryPrimOp::Length => {
+                let argument_span = self.node(argument)?.span;
+                if value.tag() != ValueTag::List {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id: argument,
+                            expected: "list",
+                            actual: value.tag(),
+                        },
+                        argument_span,
+                    ));
+                }
+                let list = self.heap.get_list(value).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: argument,
+                            source,
+                        },
+                        argument_span,
+                    )
+                })?;
+                let len = i64::try_from(list.len()).map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::ListLengthOverflow {
+                            id: argument,
+                            len: list.len(),
+                        },
+                        argument_span,
+                    )
+                })?;
+                Ok(Value::int(len))
             }
         }
     }
@@ -2688,6 +2720,7 @@ enum StrictUnaryPrimOp {
     IsNull,
     IsPath,
     TypeOf,
+    Length,
 }
 
 impl StrictUnaryPrimOp {
@@ -2703,6 +2736,7 @@ impl StrictUnaryPrimOp {
             b"isNull" => Some(Self::IsNull),
             b"isPath" => Some(Self::IsPath),
             b"typeOf" => Some(Self::TypeOf),
+            b"length" => Some(Self::Length),
             _ => None,
         }
     }
@@ -3068,6 +3102,14 @@ pub enum TreeWalkErrorKind {
         /// The list node id.
         id: IrId,
         /// The requested list length.
+        len: usize,
+    },
+    /// A list length could not fit in the Nix integer type.
+    #[error("list length {len} at node {id:?} does not fit in i64")]
+    ListLengthOverflow {
+        /// The list-valued node whose length overflowed.
+        id: IrId,
+        /// The overflowing list length.
         len: usize,
     },
     /// The active with-scope stack could not reserve another entry.
@@ -3503,7 +3545,41 @@ mod tests {
     }
 
     #[test]
-    fn unary_type_primops_force_arguments() {
+    fn length_primop_returns_list_spine_length_without_forcing_elements() {
+        assert_eq!(eval("builtins.length []").as_int(), Ok(0));
+        assert_eq!(eval("builtins.length [ 1 (1 / 0) true ]").as_int(), Ok(3));
+        assert_eq!(
+            eval("let builtins = { length = x: 42; }; in builtins.length [ 1 ]").as_int(),
+            Ok(42)
+        );
+    }
+
+    #[test]
+    fn length_primop_type_checks_argument() {
+        let ir = lower("builtins.length 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("length requires a list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "list",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn strict_unary_primops_force_arguments() {
         let ir = lower("builtins.isInt (1 / 0)");
         let root = ir.arena.node(ir.root).expect("root exists");
         let IrData::PrimOp { args, .. } = root.data else {

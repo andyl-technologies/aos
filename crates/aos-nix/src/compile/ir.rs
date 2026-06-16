@@ -873,7 +873,7 @@ impl IrLowerer {
             ) => Some(EffectClass::Effectful),
             Some(
                 b"isAttrs" | b"isList" | b"isFunction" | b"isString" | b"isInt" | b"isFloat"
-                | b"isBool" | b"isNull" | b"isPath" | b"typeOf",
+                | b"isBool" | b"isNull" | b"isPath" | b"typeOf" | b"length",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1694,6 +1694,7 @@ mod tests {
             ("isNull null", b"isNull".as_slice()),
             ("builtins.isPath \"not-path\"", b"isPath".as_slice()),
             ("builtins.typeOf null", b"typeOf".as_slice()),
+            ("builtins.length [ 1 2 ]", b"length".as_slice()),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -1712,6 +1713,14 @@ mod tests {
     #[test]
     fn shadowed_pure_strict_unary_primops_stay_ordinary_applications() {
         let ir = lowered("typeOf 1");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir = lowered("length [ 1 ]");
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::Apply);
         let IrData::Pair { first, .. } = root.data else {
@@ -1740,6 +1749,16 @@ mod tests {
         assert_eq!(node(&ir, first).kind, IrKind::LocalVar);
 
         let ir = lowered("let builtins = { isInt = x: x; }; in builtins.isInt 1");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered("let builtins = { length = x: 42; }; in builtins.length [ 1 ]");
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
         };
@@ -1785,8 +1804,8 @@ mod tests {
     }
 
     #[test]
-    fn pure_builtins_remain_apply_until_primop_strictness_is_modeled() {
-        let ir = lowered("builtins.length [ 1 ]");
+    fn unmodeled_pure_builtins_remain_applications() {
+        let ir = lowered("builtins.stringLength \"x\"");
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::Apply);
         let IrData::Pair { first, .. } = root.data else {
