@@ -1011,7 +1011,7 @@ impl IrLowerer {
 
     fn strict_ternary_primop_effect(&self, symbol: Symbol) -> Option<EffectClass> {
         match self.resolved.symbols.resolve(symbol) {
-            Some(b"substring") => Some(EffectClass::Pure),
+            Some(b"substring" | b"foldl'") => Some(EffectClass::Pure),
             _ => None,
         }
     }
@@ -2007,18 +2007,26 @@ mod tests {
 
     #[test]
     fn lowers_pure_strict_ternary_primops_directly() {
-        let ir = lowered("builtins.substring 1 2 \"abcd\"");
-        let root = root_node(&ir);
-        assert_eq!(root.kind, IrKind::PrimOp);
-        assert_eq!(root.effect, EffectClass::Pure);
-        let IrData::PrimOp { symbol, args } = root.data else {
-            panic!("primop payload expected");
-        };
-        assert_eq!(symbol_text(&ir, symbol), b"substring");
-        let args = ir.arena.child_slice(args).expect("primop args exist");
-        assert_eq!(args.len(), 3);
-        for arg in args {
-            assert_ne!(node(&ir, *arg).kind, IrKind::ThunkAlloc);
+        for (source, name) in [
+            ("builtins.substring 1 2 \"abcd\"", b"substring".as_slice()),
+            (
+                "builtins.foldl' (acc: x: acc) 0 [ 1 ]",
+                b"foldl'".as_slice(),
+            ),
+        ] {
+            let ir = lowered(source);
+            let root = root_node(&ir);
+            assert_eq!(root.kind, IrKind::PrimOp);
+            assert_eq!(root.effect, EffectClass::Pure);
+            let IrData::PrimOp { symbol, args } = root.data else {
+                panic!("primop payload expected");
+            };
+            assert_eq!(symbol_text(&ir, symbol), name);
+            let args = ir.arena.child_slice(args).expect("primop args exist");
+            assert_eq!(args.len(), 3);
+            for arg in args {
+                assert_ne!(node(&ir, *arg).kind, IrKind::ThunkAlloc);
+            }
         }
     }
 
@@ -2029,6 +2037,10 @@ mod tests {
             "let substring = start: len: value: \"local\"; in substring 1 2 \"abcd\"",
             "let builtins = { substring = start: len: value: \"local\"; }; in builtins.substring 1 2 \"abcd\"",
             "(builtins.substring or (start: len: value: \"default\")) 1 2 \"abcd\"",
+            "foldl' (acc: x: acc) 0 [ 1 ]",
+            "let foldl' = op: initial: list: \"local\"; in foldl' (acc: x: acc) 0 [ 1 ]",
+            "let builtins = { foldl' = op: initial: list: \"local\"; }; in builtins.foldl' (acc: x: acc) 0 [ 1 ]",
+            "(builtins.foldl' or (op: initial: list: \"default\")) (acc: x: acc) 0 [ 1 ]",
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);

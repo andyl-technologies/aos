@@ -1200,6 +1200,9 @@ impl<'ir> TreeWalk<'ir> {
             let second = args[1];
             let third = args[2];
             return match primop {
+                StrictTernaryPrimOp::FoldlStrict => {
+                    self.eval_foldl_strict_primop(id, node.span, first, second, third)
+                }
                 StrictTernaryPrimOp::Substring => self.eval_substring_primop(first, second, third),
             };
         }
@@ -2900,6 +2903,66 @@ impl<'ir> TreeWalk<'ir> {
         self.heap
             .alloc_attrs(0, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_foldl_strict_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        op_id: IrId,
+        initial_id: IrId,
+        list_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let op_span = self.node(op_id)?.span;
+        let op = self.eval_node(op_id)?;
+        if op.tag() != ValueTag::Lambda {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: op_id,
+                    expected: "lambda",
+                    actual: op.tag(),
+                },
+                op_span,
+            ));
+        }
+
+        let list_span = self.node(list_id)?.span;
+        let list_value = self.eval_node(list_id)?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list_id,
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list_span,
+            ));
+        }
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            Self::clone_list_elements(list_id, list_span, list)?
+        };
+
+        let initial_span = self.node(initial_id)?.span;
+        let mut accumulator = self.eval_node(initial_id)?;
+        accumulator = self.force_value(initial_id, initial_span, accumulator)?;
+        for element in elements {
+            let step =
+                self.apply_lambda_value(id, span, op_id, op, op_span, initial_id, accumulator)?;
+            let result =
+                self.apply_lambda_value(id, span, op_id, step, op_span, list_id, element)?;
+            accumulator = self.force_value(op_id, op_span, result)?;
+        }
+
+        Ok(accumulator)
     }
 
     fn eval_function_args_primop(
@@ -4715,12 +4778,14 @@ impl StrictUnaryPrimOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StrictTernaryPrimOp {
+    FoldlStrict,
     Substring,
 }
 
 impl StrictTernaryPrimOp {
     fn from_bytes(name: &[u8]) -> Option<Self> {
         match name {
+            b"foldl'" => Some(Self::FoldlStrict),
             b"substring" => Some(Self::Substring),
             _ => None,
         }
@@ -6963,6 +7028,150 @@ mod tests {
             }
         );
         assert_eq!(error.span(), predicate_span);
+    }
+
+    #[test]
+    fn foldl_strict_primop_folds_left_and_forces_accumulator() {
+        assert_eq!(
+            eval("builtins.foldl' (acc: x: acc + x) 0 [ 1 2 3 ]").as_int(),
+            Ok(6)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.foldl' (acc: x: acc ++ [ x ]) [] [ 1 2 3 ]) 0")
+                .as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.foldl' (acc: x: acc ++ [ x ]) [] [ 1 2 3 ]) 2")
+                .as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval("builtins.foldl' (acc: x: acc) 0 [ (1 / 0) ]").as_int(),
+            Ok(0)
+        );
+
+        let ir = lower("builtins.foldl' (acc: x: x) 0 [ (1 / 0) ]");
+        let error = eval_whnf(&ir).expect_err("foldl' forces each accumulator result");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let outcome = eval_whnf_owned(&lower("builtins.foldl' (acc: x: { a = 1 / 0; }) 0 [ 1 ]"))
+            .expect("foldl' forces accumulator to WHNF only");
+        assert_eq!(outcome.value().tag(), ValueTag::Attrs);
+    }
+
+    #[test]
+    fn foldl_strict_primop_checks_operator_then_list_then_initial() {
+        let ir = lower("builtins.foldl' (1 / 0) 0 []");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let op = args[0];
+        let op_span = ir.arena.node(op).expect("operator argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("foldl' forces operator first");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: op });
+        assert_eq!(error.span(), op_span);
+
+        let ir = lower("builtins.foldl' 1 0 []");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let op = args[0];
+        let op_span = ir.arena.node(op).expect("operator argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("foldl' requires an operator function");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: op,
+                expected: "lambda",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), op_span);
+
+        let ir = lower("builtins.foldl' (acc: x: acc) (1 / 0) 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[2];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("foldl' checks list before initial value");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: list,
+                expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), list_span);
+
+        let ir = lower("builtins.foldl' (acc: x: acc) (1 / 0) []");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let initial = args[1];
+        let initial_span = ir
+            .arena
+            .node(initial)
+            .expect("initial argument exists")
+            .span;
+
+        let error = eval_whnf(&ir).expect_err("foldl' forces initial value after list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: initial }
+        );
+        assert_eq!(error.span(), initial_span);
+    }
+
+    #[test]
+    fn foldl_strict_primop_checks_curried_operator_results() {
+        let ir = lower("builtins.foldl' (acc: 1) 0 [ 1 ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let op = args[0];
+        let op_span = ir.arena.node(op).expect("operator argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("foldl' requires curried binary operator");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: op,
+                expected: "lambda",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), op_span);
+
+        assert_eq!(
+            eval("let builtins = { foldl' = op: initial: list: 42; }; in builtins.foldl' (acc: x: acc) 0 []")
+                .as_int(),
+            Ok(42)
+        );
     }
 
     #[test]
