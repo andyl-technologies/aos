@@ -3,12 +3,13 @@
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
 //! first slices evaluate scalar and list literals, boolean control flow,
 //! assertions, boolean operators, string literals and concatenation, list-spine
-//! concatenation, static and recursive static attribute-set literals, static
+//! concatenation, static and recursive static attribute-set literals, dynamic
+//! string-valued attribute names, static and dynamic string-valued
 //! attribute selection, lexical `let` environments, simple and formal-set lambda
 //! application, lazy `with` scope lookup, thunk forcing, numeric arithmetic,
 //! numeric and string comparisons, and scalar/string equality to weak head
 //! normal form, establishing the arena access and diagnostic surface used by
-//! later slices for dynamic attribute sets, primitive operations, and derivation
+//! later slices for full string coercion, primitive operations, and derivation
 //! boundaries.
 
 use std::rc::Rc;
@@ -25,7 +26,7 @@ use crate::compile::{
 };
 use crate::list::{NixList, NixListError};
 use crate::string::{NixString, NixStringError};
-use crate::syntax::{BinOpKind, Span, Symbol, UnaryOpKind};
+use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind};
 use crate::value::{Value, ValueTag};
 
 /// Evaluates an IR root to weak head normal form with the tree-walk oracle.
@@ -99,6 +100,7 @@ impl EvalOutcome {
 #[derive(Debug)]
 pub struct TreeWalk<'ir> {
     ir: &'ir Ir,
+    symbols: SymbolTable,
     heap: EvalHeap,
     env: Vec<Rc<EvalFrame>>,
     with_scopes: Vec<EvalWithScope>,
@@ -106,9 +108,10 @@ pub struct TreeWalk<'ir> {
 
 impl<'ir> TreeWalk<'ir> {
     /// Creates a tree-walk evaluator over `ir`.
-    pub const fn new(ir: &'ir Ir) -> Self {
+    pub fn new(ir: &'ir Ir) -> Self {
         Self {
             ir,
+            symbols: ir.symbols.clone(),
             heap: EvalHeap::new(),
             env: Vec::new(),
             with_scopes: Vec::new(),
@@ -175,6 +178,7 @@ impl<'ir> TreeWalk<'ir> {
                 Ok(Value::null())
             }
             IrKind::Str => self.eval_string(id, &node),
+            IrKind::Interp => self.eval_interp(id, &node),
             IrKind::LocalVar => self.eval_local_var(id, &node),
             IrKind::UpvalVar => self.eval_upval_var(id, &node),
             IrKind::WithVar => self.eval_with_var(id, &node),
@@ -303,7 +307,6 @@ impl<'ir> TreeWalk<'ir> {
         shape: IrShapeId,
         shape_keys: &[Symbol],
         binding_range: std::ops::Range<usize>,
-        recursive: bool,
         span: Span,
     ) -> Result<(), TreeWalkError> {
         let mut binding_keys = 0usize;
@@ -311,16 +314,7 @@ impl<'ir> TreeWalk<'ir> {
             let binding = self.ir.bindings[binding_index];
             let actual = match binding.key {
                 IrAttrPathSegment::Static(symbol) => symbol,
-                IrAttrPathSegment::Dynamic(_) => {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::UnsupportedAttrSetForm {
-                            id,
-                            recursive,
-                            has_dynamic: true,
-                        },
-                        span,
-                    ));
-                }
+                IrAttrPathSegment::Dynamic(_) => continue,
             };
             let Some(expected) = shape_keys.get(binding_keys).copied() else {
                 return Err(TreeWalkError::new(
@@ -378,63 +372,29 @@ impl<'ir> TreeWalk<'ir> {
             })
     }
 
-    fn static_attr_path(
+    fn attr_path_len(
         &self,
         id: IrId,
         path: IrAttrPathId,
         span: Span,
-    ) -> Result<StaticAttrPath, TreeWalkError> {
-        let path_segments = self.attr_path(id, path, span)?;
-        let segments = path_segments.len();
-        let has_dynamic = path_segments
-            .iter()
-            .any(|segment| matches!(segment, IrAttrPathSegment::Dynamic(_)));
-        if !has_dynamic {
-            for segment in path_segments {
-                let IrAttrPathSegment::Static(symbol) = segment else {
-                    continue;
-                };
-                if self.ir.symbols.resolve(*symbol).is_none() {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::InvalidSymbol {
-                            id,
-                            symbol: *symbol,
-                        },
-                        span,
-                    ));
-                }
-            }
-        }
-        Ok(StaticAttrPath {
-            segments,
-            has_dynamic,
-        })
+    ) -> Result<usize, TreeWalkError> {
+        self.attr_path(id, path, span)
+            .map(|segments| segments.len())
     }
 
-    fn static_attr_path_key(
+    fn attr_path_segment(
         &self,
         id: IrId,
         path: IrAttrPathId,
         index: usize,
         span: Span,
-    ) -> Result<Symbol, TreeWalkError> {
-        let segments = self.attr_path(id, path, span)?;
-        match segments.get(index).copied() {
-            Some(IrAttrPathSegment::Static(symbol)) => Ok(symbol),
-            Some(IrAttrPathSegment::Dynamic(_)) => Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedAttrPath {
-                    id,
-                    path,
-                    segments: segments.len(),
-                    has_dynamic: true,
-                },
-                span,
-            )),
-            None => Err(TreeWalkError::new(
-                TreeWalkErrorKind::InvalidAttrPath { id, path },
-                span,
-            )),
-        }
+    ) -> Result<IrAttrPathSegment, TreeWalkError> {
+        self.attr_path(id, path, span)?
+            .get(index)
+            .copied()
+            .ok_or_else(|| {
+                TreeWalkError::new(TreeWalkErrorKind::InvalidAttrPath { id, path }, span)
+            })
     }
 
     fn with_chain_scope_count(
@@ -485,7 +445,7 @@ impl<'ir> TreeWalk<'ir> {
         symbol: Symbol,
         span: Span,
     ) -> Result<Value, TreeWalkError> {
-        match self.ir.symbols.resolve(symbol) {
+        match self.symbols.resolve(symbol) {
             Some(b"true") => Ok(Value::bool(true)),
             Some(b"false") => Ok(Value::bool(false)),
             Some(b"null") => Ok(Value::null()),
@@ -599,7 +559,7 @@ impl<'ir> TreeWalk<'ir> {
         let IrData::Symbol(symbol) = node.data else {
             return Err(self.invalid_payload(id, node, "string symbol payload"));
         };
-        let bytes = self.ir.symbols.resolve(symbol).ok_or_else(|| {
+        let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
             TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
         })?;
         let mut owned = Vec::new();
@@ -616,6 +576,186 @@ impl<'ir> TreeWalk<'ir> {
         self.heap
             .alloc_string(NixString::from_bytes(owned))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    fn eval_interp(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        match node.data {
+            IrData::Node(child) => {
+                let span = self.node(child)?.span;
+                let value = self.eval_node(child)?;
+                self.expect_string_value(child, value, span)
+            }
+            IrData::Children(children) => {
+                let children = self.ir.arena.child_slice(children).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidChildSlice {
+                            id,
+                            slice: children,
+                        },
+                        node.span,
+                    )
+                })?;
+                let Some((first, rest)) = children.split_first() else {
+                    return self
+                        .heap
+                        .alloc_string(NixString::default())
+                        .map_err(|source| {
+                            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                        });
+                };
+                let first_span = self.node(*first)?.span;
+                let mut current = {
+                    let value = self.eval_node(*first)?;
+                    self.expect_string_value(*first, value, first_span)?
+                };
+                for child in rest {
+                    let child_span = self.node(*child)?.span;
+                    let next = {
+                        let value = self.eval_node(*child)?;
+                        self.expect_string_value(*child, value, child_span)?
+                    };
+                    current = self.concat_strings(id, node, current, next)?;
+                }
+                Ok(current)
+            }
+            IrData::None => self
+                .heap
+                .alloc_string(NixString::default())
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                }),
+            IrData::Symbol(symbol) => {
+                let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+                })?;
+                let mut owned = Vec::new();
+                owned.try_reserve_exact(bytes.len()).map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::ByteAllocationFailed {
+                            id,
+                            len: bytes.len(),
+                        },
+                        node.span,
+                    )
+                })?;
+                owned.extend_from_slice(bytes);
+                self.heap
+                    .alloc_string(NixString::from_bytes(owned))
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                    })
+            }
+            _ => Err(self.invalid_payload(id, node, "interpolation payload")),
+        }
+    }
+
+    fn expect_string_value(
+        &self,
+        id: IrId,
+        value: Value,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        if value.tag() == ValueTag::String {
+            Ok(value)
+        } else {
+            Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                span,
+            ))
+        }
+    }
+
+    fn eval_attr_name(
+        &mut self,
+        id: IrId,
+        segment: IrAttrPathSegment,
+        null_policy: DynamicAttrNullPolicy,
+        span: Span,
+    ) -> Result<Option<Symbol>, TreeWalkError> {
+        match segment {
+            IrAttrPathSegment::Static(symbol) => {
+                if self.symbols.resolve(symbol).is_none() {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidSymbol { id, symbol },
+                        span,
+                    ));
+                }
+                Ok(Some(symbol))
+            }
+            IrAttrPathSegment::Dynamic(dynamic) => {
+                self.eval_dynamic_attr_name(id, self.dynamic_attr_expression(dynamic)?, null_policy)
+            }
+        }
+    }
+
+    fn dynamic_attr_expression(&self, dynamic: IrId) -> Result<IrId, TreeWalkError> {
+        let node = self.node(dynamic)?;
+        if node.kind == IrKind::Interp {
+            if let IrData::Node(child) = node.data {
+                return Ok(child);
+            }
+        }
+        Ok(dynamic)
+    }
+
+    fn eval_dynamic_attr_name(
+        &mut self,
+        id: IrId,
+        expression: IrId,
+        null_policy: DynamicAttrNullPolicy,
+    ) -> Result<Option<Symbol>, TreeWalkError> {
+        let span = self.node(expression)?.span;
+        let value = self.eval_node(expression)?;
+        match value.tag() {
+            ValueTag::String => self.intern_string_value(id, value, span).map(Some),
+            ValueTag::Null if null_policy == DynamicAttrNullPolicy::SkipNull => Ok(None),
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: expression,
+                    expected: "string",
+                    actual,
+                },
+                span,
+            )),
+        }
+    }
+
+    fn intern_string_value(
+        &mut self,
+        id: IrId,
+        value: Value,
+        span: Span,
+    ) -> Result<Symbol, TreeWalkError> {
+        let bytes = {
+            let string = self.heap.get_string(value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(string.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: string.len(),
+                    },
+                    span,
+                )
+            })?;
+            bytes.extend_from_slice(string.bytes());
+            bytes
+        };
+        self.symbols.intern(&bytes).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::SymbolIntern {
+                    id,
+                    source: source.kind().clone(),
+                },
+                source.span(),
+            )
+        })
     }
 
     fn eval_list(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -1173,23 +1313,12 @@ impl<'ir> TreeWalk<'ir> {
             shape,
             bindings,
             recursive,
-            has_dynamic,
+            has_dynamic: _,
             frame,
         } = node.data
         else {
             return Err(self.invalid_payload(id, node, "attrset payload"));
         };
-        if has_dynamic {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedAttrSetForm {
-                    id,
-                    recursive,
-                    has_dynamic,
-                },
-                node.span,
-            ));
-        }
-
         let binding_range = self.binding_range(id, bindings, node.span)?;
         {
             let shape_keys = self
@@ -1201,15 +1330,22 @@ impl<'ir> TreeWalk<'ir> {
                 })?
                 .keys
                 .as_ref();
-            self.validate_attrset_shape(
-                id,
-                shape,
-                shape_keys,
-                binding_range.clone(),
-                recursive,
-                node.span,
-            )?;
+            self.validate_attrset_shape(id, shape, shape_keys, binding_range.clone(), node.span)?;
         }
+        let static_bindings = binding_range
+            .clone()
+            .filter(|binding_index| {
+                matches!(
+                    self.ir.bindings[*binding_index].key,
+                    IrAttrPathSegment::Static(_)
+                )
+            })
+            .count();
+        let dynamic_key_env = if recursive {
+            Some(self.env.clone())
+        } else {
+            None
+        };
         let frame_values = if recursive {
             let Some(frame) = frame else {
                 return Err(TreeWalkError::new(
@@ -1218,12 +1354,12 @@ impl<'ir> TreeWalk<'ir> {
                 ));
             };
             let slot_count = self.frame_info(id, frame, node.span)?.slot_count as usize;
-            if slot_count != binding_range.len() {
+            if slot_count != static_bindings {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::AttrSetFrameSlotMismatch {
                         id,
                         frame_slots: slot_count,
-                        bindings: binding_range.len(),
+                        bindings: static_bindings,
                     },
                     node.span,
                 ));
@@ -1252,24 +1388,66 @@ impl<'ir> TreeWalk<'ir> {
             self.env.push(Rc::clone(frame_values));
         }
         let result = (|| {
-            for (slot, binding_index) in binding_range.enumerate() {
-                let binding = self.ir.bindings[binding_index];
-                let IrAttrPathSegment::Static(key) = binding.key else {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::UnsupportedAttrSetForm {
-                            id,
-                            recursive,
-                            has_dynamic: true,
-                        },
-                        node.span,
-                    ));
-                };
-                let value = self.eval_lazy_node(binding.value)?;
-                if let Some(frame_values) = &frame_values {
-                    frame_values.set(slot as u32, value).map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
-                    })?;
+            if let Some(frame_values) = &frame_values {
+                let mut slot = 0u32;
+                for binding_index in binding_range.clone() {
+                    let binding = self.ir.bindings[binding_index];
+                    if matches!(binding.key, IrAttrPathSegment::Static(_)) {
+                        let value = self.eval_lazy_node(binding.value)?;
+                        frame_values.set(slot, value).map_err(|source| {
+                            TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+                        })?;
+                        slot += 1;
+                    }
                 }
+            }
+
+            let mut slot = 0u32;
+            for binding_index in binding_range {
+                let binding = self.ir.bindings[binding_index];
+                let key = if matches!(binding.key, IrAttrPathSegment::Dynamic(_)) {
+                    if let Some(dynamic_key_env) = &dynamic_key_env {
+                        let saved_env = std::mem::replace(&mut self.env, dynamic_key_env.clone());
+                        let result = self.eval_attr_name(
+                            id,
+                            binding.key,
+                            DynamicAttrNullPolicy::SkipNull,
+                            node.span,
+                        );
+                        self.env = saved_env;
+                        result?
+                    } else {
+                        self.eval_attr_name(
+                            id,
+                            binding.key,
+                            DynamicAttrNullPolicy::SkipNull,
+                            node.span,
+                        )?
+                    }
+                } else {
+                    self.eval_attr_name(
+                        id,
+                        binding.key,
+                        DynamicAttrNullPolicy::SkipNull,
+                        node.span,
+                    )?
+                };
+                let Some(key) = key else {
+                    continue;
+                };
+                let value = if let Some(frame_values) = &frame_values {
+                    if matches!(binding.key, IrAttrPathSegment::Static(_)) {
+                        let value = frame_values.get(slot).map_err(|source| {
+                            TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+                        })?;
+                        slot += 1;
+                        value
+                    } else {
+                        self.eval_lazy_node(binding.value)?
+                    }
+                } else {
+                    self.eval_lazy_node(binding.value)?
+                };
                 entries.push(AttrEntry::new(key, value));
             }
             Ok(entries)
@@ -1279,7 +1457,7 @@ impl<'ir> TreeWalk<'ir> {
         }
         let entries = result?;
 
-        let attrs = FlatAttrs::new(entries, &self.ir.symbols).map_err(|source| {
+        let attrs = FlatAttrs::new(entries, &self.symbols).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, node.span)
         })?;
         self.heap
@@ -1297,35 +1475,34 @@ impl<'ir> TreeWalk<'ir> {
         else {
             return Err(self.invalid_payload(id, node, "select payload"));
         };
-        let path = self.static_attr_path(id, path_id, node.span)?;
-
+        let segments = self.attr_path_len(id, path_id, node.span)?;
         let mut current = self.eval_node(receiver)?;
-        if path.has_dynamic || path.segments == 0 {
-            if current.tag() != ValueTag::Attrs {
-                return match default {
-                    Some(default) => self.eval_node(default),
-                    None => Err(TreeWalkError::new(
-                        TreeWalkErrorKind::Type {
-                            id,
-                            expected: "attrs",
-                            actual: current.tag(),
-                        },
-                        node.span,
-                    )),
-                };
-            }
+        if segments == 0 {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedAttrPath {
                     id,
                     path: path_id,
-                    segments: path.segments,
-                    has_dynamic: path.has_dynamic,
+                    segments,
+                    has_dynamic: false,
                 },
                 node.span,
             ));
         }
 
-        for index in 0..path.segments {
+        for index in 0..segments {
+            let segment = self.attr_path_segment(id, path_id, index, node.span)?;
+            let key = self
+                .eval_attr_name(id, segment, DynamicAttrNullPolicy::RejectNull, node.span)?
+                .ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id,
+                            expected: "string",
+                            actual: ValueTag::Null,
+                        },
+                        node.span,
+                    )
+                })?;
             if current.tag() != ValueTag::Attrs {
                 return match default {
                     Some(default) => self.eval_node(default),
@@ -1339,7 +1516,6 @@ impl<'ir> TreeWalk<'ir> {
                     )),
                 };
             }
-            let key = self.static_attr_path_key(id, path_id, index, node.span)?;
             let selected = {
                 let attrs = self.heap.get_attrs(current).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
@@ -1355,7 +1531,7 @@ impl<'ir> TreeWalk<'ir> {
                     )),
                 };
             };
-            if index + 1 == path.segments {
+            if index + 1 == segments {
                 return Ok(value);
             }
             current = self.force_value(id, node.span, value)?;
@@ -1365,8 +1541,8 @@ impl<'ir> TreeWalk<'ir> {
             TreeWalkErrorKind::UnsupportedAttrPath {
                 id,
                 path: path_id,
-                segments: path.segments,
-                has_dynamic: path.has_dynamic,
+                segments,
+                has_dynamic: false,
             },
             node.span,
         ))
@@ -1381,29 +1557,37 @@ impl<'ir> TreeWalk<'ir> {
         else {
             return Err(self.invalid_payload(id, node, "has-attr payload"));
         };
-        let path = self.static_attr_path(id, path_id, node.span)?;
-
+        let segments = self.attr_path_len(id, path_id, node.span)?;
         let mut current = self.eval_node(receiver)?;
-        if path.has_dynamic || path.segments == 0 {
-            if current.tag() != ValueTag::Attrs {
-                return Ok(Value::bool(false));
-            }
+        if segments == 0 {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedAttrPath {
                     id,
                     path: path_id,
-                    segments: path.segments,
-                    has_dynamic: path.has_dynamic,
+                    segments,
+                    has_dynamic: false,
                 },
                 node.span,
             ));
         }
 
-        for index in 0..path.segments {
+        for index in 0..segments {
+            let segment = self.attr_path_segment(id, path_id, index, node.span)?;
+            let key = self
+                .eval_attr_name(id, segment, DynamicAttrNullPolicy::RejectNull, node.span)?
+                .ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id,
+                            expected: "string",
+                            actual: ValueTag::Null,
+                        },
+                        node.span,
+                    )
+                })?;
             if current.tag() != ValueTag::Attrs {
                 return Ok(Value::bool(false));
             }
-            let key = self.static_attr_path_key(id, path_id, index, node.span)?;
             let selected = {
                 let attrs = self.heap.get_attrs(current).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
@@ -1413,7 +1597,7 @@ impl<'ir> TreeWalk<'ir> {
             let Some(value) = selected else {
                 return Ok(Value::bool(false));
             };
-            if index + 1 == path.segments {
+            if index + 1 == segments {
                 return Ok(Value::bool(true));
             }
             current = self.force_value(id, node.span, value)?;
@@ -1836,9 +2020,9 @@ enum Number {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct StaticAttrPath {
-    segments: usize,
-    has_dynamic: bool,
+enum DynamicAttrNullPolicy {
+    SkipNull,
+    RejectNull,
 }
 
 impl Number {
@@ -2138,6 +2322,14 @@ pub enum TreeWalkErrorKind {
         /// The unresolved symbol payload.
         symbol: Symbol,
     },
+    /// A runtime-computed attribute name could not be interned.
+    #[error("runtime attribute-name interning failed at node {id:?}: {source}")]
+    SymbolIntern {
+        /// The node id associated with the runtime attribute name.
+        id: IrId,
+        /// The underlying symbol-table failure.
+        source: crate::syntax::AstErrorKind,
+    },
     /// A byte buffer for a string literal could not be reserved.
     #[error("failed to reserve {len} string bytes at node {id:?}")]
     ByteAllocationFailed {
@@ -2289,19 +2481,7 @@ pub enum TreeWalkErrorKind {
         /// The right operand's runtime value tag.
         right: ValueTag,
     },
-    /// The attrset form requires dynamic-name support.
-    #[error(
-        "unsupported tree-walk attrset form at {id:?}: recursive={recursive}, has_dynamic={has_dynamic}"
-    )]
-    UnsupportedAttrSetForm {
-        /// The attrset node id.
-        id: IrId,
-        /// Whether the source attrset was recursive.
-        recursive: bool,
-        /// Whether the source attrset has dynamic keys.
-        has_dynamic: bool,
-    },
-    /// The attr path requires nested traversal or dynamic-name support.
+    /// An attribute path shape is outside the evaluator's supported access forms.
     #[error(
         "unsupported tree-walk attribute path {path:?} at {id:?}: segments={segments}, has_dynamic={has_dynamic}"
     )]
@@ -2845,24 +3025,78 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_attrsets_wait_for_later_slices() {
-        let dynamic_ir = lower("{ ${\"a\"} = 1; }");
-        let error = eval_whnf_owned(&dynamic_ir).expect_err("dynamic attrsets need key eval");
+    fn evaluates_dynamic_attrsets_with_string_keys_and_null_omission() {
+        assert_eq!(
+            eval("let name = \"a\"; in { ${name} = 1; }.${name}").as_int(),
+            Ok(1)
+        );
+        assert_eq!(eval("({ ${\"a\" + \"b\"} = 3; }).ab").as_int(), Ok(3));
+        assert_eq!(eval("rec { ${\"a\"} = b; b = 2; }.a").as_int(), Ok(2));
+        assert_eq!(
+            eval("let a = 7; in rec { ${\"x\"} = a; a = 1; }.x").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval(
+                "let x = \"x\"; y = \"outer\"; in rec { ${y} = 1; a = \"bar\"; b = \"baz\"; }.outer"
+            )
+            .as_int(),
+            Ok(1)
+        );
+        assert_eq!(eval("{ ${null} = 1 / 0; a = 2; }.a").as_int(), Ok(2));
+
+        let skipped = lower("{ ${null} = 1 / 0; }");
+        let outcome = eval_whnf_owned(&skipped).expect("null dynamic key is skipped");
+        assert!(
+            outcome
+                .heap()
+                .get_attrs(outcome.value())
+                .expect("attrset is heap-owned")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn dynamic_attrsets_report_duplicate_and_non_string_keys() {
+        let duplicate = lower("{ ${\"a\"} = 1; a = 2; }");
+        let duplicate_symbol = symbol_for(&duplicate, b"a");
+        let duplicate_error =
+            eval_whnf_owned(&duplicate).expect_err("computed duplicate key is invalid");
+        assert_eq!(
+            duplicate_error.kind(),
+            TreeWalkErrorKind::Attr {
+                id: duplicate.root,
+                source: AttrError::DuplicateKey {
+                    key: duplicate_symbol
+                },
+            }
+        );
+
+        let non_string = lower("{ ${1} = 1; }");
+        let expression = non_string
+            .arena
+            .nodes()
+            .iter()
+            .enumerate()
+            .find(|(_, node)| node.kind == IrKind::Int && node.data == IrData::Int(1))
+            .map(|(index, _)| IrId::new(index as u32))
+            .expect("dynamic key expression exists");
+        let error = eval_whnf_owned(&non_string).expect_err("dynamic key must be string or null");
 
         assert_eq!(
             error.kind(),
-            TreeWalkErrorKind::UnsupportedAttrSetForm {
-                id: dynamic_ir.root,
-                recursive: false,
-                has_dynamic: true,
+            TreeWalkErrorKind::Type {
+                id: expression,
+                expected: "string",
+                actual: ValueTag::Int,
             }
         );
         assert_eq!(
             error.span(),
-            dynamic_ir
+            non_string
                 .arena
-                .node(dynamic_ir.root)
-                .expect("root exists")
+                .node(expression)
+                .expect("dynamic key expression exists")
                 .span
         );
     }
@@ -3207,8 +3441,15 @@ mod tests {
     }
 
     #[test]
-    fn select_evaluates_nested_static_paths_and_rejects_dynamic_paths() {
+    fn select_evaluates_nested_static_and_dynamic_paths() {
         assert_eq!(eval("({ a = { b = 1 + 2; }; }).a.b").as_int(), Ok(3));
+        assert_eq!(eval("({ a = 1; }).${\"a\"}").as_int(), Ok(1));
+        assert_eq!(
+            eval("let name = \"a\"; in { a = { b = 2; }; }.${name}.b").as_int(),
+            Ok(2)
+        );
+        assert_eq!(eval("({}).${\"a\"}.${1 / 0} or 2").as_int(), Ok(2));
+        assert_eq!(eval("(1).${\"a\"} or 2").as_int(), Ok(2));
 
         let error_ir = lower("({ a = 1 / 0; }).a.b or 2");
         let error = eval_whnf_owned(&error_ir).expect_err("intermediate thunk errors win");
@@ -3218,28 +3459,40 @@ mod tests {
             TreeWalkErrorKind::DivisionByZero { .. }
         ));
 
-        let dynamic = lower("({ a = 1; }).${\"a\"}");
-        let dynamic_error = eval_whnf_owned(&dynamic).expect_err("dynamic key coercion is later");
+        let null_key = lower("({ a = 1; }).${null} or 2");
+        let null_node = null_key
+            .arena
+            .nodes()
+            .iter()
+            .enumerate()
+            .find(|(_, node)| node.kind == IrKind::Null)
+            .map(|(index, _)| IrId::new(index as u32))
+            .expect("null key expression exists");
+        let null_error =
+            eval_whnf_owned(&null_key).expect_err("select dynamic null key is invalid");
 
         assert_eq!(
-            dynamic_error.kind(),
-            TreeWalkErrorKind::UnsupportedAttrPath {
-                id: dynamic.root,
-                path: IrAttrPathId::new(0),
-                segments: 1,
-                has_dynamic: true,
+            null_error.kind(),
+            TreeWalkErrorKind::Type {
+                id: null_node,
+                expected: "string",
+                actual: ValueTag::Null,
             }
         );
         assert_eq!(
-            dynamic_error.span(),
-            dynamic.arena.node(dynamic.root).expect("root exists").span
+            null_error.span(),
+            null_key
+                .arena
+                .node(null_node)
+                .expect("null key expression exists")
+                .span
         );
     }
 
     #[test]
-    fn select_evaluates_receiver_before_unsupported_path_forms() {
+    fn select_evaluates_receiver_and_reached_dynamic_keys_in_order() {
         let ir = lower("(1 / 0).${\"a\"}");
-        let error = eval_whnf_owned(&ir).expect_err("receiver errors before path support limits");
+        let error = eval_whnf_owned(&ir).expect_err("receiver errors before dynamic key success");
 
         assert!(matches!(
             error.kind(),
@@ -3252,6 +3505,15 @@ mod tests {
             .find(|node| node.kind == IrKind::BinOp)
             .expect("division node exists");
         assert_eq!(error.span(), division.span);
+
+        let dynamic_error = lower("({}).${1 / 0} or 2");
+        let error = eval_whnf_owned(&dynamic_error)
+            .expect_err("first dynamic key errors before default fallback");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
     }
 
     #[test]
@@ -3269,9 +3531,12 @@ mod tests {
     }
 
     #[test]
-    fn has_attr_evaluates_nested_static_paths_and_rejects_dynamic_paths() {
+    fn has_attr_evaluates_nested_static_and_dynamic_paths() {
         assert_eq!(eval("({ a = { b = 1 / 0; }; } ? a.b)").as_bool(), Ok(true));
         assert_eq!(eval("({ a = {}; } ? a.b)").as_bool(), Ok(false));
+        assert_eq!(eval("({ a = 1; } ? ${\"a\"})").as_bool(), Ok(true));
+        assert_eq!(eval("({} ? ${\"a\"}.${1 / 0})").as_bool(), Ok(false));
+        assert_eq!(eval("(1 ? ${\"a\"})").as_bool(), Ok(false));
 
         let error_ir = lower("({ a = 1 / 0; } ? a.b)");
         let error = eval_whnf_owned(&error_ir).expect_err("intermediate thunk errors win");
@@ -3281,28 +3546,40 @@ mod tests {
             TreeWalkErrorKind::DivisionByZero { .. }
         ));
 
-        let dynamic = lower("({ a = 1; } ? ${\"a\"})");
-        let dynamic_error = eval_whnf_owned(&dynamic).expect_err("dynamic key coercion is later");
+        let null_key = lower("({ a = 1; } ? ${null})");
+        let null_node = null_key
+            .arena
+            .nodes()
+            .iter()
+            .enumerate()
+            .find(|(_, node)| node.kind == IrKind::Null)
+            .map(|(index, _)| IrId::new(index as u32))
+            .expect("null key expression exists");
+        let null_error =
+            eval_whnf_owned(&null_key).expect_err("has-attr dynamic null key is invalid");
 
         assert_eq!(
-            dynamic_error.kind(),
-            TreeWalkErrorKind::UnsupportedAttrPath {
-                id: dynamic.root,
-                path: IrAttrPathId::new(0),
-                segments: 1,
-                has_dynamic: true,
+            null_error.kind(),
+            TreeWalkErrorKind::Type {
+                id: null_node,
+                expected: "string",
+                actual: ValueTag::Null,
             }
         );
         assert_eq!(
-            dynamic_error.span(),
-            dynamic.arena.node(dynamic.root).expect("root exists").span
+            null_error.span(),
+            null_key
+                .arena
+                .node(null_node)
+                .expect("null key expression exists")
+                .span
         );
     }
 
     #[test]
-    fn has_attr_evaluates_receiver_before_unsupported_path_forms() {
+    fn has_attr_evaluates_receiver_and_reached_dynamic_keys_in_order() {
         let ir = lower("((1 / 0) ? ${\"a\"})");
-        let error = eval_whnf_owned(&ir).expect_err("receiver errors before path support limits");
+        let error = eval_whnf_owned(&ir).expect_err("receiver errors before dynamic key success");
 
         assert!(matches!(
             error.kind(),
@@ -3315,6 +3592,15 @@ mod tests {
             .find(|node| node.kind == IrKind::BinOp)
             .expect("division node exists");
         assert_eq!(error.span(), division.span);
+
+        let dynamic_error = lower("({} ? ${1 / 0})");
+        let error = eval_whnf_owned(&dynamic_error)
+            .expect_err("first dynamic has-attr key is still evaluated");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
     }
 
     #[test]
@@ -4310,14 +4596,18 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_attrset_bindings_are_rejected_even_with_false_dynamic_flag() {
-        let value = IrId::new(0);
-        let root = IrId::new(1);
+    fn dynamic_attrset_bindings_evaluate_even_with_false_dynamic_flag() {
+        let key = IrId::new(0);
+        let value = IrId::new(1);
+        let root = IrId::new(2);
         let shape = IrShapeId::new(0);
         let span = Span::new(0, 12);
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern(b"a").expect("symbol interns");
         let ir = manual_ir_with_attr_tables(
             root,
             vec![
+                pure_node(IrKind::Str, Span::new(3, 8), IrData::Symbol(a)),
                 pure_node(IrKind::Int, Span::new(9, 10), IrData::Int(1)),
                 pure_node(
                     IrKind::AttrSet,
@@ -4331,24 +4621,20 @@ mod tests {
                     },
                 ),
             ],
-            SymbolTable::new(),
+            symbols,
             vec![IrBinding {
-                key: IrAttrPathSegment::Dynamic(value),
+                key: IrAttrPathSegment::Dynamic(key),
                 value,
             }],
             vec![IrShape::new(Vec::new().into_boxed_slice())],
         );
-        let error = eval_whnf_owned(&ir).expect_err("dynamic key must remain unsupported");
+        let outcome = eval_whnf_owned(&ir).expect("dynamic key evaluates");
+        let attrs = outcome
+            .heap()
+            .get_attrs(outcome.value())
+            .expect("attrset is heap-owned");
 
-        assert_eq!(
-            error.kind(),
-            TreeWalkErrorKind::UnsupportedAttrSetForm {
-                id: root,
-                recursive: false,
-                has_dynamic: true,
-            }
-        );
-        assert_eq!(error.span(), span);
+        assert_eq!(attrs.get(a).expect("dynamic key exists").as_int(), Ok(1));
     }
 
     #[test]
