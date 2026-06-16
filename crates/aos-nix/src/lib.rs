@@ -27,6 +27,7 @@
 //! - [`attrs`] owns the Phase-1 flat immutable attribute-set representation.
 //! - [`eval`] owns the safe tree-walk oracle and its thunk-forcing state.
 //! - [`list`] owns the Phase-1 immutable list-spine representation.
+//! - [`string`] owns byte-oriented Nix strings and string contexts.
 //!
 //! Future Phase-1 modules land below this boundary in the order specified by
 //! the RFC: `runtime` and `store`.
@@ -41,6 +42,7 @@ pub mod eval;
 pub mod heap;
 pub mod list;
 pub mod native;
+pub mod string;
 pub mod syntax;
 pub mod value;
 
