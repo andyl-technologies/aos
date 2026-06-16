@@ -13,10 +13,14 @@ argon2 = { workspace = true }
 # explicitly here). RFC-0004 Phase 5.
 password-hash = { version = "0.5", features = ["getrandom"] }
 async-trait = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+tracing = { workspace = true }
 url = { workspace = true }
 
 # The OS CSPRNG (argon2 salt, and the secret/token generators to come) reaches
@@ -27,3 +31,6 @@ url = { workspace = true }
 # deps are compiled only for wasm32; on native getrandom uses the OS directly.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+# rand 0.9 pulls getrandom 0.3; its wasm backend also needs the
+# `--cfg getrandom_backend="wasm_js"` rustflag set in .cargo/config.toml.
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }

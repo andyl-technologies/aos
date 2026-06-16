@@ -17,8 +17,8 @@
 //!
 //! This module owns only the secret formats; the grant lifecycle (start,
 //! approve with scope clamping, deny, poll) lives on
-//! [`crate::db::Database`], and the poll outcome is
-//! [`crate::db::DevicePollResult`].
+//! `Database`, and the poll outcome is
+//! `DevicePollResult`.
 
 use rand::Rng;
 
@@ -42,7 +42,7 @@ pub fn new_device_code() -> String {
 
 /// Generates a fresh 8-character user code in `XXXX-YYYY` form.
 ///
-/// Each character is drawn from [`USER_CODE_ALPHABET`], which omits the
+/// Each character is drawn from the `USER_CODE_ALPHABET`, which omits the
 /// confusable `0`/`O`/`1`/`I` so the human can read and type it reliably.
 #[must_use]
 pub fn new_user_code() -> String {

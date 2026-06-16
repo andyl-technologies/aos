@@ -12,7 +12,8 @@
 //! - [`domain`] — the tenancy/IAM model (org → project → registry tree,
 //!   principals, and the pure role/permission/scope authorization kernel).
 //! - [`auth`] — runtime-agnostic authentication primitives (Argon2id password
-//!   hashing today; secret generators, OIDC, sealing, and WebAuthn to follow).
+//!   hashing, the token/session/magic/device secret generators, and the
+//!   permission-string parser; OIDC, sealing, and WebAuthn to follow).
 //! - [`stack`] — the cache-stack node model ([`StackNode`](stack::StackNode))
 //!   that round-trips losslessly through JSON.
 //! - [`url_guard`] — the pure SSRF guards (global-IP predicate, network-origin
