@@ -16,6 +16,7 @@ const WORD_BYTES: usize = mem::size_of::<u64>();
 const MAX_ALIGN: usize = mem::align_of::<u64>();
 const OBJECT_HEADER_BYTES: usize = 2 * WORD_BYTES;
 const THUNK_BYTES: usize = 3 * WORD_BYTES;
+const LAMBDA_BYTES: usize = 4 * WORD_BYTES;
 // Header plus u32 length, padded so the inline Value tail starts 8-byte aligned.
 const LIST_ELEMENTS_OFFSET_BYTES: usize = OBJECT_HEADER_BYTES + WORD_BYTES;
 const CONS_BYTES: usize = OBJECT_HEADER_BYTES + mem::size_of::<Value>() + WORD_BYTES;
@@ -25,6 +26,8 @@ const CONS_BYTES: usize = OBJECT_HEADER_BYTES + mem::size_of::<Value>() + WORD_B
 pub enum HeapObjectKind {
     /// A suspended thunk object.
     Thunk,
+    /// A user lambda closure object.
+    Lambda,
     /// An attribute set with `slots` value cells.
     Attrs {
         /// The hidden-class shape id associated with the attrset.
@@ -147,6 +150,17 @@ impl BumpArena {
     /// storage cannot be reserved.
     pub fn aos_alloc_thunk(&mut self) -> Result<ArenaAllocation, ArenaError> {
         self.allocate(THUNK_BYTES, MAX_ALIGN, HeapObjectKind::Thunk)
+    }
+
+    /// Allocates a lambda-sized object through the Phase-1 `aos_alloc_lambda`
+    /// entry point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if reserving the object would overflow or if a new
+    /// chunk cannot be allocated.
+    pub fn aos_alloc_lambda(&mut self) -> Result<ArenaAllocation, ArenaError> {
+        self.allocate(LAMBDA_BYTES, MAX_ALIGN, HeapObjectKind::Lambda)
     }
 
     /// Allocates an attrset object through the Phase-1 `aos_alloc_attrs`
@@ -468,6 +482,10 @@ mod tests {
         let thunk = arena.aos_alloc_thunk().expect("thunk allocates");
         assert_eq!(thunk.kind, HeapObjectKind::Thunk);
         assert_eq!(thunk.requested_size, THUNK_BYTES);
+
+        let lambda = arena.aos_alloc_lambda().expect("lambda allocates");
+        assert_eq!(lambda.kind, HeapObjectKind::Lambda);
+        assert_eq!(lambda.requested_size, LAMBDA_BYTES);
 
         let attrs = arena.aos_alloc_attrs(42, 3).expect("attrset allocates");
         assert_eq!(

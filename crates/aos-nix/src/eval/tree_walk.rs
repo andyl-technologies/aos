@@ -4,18 +4,18 @@
 //! first slices evaluate scalar and list literals, boolean control flow,
 //! assertions, boolean operators, string literals and concatenation, list-spine
 //! concatenation, static and recursive static attribute-set literals, static
-//! attribute selection, lexical `let` environments, thunk forcing, numeric
-//! arithmetic, numeric and string comparisons, and scalar/string equality to
-//! weak head normal form, establishing the arena access and diagnostic surface
-//! used by later slices for functions, dynamic attribute sets, primitive
-//! operations, and derivation boundaries.
+//! attribute selection, lexical `let` environments, simple lambda application,
+//! thunk forcing, numeric arithmetic, numeric and string comparisons, and
+//! scalar/string equality to weak head normal form, establishing the arena
+//! access and diagnostic surface used by later slices for formal-set patterns,
+//! dynamic attribute sets, primitive operations, and derivation boundaries.
 
 use std::rc::Rc;
 
 use thiserror::Error;
 
 use super::env::{EvalEnv, EvalEnvError, EvalFrame};
-use super::heap::{EvalHeap, EvalHeapError, EvalThunk};
+use super::heap::{EvalHeap, EvalHeapError, EvalLambda, EvalThunk};
 use super::thunk::{ForceClaim, ForceError};
 use crate::attrs::{AttrEntry, AttrError, FlatAttrs};
 use crate::compile::{
@@ -131,9 +131,10 @@ impl<'ir> TreeWalk<'ir> {
     /// This initial public node entry point is intentionally limited to scalar
     /// literal, list literal, static attrset literal, string literal,
     /// control-flow, boolean operator, string/list concatenation, static
-    /// attribute selection, lexical `let` environment, numeric arithmetic,
-    /// numeric and string comparison, scalar/string equality, and conservative
-    /// thunk allocation nodes. Remaining environment-dependent nodes return
+    /// attribute selection, lexical `let` environment, simple lambda
+    /// application, numeric arithmetic, numeric and string comparison,
+    /// scalar/string equality, and conservative thunk allocation nodes.
+    /// Remaining environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add their
     /// explicit runtime context.
     ///
@@ -175,6 +176,8 @@ impl<'ir> TreeWalk<'ir> {
             IrKind::UpvalVar => self.eval_upval_var(id, &node),
             IrKind::List => self.eval_list(id, &node),
             IrKind::AttrSet => self.eval_attrset(id, &node),
+            IrKind::Lambda => self.eval_lambda(id, &node),
+            IrKind::Apply => self.eval_apply(id, &node),
             IrKind::Let => self.eval_let(id, &node),
             IrKind::If => self.eval_if(id, &node),
             IrKind::Assert => self.eval_assert(id, &node),
@@ -682,6 +685,130 @@ impl<'ir> TreeWalk<'ir> {
         })();
         let _ = self.env.pop();
         result
+    }
+
+    fn eval_lambda(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Lambda {
+            pattern,
+            body,
+            frame,
+        } = node.data
+        else {
+            return Err(self.invalid_payload(id, node, "lambda payload"));
+        };
+        let Some(frame) = frame else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::MissingFrameMetadata { id },
+                node.span,
+            ));
+        };
+        self.node(pattern)?;
+        self.node(body)?;
+        self.frame_info(id, frame, node.span)?;
+        let env = self.capture_env(id, node.span)?;
+        self.heap
+            .alloc_lambda(EvalLambda::new(pattern, body, frame, env))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    fn eval_apply(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Pair { first, second } = node.data else {
+            return Err(self.invalid_payload(id, node, "application pair"));
+        };
+        let function_span = self.node(first)?.span;
+        let function = self.eval_node(first)?;
+        if function.tag() != ValueTag::Lambda {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: first,
+                    expected: "lambda",
+                    actual: function.tag(),
+                },
+                function_span,
+            ));
+        }
+        let lambda = self.heap.clone_lambda(function).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id: first, source }, function_span)
+        })?;
+        let argument = self.eval_lazy_node(second)?;
+        let frame_info = self.frame_info(id, lambda.frame(), node.span)?;
+        let call_frame = EvalFrame::new(frame_info.slot_count as usize).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+        })?;
+        self.bind_simple_lambda_argument(
+            id,
+            lambda.pattern(),
+            frame_info.slot_count as usize,
+            &call_frame,
+            argument,
+            node.span,
+        )?;
+        let mut call_env = self.clone_env_frames(id, lambda.env(), node.span)?;
+        call_env.try_reserve_exact(1).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Env {
+                    id,
+                    source: EvalEnvError::CaptureAllocationFailed {
+                        frames: call_env.len() + 1,
+                    },
+                },
+                node.span,
+            )
+        })?;
+        call_env.push(call_frame);
+        let saved_env = std::mem::replace(&mut self.env, call_env);
+        let result = self.eval_node(lambda.body());
+        self.env = saved_env;
+        result
+    }
+
+    fn bind_simple_lambda_argument(
+        &self,
+        id: IrId,
+        pattern: IrId,
+        slot_count: usize,
+        frame: &EvalFrame,
+        argument: Value,
+        span: Span,
+    ) -> Result<(), TreeWalkError> {
+        let pattern_node = self.node(pattern)?;
+        let IrData::Formal {
+            name: _,
+            default: None,
+        } = pattern_node.data
+        else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedLambdaPattern {
+                    id,
+                    pattern,
+                    kind: pattern_node.kind,
+                },
+                pattern_node.span,
+            ));
+        };
+        if pattern_node.kind != IrKind::Formal {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedLambdaPattern {
+                    id,
+                    pattern,
+                    kind: pattern_node.kind,
+                },
+                pattern_node.span,
+            ));
+        }
+        if slot_count != 1 {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::LambdaFrameSlotMismatch {
+                    id,
+                    frame_slots: slot_count,
+                    pattern_slots: 1,
+                },
+                span,
+            ));
+        }
+        frame
+            .set(0, argument)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))
     }
 
     fn eval_attrset(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -1556,6 +1683,28 @@ pub enum TreeWalkErrorKind {
         /// The number of lowered bindings.
         bindings: usize,
     },
+    /// A lambda frame's slot count did not match the supported pattern.
+    #[error(
+        "lambda frame at node {id:?} has {frame_slots} slots for {pattern_slots} pattern slots"
+    )]
+    LambdaFrameSlotMismatch {
+        /// The malformed lambda or application node id.
+        id: IrId,
+        /// The resolver frame slot count.
+        frame_slots: usize,
+        /// The number of slots expected by the supported pattern.
+        pattern_slots: usize,
+    },
+    /// A lambda used a parameter pattern not implemented by this evaluator slice.
+    #[error("unsupported lambda pattern {pattern:?} ({kind:?}) at node {id:?}")]
+    UnsupportedLambdaPattern {
+        /// The application node id.
+        id: IrId,
+        /// The unsupported pattern node id.
+        pattern: IrId,
+        /// The unsupported pattern node kind.
+        kind: IrKind,
+    },
     /// A local variable was evaluated without an active environment frame.
     #[error("missing lexical environment at node {id:?}")]
     MissingEnvironment {
@@ -2325,6 +2474,91 @@ mod tests {
     }
 
     #[test]
+    fn simple_lambdas_apply_with_lazy_arguments() {
+        assert_eq!(eval("(x: x + 1) 2").as_int(), Ok(3));
+        assert_eq!(eval("let f = x: x; in f (1 + 2)").as_int(), Ok(3));
+        assert_eq!(eval("let f = x: 7; in f (1 / 0)").as_int(), Ok(7));
+        assert_eq!(eval("let x = 1; f = y: x + y; in f 2").as_int(), Ok(3));
+        assert_eq!(
+            eval("let x = 1; f = y: x + y; in let x = 10; in f x").as_int(),
+            Ok(11)
+        );
+        assert_eq!(eval("((x: y: x) (1 + 2)) 0").as_int(), Ok(3));
+    }
+
+    #[test]
+    fn formal_set_lambda_patterns_wait_for_later_slices() {
+        let ir = lower("({ x }: x) { x = 1; }");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("application root has pair payload");
+        };
+        let lambda = ir.arena.node(first).expect("lambda exists");
+        let IrData::Lambda { pattern, .. } = lambda.data else {
+            panic!("function is a lambda");
+        };
+        let pattern_kind = ir.arena.node(pattern).expect("pattern exists").kind;
+        let error = eval_whnf(&ir).expect_err("formal-set patterns are later");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedLambdaPattern {
+                id: ir.root,
+                pattern,
+                kind: pattern_kind,
+            }
+        );
+    }
+
+    #[test]
+    fn function_application_requires_lambda_functions() {
+        let ir = lower("1 2");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("application root has pair payload");
+        };
+        let first_span = ir.arena.node(first).expect("function exists").span;
+        let error = eval_whnf(&ir).expect_err("integer is not callable");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: first,
+                expected: "lambda",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), first_span);
+
+        let manual = manual_ir(
+            IrId::new(1),
+            vec![
+                pure_node(IrKind::Int, first_span, IrData::Int(1)),
+                pure_node(
+                    IrKind::Apply,
+                    Span::new(0, 4),
+                    IrData::Pair {
+                        first: IrId::new(0),
+                        second: IrId::new(99),
+                    },
+                ),
+            ],
+        );
+        let manual_error =
+            eval_whnf(&manual).expect_err("function type wins before lazy argument lookup");
+
+        assert_eq!(
+            manual_error.kind(),
+            TreeWalkErrorKind::Type {
+                id: IrId::new(0),
+                expected: "lambda",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(manual_error.span(), first_span);
+    }
+
+    #[test]
     fn select_static_keys_force_lazy_values() {
         assert_eq!(eval("({ a = 1 + 2; }).a").as_int(), Ok(3));
 
@@ -2823,18 +3057,37 @@ mod tests {
                 .expect("root exists")
                 .span
         );
+
+        let lambda_ir = lower("x: x");
+        let error = eval_whnf(&lambda_ir).expect_err("lambda value needs owning heap");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::HeapValueRequiresOwner {
+                id: lambda_ir.root,
+                tag: ValueTag::Lambda,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            lambda_ir
+                .arena
+                .node(lambda_ir.root)
+                .expect("root exists")
+                .span
+        );
     }
 
     #[test]
     fn unsupported_nodes_report_kind_and_span() {
-        let ir = lower("x: x");
-        let error = eval_whnf(&ir).expect_err("lambda construction is not implemented yet");
+        let ir = lower("./foo");
+        let error = eval_whnf(&ir).expect_err("path values are not implemented yet");
 
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::UnsupportedNode {
                 id: ir.root,
-                kind: IrKind::Lambda,
+                kind: IrKind::Path,
             }
         );
         assert_eq!(
@@ -2924,6 +3177,31 @@ mod tests {
             let span = Span::new(10 + index as u32, 11 + index as u32);
             let ir = manual_ir(root, vec![pure_node(kind, span, IrData::None)]);
             let error = eval_whnf(&ir).expect_err("malformed variable or let is invalid");
+
+            assert_eq!(
+                error.kind(),
+                TreeWalkErrorKind::InvalidPayload {
+                    id: root,
+                    kind,
+                    expected,
+                }
+            );
+            assert_eq!(error.span(), span);
+        }
+    }
+
+    #[test]
+    fn malformed_function_payloads_are_reported() {
+        let cases = [
+            (IrKind::Lambda, "lambda payload"),
+            (IrKind::Apply, "application pair"),
+        ];
+
+        for (index, (kind, expected)) in cases.into_iter().enumerate() {
+            let root = IrId::new(0);
+            let span = Span::new(20 + index as u32, 21 + index as u32);
+            let ir = manual_ir(root, vec![pure_node(kind, span, IrData::None)]);
+            let error = eval_whnf(&ir).expect_err("malformed function node is invalid");
 
             assert_eq!(
                 error.kind(),

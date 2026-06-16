@@ -4,7 +4,7 @@
 //! owns the typed Rust-side objects behind those pointers for the safe tree-walk
 //! oracle: the bump arena provides stable opaque handles, while a side table
 //! maps those handles back to checked [`NixString`], [`NixList`], [`FlatAttrs`],
-//! and [`EvalThunk`] values.
+//! [`EvalLambda`], and [`EvalThunk`] values.
 
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -14,7 +14,7 @@ use thiserror::Error;
 use super::env::EvalEnv;
 use super::thunk::ThunkCell;
 use crate::attrs::FlatAttrs;
-use crate::compile::IrId;
+use crate::compile::{FrameId, IrId};
 use crate::heap::arena::{ArenaError, ArenaStats, BumpArena};
 use crate::list::NixList;
 use crate::string::NixString;
@@ -59,6 +59,51 @@ impl EvalThunk {
     /// Returns the serial state/result cell for this thunk.
     pub const fn cell(&self) -> &ThunkCell {
         &self.cell
+    }
+}
+
+/// A user lambda closure heap record.
+///
+/// The record stores the lowered parameter pattern and body, the resolver frame
+/// used for the call's argument slots, and the lexical environment captured when
+/// the lambda was constructed.
+#[derive(Debug)]
+pub struct EvalLambda {
+    pattern: IrId,
+    body: IrId,
+    frame: FrameId,
+    env: EvalEnv,
+}
+
+impl EvalLambda {
+    /// Creates a lambda closure record.
+    pub fn new(pattern: IrId, body: IrId, frame: FrameId, env: EvalEnv) -> Self {
+        Self {
+            pattern,
+            body,
+            frame,
+            env,
+        }
+    }
+
+    /// Returns the lowered parameter pattern.
+    pub const fn pattern(&self) -> IrId {
+        self.pattern
+    }
+
+    /// Returns the lowered body expression.
+    pub const fn body(&self) -> IrId {
+        self.body
+    }
+
+    /// Returns the resolver frame associated with this lambda.
+    pub const fn frame(&self) -> FrameId {
+        self.frame
+    }
+
+    /// Returns the lexical environment captured when this lambda was allocated.
+    pub const fn env(&self) -> &EvalEnv {
+        &self.env
     }
 }
 
@@ -188,6 +233,30 @@ impl EvalHeap {
         Ok(value)
     }
 
+    /// Allocates a lambda closure object and returns its opaque runtime value.
+    ///
+    /// The returned value is only meaningful while this [`EvalHeap`] remains
+    /// alive. Use [`EvalHeap::get_lambda`] to recover the typed closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
+    /// bump arena cannot reserve a lambda handle, or if the resulting handle
+    /// violates the runtime value alignment contract.
+    pub fn alloc_lambda(&mut self, lambda: EvalLambda) -> Result<Value, EvalHeapError> {
+        self.reserve_record_slot()?;
+        let allocation = self
+            .arena
+            .aos_alloc_lambda()
+            .map_err(EvalHeapError::Arena)?;
+        let value = Value::lambda(allocation.ptr).map_err(EvalHeapError::Value)?;
+        self.records.push(HeapRecord {
+            ptr: allocation.ptr,
+            object: HeapObjectValue::Lambda(Rc::new(lambda)),
+        });
+        Ok(value)
+    }
+
     /// Allocates a suspended thunk object and returns its opaque runtime value.
     ///
     /// The returned value is only meaningful while this [`EvalHeap`] remains
@@ -305,6 +374,38 @@ impl EvalHeap {
         }
     }
 
+    /// Returns the lambda closure object referenced by `value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not a lambda value.
+    /// Returns [`EvalHeapError::UnknownPointer`] if the lambda handle does not
+    /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
+    /// the handle belongs to this heap but references a non-lambda record.
+    pub fn get_lambda(&self, value: Value) -> Result<&EvalLambda, EvalHeapError> {
+        let ptr = value.as_lambda_ptr().map_err(EvalHeapError::Value)?;
+        self.get_lambda_ptr(ptr)
+    }
+
+    /// Returns the lambda closure object referenced by an opaque heap pointer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::UnknownPointer`] if `ptr` does not belong to
+    /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
+    /// belongs to this heap but references a non-lambda record.
+    pub fn get_lambda_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&EvalLambda, EvalHeapError> {
+        let record = self.record_or_unknown(ValueTag::Lambda, ptr)?;
+        match &record.object {
+            HeapObjectValue::Lambda(lambda) => Ok(lambda.as_ref()),
+            object => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Lambda,
+                object.tag(),
+                ptr,
+            )),
+        }
+    }
+
     /// Returns the suspended thunk object referenced by `value`.
     ///
     /// # Errors
@@ -352,6 +453,21 @@ impl EvalHeap {
         }
     }
 
+    /// Clones the lambda handle so application can release the heap borrow
+    /// before evaluating the body.
+    pub(crate) fn clone_lambda(&self, value: Value) -> Result<Rc<EvalLambda>, EvalHeapError> {
+        let ptr = value.as_lambda_ptr().map_err(EvalHeapError::Value)?;
+        let record = self.record_or_unknown(ValueTag::Lambda, ptr)?;
+        match &record.object {
+            HeapObjectValue::Lambda(lambda) => Ok(Rc::clone(lambda)),
+            object => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Lambda,
+                object.tag(),
+                ptr,
+            )),
+        }
+    }
+
     fn reserve_record_slot(&mut self) -> Result<(), EvalHeapError> {
         let records = self
             .records
@@ -391,6 +507,7 @@ enum HeapObjectValue {
     String(NixString),
     List(NixList),
     Attrs(FlatAttrs),
+    Lambda(Rc<EvalLambda>),
     Thunk(Rc<EvalThunk>),
 }
 
@@ -400,6 +517,7 @@ impl HeapObjectValue {
             Self::String(_) => ValueTag::String,
             Self::List(_) => ValueTag::List,
             Self::Attrs(_) => ValueTag::Attrs,
+            Self::Lambda(_) => ValueTag::Lambda,
             Self::Thunk(_) => ValueTag::Thunk,
         }
     }
@@ -545,6 +663,26 @@ mod tests {
         let thunk = heap.get_thunk(value).expect("thunk exists");
         assert_eq!(thunk.body(), body);
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(heap.arena_stats().chunks, 1);
+    }
+
+    #[test]
+    fn allocates_lambda_values_and_recovers_closure() {
+        let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+        let pattern = IrId::new(3);
+        let body = IrId::new(7);
+        let frame = FrameId::new(1);
+        let value = heap
+            .alloc_lambda(EvalLambda::new(pattern, body, frame, EvalEnv::default()))
+            .expect("lambda allocates");
+
+        assert_eq!(value.tag(), ValueTag::Lambda);
+        assert_eq!(heap.len(), 1);
+        let lambda = heap.get_lambda(value).expect("lambda exists");
+        assert_eq!(lambda.pattern(), pattern);
+        assert_eq!(lambda.body(), body);
+        assert_eq!(lambda.frame(), frame);
+        assert!(lambda.env().frames().is_empty());
         assert_eq!(heap.arena_stats().chunks, 1);
     }
 
@@ -785,6 +923,18 @@ mod tests {
     }
 
     #[test]
+    fn reports_unknown_lambda_pointers() {
+        let heap = EvalHeap::new();
+        let ptr = NonNull::<HeapObject>::dangling();
+        let value = Value::lambda(ptr).expect("dangling pointer is aligned");
+        let error = heap
+            .get_lambda(value)
+            .expect_err("pointer does not belong to heap");
+
+        assert_eq!(error, EvalHeapError::unknown(ValueTag::Lambda, ptr));
+    }
+
+    #[test]
     fn reports_unknown_attrs_pointers() {
         let heap = EvalHeap::new();
         let ptr = NonNull::<HeapObject>::dangling();
@@ -836,6 +986,17 @@ mod tests {
             error,
             EvalHeapError::record_type_mismatch(ValueTag::Thunk, ValueTag::String, string_ptr)
         );
+        let mislabeled_lambda =
+            Value::lambda(string_ptr).expect("same pointer can carry lambda tag");
+
+        let error = heap
+            .get_lambda(mislabeled_lambda)
+            .expect_err("record is not a lambda");
+
+        assert_eq!(
+            error,
+            EvalHeapError::record_type_mismatch(ValueTag::Lambda, ValueTag::String, string_ptr)
+        );
         let mislabeled_attrs = Value::attrs(string_ptr).expect("same pointer can carry attrs tag");
 
         let error = heap
@@ -860,6 +1021,27 @@ mod tests {
         assert_eq!(
             error,
             EvalHeapError::record_type_mismatch(ValueTag::List, ValueTag::Thunk, thunk_ptr)
+        );
+
+        let lambda = heap
+            .alloc_lambda(EvalLambda::new(
+                IrId::new(0),
+                IrId::new(1),
+                FrameId::new(0),
+                EvalEnv::default(),
+            ))
+            .expect("lambda allocates");
+        let lambda_ptr = lambda.as_lambda_ptr().expect("lambda pointer");
+        let mislabeled_string =
+            Value::string(lambda_ptr).expect("same pointer can carry string tag");
+
+        let error = heap
+            .get_string(mislabeled_string)
+            .expect_err("record is not a string");
+
+        assert_eq!(
+            error,
+            EvalHeapError::record_type_mismatch(ValueTag::String, ValueTag::Lambda, lambda_ptr)
         );
     }
 
