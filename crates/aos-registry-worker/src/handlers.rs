@@ -169,10 +169,11 @@ async fn hub_home(env: &Env) -> Result<Response> {
 
 /// Apply the canonical D1 schema (a one-shot operational convenience).
 ///
-/// Prefer `wrangler d1 migrations apply` in production; this exists so a fresh
-/// database can be initialized without the wrangler migrations workflow.
+/// This is the production schema-setup path: request `GET /_init` once after
+/// `wrangler deploy` (there is no separate `wrangler d1 migrations` step — a
+/// hand-maintained migration file would diverge from core's `MIGRATIONS`).
 ///
-/// This runs the **shared** schema: constructing
+/// It runs the **shared** schema: constructing
 /// [`aos_registry_core::db::Database`] over the [`D1Backend`](crate::d1backend::D1Backend)
 /// applies the exact `MIGRATIONS` the native hub uses (RFC-0004 Phase 5 — the
 /// Worker and the native hub share one `Database`), rather than a Worker-local

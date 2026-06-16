@@ -18,13 +18,18 @@ compatibility_date = "2024-09-23"
 command = "worker-build --release"
 
 # The D1 (sqlite) database. The binding name must match
-# `handlers::bindings::D1` (REGISTRY_DB). Apply the schema with
-# `wrangler d1 migrations apply aos-registry-hub` (reads migrations/).
+# `handlers::bindings::D1` (REGISTRY_DB). Apply the schema once after deploy by
+# requesting `GET /_init`, which constructs the shared
+# `aos_registry_core::db::Database` over D1 and applies the exact `MIGRATIONS`
+# the native hub uses (tracked in the `schema_version` table). This is the
+# single source of truth for the schema — there is intentionally no separate
+# `migrations_dir`, since a hand-maintained wrangler migration would diverge
+# from core's `MIGRATIONS` (which the worker's reads and indexer now run
+# against) and the two version-tracking systems would conflict.
 [[d1_databases]]
 binding = "REGISTRY_DB"
 database_name = "aos-registry-hub"
 database_id = "00000000-0000-0000-0000-000000000000"  # replace with your D1 id
-migrations_dir = "migrations"
 
 # The R2 bucket that holds the registry surfaces (the zero-egress facade
 # source). The binding name must match `handlers::bindings::R2`

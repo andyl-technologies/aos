@@ -18,10 +18,9 @@ use serde::{Deserialize, Serialize};
 
 /// One registry's identity and read-relevant configuration.
 ///
-/// Populated from [`crate::sql::REGISTRY_BY_SLUG`] /
-/// [`crate::sql::LIST_PUBLIC_REGISTRIES`]. `trust_keys` is the raw JSON-array
-/// string as stored (`["name:Ed25519:b64", …]`); the renderer parses it for
-/// fingerprint display.
+/// Projected from `core::Database` rows by `crate::reads` (wasm32-only).
+/// `trust_keys` is the raw JSON-array string as stored
+/// (`["name:Ed25519:b64", …]`); the renderer parses it for fingerprint display.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Registry {
     /// The registry's row id.
@@ -42,7 +41,7 @@ pub struct Registry {
 
 /// Index freshness and surface metadata for one registry.
 ///
-/// Populated from [`crate::sql::REGISTRY_INDEX`].
+/// Projected from `core::Database::index_status` by `crate::reads`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IndexInfo {
     /// `fresh` | `indexing` | `stale` | `failed` | `partial`.

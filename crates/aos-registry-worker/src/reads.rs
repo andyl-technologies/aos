@@ -34,9 +34,8 @@ fn rust_err(err: anyhow::Error) -> worker::Error {
 /// A per-request read handle: `core::Database` over a bound D1 database.
 ///
 /// Constructed fresh from `env.d1(binding)` each request via [`Reads::new`]. The
-/// schema is applied out of band (the `/_init` handler or
-/// `wrangler d1 migrations apply`), so this attaches the backend without
-/// migrating.
+/// schema is applied out of band (the `/_init` handler, once after deploy), so
+/// this attaches the backend without migrating.
 pub struct Reads {
     db: Database,
 }

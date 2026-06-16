@@ -308,7 +308,11 @@ fn parse_trust_keys(json: &str) -> Result<Vec<String>> {
 /// List every public registry, mapped to the worker's [`Registry`].
 async fn list_public_registries(backend: &D1Backend) -> Result<Vec<Registry>> {
     let rows = backend
-        .query(crate::sql::LIST_PUBLIC_REGISTRIES, &[])
+        .query(
+            "SELECT id, slug, source_url, trust_keys, require_signatures, visibility, prefix \
+             FROM registries WHERE visibility = 'public' ORDER BY slug",
+            &[],
+        )
         .await
         .context("listing registries")?;
     rows.into_iter()

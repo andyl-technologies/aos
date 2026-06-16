@@ -12,8 +12,9 @@
 //! - [`aos_registry_surface`] — the wasm-clean reader (objects, tags, refs,
 //!   Ed25519 verification) the native hub indexer and `apm` already run, reused
 //!   verbatim in the Cron indexer ([`indexer`]).
-//! - The native hub's sqlite-dialect SQL — D1 *is* sqlite, so the schema and
-//!   read queries ([`sql`]) are the native strings unchanged.
+//! - [`aos_registry_core`] — the shared `Database` (schema `MIGRATIONS` + read
+//!   queries) the native hub runs, driven over the D1 [`d1backend`] so the
+//!   Worker's read path and indexer cannot drift from the hub's.
 //! - The native hub's facade classification — [`keymap`] is a faithful copy of
 //!   `compat::{is_machine_path, cache_control, content_type}`.
 //!
@@ -32,8 +33,6 @@
 //!
 //! Pure, native-testable (compile on every target):
 //!
-//! - [`sql`] — the D1 schema and read queries, validated offline against a real
-//!   sqlite engine.
 //! - [`keymap`] — R2 key mapping and the facade cache/content classification.
 //! - [`model`] — serde data models shared by the D1 layer, JSON API, and
 //!   renderer.
@@ -67,7 +66,6 @@ pub mod indexlogic;
 pub mod keymap;
 pub mod model;
 pub mod render;
-pub mod sql;
 
 #[cfg(target_arch = "wasm32")]
 pub mod d1backend;

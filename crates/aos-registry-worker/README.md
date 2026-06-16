@@ -116,9 +116,15 @@ cargo install worker-build wrangler          # one-time tooling
 wrangler d1 create aos-registry-hub          # provision D1, copy the id into wrangler.toml
 wrangler r2 bucket create aos-registry-surfaces
 wrangler kv namespace create SESSIONS        # copy the id into wrangler.toml
-wrangler d1 migrations apply aos-registry-hub   # apply migrations/0001_schema.sql
 wrangler deploy                              # builds the wasm (via worker-build) and deploys
+curl -fsS https://<your-worker>/_init        # apply the schema (core MIGRATIONS over D1), once
 ```
+
+The schema is applied by requesting `GET /_init` after the first deploy, which
+runs the shared `aos_registry_core` `MIGRATIONS` over D1 (tracked in
+`schema_version`) — the same schema the native hub uses and the worker's reads +
+indexer run against. There is no separate `wrangler d1 migrations` step: a
+hand-maintained migration file would diverge from core's `MIGRATIONS`.
 
 `worker-build --release` (run by `[build]` in `wrangler.toml`) wraps the
 `cargo build --target wasm32-unknown-unknown` + `wasm-bindgen` pipeline and emits
