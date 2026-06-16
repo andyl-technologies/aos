@@ -6,13 +6,16 @@
 //!
 //! - [`value`] — the engine-neutral [`Value`](value::Value)/[`Row`](value::Row)
 //!   marshalling types and the [`ToValue`](value::ToValue) binding trait.
+//! - [`dialect`] — per-engine SQL translation ([`Dialect`](dialect::Dialect)):
+//!   placeholder rewriting, DDL type mapping, and the mysql upsert rewrite, so
+//!   one source statement form serves sqlite, postgres, and mysql.
 //!
-//! Later phases move the SQL dialect translation, the async `Backend` trait,
-//! the indexer, and the HTTP handlers here too, leaving the deployment crates
-//! as thin shells around their concrete backend (sqlx for native, D1 for the
-//! Worker).
+//! Later phases move the async `Backend` trait, the indexer, and the HTTP
+//! handlers here too, leaving the deployment crates as thin shells around their
+//! concrete backend (sqlx for native, D1 for the Worker).
 //!
 //! The crate carries no I/O, runtime, or driver dependencies of its own and
 //! compiles to `wasm32-unknown-unknown`.
 
+pub mod dialect;
 pub mod value;
