@@ -1592,6 +1592,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_parse_drv_name_primop(id, node.span, argument, argument_span, value)
             }
+            StrictUnaryPrimOp::SplitVersion => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_split_version_primop(id, node.span, argument, argument_span, value)
+            }
             StrictUnaryPrimOp::FunctionArgs => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_function_args_primop(id, node.span, argument, argument_span, value)
@@ -1934,6 +1938,69 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
         self.heap
             .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_split_version_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                argument_span,
+            ));
+        }
+        let bytes = {
+            let string = self.heap.get_string(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            if string.has_context() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::StringContextNotAllowed {
+                        id: argument,
+                        op: "splitVersion",
+                    },
+                    argument_span,
+                ));
+            }
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(string.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id: argument,
+                        len: string.len(),
+                    },
+                    argument_span,
+                )
+            })?;
+            bytes.extend_from_slice(string.bytes());
+            bytes
+        };
+        let len = SplitVersionRanges::new(&bytes).count();
+        let mut elements = Vec::new();
+        elements.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
+        })?;
+        for (start, end) in SplitVersionRanges::new(&bytes) {
+            elements.push(self.alloc_static_string(id, span, &bytes[start..end])?);
+        }
+        self.heap
+            .alloc_list(NixList::new(elements))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
@@ -4983,6 +5050,44 @@ fn parse_drv_name_split(bytes: &[u8]) -> (usize, usize) {
     }
 }
 
+#[derive(Clone, Debug)]
+struct SplitVersionRanges<'a> {
+    bytes: &'a [u8],
+    next: usize,
+}
+
+impl<'a> SplitVersionRanges<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, next: 0 }
+    }
+}
+
+impl Iterator for SplitVersionRanges<'_> {
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self
+            .bytes
+            .get(self.next)
+            .is_some_and(|byte| matches!(*byte, b'.' | b'-'))
+        {
+            self.next += 1;
+        }
+        let start = self.next;
+        let first = *self.bytes.get(start)?;
+        let digit = first.is_ascii_digit();
+        self.next += 1;
+        while self
+            .bytes
+            .get(self.next)
+            .is_some_and(|byte| !matches!(*byte, b'.' | b'-') && byte.is_ascii_digit() == digit)
+        {
+            self.next += 1;
+        }
+        Some((start, self.next))
+    }
+}
+
 fn dir_name_range(bytes: &[u8]) -> Option<(usize, usize)> {
     if bytes.is_empty() {
         return None;
@@ -5062,6 +5167,7 @@ enum StrictUnaryPrimOp {
     BaseNameOf,
     DirOf,
     ParseDrvName,
+    SplitVersion,
     ListToAttrs,
     ConcatLists,
 }
@@ -5093,6 +5199,7 @@ impl StrictUnaryPrimOp {
             b"baseNameOf" => Some(Self::BaseNameOf),
             b"dirOf" => Some(Self::DirOf),
             b"parseDrvName" => Some(Self::ParseDrvName),
+            b"splitVersion" => Some(Self::SplitVersion),
             b"listToAttrs" => Some(Self::ListToAttrs),
             b"concatLists" => Some(Self::ConcatLists),
             _ => None,
@@ -5666,6 +5773,14 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The underlying string failure.
         source: NixStringError,
+    },
+    /// A primop received a context-bearing string where C++ Nix forbids one.
+    #[error("{op} does not allow string context at node {id:?}")]
+    StringContextNotAllowed {
+        /// The node id associated with the rejected string.
+        id: IrId,
+        /// The primop rejecting the string context.
+        op: &'static str,
     },
     /// A Nix list operation failed.
     #[error("list operation failed at node {id:?}: {source}")]
@@ -9091,6 +9206,131 @@ mod tests {
                 id: argument,
                 expected: "string",
                 actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn split_version_primop_tokenizes_components() {
+        assert_eq!(
+            eval_list_string_bytes("builtins.splitVersion \"1.2.3\""),
+            vec![b"1".to_vec(), b"2".to_vec(), b"3".to_vec()]
+        );
+        assert_eq!(
+            eval_list_string_bytes("builtins.splitVersion \"1.0pre2\""),
+            vec![b"1".to_vec(), b"0".to_vec(), b"pre".to_vec(), b"2".to_vec()]
+        );
+        assert_eq!(
+            eval_list_string_bytes("builtins.splitVersion \"foo-1.2_bar\""),
+            vec![
+                b"foo".to_vec(),
+                b"1".to_vec(),
+                b"2".to_vec(),
+                b"_bar".to_vec()
+            ]
+        );
+        assert_eq!(
+            eval_list_string_bytes("builtins.splitVersion \"\""),
+            Vec::<Vec<u8>>::new()
+        );
+        assert_eq!(
+            eval_list_string_bytes("builtins.splitVersion \".1..2-\""),
+            vec![b"1".to_vec(), b"2".to_vec()]
+        );
+        assert_eq!(
+            eval_list_string_bytes("builtins.splitVersion \"1+2~pre\""),
+            vec![
+                b"1".to_vec(),
+                b"+".to_vec(),
+                b"2".to_vec(),
+                b"~pre".to_vec()
+            ]
+        );
+        assert_eq!(
+            eval_list_string_bytes("builtins.splitVersion \"pre123post45\""),
+            vec![
+                b"pre".to_vec(),
+                b"123".to_vec(),
+                b"post".to_vec(),
+                b"45".to_vec()
+            ]
+        );
+        assert_eq!(
+            eval_list_string_bytes("builtins.splitVersion \"é1β2\""),
+            vec![
+                "é".as_bytes().to_vec(),
+                b"1".to_vec(),
+                "β".as_bytes().to_vec(),
+                b"2".to_vec()
+            ]
+        );
+        assert_eq!(
+            eval("let builtins = { splitVersion = x: [ \"local\" ]; }; in builtins.splitVersion \"1.0\" == [ \"local\" ]")
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn split_version_primop_requires_a_string() {
+        let ir = lower("builtins.splitVersion 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("splitVersion requires a string");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn split_version_primop_rejects_string_context() {
+        let ir = lower("builtins.splitVersion \"1.0\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("splitVersion argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"1.0".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing string allocates");
+
+        let error = evaluator
+            .eval_split_version_primop(ir.root, root.span, argument, argument_span, value)
+            .expect_err("splitVersion rejects string context");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                id: argument,
+                op: "splitVersion",
             }
         );
         assert_eq!(error.span(), argument_span);

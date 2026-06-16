@@ -986,6 +986,7 @@ impl IrLowerer {
                 | b"baseNameOf"
                 | b"dirOf"
                 | b"parseDrvName"
+                | b"splitVersion"
                 | b"unsafeDiscardStringContext",
             ) => Some(EffectClass::Pure),
             _ => None,
@@ -1900,6 +1901,10 @@ mod tests {
                 b"parseDrvName".as_slice(),
             ),
             (
+                "builtins.splitVersion \"1.0pre2\"",
+                b"splitVersion".as_slice(),
+            ),
+            (
                 "builtins.unsafeDiscardStringContext \"abc\"",
                 b"unsafeDiscardStringContext".as_slice(),
             ),
@@ -2161,6 +2166,14 @@ mod tests {
         };
         assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
 
+        let ir = lowered("splitVersion \"1.0\"");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
         let ir = lowered("let typeOf = x: x; in typeOf 1");
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
@@ -2215,6 +2228,18 @@ mod tests {
 
         let ir = lowered(
             "let builtins = { parseDrvName = x: { name = \"local\"; version = \"\"; }; }; in builtins.parseDrvName \"foo-1\"",
+        );
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered(
+            "let builtins = { splitVersion = x: [ \"local\" ]; }; in builtins.splitVersion \"1.0\"",
         );
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
