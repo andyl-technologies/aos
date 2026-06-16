@@ -183,10 +183,13 @@ pub async fn generate_static_cache(
 
     // Phase B: compress (or reuse) each NAR and write its narinfo, bounded by
     // a `workers`-permit budget. A dominant NAR acquires several permits and
-    // runs zstdmt across that many threads.
+    // runs zstdmt across that many threads. Each entry is logged as it is
+    // dispatched (once a permit is free), so progress streams live rather
+    // than arriving in a burst after the slowest NAR finishes.
+    let total = entries.len();
     let sem = Arc::new(Semaphore::new(workers));
-    let mut handles = Vec::with_capacity(entries.len());
-    for entry in entries {
+    let mut handles = Vec::with_capacity(total);
+    for (index, entry) in entries.into_iter().enumerate() {
         let threads = if entry.skip {
             1
         } else {
@@ -196,6 +199,18 @@ pub async fn generate_static_cache(
             .acquire_many_owned(threads)
             .await
             .context("acquiring compression permits")?;
+        let position = index + 1;
+        if entry.skip {
+            printer.info(&format!(
+                "[{position}/{total}] Reusing cached NAR for {}",
+                entry.info.path
+            ));
+        } else {
+            printer.info(&format!(
+                "[{position}/{total}] Generating static cache entry for {}",
+                entry.info.path
+            ));
+        }
         let output_dir = Arc::clone(&output_dir);
         let store_dir = store_dir.clone();
         let signer = Arc::clone(&signer);
@@ -208,7 +223,7 @@ pub async fn generate_static_cache(
                 (*signer).as_ref(),
                 threads,
             )
-            .map(|()| (entry.info.path, entry.skip))
+            .map(|()| entry.skip)
         }));
     }
 
@@ -217,14 +232,12 @@ pub async fn generate_static_cache(
     let mut nars = 0usize;
     let mut nars_skipped = 0usize;
     for handle in handles {
-        let (path, skipped) = handle.await.context("static cache entry task panicked")??;
+        let skipped = handle.await.context("static cache entry task panicked")??;
         narinfos += 1;
         if skipped {
             nars_skipped += 1;
-            printer.info(&format!("Reused cached NAR for {path}"));
         } else {
             nars += 1;
-            printer.info(&format!("Generated static cache entry for {path}"));
         }
     }
 
