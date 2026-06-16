@@ -850,11 +850,11 @@ the next schema change, before any `expose` work ships.
 | 2 | Kernel modules as the allowlisted, signature-backed host-fulfilled permission (allowlist location rides 1(a)) | DECIDE-EARLY | packages-core |
 | 3 | Networking — **RESOLVED (direction)**: socket-activation default, netns+veth oneshot for outbound, host for k3s | validate in D17 spike | packages-core / pkgs |
 | 4 | nspawn-in-VM feasibility — **mooted for MVP** by D17; per-unit lifecycle test remains | test plan | test-infra |
-| 5 | Container roots — **RESOLVED**: store path via `RootDirectory=`; verity/`RootImage=` future (kernel lacks DM_VERITY) | RESOLVED | pkgs / apm |
+| 5 | Container roots — **RESOLVED**: store path via `RootDirectory=`; **verity-signed `RootImage=` un-deferred** (budget mandate) — built in D21/P9, `CONFIG_DM_VERITY` added | RESOLVED | pkgs / apm |
 | 6 | Bake vs. fetch — **RESOLVED by 5**: ordinary closure delivery; bake k3s, fetch workloads | RESOLVED | pkgs / boot |
 | 7 | machined/portabled/importd — **RESOLVED: stay disabled** | RESOLVED | pkgs |
 | 8 | Install-at-boot — enable **RESOLVED: presets via every-boot `aos-preset.service`** (machine-id + tmpfs-upper + apm idempotency all verified) | install unit remains BEFORE-MVP | boot / apm |
-| 9 | Config & credential delivery | DEFER (open — deliberately) | packages-core / apm |
+| 9 | Config & credential delivery — **recommendation on the table**: TPM2-sealed systemd credentials (signed-PCR policy), enabled by RFC-0006's TPM substrate ([config.md](config.md)); awaiting maintainer sign-off | DECIDE (recommendation) | packages-core / apm |
 | 10 | Boundary labeling — **RESOLVED**: computed confinement label | RESOLVED | packages-core |
 | 11 | Upgrade/rollback — **RESOLVED (direction)** under D17: unit-semantics restarts, `KillMode=process` preserved for k3s | RESOLVED (direction) | apm / packages-core |
 | 12 | Package metadata — **RESOLVED (hybrid)**: TOML carries target/requires/permissions; units ride the closure | RESOLVED | apm / packages-core |
@@ -863,8 +863,24 @@ the next schema change, before any `expose` work ships.
 | 15 | Unit naming — **RESOLVED: `aos-pkg-<name>`** | RESOLVED | packages-core |
 | 16 | Runtime unit placement — **RESOLVED**: `/var/etc` attach dir + preset lines (tmpfs upper forced it) | RESOLVED | boot / apm |
 | 17 | Execution substrate — **RESOLVED (direction)**: per-unit default, nspawn deferred; spike = validation | validate | packages-core / pkgs |
-| 18 | Package-name service dependencies (`requires`) — new resolver surface | DECIDE-EARLY | apm |
+| 18 | Package-name service dependencies (`requires`) — new resolver surface; **typed capability-routing option open** (Fuchsia-style; merit not cost, [authoring.md](authoring.md)) | DECIDE-EARLY | apm |
 | 19 | Registry schema capability gate (fail-open on old clients) | DECIDE-BEFORE-MVP | apm |
+| 20 | **Layered enforcement** — Landlock + generated MAC + eBPF-LSM + full systemd hardening baseline + per-package `systemd-analyze` CI gate ([enforcement.md](enforcement.md)) | COMMITTED (budget mandate) | packages-core / pkgs |
+| 21 | **dm-verity package roots** — signed `RootImage=` vs the `.platform` keyring ([attestation.md](attestation.md)); un-deferred | COMMITTED (budget mandate) | pkgs |
+| 22 | **Runtime attestation** — measure package + manifest into PCR 15, TPM quote, **registry golden-measurements catalog** (catalog/oracle, never a runtime signer); extends RFC-0006 ([attestation.md](attestation.md)) | COMMITTED (budget mandate) | apm / boot |
+| 23 | **Supply-chain provenance & transparency** — in-toto/SLSA, transparency log, TUF roles/thresholds ([apm-integration.md](apm-integration.md) §7) | COMMITTED (budget mandate) | apm |
+
+## State-of-the-art additions (Decisions 20–23)
+
+Decisions 1–19 were the original design questions. Decisions 20–23 are the
+state-of-the-art improvements added under the unlimited-engineering-budget
+mandate ([state-of-the-art.md](state-of-the-art.md)) — they are **committed
+deliverables, not open questions**, with full implementer detail in
+[enforcement.md](enforcement.md), [attestation.md](attestation.md), and
+[apm-integration.md](apm-integration.md). They are listed here so the register
+is the single index of everything to build. The one decision the budget mandate
+explicitly does **not** force is D9 (config), which carries a recommendation
+awaiting sign-off; and D17 (nspawn) stays deferred on merit, not cost.
 
 ---
 

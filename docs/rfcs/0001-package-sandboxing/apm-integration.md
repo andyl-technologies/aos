@@ -25,7 +25,12 @@ Sibling docs cover the rest:
 (nspawn shape, k3s as a high-privilege container), [`boot-activation.md`](boot-activation.md)
 (Ignition + first-boot install), [`config.md`](config.md) (config delivery,
 explicitly open), [`migration.md`](migration.md), and
-[`open-questions.md`](open-questions.md).
+[`open-questions.md`](open-questions.md). For the supply-chain side — runtime
+integrity (dm-verity), hardware-rooted attestation (TPM), and the registry's
+provenance role that §7 below records — the authoritative design is
+[`attestation.md`](attestation.md) (with [`enforcement.md`](enforcement.md) on
+layered in-kernel enforcement and [`state-of-the-art.md`](state-of-the-art.md)
+on the comparison).
 
 ---
 
@@ -530,16 +535,148 @@ delivery model per package — **fetch-at-boot via apm as the default**; if
 baking, document the per-package choice explicitly. Tracked in Decision 5 of
 [`open-questions.md`](open-questions.md).
 
-**Audit against TUF.** The chain above (TOFU-pinned key, tag signatures,
-anti-rollback floor) is a homegrown subset of The Update Framework. Now that the
-`[permissions]` manifest's security rides on it, audit it against TUF's attack
-catalog — freeze (serving a stale-but-validly-signed view to one host),
-mix-and-match across packages, fast-forward recovery, key
-rotation/thresholds. Separately, consider binding the manifest to the artifact
-as a detached **attestation over the NAR hash** (in-toto/SLSA-style, cf.
-sigstore/cosign attestations in the OCI world) rather than only by co-residency
-in the signed tree, so the manifest is independently verifiable. Tracked in
-Decision 5 of [`open-questions.md`](open-questions.md).
+**Build, not audit, against TUF.** The chain above (TOFU-pinned key, tag
+signatures, anti-rollback floor) is a homegrown subset of The Update Framework.
+Now that the `[permissions]` manifest's security rides on it — and that the
+registry is the provenance/attestation plane for the whole supply chain — the
+TUF surface is **built out in full**, not merely audited: see §7.1 below and
+[`attestation.md`](attestation.md) (§"Provenance & transparency") for the
+authoritative design.
+
+### 7.1 Registry role in attestation & provenance
+
+> **Authoritative design:** [`attestation.md`](attestation.md). This section
+> records only the **registry's** role and its concrete schema/CLI surface; the
+> full three-artifact model (dm-verity runtime integrity + TPM measured
+> attestation), the kernel-config and `systemd` `RootImage=`/`RootHash=` wiring,
+> and the fleet verifier all live there. Under the
+> [budget mandate](implementation-plan.md#budget-mandate) none of this is
+> deferred for cost.
+
+The registry is the **catalog / policy / provenance plane — never a runtime
+signer.** This is the *same pattern* RFC-0006's registry SB-catalog plays — "the
+registry records and validates SB signing facts but is **never a signer** of
+them" — generalized from Secure Boot to the three package trust artifacts. The
+registry plays three roles, one per artifact:
+
+1. **Provenance host + publication anchor (artifact 1).** At `apr publish` the
+   registry binds `name → version → nar-hash → manifest-hash → root-digest`,
+   **tag-signs** that binding (the existing Ed25519 tag-signature chain, with
+   name-binding and the anti-rollback floor), **hosts** the in-toto/SLSA
+   provenance attestation that ties the NAR + `[permissions]` manifest to the
+   build inputs (the `.drv` / source), and **appends the binding to a
+   transparency log** so the publication is externally auditable and
+   non-equivocable. It decides *what may be distributed* and *signs the catalog
+   entry* — it never knows a host's local policy (the three-layer rule of
+   [`permissions.md`](permissions.md) is unchanged).
+2. **Source of the signed dm-verity root hash (artifact 2).** The
+   `.roothash.p7s` (PKCS#7 over the dm-verity root hash) for each
+   package/generation root is a **registry-served artifact** (the new
+   `root_hash_sig` field, §7.2). The registry *distributes* it; the **kernel
+   enforces** it against the `.platform` keyring (populated from the UEFI db
+   certificates enrolled by RFC-0006). The registry holds no verity key and
+   performs no runtime check.
+3. **Golden-measurements catalog (artifact 3).** The registry records, per
+   package/version, the **expected measurement tuple**
+   `H(name ‖ version ‖ root-digest ‖ manifest-digest)` — the same value a node
+   extends into TPM **PCR 15** at activation. A fleet verifier checks a node's
+   `TPM2_Quote` and replayed event log against these golden values. The registry
+   is the **oracle of expected values**, exactly as it records `expected_pcr11`
+   for UKIs today; it never holds a TPM, signs a quote, or is the hardware root
+   of trust.
+
+**Key-custody separation (mandatory, inherited from RFC-0006).** The registry
+**publication key** (artifact 1) ≠ the **UEFI-db / verity key** (artifact 2) ≠
+the **TPM AK/EK** (artifact 3). A registry compromise lets an attacker publish a
+*new* signed package (caught by policy + provenance + transparency log +
+anti-rollback) but **cannot forge a TPM quote** or alter a node's measured
+state. Same blast-radius containment RFC-0006 designed for SB, extended to
+packages. See [`attestation.md`](attestation.md) §"Custody / separation of
+duties".
+
+### 7.2 Registry / `PackageMeta` schema additions for attestation
+
+These extend the Option-A `[versions.platforms.<p>]` block and `ExposeMeta`
+sketch from §2.2. All fields are `#[serde(default)]` (back-compat with old
+registries) and gated behind the **Decision 19 capability gate** (so an old apm
+that cannot enforce them *refuses* rather than silently dropping them — see the
+fail-open hazard in §2.2).
+
+```toml
+[versions.platforms.x86_64-linux]
+store_path  = "/nix/store/...-myapp-1.0"
+nar_hash    = "sha256:..."
+# ... existing fields ...
+
+# NEW (artifact 2): dm-verity root hash for this package/generation root, plus
+# its PKCS#7 detached signature (.roothash.p7s). The registry DISTRIBUTES these;
+# the KERNEL enforces root_hash_sig against the .platform keyring (UEFI db).
+root_hash     = "sha256:..."                  # dm-verity Merkle root
+root_hash_sig = "myapp-1.0.roothash.p7s"      # registry-served, kernel-enforced
+
+# NEW (artifact 1): in-toto/SLSA provenance attestation, served alongside the
+# narinfo. Binds nar_hash AND manifest-hash to the build inputs (.drv / source).
+provenance    = "myapp-1.0.intoto.jsonl"      # registry-hosted attestation ref
+
+# NEW (artifact 3): golden measurement tuple a node extends into TPM PCR 15.
+# A fleet verifier checks a node's quote against this expected value.
+measurement   = "sha256:..."                  # H(name ‖ version ‖ root-digest ‖ manifest-digest)
+```
+
+Mapping to Rust (proposed; added to `PackageMeta`, all defaulted):
+
+```rust
+/// Per-platform attestation/provenance facts. The registry hosts and serves
+/// these; it is never the runtime signer (the kernel enforces `root_hash_sig`,
+/// a TPM enforces `measurement`). All fields default for back-compat and are
+/// gated behind the Decision 19 capability gate.
+pub struct AttestationMeta {
+    /// dm-verity Merkle root hash over the package/generation root image.
+    #[serde(default)]
+    pub root_hash: Option<String>,
+    /// Registry-served PKCS#7 (`.roothash.p7s`) over `root_hash`; the kernel
+    /// validates it against the `.platform` keyring (UEFI db, RFC-0006).
+    #[serde(default)]
+    pub root_hash_sig: Option<String>,
+    /// Reference to the registry-hosted in-toto/SLSA provenance attestation
+    /// binding the NAR hash and the `[permissions]` manifest hash to build inputs.
+    #[serde(default)]
+    pub provenance: Option<String>,
+    /// Golden measurement tuple `H(name ‖ version ‖ root-digest ‖ manifest-digest)`
+    /// that a node extends into TPM PCR 15; the fleet verifier's expected value.
+    #[serde(default)]
+    pub measurement: Option<String>,
+}
+// added to PackageMeta as:
+//   #[serde(default)]
+//   pub attestation: AttestationMeta,
+```
+
+### 7.3 TUF / provenance / transparency — built, not just audited
+
+Promoting the §7 TUF/in-toto note from *consider/audit* to *build* (full design
+in [`attestation.md`](attestation.md) §"Provenance & transparency"):
+
+- **in-toto / SLSA provenance — build.** Emit a SLSA provenance attestation
+  (current spec **v1.2**, with the Source Track) per package build, binding the
+  **NAR hash AND the `[permissions]` manifest hash** to the build inputs; serve
+  it from the registry alongside the narinfo (the `provenance` field, §7.2).
+  in-toto attestation framework **v1.2**.
+- **Transparency log — build.** Append every published binding to a
+  Merkle/append-only log — the **Trustix** multi-builder-consensus shape, or a
+  **Rekor**-style log (Sigstore GA 2022; Cosign 3.0 / Rekor v2, Oct 2025). This
+  removes the **single-Ed25519-key single point of failure** the homegrown chain
+  has today ("if the cache/tag key is compromised, all builds are tainted") and
+  makes equivocation detectable.
+- **TUF — build the full roles, not just the rollback floor.** AOS already has
+  the TUF **rollback** defense (the anti-rollback semver floor, §7.4). Build out
+  the rest of TUF (**spec v1.0.34**): the role separation + **thresholds** +
+  **timestamping** that defend against freeze, mix-and-match, and fast-forward
+  attacks, plus key rotation.
+- **Caveat (record, not a blocker):** cosign's OCI-1.1 *referrers* API is
+  **selectable, not yet a hard default**, and **GHCR does not implement the
+  referrers endpoint** — relevant only if AOS ever mirrors attestations into an
+  OCI registry.
 
 ---
 
@@ -556,7 +693,8 @@ works:
 | Profile generation | gc-root + meta + FHS | also gc-root the container-root image |
 | **Expose phase** | *(does not exist)* | **NEW**: drop launch unit + template instance + `aos-pkg-<name>.target`, then enable |
 | Activation | n/a | `systemctl enable --now` (runtime) or Ignition `systemd.units[]` (first boot) |
-| Trust | tag-signed metadata + NAR hash + cache sig | **unchanged** — roots ride the same chain |
+| Trust | tag-signed metadata + NAR hash + cache sig | **unchanged** for delivery — roots ride the same chain |
+| Attestation / provenance | tag-sig + anti-rollback floor only | + `root_hash`/`root_hash_sig`/`provenance`/`measurement` (§7.2); registry hosts provenance + golden values, never a runtime signer (§7.1); full TUF + transparency log (§7.3); design in [`attestation.md`](attestation.md) |
 
 The two genuinely new pieces are (a) the **expose phase** post-install hook and
 (b) where its **unit files physically land** under the immutable-root /etc

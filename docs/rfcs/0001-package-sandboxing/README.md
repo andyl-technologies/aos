@@ -1,9 +1,13 @@
 # RFC-0001: AOS Package Sandboxing
 
-- **Status:** Proposed — 14 of 19 tracked decisions resolved, 2 mooted,
-  3 open ([`open-questions.md`](open-questions.md)). The phased build is
-  in [`implementation-plan.md`](implementation-plan.md); implementation is
-  gated on the Decision 17 validation spike (Phase 3).
+- **Status:** Proposed — 23 tracked decisions ([`open-questions.md`](open-questions.md));
+  Decisions 1–19 are the core design (14 resolved, 2 mooted, 3 open) and 20–23
+  are the state-of-the-art additions committed under the budget mandate. The
+  phased build is in [`implementation-plan.md`](implementation-plan.md);
+  implementation is gated on the Decision 17 validation spike (Phase 3).
+- **Mandate:** unlimited engineering budget, no corners cut — the target is the
+  state of the art ([`state-of-the-art.md`](state-of-the-art.md)). Cost-based
+  deferrals are lifted; only correctness-based deferrals (nspawn) remain.
 - **Date:** 2026-06-08
 - **PR:** [#28](https://github.com/andyl-technologies/aos/pull/28)
 - **Audience:** anyone working on `pkgs/`, `crates/aos-package/`,
@@ -208,8 +212,22 @@ In scope:
   machinery into `pkgs/` `expose` blocks + a thin policy module, the current-tree
   touchpoints, and the validation gates (`aos fmt --check`, `checks.eval`,
   `checks.vm.boot`, fleet tests).
-- [`open-questions.md`](open-questions.md) — the decision register: all 19
+- [`open-questions.md`](open-questions.md) — the decision register: all 23
   tracked decisions with disposition, evidence, and owner.
+- [`state-of-the-art.md`](state-of-the-art.md) — the comparison against other
+  operating systems (Fuchsia/Genode/seL4, Android/iOS, Flatpak/Snap, Talos/
+  Flatcar/ChromeOS, systemd/Landlock/eBPF-LSM): where AOS leads, where it was
+  lagging, and what each improvement closes.
+- [`enforcement.md`](enforcement.md) — **the layered defense-in-depth stack**:
+  Landlock + a generated per-package MAC profile + fleet-managed eBPF-LSM, the
+  full `systemd-analyze security` hardening baseline, per-package UID identity,
+  and the per-package CI score gate — all generated from the manifest.
+- [`attestation.md`](attestation.md) — **runtime integrity & hardware-rooted
+  attestation**: dm-verity package roots validated against the `.platform`
+  keyring, measuring the package set **and its privilege manifests** into the
+  TPM (extending RFC-0006), the TPM quote + fleet verifier, and **how the
+  registry fits in** as the golden-measurements catalog / provenance plane —
+  never a runtime signer.
 
 ## Status of evidence
 
