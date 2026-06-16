@@ -690,9 +690,11 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       units are carried by `copy_roots` or regenerated each generation
       (`install.rs`); whether a *package*-profile generation swap re-materializes
       them.
-- [ ] **`expose.images` resolution (P6).** `images:` is "sysroot only" today; the
-      installer must explicitly resolve `expose.images[].store_path` for ordinary
-      packages (`crates/aos-package/src/resolve.rs`, `install.rs`).
+- [x] **`expose.images` resolution (P6).** Install and upgrade now explicitly
+      download and generation-root `expose.images[].store_path` on ordinary
+      packages, verify the image NAR against signed registry metadata, and
+      reject image NARs that declare unsigned runtime references
+      (`crates/aos-package/src/install.rs`, `upgrade.rs`).
 - [ ] **nspawn feature checks (P8, only if nspawn lands).** cgroup-v2 delegation
       depth, `--private-users` mapping, custom seccomp support on the built
       `systemd-nspawn`.

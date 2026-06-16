@@ -76,6 +76,45 @@ pub(crate) fn rebuild_generation_expose_roots(
     Ok(())
 }
 
+/// Rebuild the generation's `expose-images/` GC-root symlinks from metadata.
+///
+/// # Errors
+///
+/// Returns an error if the generation's `expose-images/` directory cannot be
+/// recreated or an image symlink cannot be written.
+pub(crate) fn rebuild_generation_expose_image_roots(
+    generation: &Generation,
+    installed: &[InstalledMeta],
+) -> Result<()> {
+    let image_dir = generation.path.join("expose-images");
+    reset_dir(&image_dir)?;
+
+    let mut rooted = BTreeMap::<String, String>::new();
+    for entry in installed {
+        let Some(apm) = entry.apm.as_ref() else {
+            continue;
+        };
+        if !apm.explicit {
+            continue;
+        }
+        let Some(expose) = apm.expose.as_ref() else {
+            continue;
+        };
+        for image in &expose.images {
+            rooted.insert(
+                store_path_hash(&image.store_path).to_string(),
+                image.store_path.clone(),
+            );
+        }
+    }
+
+    for (hash, store_path) in rooted {
+        atomic_symlink(Path::new(&store_path), &image_dir.join(hash))?;
+    }
+
+    Ok(())
+}
+
 /// Validate a generation's exposed package metadata and rooted artifacts.
 ///
 /// # Errors
@@ -770,7 +809,7 @@ mod tests {
 
     use crate::types::{
         ApmMeta, CapabilityKind, ExposeArtifactMeta, ExposeMeta, InstalledMeta,
-        ProvidedCapabilityMeta, RequiredCapabilityMeta,
+        ProvidedCapabilityMeta, RequiredCapabilityMeta, SysrootImageEntry,
     };
 
     fn installed_with_expose(
@@ -850,6 +889,39 @@ mod tests {
             .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].file_name(), "artifacthash111");
+    }
+
+    #[test]
+    fn rebuild_generation_expose_image_roots_links_images_once() {
+        let tmp = TempDir::new().unwrap();
+        let generation = Generation {
+            number: 1,
+            path: tmp.path().join("gen-1"),
+        };
+        let mut web = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let mut api = installed_with_expose(&tmp, "api", "pkghash222", "artifacthash222");
+        let image_path = tmp.path().join("imagehash111-rootfs");
+        for installed in [&mut web, &mut api] {
+            let expose = installed.apm.as_mut().unwrap().expose.as_mut().unwrap();
+            expose.images = vec![SysrootImageEntry {
+                format: "dir".to_string(),
+                store_path: image_path.display().to_string(),
+                nar_hash: "sha256:image".to_string(),
+                nar_size: 1,
+                sb_signer_cert_sha256: None,
+                sbat: Vec::new(),
+                expected_pcr11: None,
+            }];
+        }
+
+        rebuild_generation_expose_image_roots(&generation, &[web, api]).unwrap();
+
+        let entries = std::fs::read_dir(generation.path.join("expose-images"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].file_name(), "imagehash111");
     }
 
     #[test]
