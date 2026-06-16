@@ -187,6 +187,10 @@ pub enum IrKind {
     Int,
     /// A floating-point literal.
     Float,
+    /// A boolean literal.
+    Bool,
+    /// A null literal.
+    Null,
     /// A string literal.
     Str,
     /// A path literal.
@@ -250,6 +254,8 @@ pub enum IrData {
     Int(i64),
     /// The node carries a floating-point literal.
     Float(f64),
+    /// The node carries a boolean literal.
+    Bool(bool),
     /// The node carries an interned symbol.
     Symbol(Symbol),
     /// The node references one child.
@@ -606,7 +612,7 @@ impl IrLowerer {
                 };
                 self.push(IrKind::UpvalVar, node.span, IrData::Upval { depth, slot })
             }
-            NodeKind::GlobalVar => self.lower_symbol_node(node, IrKind::GlobalVar),
+            NodeKind::GlobalVar => self.lower_global(node),
             NodeKind::WithVar => {
                 let NodeData::WithVar { symbol, chain } = node.data else {
                     return Err(self.invalid_shape(node, "with-var payload"));
@@ -644,6 +650,18 @@ impl IrLowerer {
             return Err(self.invalid_shape(node, "symbol payload"));
         };
         self.push(kind, node.span, IrData::Symbol(symbol))
+    }
+
+    fn lower_global(&mut self, node: Node) -> Result<IrId, IrError> {
+        let NodeData::Symbol(symbol) = node.data else {
+            return Err(self.invalid_shape(node, "global symbol payload"));
+        };
+        match self.resolved.symbols.resolve(symbol) {
+            Some(b"true") => self.push(IrKind::Bool, node.span, IrData::Bool(true)),
+            Some(b"false") => self.push(IrKind::Bool, node.span, IrData::Bool(false)),
+            Some(b"null") => self.push(IrKind::Null, node.span, IrData::None),
+            _ => self.push(IrKind::GlobalVar, node.span, IrData::Symbol(symbol)),
+        }
     }
 
     fn lower_list(&mut self, node: Node) -> Result<IrId, IrError> {
@@ -1131,7 +1149,14 @@ fn effect_for(kind: IrKind) -> EffectClass {
 fn is_trivial_value(kind: IrKind) -> bool {
     matches!(
         kind,
-        IrKind::Int | IrKind::Float | IrKind::Str | IrKind::Path | IrKind::SearchPath | IrKind::Uri
+        IrKind::Int
+            | IrKind::Float
+            | IrKind::Bool
+            | IrKind::Null
+            | IrKind::Str
+            | IrKind::Path
+            | IrKind::SearchPath
+            | IrKind::Uri
     )
 }
 
@@ -1148,6 +1173,10 @@ mod tests {
 
     fn node(ir: &Ir, id: IrId) -> &IrNode {
         ir.arena.node(id).expect("IR node exists")
+    }
+
+    fn root_node(ir: &Ir) -> &IrNode {
+        node(ir, ir.root)
     }
 
     fn thunk_inner(ir: &Ir, id: IrId) -> IrId {
@@ -1180,6 +1209,63 @@ mod tests {
         };
         assert_eq!(node(&ir, first).kind, IrKind::LocalVar);
         assert_eq!(node(&ir, second).kind, IrKind::Int);
+    }
+
+    #[test]
+    fn lowers_global_bool_and_null_literals_after_resolution() {
+        let true_ir = lowered("true");
+        assert_eq!(root_node(&true_ir).kind, IrKind::Bool);
+        assert_eq!(root_node(&true_ir).data, IrData::Bool(true));
+
+        let false_ir = lowered("false");
+        assert_eq!(root_node(&false_ir).kind, IrKind::Bool);
+        assert_eq!(root_node(&false_ir).data, IrData::Bool(false));
+
+        let null_ir = lowered("null");
+        assert_eq!(root_node(&null_ir).kind, IrKind::Null);
+        assert_eq!(root_node(&null_ir).data, IrData::None);
+    }
+
+    #[test]
+    fn shadowed_bool_and_null_names_remain_lexical_variables() {
+        let ir = lowered("let true = 1; null = 2; in [ true null ]");
+        let root = root_node(&ir);
+        let IrData::Let { body, .. } = root.data else {
+            panic!("let payload expected");
+        };
+        let IrData::Children(elements) = node(&ir, body).data else {
+            panic!("list payload expected");
+        };
+        let elements = ir.arena.child_slice(elements).expect("list slice exists");
+        assert_eq!(
+            node(&ir, thunk_inner(&ir, elements[0])).kind,
+            IrKind::LocalVar
+        );
+        assert_eq!(
+            node(&ir, thunk_inner(&ir, elements[1])).kind,
+            IrKind::LocalVar
+        );
+    }
+
+    #[test]
+    fn with_shadowed_bool_name_remains_dynamic() {
+        let ir = lowered("with { true = 1; }; true");
+        let IrData::Pair { second, .. } = root_node(&ir).data else {
+            panic!("with payload expected");
+        };
+        assert_eq!(node(&ir, second).kind, IrKind::WithVar);
+    }
+
+    #[test]
+    fn bool_and_null_literals_are_not_thunked_in_lists() {
+        let ir = lowered("[ true null false ]");
+        let IrData::Children(elements) = root_node(&ir).data else {
+            panic!("list payload expected");
+        };
+        let elements = ir.arena.child_slice(elements).expect("list slice exists");
+        assert_eq!(node(&ir, elements[0]).kind, IrKind::Bool);
+        assert_eq!(node(&ir, elements[1]).kind, IrKind::Null);
+        assert_eq!(node(&ir, elements[2]).kind, IrKind::Bool);
     }
 
     #[test]
