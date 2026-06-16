@@ -2,16 +2,17 @@
 //!
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
 //! first slices evaluate scalar literals, boolean control flow, assertions,
-//! boolean operators, numeric arithmetic, numeric comparisons, and scalar
-//! equality to weak head normal form, establishing the arena access and
-//! diagnostic surface used by later slices for environments, thunks, functions,
-//! attribute sets, primitive operations, and derivation boundaries.
+//! boolean operators, string literals and concatenation, numeric arithmetic,
+//! numeric comparisons, and scalar equality to weak head normal form,
+//! establishing the arena access and diagnostic surface used by later slices
+//! for environments, thunks, functions, attribute sets, primitive operations,
+//! and derivation boundaries.
 
 use thiserror::Error;
 
 use super::heap::{EvalHeap, EvalHeapError};
 use crate::compile::{Ir, IrData, IrId, IrKind, IrNode};
-use crate::string::NixString;
+use crate::string::{NixString, NixStringError};
 use crate::syntax::{BinOpKind, Span, Symbol, UnaryOpKind};
 use crate::value::{Value, ValueTag};
 
@@ -115,8 +116,9 @@ impl<'ir> TreeWalk<'ir> {
     /// Evaluates a node to weak head normal form.
     ///
     /// This initial public node entry point is intentionally limited to
-    /// environment-free scalar literal, control-flow, boolean operator, numeric
-    /// arithmetic, numeric comparison, and scalar equality nodes.
+    /// environment-free scalar literal, string literal, control-flow, boolean
+    /// operator, string concatenation, numeric arithmetic, numeric comparison,
+    /// and scalar equality nodes.
     /// Environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add an explicit
     /// runtime and environment context.
@@ -249,7 +251,7 @@ impl<'ir> TreeWalk<'ir> {
                     Ok(Value::bool(true))
                 }
             }
-            BinOpKind::Add => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Add, lhs, rhs),
+            BinOpKind::Add => self.eval_add(id, node, lhs, rhs),
             BinOpKind::Sub => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Sub, lhs, rhs),
             BinOpKind::Mul => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Mul, lhs, rhs),
             BinOpKind::Div => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Div, lhs, rhs),
@@ -289,6 +291,49 @@ impl<'ir> TreeWalk<'ir> {
         self.heap
             .alloc_string(NixString::from_bytes(owned))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    fn eval_add(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        lhs: IrId,
+        rhs: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let lhs_span = self.node(lhs)?.span;
+        let left = self.eval_node(lhs)?;
+        match left.tag() {
+            ValueTag::Int | ValueTag::Float => {
+                let rhs_span = self.node(rhs)?.span;
+                let right = self.eval_node(rhs)?;
+                let left = self.expect_number(lhs, left, lhs_span)?;
+                let right = self.expect_number(rhs, right, rhs_span)?;
+                self.eval_numeric_values(id, node, BinaryArithmeticOp::Add, left, right)
+            }
+            ValueTag::String => {
+                let rhs_span = self.node(rhs)?.span;
+                let right = self.eval_node(rhs)?;
+                if right.tag() != ValueTag::String {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id: rhs,
+                            expected: "string",
+                            actual: right.tag(),
+                        },
+                        rhs_span,
+                    ));
+                }
+                self.concat_strings(id, node, left, right)
+            }
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: lhs,
+                    expected: "number or string",
+                    actual,
+                },
+                lhs_span,
+            )),
+        }
     }
 
     fn eval_equality(
@@ -369,6 +414,17 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let left = self.eval_number_node(lhs)?;
         let right = self.eval_number_node(rhs)?;
+        self.eval_numeric_values(id, node, op, left, right)
+    }
+
+    fn eval_numeric_values(
+        &self,
+        id: IrId,
+        node: &IrNode,
+        op: BinaryArithmeticOp,
+        left: Number,
+        right: Number,
+    ) -> Result<Value, TreeWalkError> {
         match (left, right) {
             (Number::Int(left), Number::Int(right)) => {
                 self.eval_integer_binary(id, node, op, left, right)
@@ -377,6 +433,29 @@ impl<'ir> TreeWalk<'ir> {
                 self.eval_float_binary(id, node, op, left.to_float(), right.to_float())
             }
         }
+    }
+
+    fn concat_strings(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let concatenated = {
+            let left = self.heap.get_string(left).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            let right = self.heap.get_string(right).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            left.concat(right).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, node.span)
+            })?
+        };
+        self.heap
+            .alloc_string(concatenated)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
     fn eval_integer_binary(
@@ -652,6 +731,14 @@ pub enum TreeWalkErrorKind {
         /// The underlying heap failure.
         source: EvalHeapError,
     },
+    /// A Nix string operation failed.
+    #[error("string operation failed at node {id:?}: {source}")]
+    String {
+        /// The node id associated with the string operation.
+        id: IrId,
+        /// The underlying string failure.
+        source: NixStringError,
+    },
     /// A scalar operation received a value of the wrong Nix type.
     #[error("type error at node {id:?}: expected {expected}, got {actual:?}")]
     Type {
@@ -729,6 +816,7 @@ mod tests {
     use crate::compile::{
         EffectClass, IrArena, IrData, IrNode, lower as lower_ir, resolve as resolve_ast,
     };
+    use crate::string::{ContextElement, StringContext};
     use crate::syntax::{Symbol, SymbolTable, parse_str};
     use crate::value::HeapObject;
 
@@ -826,6 +914,149 @@ mod tests {
                 .expect("escaped string is heap-owned")
                 .bytes(),
             b"line\n\"quoted\""
+        );
+    }
+
+    #[test]
+    fn string_add_concatenates_heap_strings() {
+        let outcome = eval_whnf_owned(&lower("\"a\" + \"b\"")).expect("string add evaluates");
+        let value = outcome.value();
+
+        assert_eq!(value.tag(), ValueTag::String);
+        assert_eq!(
+            outcome
+                .heap()
+                .get_string(value)
+                .expect("string add result is heap-owned")
+                .bytes(),
+            b"ab"
+        );
+
+        let escaped =
+            eval_whnf_owned(&lower("\"a\\n\" + \"b\"")).expect("escaped string add evaluates");
+        assert_eq!(
+            escaped
+                .heap()
+                .get_string(escaped.value())
+                .expect("escaped add result is heap-owned")
+                .bytes(),
+            b"a\nb"
+        );
+    }
+
+    #[test]
+    fn string_add_unions_contexts() {
+        let ir = lower("1");
+        let mut evaluator = TreeWalk::new(&ir);
+        let node = *ir.arena.node(ir.root).expect("root exists");
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let output =
+            ContextElement::single_output(b"/nix/store/derivation.drv".to_vec(), b"out".to_vec())
+                .expect("output context is valid");
+        let left = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"hello".to_vec(),
+                StringContext::singleton(source.clone()).expect("source context allocates"),
+            ))
+            .expect("left string allocates");
+        let right = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b" world".to_vec(),
+                StringContext::singleton(output.clone()).expect("output context allocates"),
+            ))
+            .expect("right string allocates");
+
+        let result = evaluator
+            .concat_strings(ir.root, &node, left, right)
+            .expect("strings concatenate");
+        let string = evaluator
+            .heap
+            .get_string(result)
+            .expect("result string is heap-owned");
+
+        assert_eq!(string.bytes(), b"hello world");
+        assert_eq!(string.context().len(), 2);
+        assert!(string.context().contains(&source));
+        assert!(string.context().contains(&output));
+    }
+
+    #[test]
+    fn string_add_rejects_non_string_rhs() {
+        let ir = lower("\"a\" + 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("addition root has binary payload");
+        };
+        let rhs_span = ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("integer rhs is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: rhs,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), rhs_span);
+    }
+
+    #[test]
+    fn string_add_evaluates_rhs_before_type_checking_it() {
+        let ir = lower("\"a\" + (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("addition root has binary payload");
+        };
+        let rhs_span = ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("rhs evaluation error wins");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: rhs });
+        assert_eq!(error.span(), rhs_span);
+    }
+
+    #[test]
+    fn numeric_add_rejects_string_rhs_as_non_numeric() {
+        let ir = lower("1 + \"a\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("addition root has binary payload");
+        };
+        let rhs_span = ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("string rhs is invalid for numeric add");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: rhs,
+                expected: "number",
+                actual: ValueTag::String,
+            }
+        );
+        assert_eq!(error.span(), rhs_span);
+    }
+
+    #[test]
+    fn non_owning_eval_rejects_string_add_heap_values() {
+        let ir = lower("\"a\" + \"b\"");
+        let error = eval_whnf(&ir).expect_err("string add value needs owning heap");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::HeapValueRequiresOwner {
+                id: ir.root,
+                tag: ValueTag::String,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            ir.arena.node(ir.root).expect("root exists").span
         );
     }
 
@@ -1185,10 +1416,10 @@ mod tests {
         );
         assert_eq!(error.span(), rhs_span);
 
-        let lhs_ir = lower("true + (1 / 0)");
+        let lhs_ir = lower("true - (1 / 0)");
         let root = lhs_ir.arena.node(lhs_ir.root).expect("root exists");
         let IrData::Binary { lhs, .. } = root.data else {
-            panic!("addition root has binary payload");
+            panic!("subtraction root has binary payload");
         };
         let lhs_span = lhs_ir.arena.node(lhs).expect("lhs exists").span;
 
