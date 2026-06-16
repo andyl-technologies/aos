@@ -14,28 +14,35 @@
   against live servers). Plus the phase-major `apr` upload fix and
   `apr web generate`. ~865 tests across the hub and `aos-package`.
 
-  **Phase 5 (In progress, 2026-06-16):** a single async runtime shared by the
-  native hub and the Cloudflare Workers deployment, at **full feature
-  parity** — see [`10-unified-runtime.md`](10-unified-runtime.md). This
-  **supersedes** the read-only Workers edge in `crates/aos-registry-worker`.
-  The **data layer landed** (PR #99): the async `Backend` trait, the shared
-  `aos-registry-core::Database` (reads *and* writes), and the worker's
-  `D1Backend` (sqlx for native pg/mysql/sqlite, D1 for Workers). The
-  **remaining work** is the handler unification: the read/write/console/auth
-  path becomes one shared `axum` router served natively via `axum::serve` and
-  on Workers via a hand-rolled `worker`⇄`axum` bridge (no adapter dep; the
-  published adapters don't support the worker 0.4.x pin), deleting the worker's
-  hand-written read-only fetch router. A wasm-feasibility spike (2026-06-16) confirmed the
-  shared router compiles to wasm but the `connectrpc` *server* runtime does
-  not, so the registry hub serves a single **Connect-JSON** transport (plain
-  JSON over HTTP — `POST /aos.registry.v1.{Service}/{Method}`) as shared `axum`
-  handlers on both targets, dropping the `connectrpc` runtime from the registry
-  path entirely (a new wasm-clean `aos-proto-types` crate holds the message
-  structs; `aos-remote`'s hub client becomes a Connect-JSON client). Phase 5
-  folds the standalone hub CLI into `aos hub …` (API-driven, no direct DB
-  access); once the unification lands the worker answers the same
-  `aos.registry.v1` calls. Gated on the D1 batch-only transaction audit
-  recorded in that file.
+  **Phase 5 (RPC unification SHIPPED; read-path relocation + tests remain,
+  2026-06-16):** a single async runtime shared by the native hub and the
+  Cloudflare Workers deployment, at **full feature parity** — see
+  [`10-unified-runtime.md`](10-unified-runtime.md). This **supersedes** the
+  read-only Workers edge in `crates/aos-registry-worker`.
+
+  **Shipped:** the async `Backend` + shared `aos-registry-core::Database` (reads
+  *and* writes; sqlx native / D1 Workers); a wasm-clean `aos-proto-types`
+  message crate; the transport-free `RpcService` holding **all 26
+  `aos.registry.v1` methods** (registry/package/channel/release reads, org/
+  project/storage/IAM, config change-sets + revert, webhooks, publish, git),
+  with the `RateLimiter` and surface-read (`SurfaceFetch`/`SurfaceProvider`)
+  ports; and **one shared Connect-JSON `axum` router** (`core::connect`) that
+  compiles and serves on **both** targets — the `connectrpc` *server* runtime
+  can't target wasm (verified by a spike), so the transport is Connect-JSON
+  (`POST /aos.registry.v1.{Service}/{Method}`) over plain `axum`, with a
+  `SendWrapper` Send-bridge on the single-threaded Worker. The **Worker** mounts
+  that router via a hand-rolled `worker`⇄`axum` bridge (no adapter dep — none
+  supports the worker 0.4.x pin) over its D1/R2/D1-limiter; the **native hub**
+  mounts the same router and its connectrpc `rpc.rs` is deleted (connectrpc gone
+  from the registry path); and `aos-remote`/`aos hub` speak Connect-JSON,
+  working identically against either deployment. No application logic is
+  duplicated across the two.
+
+  **Remaining:** relocate the read-path **facade + browse UI + producer console**
+  into the shared router (so the Worker's read handlers and the hub's
+  console/facade dedup), the `Mailer` Worker impl, install-time root bootstrap,
+  and the VM/Nix tests exercising the unified surface. Gated on the D1
+  batch-only transaction audit recorded in that file.
 
   Still deferred to RFC-future: the Leptos-CSR WASM SPA web surface (the
   no-JS static tier ships); passkeys/WebAuthn beyond phase 2; mirroring
