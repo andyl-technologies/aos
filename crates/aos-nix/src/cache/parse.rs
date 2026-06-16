@@ -339,7 +339,7 @@ impl ParseCache {
 
         let parsed = parse_bytes(source).map_err(|source| ParseCacheError::Parse { source })?;
         let resolved = resolve(parsed).map_err(|source| ParseCacheError::Scope { source })?;
-        let meta = ParseCacheMeta::for_resolved(self.schema_version, source_hint, &resolved)?;
+        let meta = ParseCacheMeta::new(self.schema_version, source_hint, 0, 0);
         let stored = entry.write_resolved(&resolved, &meta).is_ok();
         Ok(CachedParse {
             key,
@@ -430,6 +430,11 @@ impl ParseCacheEntry {
 
     /// Writes the serialized resolved arena, file-local symbols, and metadata.
     ///
+    /// Symbol ids are rewritten into a deterministic file-local table before
+    /// `ir.bin` and `symbols.bin` are written, so artifacts do not inherit
+    /// process-global interner allocation order. Diagnostic node and symbol
+    /// counts are derived from the serialized artifact.
+    ///
     /// # Errors
     ///
     /// Returns [`ParseCacheError`] if the entry directory cannot be created, the
@@ -441,9 +446,15 @@ impl ParseCacheEntry {
         meta: &ParseCacheMeta,
     ) -> Result<(), ParseCacheError> {
         self.ensure_dir()?;
+        let resolved = file_local_resolved(resolved)?;
+        let meta = ParseCacheMeta::for_serialized_resolved(
+            meta.schema_version,
+            meta.source_hint.clone(),
+            &resolved,
+        )?;
         let ir_path = self.ir_path();
         let symbols_path = self.symbols_path();
-        fs::write(&ir_path, encode_resolved_ir(resolved)?).map_err(|source| {
+        fs::write(&ir_path, encode_resolved_ir(&resolved)?).map_err(|source| {
             ParseCacheError::WriteArtifact {
                 path: ir_path,
                 source,
@@ -455,7 +466,7 @@ impl ParseCacheEntry {
                 source,
             }
         })?;
-        self.write_meta(meta)
+        self.write_meta(&meta)
     }
 
     /// Reads a resolved AST artifact from this cache entry.
@@ -523,6 +534,15 @@ impl ParseCacheMeta {
     /// Returns [`ParseCacheError`] if the arena node count or symbol count does
     /// not fit in the metadata's `u32` fields.
     pub fn for_resolved(
+        schema_version: u32,
+        source_hint: Option<String>,
+        resolved: &ResolvedAst,
+    ) -> Result<Self, ParseCacheError> {
+        let resolved = file_local_resolved(resolved)?;
+        Self::for_serialized_resolved(schema_version, source_hint, &resolved)
+    }
+
+    fn for_serialized_resolved(
         schema_version: u32,
         source_hint: Option<String>,
         resolved: &ResolvedAst,
@@ -632,6 +652,115 @@ pub enum ParseCacheError {
 
 fn file_content_hash(source: &[u8]) -> [u8; 32] {
     *blake3::hash(source).as_bytes()
+}
+
+fn file_local_resolved(resolved: &ResolvedAst) -> Result<ResolvedAst, ParseCacheError> {
+    let mut remapper = SymbolRemapper::new();
+    let mut nodes = Vec::with_capacity(resolved.arena.nodes().len());
+    for node in resolved.arena.nodes() {
+        nodes.push(Node::new(
+            node.kind,
+            node.span,
+            remapper.remap_node_data(&resolved.symbols, node.data)?,
+        ));
+    }
+
+    let mut inherit_resolutions = Vec::with_capacity(resolved.scopes.inherit_resolutions().len());
+    for inherit in resolved.scopes.inherit_resolutions() {
+        let mut sources = Vec::with_capacity(inherit.sources.len());
+        for source in inherit.sources.as_ref() {
+            sources.push(InheritSource {
+                target: remapper.local_symbol(&resolved.symbols, source.target)?,
+                source: source.source,
+            });
+        }
+        inherit_resolutions.push(InheritResolution {
+            from: inherit.from,
+            sources: sources.into_boxed_slice(),
+        });
+    }
+
+    Ok(ResolvedAst {
+        root: resolved.root,
+        arena: AstArena::from_raw_parts(nodes, resolved.arena.child_pool().to_vec()),
+        symbols: remapper.symbols,
+        scopes: ScopeTables::from_raw_parts(
+            resolved.scopes.frames().to_vec(),
+            resolved.scopes.node_frames().to_vec(),
+            resolved.scopes.with_chains().to_vec(),
+            inherit_resolutions,
+            resolved.scopes.node_inherits().to_vec(),
+        ),
+    })
+}
+
+struct SymbolRemapper {
+    symbols: SymbolTable,
+    by_old: BTreeMap<Symbol, Symbol>,
+}
+
+impl SymbolRemapper {
+    fn new() -> Self {
+        Self {
+            symbols: SymbolTable::new(),
+            by_old: BTreeMap::new(),
+        }
+    }
+
+    fn local_symbol(
+        &mut self,
+        source_symbols: &SymbolTable,
+        symbol: Symbol,
+    ) -> Result<Symbol, ParseCacheError> {
+        if let Some(local) = self.by_old.get(&symbol) {
+            return Ok(*local);
+        }
+
+        let bytes = source_symbols.resolve(symbol).ok_or_else(|| {
+            ParseCacheError::EncodeArtifact(
+                "symbol id out of range before serialization".to_owned(),
+            )
+        })?;
+        let local = self.symbols.intern(bytes).map_err(|error| {
+            ParseCacheError::EncodeArtifact(format!(
+                "failed to build file-local symbol table: {error}"
+            ))
+        })?;
+        self.by_old.insert(symbol, local);
+        Ok(local)
+    }
+
+    fn remap_node_data(
+        &mut self,
+        source_symbols: &SymbolTable,
+        data: NodeData,
+    ) -> Result<NodeData, ParseCacheError> {
+        match data {
+            NodeData::Symbol(symbol) => {
+                Ok(NodeData::Symbol(self.local_symbol(source_symbols, symbol)?))
+            }
+            NodeData::FormalSet {
+                formals,
+                ellipsis,
+                alias,
+            } => Ok(NodeData::FormalSet {
+                formals,
+                ellipsis,
+                alias: alias
+                    .map(|symbol| self.local_symbol(source_symbols, symbol))
+                    .transpose()?,
+            }),
+            NodeData::Formal { name, default } => Ok(NodeData::Formal {
+                name: self.local_symbol(source_symbols, name)?,
+                default,
+            }),
+            NodeData::WithVar { symbol, chain } => Ok(NodeData::WithVar {
+                symbol: self.local_symbol(source_symbols, symbol)?,
+                chain,
+            }),
+            other => Ok(other),
+        }
+    }
 }
 
 fn push_toml_string(value: &str, out: &mut String) {
@@ -1493,6 +1622,28 @@ mod tests {
         std::env::temp_dir().join(format!("aos-nix-parse-cache-{id}-{}", std::process::id()))
     }
 
+    fn resolved_single_symbol(symbols: SymbolTable, symbol: Symbol) -> ResolvedAst {
+        ResolvedAst {
+            root: NodeId::new(0),
+            arena: AstArena::from_raw_parts(
+                vec![Node::new(
+                    NodeKind::GlobalVar,
+                    Span::new(0, 1),
+                    NodeData::Symbol(symbol),
+                )],
+                Vec::new(),
+            ),
+            symbols,
+            scopes: ScopeTables::from_raw_parts(
+                Vec::new(),
+                vec![None],
+                Vec::new(),
+                Vec::new(),
+                vec![None],
+            ),
+        }
+    }
+
     #[test]
     fn keys_depend_on_source_schema_and_flags() {
         let flags = ParseCacheFlags::new();
@@ -1692,6 +1843,44 @@ mod tests {
         assert!(repeated.memo_hit);
         assert_eq!(repeated.file_key, changed.file_key);
         assert_eq!(memo.len(), 2);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn serialization_remaps_symbols_to_file_local_ids() {
+        let mut shifted_symbols = SymbolTable::new();
+        shifted_symbols
+            .intern(b"unused")
+            .expect("unused symbol interns");
+        let shifted_x = shifted_symbols.intern(b"x").expect("x symbol interns");
+        let shifted = resolved_single_symbol(shifted_symbols, shifted_x);
+
+        let mut local_symbols = SymbolTable::new();
+        let local_x = local_symbols.intern(b"x").expect("local x interns");
+        let local = resolved_single_symbol(local_symbols, local_x);
+
+        let root = temp_root();
+        let cache = ParseCache::new(root.join("parse"));
+        let entry = cache.entry_for_source(b"symbol-remap");
+        let meta = ParseCacheMeta::for_resolved(
+            cache.schema_version(),
+            Some("expr.nix".to_owned()),
+            &shifted,
+        )
+        .expect("metadata counts file-local symbols");
+        assert_eq!(meta.symbol_count, 1);
+
+        entry
+            .write_resolved(&shifted, &meta)
+            .expect("shifted artifact writes");
+        let loaded = entry.read_resolved().expect("shifted artifact reads");
+        assert_eq!(loaded.symbols.symbols(), &[b"x".to_vec()]);
+        assert_eq!(loaded.arena.nodes(), local.arena.nodes());
+        assert_eq!(
+            loaded.scopes.inherit_resolutions(),
+            local.scopes.inherit_resolutions()
+        );
 
         let _ = fs::remove_dir_all(root);
     }

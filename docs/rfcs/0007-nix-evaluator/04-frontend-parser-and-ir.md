@@ -982,7 +982,7 @@ Frontend is the **P1** foundation (decision `S-11`): every item below lands unde
 
 - [x] Content-addressed parse cache: `blake3(file_content ⧺ schema_version ⧺ flags)` key, content-not-mtime, schema-version wholesale invalidation (§9.2) — **P1**, `S-11`/`S-15`.
 - [ ] Serialize the scope-resolved IR arena + side tables by near-`memcpy`; `mmap` zero-copy load; cache layout `ir.bin`/`symbols.bin`/`meta.toml` (§9.3–§9.4) — **P1**.
-- [ ] File-local symbol-table remapping for load-order-independent cache keys (precondition for stable cross-run/cross-machine early cutoff) (§9.3) — **P1**, `S-14` enabler.
+- [x] File-local symbol-table remapping for load-order-independent cache keys (precondition for stable cross-run/cross-machine early cutoff) (§9.3) — **P1**, `S-14` enabler.
 - [x] `import`/file-resolution memoization keyed on realpath + content hash, shared IR across symlink/search-path indirection (§9.2) — **P1**, `S-12`.
 
 ### Parse/compile as demand-graph nodes (§9.6)
