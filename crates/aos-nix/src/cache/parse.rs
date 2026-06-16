@@ -1482,7 +1482,8 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"any"
             | b"filter"
             | b"partition"
-            | b"concatMap",
+            | b"concatMap"
+            | b"groupBy",
         ) => Some(EffectClass::Pure),
         _ => None,
     }

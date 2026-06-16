@@ -1287,6 +1287,9 @@ impl<'ir> TreeWalk<'ir> {
                 StrictBinaryPrimOp::ConcatMap => {
                     self.eval_concat_map_primop(id, node.span, first, second)
                 }
+                StrictBinaryPrimOp::GroupBy => {
+                    self.eval_group_by_primop(id, node.span, first, second)
+                }
             };
         }
         if args.len() != 1 {
@@ -3013,6 +3016,140 @@ impl<'ir> TreeWalk<'ir> {
 
         self.heap
             .alloc_list(NixList::new(output))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_group_by_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        list_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let function_span = self.node(function_id)?.span;
+        let function = self.eval_node(function_id)?;
+        if function.tag() != ValueTag::Lambda {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: function_id,
+                    expected: "lambda",
+                    actual: function.tag(),
+                },
+                function_span,
+            ));
+        }
+
+        let list_span = self.node(list_id)?.span;
+        let list_value = self.eval_node(list_id)?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list_id,
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list_span,
+            ));
+        }
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            Self::clone_list_elements(list_id, list_span, list)?
+        };
+
+        let mut groups: Vec<(Symbol, Vec<Value>)> = Vec::new();
+        groups.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: elements.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        for element in elements {
+            let key = self.apply_lambda_value(
+                function_id,
+                function_span,
+                function_id,
+                function,
+                function_span,
+                list_id,
+                element,
+            )?;
+            let key = self.force_value(function_id, function_span, key)?;
+            if key.tag() != ValueTag::String {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: function_id,
+                        expected: "string",
+                        actual: key.tag(),
+                    },
+                    function_span,
+                ));
+            }
+            let key = self.intern_string_value(function_id, key, function_span)?;
+            if let Some((_, values)) = groups.iter_mut().find(|(group_key, _)| *group_key == key) {
+                let len = values.len().checked_add(1).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::List {
+                            id,
+                            source: NixListError::LengthOverflow {
+                                left: values.len(),
+                                right: 1,
+                            },
+                        },
+                        span,
+                    )
+                })?;
+                values.try_reserve_exact(1).map_err(|_| {
+                    TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
+                })?;
+                values.push(element);
+            } else {
+                let mut values = Vec::new();
+                values.try_reserve_exact(1).map_err(|_| {
+                    TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len: 1 }, span)
+                })?;
+                values.push(element);
+                groups.push((key, values));
+            }
+        }
+
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(groups.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: groups.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        for (key, values) in groups {
+            let value = self
+                .heap
+                .alloc_list(NixList::new(values))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+            entries.push(AttrEntry::new(key, value));
+        }
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
@@ -4938,6 +5075,7 @@ enum StrictBinaryPrimOp {
     Any,
     ConcatMap,
     Filter,
+    GroupBy,
     Partition,
 }
 
@@ -4963,6 +5101,7 @@ impl StrictBinaryPrimOp {
             b"any" => Some(Self::Any),
             b"concatMap" => Some(Self::ConcatMap),
             b"filter" => Some(Self::Filter),
+            b"groupBy" => Some(Self::GroupBy),
             b"partition" => Some(Self::Partition),
             _ => None,
         }
@@ -6987,6 +7126,140 @@ mod tests {
             TreeWalkErrorKind::Type {
                 id: function,
                 expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), function_span);
+    }
+
+    #[test]
+    fn group_by_primop_groups_by_string_key_without_forcing_elements() {
+        assert_eq!(
+            eval_list_string_bytes(
+                "builtins.attrNames (builtins.groupBy (x: if x < 3 then \"small\" else \"big\") [ 1 2 3 ])"
+            ),
+            vec![b"big".to_vec(), b"small".to_vec()]
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.groupBy (x: if x < 3 then \"small\" else \"big\") [ 1 2 3 ]).small")
+                .as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.groupBy (x: if x < 3 then \"small\" else \"big\") [ 1 2 3 ]).small 0")
+                .as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.groupBy (x: if x < 3 then \"small\" else \"big\") [ 1 2 3 ]).big 0")
+                .as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.groupBy (x: \"k\") [ (1 / 0) ]).k").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.groupBy (x: x) [ \"b\" \"a\" \"b\" ]).b 1 == \"b\"")
+                .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let builtins = { groupBy = f: list: { local = [ 42 ]; }; }; in builtins.groupBy (x: \"k\") [] == { local = [ 42 ]; }")
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn group_by_primop_checks_function_then_list_then_key_results() {
+        let ir = lower("builtins.groupBy (1 / 0) []");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let function = args[0];
+        let function_span = ir
+            .arena
+            .node(function)
+            .expect("function argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("groupBy forces function before list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: function }
+        );
+        assert_eq!(error.span(), function_span);
+
+        let ir = lower("builtins.groupBy 1 []");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let function = args[0];
+        let function_span = ir
+            .arena
+            .node(function)
+            .expect("function argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("groupBy requires a function");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: function,
+                expected: "lambda",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), function_span);
+
+        let ir = lower("builtins.groupBy (x: \"k\") 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("groupBy checks list after function");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: list,
+                expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), list_span);
+
+        let ir = lower("builtins.groupBy (x: 1) [ \"a\" ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let function = args[0];
+        let function_span = ir
+            .arena
+            .node(function)
+            .expect("function argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("groupBy requires string keys");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: function,
+                expected: "string",
                 actual: ValueTag::Int,
             }
         );
