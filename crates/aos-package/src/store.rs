@@ -459,6 +459,7 @@ mod tests {
             min_format: None,
             requires_features: Vec::new(),
             expose: None,
+            expose_artifact: None,
             permissions: Default::default(),
         }
     }

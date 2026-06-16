@@ -1,7 +1,7 @@
 ##! lib/testing/package-expose-lifecycle.nix — RFC-0001 live package expose check.
 ##!
-##! Boots a full AOS system, copies rendered package-expose units into
-##! `/etc/systemd/system` like a future package-manager activation step would,
+##! Boots a full AOS system, attaches rendered package-expose units through
+##! `/etc/systemd/system.attached` like the package manager does at activation,
 ##! then starts, inspects, reloads, and stops the package targets under systemd.
 {
   pkgs,
@@ -128,12 +128,14 @@ in
       initial_ip_forward = vm.succeed("cat /proc/sys/net/ipv4/ip_forward").strip()
 
       vm.succeed("systemctl is-active nftables.service")
-      vm.succeed("mkdir -p /etc/systemd/system")
-      vm.succeed("cp -a ${privatePackage.expose}/units/. /etc/systemd/system/")
-      vm.succeed("cp -a ${privateOutboundPackage.expose}/units/. /etc/systemd/system/")
+      vm.succeed("mkdir -p /etc/systemd/system.attached")
+      vm.succeed("cp -a ${privatePackage.expose}/units/. /etc/systemd/system.attached/")
+      vm.succeed("cp -a ${privateOutboundPackage.expose}/units/. /etc/systemd/system.attached/")
       vm.succeed("systemctl daemon-reload")
-      vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system/expose-lifecycle-private.service")
-      vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system/expose-lifecycle-outbound.service")
+      vm.succeed("systemctl cat expose-lifecycle-private.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-private.service'")
+      vm.succeed("systemctl cat expose-lifecycle-outbound.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-outbound.service'")
+      vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-private.service")
+      vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-outbound.service")
 
       vm.succeed("systemctl start aos-pkg-expose-lifecycle-private.target")
       assert "private-ok" in vm.succeed(

@@ -12,6 +12,7 @@
   openssl,
   pkg-config,
   protobuf,
+  systemd,
   tar,
   which,
   zstd,
@@ -30,6 +31,7 @@
   #                 here it must be present for those git operations to work
   #   nix           nix / nix-store: cache and store operations
   #   openssh       ssh-keygen, for `git -c gpg.format=ssh tag -s` release signing
+  #   systemd       systemctl, for runtime package preset/attach reconciliation
   #   zstd          pack-delta compression and store decompression
   #   tar           extracting tree subpaths from `git archive` output
   #   which         check_command_exists() preflight in the drain/sysroot path
@@ -38,7 +40,7 @@
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash git gnupg nix openssh zstd tar which];
+  runtimeTools = [bash git gnupg nix openssh systemd zstd tar which];
   runtimeBinPath = lib.makeBinPath runtimeTools;
   src = builtins.path {
     path = ../../../crates;

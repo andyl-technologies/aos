@@ -17,8 +17,9 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 
 use super::config::ApmConfig;
+use super::exposed_units::{rebuild_generation_expose_roots, reconcile_system_profile};
 use super::profile::Profile;
-use super::profile::meta;
+use super::profile::meta::{self, list_meta};
 use super::registry::RegistrySet;
 use aos_core::output::{OutputMode, Printer};
 
@@ -221,6 +222,9 @@ pub async fn run(
 
     // Rebuild metadata from the target generation's roots.
     meta::rebuild_meta(&profile, target, &registries)?;
+    let restored_installed = list_meta(&profile)?;
+    rebuild_generation_expose_roots(target, &restored_installed)?;
+    reconcile_system_profile(config, printer).await?;
 
     if json_mode {
         printer.json(&rollback_result_json(

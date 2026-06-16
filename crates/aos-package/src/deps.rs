@@ -1224,6 +1224,7 @@ references = ["llllllllllllllllllllllllllllllll"]
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
                 expose: None,
+                expose_artifact: None,
                 permissions: Default::default(),
             }),
         }];
@@ -1265,6 +1266,7 @@ references = ["llllllllllllllllllllllllllllllll"]
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
                 expose: None,
+                expose_artifact: None,
                 permissions: Default::default(),
             }),
         }];
@@ -1294,6 +1296,7 @@ references = ["llllllllllllllllllllllllllllllll"]
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
                 expose: None,
+                expose_artifact: None,
                 permissions: Default::default(),
             }),
         }];
@@ -1319,6 +1322,7 @@ references = ["llllllllllllllllllllllllllllllll"]
             min_format: None,
             requires_features: Vec::new(),
             expose: None,
+            expose_artifact: None,
             permissions: Default::default(),
         };
         let low_candidate = PackageMeta {
@@ -1343,6 +1347,7 @@ references = ["llllllllllllllllllllllllllllllll"]
             min_format: None,
             requires_features: Vec::new(),
             expose: None,
+            expose_artifact: None,
             permissions: Default::default(),
         };
 
@@ -1408,6 +1413,7 @@ references = []
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
                     expose: None,
+                    expose_artifact: None,
                     permissions: Default::default(),
                 }),
             },
@@ -1429,6 +1435,7 @@ references = []
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
                     expose: None,
+                    expose_artifact: None,
                     permissions: Default::default(),
                 }),
             },

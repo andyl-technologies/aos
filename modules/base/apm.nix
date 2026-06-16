@@ -7,16 +7,10 @@
 ##! `modules/default.nix`.
 {pkgs, ...}: {
   config = {
-    # `apm`'s registry-sync path pipes `git archive` through `tar`
-    # to materialise package TOMLs locally
-    # (`crates/aos-package/src/registry/git.rs:462-482` and
-    # `crates/aos-package/src/update.rs:484-502`). The aos wrapper
-    # script bakes `git` and `nix` into PATH, but not `tar` — so
-    # without an explicit dependency declared here, every
-    # `apm update` fails with `running tar to extract packages:
-    # No such file or directory`. Surfaced by `apm-e2e` once it
-    # reached step 4; existing apm VM tests share the same
-    # plumbing and benefit from this fix too.
+    # `apm`'s registry/update and runtime attach paths rely on the hermetic
+    # wrapper in `pkgs/tools/aos/aos.nix` for shell-out tools such as git, tar,
+    # nix, and systemctl. Keeping `pkgs.aos` in the base image makes those
+    # tools available through the wrapper without relying on the host PATH.
     environment.systemPackages = [pkgs.aos pkgs.tar];
 
     # `apm registry add` writes `~/.config/apm/registries.d/<name>.toml`
@@ -29,7 +23,31 @@
       d  /root/.config                       0700 root root - -
       d  /root/.config/apm                   0755 root root - -
       d  /root/.config/apm/registries.d      0755 root root - -
+      d  /etc/aos/packages.d                 0755 root root - -
     '';
+
+    systemd.services.aos-install-packages = {
+      description = "Reconcile AOS desired packages";
+      wantedBy = ["multi-user.target"];
+      before = [
+        "aos-preset.service"
+        "multi-user.target"
+      ];
+      after = [
+        "ignition-files.service"
+        "aos-seed-profiles.service"
+        "nix-overlay-setup.service"
+      ];
+      unitConfig.ConditionPathExists = "/etc/aos/packages.d/desired.toml";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "2min";
+      };
+      script = ''
+        ${pkgs.aos}/bin/apm install --system --from /etc/aos/packages.d/desired.toml --yes
+      '';
+    };
 
     system.checks.apm = {
       description = "apm/apr base-image smoke checks";

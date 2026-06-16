@@ -77,12 +77,13 @@ use crate::security::{
 };
 use crate::sshkey;
 use crate::types::{
-    CacheEntry, ExposeMeta, FEATURE_EXPOSE_V1, FEATURE_PERMISSIONS_V1, FEATURE_REQUIRES_V1,
-    PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile, RegistryRootConfig,
-    RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec, package_name_bucket,
-    validate_branch_name, validate_channel_name, validate_expose_meta, validate_git_ref_name,
-    validate_package_name, validate_permissions_meta, validate_platform_name,
-    validate_registry_name,
+    CacheEntry, ExposeArtifactMeta, ExposeMeta, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
+    FEATURE_PERMISSIONS_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta,
+    RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig, SbatEntry,
+    SigningKeySource, SigningKeySpec, package_name_bucket, validate_branch_name,
+    validate_channel_name, validate_expose_artifact_meta, validate_expose_meta,
+    validate_git_ref_name, validate_package_name, validate_permissions_meta,
+    validate_platform_name, validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
@@ -1448,6 +1449,9 @@ pub async fn publish(
     let expose_manifest = expose_manifest_path
         .map(|path| read_publish_expose_manifest(path, pkg_name))
         .transpose()?;
+    let expose_artifact_info = expose_manifest_path
+        .map(infer_publish_expose_artifact)
+        .transpose()?;
 
     printer.step(2, 4, "Writing package TOML...");
     let letter = first_letter(pkg_name);
@@ -1478,6 +1482,7 @@ pub async fn publish(
         &image_infos,
         source_info.as_ref(),
         expose_manifest.as_ref(),
+        expose_artifact_info.as_ref(),
     )?;
 
     std::fs::write(&toml_path, &new_content)?;
@@ -1486,6 +1491,19 @@ pub async fn publish(
     let content_addressed = registry_content_addressed(&dir) && !no_ca;
     let store_report = write_store_files(&dir, &info.path, content_addressed, bless, printer)
         .with_context(|| format!("writing store/ realisation graph for {}", info.path))?;
+    let expose_store_report = if let Some(artifact) = &expose_artifact_info {
+        Some(
+            write_store_files(&dir, &artifact.path, content_addressed, bless, printer)
+                .with_context(|| {
+                    format!(
+                        "writing store/ realisation graph for expose artifact {}",
+                        artifact.path
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
 
     printer.step(4, 4, "Done.");
     printer.kv("Package", pkg_name);
@@ -1496,6 +1514,12 @@ pub async fn publish(
     printer.kv("NAR size", &format_size(info.nar_size));
     printer.kv("Closure size", &format_size(info.closure_size));
     printer.kv("Store graph", &store_report.summary());
+    if let Some(artifact) = &expose_artifact_info {
+        printer.kv("Expose artifact", &artifact.path);
+    }
+    if let Some(report) = &expose_store_report {
+        printer.kv("Expose artifact graph", &report.summary());
+    }
     if let Some(source_info) = &source_info {
         printer.kv("Source drv", &source_info.path);
     }
@@ -1574,6 +1598,17 @@ pub async fn publish(
                 "unchanged": store_report.unchanged,
                 "content_addressed": store_report.content_addressed,
             },
+            "expose_artifact": expose_artifact_info.as_ref().map(|artifact| serde_json::json!({
+                "store_path": artifact.path.as_str(),
+                "nar_hash": artifact.nar_hash.as_str(),
+                "nar_size": artifact.nar_size,
+            })),
+            "expose_artifact_graph": expose_store_report.as_ref().map(|report| serde_json::json!({
+                "created": report.created,
+                "blessed": report.blessed,
+                "unchanged": report.unchanged,
+                "content_addressed": report.content_addressed,
+            })),
             "references": info.references,
             "source": source,
             "sysroot": sysroot,
@@ -1637,6 +1672,7 @@ fn build_package_toml(
     image_infos: &[(String, StorePathInfo, SbFacts)],
     source_info: Option<&StorePathInfo>,
     expose_manifest: Option<&PublishExposeManifest>,
+    expose_artifact_info: Option<&StorePathInfo>,
 ) -> Result<String> {
     let desc = description.unwrap_or("No description");
     let lic = license.unwrap_or("unknown");
@@ -1653,6 +1689,7 @@ fn build_package_toml(
         source_drv,
         source_nar_hash,
         expose_manifest,
+        expose_artifact_info,
     )?;
 
     if existing.is_empty() {
@@ -1774,6 +1811,43 @@ fn read_publish_expose_manifest(path: &str, package_name: &str) -> Result<Publis
         .with_context(|| format!("validating permissions manifest for package '{package_name}'"))?;
 
     Ok(manifest)
+}
+
+/// Infer the rendered expose artifact from a manifest produced by
+/// `_expose-renderer.nix`.
+fn infer_publish_expose_artifact(path: &str) -> Result<StorePathInfo> {
+    let manifest_path = Path::new(path);
+    let Some(parent) = manifest_path.parent() else {
+        bail!("expose manifest path has no parent: {path}");
+    };
+    let Some(parent_str) = parent.to_str() else {
+        bail!(
+            "expose manifest parent path is not UTF-8: {}",
+            parent.display()
+        );
+    };
+    if manifest_path.file_name().and_then(|name| name.to_str()) != Some("manifest.json") {
+        bail!("expose manifest must be named manifest.json: {path}");
+    }
+    if store_dir_from_store_path(parent_str).is_none() {
+        bail!("expose manifest must live directly in a Nix store artifact: {path}");
+    }
+    if !parent.join("units").is_dir() {
+        bail!(
+            "expose artifact {} is missing required units/ directory",
+            parent.display()
+        );
+    }
+
+    let info = introspect_store_path(parent_str)
+        .with_context(|| format!("introspecting expose artifact {parent_str}"))?;
+    let artifact = ExposeArtifactMeta {
+        store_path: info.path.clone(),
+        nar_hash: info.nar_hash.clone(),
+        nar_size: info.nar_size,
+    };
+    validate_expose_artifact_meta(&artifact)?;
+    Ok(info)
 }
 
 /// Secure Boot facts extracted from a signed UKI at publish time.
@@ -2555,6 +2629,7 @@ fn package_platform_table(
     source_drv: &str,
     source_nar_hash: &str,
     expose_manifest: Option<&PublishExposeManifest>,
+    expose_artifact_info: Option<&StorePathInfo>,
 ) -> Result<toml::Value> {
     let mut table = toml::map::Map::new();
     table.insert("store_path".into(), toml::Value::String(info.path.clone()));
@@ -2625,12 +2700,15 @@ fn package_platform_table(
     }
 
     if let Some(manifest) = expose_manifest {
+        let artifact = expose_artifact_info
+            .context("expose manifest requires rendered expose artifact metadata")?;
         table.insert(
             "min-format".into(),
             toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
         );
         let mut required_features = vec![
             toml::Value::String(FEATURE_EXPOSE_V1.to_string()),
+            toml::Value::String(FEATURE_EXPOSE_ARTIFACT_V1.to_string()),
             toml::Value::String(FEATURE_PERMISSIONS_V1.to_string()),
         ];
         if !manifest.expose.requires.is_empty() {
@@ -2638,7 +2716,7 @@ fn package_platform_table(
         }
         table.insert(
             "requires-features".into(),
-            toml::Value::Array(required_features),
+            toml::Value::Array(required_features.clone()),
         );
         let mut references = toml::map::Map::new();
         references.insert("hashes".into(), toml::Value::Array(Vec::new()));
@@ -2648,17 +2726,23 @@ fn package_platform_table(
         );
         references.insert(
             "requires-features".into(),
-            toml::Value::Array(vec![
-                toml::Value::String(FEATURE_EXPOSE_V1.to_string()),
-                toml::Value::String(FEATURE_PERMISSIONS_V1.to_string()),
-                toml::Value::String(FEATURE_REQUIRES_V1.to_string()),
-            ]),
+            toml::Value::Array(required_features.clone()),
         );
         table.insert("references".into(), toml::Value::Table(references));
         table.insert(
             "expose".into(),
             toml::Value::try_from(&manifest.expose)
                 .context("serializing expose manifest metadata")?,
+        );
+        let artifact = ExposeArtifactMeta {
+            store_path: artifact.path.clone(),
+            nar_hash: artifact.nar_hash.clone(),
+            nar_size: artifact.nar_size,
+        };
+        validate_expose_artifact_meta(&artifact)?;
+        table.insert(
+            "expose_artifact".into(),
+            toml::Value::try_from(&artifact).context("serializing expose artifact metadata")?,
         );
         table.insert(
             "permissions".into(),
@@ -9562,6 +9646,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(content.contains("name = \"curl\""));
@@ -9606,6 +9691,7 @@ mod tests {
             &[],
             Some(&source_info),
             None,
+            None,
         )
         .unwrap();
         assert!(content.contains("source_drv = \"/nix/store/drv123-curl-8.5.0.drv\""));
@@ -9620,6 +9706,13 @@ mod tests {
             nar_size: 1048576,
             references: vec![],
             closure_size: 5242880,
+        };
+        let artifact = StorePathInfo {
+            path: "/nix/store/artifacthash111-expose-webapp".into(),
+            nar_hash: "sha256:artifact".into(),
+            nar_size: 2048,
+            references: vec![],
+            closure_size: 2048,
         };
         let mut permissions = PermissionsMeta {
             network: Some(crate::types::NetworkPermission::PrivateOutbound),
@@ -9652,6 +9745,7 @@ mod tests {
             &[],
             None,
             Some(&manifest),
+            Some(&artifact),
         )
         .unwrap();
 
@@ -9680,6 +9774,7 @@ mod tests {
                 .unwrap(),
             vec![
                 FEATURE_EXPOSE_V1,
+                FEATURE_EXPOSE_ARTIFACT_V1,
                 FEATURE_PERMISSIONS_V1,
                 FEATURE_REQUIRES_V1,
             ]
@@ -9697,6 +9792,13 @@ mod tests {
                 .and_then(|expose| expose.get("target"))
                 .and_then(toml::Value::as_str),
             Some("aos-pkg-webapp.target")
+        );
+        assert_eq!(
+            platform
+                .get("expose_artifact")
+                .and_then(|artifact| artifact.get("store_path"))
+                .and_then(toml::Value::as_str),
+            Some("/nix/store/artifacthash111-expose-webapp")
         );
         assert_eq!(
             platform
@@ -9724,8 +9826,140 @@ mod tests {
             Some("aos-pkg-webapp.target")
         );
         assert_eq!(
+            parsed
+                .expose_artifact
+                .as_ref()
+                .map(|artifact| artifact.store_path.as_str()),
+            Some("/nix/store/artifacthash111-expose-webapp")
+        );
+        assert_eq!(
             parsed.permissions.network,
             Some(crate::types::NetworkPermission::PrivateOutbound)
+        );
+    }
+
+    #[test]
+    fn build_package_toml_rejects_expose_manifest_without_artifact() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let manifest = PublishExposeManifest {
+            expose: ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+            },
+            permissions: PermissionsMeta::default(),
+        };
+
+        let err = build_package_toml(
+            "",
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some("Web application"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            None,
+            Some(&manifest),
+            None,
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("requires rendered expose artifact"));
+    }
+
+    #[test]
+    fn build_package_toml_records_expose_artifact_metadata() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let artifact = StorePathInfo {
+            path: "/nix/store/artifacthash111-expose-webapp".into(),
+            nar_hash: "sha256:artifact".into(),
+            nar_size: 2048,
+            references: vec![],
+            closure_size: 2048,
+        };
+        let manifest = PublishExposeManifest {
+            expose: ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+            },
+            permissions: PermissionsMeta::default(),
+        };
+
+        let content = build_package_toml(
+            "",
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some("Web application"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            None,
+            Some(&manifest),
+            Some(&artifact),
+        )
+        .unwrap();
+
+        let rendered: toml::Value = toml::from_str(&content).unwrap();
+        let platform = rendered
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.get("x86_64-linux"))
+            .unwrap();
+        let features = platform
+            .get("requires-features")
+            .and_then(toml::Value::as_array)
+            .map(|features| {
+                features
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert!(features.contains(&FEATURE_EXPOSE_ARTIFACT_V1));
+        assert_eq!(
+            platform
+                .get("expose_artifact")
+                .and_then(|artifact| artifact.get("store_path"))
+                .and_then(toml::Value::as_str),
+            Some("/nix/store/artifacthash111-expose-webapp")
+        );
+
+        let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parsed
+                .expose_artifact
+                .as_ref()
+                .map(|artifact| artifact.store_path.as_str()),
+            Some("/nix/store/artifacthash111-expose-webapp")
         );
     }
 
@@ -9771,6 +10005,7 @@ references = []
             &[],
             None,
             None,
+            None,
         )
         .unwrap();
         // Should contain both platforms.
@@ -9814,6 +10049,7 @@ references = []
             &[("raw".to_string(), img_info, SbFacts::default())],
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(content.contains("sysroot = true"));
@@ -9852,6 +10088,7 @@ references = []
             false,
             Some("0.9.0+build\"meta"),
             &[("raw\"image".to_string(), img_info, SbFacts::default())],
+            None,
             None,
             None,
         )

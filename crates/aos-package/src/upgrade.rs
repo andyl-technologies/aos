@@ -23,6 +23,7 @@ use super::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     resolve_mirror, resolved_downloads_json,
 };
+use super::exposed_units::{rebuild_generation_expose_roots, reconcile_system_profile};
 use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
@@ -39,11 +40,17 @@ use super::verify::verify_downloads;
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExposeArtifactDownload {
+    registry_name: String,
+    store_path: String,
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
-/// An upgrade candidate: a package with a different version in the registry.
+/// An upgrade candidate: a package with newer root or expose-artifact metadata.
 pub struct UpgradeCandidate {
     /// Package name.
     pub name: String,
@@ -165,6 +172,7 @@ pub async fn run(
         .await
         .context("computing post-upgrade profile roots")?;
     let obsolete_hashes = obsolete_installed_hashes(&installed, &needed_hashes);
+    let expose_artifacts = collect_expose_artifacts(&to_upgrade)?;
 
     // Sysroot-lock check for upgraded packages.
     if !matches!(ignore_lock, IgnoreSysrootLock::All) {
@@ -199,12 +207,23 @@ pub async fn run(
     let trust_roots: Vec<(&str, &str)> = to_upgrade
         .iter()
         .map(|c| (c.registry.as_str(), store_path_hash(&c.new_meta.store_path)))
+        .chain(expose_artifacts.iter().map(|artifact| {
+            (
+                artifact.registry_name.as_str(),
+                store_path_hash(&artifact.store_path),
+            )
+        }))
         .collect();
     let trust_ctx = registries.trust_context_for_roots(&trust_roots);
     trust_ctx.enforce_totality()?;
 
     // Filter to only missing store paths.
-    let store_paths: Vec<String> = all_new_metas.iter().map(|m| m.store_path.clone()).collect();
+    let mut store_paths: Vec<String> = all_new_metas.iter().map(|m| m.store_path.clone()).collect();
+    store_paths.extend(
+        expose_artifacts
+            .iter()
+            .map(|artifact| artifact.store_path.clone()),
+    );
     let missing = filter_missing(&store_paths).await?;
     let missing_set: HashSet<&str> = missing.iter().map(|s| s.as_str()).collect();
     let to_download: Vec<&PackageMeta> = all_new_metas
@@ -212,9 +231,16 @@ pub async fn run(
         .filter(|m| missing_set.contains(m.store_path.as_str()))
         .collect();
 
-    let resolved: Vec<ResolvedDownload> = if !to_download.is_empty() {
+    let mut requests = build_download_requests(&upgrade_closures, &to_download, config)?;
+    requests.extend(build_expose_artifact_download_requests(
+        &registries,
+        &expose_artifacts,
+        &missing,
+        config,
+    )?);
+    dedupe_download_requests(&mut requests);
+    let resolved: Vec<ResolvedDownload> = if !requests.is_empty() {
         printer.step(4, 7, "Planning downloads...");
-        let requests = build_download_requests(&upgrade_closures, &to_download, config)?;
         let engine = std::sync::Arc::new(default_engine());
         fetch_narinfo_closure(
             std::sync::Arc::clone(&engine),
@@ -356,6 +382,7 @@ pub async fn run(
                     source_drv: meta.source_drv.clone(),
                     source_nar_hash: meta.source_nar_hash.clone(),
                     expose: meta.expose.clone(),
+                    expose_artifact: meta.expose_artifact.clone(),
                     permissions: meta.permissions.clone(),
                 }),
             };
@@ -364,12 +391,15 @@ pub async fn run(
         }
     }
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
+    let future_installed = list_meta(&profile)?;
+    rebuild_generation_expose_roots(&new_gen, &future_installed)?;
 
     // Build FHS tree for the new generation.
     build_generation_fhs_tree(&new_gen, printer)?;
 
     // Atomic switch to the new generation.
     profile.switch_to(&new_gen)?;
+    reconcile_system_profile(config, printer).await?;
 
     printer.step(7, 7, "Done!");
     printer.success(&format!(
@@ -433,10 +463,20 @@ pub fn find_upgradable(
         };
 
         // Compare store path hashes -- different hash means new version/rebuild.
+        // Expose artifacts are separate store paths, so unit-only renderer
+        // changes must also force a metadata rewrite and attach reconciliation.
         let old_hash = store_path_hash(&meta.store_path);
         let new_hash = store_path_hash(&reg_meta.store_path);
+        let old_artifact_hash = apm
+            .expose_artifact
+            .as_ref()
+            .map(|artifact| store_path_hash(&artifact.store_path));
+        let new_artifact_hash = reg_meta
+            .expose_artifact
+            .as_ref()
+            .map(|artifact| store_path_hash(&artifact.store_path));
 
-        if old_hash != new_hash {
+        if old_hash != new_hash || old_artifact_hash != new_artifact_hash {
             candidates.push(UpgradeCandidate {
                 name: apm.name.clone(),
                 old_version: apm.version.clone(),
@@ -785,6 +825,69 @@ fn build_download_requests(
     Ok(requests)
 }
 
+/// Collect rendered expose artifacts needed for upgraded explicit roots.
+fn collect_expose_artifacts(
+    candidates: &[UpgradeCandidate],
+) -> Result<Vec<ExposeArtifactDownload>> {
+    let mut artifacts = Vec::new();
+    let mut seen = HashSet::new();
+
+    for candidate in candidates {
+        if candidate.new_meta.expose.is_none() {
+            continue;
+        }
+        let Some(artifact) = candidate.new_meta.expose_artifact.as_ref() else {
+            anyhow::bail!(
+                "package '{}' exposes systemd units but does not record an expose artifact",
+                candidate.name
+            );
+        };
+        if seen.insert(artifact.store_path.clone()) {
+            artifacts.push(ExposeArtifactDownload {
+                registry_name: candidate.registry.clone(),
+                store_path: artifact.store_path.clone(),
+            });
+        }
+    }
+
+    Ok(artifacts)
+}
+
+/// Build NAR download requests for missing expose artifacts.
+fn build_expose_artifact_download_requests(
+    registries: &RegistrySet,
+    artifacts: &[ExposeArtifactDownload],
+    missing_store_paths: &[String],
+    config: &ApmConfig,
+) -> Result<Vec<DownloadRequest>> {
+    let missing = missing_store_paths
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut requests = Vec::new();
+
+    for artifact in artifacts {
+        if !missing.contains(artifact.store_path.as_str()) {
+            continue;
+        }
+        let registry = registries
+            .get_registry(&artifact.registry_name)
+            .with_context(|| format!("registry '{}' not loaded", artifact.registry_name))?;
+        requests.push(DownloadRequest {
+            store_path: artifact.store_path.clone(),
+            mirror_url: resolve_mirror(&config.scope.registries_path(), &registry.config),
+        });
+    }
+
+    Ok(requests)
+}
+
+/// Deduplicate download requests by store path while preserving first-seen order.
+fn dedupe_download_requests(requests: &mut Vec<DownloadRequest>) {
+    let mut seen = HashSet::new();
+    requests.retain(|request| seen.insert(request.store_path.clone()));
+}
+
 /// Format a Unix timestamp as simplified ISO 8601 (`YYYY-MM-DDTHH:MM:SSZ`).
 fn format_iso8601(epoch_secs: i64) -> String {
     let secs_per_day: i64 = 86400;
@@ -827,7 +930,9 @@ mod tests {
 
     use crate::registry::parse::CURL_TOML;
     use crate::registry::{Registry, RegistrySet};
-    use crate::types::{ApmMeta, InstalledMeta, PackageMeta, RegistryConfig};
+    use crate::types::{
+        ApmMeta, ExposeArtifactMeta, ExposeMeta, InstalledMeta, PackageMeta, RegistryConfig,
+    };
 
     /// Helper: create a registry in a temp directory from TOML test fixtures.
     fn make_registry(
@@ -902,6 +1007,7 @@ mod tests {
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
                 expose: None,
+                expose_artifact: None,
                 permissions: Default::default(),
             }),
         }
@@ -927,6 +1033,40 @@ closure_size = 53000000
 source_drv = "/var/lib/store/newsrc-curl-8.6.0.drv"
 source_nar_hash = "sha256:newsrc"
 references = []
+"#;
+
+    const CURL_TOML_REFRESHED_EXPOSE_ARTIFACT: &str = r#"
+[package]
+name = "curl"
+description = "Command-line tool and library for URL transfers"
+homepage = "https://curl.se"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "8.5.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/h7j3k8l2m9n4-curl-8.5.0"
+nar_hash = "sha256:oldnar"
+nar_size = 3100000
+closure_size = 52000000
+source_drv = "/var/lib/store/oldsrc-curl-8.5.0.drv"
+source_nar_hash = "sha256:oldsrc"
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["expose-v1", "expose-artifact-v1"]
+
+[versions.platforms.x86_64-linux.expose]
+target = "aos-pkg-curl.target"
+units = ["curl.service"]
+
+[versions.platforms.x86_64-linux.expose_artifact]
+store_path = "/var/lib/store/newartifacthash-curl-expose"
+nar_hash = "sha256:newartifact"
+nar_size = 42
 "#;
 
     // 1. find_upgradable detects newer version in registry (different hash).
@@ -971,6 +1111,53 @@ references = []
 
         let candidates = find_upgradable(&installed, &set, &[]);
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn find_upgradable_detects_expose_artifact_refresh() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry(
+            &tmp,
+            "aos-core",
+            500,
+            &[("curl", CURL_TOML_REFRESHED_EXPOSE_ARTIFACT)],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        let mut installed = vec![sample_installed(
+            "curl",
+            "8.5.0",
+            "h7j3k8l2m9n4",
+            "aos-core",
+            false,
+        )];
+        let apm = installed[0].apm.as_mut().unwrap();
+        apm.expose = Some(ExposeMeta {
+            target: "aos-pkg-curl.target".into(),
+            units: vec!["curl.service".into()],
+            images: Vec::new(),
+            requires: Vec::new(),
+        });
+        apm.expose_artifact = Some(ExposeArtifactMeta {
+            store_path: "/var/lib/store/oldartifacthash-curl-expose".into(),
+            nar_hash: "sha256:oldartifact".into(),
+            nar_size: 42,
+        });
+
+        let candidates = find_upgradable(&installed, &set, &[]);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "curl");
+        assert_eq!(candidates[0].old_store_hash, "h7j3k8l2m9n4");
+        assert_eq!(
+            candidates[0]
+                .new_meta
+                .expose_artifact
+                .as_ref()
+                .unwrap()
+                .store_path,
+            "/var/lib/store/newartifacthash-curl-expose"
+        );
     }
 
     // 3. find_upgradable with filter only checks named packages.
@@ -1157,6 +1344,7 @@ references = []
                     min_format: None,
                     requires_features: Vec::new(),
                     expose: None,
+                    expose_artifact: None,
                     permissions: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1187,6 +1375,7 @@ references = []
                     min_format: None,
                     requires_features: Vec::new(),
                     expose: None,
+                    expose_artifact: None,
                     permissions: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1235,6 +1424,7 @@ references = []
                     min_format: None,
                     requires_features: Vec::new(),
                     expose: None,
+                    expose_artifact: None,
                     permissions: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1265,6 +1455,7 @@ references = []
                     min_format: None,
                     requires_features: Vec::new(),
                     expose: None,
+                    expose_artifact: None,
                     permissions: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1314,6 +1505,7 @@ references = []
                     min_format: None,
                     requires_features: Vec::new(),
                     expose: None,
+                    expose_artifact: None,
                     permissions: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1344,6 +1536,7 @@ references = []
                     min_format: None,
                     requires_features: Vec::new(),
                     expose: None,
+                    expose_artifact: None,
                     permissions: Default::default(),
                 },
                 registry: "aos-core".into(),

@@ -93,7 +93,7 @@ reframes how the phases below are read:
 | **P2** | Target sandbox + gated side-effect services + nftables reload coherence + eval assertion | P1 | D15; activation.md | ☑ |
 | **P3** | Per-unit sandboxing materialization + confinement label + **the Decision 17 validation spike** (the gate) | P1, P2 | D2, D4, D10, D17; D1(b) | ☑ |
 | **P4** | Preset enablement (image `disable *`; Ignition per-host preset; every-boot `aos-preset.service`) | P2 | D8 (enable half) | ☑ |
-| **P5** | `apm install` + install-at-boot + **declarative reconciliation (install + prune)** + upgrade/rollback + **layered config** (TPM2 creds / schema'd artifact / EnvironmentFile) + **hot-reload plumbing** | P3, P4 | D8 (install half), D9, D11, D16, D24, D25 | ☐ |
+| **P5** | `apm install` + install-at-boot + **declarative reconciliation (install + prune)** + upgrade/rollback + **layered config** (TPM2 creds / schema'd artifact / EnvironmentFile) + **hot-reload plumbing** | P3, P4 | D8 (install half), D9, D11, D16, D24, D25 | ◐ |
 | **P6** | Container roots (`RootDirectory=` store path) + the three network modes | P3 | D3, D5, D6 | ☐ |
 | **P7** | Dissolve `modules/roles/` into `pkgs/` `expose`; `modules/` shrinks to policy | P1–P6 green per package | D14; migration.md | ☐ |
 | **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☐ |
@@ -347,27 +347,27 @@ apm at first boot; define upgrade/rollback.
 
 **Deliverables.**
 
-- [ ] **`apm install` expose phase.** Read `expose` + the `[permissions]`
+- [x] **`apm install` expose phase.** Read `expose` + the `[permissions]`
       manifest; verify `request ∩ host policy` (refuse if the manifest exceeds
       policy); materialize the per-unit + gated units; run the preset; start the
       target. In `crates/aos-package/src/install.rs` (reuse the existing async
       zbus client `crates/aos-systemd` for start/stop/reload).
-- [ ] **Attach dir (D16).** Materialize runtime-installed units as **gc-rooted
+- [x] **Attach dir (D16).** Materialize runtime-installed units as **gc-rooted
       store-path symlinks** under `/var/etc/systemd/system.attached/` (apm-owned,
       portablectl-attach shape) + the enable line in `30-aos-apm.preset`. Both
       surface through the overlay each boot. (Verify `system.attached` is in the
       unit search path with portabled disabled; else use
       `/var/etc/systemd/system/` — same mechanism. See register.)
-- [ ] **Install-at-boot oneshot.** `aos-install-packages.service`:
+- [x] **Install-at-boot oneshot.** `aos-install-packages.service`:
       `After=nix-overlay-setup.service aos-seed-profiles.service ignition-files.service`,
-      `Requires=nix-overlay-setup.service`, `Before=multi-user.target`,
-      `ConditionPathExists=/etc/aos/packages.d/desired.toml`. Idempotent via the
-      existing early-exit (`install.rs:67–73` mints no generation when nothing
-      changed); **additive-only** (removal is explicit); registry-unreachable must
-      **not** hard-fail boot (air-gapped); pull `network-online.target` on demand.
+      `Before=aos-preset.service multi-user.target`,
+      `ConditionPathExists=/etc/aos/packages.d/desired.toml`. The service does
+      not `Require=` the early-boot overlay producers in the stage-2 graph, and
+      registry refresh is best-effort so cached metadata can keep air-gapped
+      boots from hard-failing.
 - [ ] **Ignition writes** `/etc/aos/packages.d/desired.toml` (registries +
       desired packages) + registry config under `registries.d/` via `storage.files`.
-- [ ] **Declarative reconciliation (D24).** The install-at-boot step converges to
+- [x] **Declarative reconciliation (D24).** The install-at-boot step converges to
       the desired set: install additions **and uninstall packages removed from
       `desired.toml`** (disable target, remove attach units + preset lines, gc the
       generation). Replaces additive-only — the Nix/Talos/K8s declarative idiom.
@@ -382,12 +382,18 @@ apm at first boot; define upgrade/rollback.
       provider's `expose` declares; the renderer wires each as a least-privilege
       fd-pass / `BindReadOnlyPaths=` / `JoinsNamespaceOf=` (flat name ordering is
       the first increment).
-- [ ] **Upgrade / rollback (D11).** Upgrade = generation switch + `daemon-reload`
+- [x] **Upgrade / rollback (D11).** Upgrade = generation switch + `daemon-reload`
       + restart with the unit's own semantics (k3s keeps `KillMode=process`, no pod
       kill). Rollback = switch back (both store paths gc-rooted) → rewrite the
       attach symlinks + preset lines → `daemon-reload` + restart.
 
-**Closes.** D8 (install half), D9, D11, D16, D18, D24, D25.
+**Phase 5 implementation scope.** This increment implements the runtime attach
+path, first-boot desired-set reconciliation, package-profile install/prune, and
+generation upgrade/rollback mechanics. The layered config (D9), hot-reload
+config plumbing (D25), and typed capability routing part of D18 remain open and
+keep the phase at ◐ rather than ☑.
+
+**Closes when complete.** D8 (install half), D9, D11, D16, D18, D24, D25.
 
 **EXIT CRITERIA.** End-to-end on a booted host: a package's manifest is verified
 against policy, units land under `/var/etc`, the preset is applied, the target
@@ -661,21 +667,22 @@ Every tracked decision and where it is discharged. Statuses are from
 Every small open gap in the set, collected so the implementer clears it rather
 than guessing. Resolve each in the cited phase before ticking that phase's exit.
 
-- [ ] **`system.attached` search path (P5).** Whether the AOS systemd build
+- [x] **`system.attached` search path (P5).** Whether the AOS systemd build
       includes `/etc/systemd/system.attached/` in the unit search path with
       portabled disabled; if not, use `/var/etc/systemd/system/` directly — same
-      mechanism, less tidy. ([`apm-integration.md`](apm-integration.md) §4.1, D16.)
+      mechanism, less tidy. Verified by the `package-expose-lifecycle` VM check.
+      ([`apm-integration.md`](apm-integration.md) §4.1, D16.)
 - [ ] **Exact `expose` schema (P0/P1).** The precise units / permissions /
       `requires` / container-root-reference shape, co-designed with the registry
       metadata ([`apm-integration.md`](apm-integration.md) §2) and gated on D19.
 - [ ] **`expose.permissions` validation point (P1).** Build-time, `apr publish`,
       or both (lean: both — build for authoring feedback, publish as the gate).
-- [ ] **Runtime package scope (P5).** Whether runtime apm-installed packages share
+- [x] **Runtime package scope (P5).** Whether runtime apm-installed packages share
       the `system` scope or get their own (`crates/aos-package/src/profile/mod.rs`);
       the apm package generation must stay independent of the toplevel generation.
-- [ ] **Desired-packages file layout (P5).** Reuse `registries.d/` + a separate
+- [x] **Desired-packages file layout (P5).** Reuse `registries.d/` + a separate
       `packages.d/desired.toml`, or fold both into one document.
-- [ ] **Expose-artifact carry-across-generations (P5).** Whether expose-phase
+- [x] **Expose-artifact carry-across-generations (P5).** Whether expose-phase
       units are carried by `copy_roots` or regenerated each generation
       (`install.rs`); whether a *package*-profile generation swap re-materializes
       them.

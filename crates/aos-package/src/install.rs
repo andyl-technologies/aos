@@ -28,8 +28,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result};
 
@@ -39,6 +37,7 @@ use super::download::{
     fetch_narinfos, order_resolved_downloads, reference_store_path, resolve_mirror,
     resolved_downloads_json,
 };
+use super::exposed_units::{rebuild_generation_expose_roots, reconcile_system_profile};
 use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
@@ -50,11 +49,17 @@ use super::remove::retained_installed_indexes;
 use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
-use super::types::{ApmMeta, InstalledMeta, PackageMeta, ProfileScope};
+use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::verify_downloads;
 use aos_core::error::AosError;
 use aos_core::nar::info as narinfo;
 use aos_core::output::{OutputMode, Printer};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExposeArtifactDownload {
+    registry_name: String,
+    store_path: String,
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -134,7 +139,13 @@ pub async fn run(
     }
     admit_package_roots(closures.iter().flat_map(|closure| closure.closure.iter()))?;
     let all_metas = collect_unique_metas(&closures);
-    let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
+    let expose_artifacts = collect_expose_artifacts(&closures)?;
+    let mut store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
+    store_paths.extend(
+        expose_artifacts
+            .iter()
+            .map(|artifact| artifact.store_path.clone()),
+    );
     let missing = if reinstall {
         Vec::new()
     } else {
@@ -160,6 +171,7 @@ pub async fn run(
                 None,
             ));
         }
+        reconcile_system_profile(config, printer).await?;
         printer.info("All requested packages are already installed. No changes made.");
         return Ok(());
     }
@@ -242,13 +254,27 @@ pub async fn run(
                 store_path_hash(&closure.root.store_path),
             )
         })
+        .chain(expose_artifacts.iter().map(|artifact| {
+            (
+                artifact.registry_name.as_str(),
+                store_path_hash(&artifact.store_path),
+            )
+        }))
         .collect();
     let trust_ctx = registries.trust_context_for_roots(&trust_roots);
     trust_ctx.enforce_totality()?;
 
     // Step 5: Fetch narinfo for each missing path so the summary can show
     // real compressed sizes and the download can use the cache's URL/hash.
-    let requests = build_download_requests(&closures, &to_download, config)?;
+    let mut requests = build_download_requests(&closures, &to_download, config)?;
+    requests.extend(build_expose_artifact_download_requests(
+        &registries,
+        &expose_artifacts,
+        &missing,
+        reinstall,
+        config,
+    )?);
+    dedupe_download_requests(&mut requests);
     let engine = std::sync::Arc::new(default_engine());
     let resolved: Vec<ResolvedDownload> = if requests.is_empty() {
         Vec::new()
@@ -473,6 +499,7 @@ pub async fn run(
                     source_drv: meta.source_drv.clone(),
                     source_nar_hash: meta.source_nar_hash.clone(),
                     expose: meta.expose.clone(),
+                    expose_artifact: meta.expose_artifact.clone(),
                     permissions: meta.permissions.clone(),
                 }),
             };
@@ -481,13 +508,15 @@ pub async fn run(
         }
     }
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
+    let future_installed = list_meta(&profile)?;
+    rebuild_generation_expose_roots(&new_gen, &future_installed)?;
 
     // Build FHS tree for the new generation.
     build_generation_fhs_tree(&new_gen, printer)?;
 
     // Atomic switch to the new generation.
     profile.switch_to(&new_gen)?;
-    enable_system_exposed_roots(config, &closures, printer)?;
+    reconcile_system_profile(config, printer).await?;
 
     printer.step(7, 7, "Done!");
     let verb = if reinstall {
@@ -533,162 +562,6 @@ pub async fn run(
 /// `std::env::consts` in the future.
 fn platform() -> String {
     "x86_64-linux".to_string()
-}
-
-/// Enable installed package targets for system-scope exposed root packages.
-fn enable_system_exposed_roots(
-    config: &ApmConfig,
-    closures: &[ResolvedClosure],
-    printer: &Printer,
-) -> Result<()> {
-    if config.scope != ProfileScope::System {
-        return Ok(());
-    }
-
-    let mut package_names: Vec<String> = closures
-        .iter()
-        .filter(|closure| closure.root.expose.is_some())
-        .map(|closure| closure.root.name.clone())
-        .collect();
-    package_names.sort();
-    package_names.dedup();
-    if package_names.is_empty() {
-        return Ok(());
-    }
-
-    let root = aos_root_path();
-    write_runtime_preset(&root, &package_names)?;
-
-    let visible_package_names = visible_package_targets(&root, &package_names);
-    if visible_package_names.is_empty() {
-        printer.info(&format!(
-            "Recorded {} exposed package target(s) for systemd preset enablement.",
-            package_names.len()
-        ));
-        return Ok(());
-    }
-
-    systemctl_preset(&root, &visible_package_names)?;
-    if visible_package_names.len() == package_names.len() {
-        printer.info(&format!(
-            "Enabled {} exposed package target(s) via systemd presets.",
-            package_names.len()
-        ));
-    } else {
-        printer.info(&format!(
-            "Enabled {} exposed package target(s) and recorded {} for systemd preset enablement.",
-            visible_package_names.len(),
-            package_names.len()
-        ));
-    }
-    Ok(())
-}
-
-/// Return the AOS root filesystem for offline system operations.
-fn aos_root_path() -> PathBuf {
-    match std::env::var("AOS_ROOT") {
-        Ok(value) if !value.is_empty() => {
-            let path = PathBuf::from(value);
-            if path.is_absolute() {
-                return path;
-            }
-        }
-        _ => {}
-    }
-    PathBuf::from("/")
-}
-
-/// Persist runtime package enablement in the host `/var/etc` preset layer.
-fn write_runtime_preset(root: &Path, package_names: &[String]) -> Result<()> {
-    append_runtime_preset_lines(
-        &root.join("var/etc/systemd/system-preset/30-aos-apm.preset"),
-        package_names,
-    )?;
-    append_runtime_preset_lines(
-        &root.join("etc/systemd/system-preset/30-aos-apm.preset"),
-        package_names,
-    )
-}
-
-/// Append package target enable lines to one preset file without duplicates.
-fn append_runtime_preset_lines(path: &Path, package_names: &[String]) -> Result<()> {
-    let mut lines = if path.exists() {
-        std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?
-            .lines()
-            .map(str::to_owned)
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let mut existing: HashSet<String> = lines.iter().cloned().collect();
-
-    for name in package_names {
-        let line = format!("enable {}", package_target_name(name));
-        if existing.insert(line.clone()) {
-            lines.push(line);
-        }
-    }
-
-    let parent = path
-        .parent()
-        .with_context(|| format!("finding parent for {}", path.display()))?;
-    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-
-    let mut text = lines.join("\n");
-    if !text.is_empty() {
-        text.push('\n');
-    }
-    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
-}
-
-/// Return the installed package targets already visible to systemd.
-fn visible_package_targets(root: &Path, package_names: &[String]) -> Vec<String> {
-    package_names
-        .iter()
-        .filter(|name| {
-            let target = package_target_name(name);
-            unit_lookup_dirs(root)
-                .iter()
-                .any(|dir| dir.join(&target).exists())
-        })
-        .cloned()
-        .collect()
-}
-
-/// Return the unit directories that may already contain exposed package units.
-fn unit_lookup_dirs(root: &Path) -> [PathBuf; 6] {
-    [
-        root.join("etc/systemd/system"),
-        root.join("run/systemd/system"),
-        root.join("usr/lib/systemd/system"),
-        root.join("lib/systemd/system"),
-        root.join("var/etc/systemd/system"),
-        root.join("var/etc/systemd/system.attached"),
-    ]
-}
-
-/// Apply preset policy for newly installed package targets.
-fn systemctl_preset(root: &Path, package_names: &[String]) -> Result<()> {
-    let mut command = Command::new("systemctl");
-    if root != Path::new("/") {
-        command.arg(format!("--root={}", root.display()));
-    }
-    command.arg("preset");
-    for name in package_names {
-        command.arg(package_target_name(name));
-    }
-
-    let status = command.status().context("running systemctl preset")?;
-    if !status.success() {
-        anyhow::bail!("systemctl preset failed with {status}");
-    }
-    Ok(())
-}
-
-/// Return the RFC-0001 package target unit name for a package.
-fn package_target_name(package_name: &str) -> String {
-    format!("aos-pkg-{package_name}.target")
 }
 
 /// Build the machine-readable result object emitted in JSON output mode:
@@ -783,6 +656,68 @@ fn install_package_json(registry: &str, meta: &PackageMeta, explicit: bool) -> s
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
     RegistrySet::load(&config.cache_path(), &reg_configs, &platform())
+}
+
+/// Collect rendered expose artifacts needed for explicitly requested roots.
+fn collect_expose_artifacts(closures: &[ResolvedClosure]) -> Result<Vec<ExposeArtifactDownload>> {
+    let mut artifacts = Vec::new();
+    let mut seen = HashSet::new();
+
+    for closure in closures {
+        if closure.root.expose.is_none() {
+            continue;
+        }
+        let Some(artifact) = closure.root.expose_artifact.as_ref() else {
+            anyhow::bail!(
+                "package '{}' exposes systemd units but does not record an expose artifact",
+                closure.root.name
+            );
+        };
+        if seen.insert(artifact.store_path.clone()) {
+            artifacts.push(ExposeArtifactDownload {
+                registry_name: closure.registry_name.clone(),
+                store_path: artifact.store_path.clone(),
+            });
+        }
+    }
+
+    Ok(artifacts)
+}
+
+/// Build NAR download requests for missing expose artifacts.
+fn build_expose_artifact_download_requests(
+    registries: &RegistrySet,
+    artifacts: &[ExposeArtifactDownload],
+    missing_store_paths: &[String],
+    download_all: bool,
+    config: &ApmConfig,
+) -> Result<Vec<DownloadRequest>> {
+    let missing = missing_store_paths
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut requests = Vec::new();
+
+    for artifact in artifacts {
+        if !download_all && !missing.contains(artifact.store_path.as_str()) {
+            continue;
+        }
+        let registry = registries
+            .get_registry(&artifact.registry_name)
+            .with_context(|| format!("registry '{}' not loaded", artifact.registry_name))?;
+        requests.push(DownloadRequest {
+            store_path: artifact.store_path.clone(),
+            mirror_url: resolve_mirror(&config.scope.registries_path(), &registry.config),
+        });
+    }
+
+    Ok(requests)
+}
+
+/// Deduplicate download requests by store path while preserving first-seen order.
+fn dedupe_download_requests(requests: &mut Vec<DownloadRequest>) {
+    let mut seen = HashSet::new();
+    requests.retain(|request| seen.insert(request.store_path.clone()));
 }
 
 /// Resolve a closure per requested package.
@@ -1513,76 +1448,6 @@ mod tests {
         assert_eq!(p, "x86_64-linux");
     }
 
-    #[test]
-    fn write_runtime_preset_records_exposed_targets_once() {
-        let tmp = TempDir::new().unwrap();
-        let preset = tmp
-            .path()
-            .join("var/etc/systemd/system-preset/30-aos-apm.preset");
-        std::fs::create_dir_all(preset.parent().unwrap()).unwrap();
-        std::fs::write(
-            &preset,
-            "# managed by test\nenable aos-pkg-existing.target\n",
-        )
-        .unwrap();
-
-        write_runtime_preset(
-            tmp.path(),
-            &[
-                "existing".to_string(),
-                "web".to_string(),
-                "worker".to_string(),
-            ],
-        )
-        .unwrap();
-        write_runtime_preset(tmp.path(), &["web".to_string()]).unwrap();
-
-        let content = std::fs::read_to_string(&preset).unwrap();
-        assert_eq!(
-            content,
-            "# managed by test\n\
-enable aos-pkg-existing.target\n\
-enable aos-pkg-web.target\n\
-enable aos-pkg-worker.target\n"
-        );
-    }
-
-    #[test]
-    fn write_runtime_preset_mirrors_live_and_durable_policy() {
-        let tmp = TempDir::new().unwrap();
-
-        write_runtime_preset(tmp.path(), &["web".to_string()]).unwrap();
-
-        let expected = "enable aos-pkg-web.target\n";
-        let durable = tmp
-            .path()
-            .join("var/etc/systemd/system-preset/30-aos-apm.preset");
-        let live = tmp
-            .path()
-            .join("etc/systemd/system-preset/30-aos-apm.preset");
-        assert_eq!(std::fs::read_to_string(durable).unwrap(), expected);
-        assert_eq!(std::fs::read_to_string(live).unwrap(), expected);
-    }
-
-    #[test]
-    fn visible_package_targets_requires_attached_unit_file() {
-        let tmp = TempDir::new().unwrap();
-        let unit_dir = tmp.path().join("etc/systemd/system");
-        std::fs::create_dir_all(&unit_dir).unwrap();
-        std::fs::write(unit_dir.join("aos-pkg-web.target"), "[Unit]\n").unwrap();
-
-        let visible = visible_package_targets(
-            tmp.path(),
-            &[
-                "missing".to_string(),
-                "web".to_string(),
-                "worker".to_string(),
-            ],
-        );
-
-        assert_eq!(visible, vec!["web".to_string()]);
-    }
-
     fn sample_package(name: &str, version: &str, store_path: &str) -> PackageMeta {
         PackageMeta {
             name: name.to_string(),
@@ -1605,6 +1470,7 @@ enable aos-pkg-worker.target\n"
             min_format: None,
             requires_features: Vec::new(),
             expose: None,
+            expose_artifact: None,
             permissions: Default::default(),
         }
     }
@@ -1637,6 +1503,7 @@ enable aos-pkg-worker.target\n"
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
                 expose: None,
+                expose_artifact: None,
                 permissions: Default::default(),
             }),
         }

@@ -1,0 +1,775 @@
+//! Runtime reconciliation for RFC-0001 exposed package systemd units.
+//!
+//! Exposed packages publish rendered unit files in a separate store artifact.
+//! A system package-profile generation roots those artifacts under
+//! `gen-N/expose/`, while the live host sees unit-file symlinks in
+//! `system.attached/` and an exact APM preset file generated from the current
+//! package-profile metadata.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use anyhow::{Context, Result, bail};
+
+use crate::config::ApmConfig;
+use crate::profile::meta::list_meta;
+use crate::profile::{Generation, Profile};
+use crate::registry::store_path_hash;
+use crate::types::{InstalledMeta, ProfileScope};
+use crate::unit_diff::{self, UnitDiff};
+use aos_core::output::Printer;
+use aos_systemd::{JobOutcome, SystemdClient};
+use tempfile::TempDir;
+
+const APM_PRESET_REL: &str = "systemd/system-preset/30-aos-apm.preset";
+const ATTACHED_REL: &str = "systemd/system.attached";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExposedPackage {
+    name: String,
+    target: String,
+    units: BTreeSet<String>,
+    artifact_hash: String,
+    artifact_store_path: String,
+}
+
+/// Rebuild the generation's `expose/` GC-root symlinks from metadata.
+///
+/// # Errors
+///
+/// Returns an error if the generation's `expose/` directory cannot be
+/// recreated or an artifact symlink cannot be written.
+pub(crate) fn rebuild_generation_expose_roots(
+    generation: &Generation,
+    installed: &[InstalledMeta],
+) -> Result<()> {
+    let expose_dir = generation.path.join("expose");
+    reset_dir(&expose_dir)?;
+
+    let mut rooted = BTreeMap::<String, String>::new();
+    for entry in installed {
+        let Some(apm) = entry.apm.as_ref() else {
+            continue;
+        };
+        if !apm.explicit || apm.expose.is_none() {
+            continue;
+        }
+        let Some(artifact) = apm.expose_artifact.as_ref() else {
+            continue;
+        };
+        rooted.insert(
+            store_path_hash(&artifact.store_path).to_string(),
+            artifact.store_path.clone(),
+        );
+    }
+
+    for (hash, store_path) in rooted {
+        atomic_symlink(Path::new(&store_path), &expose_dir.join(hash))?;
+    }
+
+    Ok(())
+}
+
+/// Reconcile the live systemd unit view from the current system package profile.
+///
+/// Non-system scopes are a no-op. For system scope, this rewrites the APM
+/// attached-unit directory and preset file exactly, disables targets that
+/// disappeared since the previous run, reloads systemd, presets current
+/// targets, and starts them.
+///
+/// # Errors
+///
+/// Returns an error if profile metadata cannot be read, unit artifacts are
+/// incomplete, filesystem reconciliation fails, or systemd rejects the live
+/// reload/preset/start operations.
+pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Printer) -> Result<()> {
+    if config.scope != ProfileScope::System {
+        return Ok(());
+    }
+
+    let profile = Profile::open_readonly(ProfileScope::System);
+    let Some(current) = profile.current_generation()? else {
+        return Ok(());
+    };
+    let installed = list_meta(&profile)?;
+    rebuild_generation_expose_roots(&current, &installed)?;
+
+    let packages = exposed_packages(&profile, &installed)?;
+    let root = aos_root_path();
+    let old_targets = read_existing_preset_targets(&root)?;
+    let current_targets = packages
+        .iter()
+        .map(|package| package.target.clone())
+        .collect::<BTreeSet<_>>();
+    let removed_targets = old_targets
+        .difference(&current_targets)
+        .cloned()
+        .collect::<Vec<_>>();
+    let attached_diff = compute_attached_unit_diff(&root, &packages)?;
+
+    let had_attached_units = has_attached_units(&root)?;
+    if packages.is_empty() && removed_targets.is_empty() {
+        write_attached_units(&root, &packages)?;
+        write_exact_preset(&root, &current_targets)?;
+        if had_attached_units {
+            apply_systemd_changes(&root, &current_targets, &attached_diff).await?;
+        }
+        printer.info("No exposed package targets are installed.");
+        return Ok(());
+    }
+
+    disable_removed_targets(&root, &removed_targets)?;
+    write_attached_units(&root, &packages)?;
+    write_exact_preset(&root, &current_targets)?;
+    apply_systemd_changes(&root, &current_targets, &attached_diff).await?;
+
+    if current_targets.is_empty() {
+        printer.info("Removed exposed package target enablement.");
+    } else {
+        printer.info(&format!(
+            "Reconciled {} exposed package target(s).",
+            current_targets.len()
+        ));
+    }
+
+    Ok(())
+}
+
+fn exposed_packages(profile: &Profile, installed: &[InstalledMeta]) -> Result<Vec<ExposedPackage>> {
+    let mut packages = Vec::new();
+    let mut unit_owners = BTreeMap::<String, String>::new();
+    for entry in installed {
+        let Some(apm) = entry.apm.as_ref() else {
+            continue;
+        };
+        if !apm.explicit {
+            continue;
+        }
+        let Some(expose) = apm.expose.as_ref() else {
+            continue;
+        };
+        let Some(artifact) = apm.expose_artifact.as_ref() else {
+            bail!(
+                "installed exposed package '{}' is missing expose artifact metadata",
+                apm.name
+            );
+        };
+
+        let artifact_hash = store_path_hash(&artifact.store_path).to_string();
+        let artifact_root = profile
+            .current_path()
+            .join("expose")
+            .join(&artifact_hash)
+            .join("units");
+
+        let mut units = expose.units.iter().cloned().collect::<BTreeSet<_>>();
+        units.insert(expose.target.clone());
+        for unit in &units {
+            let path = artifact_root.join(unit);
+            if !path.exists() {
+                bail!(
+                    "expose artifact for package '{}' is missing unit {} at {}",
+                    apm.name,
+                    unit,
+                    path.display()
+                );
+            }
+            if let Some(owner) = unit_owners.get(unit) {
+                bail!(
+                    "exposed unit '{}' is declared by both packages '{}' and '{}'",
+                    unit,
+                    owner,
+                    apm.name
+                );
+            }
+            unit_owners.insert(unit.clone(), apm.name.clone());
+        }
+
+        packages.push(ExposedPackage {
+            name: apm.name.clone(),
+            target: expose.target.clone(),
+            units,
+            artifact_hash,
+            artifact_store_path: artifact.store_path.clone(),
+        });
+    }
+    packages.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(packages)
+}
+
+fn write_attached_units(root: &Path, packages: &[ExposedPackage]) -> Result<()> {
+    for dir in attached_dirs(root) {
+        reset_dir(&dir)?;
+        for package in packages {
+            for unit in &package.units {
+                let target = Path::new(&package.artifact_store_path)
+                    .join("units")
+                    .join(unit);
+                let link = dir.join(unit);
+                atomic_symlink(&target, &link).with_context(|| {
+                    format!(
+                        "linking attached unit {} -> {}",
+                        link.display(),
+                        target.display()
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_exact_preset(root: &Path, targets: &BTreeSet<String>) -> Result<()> {
+    let mut text = String::new();
+    for target in targets {
+        text.push_str("enable ");
+        text.push_str(target);
+        text.push('\n');
+    }
+    for path in preset_paths(root) {
+        let parent = path
+            .parent()
+            .with_context(|| format!("finding parent for {}", path.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+        std::fs::write(&path, &text).with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(())
+}
+
+async fn apply_systemd_changes(
+    root: &Path,
+    current_targets: &BTreeSet<String>,
+    attached_diff: &UnitDiff,
+) -> Result<()> {
+    if root == Path::new("/") {
+        let client = SystemdClient::connect().await?;
+        client.daemon_reload().await?;
+        preset_targets(root, current_targets)?;
+        apply_attached_unit_diff(&client, attached_diff).await?;
+        for target in current_targets {
+            let outcome = client.start_unit(target).await?;
+            if !outcome.result.is_done() {
+                bail!(
+                    "systemd failed to start exposed package target {target}: {}",
+                    outcome.result.label()
+                );
+            }
+        }
+    } else {
+        preset_targets(root, current_targets)?;
+    }
+    Ok(())
+}
+
+async fn apply_attached_unit_diff(client: &SystemdClient, diff: &UnitDiff) -> Result<()> {
+    for unit in &diff.to_stop {
+        ensure_job_done("stop", unit, client.stop_unit(unit).await?)?;
+    }
+    for unit in &diff.to_reload {
+        ensure_job_done("reload", unit, client.reload_unit(unit).await?)?;
+    }
+    for unit in &diff.to_restart {
+        ensure_job_done("restart", unit, client.restart_unit(unit).await?)?;
+    }
+    Ok(())
+}
+
+fn ensure_job_done(action: &str, unit: &str, outcome: JobOutcome) -> Result<()> {
+    if outcome.result.is_done() {
+        return Ok(());
+    }
+    bail!(
+        "systemd failed to {action} exposed package unit {unit}: {}",
+        outcome.result.label()
+    )
+}
+
+fn preset_targets(root: &Path, targets: &BTreeSet<String>) -> Result<()> {
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let mut command = systemctl(root);
+    command.arg("preset");
+    command.args(targets);
+    run_systemctl(command, "preset exposed package targets")
+}
+
+fn disable_removed_targets(root: &Path, targets: &[String]) -> Result<()> {
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let mut command = systemctl(root);
+    if root == Path::new("/") {
+        command.arg("disable").arg("--now");
+    } else {
+        command.arg("disable");
+    }
+    command.args(targets);
+    run_systemctl(command, "disable removed exposed package targets")
+}
+
+fn systemctl(root: &Path) -> Command {
+    let mut command = Command::new("systemctl");
+    if root != Path::new("/") {
+        command.arg(format!("--root={}", root.display()));
+    }
+    command
+}
+
+fn run_systemctl(mut command: Command, action: &str) -> Result<()> {
+    let status = command
+        .status()
+        .with_context(|| format!("running systemctl to {action}"))?;
+    if !status.success() {
+        bail!("systemctl failed to {action}: {status}");
+    }
+    Ok(())
+}
+
+fn read_existing_preset_targets(root: &Path) -> Result<BTreeSet<String>> {
+    let mut targets = BTreeSet::new();
+    for path in preset_paths(root) {
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in content.lines() {
+            let Some(target) = line.trim().strip_prefix("enable ") else {
+                continue;
+            };
+            if target.starts_with("aos-pkg-") && target.ends_with(".target") {
+                targets.insert(target.to_string());
+            }
+        }
+    }
+    Ok(targets)
+}
+
+fn preset_paths(root: &Path) -> [PathBuf; 2] {
+    [
+        root.join("var/etc").join(APM_PRESET_REL),
+        root.join("etc").join(APM_PRESET_REL),
+    ]
+}
+
+fn attached_dirs(root: &Path) -> [PathBuf; 2] {
+    [
+        root.join("var/etc").join(ATTACHED_REL),
+        root.join("etc").join(ATTACHED_REL),
+    ]
+}
+
+fn compute_attached_unit_diff(root: &Path, packages: &[ExposedPackage]) -> Result<UnitDiff> {
+    let temp = TempDir::new().context("creating attached unit diff workspace")?;
+    let live_root = temp.path().join("live");
+    let candidate_root = temp.path().join("candidate");
+    let live_units = live_root.join("systemd/system");
+    let candidate_units = candidate_root.join("systemd/system");
+    std::fs::create_dir_all(&live_units)
+        .with_context(|| format!("creating {}", live_units.display()))?;
+    std::fs::create_dir_all(&candidate_units)
+        .with_context(|| format!("creating {}", candidate_units.display()))?;
+
+    copy_existing_attached_units(root, &live_units)?;
+    link_candidate_attached_units(packages, &candidate_units)?;
+
+    Ok(unit_diff::compute_diff(&live_root, &candidate_root))
+}
+
+fn copy_existing_attached_units(root: &Path, destination: &Path) -> Result<()> {
+    for dir in attached_dirs(root) {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            if !is_unit_file_name(&file_name) {
+                continue;
+            }
+            atomic_symlink(&entry.path(), &destination.join(file_name))?;
+        }
+    }
+    Ok(())
+}
+
+fn link_candidate_attached_units(packages: &[ExposedPackage], destination: &Path) -> Result<()> {
+    for package in packages {
+        for unit in &package.units {
+            let target = Path::new(&package.artifact_store_path)
+                .join("units")
+                .join(unit);
+            atomic_symlink(&target, &destination.join(unit))?;
+        }
+    }
+    Ok(())
+}
+
+fn has_attached_units(root: &Path) -> Result<bool> {
+    for dir in attached_dirs(root) {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            let entry = entry?;
+            if is_unit_file_name(&entry.file_name()) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn is_unit_file_name(name: &OsStr) -> bool {
+    const UNIT_SUFFIXES: &[&str] = &[
+        ".service",
+        ".target",
+        ".socket",
+        ".timer",
+        ".path",
+        ".mount",
+        ".slice",
+        ".automount",
+        ".swap",
+    ];
+    let name = name.to_string_lossy();
+    UNIT_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
+}
+
+fn reset_dir(path: &Path) -> Result<()> {
+    if path.symlink_metadata().is_ok() {
+        for entry in
+            std::fs::read_dir(path).with_context(|| format!("reading {}", path.display()))?
+        {
+            let entry = entry?;
+            let entry_path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("reading file type for {}", entry_path.display()))?;
+            if file_type.is_dir() {
+                std::fs::remove_dir_all(&entry_path)
+                    .with_context(|| format!("removing {}", entry_path.display()))?;
+            } else {
+                std::fs::remove_file(&entry_path)
+                    .with_context(|| format!("removing {}", entry_path.display()))?;
+            }
+        }
+    } else {
+        std::fs::create_dir_all(path).with_context(|| format!("creating {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn atomic_symlink(target: &Path, link: &Path) -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    if let Ok(existing) = std::fs::read_link(link) {
+        if existing == target {
+            return Ok(());
+        }
+    }
+
+    let parent = link
+        .parent()
+        .with_context(|| format!("finding parent for {}", link.display()))?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+
+    let tmp = link.with_file_name(format!(
+        ".{}.tmp.{}",
+        link.file_name().and_then(OsStr::to_str).unwrap_or("link"),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&tmp);
+    symlink(target, &tmp).with_context(|| {
+        format!(
+            "creating temp symlink {} -> {}",
+            tmp.display(),
+            target.display()
+        )
+    })?;
+    std::fs::rename(&tmp, link)
+        .with_context(|| format!("renaming {} -> {}", tmp.display(), link.display()))
+}
+
+fn aos_root_path() -> PathBuf {
+    match std::env::var("AOS_ROOT") {
+        Ok(value) if !value.is_empty() => {
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                return path;
+            }
+        }
+        _ => {}
+    }
+    PathBuf::from("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    use crate::types::{ApmMeta, ExposeArtifactMeta, ExposeMeta, InstalledMeta};
+
+    fn installed_with_expose(
+        tmp: &TempDir,
+        name: &str,
+        package_hash: &str,
+        artifact_hash: &str,
+    ) -> InstalledMeta {
+        let artifact = tmp.path().join(format!("{artifact_hash}-expose-{name}"));
+        std::fs::create_dir_all(artifact.join("units")).unwrap();
+        std::fs::write(
+            artifact
+                .join("units")
+                .join(format!("aos-pkg-{name}.target")),
+            "[Unit]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artifact.join("units").join(format!("{name}.service")),
+            "[Unit]\n",
+        )
+        .unwrap();
+
+        InstalledMeta {
+            store_path: format!("/var/lib/store/{package_hash}-{name}-1.0"),
+            pushed_at: 1,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: name.into(),
+                version: "1.0".into(),
+                explicit: true,
+                registry: "test".into(),
+                installed_at: "2026-06-16T00:00:00Z".into(),
+                held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
+                expose: Some(ExposeMeta {
+                    target: format!("aos-pkg-{name}.target"),
+                    units: vec![format!("{name}.service")],
+                    images: Vec::new(),
+                    requires: Vec::new(),
+                }),
+                expose_artifact: Some(ExposeArtifactMeta {
+                    store_path: artifact.display().to_string(),
+                    nar_hash: "sha256:test".into(),
+                    nar_size: 1,
+                }),
+                permissions: Default::default(),
+            }),
+        }
+    }
+
+    #[test]
+    fn rebuild_generation_expose_roots_links_artifacts_once() {
+        let tmp = TempDir::new().unwrap();
+        let generation = Generation {
+            number: 1,
+            path: tmp.path().join("gen-1"),
+        };
+        let installed = vec![
+            installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111"),
+            installed_with_expose(&tmp, "api", "pkghash222", "artifacthash111"),
+        ];
+
+        rebuild_generation_expose_roots(&generation, &installed).unwrap();
+
+        let entries = std::fs::read_dir(generation.path.join("expose"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].file_name(), "artifacthash111");
+    }
+
+    #[test]
+    fn write_attached_units_replaces_stale_units_in_live_and_durable_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        std::os::unix::fs::symlink(
+            &artifact,
+            profile.current_path().join("expose/artifacthash111"),
+        )
+        .unwrap();
+
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+        for dir in attached_dirs(&root) {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("stale.service"), "[Unit]\n").unwrap();
+        }
+
+        write_attached_units(&root, &packages).unwrap();
+
+        for dir in attached_dirs(&root) {
+            assert!(!dir.join("stale.service").exists());
+            assert!(dir.join("aos-pkg-web.target").symlink_metadata().is_ok());
+            assert!(dir.join("web.service").symlink_metadata().is_ok());
+        }
+    }
+
+    #[test]
+    fn exposed_packages_rejects_duplicate_unit_names() {
+        let tmp = TempDir::new().unwrap();
+        let web = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let mut api = installed_with_expose(&tmp, "api", "pkghash222", "artifacthash222");
+        let api_artifact = api
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        std::fs::write(
+            Path::new(&api_artifact).join("units/web.service"),
+            "[Unit]\n",
+        )
+        .unwrap();
+        api.apm.as_mut().unwrap().expose.as_mut().unwrap().units = vec!["web.service".into()];
+
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        for installed in [&web, &api] {
+            let artifact = installed
+                .apm
+                .as_ref()
+                .unwrap()
+                .expose_artifact
+                .as_ref()
+                .unwrap()
+                .store_path
+                .clone();
+            std::os::unix::fs::symlink(
+                &artifact,
+                profile
+                    .current_path()
+                    .join("expose")
+                    .join(store_path_hash(&artifact)),
+            )
+            .unwrap();
+        }
+
+        let err = exposed_packages(&profile, &[web, api]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("declared by both packages"));
+    }
+
+    #[test]
+    fn attached_unit_diff_restarts_changed_services() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let old_artifact = tmp.path().join("oldartifacthash-expose-web");
+        let new_artifact = tmp.path().join("newartifacthash-expose-web");
+        std::fs::create_dir_all(old_artifact.join("units")).unwrap();
+        std::fs::create_dir_all(new_artifact.join("units")).unwrap();
+        std::fs::write(
+            old_artifact.join("units/aos-pkg-web.target"),
+            "[Unit]\nWants=web.service\n",
+        )
+        .unwrap();
+        std::fs::write(
+            old_artifact.join("units/web.service"),
+            "[Service]\nExecStart=/old\n",
+        )
+        .unwrap();
+        std::fs::write(
+            new_artifact.join("units/aos-pkg-web.target"),
+            "[Unit]\nWants=web.service\n",
+        )
+        .unwrap();
+        std::fs::write(
+            new_artifact.join("units/web.service"),
+            "[Service]\nExecStart=/new\n",
+        )
+        .unwrap();
+        let live_attached = root.join("etc").join(ATTACHED_REL);
+        std::fs::create_dir_all(&live_attached).unwrap();
+        std::os::unix::fs::symlink(
+            old_artifact.join("units/aos-pkg-web.target"),
+            live_attached.join("aos-pkg-web.target"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            old_artifact.join("units/web.service"),
+            live_attached.join("web.service"),
+        )
+        .unwrap();
+
+        let package = ExposedPackage {
+            name: "web".into(),
+            target: "aos-pkg-web.target".into(),
+            units: BTreeSet::from(["aos-pkg-web.target".to_string(), "web.service".to_string()]),
+            artifact_hash: "newartifacthash".into(),
+            artifact_store_path: new_artifact.display().to_string(),
+        };
+
+        let diff = compute_attached_unit_diff(&root, &[package]).unwrap();
+
+        assert_eq!(diff.to_restart, vec!["web.service"]);
+    }
+
+    #[test]
+    fn attached_unit_diff_stops_removed_services_without_preset() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let old_artifact = tmp.path().join("oldartifacthash-expose-web");
+        std::fs::create_dir_all(old_artifact.join("units")).unwrap();
+        std::fs::write(
+            old_artifact.join("units/web.service"),
+            "[Service]\nExecStart=/old\n",
+        )
+        .unwrap();
+        let live_attached = root.join("etc").join(ATTACHED_REL);
+        std::fs::create_dir_all(&live_attached).unwrap();
+        std::os::unix::fs::symlink(
+            old_artifact.join("units/web.service"),
+            live_attached.join("web.service"),
+        )
+        .unwrap();
+
+        let diff = compute_attached_unit_diff(&root, &[]).unwrap();
+
+        assert_eq!(diff.to_stop, vec!["web.service"]);
+    }
+
+    #[test]
+    fn write_exact_preset_removes_stale_targets() {
+        let tmp = TempDir::new().unwrap();
+        let mut targets = BTreeSet::new();
+        targets.insert("aos-pkg-web.target".to_string());
+
+        write_exact_preset(tmp.path(), &targets).unwrap();
+        targets.clear();
+        write_exact_preset(tmp.path(), &targets).unwrap();
+
+        for path in preset_paths(tmp.path()) {
+            assert_eq!(std::fs::read_to_string(path).unwrap(), "");
+        }
+    }
+}

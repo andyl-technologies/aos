@@ -399,6 +399,7 @@ pub fn rebuild_meta(
                     source_drv: pkg.source_drv.clone(),
                     source_nar_hash: pkg.source_nar_hash.clone(),
                     expose: pkg.expose.clone(),
+                    expose_artifact: pkg.expose_artifact.clone(),
                     permissions: pkg.permissions.clone(),
                 }),
             }
@@ -469,6 +470,7 @@ mod tests {
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
                 expose: None,
+                expose_artifact: None,
                 permissions: Default::default(),
             }),
         }
