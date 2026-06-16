@@ -1669,6 +1669,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_from_json_primop(argument, argument_span, value)
             }
+            StrictUnaryPrimOp::ToString => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_to_string_primop(id, node.span, argument, argument_span, value)
+            }
             StrictUnaryPrimOp::FunctionArgs => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_function_args_primop(id, node.span, argument, argument_span, value)
@@ -3063,6 +3067,253 @@ impl<'ir> TreeWalk<'ir> {
                 })
             }
         }
+    }
+
+    fn eval_to_string_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let string = self.to_string_value(id, span, argument, argument_span, value)?;
+        self.heap
+            .alloc_string(string)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn to_string_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+    ) -> Result<NixString, TreeWalkError> {
+        if value.tag() == ValueTag::List {
+            return self.list_to_string_value(id, span, value_id, value_span, value);
+        }
+        self.scalar_to_string_value(id, span, value_id, value_span, value)
+    }
+
+    fn list_to_string_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        list_id: IrId,
+        list_span: Span,
+        value: Value,
+    ) -> Result<NixString, TreeWalkError> {
+        let mut bytes = Vec::new();
+        let mut context = StringContext::empty();
+        let mut fields = 0usize;
+        self.append_list_to_string_fields(
+            id,
+            span,
+            list_id,
+            list_span,
+            value,
+            &mut bytes,
+            &mut context,
+            &mut fields,
+        )?;
+        Ok(NixString::new(bytes, context))
+    }
+
+    fn append_list_to_string_fields(
+        &mut self,
+        id: IrId,
+        span: Span,
+        list_id: IrId,
+        list_span: Span,
+        value: Value,
+        bytes: &mut Vec<u8>,
+        context: &mut StringContext,
+        fields: &mut usize,
+    ) -> Result<(), TreeWalkError> {
+        let elements = {
+            let list = self.heap.get_list(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            let mut elements = Vec::new();
+            elements.try_reserve_exact(list.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: list_id,
+                        len: list.len(),
+                    },
+                    list_span,
+                )
+            })?;
+            elements.extend_from_slice(list.as_slice());
+            elements
+        };
+
+        for element in elements {
+            self.append_to_string_list(
+                id, span, list_id, list_span, element, bytes, context, fields,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn append_to_string_list(
+        &mut self,
+        id: IrId,
+        span: Span,
+        list_id: IrId,
+        list_span: Span,
+        value: Value,
+        bytes: &mut Vec<u8>,
+        context: &mut StringContext,
+        fields: &mut usize,
+    ) -> Result<(), TreeWalkError> {
+        let value = self.force_value(list_id, list_span, value)?;
+        if value.tag() == ValueTag::List {
+            return self.append_list_to_string_fields(
+                id, span, list_id, list_span, value, bytes, context, fields,
+            );
+        }
+
+        let rendered = self.scalar_to_string_value(id, span, list_id, list_span, value)?;
+        Self::append_to_string_field(id, span, bytes, context, fields, rendered)
+    }
+
+    fn append_to_string_field(
+        id: IrId,
+        span: Span,
+        bytes: &mut Vec<u8>,
+        context: &mut StringContext,
+        fields: &mut usize,
+        field: NixString,
+    ) -> Result<(), TreeWalkError> {
+        if *fields > 0 {
+            Self::extend_bytes_for_node(id, span, bytes, b" ")?;
+        }
+        *fields = fields.checked_add(1).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListLengthOverflow {
+                    id,
+                    len: usize::MAX,
+                },
+                span,
+            )
+        })?;
+        Self::extend_bytes_for_node(id, span, bytes, field.bytes())?;
+        *context = context
+            .union(field.context())
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        Ok(())
+    }
+
+    fn scalar_to_string_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+    ) -> Result<NixString, TreeWalkError> {
+        match value.tag() {
+            ValueTag::String => self.clone_string_value(value_id, value_span, value),
+            ValueTag::Int => Ok(NixString::from_bytes(
+                (value.payload_bits() as i64).to_string().into_bytes(),
+            )),
+            ValueTag::Float => Ok(NixString::from_bytes(Self::to_string_float_bytes(
+                f64::from_bits(value.payload_bits()),
+            ))),
+            ValueTag::Bool => {
+                if self.expect_bool(value_id, value, value_span)? {
+                    Ok(NixString::from_bytes(b"1".to_vec()))
+                } else {
+                    Ok(NixString::default())
+                }
+            }
+            ValueTag::Null => Ok(NixString::default()),
+            ValueTag::Attrs => self.attrs_to_string_value(id, span, value_id, value_span, value),
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: value_id,
+                    expected: "string",
+                    actual,
+                },
+                value_span,
+            )),
+        }
+    }
+
+    fn attrs_to_string_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_id: IrId,
+        attrs_span: Span,
+        attrs_value: Value,
+    ) -> Result<NixString, TreeWalkError> {
+        if let Some(hook) =
+            self.attr_value_by_name(attrs_id, attrs_value, TO_STRING_ATTR, attrs_span)?
+        {
+            let hook = self.force_value(attrs_id, attrs_span, hook)?;
+            let value = self.apply_lambda_value(
+                attrs_id,
+                attrs_span,
+                attrs_id,
+                hook,
+                attrs_span,
+                attrs_id,
+                attrs_value,
+            )?;
+            return self.to_string_value(id, span, attrs_id, attrs_span, value);
+        }
+
+        if let Some(out_path) =
+            self.attr_value_by_name(attrs_id, attrs_value, OUT_PATH_ATTR, attrs_span)?
+        {
+            let value = self.force_value(attrs_id, attrs_span, out_path)?;
+            return self.to_string_value(id, span, attrs_id, attrs_span, value);
+        }
+
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::Type {
+                id: attrs_id,
+                expected: "string",
+                actual: ValueTag::Attrs,
+            },
+            attrs_span,
+        ))
+    }
+
+    fn clone_string_value(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<NixString, TreeWalkError> {
+        let string = self
+            .heap
+            .get_string(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let bytes = Self::copy_bytes_for_node(id, span, string.bytes())?;
+        let context = string
+            .context()
+            .union(&StringContext::empty())
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        Ok(NixString::new(bytes, context))
+    }
+
+    fn to_string_float_bytes(value: f64) -> Vec<u8> {
+        if value.is_nan() {
+            return b"nan".to_vec();
+        }
+        let value = if value == 0.0 { 0.0 } else { value };
+        format!("{value:.6}").into_bytes()
     }
 
     fn eval_list_to_attrs_primop(
@@ -6358,6 +6609,7 @@ enum StrictUnaryPrimOp {
     ParseDrvName,
     SplitVersion,
     FromJson,
+    ToString,
     ListToAttrs,
     ConcatLists,
 }
@@ -6394,6 +6646,7 @@ impl StrictUnaryPrimOp {
             b"parseDrvName" => Some(Self::ParseDrvName),
             b"splitVersion" => Some(Self::SplitVersion),
             b"fromJSON" => Some(Self::FromJson),
+            b"toString" => Some(Self::ToString),
             b"listToAttrs" => Some(Self::ListToAttrs),
             b"concatLists" => Some(Self::ConcatLists),
             _ => None,
@@ -11662,6 +11915,172 @@ mod tests {
             }
         );
         assert_eq!(error.span(), string_span);
+    }
+
+    #[test]
+    fn to_string_primop_converts_scalar_values() {
+        assert_eq!(eval_string_bytes("builtins.toString \"x\""), b"x");
+        assert_eq!(eval_string_bytes("builtins.toString 1"), b"1");
+        assert_eq!(eval_string_bytes("builtins.toString (-2)"), b"-2");
+        assert_eq!(eval_string_bytes("builtins.toString 1.25"), b"1.250000");
+        assert_eq!(eval_string_bytes("builtins.toString (-0.0)"), b"0.000000");
+        assert_eq!(
+            eval_string_bytes("builtins.toString ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308))"),
+            b"nan"
+        );
+        assert_eq!(eval_string_bytes("builtins.toString true"), b"1");
+        assert_eq!(eval_string_bytes("builtins.toString false"), b"");
+        assert_eq!(eval_string_bytes("builtins.toString null"), b"");
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { toString = x: \"local\"; }; in builtins.toString 1"
+            ),
+            b"local"
+        );
+    }
+
+    #[test]
+    fn to_string_primop_flattens_lists_with_spaces() {
+        assert_eq!(
+            eval_string_bytes("builtins.toString [ 1 \"x\" true false null ]"),
+            b"1 x 1  "
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toString [ \"x\" [] \"y\" ]"),
+            b"x y"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toString [ \"x\" [ \"\" ] \"y\" ]"),
+            b"x  y"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.toString [ [ \"a\" \"b\" ] [ \"c\" \"\" ] [ \"\" \"d\" ] ]"
+            ),
+            b"a b c   d"
+        );
+        assert_eq!(eval_string_bytes("builtins.toString [ \"\" \"\" ]"), b" ");
+    }
+
+    #[test]
+    fn to_string_primop_coerces_attrsets_with_full_to_string_rules() {
+        assert_eq!(
+            eval_string_bytes("builtins.toString { __toString = self: 1; outPath = 1 / 0; }"),
+            b"1"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toString { __toString = self: [ \"a\" \"b\" ]; }"),
+            b"a b"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toString { outPath = [ \"a\" \"b\" ]; }"),
+            b"a b"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toString [ \"x\" { __toString = self: []; } \"y\" ]"),
+            b"x  y"
+        );
+    }
+
+    #[test]
+    fn to_string_primop_forces_arguments_and_rejects_non_coercible_values() {
+        let ir = lower("builtins.toString [ \"a\" (1 / 0) ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let _argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("toString argument exists");
+
+        let error = eval_whnf_owned(&ir).expect_err("toString forces list elements");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let ir = lower("builtins.toString (x: x)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("toString argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("functions are not string-coercible");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Lambda,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn to_string_primop_preserves_string_contexts() {
+        let ir = lower("builtins.toString []");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("toString argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let first_context = ContextElement::opaque_path(b"/nix/store/first".to_vec())
+            .expect("first context builds");
+        let second_context = ContextElement::opaque_path(b"/nix/store/second".to_vec())
+            .expect("second context builds");
+        let first = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"a".to_vec(),
+                StringContext::singleton(first_context.clone()).expect("first context allocates"),
+            ))
+            .expect("first string allocates");
+        let second = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"b".to_vec(),
+                StringContext::singleton(second_context.clone()).expect("second context allocates"),
+            ))
+            .expect("second string allocates");
+        let list = evaluator
+            .heap
+            .alloc_list(NixList::new(vec![first, Value::int(1), second]))
+            .expect("list allocates");
+
+        let result = evaluator
+            .eval_to_string_primop(ir.root, root.span, argument, argument_span, list)
+            .expect("toString evaluates");
+        let string = evaluator
+            .heap
+            .get_string(result)
+            .expect("result is a string");
+
+        assert_eq!(string.bytes(), b"a 1 b");
+        assert!(string.context().contains(&first_context));
+        assert!(string.context().contains(&second_context));
     }
 
     #[test]
