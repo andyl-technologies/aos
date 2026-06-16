@@ -187,6 +187,27 @@ fn paginate<T>(items: Vec<T>, page_size: u32, token: &str) -> Result<(Vec<T>, St
     Ok((page, next))
 }
 
+/// Project a [`ChannelSummary`](crate::db::ChannelSummary) onto the wire
+/// [`pb::Channel`], dropping empty partition buckets and tagging each present
+/// bucket with its index.
+fn channel_message(channel: crate::db::ChannelSummary) -> pb::Channel {
+    pb::Channel {
+        name: channel.name,
+        frontier: channel.frontier.unwrap_or_default(),
+        partitions: channel
+            .partitions
+            .iter()
+            .enumerate()
+            .filter_map(|(bucket, release)| {
+                release.as_ref().map(|release| pb::Partition {
+                    bucket: bucket as u32,
+                    release: release.clone(),
+                })
+            })
+            .collect(),
+    }
+}
+
 /// The shared, transport-free implementation of the `aos.registry.v1` services.
 ///
 /// Holds only data the method bodies need — the [`Database`], the [`JwtKeys`]
@@ -505,6 +526,156 @@ impl RpcService {
         Ok(pb::ListReleasesResponse {
             releases,
             next_page_token,
+        })
+    }
+
+    /// `PackageService.ListPackages` — package summaries with the newest version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::NotFound`] for an unknown slug or a soft-deleted
+    /// owning org, [`RpcError::Unauthenticated`]/[`RpcError::PermissionDenied`]
+    /// when a non-public registry is read without authority,
+    /// [`RpcError::InvalidArgument`] for a malformed `page_token`, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_packages(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListPackagesRequest,
+    ) -> Result<pb::ListPackagesResponse, RpcError> {
+        let record = self.registry_or_not_found(&req.slug).await?;
+        self.require_read(auth, &record).await?;
+        let packages: Vec<pb::PackageSummary> = self
+            .db
+            .list_packages(record.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|p| pb::PackageSummary {
+                name: p.name,
+                description: p.description,
+                license: p.license,
+                latest_version: p.latest_version.unwrap_or_default(),
+            })
+            .collect();
+        let (packages, next_page_token) = paginate(packages, req.page_size, &req.page_token)?;
+        Ok(pb::ListPackagesResponse {
+            packages,
+            next_page_token,
+        })
+    }
+
+    /// `PackageService.GetPackage` — full version × platform detail for one package.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::NotFound`] for an unknown slug, package name, or a
+    /// soft-deleted owning org,
+    /// [`RpcError::Unauthenticated`]/[`RpcError::PermissionDenied`] when a
+    /// non-public registry is read without authority, and [`RpcError::Internal`]
+    /// on database failure.
+    pub async fn get_package(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetPackageRequest,
+    ) -> Result<pb::GetPackageResponse, RpcError> {
+        let record = self.registry_or_not_found(&req.slug).await?;
+        self.require_read(auth, &record).await?;
+        let detail = self
+            .db
+            .package_detail(record.id, &req.name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("package"))?;
+        let versions = detail
+            .versions
+            .into_iter()
+            .map(|v| pb::Version {
+                version: v.version,
+                previous: v.previous.unwrap_or_default(),
+                platforms: v
+                    .platforms
+                    .into_iter()
+                    .map(|p| pb::Platform {
+                        platform: p.platform,
+                        store_path: p.store_path,
+                        nar_hash: p.nar_hash,
+                        nar_size: p.nar_size,
+                        closure_size: p.closure_size,
+                    })
+                    .collect(),
+            })
+            .collect();
+        Ok(pb::GetPackageResponse {
+            package: Some(pb::Package {
+                name: detail.name,
+                description: detail.description,
+                homepage: detail.homepage.unwrap_or_default(),
+                license: detail.license,
+                maintainer: detail.maintainer,
+                sysroot: detail.sysroot,
+                versions,
+            }),
+        })
+    }
+
+    /// `ChannelService.ListChannels` — channels with full partition maps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::NotFound`] for an unknown slug or a soft-deleted
+    /// owning org, [`RpcError::Unauthenticated`]/[`RpcError::PermissionDenied`]
+    /// when a non-public registry is read without authority,
+    /// [`RpcError::InvalidArgument`] for a malformed `page_token`, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_channels(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListChannelsRequest,
+    ) -> Result<pb::ListChannelsResponse, RpcError> {
+        let record = self.registry_or_not_found(&req.slug).await?;
+        self.require_read(auth, &record).await?;
+        let channels: Vec<pb::Channel> = self
+            .db
+            .list_channels(record.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(channel_message)
+            .collect();
+        let (channels, next_page_token) = paginate(channels, req.page_size, &req.page_token)?;
+        Ok(pb::ListChannelsResponse {
+            channels,
+            next_page_token,
+        })
+    }
+
+    /// `ChannelService.GetChannel` — one channel's partition map by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::NotFound`] for an unknown slug, channel name, or a
+    /// soft-deleted owning org,
+    /// [`RpcError::Unauthenticated`]/[`RpcError::PermissionDenied`] when a
+    /// non-public registry is read without authority, and [`RpcError::Internal`]
+    /// on database failure.
+    pub async fn get_channel(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetChannelRequest,
+    ) -> Result<pb::GetChannelResponse, RpcError> {
+        let record = self.registry_or_not_found(&req.slug).await?;
+        self.require_read(auth, &record).await?;
+        let channel = self
+            .db
+            .list_channels(record.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .find(|c| c.name == req.name)
+            .ok_or_else(|| RpcError::not_found("channel"))?;
+        Ok(pb::GetChannelResponse {
+            channel: Some(channel_message(channel)),
         })
     }
 }
