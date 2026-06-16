@@ -172,10 +172,11 @@ macro_rules! rpc_route {
 /// Build the shared Connect-JSON router over the given [`RpcService`].
 ///
 /// Wires every ported `aos.registry.v1` method to `POST
-/// /aos.registry.v1.{Service}/{Method}`. The three `GitService` methods are not
-/// yet mounted (they await the surface/blob-store port; RFC-0004 Phase 5 step
-/// 4c). The returned router carries the service as axum state and is mounted
-/// unchanged by both the native hub and the Cloudflare Worker.
+/// /aos.registry.v1.{Service}/{Method}`, including the three `GitService`
+/// methods served over the surface-read port
+/// ([`SurfaceProvider`](crate::fetch::SurfaceProvider)). The returned router
+/// carries the service as axum state and is mounted unchanged by both the
+/// native hub and the Cloudflare Worker.
 #[must_use]
 pub fn router(service: Arc<RpcService>) -> Router {
     let mut r = Router::new();
@@ -212,5 +213,9 @@ pub fn router(service: Arc<RpcService>) -> Router {
     r = rpc_route!(r, "/aos.registry.v1.WebhookService/DeleteWebhook", delete_webhook);
     // PublishService
     r = rpc_route!(r, "/aos.registry.v1.PublishService/MintUploadCredentials", mint_upload_credentials);
+    // GitService
+    r = rpc_route!(r, "/aos.registry.v1.GitService/GitLog", git_log);
+    r = rpc_route!(r, "/aos.registry.v1.GitService/GitDiff", git_diff);
+    r = rpc_route!(r, "/aos.registry.v1.GitService/ListChangeRequests", list_change_requests);
     r.with_state(into_state(service))
 }

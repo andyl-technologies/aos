@@ -31,10 +31,12 @@
 use std::sync::Arc;
 
 use aos_proto_types as pb;
+use aos_registry_surface::object::Oid;
 
 use crate::auth::jwt::{Claims, JwtKeys};
 use crate::clock;
 use crate::db::{Database, IndexStatus, RegistryRecord};
+use crate::fetch::SurfaceProvider;
 use crate::domain::iam::{self, claims_principal, token_allows};
 use crate::domain::{Permission, PrincipalKind, Role, Scope};
 use crate::ratelimit::{RateClass, RateDecision, RateLimiter, MAX_ORGS_PER_OWNER};
@@ -294,6 +296,13 @@ pub struct RpcService {
     /// The abuse-bound rate limiter (the [`RateLimiter`] port), metering
     /// `CreateOrg` per principal.
     pub ratelimit: Arc<dyn RateLimiter>,
+    /// The per-registry surface-read port (the [`SurfaceProvider`]), resolving a
+    /// [`SurfaceFetch`](crate::fetch::SurfaceFetch) for the `GitService` reads.
+    ///
+    /// The native hub resolves a filesystem or HTTP fetcher per the registry's
+    /// storage binding; the Worker returns an R2-backed fetcher scoped to the
+    /// registry's prefix.
+    pub surface: Arc<dyn SurfaceProvider>,
 }
 
 impl RpcService {
@@ -304,12 +313,14 @@ impl RpcService {
         jwt_keys: JwtKeys,
         external_url: String,
         ratelimit: Arc<dyn RateLimiter>,
+        surface: Arc<dyn SurfaceProvider>,
     ) -> Self {
         Self {
             db,
             jwt_keys,
             external_url,
             ratelimit,
+            surface,
         }
     }
 
@@ -460,6 +471,29 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("registry"))
+    }
+
+    /// Resolve a registry's last-indexed HEAD commit oid.
+    ///
+    /// The `GitService` reads walk from the registry's tracked-branch HEAD, the
+    /// last commit the indexer verified.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::FailedPrecondition`] when the registry has not been
+    /// indexed yet, [`RpcError::InvalidArgument`] when the recorded commit is
+    /// not a valid oid, and [`RpcError::Internal`] on database failure.
+    async fn head_commit(&self, registry: &RegistryRecord) -> Result<Oid, RpcError> {
+        let hex = self
+            .db
+            .index_status(registry.id)
+            .await
+            .map_err(RpcError::internal)?
+            .and_then(|s| s.last_indexed_commit)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("registry has no indexed commit yet".into())
+            })?;
+        Oid::from_hex(&hex).map_err(|e| RpcError::invalid(format!("{e:#}")))
     }
 
     /// Build the wire [`pb::Registry`] for `record`, folding in its index status,
@@ -1625,6 +1659,173 @@ impl RpcService {
         Ok(pb::RevertChangesetResponse {
             changeset: Some(changeset_message(reverted)),
         })
+    }
+
+    /// `GitService.GitLog` — the committed commit log of a registry's tracked
+    /// branch.
+    ///
+    /// Walks the verified HEAD commit's first-parent history through the
+    /// committed git surface, newest first. Reads follow registry visibility:
+    /// the caller must hold [`Permission::Read`] on the registry scope (a
+    /// `public` registry's read is anonymous; see the access matrix). Each
+    /// entry carries the `AOS-Change-Id` trailer when the commit was authored or
+    /// promoted through the hub.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::NotFound`] for an unknown slug,
+    /// [`RpcError::PermissionDenied`] when the caller cannot read the registry,
+    /// [`RpcError::FailedPrecondition`] when the registry has no indexed HEAD
+    /// yet, [`RpcError::InvalidArgument`] for a malformed `page_token`, and
+    /// [`RpcError::Internal`] on database or surface-read failure.
+    pub async fn git_log(
+        &self,
+        auth: Option<&str>,
+        req: pb::GitLogRequest,
+    ) -> Result<pb::GitLogResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.slug).await?;
+        self.require_read(auth, &registry).await?;
+        let head = self.head_commit(&registry).await?;
+        let fetch = self
+            .surface
+            .fetcher(&registry)
+            .await
+            .map_err(RpcError::internal)?;
+        let log = crate::git::commit_log(fetch.as_ref(), head, crate::git::GIT_LOG_LIMIT)
+            .await
+            .map_err(RpcError::internal)?;
+        let commits: Vec<pb::GitCommit> = log
+            .into_iter()
+            .map(|c| pb::GitCommit {
+                oid: c.oid,
+                parents: c.parents,
+                message: c.message,
+                author: c.author,
+                when: c.when,
+                change_id: c.change_id.unwrap_or_default(),
+            })
+            .collect();
+        let (commits, next_page_token) = paginate(commits, req.page_size, &req.page_token)?;
+        Ok(pb::GitLogResponse {
+            commits,
+            next_page_token,
+        })
+    }
+
+    /// `GitService.GitDiff` — a textual diff of committed config files between
+    /// commits.
+    ///
+    /// Diffs `registry.toml` and `keys.toml` between `from_oid` and `to_oid`
+    /// (an empty `to_oid` defaults to the current HEAD; an empty `from_oid`
+    /// renders the whole `to` tree as additions). Requires
+    /// [`Permission::Read`] on the registry scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::NotFound`] for an unknown slug,
+    /// [`RpcError::PermissionDenied`] when the caller cannot read the registry,
+    /// [`RpcError::InvalidArgument`] for a malformed oid,
+    /// [`RpcError::FailedPrecondition`] when no HEAD is available to default
+    /// `to_oid`, and [`RpcError::Internal`] on database or surface-read failure.
+    pub async fn git_diff(
+        &self,
+        auth: Option<&str>,
+        req: pb::GitDiffRequest,
+    ) -> Result<pb::GitDiffResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.slug).await?;
+        self.require_read(auth, &registry).await?;
+        let from = if req.from_oid.is_empty() {
+            None
+        } else {
+            Some(Oid::from_hex(&req.from_oid).map_err(|e| RpcError::invalid(format!("{e:#}")))?)
+        };
+        let to = if req.to_oid.is_empty() {
+            self.head_commit(&registry).await?
+        } else {
+            Oid::from_hex(&req.to_oid).map_err(|e| RpcError::invalid(format!("{e:#}")))?
+        };
+        let fetch = self
+            .surface
+            .fetcher(&registry)
+            .await
+            .map_err(RpcError::internal)?;
+        let diff = crate::git::diff_config_files(fetch.as_ref(), from, to)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::GitDiffResponse { diff })
+    }
+
+    /// `GitService.ListChangeRequests` — the registry's draft git-backed change
+    /// requests.
+    ///
+    /// Surfaces every change-set the hub recorded as a git-backed change request
+    /// (one with a draft ref and commit), with each edited file's unified diff
+    /// (computed from the recorded old/new file contents) and the `apr change
+    /// merge` command a maintainer runs to promote it. Listing the change
+    /// requests is an admin+ surface: the caller must hold
+    /// [`Permission::AuditRead`] on the registry scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::NotFound`] for an unknown slug,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `audit.read`, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_change_requests(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListChangeRequestsRequest,
+    ) -> Result<pb::ListChangeRequestsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let registry = self.registry_or_not_found(&req.slug).await?;
+        let scope = Scope::parse(&registry.slug);
+        self.require_permission(&claims, Permission::AuditRead, &scope)
+            .await?;
+
+        let upload_url = format!(
+            "{}/{}",
+            self.external_url.trim_end_matches('/'),
+            registry.slug
+        );
+        let changesets = self
+            .db
+            .list_changesets(&registry.slug)
+            .await
+            .map_err(RpcError::internal)?;
+        let mut change_requests = Vec::new();
+        for cs in changesets.into_iter().filter(|cs| cs.git_ref.is_some()) {
+            let file_diffs = self
+                .db
+                .list_revisions(&cs.change_id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| r.object_type == "registry_file")
+                .map(|r| pb::FileDiff {
+                    diff: crate::git::unified_diff(
+                        &r.object_id,
+                        r.old_json.as_deref().unwrap_or_default(),
+                        r.new_json.as_deref().unwrap_or_default(),
+                    ),
+                    path: r.object_id,
+                })
+                .collect();
+            change_requests.push(pb::ChangeRequest {
+                merge_command: crate::git::merge_command(
+                    &upload_url,
+                    &crate::config::ChangeId(cs.change_id.clone()),
+                ),
+                change_id: cs.change_id,
+                git_ref: cs.git_ref.unwrap_or_default(),
+                git_commit: cs.git_commit.unwrap_or_default(),
+                status: cs.status,
+                summary: cs.summary.unwrap_or_default(),
+                actor_label: cs.actor_label,
+                created_at: cs.created_at,
+                file_diffs,
+            });
+        }
+        Ok(pb::ListChangeRequestsResponse { change_requests })
     }
 }
 
