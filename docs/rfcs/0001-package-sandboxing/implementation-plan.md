@@ -365,8 +365,11 @@ apm at first boot; define upgrade/rollback.
       not `Require=` the early-boot overlay producers in the stage-2 graph, and
       registry refresh is best-effort so cached metadata can keep air-gapped
       boots from hard-failing.
-- [ ] **Ignition writes** `/etc/aos/packages.d/desired.toml` (registries +
-      desired packages) + registry config under `registries.d/` via `storage.files`.
+- [x] **Ignition writes** `/etc/aos/packages.d/desired.toml` (desired packages)
+      plus registry config/trust anchors under `/etc/apm/registries.d` and
+      sibling trust directories via `storage.files`. Implemented as the reusable
+      `aos.apm.installAtBoot.ignitionConfig` fragment, verified by
+      `checks.vm.apm-install-at-boot`.
 - [x] **Declarative reconciliation (D24).** The install-at-boot step converges to
       the desired set: install additions **and uninstall packages removed from
       `desired.toml`** (disable target, remove attach units + preset lines, gc the
