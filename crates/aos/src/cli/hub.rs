@@ -27,12 +27,29 @@ pub enum HubRegistryCmd {
         /// Hub base URL (http:// or https://)
         #[arg(long)]
         hub: String,
+        /// Hub access JWT for authenticated access (omit for public reads)
+        #[arg(long)]
+        token: Option<String>,
     },
     /// Show one registry by slug
     Get {
         /// Hub base URL (http:// or https://)
         #[arg(long)]
         hub: String,
+        /// Hub access JWT for authenticated access (omit for public reads)
+        #[arg(long)]
+        token: Option<String>,
+        /// Registry slug (e.g. `acme/infra/prod/cdn`)
+        slug: String,
+    },
+    /// List a registry's verified releases (newest first)
+    Releases {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access (omit for public reads)
+        #[arg(long)]
+        token: Option<String>,
         /// Registry slug (e.g. `acme/infra/prod/cdn`)
         slug: String,
     },
