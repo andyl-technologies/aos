@@ -55,6 +55,9 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
         HubCmd::Project { command } => project(printer, command).await,
         HubCmd::Binding { command } => binding(printer, command).await,
         HubCmd::Webhook { command } => webhook(printer, command).await,
+        HubCmd::MintUpload { hub, token, slug } => {
+            mint_upload(printer, hub, token.as_deref(), slug).await
+        }
         HubCmd::Audit { hub, token, scope } => {
             audit(printer, hub, token.as_deref(), scope).await
         }
@@ -330,6 +333,26 @@ async fn webhook(printer: &Printer, command: &HubWebhookCmd) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Handles `aos hub mint-upload --slug <registry>`.
+async fn mint_upload(printer: &Printer, hub: &str, token: Option<&str>, slug: &str) -> Result<()> {
+    let client = hub_client(hub, token)?;
+    let creds = client.mint_upload_credentials(slug).await?;
+    if printer.json_if_active(&serde_json::json!({
+        "token": creds.token,
+        "upload_url": creds.upload_url,
+        "expires_at": creds.expires_at,
+    })) {
+        return Ok(());
+    }
+    printer.success(&format!("minted upload credential for '{slug}'"));
+    printer.kv("upload url", &creds.upload_url);
+    printer.kv("expires at", &creds.expires_at.to_string());
+    // The provisioning secret is shown exactly once.
+    printer.info("provisioning token (shown once — store it now):");
+    printer.plain(&creds.token);
+    Ok(())
 }
 
 /// Handles `aos hub audit [--scope <s>]`.
