@@ -208,6 +208,9 @@ pub enum PackageCommand {
         /// Search only this registry
         #[arg(long)]
         registry: Option<String>,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// Show detailed package information
     Show {
@@ -216,6 +219,9 @@ pub enum PackageCommand {
         /// Show package from this registry
         #[arg(long)]
         registry: Option<String>,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// List packages
     List {
@@ -231,26 +237,41 @@ pub enum PackageCommand {
         /// Only from this registry
         #[arg(long)]
         registry: Option<String>,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// Show closure tree (store references)
     Depends {
         /// Package name
         package: String,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// Show reverse dependencies
     Rdepends {
         /// Package name
         package: String,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// Show available versions and registry origins
     Policy {
         /// Package name
         package: String,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// List files installed by a package
     Files {
         /// Package name
         package: String,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// Prevent a package from being upgraded
     Hold {
@@ -263,9 +284,17 @@ pub enum PackageCommand {
         package: String,
     },
     /// List held packages
-    Held,
+    Held {
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
+    },
     /// List installed packages whose source registry is no longer configured
-    Orphans,
+    Orphans {
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
+    },
     /// Remove cached NAR downloads
     Clean {
         /// Also remove old profile generations
@@ -438,7 +467,13 @@ pub enum TestSystemdClientOp {
 
 impl PackageCommand {
     /// Returns `true` when the user passed `--system` on a subcommand that
-    /// supports it (Install, Upgrade, Rollback, Update, Registry).
+    /// supports it.
+    ///
+    /// Mutating and sysroot commands (`install`, `upgrade`, `rollback`,
+    /// `update`, `registry`) select the system scope to act on it; the
+    /// read-only query commands (`search`, `show`, `list`, `depends`,
+    /// `rdepends`, `policy`, `files`, `held`, `orphans`) select it to read the
+    /// system registry cache and profile instead of the per-user ones.
     pub fn is_system(&self) -> bool {
         match self {
             PackageCommand::Install { system, .. } => *system,
@@ -446,6 +481,15 @@ impl PackageCommand {
             PackageCommand::Rollback { system, .. } => *system,
             PackageCommand::Update { system, .. } => *system,
             PackageCommand::Registry { system, .. } => *system,
+            PackageCommand::Search { system, .. } => *system,
+            PackageCommand::Show { system, .. } => *system,
+            PackageCommand::List { system, .. } => *system,
+            PackageCommand::Depends { system, .. } => *system,
+            PackageCommand::Rdepends { system, .. } => *system,
+            PackageCommand::Policy { system, .. } => *system,
+            PackageCommand::Files { system, .. } => *system,
+            PackageCommand::Held { system, .. } => *system,
+            PackageCommand::Orphans { system, .. } => *system,
             _ => false,
         }
     }
@@ -1730,6 +1774,7 @@ pub async fn run(
             names_only,
             installed,
             registry,
+            ..
         } => {
             query::search(
                 &config,
@@ -1741,14 +1786,15 @@ pub async fn run(
             )
             .await
         }
-        PackageCommand::Show { package, registry } => {
-            query::show(&config, package, registry.as_deref(), printer).await
-        }
+        PackageCommand::Show {
+            package, registry, ..
+        } => query::show(&config, package, registry.as_deref(), printer).await,
         PackageCommand::List {
             installed,
             upgradable,
             held,
             registry,
+            ..
         } => {
             query::list(
                 &config,
@@ -1760,14 +1806,14 @@ pub async fn run(
             )
             .await
         }
-        PackageCommand::Depends { package } => deps::depends(&config, package, printer).await,
-        PackageCommand::Rdepends { package } => deps::rdepends(&config, package, printer).await,
-        PackageCommand::Policy { package } => deps::policy(&config, package, printer).await,
-        PackageCommand::Files { package } => deps::files(&config, package, printer).await,
+        PackageCommand::Depends { package, .. } => deps::depends(&config, package, printer).await,
+        PackageCommand::Rdepends { package, .. } => deps::rdepends(&config, package, printer).await,
+        PackageCommand::Policy { package, .. } => deps::policy(&config, package, printer).await,
+        PackageCommand::Files { package, .. } => deps::files(&config, package, printer).await,
         PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
         PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
-        PackageCommand::Held => hold::run_held(&config, printer).await,
-        PackageCommand::Orphans => query::orphans(&config, printer).await,
+        PackageCommand::Held { .. } => hold::run_held(&config, printer).await,
+        PackageCommand::Orphans { .. } => query::orphans(&config, printer).await,
         PackageCommand::Clean { generations, keep } => {
             clean::run(&config, *generations, *keep, printer).await
         }
@@ -3056,6 +3102,40 @@ mod tests {
         assert_eq!(
             derive_registry_name("https://registry.aos.dev/core"),
             "core"
+        );
+    }
+
+    #[test]
+    fn query_commands_honor_system_flag() {
+        // Query subcommands now select scope via --system, just like the
+        // mutating ones.
+        let list_system = PackageCommand::List {
+            installed: false,
+            upgradable: false,
+            held: false,
+            registry: None,
+            system: true,
+        };
+        assert!(list_system.is_system());
+
+        let list_user = PackageCommand::List {
+            installed: false,
+            upgradable: false,
+            held: false,
+            registry: None,
+            system: false,
+        };
+        assert!(!list_user.is_system());
+
+        assert!(PackageCommand::Orphans { system: true }.is_system());
+        assert!(!PackageCommand::Held { system: false }.is_system());
+        assert!(
+            PackageCommand::Show {
+                package: "curl".into(),
+                registry: None,
+                system: true,
+            }
+            .is_system()
         );
     }
 
