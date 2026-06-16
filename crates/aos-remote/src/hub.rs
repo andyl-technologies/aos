@@ -22,9 +22,10 @@ use aos_proto::aos::registry::v1::{
     CreateRegistryRequest, GetRegistryRequest, ListAuditRequest, ListBindingsRequest,
     ListChangesetsRequest,
     ListChannelsRequest, ListOrgsRequest, ListPackagesRequest, ListProjectsRequest,
-    ListRegistriesRequest, ListReleasesRequest, Org, OrgServiceClient, PackageServiceClient,
-    PackageSummary, Project, ProjectServiceClient, Registry, RegistryServiceClient, Release,
-    StorageServiceClient,
+    CreateWebhookRequest, DeleteWebhookRequest, ListRegistriesRequest, ListReleasesRequest,
+    ListWebhooksRequest, Org, OrgServiceClient, PackageServiceClient, PackageSummary, Project,
+    ProjectServiceClient, Registry, RegistryServiceClient, Release, StorageServiceClient, Webhook,
+    WebhookServiceClient,
 };
 
 use crate::client::{make_http_client, validate_base_url};
@@ -48,6 +49,7 @@ pub struct RegistryHubClient {
     bindings: StorageServiceClient<HttpClient>,
     audit: AuditServiceClient<HttpClient>,
     config: ConfigServiceClient<HttpClient>,
+    webhooks: WebhookServiceClient<HttpClient>,
 }
 
 impl RegistryHubClient {
@@ -94,7 +96,8 @@ impl RegistryHubClient {
             projects: ProjectServiceClient::new(http.clone(), config.clone()),
             bindings: StorageServiceClient::new(http.clone(), config.clone()),
             audit: AuditServiceClient::new(http.clone(), config.clone()),
-            config: ConfigServiceClient::new(http, config),
+            config: ConfigServiceClient::new(http.clone(), config.clone()),
+            webhooks: WebhookServiceClient::new(http, config),
         })
     }
 
@@ -411,5 +414,81 @@ impl RegistryHubClient {
             .registry
             .into_option()
             .context("hub returned no registry for the create request")
+    }
+
+    /// Lists an org's webhook subscriptions (secrets are never returned).
+    ///
+    /// Requires `members.manage` on the org scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn list_webhooks(&self, org_slug: &str) -> Result<Vec<Webhook>> {
+        let response = self
+            .webhooks
+            .list_webhooks(ListWebhooksRequest {
+                org_slug: org_slug.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("listing webhooks for org '{org_slug}': {e}"))?;
+        Ok(response.into_owned().webhooks)
+    }
+
+    /// Creates a webhook under an org, returning the subscription and its
+    /// HMAC-SHA256 signing secret (shown exactly once).
+    ///
+    /// Requires `members.manage` on the org scope. `events` is the set of
+    /// subscribed event types (empty subscribes to all); an empty `secret` asks
+    /// the hub to generate one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable, the RPC fails (e.g. missing
+    /// permission or an unsafe URL), or the response omits the created webhook.
+    pub async fn create_webhook(
+        &self,
+        org_slug: &str,
+        url: &str,
+        events: Vec<String>,
+        secret: &str,
+    ) -> Result<(Webhook, String)> {
+        let response = self
+            .webhooks
+            .create_webhook(CreateWebhookRequest {
+                org_slug: org_slug.into(),
+                url: url.into(),
+                events,
+                secret: secret.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("creating webhook in org '{org_slug}': {e}"))?;
+        let response = response.into_owned();
+        let secret = response.secret;
+        let webhook = response
+            .webhook
+            .into_option()
+            .context("hub returned no webhook for the create request")?;
+        Ok((webhook, secret))
+    }
+
+    /// Deletes a webhook by id, returning whether one was removed.
+    ///
+    /// Requires `members.manage` on the owning org's scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn delete_webhook(&self, id: i64) -> Result<bool> {
+        let response = self
+            .webhooks
+            .delete_webhook(DeleteWebhookRequest {
+                id,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("deleting webhook {id}: {e}"))?;
+        Ok(response.into_owned().deleted)
     }
 }
