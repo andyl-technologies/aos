@@ -1,6 +1,6 @@
 # RFC-0009: A coherent toolchain-ladder stdenv — per-tier mini-stdenv, manifest-driven packages, stock `make bootstrap`
 
-- **Status:** In progress — Phase 0 implemented
+- **Status:** In progress — Phase 1 implemented
 - **Date:** 2026-06-15
 - **PR:** _(to be filled)_
 - **Audience:** anyone working on `stdenv/` — the bootstrap chain
@@ -271,10 +271,13 @@ its successor.
   and `aos-stdenv.drv` paths match the pre-change baseline, remote
   `checks.eval` passes, the stdenv wrapper builds, and adversarial review
   findings were addressed.
-- [ ] **Phase 1 — POSIX tools, one tier.** Convert a single mid-ladder tier's
-  ~20 tools (e.g. gcc8) to `mkAutotoolsTool` + manifest. Diff the
-  resulting store paths against the current build; investigate any
-  difference before proceeding.
+- [x] **Phase 1 — POSIX tools, one tier. Implemented.** Converted gcc8's
+  POSIX/autotools tools to `mkAutotoolsTool` + `manifest.nix`. Verified
+  for Phase 1: the migrated tool output paths changed, as expected from
+  changing the derivation recipe, but all 21 migrated outputs keep
+  identical file lists versus the Phase 0 baseline; the refactored
+  `stdenv` builds; remote `checks.eval` passes; the Phase 1 Nix files
+  pass Alejandra; and adversarial review findings were addressed.
 - [ ] **Phase 2 — POSIX tools, all tiers.** Roll the manifest conversion
   across the remaining native tiers, then the cross tiers.
 - [ ] **Phase 3 — `mkGlibc`.** Unify glibc across tiers; it is lower-variance
