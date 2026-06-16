@@ -42,6 +42,8 @@ pub struct Ir {
     pub attr_paths: Box<[Box<[IrAttrPathSegment]>]>,
     /// Binding runs referenced by `let` and attrset construction nodes.
     pub bindings: Box<[IrBinding]>,
+    /// Static attribute-set shapes referenced by construction nodes.
+    pub shapes: Box<[IrShape]>,
 }
 
 /// A compact IR node id.
@@ -118,6 +120,27 @@ pub struct IrAttrPathId(u32);
 
 impl IrAttrPathId {
     /// Creates an attribute-path id from a raw side-table index.
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// Returns the raw `u32` id.
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    /// Returns the id as a `usize` index.
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// An attribute-set shape side-table id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct IrShapeId(u32);
+
+impl IrShapeId {
+    /// Creates a shape id from a raw side-table index.
     pub const fn new(raw: u32) -> Self {
         Self(raw)
     }
@@ -343,6 +366,8 @@ pub enum IrData {
     },
     /// The node represents an attribute set.
     AttrSet {
+        /// The static hidden-class shape reference.
+        shape: IrShapeId,
         /// The binding run.
         bindings: IrBindingSlice,
         /// Whether the source set was recursive.
@@ -414,6 +439,20 @@ pub struct IrBinding {
     pub key: IrAttrPathSegment,
     /// The lowered value expression, usually a [`IrKind::ThunkAlloc`].
     pub value: IrId,
+}
+
+/// A lowered static attribute-set shape.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrShape {
+    /// Statically known keys in source insertion order.
+    pub keys: Box<[Symbol]>,
+}
+
+impl IrShape {
+    /// Creates a shape from statically known keys.
+    pub fn new(keys: Box<[Symbol]>) -> Self {
+        Self { keys }
+    }
 }
 
 /// A fixed-stride IR arena plus variable-arity child pool.
@@ -552,6 +591,7 @@ struct IrLowerer {
     arena: IrArena,
     attr_paths: Vec<Box<[IrAttrPathSegment]>>,
     bindings: Vec<IrBinding>,
+    shapes: Vec<IrShape>,
     inherit_from_thunks: BTreeMap<NodeId, IrId>,
     inline_cache_sites: u32,
 }
@@ -563,6 +603,7 @@ impl IrLowerer {
             arena: IrArena::new(),
             attr_paths: Vec::new(),
             bindings: Vec::new(),
+            shapes: Vec::new(),
             inherit_from_thunks: BTreeMap::new(),
             inline_cache_sites: 0,
         }
@@ -585,6 +626,7 @@ impl IrLowerer {
             with_chains,
             attr_paths: self.attr_paths.into_boxed_slice(),
             bindings: self.bindings.into_boxed_slice(),
+            shapes: self.shapes.into_boxed_slice(),
         })
     }
 
@@ -779,6 +821,7 @@ impl IrLowerer {
         };
         let mut has_dynamic = false;
         let bindings = self.lower_bindings(bindings, &mut has_dynamic)?;
+        let shape = self.push_shape_for_bindings(bindings, node.span)?;
         let frame = if recursive {
             self.resolved.scopes.frame_for_node(ast_id)
         } else {
@@ -788,6 +831,7 @@ impl IrLowerer {
             IrKind::AttrSet,
             node.span,
             IrData::AttrSet {
+                shape,
                 bindings,
                 recursive,
                 has_dynamic,
@@ -1231,6 +1275,34 @@ impl IrLowerer {
         Ok(IrBindingSlice::new(start, len))
     }
 
+    fn push_shape_for_bindings(
+        &mut self,
+        bindings: IrBindingSlice,
+        span: Span,
+    ) -> Result<IrShapeId, IrError> {
+        let raw = u32::try_from(self.shapes.len())
+            .map_err(|_| IrError::new(IrErrorKind::TooManySideTableEntries, span))?;
+        let start = bindings.start as usize;
+        let end = start
+            .checked_add(bindings.len())
+            .ok_or_else(|| IrError::new(IrErrorKind::TooManySideTableEntries, span))?;
+        let binding_run = self
+            .bindings
+            .get(start..end)
+            .ok_or_else(|| IrError::new(IrErrorKind::TooManySideTableEntries, span))?;
+        let keys = binding_run
+            .iter()
+            .filter_map(|binding| match binding.key {
+                IrAttrPathSegment::Static(symbol) => Some(symbol),
+                IrAttrPathSegment::Dynamic(_) => None,
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let id = IrShapeId::new(raw);
+        self.shapes.push(IrShape::new(keys));
+        Ok(id)
+    }
+
     fn node(&self, id: NodeId) -> Result<Node, IrError> {
         self.resolved.arena.node(id).copied().ok_or_else(|| {
             IrError::new(
@@ -1583,6 +1655,85 @@ mod tests {
             ir.attr_paths[path.index()].as_ref(),
             [IrAttrPathSegment::Dynamic(_)]
         ));
+    }
+
+    #[test]
+    fn attrsets_reference_static_shapes_in_source_order() {
+        let ir = lowered("{ a = 1; b = 2; c.d = 3; }");
+        let root = root_node(&ir);
+        let IrData::AttrSet {
+            shape, has_dynamic, ..
+        } = root.data
+        else {
+            panic!("attrset payload expected");
+        };
+        assert!(!has_dynamic);
+        let keys = ir.shapes[shape.index()]
+            .keys
+            .iter()
+            .map(|symbol| symbol_text(&ir, *symbol))
+            .collect::<Vec<_>>();
+        assert_eq!(keys, [b"a".as_slice(), b"b".as_slice(), b"c".as_slice()]);
+    }
+
+    #[test]
+    fn dynamic_attrset_shapes_keep_static_keys_and_dynamic_flag() {
+        let ir = lowered("let name = \"x\"; in { ${name} = 1; a = 2; }");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        let IrData::AttrSet {
+            shape, has_dynamic, ..
+        } = node(&ir, body).data
+        else {
+            panic!("attrset payload expected");
+        };
+        assert!(has_dynamic);
+        let keys = ir.shapes[shape.index()]
+            .keys
+            .iter()
+            .map(|symbol| symbol_text(&ir, *symbol))
+            .collect::<Vec<_>>();
+        assert_eq!(keys, [b"a".as_slice()]);
+    }
+
+    #[test]
+    fn empty_attrsets_have_empty_shapes() {
+        let ir = lowered("{}");
+        let IrData::AttrSet {
+            shape,
+            has_dynamic,
+            bindings,
+            ..
+        } = root_node(&ir).data
+        else {
+            panic!("attrset payload expected");
+        };
+        assert!(!has_dynamic);
+        assert_eq!(bindings.len(), 0);
+        assert!(ir.shapes[shape.index()].keys.is_empty());
+    }
+
+    #[test]
+    fn recursive_attrsets_keep_shape_and_frame() {
+        let ir = lowered("rec { a = 1; }");
+        let IrData::AttrSet {
+            shape,
+            recursive,
+            frame,
+            ..
+        } = root_node(&ir).data
+        else {
+            panic!("attrset payload expected");
+        };
+        assert!(recursive);
+        assert!(frame.is_some());
+        let keys = ir.shapes[shape.index()]
+            .keys
+            .iter()
+            .map(|symbol| symbol_text(&ir, *symbol))
+            .collect::<Vec<_>>();
+        assert_eq!(keys, [b"a".as_slice()]);
     }
 
     #[test]
