@@ -39,9 +39,11 @@
 
 pub mod auth;
 pub mod backend;
+pub mod config;
 pub mod db;
 pub mod dialect;
 pub mod domain;
+pub mod filter;
 pub mod stack;
 pub mod url_guard;
 pub mod value;
