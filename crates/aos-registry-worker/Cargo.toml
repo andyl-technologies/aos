@@ -49,6 +49,16 @@ semver = { workspace = true }
 # its glue is never referenced (the worker modules are cfg-gated out).
 worker = { version = "0.4", features = ["d1"] }
 
+# The worker fold (RFC-0004 Phase 5 step 4e): the Worker serves the *same*
+# shared Connect-JSON axum router as the native hub (aos_registry_core::connect),
+# bridged to the Workers runtime by hand (no axum-cloudflare-adapter — no release
+# supports the worker 0.4.x pin). axum types-only (default-features=false) is the
+# wasm-clean config; tower's ServiceExt::oneshot drives the Router; http builds
+# the request/response at the bridge boundary.
+axum = { version = "0.8", default-features = false, features = ["json"] }
+tower = { version = "0.5", features = ["util"] }
+http = { workspace = true }
+
 [dev-dependencies]
 # The `gen_surface` example (the worker integration test's fixture generator)
 # signs the surface with a deterministic maintainer key. Already in the
