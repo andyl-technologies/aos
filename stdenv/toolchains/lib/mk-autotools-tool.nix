@@ -44,12 +44,41 @@
   freezeAutotoolsTimestamps = spec.freezeAutotoolsTimestamps or true;
   configureInSource = spec.configureInSource or false;
   useCxx = spec.useCxx or false;
+  staticNssWrapper = spec.staticNssWrapper or false;
+  compiler = spec.compiler or {};
+  compilerGcc = compiler.gcc or tierStdenv.gcc;
+  compilerGlibc = compiler.glibc or tierStdenv.glibc;
+  compilerBinutils = compiler.binutils or tierStdenv.binutils;
+  compilerBuildDeps =
+    spec.compilerBuildDeps
+    or (
+      if staticNssWrapper
+      then [
+        compilerGcc
+        compilerBinutils
+      ]
+      else []
+    );
 
   gccVersion = spec.gccVersion or "8.5.0";
-  cflags = spec.cflags or "-O2 -nostdinc -isystem $GCC_INCDIR -isystem $GCC_INCDIR-fixed -isystem ${tierStdenv.glibc}/include";
-  cppflags = spec.cppflags or "-nostdinc -isystem $GCC_INCDIR -isystem $GCC_INCDIR-fixed -isystem ${tierStdenv.glibc}/include";
-  ldflags = spec.ldflags or "-L${tierStdenv.glibc}/lib -static";
-  cxxflags = spec.cxxflags or "-O2 -nostdinc -nostdinc++ -isystem $CXX_INCDIR -isystem $CXX_INCDIR/${hostPlatform.config} -isystem $GCC_INCDIR -isystem $GCC_INCDIR-fixed -isystem ${tierStdenv.glibc}/include";
+  cflags = spec.cflags or "-O2 -nostdinc -isystem $GCC_INCDIR -isystem $GCC_INCDIR-fixed -isystem ${compilerGlibc}/include";
+  cppflags = spec.cppflags or "-nostdinc -isystem $GCC_INCDIR -isystem $GCC_INCDIR-fixed -isystem ${compilerGlibc}/include";
+  ldflags = spec.ldflags or "-L${compilerGlibc}/lib -static";
+  cxxflags = spec.cxxflags or "-O2 -nostdinc -nostdinc++ -isystem $CXX_INCDIR -isystem $CXX_INCDIR/${hostPlatform.config} -isystem $GCC_INCDIR -isystem $GCC_INCDIR-fixed -isystem ${compilerGlibc}/include";
+  cc =
+    spec.cc
+    or (
+      if staticNssWrapper
+      then "$TMPDIR/ccwrap/gcc"
+      else "${tierStdenv.cc}/bin/gcc"
+    );
+  cxx =
+    spec.cxx
+    or (
+      if staticNssWrapper
+      then "$TMPDIR/ccwrap/g++"
+      else "${tierStdenv.cc}/bin/g++"
+    );
 
   configureFlagsList = spec.configureFlags or [];
   makeFlagsList = spec.makeFlags or [];
@@ -91,13 +120,50 @@
 
     export AOS_BASH="${tierStdenv.shell}"
     export AOS_GLIBC="${tierStdenv.glibc}"
-    export LIBRARY_PATH="${tierStdenv.glibc}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
+    export LIBRARY_PATH="${compilerGlibc}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
 
-    GCC_INCDIR="${tierStdenv.gcc}/lib/gcc/${hostPlatform.config}/${gccVersion}/include"
-    CXX_INCDIR="${tierStdenv.gcc}/include/c++/${gccVersion}"
+    ${optionalString staticNssWrapper ''
+      mkdir -p "$TMPDIR/ccwrap"
+      cat > "$TMPDIR/ccwrap/gcc" <<'AOS_CC_WRAP'
+      #!${tierStdenv.shell}
+      compile=
+      for arg; do
+        case "$arg" in
+          -c|-E|-S) compile=1 ;;
+        esac
+      done
+      if [ -z "$compile" ]; then
+        exec "${compilerGcc}/bin/gcc" -isystem "${compilerGlibc}/include" "$@" -L "${compilerGlibc}/lib" -static -Wl,--start-group -Wl,--whole-archive "${compilerGlibc}/lib/libnss_files.a" "${compilerGlibc}/lib/libnss_dns.a" "${compilerGlibc}/lib/libresolv.a" -Wl,--no-whole-archive -lc -Wl,--end-group
+      fi
+      exec "${compilerGcc}/bin/gcc" -isystem "${compilerGlibc}/include" "$@"
+      AOS_CC_WRAP
+      cat > "$TMPDIR/ccwrap/g++" <<'AOS_CXX_WRAP'
+      #!${tierStdenv.shell}
+      compile=
+      for arg; do
+        case "$arg" in
+          -c|-E|-S) compile=1 ;;
+        esac
+      done
+      if [ -z "$compile" ]; then
+        exec "${compilerGcc}/bin/g++" -isystem "${compilerGlibc}/include" "$@" -L "${compilerGlibc}/lib" -static -Wl,--start-group -Wl,--whole-archive "${compilerGlibc}/lib/libnss_files.a" "${compilerGlibc}/lib/libnss_dns.a" "${compilerGlibc}/lib/libresolv.a" -Wl,--no-whole-archive -lc -Wl,--end-group
+      fi
+      exec "${compilerGcc}/bin/g++" -isystem "${compilerGlibc}/include" "$@"
+      AOS_CXX_WRAP
+      chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
+    ''}
 
-    export CC="${tierStdenv.cc}/bin/gcc"
-    export CXX="${tierStdenv.cc}/bin/g++"
+    GCC_INCDIR="${compilerGcc}/lib/gcc/${hostPlatform.config}/${gccVersion}/include"
+    CXX_INCDIR="${compilerGcc}/include/c++/${gccVersion}"
+
+    export CC="${cc}"
+    export CXX="${cxx}"
+    export LD="${compilerBinutils}/bin/ld"
+    export AR="${compilerBinutils}/bin/ar"
+    export RANLIB="${compilerBinutils}/bin/ranlib"
+    export STRIP="${compilerBinutils}/bin/strip"
+    export NM="${compilerBinutils}/bin/nm"
+    export OBJDUMP="${compilerBinutils}/bin/objdump"
     export CFLAGS="${cflags}"
     export CPPFLAGS="${cppflags}"
     export LDFLAGS="${ldflags}"
@@ -190,7 +256,7 @@ in
       inherit name;
       inherit (spec) pname version;
       src = source;
-      buildDeps = spec.buildDeps or [];
+      buildDeps = (spec.buildDeps or []) ++ compilerBuildDeps;
       runtimeDeps = spec.runtimeDeps or [];
       propagatedDeps = spec.propagatedDeps or [];
       phases = packagePhases;
