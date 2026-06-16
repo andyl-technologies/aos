@@ -23,9 +23,9 @@ use aos_proto::aos::registry::v1::{
     ListChangesetsRequest,
     ListChannelsRequest, ListOrgsRequest, ListPackagesRequest, ListProjectsRequest,
     CreateWebhookRequest, DeleteWebhookRequest, ListRegistriesRequest, ListReleasesRequest,
-    ListWebhooksRequest, Org, OrgServiceClient, PackageServiceClient, PackageSummary, Project,
-    ProjectServiceClient, Registry, RegistryServiceClient, Release, StorageServiceClient, Webhook,
-    WebhookServiceClient,
+    ListWebhooksRequest, MintUploadCredentialsRequest, Org, OrgServiceClient, PackageServiceClient,
+    PackageSummary, Project, ProjectServiceClient, PublishServiceClient, Registry,
+    RegistryServiceClient, Release, StorageServiceClient, Webhook, WebhookServiceClient,
 };
 
 use crate::client::{make_http_client, validate_base_url};
@@ -50,6 +50,21 @@ pub struct RegistryHubClient {
     audit: AuditServiceClient<HttpClient>,
     config: ConfigServiceClient<HttpClient>,
     webhooks: WebhookServiceClient<HttpClient>,
+    publish: PublishServiceClient<HttpClient>,
+}
+
+/// A short-lived, registry-scoped upload credential minted by the hub.
+///
+/// Returned by [`RegistryHubClient::mint_upload_credentials`]; the `token` is
+/// shown exactly once.
+#[derive(Debug, Clone)]
+pub struct UploadCredentials {
+    /// The provisioning-token secret (`aos_`-prefixed), shown exactly once.
+    pub token: String,
+    /// The canonical facade base URL to upload the registry surface to.
+    pub upload_url: String,
+    /// Unix seconds at which the credential expires.
+    pub expires_at: i64,
 }
 
 impl RegistryHubClient {
@@ -97,7 +112,8 @@ impl RegistryHubClient {
             bindings: StorageServiceClient::new(http.clone(), config.clone()),
             audit: AuditServiceClient::new(http.clone(), config.clone()),
             config: ConfigServiceClient::new(http.clone(), config.clone()),
-            webhooks: WebhookServiceClient::new(http, config),
+            webhooks: WebhookServiceClient::new(http.clone(), config.clone()),
+            publish: PublishServiceClient::new(http, config),
         })
     }
 
@@ -490,5 +506,32 @@ impl RegistryHubClient {
             .await
             .map_err(|e| anyhow::anyhow!("deleting webhook {id}: {e}"))?;
         Ok(response.into_owned().deleted)
+    }
+
+    /// Mints a short-lived, registry-scoped upload credential for one registry.
+    ///
+    /// Requires `publish` on the registry's canonical scope. The returned
+    /// [`UploadCredentials::token`] is a provisioning secret shown exactly once;
+    /// hand it to `apr origin upload --token` or exchange it at `/oauth2/token`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails (e.g. missing
+    /// the `publish` permission, or no such registry).
+    pub async fn mint_upload_credentials(&self, slug: &str) -> Result<UploadCredentials> {
+        let response = self
+            .publish
+            .mint_upload_credentials(MintUploadCredentialsRequest {
+                slug: slug.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("minting upload credentials for '{slug}': {e}"))?;
+        let response = response.into_owned();
+        Ok(UploadCredentials {
+            token: response.token,
+            upload_url: response.upload_url,
+            expires_at: response.expires_at,
+        })
     }
 }

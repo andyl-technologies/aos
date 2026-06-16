@@ -50,6 +50,18 @@ pub enum HubCmd {
         #[command(subcommand)]
         command: HubWebhookCmd,
     },
+    /// Mint a short-lived, registry-scoped upload credential (needs publish)
+    MintUpload {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Canonical registry slug to mint an upload credential for
+        #[arg(long)]
+        slug: String,
+    },
     /// List audit-log entries at a scope (newest first; needs --token)
     Audit {
         /// Hub base URL (http:// or https://)
