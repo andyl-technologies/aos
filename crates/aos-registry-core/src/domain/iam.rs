@@ -341,6 +341,44 @@ pub fn allow(grants: &[(Scope, Role)], permission: Permission, target: &Scope) -
         .any(|(scope, role)| scope.contains(target) && role_grants(*role).contains(&permission))
 }
 
+/// Decides whether a JWT's own claims authorize `perm` on `target`.
+///
+/// Database-free: the token must be bound to a scope that *contains* `target`
+/// and must carry `perm` explicitly. Unknown permission strings in the claims
+/// are ignored. This is the token half of the two-sided authorization check —
+/// the principal's *current* [`allow`] grants are the other half — so a revoked
+/// role still denies even on an unexpired token. The bodies live here (shared by
+/// the native hub and the Cloudflare Worker) rather than in either shell.
+#[must_use]
+pub fn token_allows(
+    claims: &crate::auth::jwt::Claims,
+    perm: Permission,
+    target: &Scope,
+) -> bool {
+    let scope = Scope::parse(&claims.scope);
+    if !scope.contains(target) {
+        return false;
+    }
+    claims
+        .perms
+        .iter()
+        .filter_map(|p| crate::auth::permission_from_str(p))
+        .any(|p| p == perm)
+}
+
+/// The [`Principal`] a JWT's claims identify, if the `owner_kind` is known.
+///
+/// Returns `None` when `claims.owner_kind` is not a recognized
+/// [`PrincipalKind`]; callers treat that as fail-closed (no principal, no
+/// grants).
+#[must_use]
+pub fn claims_principal(claims: &crate::auth::jwt::Claims) -> Option<super::Principal> {
+    super::PrincipalKind::parse(&claims.owner_kind).map(|kind| super::Principal {
+        kind,
+        id: claims.owner_id,
+    })
+}
+
 /// Top-level slugs reserved for routes and the `/-/` namespace.
 ///
 /// An org (or registry) may not take one of these names, since the slug

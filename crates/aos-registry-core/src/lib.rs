@@ -45,6 +45,7 @@ pub mod db;
 pub mod dialect;
 pub mod domain;
 pub mod filter;
+pub mod service;
 pub mod stack;
 pub mod url_guard;
 pub mod value;
