@@ -1520,6 +1520,14 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_string_length_primop(argument, argument_span, value)
             }
+            StrictUnaryPrimOp::BaseNameOf => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_base_name_of_primop(argument, argument_span, value)
+            }
+            StrictUnaryPrimOp::DirOf => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_dir_of_primop(argument, argument_span, value)
+            }
             StrictUnaryPrimOp::FunctionArgs => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_function_args_primop(id, node.span, argument, argument_span, value)
@@ -1615,6 +1623,92 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         Ok(Value::int(string.len() as i64))
+    }
+
+    fn eval_base_name_of_primop(
+        &mut self,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let string = self.coerce_to_string(argument, value, argument_span)?;
+        let result = {
+            let string = self.heap.get_string(string).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            let (start, len) = base_name_range(string.bytes());
+            string
+                .substring_preserve_context(start, len)
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: argument,
+                            source,
+                        },
+                        argument_span,
+                    )
+                })?
+        };
+        self.heap.alloc_string(result).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: argument,
+                    source,
+                },
+                argument_span,
+            )
+        })
+    }
+
+    fn eval_dir_of_primop(
+        &mut self,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let string = self.coerce_to_string(argument, value, argument_span)?;
+        let result = {
+            let string = self.heap.get_string(string).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            match dir_name_range(string.bytes()) {
+                Some((start, len)) => {
+                    string
+                        .substring_preserve_context(start, len)
+                        .map_err(|source| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::String {
+                                    id: argument,
+                                    source,
+                                },
+                                argument_span,
+                            )
+                        })?
+                }
+                None => context_free_dot_string(argument, argument_span)?,
+            }
+        };
+        self.heap.alloc_string(result).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: argument,
+                    source,
+                },
+                argument_span,
+            )
+        })
     }
 
     fn eval_list_to_attrs_primop(
@@ -4025,6 +4119,56 @@ impl<'ir> TreeWalk<'ir> {
     }
 }
 
+fn base_name_range(bytes: &[u8]) -> (usize, usize) {
+    if bytes.is_empty() {
+        return (0, 0);
+    }
+    let mut last = bytes.len() - 1;
+    if bytes[last] == b'/' && last > 0 {
+        last -= 1;
+    }
+    let start = bytes[..=last]
+        .iter()
+        .rposition(|byte| *byte == b'/')
+        .map_or(0, |index| index + 1);
+    (start, last + 1 - start)
+}
+
+fn dir_name_range(bytes: &[u8]) -> Option<(usize, usize)> {
+    if bytes.is_empty() {
+        return None;
+    }
+    if bytes[bytes.len() - 1] == b'/' {
+        let mut end = bytes.len();
+        while end > 1 && bytes[end - 1] == b'/' && bytes[..end - 1].iter().any(|byte| *byte != b'/')
+        {
+            end -= 1;
+        }
+        return Some((0, end));
+    }
+    let slash = bytes.iter().rposition(|byte| *byte == b'/')?;
+    let mut end = slash + 1;
+    while end > 1 && bytes[end - 1] == b'/' && bytes[..end].iter().any(|byte| *byte != b'/') {
+        end -= 1;
+    }
+    Some((0, end))
+}
+
+fn context_free_dot_string(id: IrId, span: Span) -> Result<NixString, TreeWalkError> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(1).map_err(|_| {
+        TreeWalkError::new(
+            TreeWalkErrorKind::String {
+                id,
+                source: NixStringError::ByteAllocationFailed { len: 1 },
+            },
+            span,
+        )
+    })?;
+    bytes.push(b'.');
+    Ok(NixString::from_bytes(bytes))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Number {
     Int(i64),
@@ -4065,6 +4209,8 @@ enum StrictUnaryPrimOp {
     Floor,
     HasContext,
     StringLength,
+    BaseNameOf,
+    DirOf,
     ListToAttrs,
     ConcatLists,
 }
@@ -4092,6 +4238,8 @@ impl StrictUnaryPrimOp {
             b"floor" => Some(Self::Floor),
             b"hasContext" => Some(Self::HasContext),
             b"stringLength" => Some(Self::StringLength),
+            b"baseNameOf" => Some(Self::BaseNameOf),
+            b"dirOf" => Some(Self::DirOf),
             b"listToAttrs" => Some(Self::ListToAttrs),
             b"concatLists" => Some(Self::ConcatLists),
             _ => None,
@@ -6723,6 +6871,93 @@ mod tests {
         assert_eq!(error.span(), argument_span);
 
         let ir = lower("builtins.stringLength 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("integer is not string-coercible here");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn base_name_and_dir_of_primops_split_path_strings() {
+        assert_eq!(eval_string_bytes("builtins.baseNameOf \"/a/b\""), b"b");
+        assert_eq!(eval_string_bytes("builtins.dirOf \"/a/b\""), b"/a");
+        assert_eq!(eval_string_bytes("builtins.baseNameOf \"\""), b"");
+        assert_eq!(eval_string_bytes("builtins.dirOf \"\""), b".");
+        assert_eq!(eval_string_bytes("builtins.baseNameOf \"/\""), b"");
+        assert_eq!(eval_string_bytes("builtins.dirOf \"/\""), b"/");
+        assert_eq!(eval_string_bytes("builtins.baseNameOf \"abc\""), b"abc");
+        assert_eq!(eval_string_bytes("builtins.dirOf \"abc\""), b".");
+        assert_eq!(eval_string_bytes("builtins.baseNameOf \"a/b/c\""), b"c");
+        assert_eq!(eval_string_bytes("builtins.dirOf \"a/b/c\""), b"a/b");
+        assert_eq!(eval_string_bytes("builtins.baseNameOf \"/a/b/\""), b"b");
+        assert_eq!(eval_string_bytes("builtins.dirOf \"/a/b/\""), b"/a/b");
+        assert_eq!(eval_string_bytes("builtins.baseNameOf \"a//\""), b"");
+        assert_eq!(eval_string_bytes("builtins.dirOf \"a//\""), b"a");
+        assert_eq!(eval_string_bytes("builtins.baseNameOf \"a//b\""), b"b");
+        assert_eq!(eval_string_bytes("builtins.dirOf \"a//b\""), b"a");
+        assert_eq!(eval_string_bytes("builtins.baseNameOf \"//a\""), b"a");
+        assert_eq!(eval_string_bytes("builtins.dirOf \"//a\""), b"//");
+    }
+
+    #[test]
+    fn base_name_and_dir_of_primops_coerce_and_shadow() {
+        assert_eq!(
+            eval_string_bytes("builtins.baseNameOf { outPath = \"/a/b\"; }"),
+            b"b"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.dirOf { __toString = self: \"/a/b\"; }"),
+            b"/a"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { baseNameOf = value: \"shadow\"; }; in builtins.baseNameOf \"/a/b\""
+            ),
+            b"shadow"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let builtins = { dirOf = value: \"shadow\"; }; in builtins.dirOf \"/a/b\""
+            ),
+            b"shadow"
+        );
+    }
+
+    #[test]
+    fn base_name_and_dir_of_primops_force_and_coerce_arguments() {
+        let ir = lower("builtins.baseNameOf (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("baseNameOf forces its argument");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: argument }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower("builtins.dirOf 1");
         let root = ir.arena.node(ir.root).expect("root exists");
         let IrData::PrimOp { args, .. } = root.data else {
             panic!("root is a primop");

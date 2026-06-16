@@ -901,7 +901,8 @@ impl IrLowerer {
                 b"isAttrs" | b"isList" | b"isFunction" | b"isString" | b"isInt" | b"isFloat"
                 | b"isBool" | b"isNull" | b"isPath" | b"typeOf" | b"length" | b"attrNames"
                 | b"attrValues" | b"tail" | b"functionArgs" | b"head" | b"ceil" | b"floor"
-                | b"hasContext" | b"listToAttrs" | b"concatLists" | b"stringLength",
+                | b"hasContext" | b"listToAttrs" | b"concatLists" | b"stringLength" | b"baseNameOf"
+                | b"dirOf",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1761,6 +1762,8 @@ mod tests {
             ),
             ("builtins.concatLists [ [ 1 ] ]", b"concatLists".as_slice()),
             ("builtins.stringLength \"abc\"", b"stringLength".as_slice()),
+            ("builtins.baseNameOf \"/a/b\"", b"baseNameOf".as_slice()),
+            ("builtins.dirOf \"/a/b\"", b"dirOf".as_slice()),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
