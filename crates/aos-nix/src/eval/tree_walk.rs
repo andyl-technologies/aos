@@ -6,11 +6,11 @@
 //! concatenation, static and recursive static attribute-set literals, dynamic
 //! string-valued attribute names, static and dynamic string-valued
 //! attribute selection, lexical `let` environments, simple and formal-set lambda
-//! application, lazy `with` scope lookup, thunk forcing, numeric arithmetic,
-//! numeric and string comparisons, and scalar/string equality to weak head
-//! normal form, establishing the arena access and diagnostic surface used by
-//! later slices for full string coercion, primitive operations, and derivation
-//! boundaries.
+//! application, lazy `with` scope lookup, attrset update, thunk forcing, numeric
+//! arithmetic, numeric and string comparisons, and scalar/string equality to
+//! weak head normal form, establishing the arena access and diagnostic surface
+//! used by later slices for full string coercion, primitive operations, and
+//! derivation boundaries.
 
 use std::rc::Rc;
 
@@ -136,7 +136,8 @@ impl<'ir> TreeWalk<'ir> {
     ///
     /// This initial public node entry point is intentionally limited to scalar
     /// literal, list literal, static attrset literal, string literal,
-    /// control-flow, boolean operator, string/list concatenation, static
+    /// control-flow, boolean operator, string/list concatenation, attrset
+    /// update, static
     /// attribute selection, lexical `let` environment, simple and formal-set
     /// lambda application, lazy `with` lookup, numeric arithmetic, numeric and
     /// string comparison, scalar/string equality, and conservative thunk
@@ -471,6 +472,28 @@ impl<'ir> TreeWalk<'ir> {
         )
     }
 
+    fn clone_attr_entries(
+        id: IrId,
+        span: Span,
+        attrs: &FlatAttrs,
+    ) -> Result<Vec<AttrEntry>, TreeWalkError> {
+        let entries = attrs.entries_by_symbol();
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(entries.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: entries.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        cloned.extend_from_slice(entries);
+        Ok(cloned)
+    }
+
     fn eval_if(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
         let IrData::Triple {
             first,
@@ -549,9 +572,11 @@ impl<'ir> TreeWalk<'ir> {
             BinOpKind::Eq => self.eval_equality(id, node, lhs, rhs, false),
             BinOpKind::Ne => self.eval_equality(id, node, lhs, rhs, true),
             BinOpKind::Concat => self.eval_list_concat(id, node, lhs, rhs),
-            BinOpKind::Update | BinOpKind::PipeRight | BinOpKind::PipeLeft => Err(
-                TreeWalkError::new(TreeWalkErrorKind::UnsupportedBinaryOp { id, op }, node.span),
-            ),
+            BinOpKind::Update => self.eval_attr_update(id, node, lhs, rhs),
+            BinOpKind::PipeRight | BinOpKind::PipeLeft => Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedBinaryOp { id, op },
+                node.span,
+            )),
         }
     }
 
@@ -1824,6 +1849,88 @@ impl<'ir> TreeWalk<'ir> {
         self.concat_lists(id, node, left, right)
     }
 
+    fn eval_attr_update(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        lhs: IrId,
+        rhs: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let lhs_span = self.node(lhs)?.span;
+        let left = self.eval_node(lhs)?;
+        if left.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: lhs,
+                    expected: "attrs",
+                    actual: left.tag(),
+                },
+                lhs_span,
+            ));
+        }
+        let left_entries = {
+            let attrs = self.heap.get_attrs(left).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, lhs_span)
+            })?;
+            Self::clone_attr_entries(id, lhs_span, attrs)?
+        };
+
+        let rhs_span = self.node(rhs)?.span;
+        let right = self.eval_node(rhs)?;
+        if right.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: rhs,
+                    expected: "attrs",
+                    actual: right.tag(),
+                },
+                rhs_span,
+            ));
+        }
+        let right_entries = {
+            let attrs = self.heap.get_attrs(right).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, rhs_span)
+            })?;
+            Self::clone_attr_entries(id, rhs_span, attrs)?
+        };
+
+        let capacity = left_entries
+            .len()
+            .checked_add(right_entries.len())
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::TooManyEntries { len: usize::MAX },
+                    },
+                    node.span,
+                )
+            })?;
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(capacity).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed { entries: capacity },
+                },
+                node.span,
+            )
+        })?;
+        for entry in left_entries {
+            if !right_entries.iter().any(|right| right.key == entry.key) {
+                entries.push(entry);
+            }
+        }
+        entries.extend(right_entries);
+
+        let attrs = FlatAttrs::new(entries, &self.symbols).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, node.span)
+        })?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
     fn concat_lists(
         &mut self,
         id: IrId,
@@ -2851,6 +2958,45 @@ mod tests {
     }
 
     #[test]
+    fn attr_update_merges_shallowly_with_rhs_precedence() {
+        assert_eq!(
+            eval("let r = { a = 1; } // { b = 2; }; in r.a + r.b").as_int(),
+            Ok(3)
+        );
+        assert_eq!(eval("(({ a = 1 / 0; } // { a = 2; }).a)").as_int(), Ok(2));
+        assert_eq!(
+            eval("(({ a = { x = 1; }; } // { a = { y = 2; }; }).a.x or 9)").as_int(),
+            Ok(9)
+        );
+    }
+
+    #[test]
+    fn attr_update_keeps_values_lazy() {
+        assert_eq!(
+            eval("let r = { a = 1; } // { b = 1 / 0; }; in r.a").as_int(),
+            Ok(1)
+        );
+
+        let ir = lower("{ a = 1 / 0; } // { b = 2; }");
+        let a = symbol_for(&ir, b"a");
+        let b = symbol_for(&ir, b"b");
+        let outcome = eval_whnf_owned(&ir).expect("attr update evaluates");
+        let attrs = outcome
+            .heap()
+            .get_attrs(outcome.value())
+            .expect("update result is heap-owned");
+
+        assert_eq!(attrs.get(b).expect("b exists").as_int(), Ok(2));
+        let lazy_division = attrs.get(a).expect("a exists");
+        assert_eq!(lazy_division.tag(), ValueTag::Thunk);
+        let thunk = outcome
+            .heap()
+            .get_thunk(lazy_division)
+            .expect("left attr value stays lazy");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+    }
+
+    #[test]
     fn evaluates_empty_attrsets_with_owned_heap() {
         let ir = lower("{}");
         let outcome = eval_whnf_owned(&ir).expect("empty attrset evaluates");
@@ -3660,6 +3806,62 @@ mod tests {
     }
 
     #[test]
+    fn attr_update_type_checks_operands_left_to_right() {
+        let lhs_ir = lower("1 // (1 / 0)");
+        let root = lhs_ir.arena.node(lhs_ir.root).expect("root exists");
+        let IrData::Binary { lhs, .. } = root.data else {
+            panic!("update root has binary payload");
+        };
+        let lhs_span = lhs_ir.arena.node(lhs).expect("lhs exists").span;
+
+        let error = eval_whnf_owned(&lhs_ir).expect_err("integer lhs is invalid before rhs");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: lhs,
+                expected: "attrs",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), lhs_span);
+
+        let rhs_ir = lower("{} // 1");
+        let root = rhs_ir.arena.node(rhs_ir.root).expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("update root has binary payload");
+        };
+        let rhs_span = rhs_ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf_owned(&rhs_ir).expect_err("integer rhs is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: rhs,
+                expected: "attrs",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), rhs_span);
+
+        let rhs_error_ir = lower("{} // (1 / 0)");
+        let root = rhs_error_ir
+            .arena
+            .node(rhs_error_ir.root)
+            .expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("update root has binary payload");
+        };
+        let rhs_span = rhs_error_ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf_owned(&rhs_error_ir).expect_err("rhs evaluation error wins");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: rhs });
+        assert_eq!(error.span(), rhs_span);
+    }
+
+    #[test]
     fn non_owning_eval_rejects_list_concat_heap_values() {
         let ir = lower("[] ++ []");
         let error = eval_whnf(&ir).expect_err("list concat value needs owning heap");
@@ -3669,6 +3871,24 @@ mod tests {
             TreeWalkErrorKind::HeapValueRequiresOwner {
                 id: ir.root,
                 tag: ValueTag::List,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            ir.arena.node(ir.root).expect("root exists").span
+        );
+    }
+
+    #[test]
+    fn non_owning_eval_rejects_attr_update_heap_values() {
+        let ir = lower("{} // {}");
+        let error = eval_whnf(&ir).expect_err("attr update value needs owning heap");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::HeapValueRequiresOwner {
+                id: ir.root,
+                tag: ValueTag::Attrs,
             }
         );
         assert_eq!(
@@ -3930,20 +4150,35 @@ mod tests {
 
     #[test]
     fn unsupported_operators_report_operator_and_span() {
-        let binary = lower("1 // 2");
-        let binary_error =
-            eval_whnf(&binary).expect_err("attribute-set update is not implemented yet");
+        let lhs = IrId::new(0);
+        let rhs = IrId::new(1);
+        let root = IrId::new(2);
+        let span = Span::new(0, 6);
+        let binary = manual_ir(
+            root,
+            vec![
+                pure_node(IrKind::Int, Span::new(0, 1), IrData::Int(1)),
+                pure_node(IrKind::Int, Span::new(5, 6), IrData::Int(2)),
+                pure_node(
+                    IrKind::BinOp,
+                    span,
+                    IrData::Binary {
+                        op: BinOpKind::PipeRight,
+                        lhs,
+                        rhs,
+                    },
+                ),
+            ],
+        );
+        let binary_error = eval_whnf(&binary).expect_err("pipe operator is not implemented yet");
         assert_eq!(
             binary_error.kind(),
             TreeWalkErrorKind::UnsupportedBinaryOp {
-                id: binary.root,
-                op: BinOpKind::Update,
+                id: root,
+                op: BinOpKind::PipeRight,
             }
         );
-        assert_eq!(
-            binary_error.span(),
-            binary.arena.node(binary.root).expect("root exists").span
-        );
+        assert_eq!(binary_error.span(), span);
     }
 
     #[test]
