@@ -35,7 +35,10 @@ pub use login::{TokenGrant, exchange_token};
 // Re-export proto types that consumers need.
 pub use aos_proto::aos::build::v1::BuildEvent;
 pub use aos_proto::aos::gc::v1::{EvictionCandidate, GcResponse};
-pub use aos_proto::aos::registry::v1::{
+// The registry-hub client exchanges the Connect-JSON message structs
+// (RFC-0004 Phase 5), so the `aos hub …` CLI consumes these from
+// `aos-proto-types` rather than the connectrpc `aos-proto` types.
+pub use aos_proto_types::{
     AuditEntry, Binding, ChangeRequest, Changeset, Channel, GitCommit, Org, Package,
     PackageSummary, Project, Registry, Release, Webhook,
 };

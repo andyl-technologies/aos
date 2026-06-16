@@ -1,59 +1,73 @@
-//! A ConnectRPC client for the AOS registry hub.
+//! A Connect-JSON client for the AOS registry hub.
 //!
 //! Where [`AosClient`](crate::AosClient) talks to an `aos-server` (cache /
-//! build / GC / auth), this talks to an **`aos-registry-hub`** — the
-//! multi-tenant registry control plane (RFC-0004). It is the client the `aos
-//! hub …` CLI subcommands use so the CLI interacts with a hub purely through
-//! its public API, never by touching the hub's database directly.
+//! build / GC / auth) over ConnectRPC, this talks to an **`aos-registry-hub`** —
+//! the multi-tenant registry control plane (RFC-0004). It is the client the
+//! `aos hub …` CLI subcommands use so the CLI interacts with a hub purely
+//! through its public API, never by touching the hub's database directly.
 //!
-//! Construct one with [`RegistryHubClient::connect_anonymous`] for public reads
-//! (listing public registries, reading a public registry's releases), or
+//! RFC-0004 Phase 5 unifies the native hub and the Cloudflare Worker on one
+//! transport: **Connect-JSON** — plain JSON over HTTP. Each method is one POST
+//! route, `POST {base}/aos.registry.v1.{Service}/{Method}`, with the
+//! JSON-encoded request message as the body and the JSON-encoded response
+//! message as a `200` body. Errors are the Connect error envelope with a
+//! matching non-2xx status:
+//!
+//! ```text
+//! POST /aos.registry.v1.RegistryService/GetRegistry
+//! Content-Type: application/json
+//! { "slug": "acme/cdn" }
+//!   -> 200 { "registry": { "slug": "acme/cdn", … } }
+//!   -> 404 { "code": "not_found", "message": "registry not found" }
+//! ```
+//!
+//! This client speaks that transport directly with `reqwest`, exchanging the
+//! [`aos_proto_types`] message structs as JSON. Construct one with
+//! [`RegistryHubClient::connect_anonymous`] for public reads, or
 //! [`RegistryHubClient::connect_with_token`] to attach a hub access JWT for
-//! authenticated calls. The provisioning-token → JWT exchange (the hub's
-//! `POST /oauth2/token`) and the write-path service clients are layered on in
-//! later RFC-0004 Phase 5 increments.
+//! authenticated calls.
 
 use anyhow::{Context, Result};
-use connectrpc::client::{ClientConfig, HttpClient};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
-use aos_proto::aos::registry::v1::{
-    AuditEntry, AuditServiceClient, Binding, ChangeRequest, Changeset, Channel,
-    ChannelServiceClient, ConfigServiceClient, CreateBindingRequest, CreateOrgRequest,
-    CreateProjectRequest, CreateRegistryRequest, CreateWebhookRequest, DeleteWebhookRequest,
-    GetChannelRequest, GetPackageRequest, GetRegistryRequest, GitCommit, GitDiffRequest,
-    GitLogRequest, GitServiceClient, ListAuditRequest, ListBindingsRequest,
-    ListChangeRequestsRequest, ListChangesetsRequest, ListChannelsRequest, ListOrgsRequest,
-    ListPackagesRequest, ListProjectsRequest, ListRegistriesRequest, ListReleasesRequest,
-    ListWebhooksRequest, MintUploadCredentialsRequest, Org, OrgServiceClient, Package,
-    PackageServiceClient, PackageSummary, Project, ProjectServiceClient, PublishServiceClient,
-    Registry, RegistryServiceClient, Release, RevertChangesetRequest, StorageServiceClient,
-    Webhook, WebhookServiceClient,
+use aos_proto_types::{
+    AuditEntry, Binding, ChangeRequest, Changeset, Channel, CreateBindingRequest,
+    CreateBindingResponse, CreateOrgRequest, CreateOrgResponse, CreateProjectRequest,
+    CreateProjectResponse, CreateRegistryRequest, CreateRegistryResponse, CreateWebhookRequest,
+    CreateWebhookResponse,
+    DeleteWebhookRequest, GetChannelRequest, GetChannelResponse, GetPackageRequest,
+    GetPackageResponse, GetRegistryRequest, GetRegistryResponse, GitCommit, GitDiffRequest,
+    GitDiffResponse, GitLogRequest, GitLogResponse, ListAuditRequest, ListAuditResponse,
+    ListBindingsRequest, ListBindingsResponse, ListChangeRequestsRequest,
+    ListChangeRequestsResponse, ListChangesetsRequest, ListChangesetsResponse, ListChannelsRequest,
+    ListChannelsResponse, ListOrgsRequest, ListOrgsResponse, ListPackagesRequest,
+    ListPackagesResponse, ListProjectsRequest, ListProjectsResponse, ListRegistriesRequest,
+    ListRegistriesResponse, ListReleasesRequest, ListReleasesResponse, ListWebhooksRequest,
+    ListWebhooksResponse, MintUploadCredentialsRequest, MintUploadCredentialsResponse, Org,
+    Package, PackageSummary, Project, Registry, Release, RevertChangesetRequest,
+    RevertChangesetResponse, Webhook,
 };
 
-use crate::client::{make_http_client, validate_base_url};
+use crate::client::validate_base_url;
 
 /// Default per-request timeout for hub RPC calls.
 const HUB_TIMEOUT_SECS: u64 = 30;
 
-/// A ConnectRPC client for an `aos-registry-hub`'s read services.
+/// A Connect-JSON client for an `aos-registry-hub`'s services.
 ///
-/// Cheap to clone (the inner service client and HTTP client are reference
-/// counted). Anonymous instances see only public registries; a token-bearing
-/// instance (see [`RegistryHubClient::connect_with_token`]) additionally sees
-/// what the token's scope/permissions allow.
+/// Cheap to clone (the inner `reqwest` client is reference counted). Anonymous
+/// instances see only public registries; a token-bearing instance (see
+/// [`RegistryHubClient::connect_with_token`]) additionally sees what the
+/// token's scope/permissions allow.
 #[derive(Clone)]
 pub struct RegistryHubClient {
-    registry: RegistryServiceClient<HttpClient>,
-    packages: PackageServiceClient<HttpClient>,
-    channels: ChannelServiceClient<HttpClient>,
-    orgs: OrgServiceClient<HttpClient>,
-    projects: ProjectServiceClient<HttpClient>,
-    bindings: StorageServiceClient<HttpClient>,
-    audit: AuditServiceClient<HttpClient>,
-    config: ConfigServiceClient<HttpClient>,
-    webhooks: WebhookServiceClient<HttpClient>,
-    publish: PublishServiceClient<HttpClient>,
-    git: GitServiceClient<HttpClient>,
+    /// The shared `reqwest` client (rustls TLS for `https://`).
+    http: reqwest::Client,
+    /// The hub root with a single trailing slash, e.g. `https://hub.example/`.
+    base: String,
+    /// The hub access JWT to send as `Authorization: Bearer …`, when present.
+    token: Option<String>,
 }
 
 /// A short-lived, registry-scoped upload credential minted by the hub.
@@ -80,7 +94,8 @@ impl RegistryHubClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if `base_url` is not a valid `http://`/`https://` URL.
+    /// Returns an error if `base_url` is not a valid `http://`/`https://` URL,
+    /// or if the underlying HTTP client cannot be built.
     pub fn connect_anonymous(base_url: &str) -> Result<Self> {
         Self::build(base_url, None)
     }
@@ -92,218 +107,304 @@ impl RegistryHubClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if `base_url` is not a valid `http://`/`https://` URL.
+    /// Returns an error if `base_url` is not a valid `http://`/`https://` URL,
+    /// or if the underlying HTTP client cannot be built.
     pub fn connect_with_token(base_url: &str, access_token: &str) -> Result<Self> {
         Self::build(base_url, Some(access_token))
     }
 
-    /// Builds the service client, optionally attaching a bearer token.
+    /// Builds the client, optionally retaining a bearer token.
     fn build(base_url: &str, access_token: Option<&str>) -> Result<Self> {
-        let base_uri = validate_base_url(base_url)?;
-        let http = make_http_client(base_url);
-        let mut config = ClientConfig::new(base_uri)
-            .default_timeout(std::time::Duration::from_secs(HUB_TIMEOUT_SECS));
-        if let Some(token) = access_token {
-            config = config.default_header("authorization", format!("Bearer {token}"));
-        }
+        // Reuse the shared base-URL validation (http(s) scheme, parseable) so a
+        // typo fails fast with the same message as the other clients.
+        let base = validate_base_url(base_url)?;
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(HUB_TIMEOUT_SECS))
+            .build()
+            .context("building the hub HTTP client")?;
         Ok(Self {
-            registry: RegistryServiceClient::new(http.clone(), config.clone()),
-            packages: PackageServiceClient::new(http.clone(), config.clone()),
-            channels: ChannelServiceClient::new(http.clone(), config.clone()),
-            orgs: OrgServiceClient::new(http.clone(), config.clone()),
-            projects: ProjectServiceClient::new(http.clone(), config.clone()),
-            bindings: StorageServiceClient::new(http.clone(), config.clone()),
-            audit: AuditServiceClient::new(http.clone(), config.clone()),
-            config: ConfigServiceClient::new(http.clone(), config.clone()),
-            webhooks: WebhookServiceClient::new(http.clone(), config.clone()),
-            publish: PublishServiceClient::new(http.clone(), config.clone()),
-            git: GitServiceClient::new(http, config),
+            http,
+            base: ensure_trailing_slash(&base.to_string()),
+            token: access_token.map(str::to_owned),
         })
     }
 
+    /// Performs one unary Connect-JSON call against the hub.
+    ///
+    /// POSTs `req` as a JSON body to `{base}{full_method}` (e.g.
+    /// `aos.registry.v1.RegistryService/ListRegistries`), attaching the bearer
+    /// token when one is set, and decodes the JSON response message. A non-2xx
+    /// status is parsed as the Connect error envelope `{ code, message }`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable, the request cannot be
+    /// serialized, the hub returns a non-2xx status (the envelope's `code` and
+    /// `message` are surfaced), or the success body cannot be decoded as `Resp`.
+    async fn call<Req, Resp>(&self, full_method: &str, req: &Req) -> Result<Resp>
+    where
+        Req: Serialize,
+        Resp: DeserializeOwned,
+    {
+        let url = format!("{}{full_method}", self.base);
+        let mut request = self.http.post(&url).json(req);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("contacting the hub at {url}"))?;
+
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .with_context(|| format!("reading the hub response from {url}"))?;
+
+        if !status.is_success() {
+            // Connect's error envelope is `{ "code": "...", "message": "..." }`.
+            // Surface its message (and code) when present; otherwise fall back
+            // to the HTTP status and any raw body text.
+            if let Ok(envelope) = serde_json::from_slice::<ConnectError>(&body) {
+                anyhow::bail!("hub error [{}]: {}", envelope.code, envelope.message);
+            }
+            let detail = String::from_utf8_lossy(&body);
+            let detail = detail.trim();
+            anyhow::bail!(
+                "hub request to {url} failed ({status}){}",
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                }
+            );
+        }
+
+        serde_json::from_slice(&body)
+            .with_context(|| format!("decoding the hub response from {url}"))
+    }
+
     /// Lists the registries visible to this client (public ones when anonymous).
+    ///
+    /// Calls `aos.registry.v1.RegistryService/ListRegistries`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn list_registries(&self) -> Result<Vec<Registry>> {
-        let response = self
-            .registry
-            .list_registries(ListRegistriesRequest::default())
+        let resp: ListRegistriesResponse = self
+            .call(
+                "aos.registry.v1.RegistryService/ListRegistries",
+                &ListRegistriesRequest::default(),
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("listing registries: {e}"))?;
-        Ok(response.into_owned().registries)
+            .context("listing registries")?;
+        Ok(resp.registries)
     }
 
     /// Fetches one registry by slug, or `None` when it does not exist or is not
     /// visible to this client.
+    ///
+    /// Calls `aos.registry.v1.RegistryService/GetRegistry`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails for a reason
     /// other than "not found".
     pub async fn get_registry(&self, slug: &str) -> Result<Option<Registry>> {
-        let response = self
-            .registry
-            .get_registry(GetRegistryRequest {
-                slug: slug.into(),
-                ..Default::default()
-            })
+        let resp: GetRegistryResponse = self
+            .call(
+                "aos.registry.v1.RegistryService/GetRegistry",
+                &GetRegistryRequest {
+                    slug: slug.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("fetching registry '{slug}': {e}"))?;
-        Ok(response.into_owned().registry.into_option())
+            .with_context(|| format!("fetching registry '{slug}'"))?;
+        Ok(resp.registry)
     }
 
     /// Lists a registry's verified releases (newest first), for a public
     /// registry when anonymous.
     ///
+    /// Calls `aos.registry.v1.RegistryService/ListReleases`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn list_releases(&self, slug: &str) -> Result<Vec<Release>> {
-        let response = self
-            .registry
-            .list_releases(ListReleasesRequest {
-                slug: slug.into(),
-                ..Default::default()
-            })
+        let resp: ListReleasesResponse = self
+            .call(
+                "aos.registry.v1.RegistryService/ListReleases",
+                &ListReleasesRequest {
+                    slug: slug.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("listing releases for '{slug}': {e}"))?;
-        Ok(response.into_owned().releases)
+            .with_context(|| format!("listing releases for '{slug}'"))?;
+        Ok(resp.releases)
     }
 
     /// Lists a registry's published packages (the verified index), for a public
     /// registry when anonymous.
     ///
+    /// Calls `aos.registry.v1.PackageService/ListPackages`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn list_packages(&self, slug: &str) -> Result<Vec<PackageSummary>> {
-        let response = self
-            .packages
-            .list_packages(ListPackagesRequest {
-                slug: slug.into(),
-                ..Default::default()
-            })
+        let resp: ListPackagesResponse = self
+            .call(
+                "aos.registry.v1.PackageService/ListPackages",
+                &ListPackagesRequest {
+                    slug: slug.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("listing packages for '{slug}': {e}"))?;
-        Ok(response.into_owned().packages)
+            .with_context(|| format!("listing packages for '{slug}'"))?;
+        Ok(resp.packages)
     }
 
     /// Lists a registry's rollout channels, for a public registry when
     /// anonymous.
     ///
+    /// Calls `aos.registry.v1.ChannelService/ListChannels`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn list_channels(&self, slug: &str) -> Result<Vec<Channel>> {
-        let response = self
-            .channels
-            .list_channels(ListChannelsRequest {
-                slug: slug.into(),
-                ..Default::default()
-            })
+        let resp: ListChannelsResponse = self
+            .call(
+                "aos.registry.v1.ChannelService/ListChannels",
+                &ListChannelsRequest {
+                    slug: slug.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("listing channels for '{slug}': {e}"))?;
-        Ok(response.into_owned().channels)
+            .with_context(|| format!("listing channels for '{slug}'"))?;
+        Ok(resp.channels)
     }
 
     /// Lists the organizations visible to this client.
     ///
     /// Orgs are a tenant boundary, so this needs an authenticated client (see
     /// [`connect_with_token`](Self::connect_with_token)); an anonymous client
-    /// sees none.
+    /// sees none. Calls `aos.registry.v1.OrgService/ListOrgs`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn list_orgs(&self) -> Result<Vec<Org>> {
-        let response = self
-            .orgs
-            .list_orgs(ListOrgsRequest::default())
+        let resp: ListOrgsResponse = self
+            .call(
+                "aos.registry.v1.OrgService/ListOrgs",
+                &ListOrgsRequest::default(),
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("listing orgs: {e}"))?;
-        Ok(response.into_owned().orgs)
+            .context("listing orgs")?;
+        Ok(resp.orgs)
     }
 
     /// Lists the projects under an org.
+    ///
+    /// Calls `aos.registry.v1.ProjectService/ListProjects`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn list_projects(&self, org_slug: &str) -> Result<Vec<Project>> {
-        let response = self
-            .projects
-            .list_projects(ListProjectsRequest {
-                org_slug: org_slug.into(),
-                ..Default::default()
-            })
+        let resp: ListProjectsResponse = self
+            .call(
+                "aos.registry.v1.ProjectService/ListProjects",
+                &ListProjectsRequest {
+                    org_slug: org_slug.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("listing projects for org '{org_slug}': {e}"))?;
-        Ok(response.into_owned().projects)
+            .with_context(|| format!("listing projects for org '{org_slug}'"))?;
+        Ok(resp.projects)
     }
 
     /// Lists the storage bindings under an org.
+    ///
+    /// Calls `aos.registry.v1.StorageService/ListBindings`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn list_bindings(&self, org_slug: &str) -> Result<Vec<Binding>> {
-        let response = self
-            .bindings
-            .list_bindings(ListBindingsRequest {
-                org_slug: org_slug.into(),
-                ..Default::default()
-            })
+        let resp: ListBindingsResponse = self
+            .call(
+                "aos.registry.v1.StorageService/ListBindings",
+                &ListBindingsRequest {
+                    org_slug: org_slug.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("listing bindings for org '{org_slug}': {e}"))?;
-        Ok(response.into_owned().bindings)
+            .with_context(|| format!("listing bindings for org '{org_slug}'"))?;
+        Ok(resp.bindings)
     }
 
     /// Lists audit-log entries at a scope (the root scope `""` is instance-wide),
     /// newest first.
     ///
-    /// Requires an authenticated client with `audit.read` on the scope.
+    /// Requires an authenticated client with `audit.read` on the scope. Calls
+    /// `aos.registry.v1.AuditService/ListAudit`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn list_audit(&self, scope: &str) -> Result<Vec<AuditEntry>> {
-        let response = self
-            .audit
-            .list_audit(ListAuditRequest {
-                scope: scope.into(),
-                ..Default::default()
-            })
+        let resp: ListAuditResponse = self
+            .call(
+                "aos.registry.v1.AuditService/ListAudit",
+                &ListAuditRequest {
+                    scope: scope.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("listing audit entries for scope '{scope}': {e}"))?;
-        Ok(response.into_owned().entries)
+            .with_context(|| format!("listing audit entries for scope '{scope}'"))?;
+        Ok(resp.entries)
     }
 
     /// Lists configuration change-sets at a scope (the root scope `""` is
     /// instance-wide), newest first.
     ///
-    /// Requires an authenticated client with `audit.read` on the scope.
+    /// Requires an authenticated client with `audit.read` on the scope. Calls
+    /// `aos.registry.v1.ConfigService/ListChangesets`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn list_changesets(&self, scope: &str) -> Result<Vec<Changeset>> {
-        let response = self
-            .config
-            .list_changesets(ListChangesetsRequest {
-                scope: scope.into(),
-                ..Default::default()
-            })
+        let resp: ListChangesetsResponse = self
+            .call(
+                "aos.registry.v1.ConfigService/ListChangesets",
+                &ListChangesetsRequest {
+                    scope: scope.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("listing change-sets for scope '{scope}': {e}"))?;
-        Ok(response.into_owned().changesets)
+            .with_context(|| format!("listing change-sets for scope '{scope}'"))?;
+        Ok(resp.changesets)
     }
 
     /// Creates an organization; the authenticated caller becomes its Owner.
     ///
     /// Requires an authenticated client (see
-    /// [`connect_with_token`](Self::connect_with_token)).
+    /// [`connect_with_token`](Self::connect_with_token)). Calls
+    /// `aos.registry.v1.OrgService/CreateOrg`.
     ///
     /// # Errors
     ///
@@ -311,26 +412,26 @@ impl RegistryHubClient {
     /// is taken or the caller is unauthenticated), or the response omits the
     /// created org.
     pub async fn create_org(&self, slug: &str, name: &str) -> Result<Org> {
-        let response = self
-            .orgs
-            .create_org(CreateOrgRequest {
-                slug: slug.into(),
-                name: name.into(),
-                ..Default::default()
-            })
+        let resp: CreateOrgResponse = self
+            .call(
+                "aos.registry.v1.OrgService/CreateOrg",
+                &CreateOrgRequest {
+                    slug: slug.into(),
+                    name: name.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("creating org '{slug}': {e}"))?;
-        response
-            .into_owned()
-            .org
-            .into_option()
+            .with_context(|| format!("creating org '{slug}'"))?;
+        resp.org
             .context("hub returned no org for the create request")
     }
 
     /// Creates a project at a materialized path under an org.
     ///
     /// Requires `registry.configure` on the org scope. The `path` is the
-    /// materialized path within the org (`""` for an org-root project).
+    /// materialized path within the org (`""` for an org-root project). Calls
+    /// `aos.registry.v1.ProjectService/CreateProject`.
     ///
     /// # Errors
     ///
@@ -338,27 +439,27 @@ impl RegistryHubClient {
     /// permission or a duplicate path), or the response omits the created
     /// project.
     pub async fn create_project(&self, org_slug: &str, path: &str, name: &str) -> Result<Project> {
-        let response = self
-            .projects
-            .create_project(CreateProjectRequest {
-                org_slug: org_slug.into(),
-                path: path.into(),
-                name: name.into(),
-                ..Default::default()
-            })
+        let resp: CreateProjectResponse = self
+            .call(
+                "aos.registry.v1.ProjectService/CreateProject",
+                &CreateProjectRequest {
+                    org_slug: org_slug.into(),
+                    path: path.into(),
+                    name: name.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("creating project '{name}' in org '{org_slug}': {e}"))?;
-        response
-            .into_owned()
-            .project
-            .into_option()
+            .with_context(|| format!("creating project '{name}' in org '{org_slug}'"))?;
+        resp.project
             .context("hub returned no project for the create request")
     }
 
     /// Creates a storage binding under an org.
     ///
     /// Requires `registry.configure` on the org scope. Only the `local_fs` kind
-    /// is supported this phase; `root` is the backend root path.
+    /// is supported this phase; `root` is the backend root path. Calls
+    /// `aos.registry.v1.StorageService/CreateBinding`.
     ///
     /// # Errors
     ///
@@ -372,21 +473,20 @@ impl RegistryHubClient {
         kind: &str,
         root: &str,
     ) -> Result<Binding> {
-        let response = self
-            .bindings
-            .create_binding(CreateBindingRequest {
-                org_slug: org_slug.into(),
-                name: name.into(),
-                kind: kind.into(),
-                root: root.into(),
-                ..Default::default()
-            })
+        let resp: CreateBindingResponse = self
+            .call(
+                "aos.registry.v1.StorageService/CreateBinding",
+                &CreateBindingRequest {
+                    org_slug: org_slug.into(),
+                    name: name.into(),
+                    kind: kind.into(),
+                    root: root.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("creating binding '{name}' in org '{org_slug}': {e}"))?;
-        response
-            .into_owned()
-            .binding
-            .into_option()
+            .with_context(|| format!("creating binding '{name}' in org '{org_slug}'"))?;
+        resp.binding
             .context("hub returned no binding for the create request")
     }
 
@@ -397,7 +497,8 @@ impl RegistryHubClient {
     /// `visibility` is `public`/`internal`/`private`; `binding_name` and `prefix`
     /// place the surface in a storage binding (an empty `binding_name` leaves the
     /// registry unbound); `trust_keys` are pinned anchors in
-    /// `name:Ed25519:<base64>` form.
+    /// `name:Ed25519:<base64>` form. Calls
+    /// `aos.registry.v1.RegistryService/CreateRegistry`.
     ///
     /// # Errors
     ///
@@ -415,44 +516,46 @@ impl RegistryHubClient {
         prefix: &str,
         trust_keys: Vec<String>,
     ) -> Result<Registry> {
-        let response = self
-            .registry
-            .create_registry(CreateRegistryRequest {
-                org_slug: org_slug.into(),
-                project_path: project_path.into(),
-                name: name.into(),
-                visibility: visibility.into(),
-                binding_name: binding_name.into(),
-                prefix: prefix.into(),
-                trust_keys,
-                ..Default::default()
-            })
+        let resp: CreateRegistryResponse = self
+            .call(
+                "aos.registry.v1.RegistryService/CreateRegistry",
+                &CreateRegistryRequest {
+                    org_slug: org_slug.into(),
+                    project_path: project_path.into(),
+                    name: name.into(),
+                    visibility: visibility.into(),
+                    binding_name: binding_name.into(),
+                    prefix: prefix.into(),
+                    trust_keys,
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("creating registry '{name}' in org '{org_slug}': {e}"))?;
-        response
-            .into_owned()
-            .registry
-            .into_option()
+            .with_context(|| format!("creating registry '{name}' in org '{org_slug}'"))?;
+        resp.registry
             .context("hub returned no registry for the create request")
     }
 
     /// Lists an org's webhook subscriptions (secrets are never returned).
     ///
-    /// Requires `members.manage` on the org scope.
+    /// Requires `members.manage` on the org scope. Calls
+    /// `aos.registry.v1.WebhookService/ListWebhooks`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn list_webhooks(&self, org_slug: &str) -> Result<Vec<Webhook>> {
-        let response = self
-            .webhooks
-            .list_webhooks(ListWebhooksRequest {
-                org_slug: org_slug.into(),
-                ..Default::default()
-            })
+        let resp: ListWebhooksResponse = self
+            .call(
+                "aos.registry.v1.WebhookService/ListWebhooks",
+                &ListWebhooksRequest {
+                    org_slug: org_slug.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("listing webhooks for org '{org_slug}': {e}"))?;
-        Ok(response.into_owned().webhooks)
+            .with_context(|| format!("listing webhooks for org '{org_slug}'"))?;
+        Ok(resp.webhooks)
     }
 
     /// Creates a webhook under an org, returning the subscription and its
@@ -460,7 +563,8 @@ impl RegistryHubClient {
     ///
     /// Requires `members.manage` on the org scope. `events` is the set of
     /// subscribed event types (empty subscribes to all); an empty `secret` asks
-    /// the hub to generate one.
+    /// the hub to generate one. Calls
+    /// `aos.registry.v1.WebhookService/CreateWebhook`.
     ///
     /// # Errors
     ///
@@ -473,43 +577,46 @@ impl RegistryHubClient {
         events: Vec<String>,
         secret: &str,
     ) -> Result<(Webhook, String)> {
-        let response = self
-            .webhooks
-            .create_webhook(CreateWebhookRequest {
-                org_slug: org_slug.into(),
-                url: url.into(),
-                events,
-                secret: secret.into(),
-                ..Default::default()
-            })
+        let resp: CreateWebhookResponse = self
+            .call(
+                "aos.registry.v1.WebhookService/CreateWebhook",
+                &CreateWebhookRequest {
+                    org_slug: org_slug.into(),
+                    url: url.into(),
+                    events,
+                    secret: secret.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("creating webhook in org '{org_slug}': {e}"))?;
-        let response = response.into_owned();
-        let secret = response.secret;
-        let webhook = response
+            .with_context(|| format!("creating webhook in org '{org_slug}'"))?;
+        let secret = resp.secret;
+        let webhook = resp
             .webhook
-            .into_option()
             .context("hub returned no webhook for the create request")?;
         Ok((webhook, secret))
     }
 
     /// Deletes a webhook by id, returning whether one was removed.
     ///
-    /// Requires `members.manage` on the owning org's scope.
+    /// Requires `members.manage` on the owning org's scope. Calls
+    /// `aos.registry.v1.WebhookService/DeleteWebhook`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn delete_webhook(&self, id: i64) -> Result<bool> {
-        let response = self
-            .webhooks
-            .delete_webhook(DeleteWebhookRequest {
-                id,
-                ..Default::default()
-            })
+        let resp: aos_proto_types::DeleteWebhookResponse = self
+            .call(
+                "aos.registry.v1.WebhookService/DeleteWebhook",
+                &DeleteWebhookRequest {
+                    id,
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("deleting webhook {id}: {e}"))?;
-        Ok(response.into_owned().deleted)
+            .with_context(|| format!("deleting webhook {id}"))?;
+        Ok(resp.deleted)
     }
 
     /// Mints a short-lived, registry-scoped upload credential for one registry.
@@ -517,45 +624,50 @@ impl RegistryHubClient {
     /// Requires `publish` on the registry's canonical scope. The returned
     /// [`UploadCredentials::token`] is a provisioning secret shown exactly once;
     /// hand it to `apr origin upload --token` or exchange it at `/oauth2/token`.
+    /// Calls `aos.registry.v1.PublishService/MintUploadCredentials`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails (e.g. missing
     /// the `publish` permission, or no such registry).
     pub async fn mint_upload_credentials(&self, slug: &str) -> Result<UploadCredentials> {
-        let response = self
-            .publish
-            .mint_upload_credentials(MintUploadCredentialsRequest {
-                slug: slug.into(),
-                ..Default::default()
-            })
+        let resp: MintUploadCredentialsResponse = self
+            .call(
+                "aos.registry.v1.PublishService/MintUploadCredentials",
+                &MintUploadCredentialsRequest {
+                    slug: slug.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("minting upload credentials for '{slug}': {e}"))?;
-        let response = response.into_owned();
+            .with_context(|| format!("minting upload credentials for '{slug}'"))?;
         Ok(UploadCredentials {
-            token: response.token,
-            upload_url: response.upload_url,
-            expires_at: response.expires_at,
+            token: resp.token,
+            upload_url: resp.upload_url,
+            expires_at: resp.expires_at,
         })
     }
 
     /// Lists a registry's committed commit log (newest first), the first page.
     ///
     /// Requires `read` on the registry scope (follows registry visibility).
+    /// Calls `aos.registry.v1.GitService/GitLog`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn git_log(&self, slug: &str) -> Result<Vec<GitCommit>> {
-        let response = self
-            .git
-            .git_log(GitLogRequest {
-                slug: slug.into(),
-                ..Default::default()
-            })
+        let resp: GitLogResponse = self
+            .call(
+                "aos.registry.v1.GitService/GitLog",
+                &GitLogRequest {
+                    slug: slug.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("reading git log for '{slug}': {e}"))?;
-        Ok(response.into_owned().commits)
+            .with_context(|| format!("reading git log for '{slug}'"))?;
+        Ok(resp.commits)
     }
 
     /// Returns a textual diff of a registry's committed config files between two
@@ -563,103 +675,139 @@ impl RegistryHubClient {
     ///
     /// An empty `from_oid` diffs the whole tree as additions; an empty `to_oid`
     /// defaults to the current HEAD. Requires `read` on the registry scope.
+    /// Calls `aos.registry.v1.GitService/GitDiff`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn git_diff(&self, slug: &str, from_oid: &str, to_oid: &str) -> Result<String> {
-        let response = self
-            .git
-            .git_diff(GitDiffRequest {
-                slug: slug.into(),
-                from_oid: from_oid.into(),
-                to_oid: to_oid.into(),
-                ..Default::default()
-            })
+        let resp: GitDiffResponse = self
+            .call(
+                "aos.registry.v1.GitService/GitDiff",
+                &GitDiffRequest {
+                    slug: slug.into(),
+                    from_oid: from_oid.into(),
+                    to_oid: to_oid.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("diffing '{slug}': {e}"))?;
-        Ok(response.into_owned().diff)
+            .with_context(|| format!("diffing '{slug}'"))?;
+        Ok(resp.diff)
     }
 
     /// Lists a registry's draft git-backed change requests.
     ///
-    /// Requires `audit.read` on the registry scope.
+    /// Requires `audit.read` on the registry scope. Calls
+    /// `aos.registry.v1.GitService/ListChangeRequests`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn list_change_requests(&self, slug: &str) -> Result<Vec<ChangeRequest>> {
-        let response = self
-            .git
-            .list_change_requests(ListChangeRequestsRequest {
-                slug: slug.into(),
-                ..Default::default()
-            })
+        let resp: ListChangeRequestsResponse = self
+            .call(
+                "aos.registry.v1.GitService/ListChangeRequests",
+                &ListChangeRequestsRequest {
+                    slug: slug.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("listing change requests for '{slug}': {e}"))?;
-        Ok(response.into_owned().change_requests)
+            .with_context(|| format!("listing change requests for '{slug}'"))?;
+        Ok(resp.change_requests)
     }
 
     /// Fetches full detail for one package (every version and platform artifact),
     /// or `None` when it does not exist or is not visible to this client.
     ///
+    /// Calls `aos.registry.v1.PackageService/GetPackage`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn get_package(&self, slug: &str, name: &str) -> Result<Option<Package>> {
-        let response = self
-            .packages
-            .get_package(GetPackageRequest {
-                slug: slug.into(),
-                name: name.into(),
-                ..Default::default()
-            })
+        let resp: GetPackageResponse = self
+            .call(
+                "aos.registry.v1.PackageService/GetPackage",
+                &GetPackageRequest {
+                    slug: slug.into(),
+                    name: name.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("fetching package '{name}' in '{slug}': {e}"))?;
-        Ok(response.into_owned().package.into_option())
+            .with_context(|| format!("fetching package '{name}' in '{slug}'"))?;
+        Ok(resp.package)
     }
 
     /// Fetches one rollout channel with its partition map, or `None` when it does
     /// not exist or is not visible to this client.
     ///
+    /// Calls `aos.registry.v1.ChannelService/GetChannel`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable or the RPC fails.
     pub async fn get_channel(&self, slug: &str, name: &str) -> Result<Option<Channel>> {
-        let response = self
-            .channels
-            .get_channel(GetChannelRequest {
-                slug: slug.into(),
-                name: name.into(),
-                ..Default::default()
-            })
+        let resp: GetChannelResponse = self
+            .call(
+                "aos.registry.v1.ChannelService/GetChannel",
+                &GetChannelRequest {
+                    slug: slug.into(),
+                    name: name.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("fetching channel '{name}' in '{slug}': {e}"))?;
-        Ok(response.into_owned().channel.into_option())
+            .with_context(|| format!("fetching channel '{name}' in '{slug}'"))?;
+        Ok(resp.channel)
     }
 
     /// Drafts and applies a forward revert of a change-set, returning the new
     /// revert change-set.
     ///
-    /// Requires `registry.configure` on the change-set's scope.
+    /// Requires `registry.configure` on the change-set's scope. Calls
+    /// `aos.registry.v1.ConfigService/RevertChangeset`.
     ///
     /// # Errors
     ///
     /// Returns an error if the hub is unreachable, the RPC fails (e.g. missing
     /// permission or an unknown change-set), or the response omits the revert.
     pub async fn revert_changeset(&self, change_id: &str) -> Result<Changeset> {
-        let response = self
-            .config
-            .revert_changeset(RevertChangesetRequest {
-                change_id: change_id.into(),
-                ..Default::default()
-            })
+        let resp: RevertChangesetResponse = self
+            .call(
+                "aos.registry.v1.ConfigService/RevertChangeset",
+                &RevertChangesetRequest {
+                    change_id: change_id.into(),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("reverting change-set '{change_id}': {e}"))?;
-        response
-            .into_owned()
-            .changeset
-            .into_option()
+            .with_context(|| format!("reverting change-set '{change_id}'"))?;
+        resp.changeset
             .context("hub returned no change-set for the revert request")
+    }
+}
+
+/// The Connect-JSON error envelope: a stable error `code` and human `message`.
+///
+/// Returned with a non-2xx HTTP status on failure; see the hub's
+/// `aos-registry-core` `RpcError`.
+#[derive(serde::Deserialize)]
+struct ConnectError {
+    /// The Connect error code (e.g. `not_found`, `permission_denied`).
+    code: String,
+    /// The human-readable error message.
+    message: String,
+}
+
+/// Returns `s` with a single trailing slash so `format!("{base}{method}")`
+/// joins cleanly whether or not the parsed URL already ended in `/`.
+fn ensure_trailing_slash(s: &str) -> String {
+    if s.ends_with('/') {
+        s.to_string()
+    } else {
+        format!("{s}/")
     }
 }
