@@ -5,15 +5,16 @@
 //! touching the hub's database. `login` exchanges a provisioning secret for a
 //! hub access JWT via the REST `POST /oauth2/token` endpoint
 //! ([`aos_remote::exchange_token`]); read operations run anonymously by default
-//! and accept an optional `--token` (that JWT) for authenticated reads. Write
-//! subcommands follow in later RFC-0004 Phase 5 increments.
+//! and accept an optional `--token` (that JWT) for authenticated reads. The
+//! tenancy writes (`org`/`project`/`binding create`) take that JWT too; further
+//! write subcommands follow in later RFC-0004 Phase 5 increments.
 
 use anyhow::Result;
 
 use aos_core::output::Printer;
 use aos_remote::RegistryHubClient;
 
-use crate::cli::{HubCmd, HubRegistryCmd};
+use crate::cli::{HubBindingCmd, HubCmd, HubOrgCmd, HubProjectCmd, HubRegistryCmd};
 
 /// Handles `aos hub login`: exchanges a provisioning secret for an access JWT.
 async fn login(printer: &Printer, hub: &str, provisioning_token: &str) -> Result<()> {
@@ -48,13 +49,9 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
             provisioning_token,
         } => login(printer, hub, provisioning_token).await,
         HubCmd::Registry { command } => registry(printer, command).await,
-        HubCmd::Orgs { hub, token } => orgs(printer, hub, token.as_deref()).await,
-        HubCmd::Projects { hub, token, org } => {
-            projects(printer, hub, token.as_deref(), org).await
-        }
-        HubCmd::Bindings { hub, token, org } => {
-            bindings(printer, hub, token.as_deref(), org).await
-        }
+        HubCmd::Org { command } => org(printer, command).await,
+        HubCmd::Project { command } => project(printer, command).await,
+        HubCmd::Binding { command } => binding(printer, command).await,
         HubCmd::Audit { hub, token, scope } => {
             audit(printer, hub, token.as_deref(), scope).await
         }
@@ -73,91 +70,177 @@ fn scope_label(scope: &str) -> &str {
     }
 }
 
-/// Handles `aos hub orgs`.
-async fn orgs(printer: &Printer, hub: &str, token: Option<&str>) -> Result<()> {
-    let client = hub_client(hub, token)?;
-    let orgs = client.list_orgs().await?;
-    if printer.json_if_active(&serde_json::json!({
-        "orgs": orgs
-            .iter()
-            .map(|o| serde_json::json!({
-                "slug": o.slug,
-                "name": o.name,
-                "created_at": o.created_at,
-            }))
-            .collect::<Vec<_>>(),
-    })) {
-        return Ok(());
+/// Handles `aos hub org …`.
+async fn org(printer: &Printer, command: &HubOrgCmd) -> Result<()> {
+    match command {
+        HubOrgCmd::List { hub, token } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let orgs = client.list_orgs().await?;
+            if printer.json_if_active(&serde_json::json!({
+                "orgs": orgs
+                    .iter()
+                    .map(|o| serde_json::json!({
+                        "slug": o.slug,
+                        "name": o.name,
+                        "created_at": o.created_at,
+                    }))
+                    .collect::<Vec<_>>(),
+            })) {
+                return Ok(());
+            }
+            if orgs.is_empty() {
+                printer.info("no organizations visible (authenticate with --token?)");
+                return Ok(());
+            }
+            printer.header(&format!("{} org(s) on {hub}", orgs.len()));
+            for org in &orgs {
+                printer.plain(&format!("  {}  {}", org.slug, org.name));
+            }
+            Ok(())
+        }
+        HubOrgCmd::Create {
+            hub,
+            token,
+            slug,
+            name,
+        } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let org = client.create_org(slug, name).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "org": { "slug": org.slug, "name": org.name, "created_at": org.created_at },
+            })) {
+                return Ok(());
+            }
+            printer.success(&format!("created org '{}' ({})", org.slug, org.name));
+            Ok(())
+        }
     }
-    if orgs.is_empty() {
-        printer.info("no organizations visible (authenticate with --token?)");
-        return Ok(());
-    }
-    printer.header(&format!("{} org(s) on {hub}", orgs.len()));
-    for org in &orgs {
-        printer.plain(&format!("  {}  {}", org.slug, org.name));
-    }
-    Ok(())
 }
 
-/// Handles `aos hub projects --org <slug>`.
-async fn projects(printer: &Printer, hub: &str, token: Option<&str>, org: &str) -> Result<()> {
-    let client = hub_client(hub, token)?;
-    let projects = client.list_projects(org).await?;
-    if printer.json_if_active(&serde_json::json!({
-        "projects": projects
-            .iter()
-            .map(|p| serde_json::json!({
-                "org_slug": p.org_slug,
-                "path": p.path,
-                "name": p.name,
-            }))
-            .collect::<Vec<_>>(),
-    })) {
-        return Ok(());
+/// Handles `aos hub project …`.
+async fn project(printer: &Printer, command: &HubProjectCmd) -> Result<()> {
+    match command {
+        HubProjectCmd::List { hub, token, org } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let projects = client.list_projects(org).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "projects": projects
+                    .iter()
+                    .map(|p| serde_json::json!({
+                        "org_slug": p.org_slug,
+                        "path": p.path,
+                        "name": p.name,
+                    }))
+                    .collect::<Vec<_>>(),
+            })) {
+                return Ok(());
+            }
+            if projects.is_empty() {
+                printer.info(&format!("no projects in org '{org}'"));
+                return Ok(());
+            }
+            printer.header(&format!("{} project(s) in {org}", projects.len()));
+            for project in &projects {
+                let path = if project.path.is_empty() {
+                    "<org root>"
+                } else {
+                    &project.path
+                };
+                printer.plain(&format!("  {path}  {}", project.name));
+            }
+            Ok(())
+        }
+        HubProjectCmd::Create {
+            hub,
+            token,
+            org,
+            path,
+            name,
+        } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let project = client.create_project(org, path, name).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "project": {
+                    "org_slug": project.org_slug,
+                    "path": project.path,
+                    "name": project.name,
+                },
+            })) {
+                return Ok(());
+            }
+            let where_ = if project.path.is_empty() {
+                "<org root>".to_string()
+            } else {
+                project.path.clone()
+            };
+            printer.success(&format!(
+                "created project '{}' at {where_} in org '{org}'",
+                project.name
+            ));
+            Ok(())
+        }
     }
-    if projects.is_empty() {
-        printer.info(&format!("no projects in org '{org}'"));
-        return Ok(());
-    }
-    printer.header(&format!("{} project(s) in {org}", projects.len()));
-    for project in &projects {
-        let path = if project.path.is_empty() {
-            "<org root>"
-        } else {
-            &project.path
-        };
-        printer.plain(&format!("  {path}  {}", project.name));
-    }
-    Ok(())
 }
 
-/// Handles `aos hub bindings --org <slug>`.
-async fn bindings(printer: &Printer, hub: &str, token: Option<&str>, org: &str) -> Result<()> {
-    let client = hub_client(hub, token)?;
-    let bindings = client.list_bindings(org).await?;
-    if printer.json_if_active(&serde_json::json!({
-        "bindings": bindings
-            .iter()
-            .map(|b| serde_json::json!({
-                "org_slug": b.org_slug,
-                "name": b.name,
-                "kind": b.kind,
-                "root": b.root,
-            }))
-            .collect::<Vec<_>>(),
-    })) {
-        return Ok(());
+/// Handles `aos hub binding …`.
+async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
+    match command {
+        HubBindingCmd::List { hub, token, org } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let bindings = client.list_bindings(org).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "bindings": bindings
+                    .iter()
+                    .map(|b| serde_json::json!({
+                        "org_slug": b.org_slug,
+                        "name": b.name,
+                        "kind": b.kind,
+                        "root": b.root,
+                    }))
+                    .collect::<Vec<_>>(),
+            })) {
+                return Ok(());
+            }
+            if bindings.is_empty() {
+                printer.info(&format!("no storage bindings in org '{org}'"));
+                return Ok(());
+            }
+            printer.header(&format!("{} binding(s) in {org}", bindings.len()));
+            for binding in &bindings {
+                printer.plain(&format!(
+                    "  {}  [{}]  {}",
+                    binding.name, binding.kind, binding.root
+                ));
+            }
+            Ok(())
+        }
+        HubBindingCmd::Create {
+            hub,
+            token,
+            org,
+            name,
+            kind,
+            root,
+        } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let binding = client.create_binding(org, name, kind, root).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "binding": {
+                    "org_slug": binding.org_slug,
+                    "name": binding.name,
+                    "kind": binding.kind,
+                    "root": binding.root,
+                },
+            })) {
+                return Ok(());
+            }
+            printer.success(&format!(
+                "created binding '{}' [{}] -> {} in org '{org}'",
+                binding.name, binding.kind, binding.root
+            ));
+            Ok(())
+        }
     }
-    if bindings.is_empty() {
-        printer.info(&format!("no storage bindings in org '{org}'"));
-        return Ok(());
-    }
-    printer.header(&format!("{} binding(s) in {org}", bindings.len()));
-    for binding in &bindings {
-        printer.plain(&format!("  {}  [{}]  {}", binding.name, binding.kind, binding.root));
-    }
-    Ok(())
 }
 
 /// Handles `aos hub audit [--scope <s>]`.

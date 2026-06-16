@@ -4,8 +4,9 @@
 //! its public ConnectRPC API (RFC-0004), never by touching the hub's database
 //! directly. `login` exchanges a provisioning secret for that JWT. Public browse
 //! reads (registries, releases, packages, channels) run anonymously; tenancy and
-//! audit reads (orgs, projects, bindings, audit, change-sets) take a `--token`
-//! hub access JWT. Write operations are layered on in later RFC-0004 Phase 5
+//! audit reads (`org`/`project`/`binding list`, audit, change-sets) take a
+//! `--token` hub access JWT, as do the tenancy writes (`org`/`project`/`binding
+//! create`). Further write operations are layered on in later RFC-0004 Phase 5
 //! increments.
 //!
 //! Doc comments here are clap `--help` text; the implementation lives in
@@ -29,38 +30,20 @@ pub enum HubCmd {
         #[command(subcommand)]
         command: HubRegistryCmd,
     },
-    /// List the organizations you can see (needs --token)
-    Orgs {
-        /// Hub base URL (http:// or https://)
-        #[arg(long)]
-        hub: String,
-        /// Hub access JWT (orgs are private; omit only to confirm none are public)
-        #[arg(long)]
-        token: Option<String>,
+    /// Manage organizations (the tenant boundary)
+    Org {
+        #[command(subcommand)]
+        command: HubOrgCmd,
     },
-    /// List the projects under an org
-    Projects {
-        /// Hub base URL (http:// or https://)
-        #[arg(long)]
-        hub: String,
-        /// Hub access JWT for authenticated access
-        #[arg(long)]
-        token: Option<String>,
-        /// Org slug
-        #[arg(long)]
-        org: String,
+    /// Manage projects within an org
+    Project {
+        #[command(subcommand)]
+        command: HubProjectCmd,
     },
-    /// List the storage bindings under an org
-    Bindings {
-        /// Hub base URL (http:// or https://)
-        #[arg(long)]
-        hub: String,
-        /// Hub access JWT for authenticated access
-        #[arg(long)]
-        token: Option<String>,
-        /// Org slug
-        #[arg(long)]
-        org: String,
+    /// Manage storage bindings within an org
+    Binding {
+        #[command(subcommand)]
+        command: HubBindingCmd,
     },
     /// List audit-log entries at a scope (newest first; needs --token)
     Audit {
@@ -85,6 +68,105 @@ pub enum HubCmd {
         /// Scope path to filter on; omit for the instance-wide root scope
         #[arg(long, default_value = "")]
         scope: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubOrgCmd {
+    /// List the organizations you can see (needs --token)
+    List {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT (orgs are private; omit only to confirm none are public)
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Create an org (the caller becomes its Owner; needs --token)
+    Create {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Org slug (the tenant identifier)
+        #[arg(long)]
+        slug: String,
+        /// Human-readable org name
+        #[arg(long)]
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubProjectCmd {
+    /// List the projects under an org
+    List {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Org slug
+        #[arg(long)]
+        org: String,
+    },
+    /// Create a project at a path under an org (needs registry.configure)
+    Create {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Org slug
+        #[arg(long)]
+        org: String,
+        /// Materialized path within the org (omit for an org-root project)
+        #[arg(long, default_value = "")]
+        path: String,
+        /// Human-readable project name
+        #[arg(long)]
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubBindingCmd {
+    /// List the storage bindings under an org
+    List {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Org slug
+        #[arg(long)]
+        org: String,
+    },
+    /// Create a storage binding under an org (needs registry.configure)
+    Create {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Org slug
+        #[arg(long)]
+        org: String,
+        /// Binding name
+        #[arg(long)]
+        name: String,
+        /// Backend kind (only `local_fs` is supported this phase)
+        #[arg(long, default_value = "local_fs")]
+        kind: String,
+        /// Backend root (an absolute filesystem path for local_fs)
+        #[arg(long)]
+        root: String,
     },
 }
 

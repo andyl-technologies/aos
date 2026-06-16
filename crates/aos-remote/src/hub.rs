@@ -13,16 +13,17 @@
 //! `POST /oauth2/token`) and the write-path service clients are layered on in
 //! later RFC-0004 Phase 5 increments.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use connectrpc::client::{ClientConfig, HttpClient};
 
 use aos_proto::aos::registry::v1::{
     AuditEntry, AuditServiceClient, Binding, Changeset, Channel, ChannelServiceClient,
-    ConfigServiceClient, GetRegistryRequest, ListAuditRequest, ListBindingsRequest,
-    ListChangesetsRequest, ListChannelsRequest, ListOrgsRequest, ListPackagesRequest,
-    ListProjectsRequest, ListRegistriesRequest, ListReleasesRequest, Org, OrgServiceClient,
-    PackageServiceClient, PackageSummary, Project, ProjectServiceClient, Registry,
-    RegistryServiceClient, Release, StorageServiceClient,
+    ConfigServiceClient, CreateBindingRequest, CreateOrgRequest, CreateProjectRequest,
+    GetRegistryRequest, ListAuditRequest, ListBindingsRequest, ListChangesetsRequest,
+    ListChannelsRequest, ListOrgsRequest, ListPackagesRequest, ListProjectsRequest,
+    ListRegistriesRequest, ListReleasesRequest, Org, OrgServiceClient, PackageServiceClient,
+    PackageSummary, Project, ProjectServiceClient, Registry, RegistryServiceClient, Release,
+    StorageServiceClient,
 };
 
 use crate::client::{make_http_client, validate_base_url};
@@ -273,5 +274,95 @@ impl RegistryHubClient {
             .await
             .map_err(|e| anyhow::anyhow!("listing change-sets for scope '{scope}': {e}"))?;
         Ok(response.into_owned().changesets)
+    }
+
+    /// Creates an organization; the authenticated caller becomes its Owner.
+    ///
+    /// Requires an authenticated client (see
+    /// [`connect_with_token`](Self::connect_with_token)).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable, the RPC fails (e.g. the slug
+    /// is taken or the caller is unauthenticated), or the response omits the
+    /// created org.
+    pub async fn create_org(&self, slug: &str, name: &str) -> Result<Org> {
+        let response = self
+            .orgs
+            .create_org(CreateOrgRequest {
+                slug: slug.into(),
+                name: name.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("creating org '{slug}': {e}"))?;
+        response
+            .into_owned()
+            .org
+            .into_option()
+            .context("hub returned no org for the create request")
+    }
+
+    /// Creates a project at a materialized path under an org.
+    ///
+    /// Requires `registry.configure` on the org scope. The `path` is the
+    /// materialized path within the org (`""` for an org-root project).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable, the RPC fails (e.g. missing
+    /// permission or a duplicate path), or the response omits the created
+    /// project.
+    pub async fn create_project(&self, org_slug: &str, path: &str, name: &str) -> Result<Project> {
+        let response = self
+            .projects
+            .create_project(CreateProjectRequest {
+                org_slug: org_slug.into(),
+                path: path.into(),
+                name: name.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("creating project '{name}' in org '{org_slug}': {e}"))?;
+        response
+            .into_owned()
+            .project
+            .into_option()
+            .context("hub returned no project for the create request")
+    }
+
+    /// Creates a storage binding under an org.
+    ///
+    /// Requires `registry.configure` on the org scope. Only the `local_fs` kind
+    /// is supported this phase; `root` is the backend root path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable, the RPC fails (e.g. missing
+    /// permission or a duplicate name), or the response omits the created
+    /// binding.
+    pub async fn create_binding(
+        &self,
+        org_slug: &str,
+        name: &str,
+        kind: &str,
+        root: &str,
+    ) -> Result<Binding> {
+        let response = self
+            .bindings
+            .create_binding(CreateBindingRequest {
+                org_slug: org_slug.into(),
+                name: name.into(),
+                kind: kind.into(),
+                root: root.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("creating binding '{name}' in org '{org_slug}': {e}"))?;
+        response
+            .into_owned()
+            .binding
+            .into_option()
+            .context("hub returned no binding for the create request")
     }
 }
