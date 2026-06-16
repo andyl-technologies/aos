@@ -1,8 +1,8 @@
-//! The unified [`Backend`] driver, an enum over concrete `sqlx` pools.
+//! The unified [`Backend`](crate::backend::Backend) driver, an enum over concrete `sqlx` pools.
 //!
 //! [`SqlxBackend`] is one type carrying a per-engine connection pool —
-//! [`sqlx::SqlitePool`] always, [`sqlx::PgPool`] under the `postgres` feature,
-//! [`sqlx::MySqlPool`] under `mysql`. It replaces the three hand-rolled
+//! [`sqlx::SqlitePool`] always, `sqlx::PgPool` under the `postgres` feature,
+//! `sqlx::MySqlPool` under `mysql`. It replaces the three hand-rolled
 //! sync-driver backends with a single async one: every method matches on the
 //! arm, translates the hub's sqlite-source SQL with [`Dialect`], binds the
 //! caller's [`Value`]s onto a `sqlx::query`, and decodes result columns back
@@ -228,7 +228,7 @@ impl super::Backend for SqlxBackend {
 /// The sqlite binding, decoding, and statement helpers.
 ///
 /// Source dialect: translation is the identity, so each helper applies
-/// [`prepare`] for parameter ordering and runs the SQL directly.
+/// [`prepare`](crate::backend::prepare) for parameter ordering and runs the SQL directly.
 mod sqlite {
     use anyhow::{Context, Result};
     use sqlx::{Row as _, Sqlite, SqlitePool, TypeInfo, ValueRef};
