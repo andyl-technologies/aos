@@ -225,4 +225,34 @@ pub enum HubRegistryCmd {
         /// Registry slug (e.g. `acme/infra/prod/cdn`)
         slug: String,
     },
+    /// Create an org-owned managed registry (needs registry.configure)
+    Create {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Owning org slug
+        #[arg(long)]
+        org: String,
+        /// Owning project's materialized path (omit for an org-root registry)
+        #[arg(long, default_value = "")]
+        project_path: String,
+        /// Registry name (the last canonical-path segment)
+        #[arg(long)]
+        name: String,
+        /// Visibility: public | internal | private
+        #[arg(long, default_value = "private")]
+        visibility: String,
+        /// Storage binding name within the org (omit for an unbound registry)
+        #[arg(long, default_value = "")]
+        binding: String,
+        /// Sub-prefix under the binding root
+        #[arg(long, default_value = "")]
+        prefix: String,
+        /// Pinned trust anchor in name:Ed25519:<base64> form (repeatable)
+        #[arg(long = "trust-key")]
+        trust_key: Vec<String>,
+    },
 }

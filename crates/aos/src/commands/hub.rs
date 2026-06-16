@@ -490,5 +490,43 @@ async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Result<()> {
             }
             Ok(())
         }
+        HubRegistryCmd::Create {
+            hub,
+            token,
+            org,
+            project_path,
+            name,
+            visibility,
+            binding,
+            prefix,
+            trust_key,
+        } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let registry = client
+                .create_registry(
+                    org,
+                    project_path,
+                    name,
+                    visibility,
+                    binding,
+                    prefix,
+                    trust_key.clone(),
+                )
+                .await?;
+            if printer.json_if_active(&serde_json::json!({
+                "registry": {
+                    "slug": registry.slug,
+                    "name": registry.name,
+                    "index_state": registry.index_state,
+                },
+            })) {
+                return Ok(());
+            }
+            printer.success(&format!(
+                "created registry '{}' ({visibility}) in org '{org}'",
+                registry.slug
+            ));
+            Ok(())
+        }
     }
 }
