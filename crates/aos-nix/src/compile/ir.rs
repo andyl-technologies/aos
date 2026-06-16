@@ -133,6 +133,27 @@ impl IrAttrPathId {
     }
 }
 
+/// A stable inline-cache site id for an attribute lookup node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct IrInlineCacheSiteId(u32);
+
+impl IrInlineCacheSiteId {
+    /// Creates an inline-cache site id from a raw counter value.
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// Returns the raw `u32` site id.
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    /// Returns the site id as a `usize` index.
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// A fixed-stride IR node.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IrNode {
@@ -271,6 +292,8 @@ pub enum IrData {
     },
     /// The node represents an attribute selection.
     Select {
+        /// The stable inline-cache site for this lookup.
+        site: IrInlineCacheSiteId,
         /// The selected expression.
         receiver: IrId,
         /// The lowered attribute path.
@@ -280,6 +303,8 @@ pub enum IrData {
     },
     /// The node represents an attribute membership test.
     HasAttr {
+        /// The stable inline-cache site for this lookup.
+        site: IrInlineCacheSiteId,
         /// The tested expression.
         receiver: IrId,
         /// The lowered attribute path.
@@ -489,6 +514,9 @@ pub enum IrErrorKind {
     /// Too many side-table entries were created.
     #[error("too many IR side-table entries")]
     TooManySideTableEntries,
+    /// Too many inline-cache sites were created.
+    #[error("too many IR inline-cache sites")]
+    TooManyInlineCacheSites,
     /// A static binding key could not be lowered.
     #[error("invalid binding key")]
     InvalidBindingKey,
@@ -512,6 +540,7 @@ struct IrLowerer {
     attr_paths: Vec<Box<[IrAttrPathSegment]>>,
     bindings: Vec<IrBinding>,
     inherit_from_thunks: BTreeMap<NodeId, IrId>,
+    inline_cache_sites: u32,
 }
 
 impl IrLowerer {
@@ -522,6 +551,7 @@ impl IrLowerer {
             attr_paths: Vec::new(),
             bindings: Vec::new(),
             inherit_from_thunks: BTreeMap::new(),
+            inline_cache_sites: 0,
         }
     }
 
@@ -766,10 +796,12 @@ impl IrLowerer {
         let default = default
             .map(|default| self.lower_lazy(default))
             .transpose()?;
+        let site = self.next_inline_cache_site(node.span)?;
         self.push(
             IrKind::Select,
             node.span,
             IrData::Select {
+                site,
                 receiver,
                 path,
                 default,
@@ -783,10 +815,15 @@ impl IrLowerer {
         };
         let receiver = self.lower_expr(receiver)?;
         let path = self.lower_attr_path(path)?;
+        let site = self.next_inline_cache_site(node.span)?;
         self.push(
             IrKind::HasAttr,
             node.span,
-            IrData::HasAttr { receiver, path },
+            IrData::HasAttr {
+                site,
+                receiver,
+                path,
+            },
         )
     }
 
@@ -985,10 +1022,12 @@ impl IrLowerer {
         let default = default
             .map(|default| self.lower_lazy(default))
             .transpose()?;
+        let site = self.next_inline_cache_site(node.span)?;
         let select = self.push(
             IrKind::Select,
             node.span,
             IrData::Select {
+                site,
                 receiver,
                 path,
                 default,
@@ -1019,6 +1058,15 @@ impl IrLowerer {
             return Ok(lowered);
         }
         self.push(IrKind::ThunkAlloc, node.span, IrData::Node(lowered))
+    }
+
+    fn next_inline_cache_site(&mut self, span: Span) -> Result<IrInlineCacheSiteId, IrError> {
+        let site = IrInlineCacheSiteId::new(self.inline_cache_sites);
+        self.inline_cache_sites = self
+            .inline_cache_sites
+            .checked_add(1)
+            .ok_or_else(|| IrError::new(IrErrorKind::TooManyInlineCacheSites, span))?;
+        Ok(site)
     }
 
     fn push(&mut self, kind: IrKind, span: Span, data: IrData) -> Result<IrId, IrError> {
@@ -1110,6 +1158,13 @@ mod tests {
         inner
     }
 
+    fn lookup_site(ir: &Ir, id: IrId) -> IrInlineCacheSiteId {
+        match node(ir, id).data {
+            IrData::Select { site, .. } | IrData::HasAttr { site, .. } => site,
+            _ => panic!("lookup payload expected"),
+        }
+    }
+
     #[test]
     fn lowers_let_lambda_application_to_resolved_ir() {
         let ir = lowered("let x = 1; f = y: x + y; in f 41");
@@ -1164,6 +1219,26 @@ mod tests {
     }
 
     #[test]
+    fn assigns_stable_inline_cache_sites_to_lookups() {
+        let ir = lowered("let x = { a = 1; b = 2; }; in [ x.a (x ? b) x.b ]");
+        let root = node(&ir, ir.root);
+        let IrData::Let { body, .. } = root.data else {
+            panic!("let payload expected");
+        };
+        let IrData::Children(elements) = node(&ir, body).data else {
+            panic!("list payload expected");
+        };
+        let elements = ir.arena.child_slice(elements).expect("list slice exists");
+        let first = thunk_inner(&ir, elements[0]);
+        let second = thunk_inner(&ir, elements[1]);
+        let third = thunk_inner(&ir, elements[2]);
+
+        assert_eq!(lookup_site(&ir, first).as_u32(), 0);
+        assert_eq!(lookup_site(&ir, second).as_u32(), 1);
+        assert_eq!(lookup_site(&ir, third).as_u32(), 2);
+    }
+
+    #[test]
     fn inherit_from_targets_share_one_source_thunk() {
         let ir =
             lowered("let src = { name = 1; version = 2; }; in { inherit (src) name version; }");
@@ -1180,6 +1255,8 @@ mod tests {
         let second = ir.bindings[bindings.start as usize + 1];
         let first_select = thunk_inner(&ir, first.value);
         let second_select = thunk_inner(&ir, second.value);
+        assert_eq!(lookup_site(&ir, first_select).as_u32(), 0);
+        assert_eq!(lookup_site(&ir, second_select).as_u32(), 1);
         let IrData::Select {
             receiver: first_receiver,
             ..
