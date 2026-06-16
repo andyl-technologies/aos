@@ -107,6 +107,13 @@
     builtins.stringLength (builtins.replaceStrings [needle] [""] haystack)
     != builtins.stringLength haystack;
 
+  nsswitchNoMymachines =
+    if containsStr "mymachines" system.config.environment.etc."nsswitch.conf".text
+    then throw "modules/base/nsswitch.nix must not rely on nss-mymachines"
+    else if !(containsStr "hosts:          files myhostname resolve [!UNAVAIL=return] dns" system.config.environment.etc."nsswitch.conf".text)
+    then throw "modules/base/nsswitch.nix generated an unexpected hosts lookup order"
+    else "ok";
+
   # --- aos.apm.installAtBoot --------------------------------------------
   # Host-authored package intent renders as an Ignition storage.files
   # fragment: desired.toml plus registry config/trust anchors.
@@ -240,6 +247,7 @@ in
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
         echo "apm install boot: ignition (${apmInstallAtBootIgnition}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid registry (${apmRegistriesRejectsInvalidName})"
+        echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       no package drop-in include (${firewallNoNftablesDropin}), scan-dir storage rejected (${scanDirStorageRejected})"
         echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"
 
