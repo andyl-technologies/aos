@@ -834,6 +834,32 @@ impl IrLowerer {
             .map(|effect| (symbol, effect, first_argument)))
     }
 
+    fn strict_lazy_binary_primop_ref(
+        &self,
+        id: NodeId,
+    ) -> Result<Option<(Symbol, EffectClass, NodeId)>, IrError> {
+        let node = self.node(id)?;
+        if node.kind != NodeKind::Apply {
+            return Ok(None);
+        }
+        let NodeData::Pair {
+            first: function,
+            second: first_argument,
+        } = node.data
+        else {
+            return Err(self.invalid_shape(node, "application pair"));
+        };
+        if self.node(function)?.kind == NodeKind::GlobalVar {
+            return Ok(None);
+        }
+        let Some(symbol) = self.direct_builtin_ref_symbol(function)? else {
+            return Ok(None);
+        };
+        Ok(self
+            .strict_lazy_binary_primop_effect(symbol)
+            .map(|effect| (symbol, effect, first_argument)))
+    }
+
     fn strict_ternary_primop_ref(
         &self,
         id: NodeId,
@@ -972,6 +998,13 @@ impl IrLowerer {
                 | b"catAttrs" | b"elem" | b"lessThan" | b"add" | b"sub" | b"mul" | b"div"
                 | b"bitAnd" | b"bitOr" | b"bitXor",
             ) => Some(EffectClass::Pure),
+            _ => None,
+        }
+    }
+
+    fn strict_lazy_binary_primop_effect(&self, symbol: Symbol) -> Option<EffectClass> {
+        match self.resolved.symbols.resolve(symbol) {
+            Some(b"seq") => Some(EffectClass::Pure),
             _ => None,
         }
     }
@@ -1136,6 +1169,21 @@ impl IrLowerer {
         if let Some((symbol, effect)) = self.strict_unary_primop_ref(function)? {
             let argument = self.lower_expr(argument)?;
             let args = self.arena.push_child_slice(&[argument], node.span)?;
+            return self.push_with_effect(
+                IrKind::PrimOp,
+                node.span,
+                effect,
+                IrData::PrimOp { symbol, args },
+            );
+        }
+        if let Some((symbol, effect, first_argument)) =
+            self.strict_lazy_binary_primop_ref(function)?
+        {
+            let first_argument = self.lower_expr(first_argument)?;
+            let second_argument = self.lower_lazy(argument)?;
+            let args = self
+                .arena
+                .push_child_slice(&[first_argument, second_argument], node.span)?;
             return self.push_with_effect(
                 IrKind::PrimOp,
                 node.span,
@@ -1905,6 +1953,48 @@ mod tests {
             for arg in args {
                 assert_ne!(node(&ir, *arg).kind, IrKind::ThunkAlloc);
             }
+        }
+    }
+
+    #[test]
+    fn lowers_pure_strict_lazy_binary_primops_directly() {
+        let ir = lowered("builtins.seq (let x = 1; in x) (let y = 2; in y)");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::PrimOp);
+        assert_eq!(root.effect, EffectClass::Pure);
+        let IrData::PrimOp { symbol, args } = root.data else {
+            panic!("primop payload expected");
+        };
+        assert_eq!(symbol_text(&ir, symbol), b"seq");
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        assert_eq!(args.len(), 2);
+        assert_eq!(node(&ir, args[0]).kind, IrKind::Let);
+        assert_eq!(node(&ir, args[1]).kind, IrKind::ThunkAlloc);
+    }
+
+    #[test]
+    fn shadowed_pure_strict_lazy_binary_primops_stay_ordinary_applications() {
+        for source in [
+            "seq 1 2",
+            "let seq = first: second: second; in seq 1 2",
+            "let builtins = { seq = first: second: second; }; in builtins.seq 1 2",
+            "(builtins.seq or (first: second: second)) 1 2",
+        ] {
+            let ir = lowered(source);
+            let root = root_node(&ir);
+            let root = if root.kind == IrKind::Let {
+                let IrData::Let { body, .. } = root.data else {
+                    panic!("let payload expected");
+                };
+                node(&ir, body)
+            } else {
+                root
+            };
+            assert_eq!(root.kind, IrKind::Apply);
+            let IrData::Pair { first, .. } = root.data else {
+                panic!("apply payload expected");
+            };
+            assert_eq!(node(&ir, first).kind, IrKind::Apply);
         }
     }
 

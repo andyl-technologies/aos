@@ -1475,7 +1475,8 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"baseNameOf"
             | b"dirOf"
             | b"substring"
-            | b"unsafeDiscardStringContext",
+            | b"unsafeDiscardStringContext"
+            | b"seq",
         ) => Some(EffectClass::Pure),
         _ => None,
     }

@@ -1173,6 +1173,7 @@ impl<'ir> TreeWalk<'ir> {
         let name = self.symbols.resolve(symbol).ok_or_else(|| {
             TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
         })?;
+        let strict_lazy_binary = StrictLazyBinaryPrimOp::from_bytes(name);
         let strict_ternary = StrictTernaryPrimOp::from_bytes(name);
         let strict_binary = StrictBinaryPrimOp::from_bytes(name);
         let strict_unary = StrictUnaryPrimOp::from_bytes(name);
@@ -1200,6 +1201,25 @@ impl<'ir> TreeWalk<'ir> {
             let third = args[2];
             return match primop {
                 StrictTernaryPrimOp::Substring => self.eval_substring_primop(first, second, third),
+            };
+        }
+        if let Some(primop) = strict_lazy_binary {
+            if args.len() != 2 {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidPrimOpArity {
+                        id,
+                        symbol,
+                        expected: 2,
+                        actual: args.len(),
+                    },
+                    node.span,
+                ));
+            }
+
+            let first = args[0];
+            let second = args[1];
+            return match primop {
+                StrictLazyBinaryPrimOp::Seq => self.eval_seq_primop(first, second),
             };
         }
         if let Some(primop) = strict_binary {
@@ -1601,6 +1621,11 @@ impl<'ir> TreeWalk<'ir> {
             }
         };
         Ok(Value::int(value))
+    }
+
+    fn eval_seq_primop(&mut self, first: IrId, second: IrId) -> Result<Value, TreeWalkError> {
+        self.eval_node(first)?;
+        self.eval_lazy_node(second)
     }
 
     fn eval_has_context_primop(
@@ -4387,6 +4412,20 @@ impl StrictTernaryPrimOp {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StrictLazyBinaryPrimOp {
+    Seq,
+}
+
+impl StrictLazyBinaryPrimOp {
+    fn from_bytes(name: &[u8]) -> Option<Self> {
+        match name {
+            b"seq" => Some(Self::Seq),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StrictBinaryPrimOp {
     Add,
     Sub,
@@ -6910,6 +6949,64 @@ mod tests {
         ] {
             assert_eq!(eval(source).as_int(), Ok(i64::MAX));
         }
+    }
+
+    #[test]
+    fn seq_primop_forces_first_to_whnf_and_returns_second() {
+        assert_eq!(eval("builtins.seq { x = 1 / 0; } 2").as_int(), Ok(2));
+        assert_eq!(
+            eval("builtins.length (builtins.seq 1 [ (1 / 0) ])").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let builtins = { seq = first: second: 42; }; in builtins.seq (1 / 0) 0").as_int(),
+            Ok(42)
+        );
+    }
+
+    #[test]
+    fn seq_primop_reports_forcing_errors_left_to_right() {
+        let ir = lower("builtins.seq (1 / 0) 2");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let first = args[0];
+        let first_span = ir.arena.node(first).expect("first argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("seq forces first argument first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: first }
+        );
+        assert_eq!(error.span(), first_span);
+
+        let ir = lower("builtins.seq 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let second = args[1];
+        let IrData::Node(second_body) = ir.arena.node(second).expect("second argument exists").data
+        else {
+            panic!("second argument is a thunk allocation");
+        };
+        let second_span = ir
+            .arena
+            .node(second_body)
+            .expect("second thunk body exists")
+            .span;
+
+        let error = eval_whnf(&ir).expect_err("seq returns and demands second argument");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: second_body }
+        );
+        assert_eq!(error.span(), second_span);
     }
 
     #[test]
