@@ -126,5 +126,70 @@ async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Result<()> {
             }
             Ok(())
         }
+        HubRegistryCmd::Packages { hub, token, slug } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let packages = client.list_packages(slug).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "packages": packages
+                    .iter()
+                    .map(|p| serde_json::json!({
+                        "name": p.name,
+                        "description": p.description,
+                        "license": p.license,
+                        "latest_version": p.latest_version,
+                    }))
+                    .collect::<Vec<_>>(),
+            })) {
+                return Ok(());
+            }
+            if packages.is_empty() {
+                printer.info(&format!("no packages in '{slug}'"));
+                return Ok(());
+            }
+            printer.header(&format!("{} package(s) in {slug}", packages.len()));
+            for package in &packages {
+                let version = if package.latest_version.is_empty() {
+                    "—"
+                } else {
+                    &package.latest_version
+                };
+                printer.plain(&format!("  {}  {version}", package.name));
+            }
+            Ok(())
+        }
+        HubRegistryCmd::Channels { hub, token, slug } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let channels = client.list_channels(slug).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "channels": channels
+                    .iter()
+                    .map(|c| serde_json::json!({
+                        "name": c.name,
+                        "frontier": c.frontier,
+                        "assigned_partitions": c.partitions.len(),
+                    }))
+                    .collect::<Vec<_>>(),
+            })) {
+                return Ok(());
+            }
+            if channels.is_empty() {
+                printer.info(&format!("no channels in '{slug}'"));
+                return Ok(());
+            }
+            printer.header(&format!("{} channel(s) in {slug}", channels.len()));
+            for channel in &channels {
+                let frontier = if channel.frontier.is_empty() {
+                    "unset"
+                } else {
+                    &channel.frontier
+                };
+                printer.plain(&format!(
+                    "  {}  frontier={frontier}  ({}/256 partitions)",
+                    channel.name,
+                    channel.partitions.len()
+                ));
+            }
+            Ok(())
+        }
     }
 }
