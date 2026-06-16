@@ -1,8 +1,11 @@
 //! Protocol trait and URL-scheme dispatch.
 //!
 //! Each protocol (HTTP, S3, SFTP, filesystem) implements the
-//! `Protocol` trait. The `for_url()` function creates the appropriate
-//! implementation based on the URL scheme.
+//! `Protocol` trait. The `for_url()` function returns a shared,
+//! process-wide handler for the URL's scheme so per-protocol resources
+//! are reused across transfers: the HTTP client's connection pool, the
+//! SFTP session cache, and the S3 client cache all persist instead of
+//! being rebuilt on every request.
 
 pub mod fs;
 pub mod http;
@@ -10,6 +13,7 @@ pub mod s3;
 pub mod sftp;
 
 use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -88,7 +92,13 @@ pub trait Protocol: Send + Sync {
     }
 }
 
-/// Create a Protocol implementation based on URL scheme.
+/// Returns the shared [`Protocol`] handler for a URL's scheme.
+///
+/// Each scheme family is backed by a single process-wide instance
+/// (created on first use), so connection pools and session/client
+/// caches are reused across every transfer rather than rebuilt per
+/// request. The returned [`Arc`] is cheap to clone and safe to move
+/// into spawned tasks.
 ///
 /// Supported schemes:
 /// - `http://`, `https://` -> HTTP protocol
@@ -100,7 +110,7 @@ pub trait Protocol: Send + Sync {
 ///
 /// Returns an error if the URL has no `://` scheme separator or the
 /// scheme is not one of the supported values above.
-pub fn for_url(url: &str) -> Result<Box<dyn Protocol>> {
+pub fn for_url(url: &str) -> Result<Arc<dyn Protocol>> {
     let scheme = url
         .split("://")
         .next()
@@ -108,12 +118,41 @@ pub fn for_url(url: &str) -> Result<Box<dyn Protocol>> {
         .to_lowercase();
 
     match scheme.as_str() {
-        "http" | "https" => Ok(Box::new(http::HttpProtocol::new())),
-        "s3" => Ok(Box::new(s3::S3Protocol::new())),
-        "sftp" | "ssh" => Ok(Box::new(sftp::SftpProtocol::new())),
-        "file" => Ok(Box::new(fs::FsProtocol::new())),
+        "http" | "https" => Ok(http_protocol()),
+        "s3" => Ok(s3_protocol()),
+        "sftp" | "ssh" => Ok(sftp_protocol()),
+        "file" => Ok(fs_protocol()),
         other => anyhow::bail!("unsupported URL scheme: '{other}'"),
     }
+}
+
+/// Returns the shared HTTP(S) handler, whose `reqwest::Client` pools
+/// connections across all transfers.
+fn http_protocol() -> Arc<dyn Protocol> {
+    static HTTP: OnceLock<Arc<dyn Protocol>> = OnceLock::new();
+    HTTP.get_or_init(|| Arc::new(http::HttpProtocol::new()))
+        .clone()
+}
+
+/// Returns the shared S3 handler, whose internal client cache persists
+/// across requests.
+fn s3_protocol() -> Arc<dyn Protocol> {
+    static S3: OnceLock<Arc<dyn Protocol>> = OnceLock::new();
+    S3.get_or_init(|| Arc::new(s3::S3Protocol::new())).clone()
+}
+
+/// Returns the shared SFTP/SSH handler, whose per-host session cache
+/// persists across requests.
+fn sftp_protocol() -> Arc<dyn Protocol> {
+    static SFTP: OnceLock<Arc<dyn Protocol>> = OnceLock::new();
+    SFTP.get_or_init(|| Arc::new(sftp::SftpProtocol::new()))
+        .clone()
+}
+
+/// Returns the shared (stateless) filesystem handler.
+fn fs_protocol() -> Arc<dyn Protocol> {
+    static FS: OnceLock<Arc<dyn Protocol>> = OnceLock::new();
+    FS.get_or_init(|| Arc::new(fs::FsProtocol::new())).clone()
 }
 
 #[cfg(test)]

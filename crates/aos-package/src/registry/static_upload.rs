@@ -17,8 +17,15 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use aos_cache::backend::{self, AuthOptions};
 use aos_core::output::Printer;
+use futures_util::future::join_all;
+use futures_util::stream::{StreamExt, TryStreamExt};
 
 use crate::registry::objectstore;
+
+/// Maximum origin-file uploads kept in flight per destination. The
+/// `aos_net` connection pool enforces the real per-host limit; this only
+/// bounds how many requests we stage at once.
+const UPLOAD_CONCURRENCY: usize = 16;
 
 /// `Cache-Control` for content-addressed files that never change in place.
 const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
@@ -149,14 +156,17 @@ pub async fn upload_static_origin_to_all(
         files: files.len(),
         bytes,
     };
-    let mut failures = Vec::new();
-
-    for upload_url in upload_urls {
-        if let Err(err) = upload_static_origin(&files, upload_url, auth, printer).await {
-            failures.push(format!("{upload_url}: {err:#}"));
+    let results = join_all(upload_urls.iter().map(|upload_url| {
+        let files = &files;
+        async move {
+            upload_static_origin(files, upload_url, auth, printer)
+                .await
+                .map_err(|err| format!("{upload_url}: {err:#}"))
         }
-    }
+    }))
+    .await;
 
+    let failures: Vec<String> = results.into_iter().filter_map(Result::err).collect();
     if !failures.is_empty() {
         bail!(
             "static origin upload failed for {}/{} destination(s):\n{}",
@@ -169,7 +179,11 @@ pub async fn upload_static_origin_to_all(
     Ok(report)
 }
 
-/// Upload the collected files to one destination, preserving order.
+/// Upload the collected files to one destination.
+///
+/// Immutable payloads are uploaded first (concurrently), then — as a
+/// barrier — the mutable pointers, preserving the producer-safe ordering
+/// guarantee while parallelizing within each class.
 async fn upload_static_origin(
     files: &[StaticOriginFile],
     upload_url: &str,
@@ -177,17 +191,27 @@ async fn upload_static_origin(
     printer: &Printer,
 ) -> Result<()> {
     let backend = backend::from_url(upload_url, auth).await?;
-    for file in files {
-        backend
-            .put_static_file(
-                &file.relative_path,
-                &file.source,
-                Some(file.content_type),
-                Some(file.cache_control),
-            )
-            .await
-            .with_context(|| format!("uploading {}", file.relative_path))?;
+    let backend = &*backend;
+
+    for class in [StaticOriginClass::Immutable, StaticOriginClass::Mutable] {
+        futures_util::stream::iter(files.iter().filter(|file| file.class == class).map(
+            |file| async move {
+                backend
+                    .put_static_file(
+                        &file.relative_path,
+                        &file.source,
+                        Some(file.content_type),
+                        Some(file.cache_control),
+                    )
+                    .await
+                    .with_context(|| format!("uploading {}", file.relative_path))
+            },
+        ))
+        .buffer_unordered(UPLOAD_CONCURRENCY)
+        .try_collect::<Vec<()>>()
+        .await?;
     }
+
     printer.success(&format!(
         "Uploaded static registry origin files to {upload_url}"
     ));
