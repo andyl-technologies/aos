@@ -48,8 +48,9 @@
 //!
 //! A [`ChangeId`] is a UUID v4 string (reusing the crate's existing `uuid`
 //! dependency); change-sets order by `created_at`, so no sortable-id
-//! (ULID) generator dependency is taken on. This is the native target — the
-//! wasm-only clock/RNG constraints of the workflow engine do not apply here.
+//! (ULID) generator dependency is taken on. The v4 RNG and the `created_at`
+//! clock run on every target — natively, and on the Worker through
+//! getrandom's JS backend.
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -231,7 +232,7 @@ fn render_value(v: &Value) -> String {
 /// # Examples
 ///
 /// ```
-/// use aos_registry_hub::config::semantic_diff;
+/// use aos_registry_core::config::semantic_diff;
 /// use serde_json::json;
 ///
 /// let diffs = semantic_diff(

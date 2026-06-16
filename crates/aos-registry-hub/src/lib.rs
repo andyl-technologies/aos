@@ -74,7 +74,9 @@
 
 pub mod auth;
 pub mod compat;
-pub mod config;
+/// Config change-set staging/revert, re-exported from
+/// [`aos_registry_core::config`] (RFC-0004 Phase 5); keeps `crate::config::…` stable.
+pub use aos_registry_core::config;
 pub mod console;
 pub mod db;
 /// The tenancy/IAM domain model, re-exported from [`aos_registry_core::domain`]
@@ -83,7 +85,9 @@ pub use aos_registry_core::domain;
 pub mod export;
 pub mod facade;
 pub mod fetch;
-pub mod filter;
+/// Package/release listing filters, re-exported from
+/// [`aos_registry_core::filter`] (RFC-0004 Phase 5); keeps `crate::filter::…` stable.
+pub use aos_registry_core::filter;
 pub mod gitwrite;
 pub mod indexer;
 pub mod mirror;
