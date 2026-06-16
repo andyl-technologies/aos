@@ -7,10 +7,10 @@
 //! string-valued attribute names, static and dynamic string-valued
 //! attribute selection, lexical `let` environments, simple and formal-set lambda
 //! application, lazy `with` scope lookup, attrset update, thunk forcing, numeric
-//! arithmetic, numeric and string comparisons, and scalar/string equality to
-//! weak head normal form, establishing the arena access and diagnostic surface
-//! used by later slices for full string coercion, primitive operations, and
-//! derivation boundaries.
+//! arithmetic, numeric and string comparisons, and scalar/string/function
+//! equality to weak head normal form, establishing the arena access and
+//! diagnostic surface used by later slices for full string coercion, primitive
+//! operations, and derivation boundaries.
 
 use std::rc::Rc;
 
@@ -143,7 +143,7 @@ impl<'ir> TreeWalk<'ir> {
     /// update, static
     /// attribute selection, lexical `let` environment, simple and formal-set
     /// lambda application, lazy `with` lookup, numeric arithmetic, numeric and
-    /// string comparison, scalar/string equality, and conservative thunk
+    /// string comparison, scalar/string/function equality, and conservative thunk
     /// allocation nodes. Remaining environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add their
     /// explicit runtime context.
@@ -1795,6 +1795,7 @@ impl<'ir> TreeWalk<'ir> {
             (ValueTag::Bool, ValueTag::Bool) => Ok(left.payload_bits() == right.payload_bits()),
             (ValueTag::Null, ValueTag::Null) => Ok(true),
             (ValueTag::String, ValueTag::String) => self.strings_equal(id, node, left, right),
+            (ValueTag::Lambda | ValueTag::Primop, ValueTag::Lambda | ValueTag::Primop) => Ok(false),
             (left_tag, right_tag) if left_tag == right_tag => Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedEqualityType {
                     id,
@@ -5441,6 +5442,32 @@ mod tests {
                 .scalar_equal(ir.root, &node, left, right)
                 .expect("strings compare"),
             true
+        );
+    }
+
+    #[test]
+    fn direct_function_equality_is_always_false() {
+        assert_eq!(eval("let f = x: x; in f == f").as_bool(), Ok(false));
+        assert_eq!(eval("let f = x: x; in f != f").as_bool(), Ok(true));
+        assert_eq!(
+            eval("let f = x: x; g = x: x; in f == g").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(eval("(x: x) == 1").as_bool(), Ok(false));
+
+        let ir = lower("1");
+        let evaluator = TreeWalk::new(&ir);
+        let node = ir.arena.node(ir.root).expect("root exists");
+        let ptr = NonNull::<HeapObject>::dangling();
+        let lambda = Value::lambda(ptr).expect("aligned lambda pointer");
+        let primop = Value::primop(ptr).expect("aligned primop pointer");
+        assert_eq!(
+            evaluator.scalar_equal(ir.root, node, primop, primop),
+            Ok(false)
+        );
+        assert_eq!(
+            evaluator.scalar_equal(ir.root, node, lambda, primop),
+            Ok(false)
         );
     }
 
