@@ -44,6 +44,12 @@ const DEFAULT_PAGE_SIZE: u32 = 500;
 /// Hard ceiling on page size.
 const MAX_PAGE_SIZE: u32 = 1000;
 
+/// Default lifetime, in seconds, of a minted upload credential (1 hour).
+///
+/// A `MintUploadCredentials` token is a short-lived provisioning secret scoped
+/// to one registry; it lives only long enough for a producer to drive a publish.
+pub const UPLOAD_CREDENTIAL_TTL_SECS: i64 = 3600;
+
 /// A registry-hub method failure, tagged with a Connect error code.
 ///
 /// Mirrors the subset of `connectrpc::ErrorCode` the hub uses. The transport
@@ -216,6 +222,44 @@ fn org_message(org: &crate::db::OrgRecord) -> pb::Org {
         slug: org.slug.clone(),
         name: org.name.clone(),
         created_at: org.created_at,
+    }
+}
+
+/// Build the wire [`pb::Project`] for a project at `path`/`name` under `org_slug`.
+fn project_message(org_slug: String, path: String, name: String) -> pb::Project {
+    pb::Project {
+        org_slug,
+        path,
+        name,
+    }
+}
+
+/// Build the wire [`pb::Binding`] for a storage binding under `org_slug`.
+fn binding_message(org_slug: String, name: String, kind: String, root: String) -> pb::Binding {
+    pb::Binding {
+        org_slug,
+        name,
+        kind,
+        root,
+    }
+}
+
+/// Build the wire [`pb::Webhook`] for a webhook subscription under `org_slug`.
+fn webhook_message(
+    id: i64,
+    org_slug: String,
+    url: String,
+    events: Vec<String>,
+    active: bool,
+    created_at: i64,
+) -> pb::Webhook {
+    pb::Webhook {
+        id,
+        org_slug,
+        url,
+        events,
+        active,
+        created_at,
     }
 }
 
@@ -1179,5 +1223,320 @@ impl RpcService {
             })
             .collect();
         Ok(pb::ListWebhooksResponse { webhooks })
+    }
+
+    /// `RegistryService.CreateRegistry` — create an org-owned, storage-bound
+    /// managed registry (phase 2c write path).
+    ///
+    /// The registry is created at the canonical path `{org}/{project_path}/{name}`
+    /// with the given visibility, optionally bound to a named storage binding
+    /// plus prefix, and indexed lazily by the background re-indexer. Requires
+    /// [`Permission::RegistryConfigure`] on the org scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `registry.configure`
+    /// on the org scope, [`RpcError::NotFound`] for an unknown org or
+    /// `binding_name`, [`RpcError::InvalidArgument`] for a missing name or bad
+    /// visibility, [`RpcError::AlreadyExists`] when a registry occupies the
+    /// canonical path, and [`RpcError::Internal`] on database failure.
+    pub async fn create_registry(
+        &self,
+        auth: Option<&str>,
+        req: pb::CreateRegistryRequest,
+    ) -> Result<pb::CreateRegistryResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self.org_or_not_found(&req.org_slug).await?;
+        self.require_permission(&claims, Permission::RegistryConfigure, &Scope::parse(&org.slug))
+            .await?;
+        if req.name.is_empty() {
+            return Err(RpcError::invalid("registry name is required"));
+        }
+        let visibility = match req.visibility.as_str() {
+            "" => "private",
+            v @ ("public" | "internal" | "private") => v,
+            other => return Err(RpcError::invalid(format!("invalid visibility '{other}'"))),
+        };
+        let binding_id = if req.binding_name.is_empty() {
+            None
+        } else {
+            Some(
+                self.db
+                    .storage_binding_by_name(org.id, &req.binding_name)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("storage binding"))?
+                    .id,
+            )
+        };
+        let id = self
+            .db
+            .create_managed_registry(
+                org.id,
+                &req.project_path,
+                &req.name,
+                visibility,
+                binding_id,
+                &req.prefix,
+                &req.trust_keys,
+                true,
+            )
+            .await
+            .map_err(|e| RpcError::AlreadyExists(format!("{e:#}")))?;
+        let record = self
+            .db
+            .registry_by_scope(&org.slug, &req.project_path, &req.name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::internal(anyhow::anyhow!("registry {id} vanished after creation"))
+            })?;
+        let status = self
+            .db
+            .index_status(record.id)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::CreateRegistryResponse {
+            registry: Some(self.registry_message(&record, status).await?),
+        })
+    }
+
+    /// `ProjectService.CreateProject` — create a project at a materialized path
+    /// under an org.
+    ///
+    /// Requires [`Permission::RegistryConfigure`] on the org scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `registry.configure`
+    /// on the org scope, [`RpcError::NotFound`] for an unknown org,
+    /// [`RpcError::InvalidArgument`] for an empty name, [`RpcError::AlreadyExists`]
+    /// when `(org, path)` exists, and [`RpcError::Internal`] on database failure.
+    pub async fn create_project(
+        &self,
+        auth: Option<&str>,
+        req: pb::CreateProjectRequest,
+    ) -> Result<pb::CreateProjectResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self.org_or_not_found(&req.org_slug).await?;
+        self.require_permission(&claims, Permission::RegistryConfigure, &Scope::parse(&org.slug))
+            .await?;
+        if req.name.is_empty() {
+            return Err(RpcError::invalid("project name is required"));
+        }
+        self.db
+            .create_project(org.id, &req.path, &req.name)
+            .await
+            .map_err(|e| RpcError::AlreadyExists(format!("{e:#}")))?;
+        Ok(pb::CreateProjectResponse {
+            project: Some(project_message(org.slug, req.path, req.name)),
+        })
+    }
+
+    /// `StorageService.CreateBinding` — create a storage binding under an org.
+    ///
+    /// Only the `local_fs` kind is supported this phase (where `root` is a
+    /// filesystem path). Requires [`Permission::RegistryConfigure`] on the org
+    /// scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `registry.configure`
+    /// on the org scope, [`RpcError::NotFound`] for an unknown org,
+    /// [`RpcError::InvalidArgument`] for an empty name/root or unsupported kind,
+    /// [`RpcError::AlreadyExists`] when `(org, name)` exists, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn create_binding(
+        &self,
+        auth: Option<&str>,
+        req: pb::CreateBindingRequest,
+    ) -> Result<pb::CreateBindingResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self.org_or_not_found(&req.org_slug).await?;
+        self.require_permission(&claims, Permission::RegistryConfigure, &Scope::parse(&org.slug))
+            .await?;
+        if req.name.is_empty() || req.root.is_empty() {
+            return Err(RpcError::invalid("binding name and root are required"));
+        }
+        let kind = if req.kind.is_empty() {
+            "local_fs"
+        } else {
+            req.kind.as_str()
+        };
+        self.db
+            .create_storage_binding(org.id, &req.name, kind, &req.root)
+            .await
+            .map_err(|e| {
+                if kind == "local_fs" {
+                    RpcError::AlreadyExists(format!("{e:#}"))
+                } else {
+                    RpcError::invalid(format!("{e:#}"))
+                }
+            })?;
+        Ok(pb::CreateBindingResponse {
+            binding: Some(binding_message(
+                org.slug,
+                req.name,
+                kind.to_string(),
+                req.root,
+            )),
+        })
+    }
+
+    /// `WebhookService.CreateWebhook` — subscribe an org's HTTP endpoint to
+    /// registry events.
+    ///
+    /// The webhook is created under the named org subscribed to `events` (an
+    /// empty list subscribes to all event types). A `secret` may be supplied;
+    /// otherwise a random `aos_`-prefixed one is generated. The signing secret is
+    /// returned exactly once in [`pb::CreateWebhookResponse::secret`] — it is
+    /// never echoed by [`Self::list_webhooks`]. Requires
+    /// [`Permission::MembersManage`] (admin+) on the org scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `members.manage` on
+    /// the org, [`RpcError::NotFound`] for an unknown org,
+    /// [`RpcError::InvalidArgument`] for an empty URL or a URL that fails the
+    /// SSRF guard ([`crate::url_guard::is_safe_remote_url`] — loopback/
+    /// link-local/private/non-`http(s)` targets), and [`RpcError::Internal`] on
+    /// database failure.
+    pub async fn create_webhook(
+        &self,
+        auth: Option<&str>,
+        req: pb::CreateWebhookRequest,
+    ) -> Result<pb::CreateWebhookResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self.org_or_not_found(&req.org_slug).await?;
+        self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))
+            .await?;
+        if req.url.is_empty() {
+            return Err(RpcError::invalid("webhook url is required"));
+        }
+        // The delivery worker POSTs to this URL from inside the hub network, so
+        // reject loopback/link-local/private/non-http(s) targets (create_webhook
+        // re-checks; this surfaces a clear invalid-argument error).
+        if let Err(err) = crate::url_guard::is_safe_remote_url(&req.url) {
+            return Err(RpcError::invalid(format!("rejecting webhook url: {err:#}")));
+        }
+        let secret = if req.secret.is_empty() {
+            crate::auth::token::generate_token().0
+        } else {
+            req.secret.clone()
+        };
+        let events: Vec<String> = req.events.clone();
+        let id = self
+            .db
+            .create_webhook(org.id, &req.url, &secret, &events)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::CreateWebhookResponse {
+            webhook: Some(webhook_message(id, org.slug, req.url, events, true, 0)),
+            secret,
+        })
+    }
+
+    /// `WebhookService.DeleteWebhook` — remove a webhook (and its queued
+    /// deliveries) by id.
+    ///
+    /// Requires [`Permission::MembersManage`] on the *owning org's* scope,
+    /// resolved from the webhook's `org_id` so the check binds to the resource
+    /// being deleted rather than a caller-supplied scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::NotFound`] for an unknown webhook id or its (vanished) org,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `members.manage` on
+    /// the owning org, and [`RpcError::Internal`] on database failure.
+    pub async fn delete_webhook(
+        &self,
+        auth: Option<&str>,
+        req: pb::DeleteWebhookRequest,
+    ) -> Result<pb::DeleteWebhookResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let webhook = self
+            .db
+            .webhook(req.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("webhook"))?;
+        let org = self
+            .db
+            .org_by_id(webhook.org_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("org"))?;
+        self.require_permission(&claims, Permission::MembersManage, &Scope::parse(&org.slug))
+            .await?;
+        let deleted = self
+            .db
+            .delete_webhook(req.id)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::DeleteWebhookResponse { deleted })
+    }
+
+    /// `PublishService.MintUploadCredentials` — issue a short-lived,
+    /// registry-scoped upload credential.
+    ///
+    /// The caller must already hold `publish` on the registry's canonical scope
+    /// (the same right the upload facade requires). On success the hub mints a
+    /// fresh provisioning token *owned by the calling principal*, scoped to
+    /// exactly that registry with only the `publish` permission and a short
+    /// expiry ([`UPLOAD_CREDENTIAL_TTL_SECS`]). The response carries that token
+    /// (shown once), the canonical facade `upload_url` (`{external_url}/{slug}`),
+    /// and the expiry.
+    ///
+    /// Token ownership keeps the credential clamped: it deadens the instant the
+    /// owner's `publish` grant is removed, so a minted credential never outlives
+    /// the authority that minted it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::NotFound`] for an unknown registry slug,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `publish` on the
+    /// registry scope or has no resolvable principal, and [`RpcError::Internal`]
+    /// on database failure.
+    pub async fn mint_upload_credentials(
+        &self,
+        auth: Option<&str>,
+        req: pb::MintUploadCredentialsRequest,
+    ) -> Result<pb::MintUploadCredentialsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let registry = self.registry_or_not_found(&req.slug).await?;
+        let scope = Scope::parse(&registry.slug);
+        self.require_permission(&claims, Permission::Publish, &scope)
+            .await?;
+
+        let owner = claims_principal(&claims)
+            .ok_or_else(|| RpcError::PermissionDenied("unknown principal kind".into()))?;
+        let expires_at = clock::now_unix_secs() + UPLOAD_CREDENTIAL_TTL_SECS;
+        let (_id, secret) = self
+            .db
+            .create_token(
+                owner,
+                &registry.slug,
+                &[Permission::Publish],
+                Some("upload credential (MintUploadCredentials)"),
+                Some(expires_at),
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        let upload_url = format!(
+            "{}/{}",
+            self.external_url.trim_end_matches('/'),
+            registry.slug
+        );
+        Ok(pb::MintUploadCredentialsResponse {
+            token: secret,
+            upload_url,
+            expires_at,
+        })
     }
 }
