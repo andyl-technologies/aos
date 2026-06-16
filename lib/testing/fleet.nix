@@ -56,9 +56,44 @@
   # callers needing more should add to the lists in lockstep.
   uriEncode =
     builtins.replaceStrings
-    ["%" "\n" "#" "?" " " "&" "+" "=" "[" "]"]
-    ["%25" "%0A" "%23" "%3F" "%20" "%26" "%2B" "%3D" "%5B" "%5D"];
+    ["%" "\n" "\"" "\\" "{" "}" ":" "," "#" "?" " " "&" "+" "=" "[" "]"]
+    ["%25" "%0A" "%22" "%5C" "%7B" "%7D" "%3A" "%2C" "%23" "%3F" "%20" "%26" "%2B" "%3D" "%5B" "%5D"];
   dataUrl = content: "data:,${uriEncode content}";
+
+  mkFleetPackageFragment = m: let
+    mkDir = path: {
+      inherit path;
+      mode = 493; # 0755
+      overwrite = true;
+    };
+    mkFile = path: text: {
+      inherit path;
+      mode = 420; # 0644
+      overwrite = true;
+      contents.source = dataUrl text;
+    };
+  in
+    if m.packages == []
+    then {
+      storage = {
+        directories = [];
+        files = [];
+        links = [];
+      };
+    }
+    else {
+      storage = {
+        directories = [
+          (mkDir "/etc/aos/packages.d")
+        ];
+        files = [
+          (mkFile "/etc/aos/packages.d/fleet-seed" (
+            lib.concatMapStrings (package: "${package}\n") m.packages
+          ))
+        ];
+        links = [];
+      };
+    };
 
   # ── Per-machine derivation order ───────────────────────────────────
   # Drives IP, MAC, banner ordering. `lib.imap` is the AOS lib's
@@ -72,7 +107,7 @@
     lib.imap (i: mname: let
       m = machines.${mname};
     in {
-      inherit (m) system roles instanceMetadata;
+      inherit (m) system roles packages instanceMetadata;
       # `extraClosures` / `varSizeMiB` / `bootMode` / `imageDiskMiB`
       # default on the fleet machine type, so the `or` fallbacks only
       # matter for callers bypassing fleet-spec validation.
@@ -196,9 +231,18 @@
       then debug m
       else {storage.files = [];};
 
+    mPackages = mkFleetPackageFragment m;
     identityPaths = builtins.map (f: f.path) mIdentity.storage.files;
     debugPaths = builtins.map (f: f.path) mDebug.storage.files;
-    reservedPaths = identityPaths ++ debugPaths;
+    packageStorage = mPackages.storage;
+    packageFiles = packageStorage.files or [];
+    packageLinks = packageStorage.links or [];
+    packageDirs = packageStorage.directories or [];
+    packagePaths =
+      builtins.map (f: f.path) packageFiles
+      ++ builtins.map (l: l.path) packageLinks
+      ++ builtins.map (d: d.path) packageDirs;
+    reservedPaths = identityPaths ++ debugPaths ++ packagePaths;
 
     roleMerges =
       builtins.map
@@ -227,27 +271,33 @@
     userIgnitionConfig = maybeNull (userIgnition.config or null) {};
     userMerges = maybeNull (userIgnitionConfig.merge or null) [];
     userFiles = maybeNull (userStorage.files or null) [];
+    userLinks = maybeNull (userStorage.links or null) [];
+    userDirs = maybeNull (userStorage.directories or null) [];
+    userEntries =
+      builtins.map (f: {inherit (f) path;}) userFiles
+      ++ builtins.map (l: {inherit (l) path;}) userLinks
+      ++ builtins.map (d: {inherit (d) path;}) userDirs;
 
     collisions =
       builtins.filter
       (f: builtins.elem f.path reservedPaths)
-      userFiles;
+      userEntries;
   in
     if collisions != []
     then
       throw ''
-        fleet '${name}': machine "${m.name}" instanceMetadata.config.storage.files
+        fleet '${name}': machine "${m.name}" instanceMetadata.config.storage
         collides with reserved path(s):
           ${lib.concatStringsSep ", " (builtins.map (f: f.path) collisions)}
         Reserved paths: ${lib.concatStringsSep ", " reservedPaths}.
-        Pick a different path, or move the override into a role.
+        Pick a different path, or move the override into a role/package.
       ''
     else
       userCfg
       // {
         # `merge` is reconstructed as `roleMerges ++ userMerges` — both
         # contribute, role merges first. The collision check above only
-        # inspects `storage.files`; merge entries aren't path-scoped and
+        # inspects storage entries; merge entries aren't path-scoped and
         # are safe to concatenate.
         ignition =
           userIgnition
@@ -264,7 +314,10 @@
             files =
               mIdentity.storage.files
               ++ mDebug.storage.files
+              ++ packageFiles
               ++ userFiles;
+            links = packageLinks ++ userLinks;
+            directories = packageDirs ++ userDirs;
           };
       };
 
@@ -285,6 +338,7 @@
       m:
         {
           inherit (m) name ip mac debugMac index system roles bootMode tpm;
+          inherit (m) packages;
         }
         // (
           if m.bootMode == "image"

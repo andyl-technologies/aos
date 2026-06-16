@@ -63,5 +63,11 @@ in {
     aos.roles.test-http-server.bundle = true;
     aos.roles.apm-systemd-client-test.bundle = true;
     aos.roles.aos-test-agent.bundle = true;
+
+    aos.packages.test-http-server = {
+      package = pkgs.test-http-server;
+      bundle = true;
+      preset = false;
+    };
   };
 }

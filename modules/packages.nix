@@ -88,6 +88,15 @@
     };
   };
 
+  packageMetaFile = name: package: let
+    packageHash = storePathHash package.package;
+  in
+    pkgs.writeTextFile {
+      name = "aos-package-${name}-meta.json";
+      text = builtins.toJSON (packageMeta name package);
+      destination = "/${packageHash}.json";
+    };
+
   packageSeedBundle =
     pkgs.runCommand "aos-package-profile-seed" {
       buildDeps = [pkgs.coreutils];
@@ -105,11 +114,7 @@
           name: package: let
             packageHash = storePathHash package.package;
             exposeHash = storePathHash package.package.expose;
-            metaFile = pkgs.writeTextFile {
-              name = "aos-package-${name}-meta.json";
-              text = builtins.toJSON (packageMeta name package);
-              destination = "/${packageHash}.json";
-            };
+            metaFile = packageMetaFile name package;
           in ''
             ln -sfn ${package.package} "$out/gen-1/usr/${packageHash}"
             ln -sfn ${package.package.expose} "$out/gen-1/expose/${exposeHash}"
@@ -125,6 +130,24 @@
     lib.mapAttrsToList
     (_: package: "enable ${packageTarget package}")
     presetExposedPackages;
+
+  seedPackageCases =
+    lib.concatStringsSep "\n"
+    (lib.mapAttrsToList (
+        name: package: let
+          packageHash = storePathHash package.package;
+          exposeHash = storePathHash package.package.expose;
+          metaFile = packageMetaFile name package;
+        in ''
+          ${name})
+            ${pkgs.coreutils}/bin/ln -sfn ${package.package} "$profile/gen-1/usr/${packageHash}"
+            ${pkgs.coreutils}/bin/ln -sfn ${package.package.expose} "$profile/gen-1/expose/${exposeHash}"
+            ${pkgs.coreutils}/bin/cp ${metaFile}/${packageHash}.json "$profile/meta/${packageHash}.json"
+            ${pkgs.coreutils}/bin/cp ${metaFile}/${packageHash}.json "$profile/gen-1/meta/${packageHash}.json"
+            ;;
+        ''
+      )
+      exposedBundledPackages);
 
   reconcileExposedUnits = pkgs.writeShellScriptBin "aos-reconcile-exposed-units" ''
     exec ${pkgs.aos}/bin/apm _test-reconcile-exposed-units "$@"
@@ -213,7 +236,7 @@ in {
         )
         exposedBundledPackages);
 
-    systemd.services.aos-seed-baked-packages = lib.mkIf (presetExposedPackages != {}) {
+    systemd.services.aos-seed-baked-packages = lib.mkIf (exposedBundledPackages != {}) {
       description = "Seed baked AOS package profile";
       wantedBy = ["multi-user.target"];
       before = [
@@ -232,8 +255,27 @@ in {
       script = ''
         profile=/var/lib/profiles/system-packages
         if [ ! -e "$profile/state.json" ]; then
-          ${pkgs.coreutils}/bin/mkdir -p "$profile"
-          ${pkgs.coreutils}/bin/cp -a ${packageSeedBundle}/. "$profile/"
+          if [ -f /etc/aos/packages.d/fleet-seed ]; then
+            ${pkgs.coreutils}/bin/mkdir -p "$profile/gen-1/usr" "$profile/gen-1/expose" "$profile/gen-1/meta" "$profile/meta"
+            printf '%s\n' '{"current_generation":1,"next_generation":2}' > "$profile/state.json"
+            ${pkgs.coreutils}/bin/ln -sfn gen-1 "$profile/current"
+            seed_one() {
+              case "$1" in
+          ${seedPackageCases}
+                *)
+                  echo "unknown bundled AOS package seed '$1'" >&2
+                  exit 1
+                  ;;
+              esac
+            }
+            while IFS= read -r package || [ -n "$package" ]; do
+              [ -n "$package" ] || continue
+              seed_one "$package"
+            done < /etc/aos/packages.d/fleet-seed
+          else
+            ${pkgs.coreutils}/bin/mkdir -p "$profile"
+            ${pkgs.coreutils}/bin/cp -a ${packageSeedBundle}/. "$profile/"
+          fi
         fi
         ${reconcileExposedUnits}/bin/aos-reconcile-exposed-units --system
       '';

@@ -266,8 +266,8 @@
   packagePolicyBadPresetSystem = mkSystem [
     ../../systems/server.nix
     {
-      aos.packages.test-http-server = {
-        package = pkgs.test-http-server;
+      aos.packages.expose-smoke = {
+        package = pkgs.expose-smoke;
         preset = true;
       };
     }

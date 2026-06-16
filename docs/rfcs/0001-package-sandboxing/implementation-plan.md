@@ -484,9 +484,12 @@ derivation with an `expose` block, is baked into an image through
 rendered unit artifact, and is enabled through image/APM preset policy in the
 `package-test-http-server` VM. The same VM also proves `bundle = true; preset =
 false` packages stay baked but inert: they are present in the image without
-being seeded into the package profile, attached, or enabled. The role tree still
-exists, and the broader role-to-package dissolution, security policy split, and
-fleet-spec rename remain open.
+being seeded into the package profile, attached, or enabled. Fleet tests now
+have an additive `packages = [...]` selector that seeds selected bundled package
+profiles per machine, and `test-http-server-pair` uses that selector. The role
+tree and `roles = [...]` fleet surface still exist, so the broader
+role-to-package dissolution, security policy split, and full fleet-spec rename
+remain open.
 
 **Closes.** D14; the [`migration.md`](migration.md) increments.
 
