@@ -307,9 +307,11 @@ mod tests {
     }
 
     /// The wrangler migration file and the in-crate [`SCHEMA`] constant carry
-    /// the same DDL, so `wrangler d1 migrations apply` and the `/_init` handler
-    /// build an identical schema. Compared after stripping SQL comments and
-    /// collapsing whitespace, so cosmetic formatting differences don't matter.
+    /// the same DDL. Compared after stripping SQL comments and collapsing
+    /// whitespace, so cosmetic formatting differences don't matter. (The `/_init`
+    /// handler now applies the canonical core `MIGRATIONS` via the shared
+    /// `Database`, not `SCHEMA`; this test still pins the wrangler-migrations
+    /// file ↔ `SCHEMA` read-subset agreement used by the worker's read tests.)
     #[test]
     fn migration_file_matches_schema() {
         let file = include_str!("../migrations/0001_schema.sql");
