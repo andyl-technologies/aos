@@ -629,7 +629,7 @@ impl IrLowerer {
             NodeKind::Lambda => self.lower_lambda(id, node),
             NodeKind::FormalSet => self.lower_formal_set(node),
             NodeKind::Formal => self.lower_formal(node),
-            NodeKind::Apply => self.lower_pair(node, IrKind::Apply, LazySecond::Yes),
+            NodeKind::Apply => self.lower_apply(node),
             NodeKind::Select => self.lower_select(node),
             NodeKind::HasAttr => self.lower_has_attr(node),
             NodeKind::LetIn => self.lower_let(id, node),
@@ -662,6 +662,50 @@ impl IrLowerer {
             Some(b"null") => self.push(IrKind::Null, node.span, IrData::None),
             _ => self.push(IrKind::GlobalVar, node.span, IrData::Symbol(symbol)),
         }
+    }
+
+    fn is_derivation_strict_ref(&self, id: NodeId) -> Result<bool, IrError> {
+        let node = self.node(id)?;
+        match node.kind {
+            NodeKind::GlobalVar => Ok(self.symbol_payload_is(node, b"derivationStrict")),
+            NodeKind::Select => {
+                let NodeData::Select {
+                    receiver,
+                    path,
+                    default,
+                } = node.data
+                else {
+                    return Err(self.invalid_shape(node, "select payload"));
+                };
+                if default.is_some() {
+                    return Ok(false);
+                }
+                let receiver = self.node(receiver)?;
+                if receiver.kind != NodeKind::GlobalVar
+                    || !self.symbol_payload_is(receiver, b"builtins")
+                {
+                    return Ok(false);
+                }
+                let segments = self.child_ids(path)?;
+                let Some(segment) = segments.first().copied() else {
+                    return Ok(false);
+                };
+                if segments.len() != 1 {
+                    return Ok(false);
+                }
+                let segment = self.node(segment)?;
+                Ok(matches!(segment.kind, NodeKind::Ident | NodeKind::Str)
+                    && self.symbol_payload_is(segment, b"derivationStrict"))
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn symbol_payload_is(&self, node: Node, expected: &[u8]) -> bool {
+        let NodeData::Symbol(symbol) = node.data else {
+            return false;
+        };
+        self.resolved.symbols.resolve(symbol) == Some(expected)
     }
 
     fn lower_list(&mut self, node: Node) -> Result<IrId, IrError> {
@@ -798,6 +842,21 @@ impl IrLowerer {
             self.lower_expr(second)?
         };
         self.push(kind, node.span, IrData::Pair { first, second })
+    }
+
+    fn lower_apply(&mut self, node: Node) -> Result<IrId, IrError> {
+        let NodeData::Pair {
+            first: function,
+            second: argument,
+        } = node.data
+        else {
+            return Err(self.invalid_shape(node, "application pair"));
+        };
+        if self.is_derivation_strict_ref(function)? {
+            let argument = self.lower_expr(argument)?;
+            return self.push(IrKind::DerivationStrict, node.span, IrData::Node(argument));
+        }
+        self.lower_pair(node, IrKind::Apply, LazySecond::Yes)
     }
 
     fn lower_select(&mut self, node: Node) -> Result<IrId, IrError> {
@@ -1266,6 +1325,74 @@ mod tests {
         assert_eq!(node(&ir, elements[0]).kind, IrKind::Bool);
         assert_eq!(node(&ir, elements[1]).kind, IrKind::Null);
         assert_eq!(node(&ir, elements[2]).kind, IrKind::Bool);
+    }
+
+    #[test]
+    fn lowers_direct_derivation_strict_to_effectful_boundary() {
+        for source in [
+            "derivationStrict { name = \"x\"; }",
+            "builtins.derivationStrict { name = \"x\"; }",
+        ] {
+            let ir = lowered(source);
+            let root = root_node(&ir);
+            assert_eq!(root.kind, IrKind::DerivationStrict);
+            assert_eq!(root.effect, EffectClass::Effectful);
+            let IrData::Node(argument) = root.data else {
+                panic!("derivationStrict payload expected");
+            };
+            assert_eq!(node(&ir, argument).kind, IrKind::AttrSet);
+        }
+    }
+
+    #[test]
+    fn shadowed_derivation_strict_stays_an_application() {
+        let ir = lowered("let derivationStrict = x: x; in derivationStrict 1");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::LocalVar);
+    }
+
+    #[test]
+    fn shadowed_builtins_derivation_strict_stays_a_select_application() {
+        let ir =
+            lowered("let builtins = { derivationStrict = x: x; }; in builtins.derivationStrict 1");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+    }
+
+    #[test]
+    fn with_shadowed_derivation_strict_stays_dynamic_application() {
+        let ir = lowered("with { derivationStrict = x: x; }; derivationStrict 1");
+        let IrData::Pair { second: body, .. } = root_node(&ir).data else {
+            panic!("with payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::WithVar);
+    }
+
+    #[test]
+    fn select_default_derivation_strict_stays_a_select_application() {
+        let ir = lowered("(builtins.derivationStrict or (x: x)) { name = \"x\"; }");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
     }
 
     #[test]
