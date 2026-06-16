@@ -27,7 +27,7 @@ use crate::compile::{
     IrKind, IrNode, IrShapeId,
 };
 use crate::list::{NixList, NixListError};
-use crate::string::{NixString, NixStringError};
+use crate::string::{ContextKind, NixString, NixStringError};
 use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind};
 use crate::value::{Value, ValueTag};
 
@@ -1617,6 +1617,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_has_context_primop(argument, argument_span, value)
             }
+            StrictUnaryPrimOp::GetContext => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_get_context_primop(id, node.span, argument, argument_span, value)
+            }
             StrictUnaryPrimOp::UnsafeDiscardStringContext => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_unsafe_discard_string_context_primop(argument, argument_span, value)
@@ -1726,6 +1730,202 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         Ok(Value::bool(string.has_context()))
+    }
+
+    fn eval_get_context_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                argument_span,
+            ));
+        }
+        let groups = {
+            let string = self.heap.get_string(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            let mut groups: Vec<ReflectedContextGroup> = Vec::new();
+            groups
+                .try_reserve_exact(string.context().len())
+                .map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Attr {
+                            id,
+                            source: AttrError::AllocationFailed {
+                                entries: string.context().len(),
+                            },
+                        },
+                        span,
+                    )
+                })?;
+            for element in string.context() {
+                let path = Self::copy_bytes_for_node(id, span, element.path())?;
+                let group_index = if groups
+                    .last()
+                    .is_some_and(|group| group.path.as_slice() == path.as_slice())
+                {
+                    groups.len() - 1
+                } else {
+                    groups.push(ReflectedContextGroup::new(path));
+                    groups.len() - 1
+                };
+                let Some(group) = groups.get_mut(group_index) else {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidStringContext { id },
+                        span,
+                    ));
+                };
+                match element.kind() {
+                    ContextKind::OpaquePath => group.path_flag = true,
+                    ContextKind::SingleOutput => {
+                        let output = element.output().ok_or_else(|| {
+                            TreeWalkError::new(TreeWalkErrorKind::InvalidStringContext { id }, span)
+                        })?;
+                        let len = group.outputs.len().checked_add(1).ok_or_else(|| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::List {
+                                    id,
+                                    source: NixListError::LengthOverflow {
+                                        left: group.outputs.len(),
+                                        right: 1,
+                                    },
+                                },
+                                span,
+                            )
+                        })?;
+                        group.outputs.try_reserve_exact(1).map_err(|_| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::ListAllocationFailed { id, len },
+                                span,
+                            )
+                        })?;
+                        group
+                            .outputs
+                            .push(Self::copy_bytes_for_node(id, span, output)?);
+                    }
+                    ContextKind::DeepDerivation => group.all_outputs = true,
+                }
+            }
+            groups
+        };
+
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(groups.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: groups.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        for group in groups {
+            let symbol = self.symbols.intern(&group.path).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SymbolIntern {
+                        id,
+                        source: source.kind().clone(),
+                    },
+                    span,
+                )
+            })?;
+            let value = self.alloc_reflected_context_group(id, span, group)?;
+            entries.push(AttrEntry::new(symbol, value));
+        }
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn alloc_reflected_context_group(
+        &mut self,
+        id: IrId,
+        span: Span,
+        group: ReflectedContextGroup,
+    ) -> Result<Value, TreeWalkError> {
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(3).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed { entries: 3 },
+                },
+                span,
+            )
+        })?;
+        if group.path_flag {
+            let symbol = self.intern_builtin_attr_symbol(id, b"path", span)?;
+            entries.push(AttrEntry::new(symbol, Value::bool(true)));
+        }
+        if group.all_outputs {
+            let symbol = self.intern_builtin_attr_symbol(id, b"allOutputs", span)?;
+            entries.push(AttrEntry::new(symbol, Value::bool(true)));
+        }
+        if !group.outputs.is_empty() {
+            let mut outputs = Vec::new();
+            outputs
+                .try_reserve_exact(group.outputs.len())
+                .map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::ListAllocationFailed {
+                            id,
+                            len: group.outputs.len(),
+                        },
+                        span,
+                    )
+                })?;
+            for output in group.outputs {
+                outputs.push(self.alloc_static_string(id, span, &output)?);
+            }
+            let outputs = self
+                .heap
+                .alloc_list(NixList::new(outputs))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+            let symbol = self.intern_builtin_attr_symbol(id, b"outputs", span)?;
+            entries.push(AttrEntry::new(symbol, outputs));
+        }
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn copy_bytes_for_node(id: IrId, span: Span, bytes: &[u8]) -> Result<Vec<u8>, TreeWalkError> {
+        let mut copied = Vec::new();
+        copied.try_reserve_exact(bytes.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: bytes.len(),
+                },
+                span,
+            )
+        })?;
+        copied.extend_from_slice(bytes);
+        Ok(copied)
     }
 
     fn eval_unsafe_discard_string_context_primop(
@@ -5342,6 +5542,25 @@ enum Number {
     Float(f64),
 }
 
+#[derive(Debug)]
+struct ReflectedContextGroup {
+    path: Vec<u8>,
+    path_flag: bool,
+    all_outputs: bool,
+    outputs: Vec<Vec<u8>>,
+}
+
+impl ReflectedContextGroup {
+    fn new(path: Vec<u8>) -> Self {
+        Self {
+            path,
+            path_flag: false,
+            all_outputs: false,
+            outputs: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DynamicAttrNullPolicy {
     SkipNull,
@@ -5375,6 +5594,7 @@ enum StrictUnaryPrimOp {
     Ceil,
     Floor,
     HasContext,
+    GetContext,
     UnsafeDiscardStringContext,
     StringLength,
     BaseNameOf,
@@ -5408,6 +5628,7 @@ impl StrictUnaryPrimOp {
             b"ceil" => Some(Self::Ceil),
             b"floor" => Some(Self::Floor),
             b"hasContext" => Some(Self::HasContext),
+            b"getContext" => Some(Self::GetContext),
             b"unsafeDiscardStringContext" => Some(Self::UnsafeDiscardStringContext),
             b"stringLength" => Some(Self::StringLength),
             b"baseNameOf" => Some(Self::BaseNameOf),
@@ -6011,6 +6232,12 @@ pub enum TreeWalkErrorKind {
     #[error("unsupported JSON number at node {id:?}")]
     JsonNumberUnsupported {
         /// The string-valued node that produced the unsupported number.
+        id: IrId,
+    },
+    /// An internal string-context element violated its shape invariant.
+    #[error("invalid string context at node {id:?}")]
+    InvalidStringContext {
+        /// The node id associated with the malformed context.
         id: IrId,
     },
     /// A Nix list operation failed.
@@ -8974,6 +9201,155 @@ mod tests {
                 id: argument,
                 expected: "string",
                 actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn get_context_primop_reflects_sparse_context_attrs() {
+        assert_eq!(
+            eval_list_string_bytes("builtins.attrNames (builtins.getContext \"x\")"),
+            Vec::<Vec<u8>>::new()
+        );
+        assert_eq!(
+            eval("let builtins = { getContext = x: { local = true; }; }; in (builtins.getContext \"x\").local")
+                .as_bool(),
+            Ok(true)
+        );
+
+        let ir = lower("builtins.getContext \"x\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("getContext argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source_path = b"/nix/store/source";
+        let drv_path = b"/nix/store/derivation.drv";
+        let deep_path = b"/nix/store/deep.drv";
+        let context = StringContext::new(vec![
+            ContextElement::single_output(drv_path.to_vec(), b"out".to_vec())
+                .expect("output context is valid"),
+            ContextElement::opaque_path(source_path.to_vec()).expect("source context is valid"),
+            ContextElement::deep_derivation(deep_path.to_vec()).expect("deep context is valid"),
+            ContextElement::single_output(drv_path.to_vec(), b"dev".to_vec())
+                .expect("output context is valid"),
+        ]);
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(b"x".to_vec(), context))
+            .expect("context-bearing string allocates");
+
+        let result = evaluator
+            .eval_get_context_primop(ir.root, root.span, argument, argument_span, value)
+            .expect("getContext evaluates");
+
+        let source_key = evaluator
+            .symbols
+            .intern(source_path)
+            .expect("source key interns");
+        let drv_key = evaluator.symbols.intern(drv_path).expect("drv key interns");
+        let deep_key = evaluator
+            .symbols
+            .intern(deep_path)
+            .expect("deep key interns");
+        let path_key = evaluator.symbols.intern(b"path").expect("path key interns");
+        let outputs_key = evaluator
+            .symbols
+            .intern(b"outputs")
+            .expect("outputs key interns");
+        let all_outputs_key = evaluator
+            .symbols
+            .intern(b"allOutputs")
+            .expect("allOutputs key interns");
+        let top = evaluator
+            .heap
+            .get_attrs(result)
+            .expect("getContext returns attrs");
+
+        let source = evaluator
+            .heap
+            .get_attrs(top.get(source_key).expect("source context exists"))
+            .expect("source context value is attrs");
+        assert_eq!(
+            source
+                .get(path_key)
+                .expect("opaque path marker exists")
+                .as_bool(),
+            Ok(true)
+        );
+        assert!(source.get(outputs_key).is_none());
+        assert!(source.get(all_outputs_key).is_none());
+
+        let drv = evaluator
+            .heap
+            .get_attrs(top.get(drv_key).expect("drv context exists"))
+            .expect("drv context value is attrs");
+        assert!(drv.get(path_key).is_none());
+        assert!(drv.get(all_outputs_key).is_none());
+        let outputs = evaluator
+            .heap
+            .get_list(drv.get(outputs_key).expect("outputs marker exists"))
+            .expect("outputs marker is a list");
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(
+            evaluator
+                .heap
+                .get_string(outputs.get(0).expect("first output"))
+                .expect("first output is a string")
+                .bytes(),
+            b"dev"
+        );
+        assert_eq!(
+            evaluator
+                .heap
+                .get_string(outputs.get(1).expect("second output"))
+                .expect("second output is a string")
+                .bytes(),
+            b"out"
+        );
+
+        let deep = evaluator
+            .heap
+            .get_attrs(top.get(deep_key).expect("deep context exists"))
+            .expect("deep context value is attrs");
+        assert!(deep.get(path_key).is_none());
+        assert!(deep.get(outputs_key).is_none());
+        assert_eq!(
+            deep.get(all_outputs_key)
+                .expect("deep marker exists")
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn get_context_primop_type_checks_argument() {
+        let ir = lower("builtins.getContext 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("getContext requires a string");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
             }
         );
         assert_eq!(error.span(), argument_span);

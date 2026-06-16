@@ -1454,6 +1454,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"ceil"
             | b"floor"
             | b"hasContext"
+            | b"getContext"
             | b"elemAt"
             | b"getAttr"
             | b"hasAttr"
