@@ -41,6 +41,14 @@ pub mod auth;
 pub mod backend;
 pub mod clock;
 pub mod config;
+// The shared Connect-JSON `axum` router. Native today; the wasm32 (Worker)
+// build is gated off until the worker-fold (RFC-0004 Phase 5 step 4e) adds the
+// `Send` bridge axum requires — on the single-threaded Worker the `?Send` D1
+// `Backend` futures and `RpcService` state need a `SendWrapper`-class shim to
+// satisfy axum's `Handler`/`Router` `Send + Sync` bounds. The router definition
+// itself is target-agnostic; only the mount needs the shim.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod connect;
 pub mod db;
 pub mod dialect;
 pub mod domain;
