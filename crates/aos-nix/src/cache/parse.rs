@@ -31,6 +31,7 @@ use crate::compile::{
     IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain, ResolvedAst,
     ScopeError, ScopeTables, Upvalue, WithChain, lower, resolve,
 };
+use crate::runtime::builtins::{BuiltinDirect, BuiltinEffect, direct_builtin};
 use crate::syntax::{
     AstArena, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind, ParseError, Span, Symbol,
     SymbolTable, UnaryOpKind, parse_bytes,
@@ -1430,78 +1431,18 @@ fn validate_ir_node_effect(ir: &Ir, node: IrNode) -> Result<(), String> {
 }
 
 fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
-    match name {
-        Some(
-            b"getEnv" | b"hashFile" | b"import" | b"pathExists" | b"readDir" | b"readFile"
-            | b"readFileType",
-        ) => Some(EffectClass::Effectful),
-        Some(
-            b"isAttrs"
-            | b"isList"
-            | b"isFunction"
-            | b"isString"
-            | b"isInt"
-            | b"isFloat"
-            | b"isBool"
-            | b"isNull"
-            | b"isPath"
-            | b"typeOf"
-            | b"length"
-            | b"attrNames"
-            | b"attrValues"
-            | b"tail"
-            | b"functionArgs"
-            | b"head"
-            | b"ceil"
-            | b"floor"
-            | b"hasContext"
-            | b"getContext"
-            | b"elemAt"
-            | b"getAttr"
-            | b"hasAttr"
-            | b"removeAttrs"
-            | b"intersectAttrs"
-            | b"listToAttrs"
-            | b"catAttrs"
-            | b"elem"
-            | b"concatLists"
-            | b"lessThan"
-            | b"hashString"
-            | b"concatStringsSep"
-            | b"add"
-            | b"sub"
-            | b"mul"
-            | b"div"
-            | b"bitAnd"
-            | b"bitOr"
-            | b"bitXor"
-            | b"compareVersions"
-            | b"stringLength"
-            | b"baseNameOf"
-            | b"dirOf"
-            | b"parseDrvName"
-            | b"splitVersion"
-            | b"fromJSON"
-            | b"toString"
-            | b"toJSON"
-            | b"convertHash"
-            | b"substring"
-            | b"foldl'"
-            | b"replaceStrings"
-            | b"addDrvOutputDependencies"
-            | b"unsafeDiscardOutputDependency"
-            | b"unsafeDiscardStringContext"
-            | b"deepSeq"
-            | b"seq"
-            | b"all"
-            | b"any"
-            | b"filter"
-            | b"partition"
-            | b"concatMap"
-            | b"groupBy",
-        ) => Some(EffectClass::Pure),
-        _ => None,
-    }
+    let direct = direct_builtin(name?)?;
+    let effect = match direct {
+        BuiltinDirect::DerivationStrict => return None,
+        BuiltinDirect::StrictUnary { effect }
+        | BuiltinDirect::StrictBinary { effect }
+        | BuiltinDirect::StrictLazyBinary { effect }
+        | BuiltinDirect::StrictTernary { effect } => effect,
+    };
+    Some(match effect {
+        BuiltinEffect::Pure => EffectClass::Pure,
+        BuiltinEffect::Effectful => EffectClass::Effectful,
+    })
 }
 
 fn validate_ir_data(ir: &Ir, data: IrData) -> Result<(), String> {
@@ -2988,6 +2929,44 @@ mod tests {
             encode_lowered_ir(&invalid_primop_effect).expect("invalid primop effect encodes");
         let error = decode_lowered_ir(&bytes, symbols).expect_err("pure primop effect is rejected");
         assert!(error.contains("invalid IR effect"));
+
+        let mut symbols = SymbolTable::new();
+        let derivation_strict = symbols
+            .intern(b"derivationStrict")
+            .expect("derivationStrict interns");
+        let derivation_as_primop = Ir {
+            root: IrId::new(1),
+            arena: IrArena::from_raw_parts(
+                vec![
+                    IrNode::new(
+                        IrKind::Bool,
+                        Span::new(20, 24),
+                        EffectClass::Pure,
+                        IrData::Bool(false),
+                    ),
+                    IrNode::new(
+                        IrKind::PrimOp,
+                        Span::new(0, 24),
+                        EffectClass::Effectful,
+                        IrData::PrimOp {
+                            symbol: derivation_strict,
+                            args: IrChildSlice::new(0, 1),
+                        },
+                    ),
+                ],
+                vec![IrId::new(0)],
+            ),
+            symbols: symbols.clone(),
+            frames: Vec::new().into_boxed_slice(),
+            with_chains: Vec::new().into_boxed_slice(),
+            attr_paths: Vec::new().into_boxed_slice(),
+            bindings: Vec::new().into_boxed_slice(),
+            shapes: Vec::new().into_boxed_slice(),
+        };
+        let bytes = encode_lowered_ir(&derivation_as_primop).expect("derivation primop encodes");
+        let error = decode_lowered_ir(&bytes, symbols)
+            .expect_err("derivationStrict is not a normal primop");
+        assert!(error.contains("unknown IR primop symbol"));
 
         let mut symbols = SymbolTable::new();
         let future = symbols.intern(b"futurePrimop").expect("future interns");

@@ -16,7 +16,7 @@
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
-    fs,
+    fs, io,
     os::unix::ffi::OsStrExt,
     path::{Component, Path, PathBuf},
     rc::Rc,
@@ -332,6 +332,39 @@ fn normalize_store_dir(store_dir: Vec<u8>) -> Result<Vec<u8>, TreeWalkOptionsErr
     }
 
     Ok(normalized)
+}
+
+fn file_type_name(file_type: fs::FileType) -> &'static [u8] {
+    if file_type.is_file() {
+        b"regular"
+    } else if file_type.is_dir() {
+        b"directory"
+    } else if file_type.is_symlink() {
+        b"symlink"
+    } else {
+        b"unknown"
+    }
+}
+
+fn path_without_trailing_path_markers(path: &[u8]) -> &[u8] {
+    let mut end = path.len();
+    loop {
+        let previous_end = end;
+        while end > 1 && path[end - 1] == b'/' {
+            end -= 1;
+        }
+        if end > 2 && path[end - 2] == b'/' && path[end - 1] == b'.' {
+            end -= 2;
+            continue;
+        }
+        if end == 2 && path[0] == b'/' && path[1] == b'.' {
+            end = 1;
+        }
+        if end == previous_end {
+            break;
+        }
+    }
+    &path[..end]
 }
 
 /// A safe recursive evaluator for lowered IR.
@@ -2096,6 +2129,149 @@ impl<'ir> TreeWalk<'ir> {
         let name = self.context_free_string_bytes(argument, argument_span, value, "getEnv")?;
         let env_value = self.options.env_var(&name).unwrap_or_default().to_vec();
         self.alloc_static_string(id, span, &env_value)
+    }
+
+    fn eval_path_exists_primop(
+        &mut self,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let must_be_dir = self.path_exists_requires_directory(argument, argument_span, value)?;
+        let path = self.coerce_to_path_bytes(argument, argument_span, value, "pathExists")?;
+        let metadata = if must_be_dir {
+            fs::metadata(Path::new(OsStr::from_bytes(&path)))
+        } else {
+            fs::symlink_metadata(Path::new(OsStr::from_bytes(
+                path_without_trailing_path_markers(&path),
+            )))
+        };
+        match metadata {
+            Ok(metadata) => Ok(Value::bool(!must_be_dir || metadata.is_dir())),
+            Err(source)
+                if matches!(
+                    source.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(Value::bool(false))
+            }
+            Err(source) => Err(TreeWalkError::new(
+                TreeWalkErrorKind::PathStat {
+                    id: argument,
+                    path,
+                    message: source.to_string(),
+                },
+                argument_span,
+            )),
+        }
+    }
+
+    fn path_exists_requires_directory(
+        &self,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<bool, TreeWalkError> {
+        if value.tag() != ValueTag::String {
+            return Ok(false);
+        }
+        let string = self.heap.get_string(value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: argument,
+                    source,
+                },
+                argument_span,
+            )
+        })?;
+        Ok(string.bytes().ends_with(b"/") || string.bytes().ends_with(b"/."))
+    }
+
+    fn eval_read_dir_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let path = self.coerce_to_path_bytes(argument, argument_span, value, "readDir")?;
+        let entries = fs::read_dir(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::DirectoryRead {
+                    id: argument,
+                    path: path.clone(),
+                    message: source.to_string(),
+                },
+                argument_span,
+            )
+        })?;
+        let mut attrs = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::DirectoryRead {
+                        id: argument,
+                        path: path.clone(),
+                        message: source.to_string(),
+                    },
+                    argument_span,
+                )
+            })?;
+            let file_name = entry.file_name();
+            let name = file_name.as_bytes();
+            let symbol = self.symbols.intern(name).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SymbolIntern {
+                        id,
+                        source: source.kind().clone(),
+                    },
+                    span,
+                )
+            })?;
+            let file_type = entry.file_type().map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::DirectoryRead {
+                        id: argument,
+                        path: entry.path().as_os_str().as_bytes().to_vec(),
+                        message: source.to_string(),
+                    },
+                    argument_span,
+                )
+            })?;
+            let value = self.alloc_static_string(id, span, file_type_name(file_type))?;
+            attrs.push(AttrEntry::new(symbol, value));
+        }
+        let attrs = FlatAttrs::new(attrs, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_read_file_type_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let path = self.coerce_to_path_bytes(argument, argument_span, value, "readFileType")?;
+        let stat_path = path_without_trailing_path_markers(&path);
+        let file_type =
+            fs::symlink_metadata(Path::new(OsStr::from_bytes(stat_path))).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::PathStat {
+                        id: argument,
+                        path: path.clone(),
+                        message: source.to_string(),
+                    },
+                    argument_span,
+                )
+            })?;
+        self.alloc_static_string(id, span, file_type_name(file_type.file_type()))
     }
 
     fn alloc_reflected_context_group(
@@ -8481,6 +8657,8 @@ macro_rules! builtin_registry {
         strict_unary_builtin!($ty, $name, $primop);
     };
 
+    (@declare custom_effectful_strict_unary $ty:ident, $name:expr) => {};
+
     (@declare strict_binary $ty:ident, $name:expr, $primop:expr) => {
         strict_binary_builtin!($ty, $name, $primop);
     };
@@ -8605,6 +8783,147 @@ impl Builtin for StoreDirBuiltin {
     ) -> Result<Value, TreeWalkError> {
         let store_dir = eval.options.store_dir().to_vec();
         eval.alloc_static_string(id, span, &store_dir)
+    }
+}
+
+struct PathExistsBuiltin;
+
+#[allow(dead_code)]
+static PATH_EXISTS_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns whether a path exists at evaluation time.",
+};
+
+impl Builtin for PathExistsBuiltin {
+    fn name(&self) -> &'static [u8] {
+        b"pathExists"
+    }
+
+    fn first_class_arity(&self) -> Option<usize> {
+        Some(1)
+    }
+
+    fn docs(&self) -> &'static BuiltinDocs {
+        &PATH_EXISTS_DOCS
+    }
+
+    fn apply_direct(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        call: BuiltinCall,
+        _node: &IrNode,
+        args: &[IrId],
+    ) -> Result<Value, TreeWalkError> {
+        check_builtin_arity(call, 1, args.len())?;
+        let argument = args[0];
+        let argument_span = eval.node(argument)?.span;
+        let value = eval.eval_node(argument)?;
+        eval.eval_path_exists_primop(argument, argument_span, value)
+    }
+
+    fn apply(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        call: BuiltinCall,
+        args: &[EvalPrimOpArg],
+    ) -> Result<Value, TreeWalkError> {
+        check_builtin_arity(call, 1, args.len())?;
+        let argument = args[0];
+        let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+        eval.eval_path_exists_primop(argument.id(), argument.span(), value)
+    }
+}
+
+struct ReadDirBuiltin;
+
+#[allow(dead_code)]
+static READ_DIR_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns an attribute set describing a directory's entries.",
+};
+
+impl Builtin for ReadDirBuiltin {
+    fn name(&self) -> &'static [u8] {
+        b"readDir"
+    }
+
+    fn first_class_arity(&self) -> Option<usize> {
+        Some(1)
+    }
+
+    fn docs(&self) -> &'static BuiltinDocs {
+        &READ_DIR_DOCS
+    }
+
+    fn apply_direct(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        call: BuiltinCall,
+        _node: &IrNode,
+        args: &[IrId],
+    ) -> Result<Value, TreeWalkError> {
+        check_builtin_arity(call, 1, args.len())?;
+        let argument = args[0];
+        let argument_span = eval.node(argument)?.span;
+        let value = eval.eval_node(argument)?;
+        eval.eval_read_dir_primop(call.id, call.span, argument, argument_span, value)
+    }
+
+    fn apply(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        call: BuiltinCall,
+        args: &[EvalPrimOpArg],
+    ) -> Result<Value, TreeWalkError> {
+        check_builtin_arity(call, 1, args.len())?;
+        let argument = args[0];
+        let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+        eval.eval_read_dir_primop(call.id, call.span, argument.id(), argument.span(), value)
+    }
+}
+
+struct ReadFileTypeBuiltin;
+
+#[allow(dead_code)]
+static READ_FILE_TYPE_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns the filesystem type of a path.",
+};
+
+impl Builtin for ReadFileTypeBuiltin {
+    fn name(&self) -> &'static [u8] {
+        b"readFileType"
+    }
+
+    fn first_class_arity(&self) -> Option<usize> {
+        Some(1)
+    }
+
+    fn docs(&self) -> &'static BuiltinDocs {
+        &READ_FILE_TYPE_DOCS
+    }
+
+    fn apply_direct(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        call: BuiltinCall,
+        _node: &IrNode,
+        args: &[IrId],
+    ) -> Result<Value, TreeWalkError> {
+        check_builtin_arity(call, 1, args.len())?;
+        let argument = args[0];
+        let argument_span = eval.node(argument)?.span;
+        let value = eval.eval_node(argument)?;
+        eval.eval_read_file_type_primop(call.id, call.span, argument, argument_span, value)
+    }
+
+    fn apply(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        call: BuiltinCall,
+        args: &[EvalPrimOpArg],
+    ) -> Result<Value, TreeWalkError> {
+        check_builtin_arity(call, 1, args.len())?;
+        let argument = args[0];
+        let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+        eval.eval_read_file_type_primop(call.id, call.span, argument.id(), argument.span(), value)
     }
 }
 
@@ -9179,6 +9498,26 @@ pub enum TreeWalkErrorKind {
         /// The filesystem diagnostic.
         message: String,
     },
+    /// A filesystem-stat primop could not inspect its target path.
+    #[error("failed to stat path at node {id:?} path {path:?}: {message}")]
+    PathStat {
+        /// The path-valued node being inspected.
+        id: IrId,
+        /// The path bytes.
+        path: Vec<u8>,
+        /// The filesystem diagnostic.
+        message: String,
+    },
+    /// A directory-listing primop could not read its target directory.
+    #[error("failed to read directory at node {id:?} path {path:?}: {message}")]
+    DirectoryRead {
+        /// The path-valued node being listed.
+        id: IrId,
+        /// The directory path bytes.
+        path: Vec<u8>,
+        /// The filesystem diagnostic.
+        message: String,
+    },
     /// A list spine buffer could not be reserved.
     #[error("failed to reserve {len} list elements at node {id:?}")]
     ListAllocationFailed {
@@ -9590,7 +9929,7 @@ mod tests {
         EffectClass, FrameInfo, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode, IrShape,
         IrWithChain, lower as lower_ir, resolve as resolve_ast,
     };
-    use crate::runtime::builtins::BUILTIN_NAMES;
+    use crate::runtime::builtins::{BUILTIN_NAMES, BuiltinDirect, BuiltinEffect, direct_builtin};
     use crate::string::{ContextElement, StringContext};
     use crate::syntax::{Symbol, SymbolTable, parse_str};
     use crate::value::HeapObject;
@@ -9906,6 +10245,26 @@ mod tests {
         assert_eq!(registry_names.len(), BUILTIN_REGISTRY.len());
         assert_eq!(scope_names.len(), BUILTIN_NAMES.len());
         assert_eq!(registry_names, scope_names);
+    }
+
+    #[test]
+    fn custom_effectful_unary_builtin_metadata_matches_runtime_impls() {
+        for name in [
+            b"pathExists".as_slice(),
+            b"readDir".as_slice(),
+            b"readFileType".as_slice(),
+        ] {
+            assert_eq!(
+                direct_builtin(name),
+                Some(BuiltinDirect::StrictUnary {
+                    effect: BuiltinEffect::Effectful
+                })
+            );
+            let builtin = lookup_builtin_by_name(name).expect("builtin is registered");
+
+            assert_eq!(builtin.first_class_arity(), Some(1));
+            assert!(!builtin.docs().summary().is_empty());
+        }
     }
 
     #[test]
@@ -15035,6 +15394,381 @@ mod tests {
             other => panic!("expected file-read error, got {other:?}"),
         }
         assert_eq!(error.span(), path_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn path_exists_primop_checks_filesystem_presence() {
+        let dir = unique_temp_dir("path-exists");
+        let file = dir.join("regular.txt");
+        let dangling = dir.join("dangling");
+        fs::write(&file, b"data").expect("regular file writes");
+        std::os::unix::fs::symlink(dir.join("missing-target"), &dangling)
+            .expect("dangling symlink creates");
+        let dir_path = path_source(&dir);
+        let file_path = path_source(&file);
+        let dangling_path = path_source(&dangling);
+        let missing_path = path_source(&dir.join("missing.txt"));
+
+        assert_eq!(
+            eval(&format!(
+                "builtins.pathExists {}",
+                nix_string_literal(&file_path)
+            ))
+            .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval(&format!(
+                "builtins.pathExists {}",
+                nix_string_literal(&missing_path)
+            ))
+            .as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval(&format!(
+                "builtins.pathExists {}",
+                nix_string_literal(&dangling_path)
+            ))
+            .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval(&format!(
+                "builtins.pathExists {}",
+                nix_string_literal(&format!("{dangling_path}/"))
+            ))
+            .as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval(&format!(
+                "builtins.pathExists {}",
+                nix_string_literal(&format!("{dir_path}/"))
+            ))
+            .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval(&format!(
+                "builtins.pathExists {}",
+                nix_string_literal(&format!("{file_path}/"))
+            ))
+            .as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval(&format!(
+                "builtins.pathExists {}",
+                nix_string_literal(&format!("{file_path}/."))
+            ))
+            .as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval(&format!(
+                "builtins.pathExists {{ outPath = {}; }}",
+                nix_string_literal(&format!("{file_path}/"))
+            ))
+            .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval(&format!(
+                "builtins.pathExists {{ outPath = {}; }}",
+                nix_string_literal(&format!("{file_path}/."))
+            ))
+            .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval(&format!(
+                "let f = builtins.pathExists; in f {}",
+                nix_string_literal(&file_path)
+            ))
+            .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let builtins = { pathExists = path: false; }; in builtins.pathExists \"/\"")
+                .as_bool(),
+            Ok(false)
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn path_exists_primop_type_checks_and_rejects_relative_strings() {
+        let ir = lower("builtins.pathExists 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("pathExists requires a path");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower("builtins.pathExists \"relative.txt\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("relative strings are rejected");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::PathNotAbsolute {
+                id: argument,
+                path: b"relative.txt".to_vec(),
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn read_file_type_primop_reports_filesystem_node_types() {
+        let dir = unique_temp_dir("read-file-type");
+        let regular = dir.join("regular");
+        let nested = dir.join("nested");
+        let link = dir.join("link");
+        let link_dir = dir.join("link-dir");
+        let dangling = dir.join("dangling");
+        fs::write(&regular, b"data").expect("regular file writes");
+        fs::create_dir(&nested).expect("nested directory creates");
+        std::os::unix::fs::symlink(&regular, &link).expect("symlink creates");
+        std::os::unix::fs::symlink(&nested, &link_dir).expect("directory symlink creates");
+        std::os::unix::fs::symlink(dir.join("missing-target"), &dangling)
+            .expect("dangling symlink creates");
+        let regular_path = path_source(&regular);
+        let nested_path = path_source(&nested);
+        let link_path = path_source(&link);
+        let link_dir_path = path_source(&link_dir);
+        let dangling_path = path_source(&dangling);
+
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.readFileType {}",
+                nix_string_literal(&regular_path)
+            )),
+            b"regular"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.readFileType {}",
+                nix_string_literal(&nested_path)
+            )),
+            b"directory"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.readFileType {}",
+                nix_string_literal(&link_path)
+            )),
+            b"symlink"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.readFileType {}",
+                nix_string_literal(&format!("{regular_path}/"))
+            )),
+            b"regular"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.readFileType {}",
+                nix_string_literal(&format!("{regular_path}/."))
+            )),
+            b"regular"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.readFileType {}",
+                nix_string_literal(&format!("{link_dir_path}/"))
+            )),
+            b"symlink"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.readFileType {}",
+                nix_string_literal(&format!("{link_dir_path}/."))
+            )),
+            b"symlink"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.readFileType {}",
+                nix_string_literal(&format!("{dangling_path}/"))
+            )),
+            b"symlink"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.readFileType {}",
+                nix_string_literal(&format!("{dangling_path}/."))
+            )),
+            b"symlink"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "let f = builtins.readFileType; in f {}",
+                nix_string_literal(&regular_path)
+            )),
+            b"regular"
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn read_file_type_primop_reports_stat_errors() {
+        let dir = unique_temp_dir("read-file-type-missing");
+        let missing_path = path_source(&dir.join("missing"));
+        let ir = lower(&format!(
+            "builtins.readFileType {}",
+            nix_string_literal(&missing_path)
+        ));
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("missing path is reported");
+
+        match error.kind() {
+            TreeWalkErrorKind::PathStat { id, path, message } => {
+                assert_eq!(id, argument);
+                assert_eq!(path.as_slice(), missing_path.as_bytes());
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected stat error, got {other:?}"),
+        }
+        assert_eq!(error.span(), argument_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn read_dir_primop_lists_entry_types() {
+        let dir = unique_temp_dir("read-dir");
+        let regular = dir.join("regular");
+        let nested = dir.join("nested");
+        let link = dir.join("link");
+        fs::write(&regular, b"data").expect("regular file writes");
+        fs::create_dir(&nested).expect("nested directory creates");
+        std::os::unix::fs::symlink(&regular, &link).expect("symlink creates");
+        let dir_path = path_source(&dir);
+
+        assert_eq!(
+            eval_list_string_bytes(&format!(
+                "builtins.attrNames (builtins.readDir {})",
+                nix_string_literal(&dir_path)
+            )),
+            vec![b"link".to_vec(), b"nested".to_vec(), b"regular".to_vec()]
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "(builtins.readDir {}).link",
+                nix_string_literal(&dir_path)
+            )),
+            b"symlink"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "(builtins.readDir {}).nested",
+                nix_string_literal(&dir_path)
+            )),
+            b"directory"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "(builtins.readDir {}).regular",
+                nix_string_literal(&dir_path)
+            )),
+            b"regular"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "let f = builtins.readDir; d = f {}; in d.regular",
+                nix_string_literal(&dir_path)
+            )),
+            b"regular"
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn read_dir_primop_type_checks_and_reports_directory_errors() {
+        let ir = lower("builtins.readDir 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("readDir requires a path");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let dir = unique_temp_dir("read-dir-file");
+        let regular = dir.join("regular");
+        fs::write(&regular, b"data").expect("regular file writes");
+        let regular_path = path_source(&regular);
+        let ir = lower(&format!(
+            "builtins.readDir {}",
+            nix_string_literal(&regular_path)
+        ));
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("file is not a directory");
+
+        match error.kind() {
+            TreeWalkErrorKind::DirectoryRead { id, path, message } => {
+                assert_eq!(id, argument);
+                assert_eq!(path.as_slice(), regular_path.as_bytes());
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected directory-read error, got {other:?}"),
+        }
+        assert_eq!(error.span(), argument_span);
 
         fs::remove_dir_all(dir).expect("temp directory removes");
     }

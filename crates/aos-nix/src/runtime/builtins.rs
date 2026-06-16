@@ -94,11 +94,11 @@ macro_rules! builtin_definitions {
             unsupported ParseFlakeRefBuiltin, b"parseFlakeRef";
             direct_binary PartitionBuiltin, b"partition", StrictBinaryPrimOp::Partition;
             unsupported PathBuiltin, b"path";
-            effectful_unary_unsupported PathExistsBuiltin, b"pathExists";
+            custom_effectful_strict_unary PathExistsBuiltin, b"pathExists";
             unsupported PlaceholderBuiltin, b"placeholder";
-            effectful_unary_unsupported ReadDirBuiltin, b"readDir";
+            custom_effectful_strict_unary ReadDirBuiltin, b"readDir";
             effectful_unary_unsupported ReadFileBuiltin, b"readFile";
-            effectful_unary_unsupported ReadFileTypeBuiltin, b"readFileType";
+            custom_effectful_strict_unary ReadFileTypeBuiltin, b"readFileType";
             direct_binary RemoveAttrsBuiltin, b"removeAttrs", StrictBinaryPrimOp::RemoveAttrs;
             direct_ternary ReplaceStringsBuiltin, b"replaceStrings", StrictTernaryPrimOp::ReplaceStrings;
             unsupported ScopedImportBuiltin, b"scopedImport";
@@ -198,6 +198,15 @@ macro_rules! builtin_direct_metadata {
     };
 
     (@record effectful_strict_unary, $name:expr, $primop:expr) => {
+        Some((
+            $name,
+            BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful,
+            },
+        ))
+    };
+
+    (@record custom_effectful_strict_unary, $name:expr) => {
         Some((
             $name,
             BuiltinDirect::StrictUnary {
@@ -307,6 +316,24 @@ mod tests {
         assert_eq!(
             direct_builtin(b"hashFile"),
             Some(BuiltinDirect::StrictBinary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
+            direct_builtin(b"pathExists"),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
+            direct_builtin(b"readDir"),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
+            direct_builtin(b"readFileType"),
+            Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful
             })
         );
