@@ -78,6 +78,10 @@ pub mod compat;
 /// [`aos_registry_core::config`] (RFC-0004 Phase 5); keeps `crate::config::…` stable.
 pub use aos_registry_core::config;
 pub mod console;
+/// Native adapters from the hub's concrete types to the shared service ports
+/// ([`aos_registry_core::ratelimit::RateLimiter`],
+/// [`aos_registry_core::fetch::SurfaceProvider`]); RFC-0004 Phase 5.
+pub mod coreports;
 pub mod db;
 /// The tenancy/IAM domain model, re-exported from [`aos_registry_core::domain`]
 /// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::domain::…` stable.
