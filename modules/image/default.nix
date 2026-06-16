@@ -74,6 +74,16 @@ in {
     };
   };
 
+  options.system.build.uki = lib.mkOption {
+    type = lib.types.package;
+    description = ''
+      The assembled Unified Kernel Image (`.efi`) written to the image's
+      ESP. Secure Boot signed when `aos.boot.secureBoot.enable` is set.
+      Exposed so it can be published (`apr publish --image`) and have its
+      Secure Boot facts cataloged (RFC-0006 phase 4).
+    '';
+  };
+
   config = lib.mkIf cfg.enable {
     system.build.image = {
       raw = rawImage;
@@ -81,5 +91,6 @@ in {
       vmdk = convertImage "vmdk" "vmdk";
       vhd = convertImage "vhd" "vpc";
     };
+    system.build.uki = rawImage.uki;
   };
 }

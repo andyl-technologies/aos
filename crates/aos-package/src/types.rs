@@ -1072,6 +1072,26 @@ impl ProfileScope {
             ],
         }
     }
+
+    /// Directories searched for provisioned Secure Boot db certificates, in
+    /// precedence order.
+    ///
+    /// Mirrors [`ProfileScope::trusted_keys_dirs`]: a deployment bakes
+    /// `trusted-sb-certs.d/<registry>.pem` alongside `trusted-keys.d`, giving
+    /// `apm` the db cert to re-verify cataloged UKIs against at download time
+    /// (RFC-0006 phase 4 trust-bootstrap symmetry).
+    pub fn trusted_sb_certs_dirs(&self) -> Vec<PathBuf> {
+        match self {
+            ProfileScope::User => vec![
+                xdg_config_home().join("apm/trusted-sb-certs.d"),
+                apm_system_config_dir().join("trusted-sb-certs.d"),
+            ],
+            ProfileScope::System => vec![
+                apm_system_config_dir().join("trusted-sb-certs.d"),
+                apm_state_dir().join("trusted-sb-certs.d"),
+            ],
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1189,7 +1209,31 @@ fn default_cache_priority() -> u32 {
 // Sysroot image entry — a pre-compiled image attached to a sysroot package
 // ---------------------------------------------------------------------------
 
+/// A single SBAT (Secure Boot Advanced Targeting) component record.
+///
+/// SBAT entries are read from a UKI's PE `.sbat` section: each line of that
+/// CSV section names a boot component and the *generation* number that an
+/// `sbat` revocation can compare against. The registry records these so the
+/// fleet can enforce a per-component minimum generation (the *revocation
+/// floor*) at download time, mirroring what firmware/loader SBAT enforces at
+/// boot time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SbatEntry {
+    /// SBAT component identifier (the first CSV column, e.g. `aos`,
+    /// `systemd`, `grub`).
+    pub component: String,
+    /// SBAT generation number for the component (the second CSV column).
+    /// A higher number supersedes a lower one; the revocation floor is the
+    /// minimum acceptable value.
+    pub generation: u32,
+}
+
 /// A pre-compiled image format entry within a sysroot package version.
+///
+/// The trailing Secure Boot fields are populated only for signed UKIs/images
+/// (see RFC-0006 phase 4). They are optional so that legacy and unsigned
+/// publishes continue to parse: an entry with none of them set is treated as
+/// "no Secure Boot claims recorded" and skips download-time SB validation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SysrootImageEntry {
     /// Image format identifier (e.g. `qcow2`, `raw`), matched against
@@ -1201,6 +1245,22 @@ pub struct SysrootImageEntry {
     pub nar_hash: String,
     /// Size of the image's uncompressed NAR in bytes.
     pub nar_size: u64,
+    /// Lowercase hex SHA-256 of the signer leaf certificate found in the
+    /// PE's Authenticode certificate table; the db cert this image must
+    /// chain to. `None` for unsigned/legacy images.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sb_signer_cert_sha256: Option<String>,
+    /// SBAT component/generation pairs read from the PE `.sbat` section.
+    /// Empty when the image carries no `.sbat` section.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sbat: Vec<SbatEntry>,
+    /// ukify/`systemd-measure`-predicted TPM PCR-11 value for this UKI
+    /// (hex). See [`SysrootImageEntry`] callers and RFC-0006
+    /// `registry-catalog.md` for the prediction-scope caveat: this records
+    /// the UKI's own contribution, not the full sd-boot phase sequence.
+    /// `None` when `systemd-measure` was unavailable at publish time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_pcr11: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

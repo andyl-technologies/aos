@@ -8,6 +8,10 @@
 ##!     bootstrap anchor.
 ##!   - `/etc/apm/trusted-keys.d/<name>.pub` — every trust key, one per
 ##!     line (`apm` reads this directory in both profile scopes).
+##!   - `/etc/apm/trusted-sb-certs.d/<name>.pem` — the Secure Boot db
+##!     certificate(s) `apm` re-verifies cataloged UKIs against at
+##!     download time (RFC-0006 phase 4). Distinct key, same delivery
+##!     mechanism as the registry trust anchor, provisioned at install.
 ##!
 ##! This is the out-of-band root of trust: first contact with the
 ##! registry verifies against these keys, and all later key rotation
@@ -42,6 +46,11 @@
 
   trustedKeys = registry:
     lib.concatMapStrings (key: key + "\n") registry.trustKeys;
+
+  # Concatenate the registry's Secure Boot db certificate PEMs into one
+  # bundle (`apm` accepts the leaf or a full chain in a single file).
+  trustedSbCerts = registry:
+    lib.concatMapStrings (cert: cert + "\n") registry.sbDbCerts;
 
   # `<name>:Ed25519:<base64>` with the registry-name prefix matching the
   # attribute name.
@@ -84,6 +93,19 @@ in {
           default = 50;
           description = "Registry priority (higher = preferred).";
         };
+        sbDbCerts = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [];
+          description = ''
+            Secure Boot db certificate(s) in PEM form, used by `apm` to
+            re-verify cataloged UKIs against this registry at download
+            time (RFC-0006 phase 4). Each entry is a PEM block; they are
+            concatenated into `/etc/apm/trusted-sb-certs.d/<name>.pem`.
+            Leave empty to skip the download-time UKI re-verification
+            step (the signed catalog's active-set and SBAT-floor checks
+            still apply).
+          '';
+        };
       };
     });
   };
@@ -103,10 +125,14 @@ in {
       )
       cfg);
 
-    environment.etc = lib.mkMerge (lib.mapAttrsToList (name: registry: {
+    environment.etc = lib.mkMerge (lib.mapAttrsToList (name: registry:
+      {
         "apm/registries.d/${name}.toml".text = registryToml name registry;
         "apm/trusted-keys.d/${name}.pub".text = trustedKeys registry;
+      }
+      // lib.optionalAttrs (registry.sbDbCerts != []) {
+        "apm/trusted-sb-certs.d/${name}.pem".text = trustedSbCerts registry;
       })
-      cfg);
+    cfg);
   };
 }

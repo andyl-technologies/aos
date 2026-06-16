@@ -40,6 +40,12 @@ in
       pcre2
       zlib
       util-linux
+      # glib installs python tools (glib-mkenums, glib-genmarshal,
+      # gdbus-codegen) used by downstream builds; their shebangs point at
+      # this interpreter, so it must stay in the closure. As a build-only
+      # dep it would be a runtime ref and nuke-references would rewrite the
+      # shebang to a placeholder, breaking the tools (e.g. json-glib build).
+      python3
     ];
     propagatedDeps = [
       libffi
