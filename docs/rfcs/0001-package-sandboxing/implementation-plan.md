@@ -463,7 +463,7 @@ policy. (migration.md increments 2–4; D14.)
 
 **Deliverables.**
 
-- [ ] **`test-http-server` via `expose` end-to-end** (build → image bake → preset
+- [x] **`test-http-server` via `expose` end-to-end** (build → image bake → preset
       enable → VM check) while the role tree still exists.
 - [ ] **Dissolve `modules/roles/*` one package at a time** into `pkgs/` `expose`
       blocks; `k3s-worker` / `k3s-control-plane` become **meta-packages**
@@ -477,6 +477,14 @@ policy. (migration.md increments 2–4; D14.)
       `roles` → `packages`, `availableRoles` → `availablePackages`,
       `file:///etc/aos/ignition-roles/<n>` → `/etc/aos/packages/<n>`; every
       `roles = ["…"]` → `packages = ["…"]` in `tests/fleet/*.nix`.
+
+**Phase 7 implementation scope.** `test-http-server` now exists as a `pkgs/`
+derivation with an `expose` block, is baked into an image through
+`modules/packages.nix`, seeds the system package profile at boot, attaches its
+rendered unit artifact, and is enabled through image/APM preset policy in the
+`package-test-http-server` VM. The role tree still exists, and the broader
+role-to-package dissolution, security policy split, and fleet-spec rename remain
+open.
 
 **Closes.** D14; the [`migration.md`](migration.md) increments.
 

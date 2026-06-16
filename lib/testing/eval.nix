@@ -228,6 +228,43 @@
     if !(builtins.elem "expose-smoke" exposedPackageNames)
     then throw "packagesWithExpose must include pkgs.expose-smoke"
     else exposedPackagePathsJson;
+
+  packagePolicySystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.packages.test-http-server = {
+        package = pkgs.test-http-server;
+        bundle = true;
+        preset = true;
+      };
+    }
+  ];
+  packagePolicySystemPackageStrings =
+    builtins.map builtins.toString packagePolicySystem.config.environment.systemPackages;
+  packagePolicyModule =
+    if !(builtins.elem (builtins.toString pkgs.test-http-server) packagePolicySystemPackageStrings)
+    then throw "aos.packages must add bundled package payloads to environment.systemPackages"
+    else if !(builtins.elem (builtins.toString pkgs.test-http-server.expose) packagePolicySystemPackageStrings)
+    then throw "aos.packages must add bundled expose artifacts to environment.systemPackages"
+    else if !(builtins.elem "enable aos-pkg-test-http-server.target" packagePolicySystem.config.systemd.systemPresetRules)
+    then throw "aos.packages must emit image preset enablement for preset=true packages"
+    else builtins.seq packagePolicySystem.config.system.build.aosPackageProfileSeed.name "ok";
+
+  packagePolicyBadTargetSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.packages.wrong-name = {
+        package = pkgs.test-http-server;
+        bundle = true;
+      };
+    }
+  ];
+  packagePolicyRejectsWrongTarget = let
+    forced = builtins.tryEval (packagePolicyBadTargetSystem.config.system.build.toplevel.outPath);
+  in
+    if forced.success
+    then throw "aos.packages must reject policy names that do not match the package target"
+    else "ok";
 in
   # Use a raw derivation with AOS bash so we don't pull in host tools.
   # The real verification happens at Nix eval time: the builtins.toJSON calls
@@ -250,6 +287,7 @@ in
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       no package drop-in include (${firewallNoNftablesDropin}), scan-dir storage rejected (${scanDirStorageRejected})"
         echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"
+        echo "package policy: baked profile (${packagePolicyModule}), target mismatch (${packagePolicyRejectsWrongTarget})"
 
         # Force the build attributes to ensure they evaluate
         echo "toplevel:       ${system.config.system.build.toplevel.name}"
