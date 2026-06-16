@@ -153,6 +153,10 @@
   packagesWithExpose =
     lib.filterAttrs (_: p: builtins.isAttrs p && p ? expose) pkgs;
 
+  packageExposeLifecycleCheck = import ./lib/testing/package-expose-lifecycle.nix {
+    inherit pkgs mkSystem testing;
+  };
+
   # Stdenv cross-cutting integration check
   stdenvChecks = {
     cross-cutting-c-pipeline = testing.mkVMTest {
@@ -275,13 +279,15 @@ in {
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
     package-expose = import ./lib/testing/package-expose.nix {
-      inherit pkgs lib packagesWithExpose;
+      inherit pkgs lib mkSystem packagesWithExpose;
     };
+    package-expose-lifecycle = packageExposeLifecycleCheck;
     # Module-level VM checks (from server system, for backwards compat)
     vm =
       serverSystem.config.system.build.checks
       // {
         apm = apmTests;
+        package-expose-lifecycle = packageExposeLifecycleCheck;
       };
     integration = packageChecks // stdenvChecks;
     fleet = discoverFleetTests;
