@@ -11,10 +11,12 @@
 //!   meta.toml
 //! ```
 //!
-//! `ir.bin` and `symbols.bin` serialization are intentionally left to the IR
-//! serialization pass. This module owns the stable key and entry layout those
-//! writers use.
+//! The durable cache key is independent of path. Import/file-resolution
+//! memoization sits above it and keys in-process reuse by canonical realpath
+//! plus BLAKE3 content hash, allowing symlinked paths to share the same resolved
+//! artifact while still reparsing changed files.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -98,6 +100,153 @@ impl fmt::Display for ParseCacheKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.to_hex())
     }
+}
+
+/// A canonical import/file-resolution memo key.
+///
+/// The key combines the resolved realpath with the BLAKE3 hash of the bytes
+/// read from that path. The realpath preserves Nix import identity semantics,
+/// while the content hash makes edits observable without relying on mtimes.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ParseFileKey {
+    realpath: PathBuf,
+    content_hash: [u8; 32],
+}
+
+impl ParseFileKey {
+    /// Creates a file memo key from a canonical path and content hash.
+    pub fn new(realpath: impl Into<PathBuf>, content_hash: [u8; 32]) -> Self {
+        Self {
+            realpath: realpath.into(),
+            content_hash,
+        }
+    }
+
+    /// Creates a file memo key by hashing source bytes with BLAKE3.
+    pub fn for_source(realpath: impl Into<PathBuf>, source: &[u8]) -> Self {
+        Self::new(realpath, file_content_hash(source))
+    }
+
+    /// Returns the canonical path component of the key.
+    pub fn realpath(&self) -> &Path {
+        &self.realpath
+    }
+
+    /// Returns the raw 32-byte BLAKE3 content hash.
+    pub const fn content_hash(&self) -> [u8; 32] {
+        self.content_hash
+    }
+
+    /// Returns the lowercase hexadecimal content hash.
+    pub fn content_hash_hex(&self) -> String {
+        blake3::Hash::from(self.content_hash).to_hex().to_string()
+    }
+}
+
+/// An in-process memo table for parsed imports/files.
+///
+/// The table is deliberately layered over [`ParseCache`]: the durable cache
+/// remains content-addressed by source bytes, while this table provides
+/// Nix-compatible realpath identity and shares parse artifacts reached through
+/// symlinks or other path-resolution indirection.
+#[derive(Clone, Debug)]
+pub struct FileParseMemo {
+    cache: ParseCache,
+    entries: BTreeMap<ParseFileKey, CachedParse>,
+}
+
+impl FileParseMemo {
+    /// Creates an empty file memo table backed by `cache`.
+    pub fn new(cache: ParseCache) -> Self {
+        Self {
+            cache,
+            entries: BTreeMap::new(),
+        }
+    }
+
+    /// Creates an empty file memo table backed by a parse cache at `root`.
+    pub fn with_cache_root(root: impl Into<PathBuf>) -> Self {
+        Self::new(ParseCache::new(root))
+    }
+
+    /// Returns the durable parse cache backing this file memo table.
+    pub fn parse_cache(&self) -> &ParseCache {
+        &self.cache
+    }
+
+    /// Returns the number of memoized realpath/content pairs.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether this file memo table has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Clears all in-process file memo entries.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// Loads a resolved parse artifact for a filesystem path.
+    ///
+    /// The path is canonicalized before bytes are read. The in-process memo key
+    /// is `(canonical realpath, blake3(file bytes))`; cache misses delegate to
+    /// [`ParseCache::load_or_parse_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if the path cannot be canonicalized, the
+    /// source file cannot be read, or parsing/scope resolution fails.
+    pub fn load_or_parse_file(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<CachedFileParse, ParseCacheError> {
+        let requested = path.as_ref();
+        let realpath =
+            fs::canonicalize(requested).map_err(|source| ParseCacheError::CanonicalizeSource {
+                path: requested.to_path_buf(),
+                source,
+            })?;
+        let source = fs::read(&realpath).map_err(|source| ParseCacheError::ReadSource {
+            path: realpath.clone(),
+            source,
+        })?;
+        let file_key = ParseFileKey::for_source(realpath.clone(), &source);
+        if let Some(parsed) = self.entries.get(&file_key) {
+            return Ok(CachedFileParse {
+                file_key,
+                parsed: parsed.clone(),
+                memo_hit: true,
+            });
+        }
+
+        let parsed = self
+            .cache
+            .load_or_parse_bytes(&source, Some(realpath.to_string_lossy().into_owned()))?;
+        self.entries.insert(file_key.clone(), parsed.clone());
+        Ok(CachedFileParse {
+            file_key,
+            parsed,
+            memo_hit: false,
+        })
+    }
+}
+
+/// The result of [`FileParseMemo::load_or_parse_file`].
+#[derive(Clone, Debug)]
+pub struct CachedFileParse {
+    /// The canonical realpath/content key used for in-process reuse.
+    pub file_key: ParseFileKey,
+    /// The durable content-addressed parse-cache result.
+    ///
+    /// Its [`CachedParse::hit`] flag describes the durable artifact lookup that
+    /// produced this value, while [`Self::memo_hit`] describes this file-memo
+    /// lookup.
+    pub parsed: CachedParse,
+    /// Whether the result came from the in-process file memo table.
+    pub memo_hit: bool,
 }
 
 /// A parse-cache rooted at `$AOS_NIX_CACHE/parse`.
@@ -405,7 +554,7 @@ impl ParseCacheMeta {
     }
 }
 
-/// A parse-cache filesystem failure.
+/// A parse-cache or file-memoization failure.
 #[derive(Debug, Error)]
 pub enum ParseCacheError {
     /// Source bytes could not be parsed.
@@ -419,6 +568,22 @@ pub enum ParseCacheError {
     Scope {
         /// The scope-resolution failure.
         source: ScopeError,
+    },
+    /// A source path could not be canonicalized for file memoization.
+    #[error("failed to canonicalize source path {path:?}")]
+    CanonicalizeSource {
+        /// The requested source path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// A canonicalized source file could not be read for file memoization.
+    #[error("failed to read source file {path:?}")]
+    ReadSource {
+        /// The canonical source path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
     },
     /// The cache entry directory could not be created.
     #[error("failed to create parse-cache directory {path:?}")]
@@ -463,6 +628,10 @@ pub enum ParseCacheError {
     /// A resolved artifact could not be encoded.
     #[error("failed to encode parse-cache artifact: {0}")]
     EncodeArtifact(String),
+}
+
+fn file_content_hash(source: &[u8]) -> [u8; 32] {
+    *blake3::hash(source).as_bytes()
 }
 
 fn push_toml_string(value: &str, out: &mut String) {
@@ -1449,6 +1618,82 @@ mod tests {
         assert!(!parsed.stored);
 
         let _ = fs::remove_file(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_memo_shares_artifacts_across_symlinked_paths() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_root();
+        let src_dir = root.join("src");
+        fs::create_dir_all(&src_dir).expect("source dir creates");
+        let source_path = src_dir.join("expr.nix");
+        let link_path = src_dir.join("linked-expr.nix");
+        fs::write(&source_path, b"let x = 1; in x").expect("source writes");
+        symlink(&source_path, &link_path).expect("symlink creates");
+        let mut memo = FileParseMemo::with_cache_root(root.join("parse"));
+
+        let first = memo
+            .load_or_parse_file(&source_path)
+            .expect("source parses through real path");
+        assert!(!first.memo_hit);
+        assert!(!first.parsed.hit);
+        assert!(first.parsed.stored);
+        assert_eq!(
+            first.file_key.realpath(),
+            fs::canonicalize(&source_path)
+                .expect("source canonicalizes")
+                .as_path()
+        );
+
+        let second = memo
+            .load_or_parse_file(&link_path)
+            .expect("source parses through symlink path");
+        assert!(second.memo_hit);
+        assert_eq!(second.file_key, first.file_key);
+        assert_eq!(second.parsed.key, first.parsed.key);
+        assert_eq!(memo.len(), 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_memo_rekeys_when_file_content_changes() {
+        let root = temp_root();
+        let src_dir = root.join("src");
+        fs::create_dir_all(&src_dir).expect("source dir creates");
+        let source_path = src_dir.join("expr.nix");
+        fs::write(&source_path, b"let x = 1; in x").expect("source writes");
+        let mut memo = FileParseMemo::with_cache_root(root.join("parse"));
+
+        let first = memo
+            .load_or_parse_file(&source_path)
+            .expect("initial source parses");
+        assert!(!first.memo_hit);
+        assert_eq!(memo.len(), 1);
+
+        fs::write(&source_path, b"let x = 2; in x").expect("changed source writes");
+        let changed = memo
+            .load_or_parse_file(&source_path)
+            .expect("changed source parses");
+        assert!(!changed.memo_hit);
+        assert_eq!(first.file_key.realpath(), changed.file_key.realpath());
+        assert_ne!(
+            first.file_key.content_hash(),
+            changed.file_key.content_hash()
+        );
+        assert_ne!(first.parsed.key, changed.parsed.key);
+        assert_eq!(memo.len(), 2);
+
+        let repeated = memo
+            .load_or_parse_file(&source_path)
+            .expect("changed source memoizes");
+        assert!(repeated.memo_hit);
+        assert_eq!(repeated.file_key, changed.file_key);
+        assert_eq!(memo.len(), 2);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
