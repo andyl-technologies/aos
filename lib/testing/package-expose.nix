@@ -9,6 +9,31 @@
   packagesWithExpose,
 }: let
   pkg = pkgs.expose-smoke;
+  minimal = pkgs.mkDerivation {
+    pname = "expose-minimal";
+    version = "0";
+    src = null;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/expose-minimal"
+          printf expose-minimal > "$out/share/expose-minimal/payload.txt"
+        '';
+      }
+    ];
+
+    expose = {
+      units."expose-minimal.service" = {
+        description = "RFC-0001 expose minimal service";
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+      };
+    };
+  };
   serverSystem = mkSystem ../../systems/server.nix;
   k3sWorkerRole = serverSystem.config.aos.roles.k3s-worker;
   k3sCommon = import ../../modules/roles/kubernetes/_k3s-common.nix {inherit lib pkgs;};
@@ -73,6 +98,45 @@
     if privilegedExecPrefix.success
     then throw "expose renderer must reject systemd privileged Exec* prefixes on workload services"
     else "ok";
+  kernelModulePermissionMismatch = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-kernel-module-mismatch.service" = {
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        kernel.modules = ["br_netfilter"];
+        permissions = {
+          network = "private";
+          kernel-modules = [];
+        };
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  kernelModulePermissionMismatchRejected =
+    if kernelModulePermissionMismatch.success
+    then throw "expose renderer must reject host module loads that are absent from permissions.kernel-modules"
+    else "ok";
+  permissionOnlyModules = pkg.overrideAttrs (_: {
+    expose = {
+      units."expose-smoke-permission-only-modules.service" = {
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+      };
+      permissions = {
+        network = "private";
+        kernel-modules = ["br_netfilter"];
+      };
+      requires = [];
+    };
+  });
   privateOutbound = pkg.overrideAttrs (_: {
     expose = {
       units."expose-smoke-private-outbound.service" = {
@@ -240,8 +304,12 @@ in
 
     payload = pkg;
     exposePath = pkg.expose;
+    exposeConfinement = builtins.toJSON pkg.expose.passthru.confinement;
+    minimalPayload = minimal;
+    minimalExposePath = minimal.expose;
     overriddenPayload = overridden;
     overriddenExposePath = overridden.expose;
+    permissionOnlyModulesExposePath = permissionOnlyModules.expose;
     withHolesExposePath = withHoles.expose;
     unconfinedExposePath = unconfined.expose;
     privilegedSyscallsExposePath = privilegedSyscalls.expose;
@@ -249,12 +317,14 @@ in
     regexNamePrivateOutboundExposePath = regexNamePrivateOutbound.expose;
     k3sWorkerExposePath = k3sWorkerSpike.expose;
     inherit k3sWorkerRoleUnitPath k3sWorkerRolePreflightPath;
-    inherit reservedCollisionRejected privilegedExecPrefixRejected;
+    inherit reservedCollisionRejected privilegedExecPrefixRejected kernelModulePermissionMismatchRejected;
 
     buildDeps =
       (builtins.map (pkg: pkg.exposeCheck) (builtins.attrValues packagesWithExpose))
       ++ [
+        minimal.exposeCheck
         overridden.exposeCheck
+        permissionOnlyModules.exposeCheck
         withHoles.exposeCheck
         unconfined.exposeCheck
         privilegedSyscalls.exposeCheck
@@ -387,9 +457,49 @@ in
           grep -q '"allowedUDP":\[5353\]' "$manifest"
           grep -q '"forwardPolicy":"accept"' "$manifest"
           grep -q '"confinement":{"class":"sandboxed","holes":\[\],"label":"sandboxed"}' "$manifest"
+          test "$exposeConfinement" = '{"class":"sandboxed","holes":[],"label":"sandboxed"}'
           grep -q '"network":"private"' "$manifest"
           grep -q '"security-label":"aos.expose-smoke"' "$manifest"
           grep -q '"syscalls":"restricted"' "$manifest"
+
+          minimal_unit="$minimalExposePath/units/expose-minimal.service"
+          minimal_target="$minimalExposePath/units/aos-pkg-expose-minimal.target"
+          minimal_modules="$minimalExposePath/units/aos-pkg-expose-minimal-modules.service"
+          minimal_sysctl="$minimalExposePath/units/aos-pkg-expose-minimal-sysctl.service"
+          minimal_firewall="$minimalExposePath/units/aos-pkg-expose-minimal-firewall.service"
+          minimal_manifest="$minimalExposePath/manifest.json"
+          test -f "$minimal_unit"
+          test -f "$minimal_target"
+          test -f "$minimal_modules"
+          test -f "$minimal_sysctl"
+          test -f "$minimal_firewall"
+          test ! -f "$minimalExposePath/units/aos-pkg-expose-minimal-netns.service"
+          test -f "$minimal_manifest"
+          grep -q 'Description=RFC-0001 expose minimal service' "$minimal_unit"
+          grep -q "RootDirectory=$minimalPayload" "$minimal_unit"
+          grep -q 'PrivateNetwork=true' "$minimal_unit"
+          grep -q '^CapabilityBoundingSet=$' "$minimal_unit"
+          grep -q '^AmbientCapabilities=$' "$minimal_unit"
+          grep -q 'DevicePolicy=closed' "$minimal_unit"
+          grep -q 'ExecStart=${pkgs.coreutils}/bin/true' "$minimal_modules"
+          grep -q 'ExecStart=${pkgs.coreutils}/bin/true' "$minimal_sysctl"
+          grep -q 'ExecStart=${pkgs.coreutils}/bin/true' "$minimal_firewall"
+          grep -q '"modules":\[\]' "$minimal_manifest"
+          grep -q '"sysctl":{}' "$minimal_manifest"
+          grep -q '"allowedTCP":\[\]' "$minimal_manifest"
+          grep -q '"allowedUDP":\[\]' "$minimal_manifest"
+          grep -q '"forwardPolicy":"drop"' "$minimal_manifest"
+          grep -q '"confinement":{"class":"sandboxed","holes":\[\],"label":"sandboxed"}' "$minimal_manifest"
+          grep -q '"security-label":"aos-pkg-expose-minimal"' "$minimal_manifest"
+          if grep -q '"kernel-modules"\|"capabilities"\|"devices"\|"host-paths"\|"cgroup-delegate"\|"privileged-users"\|"network"' \
+            "$minimal_manifest"; then
+            echo "minimal expose manifest must not request explicit permission grants" >&2
+            exit 1
+          fi
+          if find "$minimalExposePath/units" -name '*.mount' | grep .; then
+            echo "minimal expose package must not render package-authored mount units" >&2
+            exit 1
+          fi
 
           test "$payload" = "$overriddenPayload"
           test "$exposePath" != "$overriddenExposePath"
@@ -398,6 +508,13 @@ in
             "$overriddenExposePath/units/expose-smoke-override.service"
           test "$reservedCollisionRejected" = ok
           test "$privilegedExecPrefixRejected" = ok
+          test "$kernelModulePermissionMismatchRejected" = ok
+          permission_only_modules="$permissionOnlyModulesExposePath/units/aos-pkg-expose-smoke-modules.service"
+          permission_only_manifest="$permissionOnlyModulesExposePath/manifest.json"
+          grep -q 'ExecStart=${pkgs.kmod}/sbin/modprobe -a br_netfilter' \
+            "$permission_only_modules"
+          grep -q '"modules":\["br_netfilter"\]' "$permission_only_manifest"
+          grep -q '"kernel-modules":\["br_netfilter"\]' "$permission_only_manifest"
           grep -q '"confinement":{"class":"sandboxed-with-holes","holes":\["capability:CAP_NET_BIND_SERVICE"\],"label":"sandboxed-with-holes (capability:CAP_NET_BIND_SERVICE)"}' \
             "$withHolesExposePath/manifest.json"
           grep -q '"security-label":"aos-pkg-expose-smoke"' \

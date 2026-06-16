@@ -55,6 +55,7 @@ use aos_cache::AuthOptions;
 use aos_core::nar::info as narinfo;
 use aos_core::nix::aos_nix_env;
 use clap::ValueEnum as _;
+use serde::Deserialize;
 use serde_json::Value;
 
 use aos_core::output::{OutputMode, Printer};
@@ -76,9 +77,11 @@ use crate::security::{
 };
 use crate::sshkey;
 use crate::types::{
-    CacheEntry, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
-    SbatEntry, SigningKeySource, SigningKeySpec, package_name_bucket, validate_branch_name,
-    validate_channel_name, validate_git_ref_name, validate_package_name, validate_platform_name,
+    CacheEntry, ExposeMeta, FEATURE_EXPOSE_V1, FEATURE_PERMISSIONS_V1, FEATURE_REQUIRES_V1,
+    PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile, RegistryRootConfig,
+    RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec, package_name_bucket,
+    validate_branch_name, validate_channel_name, validate_expose_meta, validate_git_ref_name,
+    validate_package_name, validate_permissions_meta, validate_platform_name,
     validate_registry_name,
 };
 use crate::{
@@ -89,6 +92,12 @@ use crate::{
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+struct PublishExposeManifest {
+    expose: ExposeMeta,
+    permissions: PermissionsMeta,
+}
 
 /// Resolve the registry storage directory for a given registry name.
 fn registry_dir(config: &ApmConfig, registry: Option<&str>) -> Result<PathBuf> {
@@ -1337,6 +1346,8 @@ description = ""
 /// the package as a system root, `--previous` records the predecessor
 /// version for delta upgrades, and `--source-drv` records explicit source
 /// provenance for prebuilt binaries whose deriver is not visible to Nix.
+/// `--expose-manifest` records the RFC-0001 expose and permission metadata
+/// rendered by the package builder.
 ///
 /// # Errors
 ///
@@ -1344,8 +1355,9 @@ description = ""
 /// package name is not safe for registry package paths, when the platform
 /// name is not safe for package metadata, when `--image` and
 /// `--image-format` are not given in pairs, when the `nix path-info` /
-/// `nix-store` queries fail for the store path, or when a file write, the
-/// commit, or the object-store refresh fails.
+/// `nix-store` queries fail for the store path, when `--expose-manifest`
+/// cannot be parsed or validated, or when a file write, the commit, or the
+/// object-store refresh fails.
 ///
 /// # Panics
 ///
@@ -1367,6 +1379,7 @@ pub async fn publish(
     source_drv: Option<&str>,
     image_paths: &[String],
     image_formats: &[String],
+    expose_manifest_path: Option<&str>,
     bless: bool,
     no_ca: bool,
     no_commit: bool,
@@ -1432,6 +1445,9 @@ pub async fn publish(
         .map(|s| s.to_string())
         .unwrap_or_else(default_platform);
     validate_platform_name(&platform)?;
+    let expose_manifest = expose_manifest_path
+        .map(|path| read_publish_expose_manifest(path, pkg_name))
+        .transpose()?;
 
     printer.step(2, 4, "Writing package TOML...");
     let letter = first_letter(pkg_name);
@@ -1461,6 +1477,7 @@ pub async fn publish(
         previous,
         &image_infos,
         source_info.as_ref(),
+        expose_manifest.as_ref(),
     )?;
 
     std::fs::write(&toml_path, &new_content)?;
@@ -1619,6 +1636,7 @@ fn build_package_toml(
     previous: Option<&str>,
     image_infos: &[(String, StorePathInfo, SbFacts)],
     source_info: Option<&StorePathInfo>,
+    expose_manifest: Option<&PublishExposeManifest>,
 ) -> Result<String> {
     let desc = description.unwrap_or("No description");
     let lic = license.unwrap_or("unknown");
@@ -1629,7 +1647,13 @@ fn build_package_toml(
     let source_nar_hash = source_info
         .map(|source| source.nar_hash.as_str())
         .unwrap_or_default();
-    let platform_table = package_platform_table(info, image_infos, source_drv, source_nar_hash);
+    let platform_table = package_platform_table(
+        info,
+        image_infos,
+        source_drv,
+        source_nar_hash,
+        expose_manifest,
+    )?;
 
     if existing.is_empty() {
         let mut package = toml::map::Map::new();
@@ -1733,6 +1757,23 @@ fn build_package_toml(
 
         Ok(toml::to_string_pretty(&toml_val)?)
     }
+}
+
+fn read_publish_expose_manifest(path: &str, package_name: &str) -> Result<PublishExposeManifest> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("reading expose manifest {path}"))?;
+    let mut manifest: PublishExposeManifest = serde_json::from_str(&content)
+        .with_context(|| format!("parsing expose manifest {path}"))?;
+
+    validate_expose_meta(&manifest.expose)
+        .with_context(|| format!("validating expose manifest for package '{package_name}'"))?;
+    if manifest.permissions.confinement.is_none() {
+        manifest.permissions.confinement = Some(manifest.permissions.computed_confinement());
+    }
+    validate_permissions_meta(package_name, &manifest.permissions)
+        .with_context(|| format!("validating permissions manifest for package '{package_name}'"))?;
+
+    Ok(manifest)
 }
 
 /// Secure Boot facts extracted from a signed UKI at publish time.
@@ -2513,7 +2554,8 @@ fn package_platform_table(
     image_infos: &[(String, StorePathInfo, SbFacts)],
     source_drv: &str,
     source_nar_hash: &str,
-) -> toml::Value {
+    expose_manifest: Option<&PublishExposeManifest>,
+) -> Result<toml::Value> {
     let mut table = toml::map::Map::new();
     table.insert("store_path".into(), toml::Value::String(info.path.clone()));
     // No nar_hash/nar_size/references here: the output's content binding and
@@ -2582,7 +2624,50 @@ fn package_platform_table(
         table.insert("images".into(), toml::Value::Array(images));
     }
 
-    toml::Value::Table(table)
+    if let Some(manifest) = expose_manifest {
+        table.insert(
+            "min-format".into(),
+            toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
+        );
+        let mut required_features = vec![
+            toml::Value::String(FEATURE_EXPOSE_V1.to_string()),
+            toml::Value::String(FEATURE_PERMISSIONS_V1.to_string()),
+        ];
+        if !manifest.expose.requires.is_empty() {
+            required_features.push(toml::Value::String(FEATURE_REQUIRES_V1.to_string()));
+        }
+        table.insert(
+            "requires-features".into(),
+            toml::Value::Array(required_features),
+        );
+        let mut references = toml::map::Map::new();
+        references.insert("hashes".into(), toml::Value::Array(Vec::new()));
+        references.insert(
+            "min-format".into(),
+            toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
+        );
+        references.insert(
+            "requires-features".into(),
+            toml::Value::Array(vec![
+                toml::Value::String(FEATURE_EXPOSE_V1.to_string()),
+                toml::Value::String(FEATURE_PERMISSIONS_V1.to_string()),
+                toml::Value::String(FEATURE_REQUIRES_V1.to_string()),
+            ]),
+        );
+        table.insert("references".into(), toml::Value::Table(references));
+        table.insert(
+            "expose".into(),
+            toml::Value::try_from(&manifest.expose)
+                .context("serializing expose manifest metadata")?,
+        );
+        table.insert(
+            "permissions".into(),
+            toml::Value::try_from(&manifest.permissions)
+                .context("serializing permissions manifest metadata")?,
+        );
+    }
+
+    Ok(toml::Value::Table(table))
 }
 
 /// `apr unpublish <PACKAGE> [VERSION]` — removes package metadata from the
@@ -7447,6 +7532,7 @@ pub async fn release(
                 source_drv,
                 image_paths,
                 image_formats,
+                None,
                 bless,
                 false, // no_ca: release honors the registry's content_addressed setting
                 false, // no_commit
@@ -9475,6 +9561,7 @@ mod tests {
             None,
             &[],
             None,
+            None,
         )
         .unwrap();
         assert!(content.contains("name = \"curl\""));
@@ -9518,10 +9605,128 @@ mod tests {
             None,
             &[],
             Some(&source_info),
+            None,
         )
         .unwrap();
         assert!(content.contains("source_drv = \"/nix/store/drv123-curl-8.5.0.drv\""));
         assert!(content.contains("source_nar_hash = \"sha256:source\""));
+    }
+
+    #[test]
+    fn build_package_toml_records_expose_manifest_metadata() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let mut permissions = PermissionsMeta {
+            network: Some(crate::types::NetworkPermission::PrivateOutbound),
+            capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
+            ..PermissionsMeta::default()
+        };
+        permissions.confinement = Some(permissions.computed_confinement());
+        let manifest = PublishExposeManifest {
+            expose: ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: vec!["zlib".into()],
+            },
+            permissions,
+        };
+
+        let content = build_package_toml(
+            "",
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some("Web application"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            None,
+            Some(&manifest),
+        )
+        .unwrap();
+
+        let rendered: toml::Value = toml::from_str(&content).unwrap();
+        let platform = rendered
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.get("x86_64-linux"))
+            .unwrap();
+        assert_eq!(
+            platform.get("min-format").and_then(toml::Value::as_integer),
+            Some(i64::from(PACKAGE_META_FORMAT))
+        );
+        assert_eq!(
+            platform
+                .get("requires-features")
+                .and_then(toml::Value::as_array)
+                .map(|features| {
+                    features
+                        .iter()
+                        .filter_map(toml::Value::as_str)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap(),
+            vec![
+                FEATURE_EXPOSE_V1,
+                FEATURE_PERMISSIONS_V1,
+                FEATURE_REQUIRES_V1,
+            ]
+        );
+        assert_eq!(
+            platform
+                .get("references")
+                .and_then(|references| references.get("min-format"))
+                .and_then(toml::Value::as_integer),
+            Some(i64::from(PACKAGE_META_FORMAT))
+        );
+        assert_eq!(
+            platform
+                .get("expose")
+                .and_then(|expose| expose.get("target"))
+                .and_then(toml::Value::as_str),
+            Some("aos-pkg-webapp.target")
+        );
+        assert_eq!(
+            platform
+                .get("permissions")
+                .and_then(|permissions| permissions.get("network"))
+                .and_then(toml::Value::as_str),
+            Some("private-outbound")
+        );
+        assert_eq!(
+            platform
+                .get("permissions")
+                .and_then(|permissions| permissions.get("confinement"))
+                .and_then(|confinement| confinement.get("label"))
+                .and_then(toml::Value::as_str),
+            Some(
+                "sandboxed-with-holes (network:private-outbound, capability:CAP_NET_BIND_SERVICE)",
+            )
+        );
+
+        let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parsed.expose.as_ref().map(|expose| expose.target.as_str()),
+            Some("aos-pkg-webapp.target")
+        );
+        assert_eq!(
+            parsed.permissions.network,
+            Some(crate::types::NetworkPermission::PrivateOutbound)
+        );
     }
 
     #[test]
@@ -9565,6 +9770,7 @@ references = []
             None,
             &[],
             None,
+            None,
         )
         .unwrap();
         // Should contain both platforms.
@@ -9607,6 +9813,7 @@ references = []
             Some("2026.03"),
             &[("raw".to_string(), img_info, SbFacts::default())],
             None,
+            None,
         )
         .unwrap();
         assert!(content.contains("sysroot = true"));
@@ -9645,6 +9852,7 @@ references = []
             false,
             Some("0.9.0+build\"meta"),
             &[("raw\"image".to_string(), img_info, SbFacts::default())],
+            None,
             None,
         )
         .unwrap();

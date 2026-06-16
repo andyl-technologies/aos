@@ -51,7 +51,7 @@ mkDerivation {
       capabilities = [];
       devices = [];
       host-paths = [];
-      kernel-modules = [];
+      kernel-modules = ["br_netfilter"];
       syscalls = "restricted";
       security-label = "aos.expose-smoke";
     };

@@ -28,10 +28,11 @@
       or (throw "mkDerivation: package must set pname or name");
     renderedExpose =
       if args ? expose
-      then exposeRenderer.render {
-        inherit packageName drv;
-        expose = args.expose;
-      }
+      then
+        exposeRenderer.render {
+          inherit packageName drv;
+          expose = args.expose;
+        }
       else null;
     exposeAttrs =
       if args ? expose

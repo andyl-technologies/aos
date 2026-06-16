@@ -598,6 +598,11 @@ network = "private-outbound"
 capabilities = ["CAP_NET_BIND_SERVICE"]
 host-paths = [{ path = "/srv/webapp", mode = "read-only" }]
 syscalls = "system-service"
+
+[versions.platforms.x86_64-linux.permissions.confinement]
+class = "sandboxed-with-holes"
+label = "sandboxed-with-holes (network:private-outbound, capability:CAP_NET_BIND_SERVICE, host-path:read-only:/srv/webapp, syscalls:system-service)"
+holes = ["network:private-outbound", "capability:CAP_NET_BIND_SERVICE", "host-path:read-only:/srv/webapp", "syscalls:system-service"]
 "#;
 
 #[cfg(test)]
@@ -671,7 +676,7 @@ references = []
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{HostPathMode, NetworkPermission, SyscallProfile};
+    use crate::types::{ConfinementClass, HostPathMode, NetworkPermission, SyscallProfile};
 
     #[test]
     fn parse_curl_x86() {
@@ -743,6 +748,21 @@ mod tests {
         assert_eq!(
             meta.permissions.syscalls,
             Some(SyscallProfile::SystemService)
+        );
+        let confinement = meta.permissions.confinement.as_ref().unwrap();
+        assert_eq!(confinement.class, ConfinementClass::SandboxedWithHoles);
+        assert_eq!(
+            confinement.label,
+            "sandboxed-with-holes (network:private-outbound, capability:CAP_NET_BIND_SERVICE, host-path:read-only:/srv/webapp, syscalls:system-service)"
+        );
+        assert_eq!(
+            confinement.holes,
+            vec![
+                "network:private-outbound".to_string(),
+                "capability:CAP_NET_BIND_SERVICE".to_string(),
+                "host-path:read-only:/srv/webapp".to_string(),
+                "syscalls:system-service".to_string(),
+            ]
         );
     }
 

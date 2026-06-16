@@ -218,6 +218,17 @@ pub enum PackageCommand {
         #[arg(long)]
         registry: Option<String>,
     },
+    /// Show package information
+    Info {
+        /// Package name
+        package: String,
+        /// Show package from this registry
+        #[arg(long)]
+        registry: Option<String>,
+        /// Show permission metadata only
+        #[arg(long)]
+        permissions: bool,
+    },
     /// List packages
     List {
         /// Only installed packages
@@ -600,6 +611,9 @@ pub enum RegistryCommand {
         /// Image format for each --image (repeatable, paired with --image)
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
+        /// Expose manifest.json to publish with package metadata
+        #[arg(long = "expose-manifest")]
+        expose_manifest: Option<String>,
         /// Bless additional content for paths already recorded with different
         /// bits in the store/ graph instead of failing
         #[arg(long)]
@@ -1745,6 +1759,11 @@ pub async fn run(
         PackageCommand::Show { package, registry } => {
             query::show(&config, package, registry.as_deref(), printer).await
         }
+        PackageCommand::Info {
+            package,
+            registry,
+            permissions,
+        } => query::info(&config, package, registry.as_deref(), *permissions, printer).await,
         PackageCommand::List {
             installed,
             upgradable,
@@ -1914,6 +1933,7 @@ async fn run_registry(
             source_drv,
             images,
             image_formats,
+            expose_manifest,
             bless,
             no_ca,
             no_commit,
@@ -1937,6 +1957,7 @@ async fn run_registry(
                 source_drv.as_deref(),
                 images,
                 image_formats,
+                expose_manifest.as_deref(),
                 *bless,
                 *no_ca,
                 *no_commit,

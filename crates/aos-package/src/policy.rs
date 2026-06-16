@@ -40,7 +40,10 @@ pub const DEFAULT_POLICY_PATH: &str = "/etc/aos/policy.toml";
 pub fn admit_package_roots<'a>(metas: impl IntoIterator<Item = &'a PackageMeta>) -> Result<()> {
     let permission_roots: Vec<&PackageMeta> = metas
         .into_iter()
-        .filter(|meta| !meta.permissions.is_empty())
+        .filter(|meta| {
+            meta.permissions
+                .requires_policy_admission_for_package(&meta.name)
+        })
         .collect();
     if permission_roots.is_empty() {
         return Ok(());
@@ -50,7 +53,7 @@ pub fn admit_package_roots<'a>(metas: impl IntoIterator<Item = &'a PackageMeta>)
         .context("loading /etc/aos/policy.toml for permission-bearing package admission")?;
     for meta in permission_roots {
         policy
-            .admit(&meta.permissions)
+            .admit_for_package(&meta.name, &meta.permissions)
             .with_context(|| format!("admitting permissions for package '{}'", meta.name))?;
     }
     Ok(())
@@ -122,7 +125,34 @@ impl HostPolicy {
     /// Returns an error describing the first requested permission that exceeds
     /// this host policy.
     pub fn admit(&self, permissions: &PermissionsMeta) -> Result<()> {
-        validate_permissions_meta("package", permissions)?;
+        self.admit_inner("package", permissions, false)
+    }
+
+    /// Return `Ok(())` when this policy admits a package's requested permissions.
+    ///
+    /// The generated default security label `aos-pkg-<package>` is metadata
+    /// for package-scoped display and does not require a host policy allowlist.
+    /// Custom labels remain policy-controlled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first requested permission that exceeds
+    /// this host policy.
+    pub fn admit_for_package(
+        &self,
+        package_name: &str,
+        permissions: &PermissionsMeta,
+    ) -> Result<()> {
+        self.admit_inner(package_name, permissions, true)
+    }
+
+    fn admit_inner(
+        &self,
+        package_name: &str,
+        permissions: &PermissionsMeta,
+        allow_generated_label: bool,
+    ) -> Result<()> {
+        validate_permissions_meta(package_name, permissions)?;
 
         let network = permissions.network.unwrap_or(NetworkPermission::Private);
         if !self.allows_network(network) {
@@ -172,7 +202,9 @@ impl HostPolicy {
         }
 
         if let Some(label) = &permissions.security_label {
-            if !self.allows_security_label(label) {
+            if !(allow_generated_label && is_generated_security_label(label, package_name))
+                && !self.allows_security_label(label)
+            {
                 bail!("security label '{label}' is not allowed by host policy");
             }
         }
@@ -264,6 +296,10 @@ impl HostPolicy {
                 .iter()
                 .any(|allowed| allowed == label)
     }
+}
+
+fn is_generated_security_label(label: &str, package_name: &str) -> bool {
+    label == format!("aos-pkg-{package_name}")
 }
 
 /// Per-permission host policy overrides.
@@ -359,6 +395,53 @@ syscall-profiles = ["system-service"]
         };
 
         policy.admit(&permissions).unwrap();
+    }
+
+    #[test]
+    fn generated_metadata_alone_does_not_require_policy_admission() {
+        let mut permissions = PermissionsMeta {
+            security_label: Some("aos-pkg-expose-minimal".into()),
+            ..PermissionsMeta::default()
+        };
+        permissions.confinement = Some(permissions.computed_confinement());
+
+        assert!(!permissions.requires_policy_admission());
+        assert!(!permissions.requires_policy_admission_for_package("expose-minimal"));
+
+        permissions.security_label = Some("custom.expose-minimal".into());
+        assert!(permissions.requires_policy_admission_for_package("expose-minimal"));
+
+        permissions.security_label = Some("aos-pkg-expose-minimal".into());
+        permissions.kernel_modules = vec!["br_netfilter".into()];
+        assert!(permissions.requires_policy_admission());
+
+        let policy = HostPolicy::parse_str(
+            r#"
+tier = "restricted"
+kernel-modules = ["br_netfilter"]
+"#,
+        )
+        .unwrap();
+        policy
+            .admit_for_package("expose-minimal", &permissions)
+            .unwrap();
+
+        let err = policy.admit(&permissions).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("security label 'aos-pkg-expose-minimal'"),
+            "got: {err}"
+        );
+
+        permissions.security_label = Some("custom.expose-minimal".into());
+        let err = policy
+            .admit_for_package("expose-minimal", &permissions)
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("security label 'custom.expose-minimal'"),
+            "got: {err}"
+        );
     }
 
     #[test]
