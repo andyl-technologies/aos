@@ -3517,17 +3517,30 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
         let left = self.eval_node(lhs)?;
+        let rhs_span = self.node(rhs)?.span;
+        let right = self.eval_node(rhs)?;
+        self.eval_comparison_values(id, node, op, lhs, lhs_span, left, rhs, rhs_span, right)
+    }
+
+    fn eval_comparison_values(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        op: ComparisonOp,
+        lhs: IrId,
+        lhs_span: Span,
+        left: Value,
+        rhs: IrId,
+        rhs_span: Span,
+        right: Value,
+    ) -> Result<Value, TreeWalkError> {
         match left.tag() {
             ValueTag::Int | ValueTag::Float => {
-                let rhs_span = self.node(rhs)?.span;
-                let right = self.eval_node(rhs)?;
                 let left = self.expect_number(lhs, left, lhs_span)?;
                 let right = self.expect_number(rhs, right, rhs_span)?;
                 Ok(Value::bool(compare_numbers(op, left, right)))
             }
             ValueTag::String => {
-                let rhs_span = self.node(rhs)?.span;
-                let right = self.eval_node(rhs)?;
                 if right.tag() != ValueTag::String {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::Type {
@@ -3541,8 +3554,6 @@ impl<'ir> TreeWalk<'ir> {
                 self.compare_strings(id, node, op, left, right)
             }
             ValueTag::List => {
-                let rhs_span = self.node(rhs)?.span;
-                let right = self.eval_node(rhs)?;
                 if right.tag() != ValueTag::List {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::Type {
@@ -5781,8 +5792,22 @@ mod tests {
     }
 
     #[test]
-    fn less_than_primop_type_checks_operands_left_to_right() {
+    fn less_than_primop_forces_operands_before_type_checks() {
         let ir = lower("builtins.lessThan true (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let rhs = args[1];
+        let rhs_span = ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf(&ir).expect_err("lessThan forces rhs before type check");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: rhs });
+        assert_eq!(error.span(), rhs_span);
+
+        let ir = lower("builtins.lessThan true false");
         let root = ir.arena.node(ir.root).expect("root exists");
         let IrData::PrimOp { args, .. } = root.data else {
             panic!("root is a primop");
@@ -5791,7 +5816,7 @@ mod tests {
         let lhs = args[0];
         let lhs_span = ir.arena.node(lhs).expect("lhs exists").span;
 
-        let error = eval_whnf(&ir).expect_err("lessThan checks lhs before rhs");
+        let error = eval_whnf(&ir).expect_err("lessThan rejects incomparable lhs");
 
         assert_eq!(
             error.kind(),
@@ -9360,7 +9385,7 @@ mod tests {
     }
 
     #[test]
-    fn comparisons_type_check_operands_left_to_right() {
+    fn comparisons_force_operands_before_type_checks() {
         let rhs_ir = lower("1 < true");
         let root = rhs_ir.arena.node(rhs_ir.root).expect("root exists");
         let IrData::Binary { rhs, .. } = root.data else {
@@ -9441,22 +9466,15 @@ mod tests {
 
         let lhs_ir = lower("false < (1 / 0)");
         let root = lhs_ir.arena.node(lhs_ir.root).expect("root exists");
-        let IrData::Binary { lhs, .. } = root.data else {
+        let IrData::Binary { rhs, .. } = root.data else {
             panic!("comparison root has binary payload");
         };
-        let lhs_span = lhs_ir.arena.node(lhs).expect("lhs exists").span;
+        let rhs_span = lhs_ir.arena.node(rhs).expect("rhs exists").span;
 
-        let error = eval_whnf(&lhs_ir).expect_err("boolean lhs is invalid before rhs");
+        let error = eval_whnf(&lhs_ir).expect_err("rhs evaluation error wins before lhs type");
 
-        assert_eq!(
-            error.kind(),
-            TreeWalkErrorKind::Type {
-                id: lhs,
-                expected: "number, string, or list",
-                actual: ValueTag::Bool,
-            }
-        );
-        assert_eq!(error.span(), lhs_span);
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: rhs });
+        assert_eq!(error.span(), rhs_span);
     }
 
     #[test]
