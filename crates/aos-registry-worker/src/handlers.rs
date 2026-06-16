@@ -169,13 +169,23 @@ async fn hub_home(env: &Env) -> Result<Response> {
     html(render::home_page(&registries))
 }
 
-/// Apply the D1 read schema (a one-shot operational convenience).
+/// Apply the canonical D1 schema (a one-shot operational convenience).
 ///
 /// Prefer `wrangler d1 migrations apply` in production; this exists so a fresh
 /// database can be initialized without the wrangler migrations workflow.
+///
+/// This runs the **shared** schema: constructing
+/// [`aos_registry_core::db::Database`] over the [`D1Backend`](crate::d1backend::D1Backend)
+/// applies the exact `MIGRATIONS` the native hub uses (RFC-0004 Phase 5 — the
+/// Worker and the native hub share one `Database`), rather than a Worker-local
+/// read-only schema subset.
 async fn init_schema(env: &Env) -> Result<Response> {
+    use aos_registry_core::db::Database;
+
     let db_handle = env.d1(D1_BINDING)?;
-    Db::new(&db_handle).migrate().await?;
+    Database::with_backend(Box::new(crate::d1backend::D1Backend::new(db_handle)))
+        .await
+        .map_err(|err| worker::Error::RustError(format!("applying D1 migrations: {err:#}")))?;
     Response::ok("schema applied")
 }
 
