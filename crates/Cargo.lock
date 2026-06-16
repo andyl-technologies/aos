@@ -359,6 +359,7 @@ dependencies = [
  "rand 0.9.4",
  "rsa",
  "rusqlite",
+ "send_wrapper",
  "serde",
  "serde_json",
  "sha2 0.10.9",

@@ -42,6 +42,59 @@ use serde::Serialize;
 
 use crate::service::{RpcError, RpcService};
 
+#[cfg(target_arch = "wasm32")]
+use send_wrapper::SendWrapper;
+
+// --- The wasm `Send` bridge ---------------------------------------------------
+//
+// `axum`'s `Handler` and `Router` state demand `Send + Sync`, but the Worker's
+// D1-backed `RpcService` is `?Send` (its `Backend`/`RateLimiter` futures hold
+// non-`Send` JS values). On the single-threaded Worker that is sound, so a
+// `SendWrapper` (which is unconditionally `Send + Sync` and panics only if
+// touched off its origin thread — impossible with one thread) bridges the gap.
+// On native, where threads are real, the bridge is the identity: the service is
+// genuinely `Send + Sync`.
+
+/// The axum state type carrying the shared service, made `Send + Sync`.
+#[cfg(not(target_arch = "wasm32"))]
+type SharedState = Arc<RpcService>;
+/// See the native definition — `SendWrapper`-wrapped on the wasm32 Worker.
+#[cfg(target_arch = "wasm32")]
+type SharedState = SendWrapper<Arc<RpcService>>;
+
+/// Wrap the service as axum state (identity on native, `SendWrapper` on wasm).
+#[cfg(not(target_arch = "wasm32"))]
+fn into_state(svc: Arc<RpcService>) -> SharedState {
+    svc
+}
+/// See the native definition.
+#[cfg(target_arch = "wasm32")]
+fn into_state(svc: Arc<RpcService>) -> SharedState {
+    SendWrapper::new(svc)
+}
+
+/// Recover the `Arc<RpcService>` from axum state (identity on native).
+#[cfg(not(target_arch = "wasm32"))]
+fn from_state(state: SharedState) -> Arc<RpcService> {
+    state
+}
+/// See the native definition — `take()` is sound on the single-threaded Worker.
+#[cfg(target_arch = "wasm32")]
+fn from_state(state: SharedState) -> Arc<RpcService> {
+    state.take()
+}
+
+/// Make a handler future satisfy axum's `Send` bound (identity on native).
+#[cfg(not(target_arch = "wasm32"))]
+fn send_bridge<F: std::future::Future>(fut: F) -> F {
+    fut
+}
+/// See the native definition — `SendWrapper` makes the `?Send` future `Send`.
+#[cfg(target_arch = "wasm32")]
+fn send_bridge<F: std::future::Future>(fut: F) -> SendWrapper<F> {
+    SendWrapper::new(fut)
+}
+
 /// Render an [`RpcError`] as the Connect-JSON error envelope plus HTTP status.
 fn error_response(err: &RpcError) -> Response {
     let status = StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -105,10 +158,11 @@ macro_rules! rpc_route {
         $router.route(
             $path,
             post(
-                |State(svc): State<Arc<RpcService>>, headers: HeaderMap, body: Bytes| {
-                    unary(svc, headers, body, |svc, auth, req| async move {
+                |State(state): State<SharedState>, headers: HeaderMap, body: Bytes| {
+                    let svc = from_state(state);
+                    send_bridge(unary(svc, headers, body, |svc, auth, req| async move {
                         svc.$method(auth.as_deref(), req).await
-                    })
+                    }))
                 },
             ),
         )
@@ -158,5 +212,5 @@ pub fn router(service: Arc<RpcService>) -> Router {
     r = rpc_route!(r, "/aos.registry.v1.WebhookService/DeleteWebhook", delete_webhook);
     // PublishService
     r = rpc_route!(r, "/aos.registry.v1.PublishService/MintUploadCredentials", mint_upload_credentials);
-    r.with_state(service)
+    r.with_state(into_state(service))
 }
