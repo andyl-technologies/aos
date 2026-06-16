@@ -31,4 +31,6 @@ pub use hub::RegistryHubClient;
 // Re-export proto types that consumers need.
 pub use aos_proto::aos::build::v1::BuildEvent;
 pub use aos_proto::aos::gc::v1::{EvictionCandidate, GcResponse};
-pub use aos_proto::aos::registry::v1::{Channel, PackageSummary, Registry, Release};
+pub use aos_proto::aos::registry::v1::{
+    Binding, Channel, Org, PackageSummary, Project, Registry, Release,
+};
