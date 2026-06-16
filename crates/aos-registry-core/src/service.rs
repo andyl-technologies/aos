@@ -1539,4 +1539,115 @@ impl RpcService {
             expires_at,
         })
     }
+
+    /// `ConfigService.RevertChangeset` — draft and apply a forward revert.
+    ///
+    /// Drafts the snapshot-targeted forward revert ([`crate::config::revert`])
+    /// and immediately applies it, returning the new revert change-set. The
+    /// revert re-enters the same apply path, so a `registry`-visibility
+    /// revision's revert calls [`Database::set_registry_visibility`] again.
+    ///
+    /// Authz approximates the RFC's "same permission the original change
+    /// required" as `registry.configure` on the change-set's scope — the admin+
+    /// verb gating the SQL-backed configuration this engine records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::NotFound`] for an unknown `change_id`,
+    /// [`RpcError::PermissionDenied`] when the caller lacks `registry.configure`
+    /// on the change-set's scope, [`RpcError::FailedPrecondition`] when the
+    /// change-set has no revisions to revert, and [`RpcError::Internal`] on
+    /// database failure.
+    pub async fn revert_changeset(
+        &self,
+        auth: Option<&str>,
+        req: pb::RevertChangesetRequest,
+    ) -> Result<pb::RevertChangesetResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let summary = self
+            .db
+            .changeset(&req.change_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("changeset"))?;
+        let scope = Scope::parse(&summary.scope);
+        self.require_permission(&claims, Permission::RegistryConfigure, &scope)
+            .await?;
+
+        let Some(actor) = claims_principal(&claims) else {
+            return Err(RpcError::PermissionDenied("unknown principal kind".into()));
+        };
+        let actor_label = format!("{}:{}", claims.owner_kind, claims.owner_id);
+        let original = crate::config::ChangeId(summary.change_id.clone());
+
+        // Draft the forward revert; live state for conflict detection comes from
+        // the registries table (the object type this phase mutates).
+        let draft = crate::config::revert(
+            &self.db,
+            &original,
+            &actor,
+            &actor_label,
+            |object_type: &str, object_id: &str| {
+                let is_registry = object_type == "registry";
+                let object_id = object_id.to_string();
+                async move {
+                    if is_registry {
+                        self.db
+                            .registry_by_slug(&object_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|r| serde_json::json!({ "visibility": r.visibility }))
+                    } else {
+                        None
+                    }
+                }
+            },
+        )
+        .await
+        .map_err(|e| RpcError::FailedPrecondition(format!("{e:#}")))?;
+
+        // Apply the revert draft: re-run each revision's live mutation.
+        crate::config::apply(&self.db, &draft.change_id, "changeset.revert", |rev| {
+            let rev = rev.clone();
+            async move { apply_revert_revision(&self.db, &rev).await }
+        })
+        .await
+        .map_err(RpcError::internal)?;
+
+        let reverted = self
+            .db
+            .changeset(draft.change_id.as_str())
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("revert change-set vanished")))?;
+        Ok(pb::RevertChangesetResponse {
+            changeset: Some(changeset_message(reverted)),
+        })
+    }
+}
+
+/// Apply one revision of a revert draft to its live object.
+///
+/// Only `registry`-visibility revisions carry a live mutation this phase;
+/// `token`/`invitation` exemption revisions are records-only (no live credential
+/// or grant is resurrected), so they apply as no-ops.
+async fn apply_revert_revision(
+    db: &Database,
+    revision: &crate::config::Revision,
+) -> anyhow::Result<()> {
+    if revision.object_type == "registry" {
+        if let Some(visibility) = revision
+            .new_json
+            .as_ref()
+            .and_then(|v| v.get("visibility"))
+            .and_then(|v| v.as_str())
+        {
+            if let Some(record) = db.registry_by_slug(&revision.object_id).await? {
+                db.set_registry_visibility(record.id, visibility).await?;
+            }
+        }
+    }
+    Ok(())
 }
