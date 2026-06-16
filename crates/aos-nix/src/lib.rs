@@ -24,12 +24,14 @@
 //!   tree-walk oracle.
 //! - [`heap`] owns the Phase-1 one-shot bump arena used for evaluator heap
 //!   objects.
+//! - [`attrs`] owns the Phase-1 flat immutable attribute-set representation.
 //!
 //! Future Phase-1 modules land below this boundary in the order specified by
-//! the RFC: `attrs`, `eval`, `runtime`, and `store`.
+//! the RFC: `eval`, `runtime`, and `store`.
 
 #![forbid(unsafe_code)]
 
+pub mod attrs;
 pub mod cache;
 pub mod compile;
 pub mod error;
