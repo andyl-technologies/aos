@@ -70,6 +70,8 @@ pub mod sql;
 #[cfg(target_arch = "wasm32")]
 pub mod d1;
 #[cfg(target_arch = "wasm32")]
+pub mod d1backend;
+#[cfg(target_arch = "wasm32")]
 pub mod facade;
 #[cfg(target_arch = "wasm32")]
 pub mod handlers;
