@@ -11,9 +11,10 @@
   (`handlers.rs`/`reads.rs`/`facade.rs`) is then deleted. The wasm-feasibility
   spike that gated the handler shape is **done** — results in
   "[Spike results](#spike-results-2026-06-16-what-actually-compiles-to-wasm)"
-  below; it forced one amendment to the RPC transport (the `connectrpc`
-  *server* runtime cannot target wasm). Still gated on the D1 transaction
-  audit for the write sites.
+  below; it forced the RPC transport decision (the `connectrpc` *server*
+  runtime cannot target wasm, so the hub serves a single **Connect-JSON**
+  transport over shared `axum` handlers — see below). Still gated on the D1
+  transaction audit for the write sites.
 - **Audience:** `crates/aos-registry-hub/`, `crates/aos-registry-worker/`,
   `crates/aos-proto/`, the `aos` CLI (`crates/aos/`, `crates/aos-remote/`).
 
