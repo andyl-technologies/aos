@@ -1,3 +1,24 @@
+//! The AOS pack wire format ("AOSP") and pack import.
+//!
+//! A *pack* batches multiple NAR-serialized store paths into one upload so
+//! a client can push a whole closure in a single
+//! `POST /{view}/upload-pack` request instead of one PUT per path.
+//!
+//! # Wire format (version 1, all integers big-endian)
+//!
+//! ```text
+//! header:   "AOSP" magic (4) | version u32 (4) | entry count u32 (4)
+//! entry *N: store hash, 32 hex ASCII bytes | NAR size u64 (8) | NAR data
+//! trailer:  SHA-256 digest of everything before it (32)
+//! ```
+//!
+//! [`create_pack`] and [`parse_pack`] round-trip this format;
+//! [`import_pack`] feeds each entry to `nix-store --import` and then
+//! security-screens the resulting paths with [`validate_imported_path`],
+//! which only admits `.drv` files and content-addressed (fixed-output)
+//! paths — anything else could smuggle arbitrary binaries into the store
+//! under an input-addressed name.
+
 use sha2::{Digest, Sha256};
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
@@ -16,11 +37,20 @@ const TRAILER_SIZE: usize = 32; // SHA-256 digest
 pub struct PackEntry {
     /// 32-character hex store path hash.
     pub hash: String,
-    /// Raw NAR data.
+    /// Raw NAR data (as produced by `nix-store --export`).
     pub nar_data: Vec<u8>,
 }
 
-/// Parse a pack from its wire format.
+/// Parses a pack from its wire format into its entries.
+///
+/// The trailing SHA-256 checksum is verified before any entry is parsed,
+/// so a corrupted upload is rejected wholesale.
+///
+/// # Errors
+///
+/// Returns a descriptive message if the data is too short, the checksum
+/// does not match, the magic or version is wrong, an entry is truncated or
+/// has a non-UTF-8 hash, or unconsumed bytes remain after the last entry.
 pub fn parse_pack(data: &[u8]) -> Result<Vec<PackEntry>, String> {
     if data.len() < HEADER_SIZE + TRAILER_SIZE {
         return Err("data too short for pack header and trailer".into());
@@ -113,7 +143,10 @@ pub fn parse_pack(data: &[u8]) -> Result<Vec<PackEntry>, String> {
     Ok(entries)
 }
 
-/// Serialize entries into the pack wire format.
+/// Serializes entries into the pack wire format, including the header and
+/// SHA-256 trailer.
+///
+/// The output round-trips through [`parse_pack`].
 pub fn create_pack(entries: &[PackEntry]) -> Vec<u8> {
     let mut buf = Vec::new();
 
@@ -136,9 +169,28 @@ pub fn create_pack(entries: &[PackEntry]) -> Vec<u8> {
     buf
 }
 
-/// Validate that an imported store path is safe to accept.
-/// Returns Ok(()) if the path is a .drv or content-addressed (fixed-output) path.
-/// Returns Err with a reason string if the path should be rejected.
+/// Validates that an imported store path is safe to accept.
+///
+/// Only two classes of path are admitted:
+///
+/// - `.drv` files — build recipes, not binaries, so always safe; and
+/// - content-addressed (fixed-output) paths, detected by the presence of a
+///   `ca` field in `nix path-info --json` output — their store hash is
+///   derived from their contents, so a client cannot substitute malicious
+///   bytes under a trusted name.
+///
+/// Everything else (regular input-addressed build outputs) is rejected;
+/// such paths must be produced by the server's own builds instead of being
+/// uploaded directly.
+///
+/// Note this consults the Nix store, so the path must already be imported
+/// when called (it is used post-import to vet `nix-store --import` results).
+///
+/// # Errors
+///
+/// Returns a reason string if the path is neither a `.drv` nor
+/// content-addressed, or if `nix path-info` cannot be run or its output
+/// cannot be parsed.
 pub fn validate_imported_path(store_path: &str) -> Result<(), String> {
     // .drv files are always safe (they're build recipes, not binaries)
     if store_path.ends_with(".drv") {
@@ -200,7 +252,17 @@ pub fn validate_imported_path(store_path: &str) -> Result<(), String> {
     }
 }
 
-/// Import pack entries into the Nix store via `nix-store --import`.
+/// Imports pack entries into the Nix store via `nix-store --import`.
+///
+/// Entries are imported sequentially; every resulting store path is vetted
+/// with [`validate_imported_path`] before being included in the returned
+/// list. The import stops at the first failure, so earlier entries may
+/// already be in the store when an error is returned.
+///
+/// # Errors
+///
+/// Returns a reason string if spawning or waiting on `nix-store --import`
+/// fails, the import exits non-zero, or an imported path fails validation.
 pub async fn import_pack(entries: &[PackEntry]) -> Result<Vec<String>, String> {
     tracing::info!(count = entries.len(), "importing pack entries");
     let mut paths = Vec::with_capacity(entries.len());

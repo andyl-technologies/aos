@@ -316,12 +316,24 @@ in {
           # CI and the fixer must delete this block (or flip `if` →
           # `if !`). The check is intentionally exit-code only — a
           # tripwire for "bug is gone", not a tight oracle.
-          BIG=$AOS_ROOT/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bigpkg-1.0
+          #
+          # The pusher gets its OWN store root: push now dedups via the
+          # server's /query-missing before uploading, and the server
+          # answers from its nix DB. With the bogus path registered in
+          # the shared $AOS_ROOT DB (as this block originally did), the
+          # server reports it as already cached and the push exits 0
+          # without ever reaching put_nar — firing the tripwire for the
+          # wrong reason. A separate pusher root keeps the path missing
+          # on the server so the broken upload path is still exercised.
+          PUSHER_ROOT=/tmp/tripwire-root
+          mkdir -p "$PUSHER_ROOT/store" "$PUSHER_ROOT/var/nix/db"
+          cp "$AOS_ROOT/var/nix/db/db.sqlite" "$PUSHER_ROOT/var/nix/db/db.sqlite"
+          BIG=$PUSHER_ROOT/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bigpkg-1.0
           mkdir -p "$BIG/share"
           dd if=/dev/urandom of="$BIG/share/blob" bs=1M count=2 status=none
-          sqlite3 "$AOS_ROOT/var/nix/db/db.sqlite" \\
+          sqlite3 "$PUSHER_ROOT/var/nix/db/db.sqlite" \\
             "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$BIG', 'sha256:0000000000000000000000000000000000000000000000000000000000000002', 2100000, 4096, 1, ''');"
-          if ${pkgs.aos}/bin/aos cache push "$BIG" \\
+          if AOS_ROOT=$PUSHER_ROOT ${pkgs.aos}/bin/aos cache push "$BIG" \\
               --to http://127.0.0.1:15000/default --token "$PROV" \\
               --batch-threshold 0 2>&1; then
             echo "CROSS-FAIL FIRED: aos cache push --batch-threshold 0 unexpectedly succeeded." >&2
@@ -365,15 +377,20 @@ in {
       # and download caches survive across commands. The aos-test-
       # agent doesn't spawn a login shell, so without this every
       # command would see a fresh empty $HOME.
+      # `USER=apmfleet` is likewise explicit so the profile path is
+      # stable and can be asserted after install.
       client.succeed(
-          "HOME=/tmp ${pkgs.aos}/bin/apm registry add git://server:9418/test-reg --name test-reg",
+          "HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm registry add --no-verify git://server:9418/test-reg --name test-reg",
           timeout=120,
       )
       # `apm update` walks `git fetch` + `git archive | tar -x` over
       # the fleet's multicast L2, which can comfortably overshoot the
       # 30s default agent timeout under host load (other VMs running,
       # cargo recompiles competing for CPU).
-      client.succeed("HOME=/tmp ${pkgs.aos}/bin/apm update --registry test-reg", timeout=120)
+      client.succeed(
+          "HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm update --registry test-reg",
+          timeout=120,
+      )
       # `extract_packages` strips the leading `packages/` and lands TOMLs
       # under `cache_path()/<registry>/packages/` —
       # `crates/aos-package/src/{update,registry/git}.rs::extract_packages`.
@@ -403,12 +420,16 @@ in {
       # down (each cross-VM round-trip is a flake surface under load).
       client.succeed(
           "mkdir -p ${serverStoreRoot}/store ${serverStoreRoot}/var/nix/db && "
-          "AOS_ROOT=${serverStoreRoot} HOME=/tmp ${pkgs.aos}/bin/apm install ${testPkg.name} --registry test-reg",
+          "AOS_ROOT=${serverStoreRoot} HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm install ${testPkg.name} --registry test-reg",
           timeout=240,
       )
       # Path was absent in step 2; its presence here proves the NAR
       # was transferred over the network from the server's cache.
       client.succeed("test -x ${storePath}/bin/${testPkg.name}")
+      client.succeed(
+          "PROFILE_BIN=/var/lib/profiles/per-user/apmfleet/current/bin/${testPkg.name}; "
+          "test -x \"$PROFILE_BIN\" && \"$PROFILE_BIN\" | grep -qx '${testPkg.name} ${testPkg.version}'"
+      )
 
       # ── 6. Server's cache logged at least one NAR fetch ───────────
       # `nar_handler` in crates/aos-server/src/routes.rs:272 logs the
@@ -425,7 +446,10 @@ in {
       )
 
       # ── 7. Idempotency: second sync exits clean ───────────────────
-      client.succeed("HOME=/tmp ${pkgs.aos}/bin/apm update --registry test-reg", timeout=120)
+      client.succeed(
+          "HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm update --registry test-reg",
+          timeout=120,
+      )
 
       # ── 8. Negative path: registry down ───────────────────────────
       # Stop the git daemon. `apm update` should fail — there's no
@@ -434,7 +458,10 @@ in {
       # doesn't take the binary cache down with it. Restart afterwards
       # so any future operator inspection sees a working server.
       server.succeed("systemctl stop aos-registry-server-gitd.service")
-      client.fail("HOME=/tmp ${pkgs.aos}/bin/apm update --registry test-reg", timeout=120)
+      client.fail(
+          "HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm update --registry test-reg",
+          timeout=120,
+      )
       client.succeed("curl -sf http://server:15000/default/nix-cache-info")
       server.succeed("systemctl start aos-registry-server-gitd.service")
     '';

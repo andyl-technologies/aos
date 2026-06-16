@@ -1,5 +1,24 @@
+//! Package registry loading, resolution, and synchronization.
+//!
+//! A registry is a git repository of per-package TOML metadata files plus a
+//! `store/` realisation graph, mirrored into a local cache directory by
+//! `apm update`. This module ties the pieces together:
+//!
+//! - [`Registry`] loads one registry's cache and answers name, store-path
+//!   hash, and realisation-graph lookups for a single platform.
+//! - [`RegistrySet`] layers multiple registries by priority so the highest
+//!   priority registry that offers a package wins.
+//! - Submodules implement the moving parts: [`git`] (git/dumb-HTTP sync with
+//!   signature and fast-forward verification), [`parse`] (package TOML
+//!   schema), [`store`] (the `store/` realisation graph - dependency shape,
+//!   blessed NAR bytes, and content addresses), [`channel`] and
+//!   [`verify`] (channel rollout partitions and signed tag chains), [`keys`]
+//!   (the committed `keys.toml` trust roster), [`fetch`] and [`pack`]
+//!   (delta/full-pack object transfer), [`objectstore`] and [`static_upload`]
+//!   (the producer-side static dumb-HTTP origin), [`nixcache`] (static Nix
+//!   binary-cache generation), and [`state`] (persisted sync state).
+
 pub mod channel;
-pub mod closures;
 pub mod fetch;
 pub mod git;
 pub mod keys;
@@ -7,8 +26,10 @@ pub mod nixcache;
 pub mod objectstore;
 pub mod pack;
 pub mod parse;
+pub mod sb_certs;
 pub mod state;
 pub mod static_upload;
+pub mod store;
 pub mod verify;
 
 use std::collections::HashMap;
@@ -16,18 +37,24 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use super::types::{ClosureMeta, PackageMeta, RegistryConfig};
-use closures::load_closures;
-use parse::parse_registry;
+use super::types::{PackageMeta, RegistryConfig, TrackingMode};
+use parse::parse_registry_matching;
+use store::StoreMap;
 
 /// A loaded registry with all its packages for the current platform.
 #[derive(Debug)]
 pub struct Registry {
+    /// The registry configuration this instance was loaded from.
     pub config: RegistryConfig,
+    /// Newest matching version of every package offered for the loaded
+    /// platform, keyed by package name.
     pub packages: HashMap<String, PackageMeta>,
-    hash_index: HashMap<String, String>,
-    /// Precomputed closures keyed by store path hash.
-    closures: HashMap<String, ClosureMeta>,
+    /// Reverse index from store path hash to the exact package version that
+    /// produced it (covers all versions, not just the newest).
+    hash_index: HashMap<String, PackageMeta>,
+    /// The registry's `store/` realisation graph: dependency shape, blessed
+    /// NAR bytes, and content addresses, keyed by IA store-path hash.
+    store: StoreMap,
 }
 
 impl Registry {
@@ -35,51 +62,86 @@ impl Registry {
     ///
     /// The cache directory should contain a `packages/` subdirectory with
     /// the registry's TOML package files organized by first letter, and
-    /// optionally a `closures/` directory with precomputed closure files.
+    /// optionally a `store/` realisation graph. A missing `store/` directory
+    /// is tolerated (a legacy registry) and yields an absent graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registry tracking config is invalid, the
+    /// `packages/` directory cannot be read, any package TOML file inside
+    /// it fails to parse, or a present `store/` graph is malformed.
     pub fn load(cache_dir: &Path, config: &RegistryConfig, platform: &str) -> Result<Self> {
         let registry_dir = cache_dir.join(&config.name);
-        let (packages, hash_index) =
-            parse_registry(&registry_dir, platform).with_context(|| {
-                format!(
-                    "loading registry '{}' from {}",
-                    config.name,
-                    registry_dir.display()
-                )
-            })?;
+        let version_req = match config.tracking_mode()? {
+            TrackingMode::Version(req) => Some(req),
+            _ => None,
+        };
+        let (mut packages, mut hash_index) =
+            parse_registry_matching(&registry_dir, platform, version_req.as_ref()).with_context(
+                || {
+                    format!(
+                        "loading registry '{}' from {}",
+                        config.name,
+                        registry_dir.display()
+                    )
+                },
+            )?;
 
-        let closures = load_closures(&registry_dir).unwrap_or_default();
+        // The realisation graph is signed security data: a malformed or
+        // misfiled record fails the registry load rather than degrading
+        // silently.
+        let store = StoreMap::load(&registry_dir)
+            .with_context(|| format!("loading store/ graph for registry '{}'", config.name))?;
+
+        // Package TOMLs no longer carry nar_hash/nar_size/references - the
+        // graph is the single authority. Backfill the in-memory metas from a
+        // root realisation so display/verify consumers keep working; legacy
+        // registries still populate them from the TOML.
+        for meta in packages.values_mut().chain(hash_index.values_mut()) {
+            enrich_meta_from_store(meta, &store);
+        }
 
         Ok(Self {
             config: config.clone(),
             packages,
             hash_index,
-            closures,
+            store,
         })
     }
 
-    /// Look up a package by name.
+    /// Returns the registry's `store/` realisation graph.
+    pub fn store_map(&self) -> &StoreMap {
+        &self.store
+    }
+
+    /// Looks up the newest version of a package by name.
     pub fn get(&self, name: &str) -> Option<&PackageMeta> {
         self.packages.get(name)
     }
 
-    /// Look up a package by store path hash.
+    /// Looks up a package version by its store path hash.
+    ///
+    /// Unlike [`Registry::get`], this resolves any published version whose
+    /// output landed at that hash, which is what closure walking and rollback
+    /// metadata rebuilds need.
     pub fn get_by_hash(&self, hash: &str) -> Option<&PackageMeta> {
-        self.hash_index
-            .get(hash)
-            .and_then(|name| self.packages.get(name))
+        self.hash_index.get(hash)
     }
 
-    /// Get the precomputed closure for a store path hash, if available.
-    pub fn get_closure(&self, hash: &str) -> Option<&ClosureMeta> {
-        self.closures.get(hash)
+    /// Direct dependency IA hashes of a store path, from the `store/` graph.
+    pub fn direct_deps(&self, hash: &str) -> Vec<String> {
+        self.store.direct_deps(hash)
     }
 
-    /// List all package names.
+    /// Lists all package names offered by this registry (unordered).
     pub fn names(&self) -> Vec<&str> {
         self.packages.keys().map(|s| s.as_str()).collect()
     }
 
-    /// Search packages by pattern (name + description).
+    /// Searches packages by a case-insensitive substring pattern.
+    ///
+    /// Matches against the package name, and also the description unless
+    /// `names_only` is set.
     pub fn search(&self, pattern: &str, names_only: bool) -> Vec<&PackageMeta> {
         let pattern_lower = pattern.to_lowercase();
         self.packages
@@ -103,13 +165,24 @@ pub struct RegistrySet {
 }
 
 impl RegistrySet {
-    /// Create a new registry set from pre-loaded registries.
-    /// Registries should already be sorted by priority (highest first).
+    /// Creates a new registry set from pre-loaded registries.
+    ///
+    /// Registries should already be sorted by priority (highest first);
+    /// [`RegistrySet::resolve`] returns the first match in iteration order.
     pub fn new(registries: Vec<Registry>) -> Self {
         Self { registries }
     }
 
-    /// Load all enabled registries from the cache directory.
+    /// Loads all enabled registries from the cache directory.
+    ///
+    /// Registries that fail to load (typically because they have not been
+    /// synced yet) are skipped with a warning on stderr rather than failing
+    /// the whole set.
+    ///
+    /// # Errors
+    ///
+    /// Currently never returns an error; the `Result` is kept for forward
+    /// compatibility with stricter loading policies.
     pub fn load(cache_dir: &Path, configs: &[&RegistryConfig], platform: &str) -> Result<Self> {
         let mut registries = Vec::new();
         for config in configs {
@@ -125,8 +198,8 @@ impl RegistrySet {
         Ok(Self::new(registries))
     }
 
-    /// Resolve a package name: returns the package from the highest-priority
-    /// registry that offers it.
+    /// Resolves a package name to the package offered by the
+    /// highest-priority registry, together with that registry.
     pub fn resolve(&self, name: &str) -> Option<(&Registry, &PackageMeta)> {
         for reg in &self.registries {
             if let Some(meta) = reg.get(name) {
@@ -136,7 +209,7 @@ impl RegistrySet {
         None
     }
 
-    /// Resolve a store path hash within a specific registry.
+    /// Resolves a store path hash within a specific registry.
     ///
     /// Used for registry-scoped closure walking: all dependencies of a
     /// package resolve from the same registry that provided it.
@@ -147,16 +220,15 @@ impl RegistrySet {
             .and_then(|r| r.get_by_hash(hash))
     }
 
-    /// Get the precomputed closure for a store path hash within a specific
-    /// registry.
-    pub fn get_closure_in(&self, registry_name: &str, hash: &str) -> Option<&ClosureMeta> {
+    /// Returns the `store/` realisation graph of a specific registry.
+    pub fn store_map_in(&self, registry_name: &str) -> Option<&StoreMap> {
         self.registries
             .iter()
             .find(|r| r.config.name == registry_name)
-            .and_then(|r| r.get_closure(hash))
+            .map(Registry::store_map)
     }
 
-    /// Get all versions of a package across registries (for `apm policy`).
+    /// Returns all versions of a package across registries (for `apm policy`).
     ///
     /// Returns entries from all registries, ordered by priority (highest first).
     pub fn all_versions(&self, name: &str) -> Vec<(&Registry, &PackageMeta)> {
@@ -166,19 +238,79 @@ impl RegistrySet {
             .collect()
     }
 
-    /// Get a reference to a specific registry by name.
+    /// Returns a reference to a specific registry by name.
     pub fn get_registry(&self, name: &str) -> Option<&Registry> {
         self.registries.iter().find(|r| r.config.name == name)
     }
 
-    /// Iterate over all registries.
+    /// Returns all registries in priority order (highest first).
     pub fn registries(&self) -> &[Registry] {
         &self.registries
+    }
+
+    /// Builds the per-transaction trust context, seeded from the **whole
+    /// graph closure** of each root (RFC-0005 §2.6).
+    ///
+    /// `roots` pairs each closure root's store-path hash with the name of the
+    /// registry that resolved it. For a registry that publishes a `store/`
+    /// graph, every member reachable from the root by dependency edges —
+    /// including anonymous, non-package members — is attributed to that
+    /// registry's graph, so totality and download verification cover every
+    /// byte that gets imported, not just the published packages. A legacy
+    /// registry (no graph) contributes nothing, so its members fall through
+    /// to the unauthenticated narinfo path. Each path is judged against
+    /// *that* registry's graph (never a cross-registry union).
+    pub fn trust_context_for_roots<'a>(
+        &'a self,
+        roots: &[(&str, &str)],
+    ) -> store::TrustContext<'a> {
+        let mut ctx = store::TrustContext::new();
+        for (registry_name, root_hash) in roots {
+            if let Some(registry) = self.get_registry(registry_name) {
+                let map = registry.store_map();
+                if map.is_present() {
+                    for member in map.reachable(root_hash) {
+                        ctx.insert(member, map);
+                    }
+                }
+            }
+        }
+        ctx
     }
 }
 
 /// Re-export `store_path_hash` for use by other modules.
 pub use parse::store_path_hash;
+
+/// Fill a meta's `nar_hash`/`nar_size`/`references` from the realisation
+/// graph when the TOML did not carry them (post-RFC-0005 registries). A
+/// blessed NAR supplies the display/verify values and the graph's edges
+/// supply `references`; verification proper checks the full blessed set and
+/// the whole graph closure, not these single values. RFC-0005 §2.8 step 1
+/// requires this backfill so sysroot containment/lock checks and size
+/// summaries keep working when the TOML omits the legacy fields.
+fn enrich_meta_from_store(meta: &mut PackageMeta, store: &StoreMap) {
+    let hash = store_path_hash(&meta.store_path);
+    if meta.references.is_empty() {
+        let deps = store.direct_deps(hash);
+        if !deps.is_empty() {
+            meta.references = deps;
+        }
+    }
+    if !meta.nar_hash.is_empty() && meta.nar_size != 0 {
+        return;
+    }
+    let nars = store.blessed_nars(hash);
+    let Some(nar) = nars.first() else {
+        return;
+    };
+    if meta.nar_hash.is_empty() {
+        meta.nar_hash = nar.nar_hash();
+    }
+    if meta.nar_size == 0 {
+        meta.nar_size = nar.size;
+    }
+}
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -186,28 +318,48 @@ pub(crate) mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    use super::closures::{CURL_CLOSURE, ZLIB_CLOSURE};
-    use super::parse::{CURL_TOML, ZLIB_TOML};
+    use super::parse::{CURL_TOML, MULTI_VERSION_TOML, ZLIB_TOML};
+
+    /// A 52-char nixbase32 SHA-256 digest for store-record fixtures.
+    pub(crate) const FIX_NAR: &str = "1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy";
+
+    /// curl's store record: depends on zlib (`r4q1m2kp8v3x`) plus three
+    /// store paths not published as packages.
+    pub(crate) fn curl_store_record() -> (&'static str, String) {
+        (
+            "h7j3k8l2m9n4",
+            format!(
+                "nar:sha256:{FIX_NAR}:3145728\n\
+                 \tia:sha256:r4q1m2kp8v3x\n\
+                 \tia:sha256:xr5is7by89v3q\n\
+                 \tia:sha256:q8mn2pv73w0x\n\
+                 \tia:sha256:kl9m3n0p5p6q\n"
+            ),
+        )
+    }
+
+    /// zlib's store record: a leaf.
+    pub(crate) fn zlib_store_record() -> (&'static str, String) {
+        ("r4q1m2kp8v3x", format!("nar:sha256:{FIX_NAR}:524288\n"))
+    }
 
     /// Helper: create a registry in a temp directory from TOML test fixtures.
-    ///
-    /// Optionally writes closure files when `closure_files` is non-empty.
     pub(crate) fn make_registry(
         tmp: &TempDir,
         name: &str,
         priority: u32,
         toml_files: &[(&str, &str)],
     ) -> Registry {
-        make_registry_with_closures(tmp, name, priority, toml_files, &[])
+        make_registry_with_store(tmp, name, priority, toml_files, &[])
     }
 
-    /// Helper: create a registry with both TOML and closure files.
-    pub(crate) fn make_registry_with_closures(
+    /// Helper: create a registry with TOML files and `store/` records.
+    pub(crate) fn make_registry_with_store(
         tmp: &TempDir,
         name: &str,
         priority: u32,
         toml_files: &[(&str, &str)],
-        closure_files: &[(&str, &str)],
+        store_records: &[(&str, String)],
     ) -> Registry {
         let reg_dir = tmp.path().join(name);
         let pkg_dir = reg_dir.join("packages");
@@ -218,12 +370,10 @@ pub(crate) mod tests {
             fs::write(dir.join(format!("{pkg_name}.toml")), content).unwrap();
         }
 
-        if !closure_files.is_empty() {
-            let closures_dir = reg_dir.join("closures");
-            fs::create_dir_all(&closures_dir).unwrap();
-            for (hash, content) in closure_files {
-                fs::write(closures_dir.join(hash), content).unwrap();
-            }
+        for (ia, content) in store_records {
+            let dir = reg_dir.join(store::STORE_DIR).join(&ia[..2]);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(ia), content).unwrap();
         }
 
         let config = RegistryConfig {
@@ -261,6 +411,39 @@ pub(crate) mod tests {
         let reg = make_registry(&tmp, "test", 500, &[("curl", CURL_TOML)]);
         let meta = reg.get_by_hash("h7j3k8l2m9n4").unwrap();
         assert_eq!(meta.name, "curl");
+    }
+
+    #[test]
+    fn registry_load_applies_version_tracking_constraint() {
+        let tmp = TempDir::new().unwrap();
+        let reg_dir = tmp.path().join("test");
+        let pkg_dir = reg_dir.join("packages").join("t");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("tool.toml"), MULTI_VERSION_TOML).unwrap();
+
+        let config = RegistryConfig {
+            name: "test".to_string(),
+            url: "https://registry.example.com/test".to_string(),
+            priority: 500,
+            enabled: true,
+            commit: None,
+            branch: None,
+            channel: None,
+            tag: None,
+            version: Some("^1.0".to_string()),
+            pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            upload_auth: None,
+            signing_keys: Default::default(),
+            signing: None,
+        };
+
+        let reg = Registry::load(tmp.path(), &config, "x86_64-linux").unwrap();
+
+        assert_eq!(reg.get("tool").unwrap().version, "1.0.0");
+        assert!(reg.get_by_hash("oldhash111111").is_some());
+        assert!(reg.get_by_hash("newhash222222").is_none());
     }
 
     #[test]
@@ -349,57 +532,56 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn registry_loads_closures() {
+    fn registry_loads_store_graph() {
         let tmp = TempDir::new().unwrap();
-        let core = make_registry_with_closures(
+        let core = make_registry_with_store(
             &tmp,
             "aos-core",
             500,
             &[("curl", CURL_TOML), ("zlib", ZLIB_TOML)],
-            &[
-                ("h7j3k8l2m9n4", CURL_CLOSURE),
-                ("r4q1m2kp8v3x", ZLIB_CLOSURE),
-            ],
+            &[curl_store_record(), zlib_store_record()],
         );
 
-        // Closures are available.
-        let curl_closure = core.get_closure("h7j3k8l2m9n4").unwrap();
-        assert_eq!(curl_closure.members.len(), 5);
-        assert_eq!(curl_closure.root, "h7j3k8l2m9n4");
+        // Graph is present; curl's edges and blessed bytes are available.
+        assert!(core.store_map().is_present());
+        assert_eq!(core.direct_deps("h7j3k8l2m9n4").len(), 4);
+        assert!(
+            core.direct_deps("h7j3k8l2m9n4")
+                .contains(&"r4q1m2kp8v3x".to_string())
+        );
+        assert_eq!(core.store_map().blessed_nars("r4q1m2kp8v3x").len(), 1);
 
-        let zlib_closure = core.get_closure("r4q1m2kp8v3x").unwrap();
-        assert_eq!(zlib_closure.members.len(), 1);
-
-        // Missing closure returns None.
-        assert!(core.get_closure("nonexistent").is_none());
+        // Unmapped path has no record.
+        assert!(core.store_map().get("nonexistent").is_none());
+        assert!(core.direct_deps("nonexistent").is_empty());
     }
 
     #[test]
-    fn registry_set_get_closure_in() {
+    fn registry_set_store_map_in() {
         let tmp = TempDir::new().unwrap();
-        let core = make_registry_with_closures(
+        let core = make_registry_with_store(
             &tmp,
             "aos-core",
             500,
             &[("curl", CURL_TOML)],
-            &[("h7j3k8l2m9n4", CURL_CLOSURE)],
+            &[curl_store_record()],
         );
         let set = RegistrySet::new(vec![core]);
 
-        let closure = set.get_closure_in("aos-core", "h7j3k8l2m9n4");
-        assert!(closure.is_some());
-        assert_eq!(closure.unwrap().members.len(), 5);
+        let map = set.store_map_in("aos-core").unwrap();
+        assert!(map.get("h7j3k8l2m9n4").is_some());
 
         // Wrong registry.
-        assert!(set.get_closure_in("aos-extra", "h7j3k8l2m9n4").is_none());
+        assert!(set.store_map_in("aos-extra").is_none());
     }
 
     #[test]
-    fn registry_without_closures_dir() {
+    fn registry_without_store_dir_is_legacy() {
         let tmp = TempDir::new().unwrap();
         let core = make_registry(&tmp, "aos-core", 500, &[("curl", CURL_TOML)]);
 
-        // No closures dir — get_closure returns None.
-        assert!(core.get_closure("h7j3k8l2m9n4").is_none());
+        // No store/ dir - graph reads as not-present (legacy registry).
+        assert!(!core.store_map().is_present());
+        assert!(core.store_map().get("h7j3k8l2m9n4").is_none());
     }
 }

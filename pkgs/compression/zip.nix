@@ -11,7 +11,15 @@ in
     inherit version;
 
     src = fetchurl {
+      # downloads.sourceforge.net geo-redirects to a regional mirror,
+      # and the EU mirror the OVH cluster lands on serves corrupted
+      # bytes for zip30.tar.gz (sha256 8e6aec9b… instead of the
+      # canonical f0e8bb1f…), failing the FOD with HASH_MISMATCH.
+      # Direct, non-redirected mirrors that reliably serve the
+      # canonical bytes come first; sourceforge stays as a last resort.
       urls = [
+        "https://ftp.osuosl.org/pub/blfs/conglomeration/zip/zip30.tar.gz"
+        "https://src.fedoraproject.org/repo/pkgs/zip/zip30.tar.gz/7b74551e63f8ee6aab6fbc86676c0d37/zip30.tar.gz"
         "https://downloads.sourceforge.net/infozip/zip30.tar.gz"
       ];
       hash = "sha256-8Oi7H5t+sLAShUlaJpnfOkt2Z4TBdlqPGu7fY8CAY2k=";

@@ -1,3 +1,17 @@
+//! The `aos cache push` operation: upload closure paths to a cache.
+//!
+//! Push resolves installables to store paths, enumerates their closure,
+//! asks the [`CacheBackend`] which paths it is missing, and uploads each
+//! missing path as a compressed NAR plus a `.narinfo` metadata file.
+//!
+//! For AOS servers (backends where [`CacheBackend::supports_pack`] is
+//! true), small NARs are accumulated into *packs* — concatenated
+//! `nix-store --export` streams uploaded in one request — to amortise
+//! per-request overhead. Paths are uploaded in dependency order
+//! (references before referrers) so the server can import each entry as
+//! it arrives.
+
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -8,7 +22,7 @@ use tokio::sync::Semaphore;
 
 use aos_core::nar::info as narinfo;
 use aos_core::nar::pack::{self, PackPath};
-use aos_core::nix::NixCli;
+use aos_core::nix::{NixCli, PathInfo};
 use aos_core::output::Printer;
 
 use crate::backend::CacheBackend;
@@ -16,6 +30,35 @@ use crate::bandwidth;
 use crate::compress::{compression_ext, compression_name, streaming_compress, streaming_export};
 use crate::resolve::resolve_installables;
 
+/// Uploads all closure paths missing from the cache.
+///
+/// The pipeline is:
+///
+/// 1. Resolve `installables` / `file` / `attr` / `expr` to store paths.
+/// 2. Enumerate the combined closure, gather path metadata, and order it
+///    so references come before referrers.
+/// 3. Query the backend for missing paths (in chunks of 500 hashes).
+/// 4. For each missing path: compress the NAR (`compression` is `zstd`,
+///    `xz`, or `none`; `compression_level` is passed to the compressor),
+///    generate the narinfo, and upload.
+///
+/// On backends that support packs (the AOS server), NARs whose
+/// compressed size is below `batch_threshold` (a human-readable size
+/// such as `"1MB"`) are batched into a single pack upload; larger NARs
+/// flush the pending batch first so dependency order is preserved, then
+/// upload as a single-entry pack. Other backends receive individual
+/// `put_nar` / `put_narinfo` uploads.
+///
+/// `jobs` caps concurrent uploads (a value of `0` is treated as `1`);
+/// `max_bandwidth` accepts a rate such as `"100MB/s"` and `None` means
+/// unlimited. With `dry_run` the missing paths and their NAR sizes are
+/// printed and nothing is uploaded.
+///
+/// # Errors
+///
+/// Returns an error if installable resolution, closure enumeration,
+/// metadata gathering, threshold or bandwidth parsing, compression, or
+/// any backend upload or query fails.
 pub async fn run_push(
     printer: &Printer,
     backend: &dyn CacheBackend,
@@ -52,7 +95,8 @@ pub async fn run_push(
     // 3. Gather metadata.
     printer.info("Gathering path metadata...");
     let path_refs: Vec<&str> = all_paths.iter().map(String::as_str).collect();
-    let infos = nix.path_info_batch(&path_refs)?;
+    let mut infos = nix.path_info_batch(&path_refs)?;
+    order_path_infos_for_import(&mut infos);
 
     // 4. Query missing (in chunks of 500).
     let store_hashes: Vec<&str> = all_paths.iter().map(|p| narinfo::store_hash(p)).collect();
@@ -167,22 +211,25 @@ pub async fn run_push(
         });
         let narinfo_text = narinfo::format(&ni);
 
-        // Batch small NARs into packs for HTTP backends.
-        if use_packs && file_size < batch_threshold_bytes {
-            // Pack entries are piped server-side into `nix-store --import`
-            // (aos-server/src/pack.rs:186-251), which requires Nix's
-            // export format — NOT compressed NAR. Run `nix-store --export`
-            // here to produce raw NAR + ExportTrailer bytes. The
-            // `compressed` we built above stays useful for the file-hash
-            // and file-size fields of the narinfo we generate, but it's
-            // dropped at end-of-scope; packs trade compression for the
-            // batching win.
+        if use_packs {
+            // AOS pack upload imports Nix export streams server-side.
             let exported = streaming_export(&info.path)?;
-            pack_paths.push(PackPath {
+            let pack_path = PackPath {
                 hash: hash.to_string(),
                 nar_data: exported,
-            });
-            pack_narinfos.push((hash.to_string(), narinfo_text));
+            };
+            let pack_narinfo = (hash.to_string(), narinfo_text);
+
+            if file_size < batch_threshold_bytes {
+                pack_paths.push(pack_path);
+                pack_narinfos.push(pack_narinfo);
+            } else {
+                upload_pack_entries(backend, &pack_paths, &pack_narinfos).await?;
+                pack_paths.clear();
+                pack_narinfos.clear();
+
+                upload_pack_entries(backend, &[pack_path], &[pack_narinfo]).await?;
+            }
         } else {
             // Upload NAR + narinfo individually.
             backend.put_nar(&nar_filename, &compressed).await?;
@@ -195,29 +242,7 @@ pub async fn run_push(
     }
 
     // Flush any remaining pack paths.
-    if !pack_paths.is_empty() {
-        let pack_data = pack::create_pack(&pack_paths);
-        match backend.upload_pack(&pack_data).await {
-            Ok(_) => {
-                // Upload narinfos for packed paths.
-                for (hash, narinfo_text) in &pack_narinfos {
-                    backend.put_narinfo(hash, narinfo_text).await?;
-                }
-            }
-            Err(e) => {
-                // Fall back to individual uploads if pack fails.
-                printer.warning(&format!("pack upload failed, falling back: {e:#}"));
-                for (i, pp) in pack_paths.iter().enumerate() {
-                    let (hash, narinfo_text) = &pack_narinfos[i];
-                    let comp_ext = compression_ext(compression);
-                    let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(&pp.nar_data)));
-                    let nar_filename = format!("{}.{}", file_hash.replace(':', "-"), comp_ext);
-                    backend.put_nar(&nar_filename, &pp.nar_data).await?;
-                    backend.put_narinfo(hash, narinfo_text).await?;
-                }
-            }
-        }
-    }
+    upload_pack_entries(backend, &pack_paths, &pack_narinfos).await?;
 
     overall.finish_and_clear();
 
@@ -230,4 +255,143 @@ pub async fn run_push(
     ));
 
     Ok(())
+}
+
+/// Uploads a batch of pack entries and registers their narinfos.
+///
+/// No-op when `pack_paths` is empty, so callers can flush
+/// unconditionally. The narinfo puts are issued after the pack upload —
+/// on the AOS server they are no-ops anyway (narinfo is synthesised
+/// server-side once the pack import registers the paths).
+async fn upload_pack_entries(
+    backend: &dyn CacheBackend,
+    pack_paths: &[PackPath],
+    pack_narinfos: &[(String, String)],
+) -> Result<()> {
+    if pack_paths.is_empty() {
+        return Ok(());
+    }
+
+    let pack_data = pack::create_pack(pack_paths);
+    backend.upload_pack(&pack_data).await?;
+    for (hash, narinfo_text) in pack_narinfos {
+        backend.put_narinfo(hash, narinfo_text).await?;
+    }
+    Ok(())
+}
+
+/// Topologically sorts path infos so references precede their referrers.
+///
+/// `nix-store --import` on the receiving side rejects a path whose
+/// references are not yet valid, so upload order matters. This is Kahn's
+/// algorithm over the in-closure reference edges; references outside the
+/// set and self-references are ignored. If a cycle prevents a complete
+/// ordering (which should not happen for a valid closure), the leftover
+/// paths are appended in their original order rather than dropped.
+fn order_path_infos_for_import(infos: &mut Vec<PathInfo>) {
+    let index_by_path: HashMap<&str, usize> = infos
+        .iter()
+        .enumerate()
+        .map(|(idx, info)| (info.path.as_str(), idx))
+        .collect();
+    let mut indegree = vec![0usize; infos.len()];
+    let mut dependents = vec![Vec::new(); infos.len()];
+
+    for (idx, info) in infos.iter().enumerate() {
+        for reference in &info.references {
+            let Some(&reference_idx) = index_by_path.get(reference.as_str()) else {
+                continue;
+            };
+            if reference_idx == idx {
+                continue;
+            }
+            indegree[idx] += 1;
+            dependents[reference_idx].push(idx);
+        }
+    }
+
+    let mut ready = VecDeque::new();
+    for (idx, degree) in indegree.iter().enumerate() {
+        if *degree == 0 {
+            ready.push_back(idx);
+        }
+    }
+
+    let mut ordered_indices = Vec::with_capacity(infos.len());
+    while let Some(idx) = ready.pop_front() {
+        ordered_indices.push(idx);
+        for dependent in &dependents[idx] {
+            indegree[*dependent] -= 1;
+            if indegree[*dependent] == 0 {
+                ready.push_back(*dependent);
+            }
+        }
+    }
+
+    if ordered_indices.len() != infos.len() {
+        let mut seen = vec![false; infos.len()];
+        for idx in &ordered_indices {
+            seen[*idx] = true;
+        }
+        for (idx, is_seen) in seen.iter().enumerate() {
+            if !is_seen {
+                ordered_indices.push(idx);
+            }
+        }
+    }
+
+    *infos = ordered_indices
+        .into_iter()
+        .map(|idx| infos[idx].clone())
+        .collect();
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_core::nix::PathInfo;
+
+    use super::order_path_infos_for_import;
+
+    fn info(path: &str, references: &[&str]) -> PathInfo {
+        PathInfo {
+            path: path.to_string(),
+            nar_hash: "sha256:fixture".to_string(),
+            nar_size: 1,
+            references: references
+                .iter()
+                .map(|reference| reference.to_string())
+                .collect(),
+            deriver: None,
+            signatures: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn import_order_places_references_before_referrers() {
+        let dep = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-lib";
+        let app = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-app";
+        let mut infos = vec![info(app, &[dep]), info(dep, &[])];
+
+        order_path_infos_for_import(&mut infos);
+
+        let paths: Vec<&str> = infos.iter().map(|info| info.path.as_str()).collect();
+        assert_eq!(paths, vec![dep, app]);
+    }
+
+    #[test]
+    fn import_order_handles_transitive_references() {
+        let leaf = "/nix/store/cccccccccccccccccccccccccccccccc-leaf";
+        let middle = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-middle";
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root";
+        let mut infos = vec![
+            info(root, &[middle]),
+            info(middle, &[leaf]),
+            info(leaf, &[]),
+        ];
+
+        order_path_infos_for_import(&mut infos);
+
+        let paths: Vec<&str> = infos.iter().map(|info| info.path.as_str()).collect();
+        assert_eq!(paths, vec![leaf, middle, root]);
+    }
 }

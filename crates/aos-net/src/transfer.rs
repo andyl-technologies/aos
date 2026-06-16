@@ -33,8 +33,11 @@ pub struct TransferEngineConfig {
     /// Maximum bandwidth in bytes/sec. `None` means unlimited.
     pub max_bandwidth: Option<u64>,
     /// Minimum speed in bytes/sec. Abort transfer if below this for too long.
+    /// `None` disables the check.
     pub min_speed: Option<u64>,
-    /// How long the speed must be below `min_speed` before aborting.
+    /// Grace period before `min_speed` is enforced. The average speed
+    /// since the start of the transfer is checked only after this much
+    /// time has elapsed.
     pub min_speed_duration: Duration,
 }
 
@@ -67,6 +70,11 @@ pub struct TransferEngine {
 
 impl TransferEngine {
     /// Create a new transfer engine with the given configuration.
+    ///
+    /// The engine starts with an empty [`AuthStore`] (add credentials
+    /// via [`auth`](TransferEngine::auth)) and a no-op progress
+    /// handler (replace it with
+    /// [`set_progress`](TransferEngine::set_progress)).
     pub fn new(config: TransferEngineConfig) -> Self {
         let bandwidth = config.max_bandwidth.map(BandwidthLimiter::new);
 
@@ -97,6 +105,30 @@ impl TransferEngine {
     }
 
     /// Execute a single transfer with streaming hash, bandwidth, progress, and retry.
+    ///
+    /// GET requests use the streaming path: the response body is
+    /// processed chunk-by-chunk, with hash updates, bandwidth-limiter
+    /// consumption, progress callbacks, and minimum-speed enforcement
+    /// applied per chunk as it is written to the request's output.
+    /// Other methods go through the protocol's buffered `execute`
+    /// path, with hashing and bandwidth applied afterwards.
+    ///
+    /// Transient failures are retried per the engine's [`RetryConfig`]
+    /// with exponential backoff. A 401 response additionally triggers
+    /// one token-refresh attempt (see [`AuthStore::refresh_token`])
+    /// before retrying.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    ///
+    /// - the URL scheme is unsupported,
+    /// - the transfer fails with a permanent error (e.g. HTTP 4xx), or
+    ///   keeps failing transiently until retries are exhausted,
+    /// - the computed hash does not match the request's [`HashSpec`](crate::types::HashSpec),
+    /// - the average speed stays below the configured minimum after
+    ///   the grace period, or
+    /// - writing to the output destination fails.
     pub async fn execute(&self, request: TransferRequest) -> Result<TransferResult> {
         let url = request.url.clone();
         let hash_spec = request.hash.clone();
@@ -323,7 +355,13 @@ impl TransferEngine {
     /// Execute a single transfer directly via the protocol layer.
     ///
     /// This is the lower-level path used for HEAD requests and transfers
-    /// that don't need retry wrapping.
+    /// that don't need retry wrapping. Bandwidth limiting and hash
+    /// verification (when the body is buffered) are still applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the URL scheme is unsupported, the protocol
+    /// operation fails, or the buffered body fails hash verification.
     async fn execute_direct(&self, request: &TransferRequest) -> Result<TransferResult> {
         let url = &request.url;
         let host = extract_host(url).unwrap_or_else(|| "unknown".to_string());
@@ -362,8 +400,18 @@ impl TransferEngine {
     /// Execute multiple transfers in parallel.
     ///
     /// Concurrency is bounded by the connection pool's per-host and
-    /// global limits. Uses the streaming architecture for per-chunk
-    /// hash/bandwidth/progress on each transfer.
+    /// global limits (permits are acquired before each task is
+    /// spawned). Each transfer is retried independently per the
+    /// engine's [`RetryConfig`]. The returned vector has one
+    /// `Result` per request, in the same order as the input; the call
+    /// itself never fails as a whole, and a panicked transfer task is
+    /// reported as an `Err` for that entry.
+    ///
+    /// Note: batch transfers currently buffer each response in memory
+    /// -- the per-request `body`, `hash`, and `output` settings are
+    /// not honored on this path (only `url`, `method`, `headers`, and
+    /// `resume` are). Use [`execute`](TransferEngine::execute) for
+    /// file output or hash verification.
     pub async fn execute_batch(
         &self,
         requests: Vec<TransferRequest>,
@@ -484,12 +532,26 @@ impl TransferEngine {
     }
 
     /// HEAD request -- check existence and get content-length.
+    ///
+    /// For most protocols a missing resource is reported as a result
+    /// with status 404 rather than an error, so callers can probe for
+    /// existence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the URL scheme is unsupported or the
+    /// underlying protocol operation fails (e.g. connection or
+    /// authentication failure). No retries are performed.
     pub async fn head(&self, url: &str) -> Result<TransferResult> {
         let request = TransferRequest::head(url);
         self.execute_direct(&request).await
     }
 
     /// Batch HEAD requests in parallel.
+    ///
+    /// Returns one `Result` per URL, in input order; see
+    /// [`execute_batch`](TransferEngine::execute_batch) for the
+    /// concurrency and retry semantics.
     pub async fn head_batch(&self, urls: &[&str]) -> Vec<Result<TransferResult>> {
         let requests: Vec<TransferRequest> =
             urls.iter().map(|url| TransferRequest::head(url)).collect();

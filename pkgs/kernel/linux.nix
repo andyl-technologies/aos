@@ -90,13 +90,19 @@ in
             scripts/kconfig/merge_config.sh -m .config "$frag"
           done
 
-          # Merge extra config from the system profile
+          # Merge extra config from the system profile. Written via a
+          # heredoc (not builtins.toFile, which rejects fragments that
+          # reference a derivation — e.g. CONFIG_MODULE_SIG_KEY pointing at
+          # a key in the store). The sed normalises leading whitespace,
+          # since kconfig/merge_config silently ignore `CONFIG_x=...` lines
+          # that aren't at column 0.
           ${
             if extraConfig != ""
             then ''
               cat > .extra-config << 'EXTRAEOF'
               ${extraConfig}
               EXTRAEOF
+              sed -i 's/^[[:space:]]*//' .extra-config
               scripts/kconfig/merge_config.sh -m .config .extra-config
             ''
             else ""

@@ -407,7 +407,15 @@ in {
           set -euo pipefail
           if ! mountpoint -q /sysroot/var; then
             mkdir -p /sysroot/var
-            mount -o nosuid,nodev /dev/disk/by-partlabel/var /sysroot/var
+            # When measured boot seals /var (RFC-0006 phase 3), the
+            # aos-var-crypt service runs first and exposes the unlocked
+            # LUKS volume as /dev/mapper/var; mount that. Otherwise the
+            # raw partition is mounted directly (unchanged behaviour).
+            if [ -e /dev/mapper/var ]; then
+              mount -o nosuid,nodev /dev/mapper/var /sysroot/var
+            else
+              mount -o nosuid,nodev /dev/disk/by-partlabel/var /sysroot/var
+            fi
           fi
           # Standard /var subdirectories expected by systemd and daemons.
           mkdir -p /sysroot/var/{log,lib,tmp}
@@ -639,6 +647,14 @@ in {
             mkdir -p "$profile_dir/gen-1"
             ln -sfn "$toplevel" "$profile_dir/gen-1/toplevel"
             ln -sfn gen-1 "$profile_dir/current"
+            # kernel_path must be the `kernel` symlink's TARGET — the
+            # same form apm's resolve_kernel_path stores for installed
+            # generations (crates/aos-package/src/sysroot.rs). Recording
+            # the symlink itself made every upgrade/rollback against the
+            # seeded gen report a spurious kernel change ("Kernel
+            # updated: 6.18.33 -> kernel") and rewrite the boot loader.
+            kern=$(readlink "/sysroot$toplevel/kernel" 2>/dev/null || true)
+            [ -n "$kern" ] || kern="$toplevel/kernel"
             # `registry: "seed"` is a sentinel for the gen baked into
             # the image (no apm install). The apm follow-up may
             # special-case it or migrate the schema to Option<String>;
@@ -649,6 +665,7 @@ in {
               --arg pn  "$(read_meta package-name)" \
               --arg ver "$(read_meta version)" \
               --arg top "$toplevel" \
+              --arg kern "$kern" \
               --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '{
                  current: 1,
@@ -660,7 +677,7 @@ in {
                    version: $ver,
                    registry: "seed",
                    created_at: $now,
-                   kernel_path: ($top + "/kernel")
+                   kernel_path: $kern
                  }]
                }' > "$profile_dir/state.json"
           fi

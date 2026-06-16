@@ -1,3 +1,30 @@
+//! The narinfo/NAR download pipeline.
+//!
+//! apm fetches packages from binary caches that speak the Nix binary-cache
+//! protocol: for each store path the cache serves
+//! `<base>/<storeHash>.narinfo` (a small key-value document carrying the NAR
+//! URL, compression, file/NAR hashes, sizes, references, and deriver) and
+//! the compressed NAR itself at `<base>/<narinfo URL field>`.
+//!
+//! The pipeline runs in three stages:
+//!
+//! 1. **Mirror resolution** ([`resolve_mirror`]): pick the cache base URL
+//!    for a registry from its `[[caches]]` entries, falling back to the
+//!    registry URL.
+//! 2. **Narinfo fetch** ([`fetch_narinfos`], [`fetch_narinfo_closure`]):
+//!    fetch narinfos in parallel; the closure variant transitively follows
+//!    `References` (skipping paths already valid in the local store) and
+//!    returns the set dependency-first so NARs can be imported in order.
+//! 3. **NAR download** ([`download_nars`]): parallel, semaphore-bounded
+//!    downloads into the NAR cache directory, verifying the compressed
+//!    `FileHash` in flight and reusing already-cached files whose hash still
+//!    checks out.
+//!
+//! Downloaded files land in the cache as `<escaped-nar-hash>.nar.zst`; the
+//! resulting [`DownloadResult`]s carry everything [`crate::store::import_nar`]
+//! needs to synthesize the import trailer.
+
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,8 +33,11 @@ use anyhow::{Context, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::Semaphore;
 
+use super::store::filter_missing;
 use super::types::RegistryConfig;
+use super::verify::{sha256_digest_hex, verify_download_hash};
 use aos_core::error::AosError;
+use aos_core::nar::cache::hash_path_fragment;
 use aos_core::nar::info::{self as narinfo, NarInfo};
 use aos_core::output::Printer;
 use aos_net::{HashAlgorithm, TransferEngine, TransferEngineConfig, TransferRequest};
@@ -21,6 +51,7 @@ use aos_net::{HashAlgorithm, TransferEngine, TransferEngineConfig, TransferReque
 /// nar hash) comes from the narinfo fetched in `fetch_narinfos`.
 #[derive(Debug, Clone)]
 pub struct DownloadRequest {
+    /// Full store path of the NAR to download.
     pub store_path: String,
     /// Cache base URL — the prefix shared by `<base>/<storeHash>.narinfo`
     /// and `<base>/<narinfo.url>`. No `/nar` suffix.
@@ -31,13 +62,16 @@ pub struct DownloadRequest {
 /// `fetch_narinfos`; consumed by `download_nars`.
 #[derive(Debug, Clone)]
 pub struct ResolvedDownload {
+    /// The original request (store path + mirror base URL).
     pub req: DownloadRequest,
+    /// The narinfo fetched for the request's store path.
     pub narinfo: NarInfo,
 }
 
 /// Result of a successful download.
 #[derive(Debug, Clone)]
 pub struct DownloadResult {
+    /// Store path the downloaded NAR materializes when imported.
     pub store_path: String,
     /// Path to the downloaded `.nar.zst` in the cache directory.
     pub local_path: PathBuf,
@@ -50,6 +84,29 @@ pub struct DownloadResult {
     pub references: Vec<String>,
     /// Deriver (from narinfo `Deriver`), if any.
     pub deriver: Option<String>,
+}
+
+/// Render the planned NAR downloads for machine-readable command output.
+///
+/// Package metadata closures can omit anonymous store references that are
+/// discovered only by reading narinfos. This helper exposes the real download
+/// plan so JSON clients can audit exactly which NARs were fetched or reused.
+pub(crate) fn resolved_downloads_json(resolved: &[ResolvedDownload]) -> Vec<serde_json::Value> {
+    resolved
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "store_path": item.narinfo.store_path.as_str(),
+                "nar_hash": item.narinfo.nar_hash.as_str(),
+                "nar_size": item.narinfo.nar_size,
+                "file_hash": item.narinfo.file_hash.as_deref(),
+                "file_size": item.narinfo.file_size,
+                "compression": item.narinfo.compression.as_str(),
+                "url": item.narinfo.url.as_str(),
+                "references": &item.narinfo.references,
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -76,15 +133,19 @@ pub fn narinfo_url(mirror_url: &str, store_path: &str) -> String {
 
 /// Determine the cache base URL for a registry.
 ///
-/// First checks the local registry clone for a `registry.toml` with
-/// `[[caches]]` entries (sorted by priority). Falls back to the registry
-/// URL itself. The returned value is a base — apm appends
+/// First checks the local registry clone under `registries_base` for a
+/// `registry.toml` with `[[caches]]` entries (sorted by priority). Falls back
+/// to the registry URL itself. The returned value is a base — apm appends
 /// `<storeHash>.narinfo` and the narinfo-supplied `URL:` field to it.
-pub fn resolve_mirror(registry: &RegistryConfig) -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("/tmp"));
-    let registries_dir = std::path::PathBuf::from(&home)
-        .join(".local/share/apm/registries")
-        .join(&registry.name);
+///
+/// `registries_base` is the active scope's registry-storage directory (see
+/// [`ProfileScope::registries_path`]); the registry's own name is joined onto
+/// it to locate the clone. Passing the scope path rather than deriving one
+/// from `$HOME` keeps user- and system-scope lookups consistent.
+///
+/// [`ProfileScope::registries_path`]: crate::types::ProfileScope::registries_path
+pub fn resolve_mirror(registries_base: &Path, registry: &RegistryConfig) -> String {
+    let registries_dir = registries_base.join(&registry.name);
 
     let mirrors = crate::registry_ops::resolve_mirrors_for_registry(&registries_dir, registry);
     if let Some(cache) = mirrors.first() {
@@ -102,6 +163,11 @@ pub fn resolve_mirror(registry: &RegistryConfig) -> String {
 ///
 /// Each GET hits `<mirror_url>/<storeHash>.narinfo`. The returned vector
 /// preserves the input order. Fails fast on the first error.
+///
+/// # Errors
+///
+/// Returns an error if any narinfo fetch fails (network error, missing
+/// body, non-UTF-8 body, or unparseable narinfo) or a fetch task panics.
 pub async fn fetch_narinfos(
     engine: Arc<TransferEngine>,
     requests: &[DownloadRequest],
@@ -155,6 +221,94 @@ pub async fn fetch_narinfos(
         .collect())
 }
 
+/// Fetch narinfos for the requested paths and all recursive NAR references.
+///
+/// References are fetched from the same cache mirror as the path that named
+/// them. The returned vector is dependency-first, so callers can import the
+/// downloaded NARs in order.
+///
+/// References whose store paths are already valid locally are not fetched
+/// (checked via `nix-store --check-validity` between BFS waves).
+///
+/// # Errors
+///
+/// Returns an error if a narinfo fetch fails, the local store validity
+/// check fails, or the fetched reference graph contains a cycle.
+pub async fn fetch_narinfo_closure(
+    engine: Arc<TransferEngine>,
+    requests: &[DownloadRequest],
+    parallel: u32,
+    printer: &Printer,
+) -> Result<Vec<ResolvedDownload>> {
+    if requests.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut fetched: HashMap<String, ResolvedDownload> = HashMap::new();
+    let mut requested: HashSet<String> = HashSet::new();
+    let mut pending = Vec::new();
+
+    for request in requests {
+        let hash = narinfo::store_hash(&request.store_path).to_string();
+        if requested.insert(hash) {
+            pending.push(request.clone());
+        }
+    }
+
+    while !pending.is_empty() {
+        let resolved = fetch_narinfos(Arc::clone(&engine), &pending, parallel, printer).await?;
+        let mut candidates = Vec::new();
+
+        for item in resolved {
+            let hash = narinfo::store_hash(&item.narinfo.store_path).to_string();
+            if fetched.contains_key(&hash) {
+                continue;
+            }
+
+            for reference in &item.narinfo.references {
+                let reference_hash = narinfo::store_hash(reference).to_string();
+                if fetched.contains_key(&reference_hash) || requested.contains(&reference_hash) {
+                    continue;
+                }
+                requested.insert(reference_hash);
+                candidates.push(DownloadRequest {
+                    store_path: reference_store_path(reference, &item.narinfo.store_path),
+                    mirror_url: item.req.mirror_url.clone(),
+                });
+            }
+
+            fetched.insert(hash, item);
+        }
+
+        pending = filter_missing_download_requests(candidates).await?;
+    }
+
+    order_narinfo_closure(requests, &fetched)
+}
+
+/// Drop candidate requests whose store paths are already valid locally,
+/// keeping only those that actually need downloading.
+async fn filter_missing_download_requests(
+    candidates: Vec<DownloadRequest>,
+) -> Result<Vec<DownloadRequest>> {
+    if candidates.is_empty() {
+        return Ok(candidates);
+    }
+
+    let candidate_paths = candidates
+        .iter()
+        .map(|request| request.store_path.clone())
+        .collect::<Vec<_>>();
+    let missing = filter_missing(&candidate_paths).await?;
+    let missing = missing.into_iter().collect::<HashSet<_>>();
+
+    Ok(candidates
+        .into_iter()
+        .filter(|request| missing.contains(&request.store_path))
+        .collect())
+}
+
+/// GET and parse a single narinfo document.
 async fn fetch_one_narinfo(
     engine: &TransferEngine,
     url: &str,
@@ -174,11 +328,100 @@ async fn fetch_one_narinfo(
         .with_context(|| format!("parsing narinfo for {} from {url}", req.store_path))
 }
 
+/// Expand a narinfo reference (bare basename or full path) to a full store
+/// path, rooting basenames under the parent path's store directory.
+pub(crate) fn reference_store_path(reference: &str, parent_store_path: &str) -> String {
+    if reference.starts_with('/') {
+        return reference.to_string();
+    }
+
+    let store_dir = parent_store_path
+        .rsplit_once('/')
+        .map(|(dir, _)| dir)
+        .unwrap_or("/nix/store");
+    format!("{store_dir}/{reference}")
+}
+
+/// Re-order an already-fetched set of narinfos into dependency-first order
+/// rooted at `roots` (used when the caller fetched narinfos itself).
+pub(crate) fn order_resolved_downloads(
+    roots: &[DownloadRequest],
+    resolved: Vec<ResolvedDownload>,
+) -> Result<Vec<ResolvedDownload>> {
+    let mut fetched = HashMap::new();
+
+    for item in resolved {
+        let hash = narinfo::store_hash(&item.narinfo.store_path).to_string();
+        fetched.insert(hash, item);
+    }
+
+    order_narinfo_closure(roots, &fetched)
+}
+
+/// Topologically sort fetched narinfos so references precede referrers,
+/// starting from each root.
+fn order_narinfo_closure(
+    roots: &[DownloadRequest],
+    fetched: &HashMap<String, ResolvedDownload>,
+) -> Result<Vec<ResolvedDownload>> {
+    let mut ordered = Vec::with_capacity(fetched.len());
+    let mut pushed = HashSet::new();
+    let mut visiting = HashSet::new();
+
+    for root in roots {
+        let hash = narinfo::store_hash(&root.store_path);
+        push_narinfo_dependencies_first(hash, fetched, &mut pushed, &mut visiting, &mut ordered)?;
+    }
+
+    Ok(ordered)
+}
+
+/// Depth-first post-order push of one narinfo and its (fetched) references.
+/// `visiting` tracks the current DFS stack so reference cycles are detected
+/// rather than recursing forever; self-references are ignored.
+fn push_narinfo_dependencies_first(
+    hash: &str,
+    fetched: &HashMap<String, ResolvedDownload>,
+    pushed: &mut HashSet<String>,
+    visiting: &mut HashSet<String>,
+    ordered: &mut Vec<ResolvedDownload>,
+) -> Result<()> {
+    if pushed.contains(hash) {
+        return Ok(());
+    }
+    if !visiting.insert(hash.to_string()) {
+        bail!("cycle in narinfo references at {hash}");
+    }
+
+    let item = fetched
+        .get(hash)
+        .with_context(|| format!("missing fetched narinfo for {hash}"))?;
+    for reference in &item.narinfo.references {
+        let reference_hash = narinfo::store_hash(reference);
+        if reference_hash == hash {
+            continue;
+        }
+        if fetched.contains_key(reference_hash) {
+            push_narinfo_dependencies_first(reference_hash, fetched, pushed, visiting, ordered)?;
+        }
+    }
+
+    visiting.remove(hash);
+    pushed.insert(hash.to_string());
+    ordered.push(item.clone());
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Single-file download
 // ---------------------------------------------------------------------------
 
 /// Download a single NAR file with progress reporting and hash verification.
+///
+/// The expected hash for the wire bytes is the narinfo `FileHash`; when the
+/// cache serves an uncompressed NAR (`Compression: none`) without one, the
+/// `NarHash` covers the same bytes and is used instead. A valid cached copy
+/// at `dest` short-circuits the network entirely.
 async fn download_one(
     engine: &TransferEngine,
     resolved: &ResolvedDownload,
@@ -203,9 +446,13 @@ async fn download_one(
             resolved.req.store_path,
         ),
     };
-    let expected_hex = file_hash.strip_prefix("sha256:").unwrap_or(&file_hash);
+    let expected_hex = sha256_digest_hex(&file_hash)?;
 
-    let transfer_req = TransferRequest::get(&url).with_hash(HashAlgorithm::Sha256, expected_hex);
+    if let Some(result) = cached_download_result(resolved, dest, &file_hash).await? {
+        return Ok(result);
+    }
+
+    let transfer_req = TransferRequest::get(&url).with_hash(HashAlgorithm::Sha256, &expected_hex);
 
     let pb_size = resolved.narinfo.file_size.unwrap_or(0);
     let pb = create_download_bar(pb_size, &label);
@@ -237,6 +484,52 @@ async fn download_one(
     })
 }
 
+/// Reuse a previously downloaded NAR at `dest` if its hash still matches.
+///
+/// Returns `Ok(None)` when the file is absent or stale (a stale file is
+/// deleted so the caller re-downloads it).
+async fn cached_download_result(
+    resolved: &ResolvedDownload,
+    dest: &Path,
+    file_hash: &str,
+) -> Result<Option<DownloadResult>> {
+    match tokio::fs::metadata(dest).await {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => bail!(
+            "cached NAR path exists but is not a regular file: {}",
+            dest.display(),
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| format!("checking cached NAR {}", dest.display()));
+        }
+    }
+
+    let dest_for_verify = dest.to_path_buf();
+    let expected_hash = file_hash.to_string();
+    let valid =
+        tokio::task::spawn_blocking(move || verify_download_hash(&dest_for_verify, &expected_hash))
+            .await
+            .context("cached NAR hash verification task panicked")?
+            .is_ok();
+
+    if !valid {
+        tokio::fs::remove_file(dest)
+            .await
+            .with_context(|| format!("removing stale cached NAR {}", dest.display()))?;
+        return Ok(None);
+    }
+
+    Ok(Some(DownloadResult {
+        store_path: resolved.req.store_path.clone(),
+        local_path: dest.to_path_buf(),
+        download_hash: file_hash.to_string(),
+        nar_hash: resolved.narinfo.nar_hash.clone(),
+        references: resolved.narinfo.references.clone(),
+        deriver: resolved.narinfo.deriver.clone(),
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Parallel download engine
 // ---------------------------------------------------------------------------
@@ -247,6 +540,16 @@ pub fn default_engine() -> TransferEngine {
 }
 
 /// Download multiple NARs in parallel.
+///
+/// Concurrency is bounded by `parallel`; each NAR lands in `cache_dir`
+/// under a filename derived from its NAR hash, with valid cached files
+/// reused instead of re-downloaded.
+///
+/// # Errors
+///
+/// Returns an error if the cache directory cannot be created, any download
+/// fails (network error, hash mismatch, missing body, write failure), or a
+/// download task panics.
 pub async fn download_nars(
     resolved: &[ResolvedDownload],
     cache_dir: &Path,
@@ -312,13 +615,14 @@ pub async fn download_nars(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Generate a cache filename from a NAR hash.
+/// Generate a cache filename from a NAR hash (path-hostile characters such
+/// as `:`, `/`, `+`, `=` are escaped).
 fn nar_cache_filename(nar_hash: &str) -> String {
-    let safe = nar_hash.replace(':', "-");
-    format!("{safe}.nar.zst")
+    format!("{}.nar.zst", hash_path_fragment(nar_hash))
 }
 
-/// Extract a short label from a store path for progress display.
+/// Extract a short label from a store path for progress display
+/// (`name-version`, with the 32-char hash prefix stripped).
 fn short_label(store_path: &str) -> String {
     store_path
         .rsplit('/')
@@ -411,7 +715,11 @@ mod tests {
             signing_keys: Default::default(),
             signing: None,
         };
-        assert_eq!(resolve_mirror(&reg), "https://registry.aos.dev/core");
+        // No local clone exists at this base, so it falls back to the URL.
+        assert_eq!(
+            resolve_mirror(Path::new("/nonexistent/registries"), &reg),
+            "https://registry.aos.dev/core"
+        );
     }
 
     #[test]
@@ -419,6 +727,14 @@ mod tests {
         assert_eq!(
             nar_cache_filename("sha256:abcdef0123456789"),
             "sha256-abcdef0123456789.nar.zst",
+        );
+    }
+
+    #[test]
+    fn nar_cache_filename_escapes_sri_path_separators() {
+        assert_eq!(
+            nar_cache_filename("sha256-/zAx+ko="),
+            "sha256-_zAx_ko_.nar.zst",
         );
     }
 
@@ -431,6 +747,57 @@ mod tests {
     #[test]
     fn short_label_short_path() {
         assert_eq!(short_label("short"), "short");
+    }
+
+    #[test]
+    fn reference_store_path_uses_parent_store_dir() {
+        assert_eq!(
+            reference_store_path(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-lib-1.0",
+                "/aos/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-app-1.0",
+            ),
+            "/aos/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-lib-1.0",
+        );
+        assert_eq!(
+            reference_store_path(
+                "/nix/store/cccccccccccccccccccccccccccccccc-lib-2.0",
+                "/aos/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-app-1.0",
+            ),
+            "/nix/store/cccccccccccccccccccccccccccccccc-lib-2.0",
+        );
+    }
+
+    #[test]
+    fn order_narinfo_closure_places_references_before_referrers() {
+        let root = resolved_download(
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root-1.0",
+            &["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-mid-1.0"],
+        );
+        let mid = resolved_download(
+            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-mid-1.0",
+            &["cccccccccccccccccccccccccccccccc-leaf-1.0"],
+        );
+        let leaf = resolved_download("/nix/store/cccccccccccccccccccccccccccccccc-leaf-1.0", &[]);
+
+        let mut fetched = HashMap::new();
+        fetched.insert("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(), root.clone());
+        fetched.insert("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(), mid);
+        fetched.insert("cccccccccccccccccccccccccccccccc".to_string(), leaf);
+
+        let ordered = order_narinfo_closure(&[root.req], &fetched).unwrap();
+        let paths = ordered
+            .iter()
+            .map(|resolved| resolved.narinfo.store_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            paths,
+            vec![
+                "/nix/store/cccccccccccccccccccccccccccccccc-leaf-1.0",
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-mid-1.0",
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root-1.0",
+            ],
+        );
     }
 
     #[tokio::test]
@@ -487,10 +854,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn download_nars_reuses_valid_cached_file_without_network() {
+        let printer = Printer::new(0, true, false);
+        let cache_dir = tempfile::TempDir::new().unwrap();
+        let nar_bytes = b"cached-nar-bytes";
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
+        let nar_hash = "sha256:abcdef0123456789";
+        let local_path = cache_dir.path().join(nar_cache_filename(nar_hash));
+        std::fs::write(&local_path, nar_bytes).unwrap();
+
+        let resolved = ResolvedDownload {
+            req: DownloadRequest {
+                store_path: "/nix/store/abc123-package".to_string(),
+                mirror_url: "http://127.0.0.1:9".to_string(),
+            },
+            narinfo: NarInfo {
+                store_path: "/nix/store/abc123-package".to_string(),
+                url: "nar/unreachable.nar.zst".to_string(),
+                compression: "zstd".to_string(),
+                file_hash: Some(file_hash.clone()),
+                file_size: Some(nar_bytes.len() as u64),
+                nar_hash: nar_hash.to_string(),
+                nar_size: 5,
+                references: Vec::new(),
+                deriver: None,
+                signatures: Vec::new(),
+            },
+        };
+
+        let results = download_nars(&[resolved], cache_dir.path(), 1, &printer)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].download_hash, file_hash);
+        assert_eq!(results[0].local_path, local_path);
+        assert_eq!(std::fs::read(&results[0].local_path).unwrap(), nar_bytes);
+    }
+
+    #[tokio::test]
+    async fn download_nars_replaces_stale_cached_file() {
+        let printer = Printer::new(0, true, false);
+        let source = tempfile::TempDir::new().unwrap();
+        let cache_dir = tempfile::TempDir::new().unwrap();
+        let nar_bytes = b"fresh-nar-bytes";
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
+        let nar_hash = "sha256:freshnarhash";
+        let nar_url = "nar/fresh.nar.zst";
+        let local_path = cache_dir.path().join(nar_cache_filename(nar_hash));
+
+        std::fs::create_dir_all(source.path().join("nar")).unwrap();
+        std::fs::write(source.path().join(nar_url), nar_bytes).unwrap();
+        std::fs::write(&local_path, b"stale-cache").unwrap();
+
+        let resolved = ResolvedDownload {
+            req: DownloadRequest {
+                store_path: "/nix/store/abc123-package".to_string(),
+                mirror_url: format!("file://{}", source.path().display()),
+            },
+            narinfo: NarInfo {
+                store_path: "/nix/store/abc123-package".to_string(),
+                url: nar_url.to_string(),
+                compression: "zstd".to_string(),
+                file_hash: Some(file_hash.clone()),
+                file_size: Some(nar_bytes.len() as u64),
+                nar_hash: nar_hash.to_string(),
+                nar_size: 5,
+                references: Vec::new(),
+                deriver: None,
+                signatures: Vec::new(),
+            },
+        };
+
+        let results = download_nars(&[resolved], cache_dir.path(), 1, &printer)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].download_hash, file_hash);
+        assert_eq!(results[0].local_path, local_path);
+        assert_eq!(std::fs::read(&results[0].local_path).unwrap(), nar_bytes);
+    }
+
+    #[tokio::test]
     async fn fetch_narinfos_empty() {
         let printer = Printer::new(0, true, false);
         let engine = Arc::new(default_engine());
         let out = fetch_narinfos(engine, &[], 4, &printer).await.unwrap();
         assert!(out.is_empty());
+    }
+
+    fn resolved_download(store_path: &str, references: &[&str]) -> ResolvedDownload {
+        ResolvedDownload {
+            req: DownloadRequest {
+                store_path: store_path.to_string(),
+                mirror_url: "http://cache.example.invalid".to_string(),
+            },
+            narinfo: NarInfo {
+                store_path: store_path.to_string(),
+                url: "nar/demo.nar.zst".to_string(),
+                compression: "zstd".to_string(),
+                file_hash: Some("sha256:filehash".to_string()),
+                file_size: Some(1),
+                nar_hash: "sha256:narhash".to_string(),
+                nar_size: 1,
+                references: references
+                    .iter()
+                    .map(|reference| reference.to_string())
+                    .collect(),
+                deriver: None,
+                signatures: Vec::new(),
+            },
+        }
     }
 }

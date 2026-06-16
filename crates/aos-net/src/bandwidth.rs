@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 pub struct BandwidthLimiter {
     /// Rate limit in bytes per second. 0 means unlimited.
     rate: AtomicU64,
-    /// Available tokens (fractional bytes tracked as integer for atomics).
+    /// Available tokens, in (possibly fractional) bytes.
     tokens: Mutex<f64>,
     /// Time of last refill.
     last_refill: Mutex<Instant>,
@@ -44,8 +44,10 @@ impl BandwidthLimiter {
     /// Wait until `bytes` worth of tokens are available, then consume them.
     ///
     /// If the limiter rate is 0 (unlimited), returns immediately.
-    /// For large requests, the data is consumed in smaller chunks to
-    /// maintain smooth throughput.
+    /// For large requests, the data is consumed in smaller chunks
+    /// (capped at one second's worth of tokens) to maintain smooth
+    /// throughput. If the rate is changed to 0 while waiting, the call
+    /// returns without consuming the remainder.
     pub async fn consume(&self, bytes: u64) {
         let rate = self.rate.load(Ordering::Relaxed);
         if rate == 0 {

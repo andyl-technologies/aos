@@ -1,3 +1,24 @@
+//! Server configuration, parsed from a TOML file.
+//!
+//! [`load_config`] reads the file at the given path into a [`ServerConfig`];
+//! when the file is absent, built-in defaults apply (listen on
+//! `127.0.0.1:5000`, zstd level 3 compression, and a single anonymous-read
+//! `default` view with a 7-day binary TTL and 90-day source TTL).
+//!
+//! Each struct mirrors one TOML section:
+//!
+//! ```text
+//! listen = "0.0.0.0:5000"
+//!
+//! [build]            # BuildConfig — nix-store --realise knobs
+//! [signing]          # SigningConfig — narinfo re-signing key
+//! [compression]      # CompressionConfig — NAR response compression
+//! [[views]]          # ViewConfig — one table per view
+//! [oauth2]           # OAuth2Config — JWT TTL and secret file
+//! [bootstrap]        # BootstrapConfig — admin Unix socket
+//! [tls]              # TlsConfig — HTTPS settings
+//! ```
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -257,6 +278,16 @@ impl Default for ServerConfig {
     }
 }
 
+/// Loads the server configuration from a TOML file.
+///
+/// If `path` does not exist, the built-in [`ServerConfig::default`] is
+/// returned instead of an error, so a freshly installed server runs with
+/// sensible defaults.
+///
+/// # Errors
+///
+/// Returns an error if the file exists but cannot be read, or if its
+/// contents are not valid TOML for [`ServerConfig`].
 pub fn load_config(path: &Path) -> Result<ServerConfig> {
     if !path.exists() {
         return Ok(ServerConfig::default());

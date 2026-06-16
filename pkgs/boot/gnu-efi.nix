@@ -60,10 +60,13 @@ in
           ARCH=x86_64
 
           # Headers
-          mkdir -p $out/include/efi/protocol $out/include/efi/x86_64
+          mkdir -p $out/include/efi/protocol $out/include/efi/x86_64 $out/include/efi/legacy
           cp inc/*.h $out/include/efi/
           cp inc/protocol/*.h $out/include/efi/protocol/
           cp inc/x86_64/*.h $out/include/efi/x86_64/
+          # efilib.h includes "legacy/efilib.h"; ship it so consumers that
+          # pull efilib.h (e.g. efitools' lib) resolve cleanly.
+          cp inc/legacy/*.h $out/include/efi/legacy/
 
           # Libraries and CRT objects
           mkdir -p $out/lib

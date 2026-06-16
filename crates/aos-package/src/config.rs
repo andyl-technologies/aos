@@ -1,16 +1,38 @@
+//! Loading apm configuration from disk.
+//!
+//! Configuration lives in two layered locations:
+//!
+//! - **System**: `/etc/apm/` — `apm.conf` plus a `registries.d/` directory
+//!   of per-registry TOML files.
+//! - **User**: `~/.config/apm/` — the same layout; in user scope it takes
+//!   precedence, with the system directory as a fallback.
+//!
+//! Settings fall back as a whole file (the first `apm.conf` found wins),
+//! while registries merge per name: a user-level `registries.d/<x>.toml`
+//! replaces the system-level definition of the same registry. Registry
+//! files may also carry a `[registry.state]` table recording the last sync
+//! (commit, channel floor, retained versions), which is loaded alongside
+//! the static config.
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use super::types::{
     ApmConfFile, ApmSettings, ProfileScope, RegistryConfig, RegistryFile, RegistryState,
+    validate_registry_name,
 };
 
 /// Loaded APM configuration for the current session.
 #[derive(Debug)]
 pub struct ApmConfig {
+    /// Global settings from `apm.conf` (or defaults when absent).
     pub settings: ApmSettings,
+    /// All configured registries with their last-sync state, sorted by
+    /// priority descending. Includes disabled registries; use
+    /// [`ApmConfig::enabled_registries`] to filter.
     pub registries: Vec<(RegistryConfig, Option<RegistryState>)>,
+    /// The profile scope (user or system) this configuration was loaded for.
     pub scope: ProfileScope,
 }
 
@@ -19,6 +41,15 @@ impl ApmConfig {
     ///
     /// - User scope: `~/.config/apm/` first, `/etc/apm/` fallback.
     /// - System scope: `/etc/apm/` only.
+    ///
+    /// Missing files are not errors: absent settings fall back to
+    /// [`ApmSettings::default`], and an absent `registries.d/` yields an
+    /// empty registry list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an existing `apm.conf` or registry TOML file
+    /// cannot be read or fails to parse.
     pub fn load(scope: ProfileScope) -> Result<Self> {
         let (primary, fallback) = match scope {
             ProfileScope::User => {
@@ -47,6 +78,7 @@ impl ApmConfig {
                 .with_context(|| format!("reading {}", primary_conf.display()))?;
             let conf: ApmConfFile = toml::from_str(&content)
                 .with_context(|| format!("parsing {}", primary_conf.display()))?;
+            Self::validate_settings(&conf.settings, &primary_conf)?;
             return Ok(conf.settings);
         }
 
@@ -57,11 +89,24 @@ impl ApmConfig {
                     .with_context(|| format!("reading {}", fb_conf.display()))?;
                 let conf: ApmConfFile = toml::from_str(&content)
                     .with_context(|| format!("parsing {}", fb_conf.display()))?;
+                Self::validate_settings(&conf.settings, &fb_conf)?;
                 return Ok(conf.settings);
             }
         }
 
         Ok(ApmSettings::default())
+    }
+
+    /// Validate loaded `apm.conf` settings before command dispatch.
+    fn validate_settings(settings: &ApmSettings, source: &Path) -> Result<()> {
+        if settings.parallel_downloads == 0 {
+            anyhow::bail!(
+                "{}: [settings].parallel_downloads must be at least 1",
+                source.display()
+            );
+        }
+
+        Ok(())
     }
 
     /// Scan `registries.d/` directories and parse each `.toml` file.
@@ -129,6 +174,8 @@ impl ApmConfig {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let rf: RegistryFile =
             toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+        validate_registry_name(&rf.registry.name)
+            .with_context(|| format!("validating registry name in {}", path.display()))?;
 
         let config = RegistryConfig {
             name: rf.registry.name,
@@ -166,7 +213,8 @@ impl ApmConfig {
         self.scope.nar_cache_path()
     }
 
-    /// Return registries sorted by priority (highest first), only enabled ones.
+    /// Return registries sorted by priority (highest first), only enabled
+    /// ones.
     pub fn enabled_registries(&self) -> Vec<&RegistryConfig> {
         self.registries
             .iter()
@@ -175,9 +223,43 @@ impl ApmConfig {
             .collect()
     }
 
-    /// Find a registry by name.
+    /// Find a registry (and its sync state) by name, enabled or not.
     pub fn find_registry(&self, name: &str) -> Option<&(RegistryConfig, Option<RegistryState>)> {
         self.registries.iter().find(|(cfg, _)| cfg.name == name)
+    }
+
+    /// Return the registry config file to update for `name`.
+    ///
+    /// User-scope configuration layers the user's `registries.d` over the
+    /// system directory. A command that mutates an already effective registry
+    /// must therefore prefer an existing user file, but fall back to an
+    /// existing writable system file when the registry came only from system
+    /// config. If neither file exists, this returns the primary path so
+    /// callers can create it or report a precise missing-config error.
+    pub fn registry_config_path_for_update(&self, name: &str) -> PathBuf {
+        let primary = self
+            .scope
+            .config_dir()
+            .join("registries.d")
+            .join(format!("{name}.toml"));
+        if primary.exists() || self.scope != ProfileScope::User {
+            return primary;
+        }
+
+        let fallback = ProfileScope::System
+            .config_dir()
+            .join("registries.d")
+            .join(format!("{name}.toml"));
+        if fallback.exists()
+            && std::fs::OpenOptions::new()
+                .write(true)
+                .open(&fallback)
+                .is_ok()
+        {
+            fallback
+        } else {
+            primary
+        }
     }
 }
 
@@ -238,6 +320,25 @@ parallel_downloads = 2
     }
 
     #[test]
+    fn load_settings_rejects_zero_parallel_downloads() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "apm.conf",
+            r#"
+[settings]
+parallel_downloads = 0
+"#,
+        );
+
+        let err = ApmConfig::load_settings(tmp.path(), None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("parallel_downloads must be at least 1")
+        );
+    }
+
+    #[test]
     fn load_registries_from_dir() {
         let tmp = TempDir::new().unwrap();
         write_file(
@@ -266,6 +367,24 @@ priority = 400
         // Sorted by priority descending
         assert_eq!(registries[0].0.name, "aos-core");
         assert_eq!(registries[1].0.name, "aos-extra");
+    }
+
+    #[test]
+    fn load_registries_rejects_path_like_names() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "registries.d/escape.toml",
+            r#"
+[registry]
+name = "../escape"
+url = "https://registry.aos.dev/core"
+priority = 500
+"#,
+        );
+
+        let err = ApmConfig::load_registries(tmp.path(), None).unwrap_err();
+        assert!(err.to_string().contains("validating registry name"));
     }
 
     #[test]
@@ -340,11 +459,11 @@ last_update = "2026-02-13T10:30:00Z"
         assert_eq!(config.name, "aos-core");
         assert!(config.signing.is_some());
         assert_eq!(
-            config.signing_keys.get("initial").map(String::as_str),
+            config.signing_keys.get("initial").and_then(|s| s.path()),
             Some("/run/keys/aos-core-initial"),
         );
         assert_eq!(
-            config.signing_keys.get("next").map(String::as_str),
+            config.signing_keys.get("next").and_then(|s| s.path()),
             Some("/run/keys/aos-core-next"),
         );
         let upload_auth = config.upload_auth.unwrap();

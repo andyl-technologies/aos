@@ -17,16 +17,123 @@
   jqBin = "${pkgs.jq}/bin/jq";
   curlBin = "${pkgs.curl}/bin/curl";
   grepBin = "${pkgs.grep}/bin/grep";
+  nixStoreBin = "${pkgs.nix}/bin/nix-store";
+  nixInstantiateBin = "${pkgs.nix}/bin/nix-instantiate";
+  sha256sumBin = "${pkgs.coreutils}/bin/sha256sum";
+  statBin = "${pkgs.coreutils}/bin/stat";
+  cutBin = "${pkgs.coreutils}/bin/cut";
+  catBin = "${pkgs.coreutils}/bin/cat";
+  tailBin = "${pkgs.coreutils}/bin/tail";
   aosBin = "${self}/bin/aos";
+  nixRuntimeDeps = [
+    pkgs.nix
+    pkgs.brotli
+    pkgs.curl
+    pkgs.openssl
+    pkgs.sqlite
+    pkgs.boost
+    pkgs.editline
+    pkgs.libsodium
+    pkgs.libarchive
+    pkgs.gc
+    pkgs.lowdown
+    pkgs.bzip2
+    pkgs.zlib
+  ];
+  nixLibPath = builtins.concatStringsSep ":" (map (pkg: "${pkg}/lib") nixRuntimeDeps);
+  rpcBuildFixtureBuilder = pkgs.mkDerivation {
+    pname = "rpc-build-log-fixture-builder";
+    version = "1.0.0";
+    src = null;
+    phases = [
+      {
+        name = "build";
+        script = ''
+          cat > builder.c <<'CEOF'
+          #include <errno.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <sys/stat.h>
+
+          static int mkdir_if_missing(const char *path) {
+            if (mkdir(path, 0755) == 0 || errno == EEXIST) {
+              return 0;
+            }
+            fprintf(stderr, "mkdir %s: %s\n", path, strerror(errno));
+            return 1;
+          }
+
+          int main(int argc, char **argv) {
+            const char *out = getenv("out");
+            const char *bash = argc > 1 ? argv[1] : NULL;
+            char bin_dir[4096];
+            char exe_path[4096];
+
+            if (out == NULL || out[0] == '\0') {
+              fputs("missing out environment variable\n", stderr);
+              return 1;
+            }
+            if (bash == NULL || bash[0] == '\0') {
+              fputs("missing bash store path argument\n", stderr);
+              return 1;
+            }
+
+            fputs("rpc build fixture: configure\n", stderr);
+            fputs("rpc build fixture: carriage-before", stderr);
+            fputs("\rrpc build fixture: carriage-after\r\n", stderr);
+            for (int i = 0; i < 256; i++) {
+              fputc('x', stderr);
+            }
+            fputc('\n', stderr);
+            fputs("rpc build fixture: eof-tail-without-newline", stderr);
+
+            if (snprintf(bin_dir, sizeof(bin_dir), "%s/bin", out) >= (int)sizeof(bin_dir) ||
+                snprintf(exe_path, sizeof(exe_path), "%s/rpc-build-log-fixture", bin_dir) >= (int)sizeof(exe_path)) {
+              fputs("output path too long\n", stderr);
+              return 1;
+            }
+
+            if (mkdir_if_missing(out) != 0 || mkdir_if_missing(bin_dir) != 0) {
+              return 1;
+            }
+
+            FILE *exe = fopen(exe_path, "w");
+            if (exe == NULL) {
+              fprintf(stderr, "open %s: %s\n", exe_path, strerror(errno));
+              return 1;
+            }
+            fprintf(exe, "#!%s/bin/bash\nprintf 'rpc build fixture executed\\n'\n", bash);
+            if (fclose(exe) != 0) {
+              fprintf(stderr, "close %s: %s\n", exe_path, strerror(errno));
+              return 1;
+            }
+            if (chmod(exe_path, 0755) != 0) {
+              fprintf(stderr, "chmod %s: %s\n", exe_path, strerror(errno));
+              return 1;
+            }
+
+            return 0;
+          }
+          CEOF
+          mkdir -p "$out/bin"
+          cc builder.c -o "$out/bin/rpc-build-log-fixture-builder"
+        '';
+      }
+    ];
+  };
 
   serverPreamble = ''
         ${iproute2Bin} link set lo up || true
         ${iproute2Bin} addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
         export AOS_ROOT=/tmp/aos
-        mkdir -p $AOS_ROOT/var/nix/db $AOS_ROOT/store $AOS_ROOT/meta /tmp/run/aos
+        mkdir -p /tmp/run/aos
 
-        ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite << 'SQL'
+        init_mock_nix_db() {
+          root="$1"
+          mkdir -p "$root/var/nix/db" "$root/store" "$root/meta"
+          ${sqliteBin} "$root/var/nix/db/db.sqlite" << 'SQL'
         CREATE TABLE IF NOT EXISTS ValidPaths (
           id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
           path TEXT UNIQUE NOT NULL, hash TEXT NOT NULL,
@@ -41,12 +148,97 @@
         );
         PRAGMA journal_mode=WAL;
     SQL
-        chmod 666 $AOS_ROOT/var/nix/db/db.sqlite
-        chmod 777 $AOS_ROOT/var/nix/db
+          chmod 666 "$root/var/nix/db/db.sqlite"
+          chmod 777 "$root/var/nix/db"
+        }
+
+        register_ca_store_path() {
+          store_path="$1"
+          root="$2"
+          store_dir="''${3:-$root/store}"
+          nar_tmp=$(mktemp)
+          NIX_STORE_DIR="$store_dir" NIX_STATE_DIR="$root/var/nix" \
+            ${nixStoreBin} --dump "$store_path" > "$nar_tmp"
+          nar_hash=$(${sha256sumBin} "$nar_tmp" | ${cutBin} -d' ' -f1)
+          nar_size=$(${statBin} -c%s "$nar_tmp")
+          rm -f "$nar_tmp"
+          ${sqliteBin} "$root/var/nix/db/db.sqlite" \
+            "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs, ca) VALUES ('$store_path', 'sha256:$nar_hash', 1000000, $nar_size, 1, NULL, 'fixed:r:sha256:$nar_hash');"
+        }
+
+        promote_view_path() {
+          root="$1"
+          view="$2"
+          namespace="$3"
+          store_path="$4"
+          store_basename="''${store_path##*/}"
+          store_hash="''${store_basename%%-*}"
+          mkdir -p "$root/gcroots/$view/$namespace"
+          ln -sfn "$store_path" "$root/gcroots/$view/$namespace/$store_hash"
+        }
+
+        write_octal_byte() {
+          octal=$(printf '%03o' "$1")
+          printf "\\$octal"
+        }
+
+        write_connect_json_request() {
+          body="$1"
+          out="$2"
+          len=''${#body}
+          b1=$(((len >> 24) & 255))
+          b2=$(((len >> 16) & 255))
+          b3=$(((len >> 8) & 255))
+          b4=$((len & 255))
+          {
+            printf '\000'
+            write_octal_byte "$b1"
+            write_octal_byte "$b2"
+            write_octal_byte "$b3"
+            write_octal_byte "$b4"
+            printf '%s' "$body"
+          } > "$out"
+        }
+
+        connect_json_payload() {
+          ${tailBin} -c +6 "$1"
+        }
+
+        init_real_build_nix_db() {
+          root="$1"
+          export NIX_REMOTE=""
+          export NIX_CONF_DIR=/tmp/nix-conf
+          export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export AOS_NIX_STORE_DIR=/nix/store
+          export AOS_NIX_STATE_DIR="$root/var/nix"
+
+          rm -f "$root/var/nix/db/db.sqlite" \
+            "$root/var/nix/db/db.sqlite-shm" \
+            "$root/var/nix/db/db.sqlite-wal"
+          mkdir -p /dev/pts
+          mount -t devpts devpts /dev/pts 2>/dev/null || true
+          mkdir -p "$NIX_CONF_DIR" "$root/var/nix/db" "$root/var/nix/gcroots"
+          ${catBin} > "$NIX_CONF_DIR/nix.conf" << 'NIXCONF'
+        experimental-features = nix-command
+        sandbox = false
+        build-users-group =
+        max-build-log-size = 10485760
+        max-silent-time = 0
+        substituters =
+        timeout = 0
+    NIXCONF
+
+          NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$root/var/nix" \
+            ${nixStoreBin} --init || true
+          NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$root/var/nix" \
+            ${nixStoreBin} --load-db < /aos-registration
+        }
+
+        init_mock_nix_db "$AOS_ROOT"
   '';
 
   serverConfig = ''
-        cat > /tmp/aos-config.toml << 'CFGEOF'
+        ${catBin} > /tmp/aos-config.toml << 'CFGEOF'
     listen = "127.0.0.1:15000"
     [[views]]
     name = "default"
@@ -90,16 +282,19 @@
     wait $SERVER_PID 2>/dev/null || true
   '';
 
-  serverDeps = [
-    self
-    pkgs.curl
-    pkgs.coreutils
-    pkgs.socat
-    pkgs.jq
-    pkgs.sqlite
-    pkgs.iproute2
-    pkgs.grep
-  ];
+  serverDeps =
+    [
+      self
+      pkgs.curl
+      pkgs.coreutils
+      pkgs.socat
+      pkgs.jq
+      pkgs.sqlite
+      pkgs.iproute2
+      pkgs.grep
+    ]
+    ++ nixRuntimeDeps;
+  buildStreamDeps = serverDeps ++ [rpcBuildFixtureBuilder];
 in {
   # ---------------------------------------------------------------------------
   # Test 1: rpc-cache-query-missing
@@ -122,7 +317,7 @@ in {
       ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
         "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$KNOWN_PATH', 'sha256:kkkk', 1000000, 1024, 1, '''''');"
 
-      echo "==> Test: ConnectRPC QueryMissing (informational)"
+      echo "==> Test: ConnectRPC QueryMissing"
       RPC_RESPONSE=$(${curlBin} -s -X POST \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $ACCESS_TOKEN" \
@@ -131,11 +326,19 @@ in {
       echo "RPC response: $RPC_RESPONSE"
       RPC_MISSING=$(echo "$RPC_RESPONSE" | ${jqBin} '.missing | length' 2>/dev/null || echo "error")
       echo "RPC missing count: $RPC_MISSING"
-      if [ "$RPC_MISSING" = "1" ]; then
-        echo "==> ConnectRPC QueryMissing returned correct result"
-      else
-        echo "INFO: ConnectRPC returned $RPC_MISSING (expected 1), verifying via REST"
-      fi
+      test "$RPC_MISSING" = "1" || { echo "FAIL: expected RPC missing count 1, got $RPC_MISSING"; FAIL=1; }
+
+      echo "==> Test: ConnectRPC QueryMissing requires auth"
+      RPC_NOAUTH_CODE=$(${curlBin} -s -o /tmp/rpc-query-missing-noauth.json -w '%{http_code}' \
+        -X POST -H "Content-Type: application/json" \
+        -d "{\"view\":\"default\",\"store_paths\":[\"$KNOWN_PATH\"]}" \
+        http://127.0.0.1:15000/aos.cache.v1.CacheService/QueryMissing)
+      RPC_NOAUTH=$(${catBin} /tmp/rpc-query-missing-noauth.json)
+      echo "RPC no-auth QueryMissing: HTTP $RPC_NOAUTH_CODE $RPC_NOAUTH"
+      test "$RPC_NOAUTH_CODE" = "401" || { echo "FAIL: expected RPC QueryMissing HTTP 401"; FAIL=1; }
+      RPC_NOAUTH_ERROR=$(echo "$RPC_NOAUTH" | ${jqBin} -r '.code // empty')
+      test "$RPC_NOAUTH_ERROR" = "unauthenticated" || \
+        { echo "FAIL: expected unauthenticated RPC QueryMissing error, got $RPC_NOAUTH_ERROR"; FAIL=1; }
 
       echo "==> Test: REST QueryMissing (1 known, 1 unknown)"
       REST=$(${curlBin} -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
@@ -183,38 +386,91 @@ in {
 
       FAIL=0
 
-      UPLOAD_PATH="/tmp/aos/store/uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu-upload-test-1.0"
-      mkdir -p "$UPLOAD_PATH/bin"
-      echo "upload test data" > "$UPLOAD_PATH/bin/data.txt"
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$UPLOAD_PATH', 'sha256:uuuu', 1000000, 2048, 1, '''''');"
+      CLIENT_STATE_ROOT=/tmp/aos-rpc-client-state
+      init_mock_nix_db "$CLIENT_STATE_ROOT"
 
-      echo "==> Test: Upload via REST PUT"
-      HASH="uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu"
-      HTTP_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
+      HASH="abababababababababababababababab"
+      UPLOAD_PATH="$AOS_ROOT/store/$HASH-rpc-upload-test-1.0"
+      mkdir -p "$UPLOAD_PATH/bin"
+      echo '#!/bin/sh' > "$UPLOAD_PATH/bin/rpc-upload-test"
+      echo 'echo "rpc upload executed"' >> "$UPLOAD_PATH/bin/rpc-upload-test"
+      chmod +x "$UPLOAD_PATH/bin/rpc-upload-test"
+      echo "upload test data" > "$UPLOAD_PATH/bin/data.txt"
+      register_ca_store_path "$UPLOAD_PATH" "$CLIENT_STATE_ROOT" "$AOS_ROOT/store"
+
+      echo "==> Test: path is missing before import"
+      BEFORE=$(${curlBin} -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"paths\":[\"$HASH\"]}" \
+        http://127.0.0.1:15000/default/query-missing)
+      echo "query-missing before: $BEFORE"
+      echo "$BEFORE" | ${jqBin} -e '.missing == ["'"$HASH"'"]' >/dev/null || \
+        { echo "FAIL: RPC upload fixture should be missing before import"; FAIL=1; }
+
+      echo "==> Test: Upload real Nix export via REST PUT"
+      NIX_STORE_DIR="$AOS_ROOT/store" NIX_STATE_DIR="$CLIENT_STATE_ROOT/var/nix" \
+        ${nixStoreBin} --export "$UPLOAD_PATH" > /tmp/rpc-upload.export
+      HTTP_CODE=$(${curlBin} -s -o /tmp/rpc-upload-response.json -w '%{http_code}' \
         -X PUT -H "Authorization: Bearer $ACCESS_TOKEN" \
         -H "Content-Type: application/octet-stream" \
-        --data-binary @"$UPLOAD_PATH/bin/data.txt" \
+        --data-binary @/tmp/rpc-upload.export \
         "http://127.0.0.1:15000/default/store/$HASH")
       echo "Upload: HTTP $HTTP_CODE"
+      ${catBin} /tmp/rpc-upload-response.json
+      test "$HTTP_CODE" = "200" || { echo "FAIL: expected upload HTTP 200"; FAIL=1; }
+      echo "$(${catBin} /tmp/rpc-upload-response.json)" | ${jqBin} -e '.path == "'"$UPLOAD_PATH"'"' >/dev/null || \
+        { echo "FAIL: upload response did not report imported store path"; FAIL=1; }
+      promote_view_path "$AOS_ROOT" default bin "$UPLOAD_PATH"
 
-      echo "==> Test: Download narinfo"
+      echo "==> Test: path is present after import"
+      AFTER=$(${curlBin} -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"paths\":[\"$HASH\"]}" \
+        http://127.0.0.1:15000/default/query-missing)
+      echo "query-missing after: $AFTER"
+      echo "$AFTER" | ${jqBin} -e '.missing == []' >/dev/null || \
+        { echo "FAIL: imported path should not be missing"; FAIL=1; }
+
+      echo "==> Test: Download narinfo via REST"
       NARINFO_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
         "http://127.0.0.1:15000/default/$HASH.narinfo")
       echo "Narinfo: HTTP $NARINFO_CODE"
+      test "$NARINFO_CODE" = "200" || { echo "FAIL: expected REST narinfo HTTP 200"; FAIL=1; }
+      NARINFO=$(${curlBin} -sf "http://127.0.0.1:15000/default/$HASH.narinfo")
+      echo "$NARINFO"
+      echo "$NARINFO" | ${grepBin} -F -q "StorePath: $UPLOAD_PATH" || \
+        { echo "FAIL: REST narinfo missing store path"; FAIL=1; }
+      echo "$NARINFO" | ${grepBin} -F -q "URL: nar/" || \
+        { echo "FAIL: REST narinfo missing NAR URL"; FAIL=1; }
 
-      if [ "$NARINFO_CODE" = "200" ]; then
-        NARINFO=$(${curlBin} -s "http://127.0.0.1:15000/default/$HASH.narinfo")
-        echo "$NARINFO"
-        NAR_URL=$(echo "$NARINFO" | ${grepBin} "^URL:" | cut -d' ' -f2)
-        if [ -n "$NAR_URL" ]; then
-          ${curlBin} -s -o /tmp/downloaded.nar \
-            -H "Authorization: Bearer $ACCESS_TOKEN" \
-            "http://127.0.0.1:15000/default/$NAR_URL" 2>/dev/null || true
-          DL_SIZE=$(stat -c%s /tmp/downloaded.nar 2>/dev/null || echo 0)
-          echo "Downloaded NAR: $DL_SIZE bytes"
-        fi
-      fi
+      echo "==> Test: ConnectRPC GetNarInfo exposes download metadata"
+      RPC_NARINFO=$(${curlBin} -s -X POST \
+        -H "Content-Type: application/json" \
+        -d "{\"view\":\"default\",\"store_hash\":\"$HASH\"}" \
+        http://127.0.0.1:15000/aos.cache.v1.CacheService/GetNarInfo)
+      echo "RPC GetNarInfo: $RPC_NARINFO"
+      RPC_STORE_PATH=$(echo "$RPC_NARINFO" | ${jqBin} -r '.store_path // .storePath // empty')
+      RPC_URL=$(echo "$RPC_NARINFO" | ${jqBin} -r '.url // empty')
+      RPC_COMPRESSION=$(echo "$RPC_NARINFO" | ${jqBin} -r '.compression // empty')
+      RPC_FILE_HASH=$(echo "$RPC_NARINFO" | ${jqBin} -r '.file_hash // .fileHash // empty')
+      RPC_FILE_SIZE=$(echo "$RPC_NARINFO" | ${jqBin} -r '.file_size // .fileSize // 0')
+      RPC_NAR_HASH=$(echo "$RPC_NARINFO" | ${jqBin} -r '.nar_hash // .narHash // empty')
+      RPC_NAR_SIZE=$(echo "$RPC_NARINFO" | ${jqBin} -r '.nar_size // .narSize // 0')
+      test "$RPC_STORE_PATH" = "$UPLOAD_PATH" || { echo "FAIL: RPC narinfo store path mismatch"; FAIL=1; }
+      echo "$RPC_URL" | ${grepBin} -q '^nar/' || { echo "FAIL: RPC narinfo missing NAR URL"; FAIL=1; }
+      test "$RPC_COMPRESSION" = "zstd" || { echo "FAIL: RPC narinfo compression mismatch: $RPC_COMPRESSION"; FAIL=1; }
+      echo "$RPC_FILE_HASH" | ${grepBin} -q '^sha256:' || { echo "FAIL: RPC narinfo missing file hash"; FAIL=1; }
+      test "$RPC_FILE_SIZE" -gt 0 || { echo "FAIL: RPC narinfo file size missing"; FAIL=1; }
+      echo "$RPC_NAR_HASH" | ${grepBin} -q '^sha256:' || { echo "FAIL: RPC narinfo missing NAR hash"; FAIL=1; }
+      test "$RPC_NAR_SIZE" -gt 0 || { echo "FAIL: RPC narinfo NAR size missing"; FAIL=1; }
+
+      echo "==> Test: Download NAR URL from RPC metadata"
+      ${curlBin} -sf -o /tmp/downloaded.nar \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        "http://127.0.0.1:15000/default/$RPC_URL"
+      DL_SIZE=$(${statBin} -c%s /tmp/downloaded.nar)
+      echo "Downloaded NAR: $DL_SIZE bytes"
+      test "$DL_SIZE" -gt 0 || { echo "FAIL: downloaded NAR is empty"; FAIL=1; }
 
       echo "==> Test: ConnectRPC GetCacheInfo"
       RPC_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
@@ -222,6 +478,7 @@ in {
         -d '{"view":"default"}' \
         http://127.0.0.1:15000/aos.cache.v1.CacheService/GetCacheInfo)
       echo "ConnectRPC GetCacheInfo: HTTP $RPC_CODE"
+      test "$RPC_CODE" = "200" || { echo "FAIL: expected GetCacheInfo HTTP 200"; FAIL=1; }
 
       ${stopServer}
       if [ "$FAIL" -ne 0 ]; then exit 1; fi
@@ -234,51 +491,168 @@ in {
   # ---------------------------------------------------------------------------
   rpc-build-stream = testing.mkVMTest {
     name = "rpc-build-stream";
-    rootfsDeps = serverDeps;
-    memory = 1024;
+    rootfsDeps = buildStreamDeps;
+    memory = 2048;
     testScript = ''
-      ${serverPreamble}
-      ${serverConfig}
-      ${startServer}
-      ${getAuthToken}
+        ${serverPreamble}
+        init_real_build_nix_db "$AOS_ROOT"
+        ${serverConfig}
+        ${startServer}
+        ${getAuthToken}
 
-      FAIL=0
+        FAIL=0
 
-      echo "==> Test: Build rejects non-existent derivation"
-      HTTP_CODE=$(${curlBin} -s -o /tmp/build-resp.json -w '%{http_code}' \
-        -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
-        "http://127.0.0.1:15000/default/build?drv=/nix/store/00000000000000000000000000000000-fake.drv")
-      echo "Build: HTTP $HTTP_CODE"
+        ${catBin} > /tmp/rpc-build-log.nix << 'NIXEOF'
+      let
+        bash = builtins.storePath "${pkgs.bash}";
+        fixtureBuilder = builtins.storePath "${rpcBuildFixtureBuilder}";
+      in
+        derivation {
+          name = "rpc-build-log-fixture";
+          system = "x86_64-linux";
+          builder = "''${fixtureBuilder}/bin/rpc-build-log-fixture-builder";
+          args = [
+            "''${bash}"
+          ];
+        }
+      NIXEOF
 
-      echo "==> Test: ConnectRPC Build rejects invalid derivation"
-      RPC_RESP=$(${curlBin} -s -X POST \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $ACCESS_TOKEN" \
-        -d '{"view":"default","derivation":"/nix/store/00000000000000000000000000000000-fake.drv"}' \
-        http://127.0.0.1:15000/aos.build.v1.BuildService/Build 2>&1 || true)
-      echo "RPC Build: $RPC_RESP"
+        BUILD_DRV=$(NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_ROOT/var/nix" \
+          ${nixInstantiateBin} /tmp/rpc-build-log.nix)
+        echo "Real build derivation: $BUILD_DRV"
+        echo "$BUILD_DRV" | ${grepBin} -q '^/nix/store/.*\.drv$' || \
+          { echo "FAIL: nix-instantiate did not return a .drv"; FAIL=1; }
 
-      if echo "$RPC_RESP" | ${jqBin} -e '.code' >/dev/null 2>&1; then
-        ERROR_CODE=$(echo "$RPC_RESP" | ${jqBin} -r '.code')
-        echo "Error code: $ERROR_CODE"
-      fi
+        echo "==> Test: REST Build streams a real derivation"
+        rm -f /tmp/build-real.sse
+        ${curlBin} -sN -X POST \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          "http://127.0.0.1:15000/default/build?drv=$BUILD_DRV" \
+          > /tmp/build-real.sse 2>/tmp/build-real.curl.err &
+        BUILD_STREAM_PID=$!
+        for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+          if ${grepBin} -q '^event: complete$' /tmp/build-real.sse; then break; fi
+          if ${grepBin} -q '^event: error$' /tmp/build-real.sse; then break; fi
+          sleep 1
+        done
+        kill $BUILD_STREAM_PID 2>/dev/null || true
+        wait $BUILD_STREAM_PID 2>/dev/null || true
+        if ${grepBin} -q '^event: error$' /tmp/build-real.sse; then
+          echo "Build error event:"
+          ${grepBin} -A1 '^event: error$' /tmp/build-real.sse | ${tailBin} -c 2000
+        fi
 
-      echo "==> Test: BuildClosure rejects empty list"
-      RPC_RESP2=$(${curlBin} -s -X POST \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $ACCESS_TOKEN" \
-        -d '{"view":"default","derivations":[]}' \
-        http://127.0.0.1:15000/aos.build.v1.BuildService/BuildClosure 2>&1 || true)
-      echo "RPC BuildClosure: $RPC_RESP2"
+        ${grepBin} -q '^event: status$' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing status event"; FAIL=1; }
+        ${grepBin} -q '^event: log$' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing log event"; FAIL=1; }
+        ${grepBin} -q '^event: complete$' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing complete event"; FAIL=1; }
+        if ${grepBin} -q '^event: error$' /tmp/build-real.sse; then
+          echo "FAIL: real build emitted error event"
+          FAIL=1
+        fi
+        ${grepBin} -q 'rpc build fixture: configure' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing configure log"; FAIL=1; }
+        ${grepBin} -q 'rpc build fixture: carriage-after' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing carriage-return log"; FAIL=1; }
+        ${grepBin} -q 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing delimiter-free log chunk"; FAIL=1; }
+        ${grepBin} -q 'rpc build fixture: eof-tail-without-newline' /tmp/build-real.sse || \
+          { echo "FAIL: real build stream missing unterminated EOF log tail"; FAIL=1; }
 
-      echo "==> Test: Build requires auth"
-      NOAUTH=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
-        -X POST "http://127.0.0.1:15000/default/build?drv=/nix/store/fake.drv")
-      test "$NOAUTH" = "401" || { echo "FAIL: expected 401, got $NOAUTH"; FAIL=1; }
+        BUILD_OUT=$(NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_ROOT/var/nix" \
+          ${nixStoreBin} -q --outputs "$BUILD_DRV")
+        "$BUILD_OUT/bin/rpc-build-log-fixture" > /tmp/rpc-build-output.txt
+        ${grepBin} -q 'rpc build fixture executed' /tmp/rpc-build-output.txt || \
+          { echo "FAIL: built output did not execute"; FAIL=1; }
 
-      ${stopServer}
-      if [ "$FAIL" -ne 0 ]; then exit 1; fi
-      echo "==> rpc-build-stream passed"
+        echo "==> Test: REST Build replays completed build logs"
+        rm -f /tmp/build-replay.sse
+        ${curlBin} -sN -X POST \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          -H "Last-Event-ID: 0" \
+          "http://127.0.0.1:15000/default/build?drv=$BUILD_DRV" \
+          > /tmp/build-replay.sse 2>/tmp/build-replay.curl.err &
+        REPLAY_STREAM_PID=$!
+        for _i in 1 2 3 4 5; do
+          if ${grepBin} -q '^event: complete$' /tmp/build-replay.sse; then break; fi
+          sleep 1
+        done
+        kill $REPLAY_STREAM_PID 2>/dev/null || true
+        wait $REPLAY_STREAM_PID 2>/dev/null || true
+
+        ${grepBin} -q '^event: log$' /tmp/build-replay.sse || \
+          { echo "FAIL: replay stream missing log event"; FAIL=1; }
+        ${grepBin} -q '^event: complete$' /tmp/build-replay.sse || \
+          { echo "FAIL: replay stream missing complete event"; FAIL=1; }
+        ${grepBin} -q 'rpc build fixture: eof-tail-without-newline' /tmp/build-replay.sse || \
+          { echo "FAIL: replay stream missing unterminated EOF log tail"; FAIL=1; }
+
+        echo "==> Test: Build rejects non-existent derivation"
+        HTTP_CODE=$(${curlBin} -s -o /tmp/build-resp.json -w '%{http_code}' \
+          -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+          "http://127.0.0.1:15000/default/build?drv=/nix/store/00000000000000000000000000000000-fake.drv")
+        echo "Build: HTTP $HTTP_CODE"
+        test "$HTTP_CODE" = "400" || { echo "FAIL: expected REST build HTTP 400"; FAIL=1; }
+
+        echo "==> Test: ConnectRPC Build rejects invalid derivation"
+        write_connect_json_request \
+          '{"view":"default","derivation":"/nix/store/00000000000000000000000000000000-fake.drv"}' \
+          /tmp/rpc-build-invalid.req
+        RPC_CODE=$(${curlBin} -s -o /tmp/rpc-build-invalid.json -w '%{http_code}' \
+          -X POST \
+          -H "Content-Type: application/connect+json" \
+          -H "Connect-Protocol-Version: 1" \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          --data-binary @/tmp/rpc-build-invalid.req \
+          http://127.0.0.1:15000/aos.build.v1.BuildService/Build)
+        RPC_RESP=$(connect_json_payload /tmp/rpc-build-invalid.json)
+        echo "RPC Build: HTTP $RPC_CODE $RPC_RESP"
+        test "$RPC_CODE" = "200" || { echo "FAIL: expected RPC build streaming HTTP 200"; FAIL=1; }
+        ERROR_CODE=$(echo "$RPC_RESP" | ${jqBin} -r '.error.code // empty')
+        test "$ERROR_CODE" = "invalid_argument" || { echo "FAIL: expected invalid_argument, got $ERROR_CODE"; FAIL=1; }
+
+        echo "==> Test: BuildClosure rejects empty list"
+        write_connect_json_request '{"view":"default","derivations":[]}' /tmp/rpc-build-closure-empty.req
+        RPC_CODE2=$(${curlBin} -s -o /tmp/rpc-build-closure-empty.json -w '%{http_code}' \
+          -X POST \
+          -H "Content-Type: application/connect+json" \
+          -H "Connect-Protocol-Version: 1" \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          --data-binary @/tmp/rpc-build-closure-empty.req \
+          http://127.0.0.1:15000/aos.build.v1.BuildService/BuildClosure)
+        RPC_RESP2=$(connect_json_payload /tmp/rpc-build-closure-empty.json)
+        echo "RPC BuildClosure: HTTP $RPC_CODE2 $RPC_RESP2"
+        test "$RPC_CODE2" = "200" || { echo "FAIL: expected RPC build-closure streaming HTTP 200"; FAIL=1; }
+        ERROR_CODE2=$(echo "$RPC_RESP2" | ${jqBin} -r '.error.code // empty')
+        test "$ERROR_CODE2" = "invalid_argument" || { echo "FAIL: expected invalid_argument, got $ERROR_CODE2"; FAIL=1; }
+
+        echo "==> Test: ConnectRPC Build requires auth"
+        write_connect_json_request \
+          '{"view":"default","derivation":"/nix/store/00000000000000000000000000000000-fake.drv"}' \
+          /tmp/rpc-build-noauth.req
+        RPC_NOAUTH_CODE=$(${curlBin} -s -o /tmp/rpc-build-noauth.json -w '%{http_code}' \
+          -X POST \
+          -H "Content-Type: application/connect+json" \
+          -H "Connect-Protocol-Version: 1" \
+          --data-binary @/tmp/rpc-build-noauth.req \
+          http://127.0.0.1:15000/aos.build.v1.BuildService/Build)
+        RPC_NOAUTH=$(connect_json_payload /tmp/rpc-build-noauth.json)
+        echo "RPC Build no-auth: HTTP $RPC_NOAUTH_CODE $RPC_NOAUTH"
+        test "$RPC_NOAUTH_CODE" = "200" || { echo "FAIL: expected RPC build no-auth streaming HTTP 200"; FAIL=1; }
+        RPC_NOAUTH_ERROR=$(echo "$RPC_NOAUTH" | ${jqBin} -r '.error.code // empty')
+        test "$RPC_NOAUTH_ERROR" = "unauthenticated" || \
+          { echo "FAIL: expected unauthenticated RPC build error, got $RPC_NOAUTH_ERROR"; FAIL=1; }
+
+        echo "==> Test: Build requires auth"
+        NOAUTH=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
+          -X POST "http://127.0.0.1:15000/default/build?drv=/nix/store/fake.drv")
+        test "$NOAUTH" = "401" || { echo "FAIL: expected 401, got $NOAUTH"; FAIL=1; }
+
+        ${stopServer}
+        if [ "$FAIL" -ne 0 ]; then exit 1; fi
+        echo "==> rpc-build-stream passed"
     '';
   };
 
@@ -311,32 +685,23 @@ in {
       echo "RPC GetToken: $RPC_TOKEN"
 
       RPC_ACCESS=$(echo "$RPC_TOKEN" | ${jqBin} -r '.access_token // .accessToken // empty' 2>/dev/null)
-      if [ -n "$RPC_ACCESS" ]; then
-        echo "==> Got JWT from ConnectRPC (length: ''${#RPC_ACCESS})"
+      RPC_TYPE=$(echo "$RPC_TOKEN" | ${jqBin} -r '.token_type // .tokenType // empty' 2>/dev/null)
+      RPC_EXPIRES=$(echo "$RPC_TOKEN" | ${jqBin} -r '.expires_in // .expiresIn // 0' 2>/dev/null)
+      RPC_SCOPE=$(echo "$RPC_TOKEN" | ${jqBin} -r '.scope // empty' 2>/dev/null)
+      test -n "$RPC_ACCESS" || { echo "FAIL: no JWT from ConnectRPC"; FAIL=1; }
+      test "$RPC_TYPE" = "Bearer" || { echo "FAIL: expected Bearer token type, got $RPC_TYPE"; FAIL=1; }
+      test "$RPC_EXPIRES" -gt 0 || { echo "FAIL: expected positive token expiry"; FAIL=1; }
+      echo "$RPC_SCOPE" | ${grepBin} -F -q "read" || { echo "FAIL: RPC token scope missing read"; FAIL=1; }
+      echo "$RPC_SCOPE" | ${grepBin} -F -q "build" || { echo "FAIL: RPC token scope missing build"; FAIL=1; }
+      echo "$RPC_SCOPE" | ${grepBin} -F -q "gc" || { echo "FAIL: RPC token scope missing gc"; FAIL=1; }
 
-        echo "==> Step 3: Authenticated query with RPC JWT"
-        QM=$(${curlBin} -s -X POST -H "Authorization: Bearer $RPC_ACCESS" \
-          -H "Content-Type: application/json" \
-          -d '{"paths":["/nix/store/fakepath-1.0"]}' \
-          http://127.0.0.1:15000/default/query-missing)
-        QM_COUNT=$(echo "$QM" | ${jqBin} '.missing | length')
-        test "$QM_COUNT" -eq 1 || { echo "FAIL: auth query failed"; FAIL=1; }
-      else
-        echo "==> ConnectRPC format different, falling back to REST"
-        JWT_REST=$(${curlBin} -s -X POST -H "Authorization: Bearer $PROV_TOKEN" \
-          -H "Content-Type: application/x-www-form-urlencoded" \
-          -d "grant_type=client_credentials" \
-          http://127.0.0.1:15000/oauth2/token)
-        ACCESS=$(echo "$JWT_REST" | ${jqBin} -r '.access_token // empty')
-        test -n "$ACCESS" || { echo "FAIL: no JWT"; FAIL=1; }
-
-        QM=$(${curlBin} -s -X POST -H "Authorization: Bearer $ACCESS" \
-          -H "Content-Type: application/json" \
-          -d '{"paths":["/nix/store/fakepath-1.0"]}' \
-          http://127.0.0.1:15000/default/query-missing)
-        QM_COUNT=$(echo "$QM" | ${jqBin} '.missing | length')
-        test "$QM_COUNT" -eq 1 || { echo "FAIL: auth query failed"; FAIL=1; }
-      fi
+      echo "==> Step 3: Authenticated query with RPC JWT"
+      QM=$(${curlBin} -s -X POST -H "Authorization: Bearer $RPC_ACCESS" \
+        -H "Content-Type: application/json" \
+        -d '{"paths":["/nix/store/fakepath-1.0"]}' \
+        http://127.0.0.1:15000/default/query-missing)
+      QM_COUNT=$(echo "$QM" | ${jqBin} '.missing | length')
+      test "$QM_COUNT" -eq 1 || { echo "FAIL: auth query failed"; FAIL=1; }
 
       echo "==> Step 4: Invalid token rejected"
       INVALID_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
@@ -344,6 +709,7 @@ in {
         -d '{"provisioning_token":"invalid-garbage-token"}' \
         http://127.0.0.1:15000/aos.auth.v1.AuthService/GetToken)
       echo "Invalid token: HTTP $INVALID_CODE"
+      test "$INVALID_CODE" = "401" || { echo "FAIL: expected invalid token HTTP 401"; FAIL=1; }
 
       ${stopServer}
       if [ "$FAIL" -ne 0 ]; then exit 1; fi
@@ -378,17 +744,17 @@ in {
       echo "==> Total paths: $TOTAL"
 
       echo "==> Test: ConnectRPC GcService.Collect (dry run)"
-      GC_RESP=$(${curlBin} -s -X POST \
+      GC_CODE=$(${curlBin} -s -o /tmp/rpc-gc-dry-run.json -w '%{http_code}' \
+        -X POST \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $ACCESS_TOKEN" \
         -d '{"view":"default","dry_run":true,"collect_store":false}' \
         http://127.0.0.1:15000/aos.gc.v1.GcService/Collect)
-      echo "RPC GC: $GC_RESP"
-
-      if echo "$GC_RESP" | ${jqBin} -e '.' >/dev/null 2>&1; then
-        DRY_RUN=$(echo "$GC_RESP" | ${jqBin} -r '.dry_run // .dryRun // "null"')
-        echo "dry_run: $DRY_RUN"
-      fi
+      GC_RESP=$(${catBin} /tmp/rpc-gc-dry-run.json)
+      echo "RPC GC: HTTP $GC_CODE $GC_RESP"
+      test "$GC_CODE" = "200" || { echo "FAIL: expected RPC GC HTTP 200"; FAIL=1; }
+      DRY_RUN=$(echo "$GC_RESP" | ${jqBin} -r '.dry_run // .dryRun // "null"')
+      test "$DRY_RUN" = "true" || { echo "FAIL: expected RPC GC dry_run true, got $DRY_RUN"; FAIL=1; }
 
       echo "==> Test: REST GC (dry run)"
       REST_GC=$(${curlBin} -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
@@ -396,14 +762,32 @@ in {
         -d '{"dry_run":true}' \
         http://127.0.0.1:15000/default/gc)
       echo "REST GC: $REST_GC"
+      echo "$REST_GC" | ${jqBin} -e '.dry_run == true' >/dev/null || { echo "FAIL: REST GC dry_run mismatch"; FAIL=1; }
 
       echo "==> Test: GC with max_size budget"
-      GC_BUDGET=$(${curlBin} -s -X POST \
+      GC_BUDGET_CODE=$(${curlBin} -s -o /tmp/rpc-gc-budget.json -w '%{http_code}' \
+        -X POST \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $ACCESS_TOKEN" \
         -d '{"view":"default","dry_run":true,"collect_store":false,"max_size":1048576}' \
-        http://127.0.0.1:15000/aos.gc.v1.GcService/Collect 2>&1 || true)
-      echo "GC with budget: $GC_BUDGET"
+        http://127.0.0.1:15000/aos.gc.v1.GcService/Collect)
+      GC_BUDGET=$(${catBin} /tmp/rpc-gc-budget.json)
+      echo "GC with budget: HTTP $GC_BUDGET_CODE $GC_BUDGET"
+      test "$GC_BUDGET_CODE" = "200" || { echo "FAIL: expected RPC GC budget HTTP 200"; FAIL=1; }
+      GC_BUDGET_DRY_RUN=$(echo "$GC_BUDGET" | ${jqBin} -r '.dry_run // .dryRun // "null"')
+      test "$GC_BUDGET_DRY_RUN" = "true" || { echo "FAIL: expected RPC GC budget dry_run true"; FAIL=1; }
+
+      echo "==> Test: ConnectRPC GC requires auth"
+      RPC_GC_NOAUTH_CODE=$(${curlBin} -s -o /tmp/rpc-gc-noauth.json -w '%{http_code}' \
+        -X POST -H "Content-Type: application/json" \
+        -d '{"view":"default","dry_run":true,"collect_store":false}' \
+        http://127.0.0.1:15000/aos.gc.v1.GcService/Collect)
+      RPC_GC_NOAUTH=$(${catBin} /tmp/rpc-gc-noauth.json)
+      echo "RPC GC no-auth: HTTP $RPC_GC_NOAUTH_CODE $RPC_GC_NOAUTH"
+      test "$RPC_GC_NOAUTH_CODE" = "401" || { echo "FAIL: expected RPC GC HTTP 401"; FAIL=1; }
+      RPC_GC_NOAUTH_ERROR=$(echo "$RPC_GC_NOAUTH" | ${jqBin} -r '.code // empty')
+      test "$RPC_GC_NOAUTH_ERROR" = "unauthenticated" || \
+        { echo "FAIL: expected unauthenticated RPC GC error, got $RPC_GC_NOAUTH_ERROR"; FAIL=1; }
 
       echo "==> Test: GC requires auth"
       NOAUTH=$(${curlBin} -s -o /dev/null -w '%{http_code}' \

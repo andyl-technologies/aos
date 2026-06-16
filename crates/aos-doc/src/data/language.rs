@@ -1,23 +1,35 @@
-/// Nix language reference organized by chapter and topic.
-///
-/// Each chapter groups related topics with substantive prose and code examples,
-/// aimed at someone who knows programming but is learning Nix.
+//! Nix language reference organized by chapter and topic.
+//!
+//! Each chapter groups related topics with substantive prose and code
+//! examples, aimed at someone who knows programming but is learning Nix.
+//! The content is compile-time constant: it backs the TUI's Language tab
+//! directly and is merged into the doc index as
+//! `language.<chapter>.<topic>` entries by [`crate::extract::build_index`].
 
+/// A chapter of the language reference (e.g. "Values & Types").
 pub struct LanguageChapter {
+    /// Human-readable chapter title.
     pub name: &'static str,
+    /// The chapter's topics, in reading order.
     pub topics: &'static [LanguageTopic],
 }
 
+/// A single topic within a chapter (e.g. "Strings").
 pub struct LanguageTopic {
+    /// Human-readable topic title.
     pub name: &'static str,
+    /// One-sentence description shown in listings and search results.
     pub summary: &'static str,
+    /// Full markdown body with prose and fenced `nix` code examples.
     pub body: &'static str,
 }
 
+/// Returns all language reference chapters, in reading order.
 pub fn chapters() -> &'static [LanguageChapter] {
     &CHAPTERS
 }
 
+/// The language reference content, one entry per chapter.
 static CHAPTERS: [LanguageChapter; 6] = [
     // ==================================================================
     // Chapter 1: Values & Types

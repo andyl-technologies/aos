@@ -285,6 +285,26 @@
             LDWRAP
                         chmod +x rootfs/usr/local/bin/gcc rootfs/usr/local/bin/cc rootfs/usr/local/bin/g++ rootfs/usr/local/bin/c++ rootfs/usr/local/bin/cpp rootfs/usr/local/bin/ld
 
+                        # util-linux is built without reboot(8), but the
+                        # headless init needs an orderly reboot syscall so
+                        # serial TEST_RESULT markers drain before Firecracker
+                        # exits. Build the tiny helper into the VM rootfs.
+                        cat > reboot.c << 'REBOOT_C'
+            #include <stdio.h>
+            #include <sys/reboot.h>
+            #include <unistd.h>
+
+            int main(void) {
+              sync();
+              if (reboot(RB_AUTOBOOT) != 0) {
+                perror("reboot");
+                return 1;
+              }
+              return 0;
+            }
+            REBOOT_C
+                        cc reboot.c -o rootfs/sbin/reboot
+
                         # Symlink binaries from all rootfsDeps
                         ${builtins.concatStringsSep "\n" (
               builtins.map (dep: ''

@@ -1,3 +1,21 @@
+//! Line-oriented parser for AOS Nix doc comments.
+//!
+//! AOS uses a lightweight doc comment convention in `.nix` files, parsed
+//! without a full Nix grammar:
+//!
+//! - `##!` lines at the top of a file form the module-level doc
+//! - A block of `##` lines immediately above a `name = ...` binding
+//!   documents that binding
+//! - A standalone `## # Heading` line starts a grouping section that is
+//!   attached to all following items
+//!
+//! Doc bodies are markdown and may contain structured `# Type`,
+//! `# Parameters`, `# Examples`, `# See Also`, `# Since`, and
+//! `# Deprecated` sections, which are parsed into the corresponding
+//! [`ItemDoc`] fields. [`parse_file`] is the sole entry point; it never
+//! fails, returning an empty [`ParsedFile`] for content with no doc
+//! comments.
+
 /// Result of parsing a single Nix file for doc comments.
 #[derive(Debug, Clone)]
 pub struct ParsedFile {
@@ -43,12 +61,15 @@ pub struct ItemDoc {
     pub source_line: usize,
 }
 
-/// Parse a Nix source file and extract all doc comments.
+/// Parses a Nix source file and extracts all doc comments.
 ///
 /// Recognizes:
 /// - `##!` at file start for module-level docs
 /// - `##` above bindings for item-level docs
 /// - `## # Heading` for section groupings
+///
+/// This function is infallible: malformed or absent doc comments simply
+/// produce fewer (or no) items.
 pub fn parse_file(content: &str) -> ParsedFile {
     let lines: Vec<&str> = content.lines().collect();
     let module_doc = parse_module_doc(&lines);
@@ -56,7 +77,8 @@ pub fn parse_file(content: &str) -> ParsedFile {
     ParsedFile { module_doc, items }
 }
 
-/// Extract `##!` lines from the start of the file.
+/// Extracts `##!` lines from the start of the file (leading blank lines are
+/// allowed before the block; any other line terminates it).
 fn parse_module_doc(lines: &[&str]) -> Option<ModuleDoc> {
     let mut doc_lines = Vec::new();
 
@@ -85,7 +107,14 @@ fn parse_module_doc(lines: &[&str]) -> Option<ModuleDoc> {
     Some(ModuleDoc { summary, body })
 }
 
-/// Parse item doc blocks and their associated bindings.
+/// Parses item doc blocks and their associated bindings.
+///
+/// Accumulates consecutive `##` lines into a buffer, then resolves the
+/// buffer when a non-comment line is reached: if the line is a binding
+/// (`name = ...`), the buffer becomes that binding's [`ItemDoc`]; if the
+/// buffer was a lone `# Heading`, it updates the current section instead.
+/// A blank line between two `##` blocks (tracked via `had_gap`) separates
+/// a standalone section heading from the doc block that follows it.
 fn parse_items(lines: &[&str]) -> Vec<ItemDoc> {
     let mut items = Vec::new();
     let mut current_section: Option<String> = None;
@@ -177,7 +206,8 @@ fn maybe_set_section(buffer: &[String], section: &mut Option<String>) {
     }
 }
 
-/// Strip the `## ` or `##` prefix from a doc comment line.
+/// Strips the `## ` or `##` prefix from a doc comment line (at most one
+/// leading space is removed so indented markdown survives).
 fn strip_doc_prefix(line: &str) -> String {
     let after_hashes = line.strip_prefix("##").unwrap_or(line);
     // Strip at most one leading space after `##`.
@@ -187,15 +217,17 @@ fn strip_doc_prefix(line: &str) -> String {
         .to_string()
 }
 
-/// Check if doc content represents a section heading (`# Heading`).
+/// Checks if doc content represents a section heading (`# Heading`).
 fn is_section_heading(content: &str) -> bool {
     let trimmed = content.trim();
     trimmed.starts_with("# ")
         || (trimmed.starts_with('#') && trimmed.len() > 1 && !trimmed.starts_with("##"))
 }
 
-/// Try to extract a binding name from a line like `name = ...` or `  name = ...`.
-/// Also handles `name =` at end of line (value on next line).
+/// Tries to extract a binding name from a line like `name = ...` or `  name = ...`.
+/// Also handles `name =` at end of line (value on next line). Returns
+/// `None` for lines whose left-hand side is not a simple Nix identifier
+/// (quoted attributes like `"foo.bar"` are not recognized).
 fn extract_binding_name(line: &str) -> Option<String> {
     let trimmed = line.trim();
 
@@ -218,7 +250,8 @@ fn extract_binding_name(line: &str) -> Option<String> {
     }
 }
 
-/// Check if a string is a valid Nix identifier.
+/// Checks if a string is a valid Nix identifier
+/// (`[a-zA-Z_][a-zA-Z0-9_'-]*`).
 fn is_valid_nix_identifier(s: &str) -> bool {
     if s.is_empty() {
         return false;
@@ -243,10 +276,13 @@ struct ParsedSections {
     deprecated: Option<String>,
 }
 
-/// Parse structured sections from a doc block's markdown.
+/// Parses structured sections from a doc block's markdown.
 ///
 /// Recognized headings: `# Type`, `# Parameters`, `# Examples`,
-/// `# See Also`, `# Since`, `# Deprecated`.
+/// `# See Also`, `# Since`, `# Deprecated`. Headings inside fenced code
+/// blocks are ignored. The text before the first heading is the main body,
+/// whose first paragraph becomes the summary; the returned `body` is the
+/// untrimmed original markdown including all sections.
 fn parse_doc_sections(raw: &str) -> ParsedSections {
     let mut sections: Vec<(String, String)> = Vec::new();
     let mut current_heading: Option<String> = None;
@@ -323,7 +359,7 @@ fn parse_doc_sections(raw: &str) -> ParsedSections {
     }
 }
 
-/// Find a named section's content.
+/// Finds a named section's content (heading match is case-insensitive).
 fn find_section(sections: &[(String, String)], name: &str) -> Option<String> {
     sections
         .iter()
@@ -331,7 +367,8 @@ fn find_section(sections: &[(String, String)], name: &str) -> Option<String> {
         .map(|(_, b)| b.clone())
 }
 
-/// Extract the first paragraph (text before the first blank line).
+/// Extracts the first paragraph (text before the first blank line),
+/// joining its lines with single spaces.
 fn extract_first_paragraph(text: &str) -> String {
     let mut result = String::new();
     for line in text.lines() {
@@ -349,8 +386,9 @@ fn extract_first_paragraph(text: &str) -> String {
     result
 }
 
-/// Extract content inside backticks from a type section.
-/// Looks for either inline `...` or a fenced code block.
+/// Extracts the type signature text from a `# Type` section.
+/// Tries a fenced code block first, then inline backticks, then falls back
+/// to the raw (trimmed) text; returns `None` only for empty content.
 fn extract_backtick_content(text: &str) -> Option<String> {
     // Try fenced block first.
     let blocks = extract_fenced_blocks(text);
@@ -372,7 +410,9 @@ fn extract_backtick_content(text: &str) -> Option<String> {
     }
 }
 
-/// Parse a parameter list in the format `- \`name\` — description`.
+/// Parses a parameter list in the format `- \`name\` -- description`.
+/// Non-list lines after an item are treated as continuations of its
+/// description.
 fn parse_parameter_list(text: &str) -> Vec<(String, String)> {
     let mut params = Vec::new();
     let mut current_name: Option<String> = None;
@@ -407,7 +447,8 @@ fn parse_parameter_list(text: &str) -> Vec<(String, String)> {
     params
 }
 
-/// Parse a single parameter item: `\`name\` — description` or `\`name\` - description`.
+/// Parses a single parameter item: `` `name` `` followed by a separator
+/// (em dash, hyphen, or colon) and the description.
 fn parse_param_item(item: &str) -> Option<(String, String)> {
     let trimmed = item.trim();
     if !trimmed.starts_with('`') {
@@ -424,7 +465,8 @@ fn parse_param_item(item: &str) -> Option<(String, String)> {
     Some((name, desc))
 }
 
-/// Extract fenced code blocks (```...``` or ```nix...```).
+/// Extracts the contents of fenced code blocks (with or without a language
+/// tag); the fence lines themselves are not included.
 fn extract_fenced_blocks(text: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut in_block = false;
@@ -448,8 +490,9 @@ fn extract_fenced_blocks(text: &str) -> Vec<String> {
     blocks
 }
 
-/// Parse a `# See Also` section into a list of references.
-/// Expects backtick-wrapped names separated by commas, spaces, or newlines.
+/// Parses a `# See Also` section into a list of references.
+/// Expects backtick-wrapped names separated by commas or newlines; the
+/// backticks are stripped from each reference.
 fn parse_see_also(text: &str) -> Vec<String> {
     let mut refs = Vec::new();
     // Split on commas and newlines, then extract backtick-quoted names.

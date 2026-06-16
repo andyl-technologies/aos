@@ -1,4 +1,8 @@
 //! ConnectRPC implementation of `GcService`.
+//!
+//! Exposes a single `Collect` RPC — the ConnectRPC twin of the REST
+//! `POST /{view}/gc` endpoint — running TTL expiry, optional budget-based
+//! eviction, and an optional store-wide `nix-store --gc`.
 
 use std::process::Stdio;
 use std::sync::Arc;
@@ -6,17 +10,27 @@ use std::sync::Arc;
 use connectrpc::{ConnectError, Context, ErrorCode};
 use tokio::process::Command;
 
+use aos_core::nix::aos_nix_env;
 use aos_proto::aos::gc::v1::*;
 
 use crate::evict;
 use crate::routes::AppState;
+use crate::services;
 
-/// ConnectRPC GC service backed by the shared `AppState`.
+/// ConnectRPC GC service backed by the shared [`AppState`].
 pub struct GcServiceImpl {
+    /// Shared server state (store, views, config).
     pub state: Arc<AppState>,
 }
 
 impl GcService for GcServiceImpl {
+    /// `Collect` — runs garbage collection for a view.
+    ///
+    /// Requires a JWT with the `build` permission on the view. Steps:
+    /// TTL expiry (always), eviction down to `max_size` when given, and
+    /// `nix-store --gc` when `collect_store` is set and `dry_run` is not.
+    /// Returns expiry/eviction counts, the scored candidates, and the
+    /// freed byte count when the store GC ran.
     async fn collect(
         &self,
         ctx: Context,
@@ -30,6 +44,7 @@ impl GcService for GcServiceImpl {
         if self.state.views.get_view(view).is_none() {
             return Err(ConnectError::new(ErrorCode::NotFound, "unknown view"));
         }
+        services::require_rpc_permission(&ctx, &self.state, view, "build")?;
 
         // Step 1: Expire TTL roots.
         let expired = evict::expire_ttl_roots(&self.state.views, view)
@@ -63,6 +78,7 @@ impl GcService for GcServiceImpl {
         // Step 3: Run `nix-store --gc` if collect_store is true and not dry run.
         let collected_bytes = if collect_store && !dry_run {
             let child = Command::new("nix-store")
+                .envs(aos_nix_env())
                 .arg("--gc")
                 .arg("--print-freed")
                 .stdout(Stdio::piped())

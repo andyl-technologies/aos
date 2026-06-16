@@ -1,3 +1,17 @@
+//! TLS acceptor construction for the HTTPS listener.
+//!
+//! Supports two modes, selected by [`crate::config::TlsConfig`]:
+//!
+//! - **Operator-provided material** — [`acceptor_from_pem`] loads an
+//!   existing PEM certificate chain and private key.
+//! - **Self-signed fallback** — [`generate_self_signed`] mints a fresh
+//!   key pair and certificate (via `rcgen`), persists both to disk with
+//!   `0600` permissions on the key, and returns a ready acceptor.
+//!
+//! [`load_or_generate`] is the usual entry point: it reuses existing files
+//! when both are present and generates new ones otherwise, so the same
+//! self-signed identity survives server restarts.
+
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,7 +22,16 @@ use rustls::ServerConfig;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::TlsAcceptor;
 
-/// Build a [`TlsAcceptor`] from PEM cert + key files.
+/// Builds a [`TlsAcceptor`] from PEM certificate and key files.
+///
+/// The certificate file may contain a full chain; the key may be in any
+/// format `rustls-pemfile` recognises (PKCS#1, PKCS#8, or SEC1).
+///
+/// # Errors
+///
+/// Returns an error if either file cannot be opened or parsed, if the
+/// certificate file contains no certificates, if the key file contains no
+/// private key, or if rustls rejects the cert/key pair.
 pub fn acceptor_from_pem(cert_path: &Path, key_path: &Path) -> Result<TlsAcceptor> {
     let certs = load_certs(cert_path)?;
     let key = load_private_key(key_path)?;
@@ -19,11 +42,19 @@ pub fn acceptor_from_pem(cert_path: &Path, key_path: &Path) -> Result<TlsAccepto
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-/// Generate a self-signed certificate + private key, write them to
-/// `cert_path` / `key_path`, and return a ready-to-use [`TlsAcceptor`].
+/// Generates a self-signed certificate + private key, writes them to
+/// `cert_path` / `key_path`, and returns a ready-to-use [`TlsAcceptor`].
 ///
 /// The certificate is valid for the given `san` subjects (DNS names and/or
 /// IPs). If `san` is empty, `["localhost", "127.0.0.1", "::1"]` is used.
+/// Parent directories are created as needed, and the key file is restricted
+/// to mode `0600` on Unix (best-effort).
+///
+/// # Errors
+///
+/// Returns an error if a SAN entry is invalid, key generation or
+/// self-signing fails, the files cannot be written, or the freshly written
+/// PEM material cannot be loaded back into an acceptor.
 pub fn generate_self_signed(
     cert_path: &Path,
     key_path: &Path,
@@ -75,7 +106,17 @@ pub fn generate_self_signed(
     acceptor_from_pem(cert_path, key_path)
 }
 
-/// Load an existing cert/key pair or generate a self-signed one.
+/// Loads an existing cert/key pair, or generates a self-signed one.
+///
+/// If both `cert_path` and `key_path` exist they are loaded as-is via
+/// [`acceptor_from_pem`]; otherwise a new self-signed pair is created via
+/// [`generate_self_signed`] and persisted to those paths for reuse on the
+/// next start.
+///
+/// # Errors
+///
+/// Propagates errors from [`acceptor_from_pem`] or
+/// [`generate_self_signed`].
 pub fn load_or_generate(cert_path: &Path, key_path: &Path, san: &[String]) -> Result<TlsAcceptor> {
     if cert_path.exists() && key_path.exists() {
         acceptor_from_pem(cert_path, key_path)
@@ -84,17 +125,21 @@ pub fn load_or_generate(cert_path: &Path, key_path: &Path, san: &[String]) -> Re
     }
 }
 
-/// Default filesystem paths for auto-generated TLS material.
+/// Returns the default filesystem path for the auto-generated certificate
+/// (`/var/lib/aos/tls/server.crt`).
 pub fn default_cert_path() -> PathBuf {
     PathBuf::from("/var/lib/aos/tls/server.crt")
 }
 
+/// Returns the default filesystem path for the auto-generated private key
+/// (`/var/lib/aos/tls/server.key`).
 pub fn default_key_path() -> PathBuf {
     PathBuf::from("/var/lib/aos/tls/server.key")
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
+/// Reads all PEM certificates from `path`, requiring at least one.
 fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening certificate file {}", path.display()))?;
@@ -108,6 +153,7 @@ fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     Ok(certs)
 }
 
+/// Reads the first PEM private key from `path`.
 fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening private key file {}", path.display()))?;

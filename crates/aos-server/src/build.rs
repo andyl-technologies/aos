@@ -1,54 +1,109 @@
+//! Build execution, deduplication, and event streaming.
+//!
+//! [`BuildManager`] is the heart of the server's build path. For each
+//! requested derivation it runs `nix-store --realise` exactly once, no
+//! matter how many clients ask ([`BuildManager::get_or_start`] dedupes by
+//! drv path), throttled by a per-view concurrency semaphore.
+//!
+//! Each build owns a [`BuildHandle`] that fans progress out to observers:
+//!
+//! - a `tokio::sync::broadcast` channel carries live [`BuildEvent`]s, and
+//! - a [`LogBuffer`] ring buffer retains recent events so late joiners and
+//!   SSE reconnections (`Last-Event-ID`) can replay history.
+//!
+//! Events ([`BuildEventKind`]) cover queueing, log lines (split on both
+//! `\n` and `\r` so Nix progress output renders live), terminal
+//! completion/error, daemon-unavailable retries (exponential backoff, up
+//! to 3 attempts), and drain notifications. On success the manager roots
+//! the output closure in the view (`bin/` namespace), removes the
+//! temporary upload roots, and optionally mirrors source inputs; finished
+//! handles linger for five minutes so reconnecting clients can still fetch
+//! the outcome.
+//!
+//! The HTTP/SSE surface for these events lives in [`crate::routes`]; the
+//! ConnectRPC surface is in [`crate::services`].
+
 use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::{Notify, Semaphore, broadcast};
+
+use aos_core::nix::aos_nix_env;
 
 use crate::drain::BuildState;
 use crate::routes::AppState;
 
-/// A single SSE event for a build.
+/// A single progress event for a build.
 #[derive(Debug, Clone)]
 pub struct BuildEvent {
+    /// Monotonically increasing, per-build sequence number. Doubles as the
+    /// SSE event id so clients can resume with `Last-Event-ID`.
     pub id: u64,
+    /// The event payload.
     pub kind: BuildEventKind,
 }
 
+/// The payload of a [`BuildEvent`].
 #[derive(Debug, Clone)]
 pub enum BuildEventKind {
+    /// Build phase transition (`queued` -> `building`).
     Status {
+        /// Phase name: `"queued"` or `"building"`.
         phase: String,
+        /// Derivation being built.
         drv: String,
     },
+    /// One line of builder output (from `nix-store --realise` stderr).
     Log {
+        /// The log line, without its trailing newline.
         line: String,
     },
+    /// Terminal event: the build finished successfully.
     Complete {
+        /// Always `true` (failures are reported as [`Error`](Self::Error)).
         success: bool,
+        /// Output store paths of the derivation.
         outputs: Vec<String>,
+        /// Wall-clock build duration in seconds.
         duration_secs: u64,
     },
+    /// Terminal event: the build failed.
     Error {
+        /// Derivation that failed.
         drv: String,
+        /// Builder exit code, when the process ran to completion.
         exit_code: Option<i32>,
+        /// Last lines of builder output (up to 50) for diagnosis.
         log_tail: String,
     },
+    /// The Nix daemon could not be reached; the server is retrying with
+    /// exponential backoff.
     DaemonUnavailable {
+        /// Current attempt number (1-based).
         attempt: u32,
+        /// Total number of attempts that will be made.
         max_attempts: u32,
+        /// Human-readable description of the failure.
         message: String,
     },
+    /// The server has entered drain mode and is shutting down.
     Drain {
+        /// Human-readable drain notice.
         message: String,
     },
 }
 
 impl BuildEvent {
-    /// Format as an SSE text frame: `id: N\nevent: type\ndata: ...\n\n`
+    /// Formats the event as an SSE text frame:
+    /// `id: N\nevent: type\ndata: ...\n\n`.
+    ///
+    /// The `data` payload is JSON for structured events and the raw line
+    /// for [`BuildEventKind::Log`] / [`BuildEventKind::Drain`].
     pub fn to_sse(&self) -> String {
         let (event_type, data) = match &self.kind {
             BuildEventKind::Status { phase, drv } => (
@@ -161,10 +216,38 @@ mod tests {
             "drain",
         );
     }
+
+    #[test]
+    fn log_record_drain_splits_newlines_and_carriage_returns() {
+        let mut pending = Vec::new();
+
+        let first = drain_log_records(&mut pending, b"copying path\rbuilding");
+        assert_eq!(first, vec!["copying path"]);
+        assert_eq!(pending, b"building");
+
+        let second = drain_log_records(&mut pending, b" package\nfinished\r\n");
+        assert_eq!(second, vec!["building package", "finished"]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn log_record_drain_flushes_large_records_without_delimiters() {
+        let mut pending = Vec::new();
+        let chunk = vec![b'x'; MAX_PENDING_LOG_BYTES];
+
+        let records = drain_log_records(&mut pending, &chunk);
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].len(), MAX_PENDING_LOG_BYTES);
+        assert!(pending.is_empty());
+    }
 }
 
 /// Ring buffer for replay of build events to late joiners.
-/// Caps at `MAX_LOG_EVENTS`; oldest events are dropped when full.
+///
+/// Caps at `MAX_LOG_EVENTS`; oldest events are dropped when full. Clients
+/// that connect (or reconnect) after a build has started read history from
+/// here before switching to the live broadcast channel.
 pub struct LogBuffer {
     events: RwLock<VecDeque<BuildEvent>>,
 }
@@ -173,13 +256,20 @@ pub struct LogBuffer {
 /// Oldest events are dropped when this limit is reached.
 const MAX_LOG_EVENTS: usize = 100_000;
 
+/// Maximum bytes a delimiter-less log record may accumulate before being
+/// flushed as a single oversized record.
+const MAX_PENDING_LOG_BYTES: usize = 16 * 1024;
+
 impl LogBuffer {
+    /// Creates an empty buffer.
     fn new() -> Self {
         Self {
             events: RwLock::new(VecDeque::with_capacity(1024)),
         }
     }
 
+    /// Appends an event, evicting the oldest entry when at capacity.
+    /// A poisoned lock drops the event with a warning instead of panicking.
     fn append(&self, event: BuildEvent) {
         let Ok(mut events) = self.events.write() else {
             tracing::warn!("log buffer write lock poisoned, dropping event");
@@ -191,7 +281,11 @@ impl LogBuffer {
         events.push_back(event);
     }
 
-    /// Get all events from `start_id` onward.
+    /// Returns all buffered events with `id >= start_id`, in order.
+    ///
+    /// Uses binary search over the ring buffer's contiguous slices (event
+    /// IDs are monotonically increasing). Pass `0` to replay everything
+    /// still retained. Returns an empty vector if the lock is poisoned.
     pub fn events_from(&self, start_id: u64) -> Vec<BuildEvent> {
         let Ok(events) = self.events.read() else {
             tracing::warn!("log buffer read lock poisoned, returning empty");
@@ -212,7 +306,8 @@ impl LogBuffer {
         }
     }
 
-    /// Get all events.
+    /// Returns a snapshot of every buffered event, in order.
+    /// Returns an empty vector if the lock is poisoned.
     pub fn all_events(&self) -> Vec<BuildEvent> {
         let Ok(events) = self.events.read() else {
             tracing::warn!("log buffer read lock poisoned, returning empty");
@@ -223,15 +318,24 @@ impl LogBuffer {
 }
 
 /// Handle to an active or recently-completed build.
+///
+/// Observers subscribe to `tx` for live events and read `log_buffer` for
+/// history; the combination gives gap-free replay (see
+/// [`LogBuffer::events_from`]).
 pub struct BuildHandle {
+    /// Derivation this handle's build realises.
     pub drv_path: String,
+    /// Broadcast channel carrying live build events.
     pub tx: broadcast::Sender<BuildEvent>,
+    /// Replay buffer of all events emitted so far (bounded).
     pub log_buffer: Arc<LogBuffer>,
+    /// Notified once when the build reaches a terminal state.
     pub done: Arc<Notify>,
     next_id: AtomicU64,
 }
 
 impl BuildHandle {
+    /// Creates a handle with a fresh broadcast channel and empty buffer.
     fn new(drv_path: String) -> Self {
         let (tx, _) = broadcast::channel(4096);
         Self {
@@ -243,10 +347,13 @@ impl BuildHandle {
         }
     }
 
+    /// Allocates the next per-build event sequence number.
     fn next_event_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// Records an event in the replay buffer and broadcasts it to live
+    /// subscribers (a send failure just means nobody is listening).
     fn emit(&self, kind: BuildEventKind) {
         let event = BuildEvent {
             id: self.next_event_id(),
@@ -257,7 +364,103 @@ impl BuildHandle {
     }
 }
 
-/// Manages active builds with deduplication and per-view concurrency limits.
+/// Records a builder log line both in the in-memory tail (used for error
+/// reporting) and as a broadcast [`BuildEventKind::Log`] event.
+fn record_log_line(handle: &BuildHandle, log_lines: &mut Vec<String>, line: String) {
+    log_lines.push(line.clone());
+    handle.emit(BuildEventKind::Log { line });
+}
+
+/// Splits a raw stderr chunk into complete log records.
+///
+/// Records are delimited by `\n`, `\r`, or `\r\n` — Nix progress output
+/// uses bare carriage returns, so newline-only splitting would hide
+/// progress until the build exits. Incomplete trailing bytes are kept in
+/// `pending` for the next chunk; if `pending` grows past
+/// `MAX_PENDING_LOG_BYTES` without a delimiter it is flushed as one
+/// oversized record.
+fn drain_log_records(pending: &mut Vec<u8>, chunk: &[u8]) -> Vec<String> {
+    pending.extend_from_slice(chunk);
+
+    let mut records = Vec::new();
+    let mut start = 0;
+    let mut idx = 0;
+
+    while idx < pending.len() {
+        let byte = pending[idx];
+        if byte == b'\n' || byte == b'\r' {
+            records.push(String::from_utf8_lossy(&pending[start..idx]).into_owned());
+            idx += 1;
+            if byte == b'\r' && idx < pending.len() && pending[idx] == b'\n' {
+                idx += 1;
+            }
+            start = idx;
+        } else {
+            idx += 1;
+        }
+    }
+
+    if start > 0 {
+        pending.drain(..start);
+    }
+
+    if pending.len() >= MAX_PENDING_LOG_BYTES {
+        records.push(String::from_utf8_lossy(pending).into_owned());
+        pending.clear();
+    }
+
+    records
+}
+
+/// Streams the builder's stderr to completion, emitting each record as a
+/// log event. Any unterminated tail is flushed as a final record at EOF.
+async fn stream_build_stderr<R>(
+    mut stderr: R,
+    handle: &BuildHandle,
+    log_lines: &mut Vec<String>,
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut pending = Vec::new();
+    let mut buf = [0_u8; 8192];
+
+    loop {
+        let read = stderr.read(&mut buf).await?;
+        if read == 0 {
+            break;
+        }
+
+        for line in drain_log_records(&mut pending, &buf[..read]) {
+            record_log_line(handle, log_lines, line);
+        }
+    }
+
+    if !pending.is_empty() {
+        record_log_line(
+            handle,
+            log_lines,
+            String::from_utf8_lossy(&pending).into_owned(),
+        );
+    }
+
+    Ok(())
+}
+
+/// Returns a `nix-store` command pre-populated with the AOS Nix
+/// environment (store root, daemon socket, etc.).
+fn nix_store_command() -> Command {
+    let mut command = Command::new("nix-store");
+    command.envs(aos_nix_env());
+    command
+}
+
+/// Manages active builds with deduplication and per-view concurrency
+/// limits.
+///
+/// One instance is shared across the whole server (in
+/// [`crate::routes::AppState`]). See the [module docs](self) for the
+/// overall lifecycle.
 pub struct BuildManager {
     /// drv_path -> active build handle.
     builds: RwLock<HashMap<String, Arc<BuildHandle>>>,
@@ -268,6 +471,7 @@ pub struct BuildManager {
 }
 
 impl BuildManager {
+    /// Creates an empty manager with no active builds.
     pub fn new() -> Self {
         Self {
             builds: RwLock::new(HashMap::new()),
@@ -276,7 +480,9 @@ impl BuildManager {
         }
     }
 
-    /// Get the semaphore for a view, creating it with `max` permits if needed.
+    /// Returns the semaphore for a view, creating it with `max` permits on
+    /// first use. The permit count is fixed at creation; later config
+    /// changes do not resize an existing semaphore.
     fn view_semaphore(&self, view: &str, max: u32) -> Arc<Semaphore> {
         {
             let Ok(sems) = self.semaphores.read() else {
@@ -297,10 +503,15 @@ impl BuildManager {
         )
     }
 
-    /// Get an existing build handle for this drv, or start a new build.
+    /// Returns an existing build handle for this drv, or starts a new
+    /// build.
     ///
-    /// Returns the shared handle. The caller subscribes to its broadcast
-    /// channel and replays from the log buffer.
+    /// If a build for `drv_path` is already running (or recently finished
+    /// and not yet cleaned up), its handle is returned and no new process
+    /// is spawned — concurrent requests for the same derivation share one
+    /// build. Otherwise the build task is spawned in the background and a
+    /// fresh handle returned. The caller subscribes to the handle's
+    /// broadcast channel and replays from its log buffer.
     pub fn get_or_start(
         self: &Arc<Self>,
         state: &Arc<AppState>,
@@ -348,7 +559,8 @@ impl BuildManager {
         handle
     }
 
-    /// Remove a completed build from the map (after a delay for late joiners).
+    /// Removes a completed build from the map (scheduled by
+    /// `schedule_cleanup` after a delay so late joiners can still attach).
     fn remove_build(&self, drv_path: &str) {
         let Ok(mut builds) = self.builds.write() else {
             tracing::warn!("builds lock poisoned, cannot remove completed build");
@@ -357,7 +569,8 @@ impl BuildManager {
         builds.remove(drv_path);
     }
 
-    /// Broadcast a drain event to all active builds.
+    /// Broadcasts a [`BuildEventKind::Drain`] event to all active builds,
+    /// telling connected clients the server is shutting down.
     pub fn broadcast_drain(&self) {
         let Ok(builds) = self.builds.read() else {
             tracing::warn!("builds lock poisoned, cannot broadcast drain");
@@ -371,8 +584,14 @@ impl BuildManager {
     }
 }
 
-/// Execute a build: acquire semaphore, run nix-store --realise, emit events,
-/// create GC roots on success.
+/// Executes a build end to end: acquires the per-view semaphore, runs
+/// `nix-store --realise` (with daemon-unavailable retries), streams stderr
+/// as log events, and on success roots the output closure in the view.
+///
+/// Always finishes by emitting a terminal event, persistently clearing the
+/// crash-recovery [`BuildState`], notifying `handle.done`, and scheduling
+/// removal of the handle. If the server is draining and this was the last
+/// in-flight build, drain completion is signalled.
 async fn run_build(
     mgr: &Arc<BuildManager>,
     state: &Arc<AppState>,
@@ -442,7 +661,7 @@ async fn run_build(
 
     let status = 'build: {
         for attempt in 1..=MAX_DAEMON_RETRIES {
-            let mut child = match Command::new("nix-store")
+            let mut child = match nix_store_command()
                 .args(["--realise", drv_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -475,7 +694,9 @@ async fn run_build(
                 }
             };
 
-            // Stream stderr lines as log events.
+            // Stream stderr as log events. Nix progress output often uses
+            // carriage returns, so newline-only readers can hide progress
+            // until the build exits.
             let Some(stderr) = child.stderr.take() else {
                 tracing::error!(view = %view, drv = %drv_path, "failed to capture stderr from nix-store");
                 handle.emit(BuildEventKind::Error {
@@ -488,12 +709,19 @@ async fn run_build(
                 schedule_cleanup(mgr, drv_path);
                 return;
             };
-            let mut lines = BufReader::new(stderr).lines();
             log_lines.clear();
 
-            while let Ok(Some(line)) = lines.next_line().await {
-                log_lines.push(line.clone());
-                handle.emit(BuildEventKind::Log { line });
+            if let Err(e) = stream_build_stderr(stderr, handle, &mut log_lines).await {
+                tracing::error!(view = %view, drv = %drv_path, error = %e, "failed reading nix-store stderr");
+                handle.emit(BuildEventKind::Error {
+                    drv: drv_path.to_string(),
+                    exit_code: None,
+                    log_tail: format!("reading nix-store stderr: {e}"),
+                });
+                build_cleanup!(build_state, &root, mgr, state, "failed");
+                handle.done.notify_waiters();
+                schedule_cleanup(mgr, drv_path);
+                return;
             }
 
             let exit = match child.wait().await {
@@ -649,7 +877,8 @@ async fn run_build(
     schedule_cleanup(mgr, drv_path);
 }
 
-/// Schedule removal of a build handle after a delay (allows late reconnectors).
+/// Schedules removal of a build handle after a 5-minute delay, giving
+/// late reconnectors a window to replay the finished build's events.
 fn schedule_cleanup(mgr: &Arc<BuildManager>, drv_path: &str) {
     let mgr = Arc::clone(mgr);
     let drv = drv_path.to_string();
@@ -659,9 +888,9 @@ fn schedule_cleanup(mgr: &Arc<BuildManager>, drv_path: &str) {
     });
 }
 
-/// Query the output paths of a derivation via `nix-store -q --outputs`.
+/// Queries the output paths of a derivation via `nix-store -q --outputs`.
 async fn query_outputs(drv_path: &str) -> Result<Vec<String>, String> {
-    let output = Command::new("nix-store")
+    let output = nix_store_command()
         .args(["-q", "--outputs", drv_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -681,9 +910,9 @@ async fn query_outputs(drv_path: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// Query the runtime closure of a store path via `nix-store -qR`.
+/// Queries the runtime closure of a store path via `nix-store -qR`.
 async fn query_closure(store_path: &str) -> Result<Vec<String>, String> {
-    let output = Command::new("nix-store")
+    let output = nix_store_command()
         .args(["-qR", store_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

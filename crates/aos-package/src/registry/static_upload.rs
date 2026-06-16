@@ -1,40 +1,86 @@
 //! Static git-origin upload helpers.
 //!
 //! This uploads the dumb-HTTP git origin surface in producer-safe order:
-//! immutable object/cache payloads first, mutable pointers last.
+//! immutable object/cache payloads first, mutable pointers last. A consumer
+//! racing a partially completed upload can therefore at worst see *old*
+//! pointers (`HEAD`, `info/refs`, channel partitions) — never a pointer to
+//! content that has not been uploaded yet.
+//!
+//! Every file is classified as [`StaticOriginClass::Immutable`]
+//! (content-addressed git objects, release packs, narinfos, NARs) or
+//! [`StaticOriginClass::Mutable`] (refs, channel partitions, server-info
+//! metadata) and tagged with matching `Cache-Control` and `Content-Type`
+//! headers for CDN-fronted hosting.
 
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use aos_cache::backend::{self, AuthOptions};
 use aos_core::output::Printer;
+use futures_util::future::join_all;
+use futures_util::stream::{StreamExt, TryStreamExt};
 
 use crate::registry::objectstore;
 
+/// Maximum origin-file uploads kept in flight per destination. The
+/// `aos_net` connection pool enforces the real per-host limit; this only
+/// bounds how many requests we stage at once.
+const UPLOAD_CONCURRENCY: usize = 16;
+
+/// `Cache-Control` for content-addressed files that never change in place.
 const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+/// `Cache-Control` for pointer files that are rewritten on every publish.
 const MUTABLE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
 
+/// Mutability class of a static origin file.
+///
+/// The `Ord` impl orders `Immutable` before `Mutable`, which is the safe
+/// upload order: payloads land before the pointers that reference them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StaticOriginClass {
+    /// Content-addressed payload (git objects, packs, narinfos, NARs).
     Immutable,
+    /// Pointer or metadata rewritten on publish (`HEAD`, `info/refs`,
+    /// `objects/info/*`, channel partitions, `nix-cache-info`).
     Mutable,
 }
 
+/// One file of the static origin surface, ready for upload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticOriginFile {
+    /// Path of the file relative to the origin root, `/`-separated.
     pub relative_path: String,
+    /// Local filesystem path the bytes are read from.
     pub source: PathBuf,
+    /// Mutability class that determined ordering and cache headers.
     pub class: StaticOriginClass,
+    /// `Content-Type` header to serve the file with.
     pub content_type: &'static str,
+    /// `Cache-Control` header to serve the file with.
     pub cache_control: &'static str,
 }
 
+/// Summary of a completed static origin upload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticOriginUploadReport {
+    /// Number of files uploaded per destination.
     pub files: usize,
+    /// Total payload size in bytes per destination.
     pub bytes: u64,
 }
 
+/// Collect the full static origin file set in safe upload order.
+///
+/// Walks the registry's git directory (`HEAD`, `info/refs`, `objects/`,
+/// `releases/`, `channels/`) and, when `cache_dir` is given, the static Nix
+/// cache (`nix-cache-info`, `*.narinfo`, `nar/`). Files are classified and
+/// sorted immutable-first, then by path. Missing optional directories are
+/// skipped.
+///
+/// # Errors
+///
+/// Returns an error if the git directory cannot be resolved, a directory
+/// cannot be read, or a file path contains non-UTF-8 or unsafe components.
 pub fn collect_static_origin_files(
     registry_dir: &Path,
     cache_dir: Option<&Path>,
@@ -78,6 +124,17 @@ pub fn collect_static_origin_files(
     Ok(files)
 }
 
+/// Upload the static origin surface to every destination URL.
+///
+/// All destinations receive the same file set in immutable-before-mutable
+/// order. Destinations are attempted independently: a failure on one does
+/// not stop uploads to the others.
+///
+/// # Errors
+///
+/// Returns an error when no upload URL is given, the origin has no files,
+/// a source file cannot be stat'ed, or any destination upload fails (the
+/// error aggregates all per-destination failures).
 pub async fn upload_static_origin_to_all(
     registry_dir: &Path,
     cache_dir: Option<&Path>,
@@ -99,14 +156,17 @@ pub async fn upload_static_origin_to_all(
         files: files.len(),
         bytes,
     };
-    let mut failures = Vec::new();
-
-    for upload_url in upload_urls {
-        if let Err(err) = upload_static_origin(&files, upload_url, auth, printer).await {
-            failures.push(format!("{upload_url}: {err:#}"));
+    let results = join_all(upload_urls.iter().map(|upload_url| {
+        let files = &files;
+        async move {
+            upload_static_origin(files, upload_url, auth, printer)
+                .await
+                .map_err(|err| format!("{upload_url}: {err:#}"))
         }
-    }
+    }))
+    .await;
 
+    let failures: Vec<String> = results.into_iter().filter_map(Result::err).collect();
     if !failures.is_empty() {
         bail!(
             "static origin upload failed for {}/{} destination(s):\n{}",
@@ -119,6 +179,11 @@ pub async fn upload_static_origin_to_all(
     Ok(report)
 }
 
+/// Upload the collected files to one destination.
+///
+/// Immutable payloads are uploaded first (concurrently), then — as a
+/// barrier — the mutable pointers, preserving the producer-safe ordering
+/// guarantee while parallelizing within each class.
 async fn upload_static_origin(
     files: &[StaticOriginFile],
     upload_url: &str,
@@ -126,23 +191,34 @@ async fn upload_static_origin(
     printer: &Printer,
 ) -> Result<()> {
     let backend = backend::from_url(upload_url, auth).await?;
-    for file in files {
-        backend
-            .put_static_file(
-                &file.relative_path,
-                &file.source,
-                Some(file.content_type),
-                Some(file.cache_control),
-            )
-            .await
-            .with_context(|| format!("uploading {}", file.relative_path))?;
+    let backend = &*backend;
+
+    for class in [StaticOriginClass::Immutable, StaticOriginClass::Mutable] {
+        futures_util::stream::iter(files.iter().filter(|file| file.class == class).map(
+            |file| async move {
+                backend
+                    .put_static_file(
+                        &file.relative_path,
+                        &file.source,
+                        Some(file.content_type),
+                        Some(file.cache_control),
+                    )
+                    .await
+                    .with_context(|| format!("uploading {}", file.relative_path))
+            },
+        ))
+        .buffer_unordered(UPLOAD_CONCURRENCY)
+        .try_collect::<Vec<()>>()
+        .await?;
     }
+
     printer.success(&format!(
         "Uploaded static registry origin files to {upload_url}"
     ));
     Ok(())
 }
 
+/// Sum the on-disk size of every collected file.
 fn total_bytes(files: &[StaticOriginFile]) -> Result<u64> {
     let mut bytes = 0u64;
     for file in files {
@@ -153,6 +229,7 @@ fn total_bytes(files: &[StaticOriginFile]) -> Result<u64> {
     Ok(bytes)
 }
 
+/// Add a single optional file under `root`; missing files are skipped.
 fn push_file(
     files: &mut Vec<StaticOriginFile>,
     root: &Path,
@@ -166,6 +243,7 @@ fn push_file(
     Ok(())
 }
 
+/// Add every `*.narinfo` file at the top level of the static cache dir.
 fn push_cache_narinfos(files: &mut Vec<StaticOriginFile>, cache_dir: &Path) -> Result<()> {
     if !cache_dir.is_dir() {
         return Ok(());
@@ -182,6 +260,8 @@ fn push_cache_narinfos(files: &mut Vec<StaticOriginFile>, cache_dir: &Path) -> R
     Ok(())
 }
 
+/// Recursively add every file under `root/relative_dir`, classifying each
+/// path with `classify`; a missing directory is skipped.
 fn push_dir<F>(
     files: &mut Vec<StaticOriginFile>,
     root: &Path,
@@ -227,6 +307,7 @@ where
     Ok(())
 }
 
+/// Append one source file with its derived metadata to the file list.
 fn push_source(
     files: &mut Vec<StaticOriginFile>,
     root: &Path,
@@ -244,6 +325,8 @@ fn push_source(
     Ok(())
 }
 
+/// Classify a path under `objects/`: `objects/info/*` metadata is mutable,
+/// content-addressed objects and packs are immutable.
 fn classify_git_path(relative_path: &str) -> Result<StaticOriginClass> {
     if relative_path.starts_with("objects/info/") {
         Ok(StaticOriginClass::Mutable)
@@ -252,6 +335,8 @@ fn classify_git_path(relative_path: &str) -> Result<StaticOriginClass> {
     }
 }
 
+/// Render `path` relative to `root` as a `/`-joined string, rejecting
+/// non-UTF-8, `..`, and other unsafe components.
 fn relative_path(root: &Path, path: &Path) -> Result<String> {
     let rel = path
         .strip_prefix(root)
@@ -274,6 +359,7 @@ fn relative_path(root: &Path, path: &Path) -> Result<String> {
     Ok(parts.join("/"))
 }
 
+/// Map a mutability class to its `Cache-Control` header value.
 fn cache_control(class: StaticOriginClass) -> &'static str {
     match class {
         StaticOriginClass::Immutable => IMMUTABLE_CACHE_CONTROL,
@@ -281,6 +367,7 @@ fn cache_control(class: StaticOriginClass) -> &'static str {
     }
 }
 
+/// Pick a `Content-Type` for a static origin path by name and extension.
 fn content_type(relative_path: &str) -> &'static str {
     if relative_path == "nix-cache-info"
         || relative_path == "HEAD"

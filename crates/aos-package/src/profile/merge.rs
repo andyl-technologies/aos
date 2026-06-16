@@ -1,9 +1,28 @@
+//! The merged FHS symlink tree of a generation.
+//!
+//! Installed packages live as isolated store paths; this module gives a
+//! generation a conventional Unix layout by merging each package's `bin/`,
+//! `lib/`, `share/`, `etc/`, ... contents into `gen-N/<dir>/` as symlinks
+//! pointing back into the store. The profile's `current` symlink then makes
+//! e.g. `current/bin` a stable PATH entry across generation switches.
+//!
+//! Merging is shallow per `MERGE_DIRS` entry: each immediate child of a
+//! merge directory becomes one symlink (a file or a whole subdirectory).
+//! Man section directories are merged at `share/man/manN` granularity so
+//! pages from different packages coexist; the `share/man` child itself is
+//! skipped during the `share` scan to avoid double handling.
+//!
+//! When two packages provide the same relative path, the later entry in the
+//! ordered store-path slice wins; every collision is reported as a
+//! [`FileConflict`] and a printed warning.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use super::Generation;
+use super::meta::read_generation_meta;
 use aos_core::output::Printer;
 
 /// FHS directories to merge from store paths.
@@ -35,24 +54,48 @@ const SHARE_SKIP_SUBDIRS: &[&str] = &["man"];
 
 /// Directories in the generation root that belong to the profile bookkeeping
 /// rather than the FHS merge tree.  `clear_fhs_tree` preserves these.
-const PRESERVED_DIRS: &[&str] = &["usr", "src"];
+const PRESERVED_DIRS: &[&str] = &["usr", "src", "meta"];
 
 /// Result of building the FHS merge tree.
 pub struct MergeResult {
+    /// Number of symlinks created in the generation.
     pub symlinks_created: usize,
+    /// Every relative path provided by more than one package.
     pub conflicts: Vec<FileConflict>,
 }
 
 /// A file conflict where two packages provide the same path.
 pub struct FileConflict {
+    /// The contested relative path (e.g. `bin/python3`).
     pub path: String,
+    /// Package whose file was linked (later in the install order).
     pub winner: String,
+    /// Package whose file was shadowed.
     pub loser: String,
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/// Build the merged FHS tree for all roots in a generation.
+///
+/// Profile generations carry metadata for every APM-managed root. Automatic
+/// dependency roots are merged first and explicit roots are merged last, so a
+/// directly requested package owns conflicting executable names over an
+/// automatic dependency with the same files.
+///
+/// # Errors
+///
+/// Returns an error if roots or generation metadata cannot be read, or if the
+/// underlying FHS tree cannot be built.
+pub fn build_generation_fhs_tree(
+    generation: &Generation,
+    printer: &Printer,
+) -> Result<MergeResult> {
+    let roots = ordered_generation_roots(generation)?;
+    build_fhs_tree(generation, &roots, printer)
+}
 
 /// Build the merged FHS tree for a generation.
 ///
@@ -64,6 +107,11 @@ pub struct FileConflict {
 /// wins.  A warning is printed for every conflict.
 ///
 /// `store_paths` is an ordered slice -- later entries take priority.
+///
+/// # Errors
+///
+/// Returns an error if a store path cannot be scanned or a symlink (or its
+/// parent directory) cannot be created.
 pub fn build_fhs_tree(
     generation: &Generation,
     store_paths: &[(String, PathBuf)],
@@ -114,9 +162,41 @@ pub fn build_fhs_tree(
     })
 }
 
+/// Return generation roots in merge order.
+///
+/// Later roots win file conflicts. Non-APM and metadata-less roots are treated
+/// like explicit roots to avoid demoting legacy profile entries.
+fn ordered_generation_roots(generation: &Generation) -> Result<Vec<(String, PathBuf)>> {
+    let mut roots = Vec::new();
+
+    for (hash, path) in generation.roots()? {
+        let priority = match read_generation_meta(generation, &hash)? {
+            Some(meta) => match meta.apm {
+                Some(apm) if !apm.explicit => 0_u8,
+                _ => 1_u8,
+            },
+            None => 1_u8,
+        };
+        roots.push((priority, hash, path));
+    }
+
+    roots.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+    Ok(roots
+        .into_iter()
+        .map(|(_priority, hash, path)| (hash, path))
+        .collect())
+}
+
 /// Remove the FHS tree (all merged symlink directories) from a generation.
 ///
-/// Preserves `usr/` and `src/` directories (GC roots and source roots).
+/// Preserves `usr/`, `src/`, and `meta/` directories (GC roots, source roots,
+/// and per-generation package metadata).
+///
+/// # Errors
+///
+/// Returns an error if the generation directory cannot be read or an entry
+/// cannot be removed.
 pub fn clear_fhs_tree(generation: &Generation) -> Result<()> {
     let entries = std::fs::read_dir(&generation.path)
         .with_context(|| format!("reading generation directory {}", generation.path.display()))?;
@@ -228,6 +308,7 @@ fn create_fhs_symlink(gen_dir: &Path, rel_path: &str, target: &Path) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{ApmMeta, InstalledMeta};
     use std::fs;
     use tempfile::TempDir;
 
@@ -247,6 +328,48 @@ mod tests {
         let path = tmp.path().join(format!("gen-{num}"));
         fs::create_dir_all(&path).unwrap();
         Generation { number: num, path }
+    }
+
+    /// Add a GC root symlink to a generation.
+    fn add_generation_root(generation: &Generation, hash: &str, store_path: &Path) {
+        let roots = generation.path.join("usr");
+        fs::create_dir_all(&roots).unwrap();
+        std::os::unix::fs::symlink(store_path, roots.join(hash)).unwrap();
+    }
+
+    /// Write APM metadata into a generation snapshot.
+    fn write_generation_apm_meta(
+        generation: &Generation,
+        hash: &str,
+        store_path: &Path,
+        explicit: bool,
+    ) {
+        let meta_dir = generation.path.join("meta");
+        fs::create_dir_all(&meta_dir).unwrap();
+        let meta = InstalledMeta {
+            store_path: store_path.to_string_lossy().to_string(),
+            pushed_at: 0,
+            pushed_by: "apm".to_string(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 0,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: "priority-tool".to_string(),
+                version: "1.0.0".to_string(),
+                explicit,
+                registry: "test".to_string(),
+                installed_at: "1970-01-01T00:00:00Z".to_string(),
+                held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
+            }),
+        };
+        fs::write(
+            meta_dir.join(format!("{hash}.json")),
+            serde_json::to_vec_pretty(&meta).unwrap(),
+        )
+        .unwrap();
     }
 
     /// A quiet-mode printer for tests (suppresses all output).
@@ -374,9 +497,31 @@ mod tests {
         assert_eq!(link_target, sp_py2.join("bin/python3"));
     }
 
-    // 5. clear_fhs_tree removes FHS dirs but preserves usr/ and src/.
     #[test]
-    fn clear_preserves_usr_and_src() {
+    fn generation_merge_prefers_explicit_roots_over_auto_dependencies() {
+        let tmp = TempDir::new().unwrap();
+        let gn = make_generation(&tmp, 1);
+        let automatic = make_store_path(&tmp, "zzz-auto-priority-tool", &["bin/priority-tool"]);
+        let explicit = make_store_path(&tmp, "aaa-explicit-priority-tool", &["bin/priority-tool"]);
+
+        add_generation_root(&gn, "zzzauto", &automatic);
+        add_generation_root(&gn, "aaaexplicit", &explicit);
+        write_generation_apm_meta(&gn, "zzzauto", &automatic, false);
+        write_generation_apm_meta(&gn, "aaaexplicit", &explicit, true);
+
+        let result = build_generation_fhs_tree(&gn, &test_printer()).unwrap();
+
+        assert_eq!(result.symlinks_created, 1);
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(
+            fs::read_link(gn.path.join("bin/priority-tool")).unwrap(),
+            explicit.join("bin/priority-tool"),
+        );
+    }
+
+    // 5. clear_fhs_tree removes FHS dirs but preserves bookkeeping.
+    #[test]
+    fn clear_preserves_profile_bookkeeping() {
         let tmp = TempDir::new().unwrap();
         let gn = make_generation(&tmp, 1);
 
@@ -391,6 +536,8 @@ mod tests {
         fs::write(gn.path.join("usr/abc123"), "root").unwrap();
         fs::create_dir_all(gn.path.join("src")).unwrap();
         fs::write(gn.path.join("src/abc123"), "root").unwrap();
+        fs::create_dir_all(gn.path.join("meta")).unwrap();
+        fs::write(gn.path.join("meta/abc123.json"), "{}").unwrap();
 
         clear_fhs_tree(&gn).unwrap();
 
@@ -404,6 +551,8 @@ mod tests {
         assert!(gn.path.join("usr/abc123").exists());
         assert!(gn.path.join("src").exists());
         assert!(gn.path.join("src/abc123").exists());
+        assert!(gn.path.join("meta").exists());
+        assert!(gn.path.join("meta/abc123.json").exists());
     }
 
     // 6. Man pages land in correct share/man/manN/ sections.

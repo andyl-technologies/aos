@@ -4,18 +4,33 @@
 //! `git+ssh://` URL schemes. Runs `git fetch` directly against a git server,
 //! verifies commit signatures and fast-forward constraints, and extracts
 //! package TOML files into the local registry cache.
+//!
+//! What gets fetched is selected by the registry's [`TrackingMode`]: a
+//! pinned commit, a branch head, a specific tag, the best tag matching a
+//! semver constraint, the remote default branch, or a *channel*. Channel
+//! tracking is the production rollout path: the host's partition object is
+//! fetched from the static origin, its signed channel-tag -> release-tag
+//! chain is verified, and freshness/monotonic-floor rules guard against
+//! frozen or rolled-back channel pointers.
+//!
+//! All modes share the same fail-closed trust model: the new head commit
+//! must be signed by a trusted key, must fast-forward from the last
+//! verified commit, and only then is the head's committed `keys.toml`
+//! roster pinned into the writable trusted-key store (in-band key
+//! rotation). See [`sync_git`] for the full sequence.
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
-use tokio::process::Command;
 
 use crate::download::join_cache_url;
-use crate::registry::{channel, fetch, verify};
-use crate::types::{RegistryConfig, RegistryState, SigningConfig, TrackingMode};
+use crate::gitcmd;
+use crate::registry::{channel, fetch, keys, verify};
+use crate::security::{self, KeyStore, KeySyncReport, TrustedKey, key_fingerprint};
+use crate::types::{RegistryConfig, RegistryState, TrackingMode};
 use aos_core::output::Printer;
 
 // ---------------------------------------------------------------------------
@@ -27,6 +42,8 @@ use aos_core::output::Printer;
 pub struct SyncResult {
     /// The new HEAD commit SHA after sync.
     pub new_commit: String,
+    /// Total number of packages in the registry after sync.
+    pub packages_count: usize,
     /// Number of new packages added.
     pub packages_added: usize,
     /// Number of packages with updated metadata.
@@ -35,14 +52,25 @@ pub struct SyncResult {
     pub packages_removed: usize,
 }
 
+/// A tracking target resolved to a concrete commit, plus the release tag
+/// it came from when the target was tag-shaped.
+struct ResolvedHead {
+    commit: String,
+    release_tag: Option<String>,
+}
+
+/// Oldest git release with reliable sha256 object-format support.
 const MIN_SHA256_GIT_VERSION: GitVersion = GitVersion {
     major: 2,
     minor: 42,
     patch: 0,
 };
 
+/// Default freshness window (14 days) for channel-tracked registries when
+/// `max_staleness_seconds` is not configured.
 const DEFAULT_CHANNEL_MAX_STALENESS_SECONDS: u64 = 14 * 24 * 60 * 60;
 
+/// Parsed `major.minor.patch` triple from `git --version`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct GitVersion {
     major: u32,
@@ -63,24 +91,64 @@ impl std::fmt::Display for GitVersion {
 /// Sync a git-transport registry.
 ///
 /// Full flow:
-/// 1. Ensure local bare git repo exists
-/// 2. Fetch refs (tag pin, branch tracking, or default)
-/// 3. Verify commit signature if required
-/// 4. Enforce fast-forward from last known commit
-/// 5. Extract package TOML files into the cache directory
+/// 1. Ensure local bare git repo exists; assemble the trusted key set
+/// 2. Fetch refs (tag pin, branch tracking, channel data, or default)
+/// 3. Verify and fast-forward the current roster head
+/// 4. Pin the roster's `keys.toml` into the writable trusted-key store
+/// 5. Resolve and verify the selected release commit/tag/channel against
+///    the post-roster trusted set
+/// 6. Enforce fast-forward from last known selected commit
+/// 7. Extract package TOML files into the cache directory
+///
+/// Verification is fail-closed: a registry config without a
+/// `[registry.signing]` section enforces signatures, and only an explicit
+/// `required = false` opts out. Roster changes are accepted only when
+/// delivered as a fast-forward in a head commit signed by an
+/// already-trusted key, which gives in-band key rotation its continuity
+/// guarantee.
+///
+/// On success, `state` is updated in place with the new commit, channel
+/// floor/bucket, retained release set, and (when the observation counts as
+/// fresh) the last-update timestamp; the caller persists it.
+///
+/// # Errors
+///
+/// Returns an error when enforcement is on but no trusted key is available,
+/// the local git is not sha256-capable, the origin is not a git-native
+/// registry (or is a legacy bundle-mode origin), fetching or channel
+/// resolution fails (including stale-channel and monotonic-floor
+/// violations), the head commit is not signed by a trusted key, the new
+/// commit is not a fast-forward of the previous one, the head lacks a
+/// usable `keys.toml` roster under enforcement, or extracting the registry
+/// tree into the cache fails.
 pub async fn sync_git(
     config: &RegistryConfig,
     tracking_mode: &TrackingMode,
     cache_dir: &Path,
     registries_dir: &Path,
+    trusted_keys_dirs: &[PathBuf],
     state: &mut RegistryState,
     printer: &Printer,
 ) -> Result<SyncResult> {
     let git_url = normalize_git_url(&config.url);
     let repo_dir = cache_dir.join(&config.name).join("repo.git");
 
-    // Step 1: Ensure repo.
+    // Step 1: Ensure repo; assemble the trusted key set.
     printer.info(&format!("Syncing registry '{}' via git...", config.name));
+    let key_store = KeyStore::new(trusted_keys_dirs.to_vec());
+    let enforcing = signing_enforced(config);
+    let trusted_keys = assemble_trusted_set(&key_store, config);
+    if enforcing && trusted_keys.is_empty() {
+        bail!(
+            "registry '{}' requires signed metadata but no trusted key is available.\n\
+             Pin a maintainer key with `apr trust pin {} <{}:Ed25519:base64key>`, or set\n\
+             [registry.signing] public_key in the registry config.\n\
+             (Setting [registry.signing] required = false disables verification.)",
+            config.name,
+            config.name,
+            config.name,
+        );
+    }
     ensure_sha256_capable_git().await?;
     if is_plain_http_url(&config.url) {
         preflight_git_native_http_origin(&git_url).await?;
@@ -97,24 +165,94 @@ pub async fn sync_git(
     }
 
     // Step 2: Fetch refs.
-    if matches!(tracking_mode, TrackingMode::Channel(_)) {
-        if let Err(err) = fetch_refs(&repo_dir, &git_url, tracking_mode).await {
-            return Err(channel_refresh_error(
-                config,
-                state,
-                "fetching git refs",
-                err,
-            ));
+    let fetch_roster_head = enforcing && uses_remote_head_roster(tracking_mode);
+    let fetched_roster_head = if matches!(tracking_mode, TrackingMode::Channel(_)) {
+        match fetch_refs(&repo_dir, &git_url, tracking_mode, fetch_roster_head).await {
+            Ok(fetched_roster_head) => fetched_roster_head,
+            Err(err) => {
+                return Err(channel_refresh_error(
+                    config,
+                    state,
+                    "fetching git refs",
+                    err,
+                ));
+            }
         }
     } else {
-        fetch_refs(&repo_dir, &git_url, tracking_mode).await?;
+        fetch_refs(&repo_dir, &git_url, tracking_mode, fetch_roster_head).await?
+    };
+
+    let channel_roster_head = if let TrackingMode::Channel(channel_name) = tracking_mode {
+        if !fetched_roster_head {
+            Some(
+                resolve_ref_to_commit(&repo_dir, &format!("refs/remotes/origin/{channel_name}"))
+                    .await?,
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Step 3: Resolve the current roster head separately from the selected
+    // release. Tag, version, and channel tracking may keep package contents
+    // pinned to an old release while trust metadata continues to advance on
+    // the registry head.
+    let pre_resolved_head = if matches!(tracking_mode, TrackingMode::Channel(_)) {
+        None
+    } else {
+        Some(resolve_fetch_head(&repo_dir, tracking_mode).await?)
+    };
+    let roster_commit = if fetched_roster_head {
+        resolve_origin_head(&repo_dir).await?
+    } else if let Some(commit) = channel_roster_head {
+        commit
+    } else {
+        pre_resolved_head
+            .as_ref()
+            .map(|head| head.commit.clone())
+            .unwrap_or_default()
+    };
+
+    // Step 4: Pin the verified roster. The roster cursor has its own
+    // anti-rollback state because selected release commits can remain fixed
+    // under tag/version/channel tracking.
+    let mut post_pin_trusted_keys = trusted_keys.clone();
+    if enforcing {
+        verify_head_commit(&repo_dir, &roster_commit, &trusted_keys)?;
+        let previous_roster_commit = state
+            .last_roster_commit
+            .as_ref()
+            .or(state.last_commit.as_ref());
+        if let Some(old_commit) = previous_roster_commit {
+            enforce_fast_forward(&repo_dir, old_commit, &roster_commit).await?;
+        }
+        if let Some(report) = apply_roster(&key_store, config, &repo_dir, &roster_commit)? {
+            if !report.is_noop() {
+                printer.info(&format!(
+                    "Registry '{}': trust roster updated ({} pinned, {} unpinned, {} masked)",
+                    config.name, report.pinned, report.unpinned, report.masked,
+                ));
+            }
+            post_pin_trusted_keys = assemble_trusted_set(&key_store, config);
+        }
     }
 
-    // Step 3: Determine the new HEAD commit.
+    // Step 5: Determine the selected release commit.
     let mut record_successful_freshness = true;
-    let new_commit = if let TrackingMode::Channel(channel_name) = tracking_mode {
-        match resolve_channel_head(config, &git_url, channel_name, &repo_dir, state).await {
-            Ok(resolved) => {
+    let resolved_head = if let TrackingMode::Channel(channel_name) = tracking_mode {
+        match resolve_channel_head(
+            config,
+            &git_url,
+            channel_name,
+            &repo_dir,
+            &post_pin_trusted_keys,
+            state,
+        )
+        .await
+        {
+            Ok((resolved, _channel_oid)) => {
                 record_successful_freshness = channel_success_freshness_at(
                     config,
                     state,
@@ -122,7 +260,10 @@ pub async fn sync_git(
                     &resolved.semver,
                     unix_now_secs(),
                 )?;
-                resolved.commit
+                ResolvedHead {
+                    commit: resolved.commit,
+                    release_tag: None,
+                }
             }
             Err(err) => {
                 return Err(channel_refresh_error(
@@ -134,8 +275,15 @@ pub async fn sync_git(
             }
         }
     } else {
-        resolve_fetch_head(&repo_dir, tracking_mode).await?
+        let Some(resolved) = pre_resolved_head else {
+            bail!("internal error: non-channel tracking did not resolve before roster pinning");
+        };
+        resolved
     };
+    let ResolvedHead {
+        commit: new_commit,
+        release_tag,
+    } = resolved_head;
 
     if matches!(tracking_mode, TrackingMode::Channel(_)) {
         let target = state
@@ -147,27 +295,37 @@ pub async fn sync_git(
         fetch::resolve_objects(&repo_dir, &git_url, &target, &retained_before, printer).await?;
     }
 
-    // Step 4: Verify commit signature if signing.required.
-    if let Some(ref signing) = config.signing {
-        if signing.required && !matches!(tracking_mode, TrackingMode::Channel(_)) {
-            verify_commit_signature(&repo_dir, &new_commit, signing).await?;
-        }
+    // Verify the selected release commit. When the selected commit is also
+    // the roster commit, the pre-pin signature check above is the continuity
+    // check that authorizes the roster update; otherwise releases are checked
+    // against the freshly pinned roster.
+    if enforcing {
+        let selected_trusted_keys = if new_commit == roster_commit {
+            &trusted_keys
+        } else {
+            &post_pin_trusted_keys
+        };
+        verify_head_commit(&repo_dir, &new_commit, selected_trusted_keys)?;
     }
 
-    // Step 5: Enforce fast-forward.
+    // Step 6: Enforce selected-release fast-forward.
     if let Some(ref old_commit) = state.last_commit {
         enforce_fast_forward(&repo_dir, old_commit, &new_commit).await?;
     }
 
-    // Step 6: Extract authenticated tree files used by consumers.
+    if enforcing && let Some(release_tag) = release_tag.as_deref() {
+        verify_release_tag(&repo_dir, release_tag, &post_pin_trusted_keys)?;
+    }
+
+    // Step 7: Extract authenticated tree files used by consumers.
     let registry_cache_dir = cache_dir.join(&config.name);
     let packages_dir = registry_cache_dir.join("packages");
     let old_packages = count_toml_files(&packages_dir).await;
     extract_packages(&repo_dir, &new_commit, &packages_dir).await?;
-    extract_closures(&repo_dir, &new_commit, &registry_cache_dir.join("closures")).await?;
+    extract_store(&repo_dir, &new_commit, &registry_cache_dir.join("store")).await?;
     let new_packages = count_toml_files(&packages_dir).await;
 
-    // Step 6b: Materialise root registry files so resolve_mirror and trust
+    // Step 7b: Materialise root registry files so resolve_mirror and trust
     // roster helpers can read the authenticated tree after sync. Without
     // registry.toml, the only cache fallback is the registry URL itself, which
     // fails for git:// transports.
@@ -203,6 +361,9 @@ pub async fn sync_git(
     }
     prune_unretained_release_dirs(&repo_dir, &state.retained).await?;
     state.last_commit = Some(new_commit.clone());
+    if enforcing {
+        state.last_roster_commit = Some(roster_commit);
+    }
     if record_successful_freshness {
         state.last_update = Some(chrono_now());
     }
@@ -214,10 +375,124 @@ pub async fn sync_git(
 
     Ok(SyncResult {
         new_commit,
+        packages_count: new_packages,
         packages_added: added,
         packages_updated: updated,
         packages_removed: removed,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Trust helpers
+// ---------------------------------------------------------------------------
+
+/// `true` when signature verification is enforced for this registry.
+///
+/// Fail-closed: an absent `[registry.signing]` section enforces
+/// verification; only an explicit `required = false` opts out.
+fn signing_enforced(config: &RegistryConfig) -> bool {
+    config
+        .signing
+        .as_ref()
+        .is_none_or(|signing| signing.required)
+}
+
+/// Assemble the trusted key set for a registry.
+///
+/// Every key visible in the trusted-key store (which applies `# revoked:`
+/// exclusions) is trusted. The `[registry.signing] public_key` config
+/// entry is a *bootstrap* anchor: it is consulted only when the store has
+/// no keys for the registry at all, and is superseded once roster keys are
+/// pinned — a revoked key lingering in a config file must not stay
+/// trusted forever.
+fn assemble_trusted_set(store: &KeyStore, config: &RegistryConfig) -> Vec<String> {
+    let mut keys: Vec<String> = store
+        .lookup_all(&config.name)
+        .iter()
+        .map(TrustedKey::key_line)
+        .collect();
+    if keys.is_empty()
+        && let Some(anchor) = config.signing.as_ref().and_then(|s| s.public_key.as_ref())
+    {
+        keys.push(anchor.clone());
+    }
+    keys
+}
+
+/// Verify the new head commit's signature against the trusted set.
+fn verify_head_commit(repo_dir: &Path, commit: &str, trusted_keys: &[String]) -> Result<()> {
+    let verified = security::verify_commit_signature(repo_dir, commit, trusted_keys)
+        .with_context(|| format!("verifying signature of commit {commit}"))?;
+    if !verified {
+        let fingerprints: Vec<String> = trusted_keys
+            .iter()
+            .filter_map(|key| {
+                security::parse_signing_key(key)
+                    .ok()
+                    .map(|(_, _, pubkey)| key_fingerprint(&pubkey))
+            })
+            .collect();
+        bail!(
+            "commit signature verification failed for {commit}: not signed by any trusted key \
+             (trusted fingerprints: {}).\n\
+             The registry requires signed commits; if a maintainer key rotated, ensure the\n\
+             rotation was delivered through a signed fast-forward sync.",
+            fingerprints.join(", "),
+        );
+    }
+    Ok(())
+}
+
+fn verify_release_tag(repo_dir: &Path, tag: &str, trusted_keys: &[String]) -> Result<()> {
+    let verified = security::verify_tag_signature(repo_dir, tag, trusted_keys)
+        .with_context(|| format!("verifying signature of release tag {tag}"))?;
+    if !verified {
+        let fingerprints: Vec<String> = trusted_keys
+            .iter()
+            .filter_map(|key| {
+                security::parse_signing_key(key)
+                    .ok()
+                    .map(|(_, _, pubkey)| key_fingerprint(&pubkey))
+            })
+            .collect();
+        bail!(
+            "release tag signature verification failed for {tag}: not signed by any trusted key \
+             (trusted fingerprints: {}).",
+            fingerprints.join(", "),
+        );
+    }
+    Ok(())
+}
+
+/// Pin the trust roster committed at the verified head into the writable
+/// trusted-key store.
+///
+/// Returns the sync report, or an error when the verified head has no
+/// usable roster: under enforcement a missing or empty `keys.toml` is a
+/// misconfigured registry, not a pass.
+fn apply_roster(
+    store: &KeyStore,
+    config: &RegistryConfig,
+    repo_dir: &Path,
+    commit: &str,
+) -> Result<Option<KeySyncReport>> {
+    let Some(roster) = keys::load_keys_toml_at_commit(repo_dir, commit)? else {
+        bail!(
+            "registry '{}' requires signed metadata but commit {commit} has no keys.toml \
+             trust roster.\n\
+             Publish a roster with `apr keys add`, or set [registry.signing] required = false.",
+            config.name,
+        );
+    };
+    if roster.active.is_empty() {
+        bail!(
+            "registry '{}' requires signed metadata but its keys.toml roster has no active \
+             keys at {commit}.\n\
+             Publish a roster with `apr keys add`, or set [registry.signing] required = false.",
+            config.name,
+        );
+    }
+    keys::pin_rotated_keys(store, &config.name, &roster).map(Some)
 }
 
 // ---------------------------------------------------------------------------
@@ -238,10 +513,16 @@ fn normalize_git_url(url: &str) -> String {
     }
 }
 
+/// `true` for plain `http(s)://` URLs (dumb-HTTP candidates).
 fn is_plain_http_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
 }
 
+/// Probe an HTTP origin to confirm it serves the git-native dumb-HTTP
+/// layout (`HEAD` and `info/refs`).
+///
+/// Detects the retired bundle-mode registry layout (`bundle-list.toml`)
+/// and fails with a dedicated migration message for it.
 async fn preflight_git_native_http_origin(base_url: &str) -> Result<()> {
     let client = reqwest::Client::new();
     let head_url = join_cache_url(base_url, "HEAD");
@@ -269,6 +550,8 @@ async fn preflight_git_native_http_origin(base_url: &str) -> Result<()> {
     );
 }
 
+/// HEAD-probe a static file URL, retrying with GET when the host rejects
+/// HEAD with 405.
 async fn probe_static_http_status(
     client: &reqwest::Client,
     url: &str,
@@ -290,8 +573,10 @@ async fn probe_static_http_status(
     Ok(response.status())
 }
 
+/// Verify the local git is new enough for sha256 repositories, both by
+/// version number and by actually probing `git init --object-format=sha256`.
 async fn ensure_sha256_capable_git() -> Result<()> {
-    let version_output = Command::new("git")
+    let version_output = gitcmd::hermetic_async()
         .arg("--version")
         .output()
         .await
@@ -321,7 +606,7 @@ async fn ensure_sha256_capable_git() -> Result<()> {
     }
 
     let tmp = tempfile::TempDir::new().context("creating temporary git capability probe repo")?;
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["init", "--bare", "--object-format=sha256"])
         .arg(tmp.path())
         .output()
@@ -339,6 +624,7 @@ async fn ensure_sha256_capable_git() -> Result<()> {
     Ok(())
 }
 
+/// Parse `git --version` output (e.g. `git version 2.42.0`).
 fn parse_git_version(output: &str) -> Option<GitVersion> {
     let token = output
         .trim()
@@ -356,6 +642,7 @@ fn parse_git_version(output: &str) -> Option<GitVersion> {
     })
 }
 
+/// Parse the leading digits of a version component (`0-rc1` -> `0`).
 fn parse_leading_u32(part: &str) -> Option<u32> {
     let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
@@ -375,7 +662,7 @@ async fn ensure_repo(repo_dir: &Path, _url: &str) -> Result<()> {
         .await
         .with_context(|| format!("creating {}", repo_dir.display()))?;
 
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["init", "--bare", "--object-format=sha256"])
         .current_dir(repo_dir)
         .output()
@@ -394,7 +681,12 @@ async fn ensure_repo(repo_dir: &Path, _url: &str) -> Result<()> {
 }
 
 /// Run `git fetch` with the appropriate refspec based on tracking mode.
-async fn fetch_refs(repo_dir: &Path, url: &str, tracking_mode: &TrackingMode) -> Result<()> {
+async fn fetch_refs(
+    repo_dir: &Path,
+    url: &str,
+    tracking_mode: &TrackingMode,
+    fetch_roster_head: bool,
+) -> Result<bool> {
     let mut args = vec!["fetch".to_string(), url.to_string()];
 
     match tracking_mode {
@@ -421,15 +713,16 @@ async fn fetch_refs(repo_dir: &Path, url: &str, tracking_mode: &TrackingMode) ->
             args.push("refs/tags/*:refs/tags/*".to_string());
         }
         TrackingMode::Default => {
-            // Fetch all tags.
-            args.push("refs/tags/*:refs/tags/*".to_string());
+            // Follow the remote's default branch HEAD when no explicit
+            // tracking selector is configured.
+            args.push("HEAD:refs/remotes/origin/HEAD".to_string());
         }
     }
 
     // Add --force to allow tag updates.
     args.push("--force".to_string());
 
-    let output = Command::new("git")
+    let output = gitcmd::transport_async()
         .args(&args)
         .current_dir(repo_dir)
         .output()
@@ -441,34 +734,87 @@ async fn fetch_refs(repo_dir: &Path, url: &str, tracking_mode: &TrackingMode) ->
         bail!("git fetch failed: {}", stderr.trim());
     }
 
-    Ok(())
+    if fetch_roster_head {
+        fetch_origin_head(repo_dir, url).await
+    } else {
+        Ok(false)
+    }
 }
 
-/// Resolve the commit SHA to use after fetching.
-async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Result<String> {
+async fn fetch_origin_head(repo_dir: &Path, url: &str) -> Result<bool> {
+    let output = gitcmd::transport_async()
+        .args(["fetch", url, "HEAD:refs/remotes/origin/HEAD", "--force"])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .with_context(|| format!("fetching remote roster head from {url}"))?;
+
+    if output.status.success() {
+        return Ok(true);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("couldn't find remote ref HEAD")
+        || stderr.contains("couldn't find remote ref")
+        || stderr.contains("could not find remote ref HEAD")
+    {
+        return Ok(false);
+    }
+    bail!("git fetch remote HEAD failed: {}", stderr.trim());
+}
+
+fn uses_remote_head_roster(tracking_mode: &TrackingMode) -> bool {
+    matches!(
+        tracking_mode,
+        TrackingMode::Tag(_) | TrackingMode::Version(_) | TrackingMode::Channel(_)
+    )
+}
+
+async fn resolve_origin_head(repo_dir: &Path) -> Result<String> {
+    let output = gitcmd::hermetic_async()
+        .args(["rev-parse", "refs/remotes/origin/HEAD"])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .context("resolving remote roster head")?;
+
+    if !output.status.success() {
+        bail!(
+            "git rev-parse refs/remotes/origin/HEAD failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Resolve the authenticated commit to use after fetching.
+async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Result<ResolvedHead> {
     let ref_to_resolve = match tracking_mode {
         TrackingMode::Commit(hash) => {
             // Already a commit hash.
-            return Ok(hash.clone());
+            return Ok(ResolvedHead {
+                commit: hash.clone(),
+                release_tag: None,
+            });
         }
         TrackingMode::Branch(branch) | TrackingMode::Channel(branch) => {
             format!("refs/remotes/origin/{branch}")
         }
         TrackingMode::Tag(tag) => {
-            format!("refs/tags/{tag}")
+            return Ok(ResolvedHead {
+                commit: resolve_ref_to_commit(repo_dir, &format!("refs/tags/{tag}")).await?,
+                release_tag: Some(tag.clone()),
+            });
         }
         TrackingMode::Version(req) => {
             // List all tags, parse as semver, pick the best match.
             return resolve_best_version_tag(repo_dir, req).await;
         }
-        TrackingMode::Default => {
-            // Find the latest tag by listing all tags and picking the last one
-            // (lexicographically, which works for our YYYY.MM.patch format).
-            return resolve_latest_tag(repo_dir).await;
-        }
+        TrackingMode::Default => "refs/remotes/origin/HEAD".to_string(),
     };
 
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["rev-parse", &ref_to_resolve])
         .current_dir(repo_dir)
         .output()
@@ -480,26 +826,51 @@ async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Re
         bail!("git rev-parse {} failed: {}", ref_to_resolve, stderr.trim());
     }
 
+    Ok(ResolvedHead {
+        commit: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        release_tag: None,
+    })
+}
+
+async fn resolve_ref_to_commit(repo_dir: &Path, ref_to_resolve: &str) -> Result<String> {
+    let output = gitcmd::hermetic_async()
+        .args(["rev-parse", &format!("{ref_to_resolve}^{{commit}}")])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .with_context(|| format!("resolving ref {ref_to_resolve} to commit"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "git rev-parse {}^{{commit}} failed: {}",
+            ref_to_resolve,
+            stderr.trim(),
+        );
+    }
+
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Resolve a channel partition to a verified release.
+///
+/// Returns the verified release together with the partition tag object id
+/// so callers can re-verify the chain after the trust roster is pinned.
 async fn resolve_channel_head(
     config: &RegistryConfig,
     base_url: &str,
     channel_name: &str,
     repo_dir: &Path,
+    trusted_keys: &[String],
     state: &mut RegistryState,
-) -> Result<verify::VerifiedRelease> {
-    let signing_key = config
-        .signing
-        .as_ref()
-        .map(|signing| signing.public_key.as_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "channel tracking for '{}' requires a trusted signing.public_key",
-                config.name,
-            )
-        })?;
+) -> Result<(verify::VerifiedRelease, String)> {
+    if trusted_keys.is_empty() {
+        bail!(
+            "channel tracking for '{}' requires a trusted key: pin one with `apr trust pin` \
+             or set [registry.signing] public_key",
+            config.name,
+        );
+    }
     let release_tags = semver_tag_object_map(repo_dir).await?;
     let assigned_bucket = match state.bucket {
         Some(bucket) => bucket,
@@ -513,12 +884,12 @@ async fn resolve_channel_head(
             channel_name,
             bucket,
             repo_dir,
-            signing_key,
+            trusted_keys,
             &release_tags,
         )
         .await
         {
-            Ok(Some(resolved)) => {
+            Ok(Some((resolved, channel_oid))) => {
                 let floor = state
                     .floor
                     .as_deref()
@@ -529,7 +900,7 @@ async fn resolve_channel_head(
 
                 state.bucket.get_or_insert(assigned_bucket);
                 state.floor = Some(resolved.semver.to_string());
-                return Ok(resolved);
+                return Ok((resolved, channel_oid));
             }
             Ok(None) => {}
             Err(err) => {
@@ -544,14 +915,20 @@ async fn resolve_channel_head(
     bail!("channel '{channel_name}' has no usable partition")
 }
 
+/// Fetch one channel partition object and verify its signed tag chain.
+///
+/// Returns `Ok(None)` when the partition does not exist (404) or points at
+/// an unknown release tag, so the caller can probe forward to the next
+/// bucket. The raw partition bytes are hashed into the local object store
+/// so the chain verification reads exactly what was served.
 async fn fetch_and_verify_partition(
     base_url: &str,
     channel_name: &str,
     bucket: u8,
     repo_dir: &Path,
-    signing_key: &str,
+    trusted_keys: &[String],
     release_tags: &BTreeMap<String, semver::Version>,
-) -> Result<Option<verify::VerifiedRelease>> {
+) -> Result<Option<(verify::VerifiedRelease, String)>> {
     let url = join_cache_url(base_url, &channel::partition_path(channel_name, bucket));
     let response = reqwest::get(&url)
         .await
@@ -587,13 +964,15 @@ async fn fetch_and_verify_partition(
         &channel_oid,
         channel_name,
         &release.to_string(),
-        signing_key,
+        trusted_keys,
     )
-    .map(Some)
+    .map(|release| Some((release, channel_oid)))
 }
 
+/// Write raw tag-object bytes into the repo with `git hash-object -w -t tag`
+/// and return the resulting object id.
 fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
-    let mut child = std::process::Command::new("git")
+    let mut child = gitcmd::hermetic()
         .args(["hash-object", "-w", "-t", "tag", "--stdin"])
         .current_dir(repo_dir)
         .stdin(Stdio::piped())
@@ -619,8 +998,9 @@ fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Map every semver-named tag's *tag object id* to its parsed version.
 async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semver::Version>> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["tag", "-l"])
         .current_dir(repo_dir)
         .output()
@@ -645,8 +1025,9 @@ async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semve
     Ok(map)
 }
 
+/// Resolve a tag ref to its tag *object* id (not the peeled commit).
 async fn resolve_tag_object(repo_dir: &Path, tag: &str) -> Result<String> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["rev-parse", &format!("{tag}^{{tag}}")])
         .current_dir(repo_dir)
         .output()
@@ -661,6 +1042,8 @@ async fn resolve_tag_object(repo_dir: &Path, tag: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Delete `releases/<X>/<Y>/<Z>` directories for releases the client no
+/// longer needs as delta bases (everything outside the retained set).
 async fn prune_unretained_release_dirs(repo_dir: &Path, retained: &[String]) -> Result<()> {
     let releases = repo_dir.join("releases");
     if !releases.exists() {
@@ -701,45 +1084,15 @@ async fn prune_unretained_release_dirs(repo_dir: &Path, retained: &[String]) -> 
     Ok(())
 }
 
-/// Find the latest tag in the repo (by version sort).
-async fn resolve_latest_tag(repo_dir: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["tag", "--sort=-version:refname"])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .context("listing tags")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git tag failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let latest = stdout
-        .lines()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("no tags found in registry"))?;
-
-    let output = Command::new("git")
-        .args(["rev-parse", &format!("refs/tags/{latest}")])
-        .current_dir(repo_dir)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        bail!("git rev-parse refs/tags/{latest} failed");
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 /// Find the best tag matching a semver constraint.
 ///
 /// Lists all tags in the repo, parses each as semver (stripping `v` prefix),
 /// filters by the constraint, and resolves the latest matching tag's commit.
-async fn resolve_best_version_tag(repo_dir: &Path, req: &semver::VersionReq) -> Result<String> {
-    let output = Command::new("git")
+async fn resolve_best_version_tag(
+    repo_dir: &Path,
+    req: &semver::VersionReq,
+) -> Result<ResolvedHead> {
+    let output = gitcmd::hermetic_async()
         .args(["tag", "-l"])
         .current_dir(repo_dir)
         .output()
@@ -781,19 +1134,10 @@ async fn resolve_best_version_tag(repo_dir: &Path, req: &semver::VersionReq) -> 
         )
     })?;
 
-    // Resolve tag to commit.
-    let output = Command::new("git")
-        .args(["rev-parse", &format!("refs/tags/{best_tag}")])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("resolving tag {best_tag}"))?;
-
-    if !output.status.success() {
-        bail!("git rev-parse refs/tags/{best_tag} failed");
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(ResolvedHead {
+        commit: resolve_ref_to_commit(repo_dir, &format!("refs/tags/{best_tag}")).await?,
+        release_tag: Some(best_tag),
+    })
 }
 
 /// Parse a tag string as a semver `Version`, stripping a leading `v` prefix,
@@ -822,36 +1166,6 @@ fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
     semver::Version::parse(&semver_str).ok()
 }
 
-/// Verify the commit signature using `git verify-commit`.
-///
-/// This checks that the commit was signed and that the signature is valid.
-/// The actual key verification depends on the user's git configuration
-/// (gpg.ssh.allowedSignersFile or gpg keyring).
-async fn verify_commit_signature(
-    repo_dir: &Path,
-    commit: &str,
-    _signing: &SigningConfig,
-) -> Result<()> {
-    let output = Command::new("git")
-        .args(["verify-commit", commit])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("running git verify-commit {commit}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "commit signature verification failed for {commit}:\n{}\n\n\
-             The registry requires signed commits (signing.required = true).\n\
-             Ensure the registry maintainer's public key is trusted.",
-            stderr.trim(),
-        );
-    }
-
-    Ok(())
-}
-
 /// Enforce that `new_commit` is a descendant of `old_commit` (fast-forward).
 ///
 /// Uses `git merge-base --is-ancestor` to check the relationship.
@@ -860,7 +1174,7 @@ async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &st
         return Ok(());
     }
 
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["merge-base", "--is-ancestor", old_commit, new_commit])
         .current_dir(repo_dir)
         .output()
@@ -888,35 +1202,54 @@ async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &st
 /// Uses `git archive` to export the `packages/` directory from the commit
 /// and extract it into the output directory.
 async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
-    extract_tree_dir(repo_dir, commit, "packages", output_dir).await
+    extract_tree_dir(repo_dir, commit, "packages", output_dir, true).await
 }
 
-/// Extract precomputed closure adjacency files from a git tree.
-async fn extract_closures(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
-    extract_tree_dir(repo_dir, commit, "closures", output_dir).await
+/// Extract the `store/` realisation graph from a git tree (RFC-0005).
+///
+/// Presence semantics matter here: a registry without a committed `store/`
+/// tree must yield NO local `store/` directory - an empty directory would
+/// read as a present-but-empty (i.e. malformed/stripped) graph and flip
+/// consumer enforcement on against a legacy registry.
+async fn extract_store(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
+    extract_tree_dir(repo_dir, commit, "store", output_dir, false).await
 }
 
+/// Replace `output_dir` with the contents of `commit:tree_path/`.
+///
+/// The existing directory is removed first so deletions in the registry
+/// propagate. When the tree path is absent from the commit,
+/// `create_empty_when_absent` selects between leaving an empty directory
+/// (the historical behavior for `packages/`) and leaving no directory at
+/// all (required for `store/`, where presence is meaningful).
 async fn extract_tree_dir(
     repo_dir: &Path,
     commit: &str,
     tree_path: &str,
     output_dir: &Path,
+    create_empty_when_absent: bool,
 ) -> Result<()> {
     if output_dir.exists() {
         tokio::fs::remove_dir_all(output_dir)
             .await
             .with_context(|| format!("cleaning {}", output_dir.display()))?;
     }
+
+    if !tree_path_exists(repo_dir, commit, tree_path).await? {
+        if create_empty_when_absent {
+            tokio::fs::create_dir_all(output_dir)
+                .await
+                .with_context(|| format!("creating {}", output_dir.display()))?;
+        }
+        return Ok(());
+    }
+
     tokio::fs::create_dir_all(output_dir)
         .await
         .with_context(|| format!("creating {}", output_dir.display()))?;
 
-    if !tree_path_exists(repo_dir, commit, tree_path).await? {
-        return Ok(());
-    }
-
     let tarball = tempfile::NamedTempFile::new().context("creating temporary git archive")?;
-    let archive = Command::new("git")
+    let archive = gitcmd::hermetic_async()
         .args(["archive", "--format=tar", "-o"])
         .arg(tarball.path())
         .arg(commit)
@@ -953,8 +1286,9 @@ async fn extract_tree_dir(
     Ok(())
 }
 
+/// `true` when `commit:tree_path` exists (`git cat-file -e`).
 async fn tree_path_exists(repo_dir: &Path, commit: &str, tree_path: &str) -> Result<bool> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["cat-file", "-e", &format!("{commit}:{tree_path}")])
         .current_dir(repo_dir)
         .output()
@@ -969,25 +1303,38 @@ async fn tree_path_exists(repo_dir: &Path, commit: &str, tree_path: &str) -> Res
 /// when no cache config is present, and older registries may not have a
 /// committed trust roster. Any stale local copy is removed when the upstream
 /// tree no longer contains the file.
+///
+/// # Errors
+///
+/// Returns an error if the target directory cannot be created, a `git show`
+/// fails for a reason other than the file being absent, or a file cannot be
+/// written or removed.
 pub async fn extract_registry_root(repo_dir: &Path, commit: &str, target_dir: &Path) -> Result<()> {
     tokio::fs::create_dir_all(target_dir)
         .await
         .with_context(|| format!("creating {}", target_dir.display()))?;
 
-    for file in ["registry.toml", "keys.toml", ".gitattributes"] {
+    for file in [
+        "registry.toml",
+        "keys.toml",
+        "sb-certs.toml",
+        ".gitattributes",
+    ] {
         extract_optional_root_file(repo_dir, commit, target_dir, file).await?;
     }
 
     Ok(())
 }
 
+/// Copy `commit:file` into `target_dir`, removing a stale local copy when
+/// the commit no longer contains the file.
 async fn extract_optional_root_file(
     repo_dir: &Path,
     commit: &str,
     target_dir: &Path,
     file: &str,
 ) -> Result<()> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic_async()
         .args(["show", &format!("{commit}:{file}")])
         .current_dir(repo_dir)
         .output()
@@ -1015,12 +1362,21 @@ async fn extract_optional_root_file(
     Ok(())
 }
 
+/// Heuristically classify `git show` stderr as "path absent from commit".
 fn is_missing_tree_path(stderr: &str, file: &str) -> bool {
     stderr.contains("does not exist")
         || stderr.contains("exists on disk, but not in")
         || stderr.contains(&format!("path '{file}'"))
 }
 
+/// Decide whether a successful channel resolution counts as a fresh
+/// observation (and should update `last_update`).
+///
+/// A first sync or an advanced release is always fresh. An unchanged
+/// release is acceptable only while the previous successful observation is
+/// within the staleness window: a frozen-but-valid channel pointer must not
+/// keep renewing its own freshness forever. A release below the previous
+/// floor is rejected outright.
 fn channel_success_freshness_at(
     config: &RegistryConfig,
     state: &RegistryState,
@@ -1102,6 +1458,8 @@ async fn count_toml_files(dir: &Path) -> usize {
     count
 }
 
+/// Wrap a failed channel refresh error with freshness context (see
+/// [`channel_refresh_error_at`]).
 fn channel_refresh_error(
     config: &RegistryConfig,
     state: &RegistryState,
@@ -1111,6 +1469,9 @@ fn channel_refresh_error(
     channel_refresh_error_at(config, state, phase, err, unix_now_secs())
 }
 
+/// Build the channel refresh failure message, annotating it with the age of
+/// the last successful freshness observation relative to `now_secs` so
+/// operators can tell a transient failure from a dangerously stale channel.
 fn channel_refresh_error_at(
     config: &RegistryConfig,
     state: &RegistryState,
@@ -1159,6 +1520,7 @@ fn channel_refresh_error_at(
     }
 }
 
+/// Current Unix time in seconds (0 if the clock is before the epoch).
 fn unix_now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1190,6 +1552,10 @@ fn chrono_now() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
+/// Parse a strict `YYYY-MM-DDTHH:MM:SSZ` timestamp into Unix seconds.
+///
+/// The inverse of [`chrono_now`]; both deliberately avoid the `chrono`
+/// dependency.
 fn parse_iso8601_utc_secs(input: &str) -> Result<u64> {
     if input.len() != 20
         || !input.ends_with('Z')
@@ -1217,6 +1583,7 @@ fn parse_iso8601_utc_secs(input: &str) -> Result<u64> {
     Ok(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
+/// Parse an all-digit timestamp field, naming it in error messages.
 fn parse_decimal(input: &str, field: &str) -> Result<u64> {
     if input.is_empty() || !input.bytes().all(|b| b.is_ascii_digit()) {
         bail!("timestamp {field} is not numeric");
@@ -1242,6 +1609,8 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     (y, m, d)
 }
 
+/// Convert a calendar date to days since the Unix epoch (inverse of
+/// [`days_to_ymd`]), rejecting out-of-range and pre-epoch dates.
 fn ymd_to_days(year: u64, month: u64, day: u64) -> Result<u64> {
     if !(1..=12).contains(&month) {
         bail!("timestamp month is out of range");
@@ -1271,6 +1640,7 @@ fn ymd_to_days(year: u64, month: u64, day: u64) -> Result<u64> {
     Ok(days as u64)
 }
 
+/// Days in a month, accounting for leap-year February.
 fn days_in_month(year: u64, month: u64) -> u64 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -1281,6 +1651,7 @@ fn days_in_month(year: u64, month: u64) -> u64 {
     }
 }
 
+/// Gregorian leap-year rule.
 fn is_leap_year(year: u64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
@@ -1292,6 +1663,8 @@ fn is_leap_year(year: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::SigningConfig;
+    use tokio::process::Command;
 
     /// Build a `git` command for fixture setup with the developer's global
     /// and system config neutralized, so tests don't inherit `~/.gitconfig`
@@ -1323,7 +1696,7 @@ mod tests {
             signing_keys: Default::default(),
             signing: Some(SigningConfig {
                 required: true,
-                public_key: "core:Ed25519:base64key".to_string(),
+                public_key: Some("core:Ed25519:base64key".to_string()),
             }),
         }
     }
@@ -1591,6 +1964,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn default_tracking_resolves_remote_head_without_tags() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        let origin_dir = tmp.path().join("origin.git");
+        let repo_dir = tmp.path().join("cache.git");
+        tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+        let output = git(&work_dir)
+            .args(["init", "--object-format=sha256"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let _ = git(&work_dir)
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .await;
+        let _ = git(&work_dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .await;
+        let output = git(&work_dir)
+            .args(["checkout", "-b", "stable"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+
+        tokio::fs::write(
+            work_dir.join("registry.toml"),
+            "[registry]\nname = \"test\"\n",
+        )
+        .await
+        .unwrap();
+        let _ = git(&work_dir).args(["add", "."]).output().await;
+        let output = git(&work_dir)
+            .args(["commit", "-m", "initial"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let output = git(&work_dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .await
+            .unwrap();
+        let expected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        let output = git(tmp.path())
+            .args([
+                "init",
+                "--bare",
+                "--object-format=sha256",
+                &origin_dir.to_string_lossy(),
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let output = git(&origin_dir)
+            .args(["symbolic-ref", "HEAD", "refs/heads/stable"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let output = git(&work_dir)
+            .args(["remote", "add", "origin", &origin_dir.to_string_lossy()])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let output = git(&work_dir)
+            .args(["push", "origin", "stable"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+
+        ensure_repo(&repo_dir, &origin_dir.to_string_lossy())
+            .await
+            .unwrap();
+        fetch_refs(
+            &repo_dir,
+            &origin_dir.to_string_lossy(),
+            &TrackingMode::Default,
+            false,
+        )
+        .await
+        .unwrap();
+        let resolved = resolve_fetch_head(&repo_dir, &TrackingMode::Default)
+            .await
+            .unwrap();
+
+        assert_eq!(resolved.commit, expected);
+        assert_eq!(resolved.release_tag, None);
+        let output = git(&repo_dir).args(["tag", "-l"]).output().await.unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
+    }
+
+    #[tokio::test]
     async fn enforce_fast_forward_same_commit() {
         let tmp = tempfile::TempDir::new().unwrap();
         let repo_dir = tmp.path().join("test.git");
@@ -1701,6 +2175,98 @@ mod tests {
             .await
             .unwrap();
         assert!(content.contains("curl"));
+    }
+
+    /// Init a non-bare repo with a configured identity at `dir`.
+    async fn init_repo(dir: &Path) {
+        tokio::fs::create_dir_all(dir).await.unwrap();
+        assert!(
+            git(dir)
+                .args(["init"])
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+        let _ = git(dir)
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .await;
+        let _ = git(dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .await;
+    }
+
+    async fn commit_all(dir: &Path, message: &str) -> String {
+        let _ = git(dir).args(["add", "-A"]).output().await;
+        let _ = git(dir).args(["commit", "-m", message]).output().await;
+        let output = git(dir).args(["rev-parse", "HEAD"]).output().await.unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn extract_store_preserves_presence_semantics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        init_repo(&work_dir).await;
+
+        // Commit 1: a registry WITHOUT a store/ tree (legacy).
+        tokio::fs::create_dir_all(work_dir.join("packages").join("c"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            work_dir.join("packages").join("c").join("curl.toml"),
+            "[package]\nname = \"curl\"\n",
+        )
+        .await
+        .unwrap();
+        let legacy_commit = commit_all(&work_dir, "legacy").await;
+
+        // Commit 2: add a sharded store/ record.
+        tokio::fs::create_dir_all(work_dir.join("store").join("r4"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            work_dir.join("store").join("r4").join("r4q1m2kp8v3x"),
+            "nar:sha256:1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy:10\n",
+        )
+        .await
+        .unwrap();
+        let mapped_commit = commit_all(&work_dir, "add store").await;
+
+        // Commit 3: remove the store/ tree again.
+        tokio::fs::remove_dir_all(work_dir.join("store"))
+            .await
+            .unwrap();
+        let removed_commit = commit_all(&work_dir, "drop store").await;
+
+        let store_dir = tmp.path().join("out-store");
+
+        // Absent tree → NO local store/ directory (StoreMap reads not-present).
+        extract_store(&work_dir, &legacy_commit, &store_dir)
+            .await
+            .unwrap();
+        assert!(!store_dir.exists(), "absent store/ must leave no directory");
+
+        // Present tree → extracted.
+        extract_store(&work_dir, &mapped_commit, &store_dir)
+            .await
+            .unwrap();
+        assert!(
+            store_dir.join("r4").join("r4q1m2kp8v3x").exists(),
+            "present store/ must be extracted"
+        );
+
+        // Dropped between syncs → stale local store/ is removed.
+        extract_store(&work_dir, &removed_commit, &store_dir)
+            .await
+            .unwrap();
+        assert!(
+            !store_dir.exists(),
+            "dropping store/ upstream must remove the stale local directory"
+        );
     }
 
     #[tokio::test]

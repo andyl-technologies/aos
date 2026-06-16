@@ -1,24 +1,54 @@
-use std::collections::HashSet;
+//! User-scope package installation (`apm install`, `apm reinstall`).
+//!
+//! [`run`] implements the full consumer install pipeline against the active
+//! profile:
+//!
+//! 1. **Resolve** — load registry metadata from the scope's cache and resolve
+//!    each requested package to a [`ResolvedClosure`] (root plus transitive
+//!    dependencies). With `--no-deps` the closure is pruned to the roots and
+//!    the skipped dependencies must already be present in the store.
+//! 2. **Guard** — short-circuit when everything is already installed, when a
+//!    package is already provided by the system sysroot, or when the
+//!    sysroot-lock check finds the closure would diverge from sysroot-pinned
+//!    store paths (bypassable via `--ignore-sysroot-lock`).
+//! 3. **Download and import** — fetch narinfos for the missing store paths,
+//!    print the summary, confirm, download the NARs, verify both the
+//!    compressed download hash and the NAR hash, and import into the store.
+//!    `--download-only` stops here.
+//! 4. **Switch generations** — create the next profile generation, carry
+//!    forward GC roots from the previous one (minus obsolete closure members),
+//!    write per-path [`InstalledMeta`] records (explicit/held flags are
+//!    preserved across reinstalls), build the merged FHS tree, and atomically
+//!    switch the profile's `current` link.
+//!
+//! System-scope installs (`--system`) do not go through this module; see
+//! [`crate::sysroot`].
+
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::download::{
-    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfos,
-    resolve_mirror,
+    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
+    fetch_narinfos, order_resolved_downloads, reference_store_path, resolve_mirror,
+    resolved_downloads_json,
 };
 use super::profile::Profile;
-use super::profile::merge::build_fhs_tree;
-use super::profile::meta::write_meta;
+use super::profile::merge::build_generation_fhs_tree;
+use super::profile::meta::{
+    delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
+};
 use super::registry::{RegistrySet, store_path_hash};
-use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
-use super::store::{create_gc_roots, filter_missing, import_nar};
+use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_closure, resolve_multiple};
+use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
-use super::verify::{verify_download_hash, verify_nar_hash};
+use super::verify::verify_downloads;
 use aos_core::error::AosError;
-use aos_core::output::Printer;
+use aos_core::nar::info as narinfo;
+use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -26,18 +56,50 @@ use aos_core::output::Printer;
 
 /// Run `apm install <packages>`.
 ///
-/// Full pipeline: resolve -> download -> verify -> import -> profile switch.
+/// Full pipeline: resolve -> download -> verify -> import -> profile switch
+/// (see the module docs for the step-by-step description). With `reinstall`
+/// every requested package must already be installed and is re-resolved from
+/// its original source registry; `require_installed` enforces the same
+/// precondition without forcing a re-download decision. In JSON output mode
+/// a machine-readable result object is emitted alongside the human output.
+///
+/// # Errors
+///
+/// Returns an error when:
+///
+/// - a requested package cannot be resolved, or (for reinstalls) is not
+///   currently installed;
+/// - the sysroot-lock check finds un-ignored violations;
+/// - `--no-deps` is given but a skipped dependency is missing from the store;
+/// - narinfo fetch, NAR download, hash verification, or store import fails;
+/// - profile generation creation, metadata writes, FHS-tree construction, or
+///   the final generation switch fails;
+/// - the user declines the confirmation prompt
+///   ([`AosError::UserCancelled`]).
 pub async fn run(
     config: &ApmConfig,
     packages: &[String],
     registry_filter: Option<&str>,
+    reinstall: bool,
+    require_installed: bool,
+    download_only: bool,
+    no_deps: bool,
     dry_run: bool,
     yes: bool,
     ignore_lock: &IgnoreSysrootLock,
     printer: &Printer,
 ) -> Result<()> {
+    let json_mode = printer.mode() == OutputMode::Json;
     if packages.is_empty() {
-        printer.info("No packages specified.");
+        if json_mode {
+            printer.json(&serde_json::json!({
+                "action": if reinstall { "reinstall" } else { "install" },
+                "status": "no_packages",
+                "requested": [],
+            }));
+        } else {
+            printer.info("No packages specified.");
+        }
         return Ok(());
     }
 
@@ -45,19 +107,78 @@ pub async fn run(
     printer.step(1, 7, "Loading registries...");
     let registries = load_registries(config)?;
 
+    let inspect_profile = Profile::open_readonly(config.scope);
+    let installed = list_meta(&inspect_profile)?;
+    if require_installed || reinstall {
+        ensure_reinstall_targets_installed(packages, &installed)?;
+    }
+
     // Step 2: Resolve closures for all requested packages.
     printer.step(2, 7, "Resolving dependencies...");
-    let closures = resolve_multiple(&registries, packages, registry_filter)?;
+    let mut closures = resolve_install_closures(
+        &registries,
+        packages,
+        registry_filter,
+        reinstall && registry_filter.is_none(),
+        &installed,
+    )?;
+    if no_deps {
+        ensure_skipped_dependencies_present(&closures).await?;
+        prune_dependency_members(&mut closures);
+    }
+    let all_metas = collect_unique_metas(&closures);
+    let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
+    let missing = if reinstall {
+        Vec::new()
+    } else {
+        filter_missing(&store_paths).await?
+    };
+
+    if !reinstall
+        && missing.is_empty()
+        && requested_closures_already_installed(&closures, &installed)
+    {
+        if json_mode {
+            printer.json(&install_result_json(
+                "current",
+                packages,
+                &closures,
+                reinstall,
+                download_only,
+                no_deps,
+                false,
+                &[],
+                0,
+                0,
+                None,
+            ));
+        }
+        printer.info("All requested packages are already installed. No changes made.");
+        return Ok(());
+    }
 
     // Check if any requested package is already provided by the sysroot.
     for closure in &closures {
         if let Some((sys_name, sys_ver)) =
             crate::sysroot::check_sysroot_containment(&closure.root.references, config)
         {
-            printer.info(&format!(
-                "{} {} already provided by sysroot {} {}",
-                closure.root.name, closure.root.version, sys_name, sys_ver,
-            ));
+            if json_mode {
+                printer.json(&serde_json::json!({
+                    "action": if reinstall { "reinstall" } else { "install" },
+                    "status": "sysroot_provided",
+                    "requested": packages,
+                    "package": install_package_json(&closure.registry_name, &closure.root, true),
+                    "sysroot": {
+                        "name": sys_name,
+                        "version": sys_ver,
+                    },
+                }));
+            } else {
+                printer.info(&format!(
+                    "{} {} already provided by sysroot {} {}",
+                    closure.root.name, closure.root.version, sys_name, sys_ver,
+                ));
+            }
             return Ok(());
         }
     }
@@ -88,18 +209,35 @@ pub async fn run(
         }
     }
 
-    // Step 3: Collect unique metas (dedup across closures).
-    let all_metas = collect_unique_metas(&closures);
-
     // Step 4: Filter missing store paths.
-    let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
-    let missing = filter_missing(&store_paths).await?;
-    let missing_set: HashSet<&str> = missing.iter().map(|s| s.as_str()).collect();
-    let to_download: Vec<&PackageMeta> = all_metas
+    let to_download: Vec<&PackageMeta> = if reinstall {
+        all_metas.clone()
+    } else {
+        let missing_set: HashSet<&str> = missing.iter().map(|s| s.as_str()).collect();
+        all_metas
+            .iter()
+            .filter(|m| missing_set.contains(m.store_path.as_str()))
+            .copied()
+            .collect()
+    };
+
+    // Trust-graph totality (RFC-0005 §2.6): seed the context from the WHOLE
+    // graph closure of each root (every reachable member, including
+    // anonymous non-package store paths), so a stripped or partial graph
+    // fails loudly and every byte that gets imported is enforced - not just
+    // the resolved packages. Covers members already in the local store too,
+    // which never reach the download/verify path.
+    let trust_roots: Vec<(&str, &str)> = closures
         .iter()
-        .filter(|m| missing_set.contains(m.store_path.as_str()))
-        .copied()
+        .map(|closure| {
+            (
+                closure.registry_name.as_str(),
+                store_path_hash(&closure.root.store_path),
+            )
+        })
         .collect();
+    let trust_ctx = registries.trust_context_for_roots(&trust_roots);
+    trust_ctx.enforce_totality()?;
 
     // Step 5: Fetch narinfo for each missing path so the summary can show
     // real compressed sizes and the download can use the cache's URL/hash.
@@ -107,8 +245,18 @@ pub async fn run(
     let engine = std::sync::Arc::new(default_engine());
     let resolved: Vec<ResolvedDownload> = if requests.is_empty() {
         Vec::new()
+    } else if no_deps {
+        let resolved = fetch_narinfos(
+            std::sync::Arc::clone(&engine),
+            &requests,
+            config.settings.parallel_downloads,
+            printer,
+        )
+        .await?;
+        ensure_narinfo_references_present(&resolved).await?;
+        order_resolved_downloads(&requests, resolved)?
     } else {
-        fetch_narinfos(
+        fetch_narinfo_closure(
             std::sync::Arc::clone(&engine),
             &requests,
             config.settings.parallel_downloads,
@@ -118,9 +266,32 @@ pub async fn run(
     };
 
     // Step 6: Print install summary.
-    print_summary(&closures, packages, &resolved, &all_metas, printer);
+    print_summary(
+        &closures,
+        packages,
+        &resolved,
+        &all_metas,
+        reinstall,
+        download_only,
+        printer,
+    );
 
     if dry_run {
+        if json_mode {
+            printer.json(&install_result_json(
+                "planned",
+                packages,
+                &closures,
+                reinstall,
+                download_only,
+                no_deps,
+                true,
+                &resolved,
+                0,
+                0,
+                None,
+            ));
+        }
         printer.info("Dry run -- no changes made.");
         return Ok(());
     }
@@ -131,6 +302,8 @@ pub async fn run(
     }
 
     // Step 8: Download missing NARs.
+    let mut downloaded_count = 0;
+    let mut imported_count = 0;
     if !resolved.is_empty() {
         printer.step(3, 7, "Downloading packages...");
 
@@ -143,14 +316,35 @@ pub async fn run(
             printer,
         )
         .await?;
+        downloaded_count = results.len();
 
-        // Verify downloads.
+        // Verify downloads against each path's source-registry store/ graph
+        // map (RFC-0005), falling back to narinfo hashes for legacy
+        // registries. Closure totality was already enforced above.
         printer.step(4, 7, "Verifying downloads...");
-        for result in &results {
-            verify_download_hash(&result.local_path, &result.download_hash)
-                .with_context(|| format!("verifying download for {}", result.store_path))?;
-            verify_nar_hash(&result.local_path, &result.nar_hash)
-                .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
+        verify_downloads(&results, &trust_ctx, printer)?;
+
+        if download_only {
+            if json_mode {
+                printer.json(&install_result_json(
+                    "downloaded",
+                    packages,
+                    &closures,
+                    reinstall,
+                    download_only,
+                    no_deps,
+                    false,
+                    &resolved,
+                    downloaded_count,
+                    0,
+                    None,
+                ));
+            }
+            printer.success(&format!(
+                "Downloaded {} NAR(s); no profile changes made.",
+                results.len(),
+            ));
+            return Ok(());
         }
 
         // Import NARs into the store.
@@ -165,8 +359,28 @@ pub async fn run(
             .await
             .with_context(|| format!("importing {}", result.store_path))?;
         }
+        imported_count = results.len();
     } else {
         printer.info("All packages already in store, skipping download.");
+        if download_only {
+            if json_mode {
+                printer.json(&install_result_json(
+                    "downloaded",
+                    packages,
+                    &closures,
+                    reinstall,
+                    download_only,
+                    no_deps,
+                    false,
+                    &[],
+                    0,
+                    0,
+                    None,
+                ));
+            }
+            printer.info("Download only -- no profile changes made.");
+            return Ok(());
+        }
     }
 
     // Step 8: Create new profile generation.
@@ -174,10 +388,15 @@ pub async fn run(
     let profile = Profile::open(config.scope)?;
     let prev_gen = profile.current_generation()?;
     let new_gen = profile.new_generation()?;
+    let explicit_names: HashSet<&str> = packages.iter().map(|s| s.as_str()).collect();
+    let obsolete_hashes =
+        obsolete_installed_hashes_after_install(&installed, &explicit_names, &closures)
+            .await
+            .context("computing post-install profile roots")?;
 
     // Copy existing roots from the previous generation (if any).
     if let Some(ref prev) = prev_gen {
-        copy_roots(prev, &new_gen)?;
+        copy_roots_except_hashes(prev, &new_gen, &obsolete_hashes)?;
     }
 
     // Create GC roots for all closure members.
@@ -196,17 +415,38 @@ pub async fn run(
     create_gc_roots(&new_gen.path, &unique_for_roots)?;
 
     // Write metadata -- explicit packages get explicit=true, deps get explicit=false.
-    let explicit_names: HashSet<&str> = packages.iter().map(|s| s.as_str()).collect();
+    for hash in &obsolete_hashes {
+        delete_meta(&profile, hash)?;
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
     let now_iso = chrono_iso8601(now);
+    let installed_flags_by_hash = installed_flags_by_hash(&installed);
+    let installed_flags_by_name = installed_flags_by_name(&installed);
 
     for closure in &closures {
         for meta in &closure.closure {
             let hash = store_path_hash(&meta.store_path).to_string();
-            let is_explicit = explicit_names.contains(meta.name.as_str());
+            let hash_flags = installed_flags_by_hash
+                .get(hash.as_str())
+                .copied()
+                .unwrap_or_default();
+            let name_flags = if explicit_names.contains(meta.name.as_str()) {
+                installed_flags_by_name
+                    .get(meta.name.as_str())
+                    .copied()
+                    .unwrap_or_default()
+            } else {
+                InstalledFlags::default()
+            };
+            let existing_flags = InstalledFlags {
+                explicit: hash_flags.explicit || name_flags.explicit,
+                held: hash_flags.held || name_flags.held,
+            };
+            let is_explicit =
+                explicit_names.contains(meta.name.as_str()) || existing_flags.explicit;
 
             let installed = InstalledMeta {
                 store_path: meta.store_path.clone(),
@@ -222,27 +462,53 @@ pub async fn run(
                     explicit: is_explicit,
                     registry: closure.registry_name.clone(),
                     installed_at: now_iso.clone(),
-                    held: false,
+                    held: existing_flags.held,
+                    source_drv: meta.source_drv.clone(),
+                    source_nar_hash: meta.source_nar_hash.clone(),
                 }),
             };
 
             write_meta(&profile, &hash, &installed)?;
         }
     }
+    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
 
     // Build FHS tree for the new generation.
-    let roots = new_gen.roots()?;
-    build_fhs_tree(&new_gen, &roots, printer)?;
+    build_generation_fhs_tree(&new_gen, printer)?;
 
     // Atomic switch to the new generation.
     profile.switch_to(&new_gen)?;
 
     printer.step(7, 7, "Done!");
+    let verb = if reinstall {
+        "Reinstalled"
+    } else {
+        "Installed"
+    };
     printer.success(&format!(
-        "Installed {} package(s) in generation {}.",
+        "{verb} {} package(s) in generation {}.",
         packages.len(),
         new_gen.number,
     ));
+    if json_mode {
+        printer.json(&install_result_json(
+            if reinstall {
+                "reinstalled"
+            } else {
+                "installed"
+            },
+            packages,
+            &closures,
+            reinstall,
+            download_only,
+            no_deps,
+            false,
+            &resolved,
+            downloaded_count,
+            imported_count,
+            Some(new_gen.number),
+        ));
+    }
 
     Ok(())
 }
@@ -259,17 +525,437 @@ fn platform() -> String {
     "x86_64-linux".to_string()
 }
 
+/// Build the machine-readable result object emitted in JSON output mode:
+/// action/status, the requested roots, the deduplicated closure, and
+/// download/import counters.
+fn install_result_json(
+    status: &str,
+    packages: &[String],
+    closures: &[ResolvedClosure],
+    reinstall: bool,
+    download_only: bool,
+    no_deps: bool,
+    dry_run: bool,
+    resolved_downloads: &[ResolvedDownload],
+    downloaded: usize,
+    imported: usize,
+    generation: Option<u32>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "action": if reinstall { "reinstall" } else { "install" },
+        "status": status,
+        "requested": packages,
+        "reinstall": reinstall,
+        "download_only": download_only,
+        "no_deps": no_deps,
+        "dry_run": dry_run,
+        "generation": generation,
+        "roots": install_roots_json(closures),
+        "closure": install_closure_json(packages, closures),
+        "downloads": {
+            "planned": resolved_downloads.len(),
+            "downloaded": downloaded,
+            "imported": imported,
+            "paths": resolved_downloads_json(resolved_downloads),
+        },
+    })
+}
+
+/// JSON entries for the explicitly requested root packages.
+fn install_roots_json(closures: &[ResolvedClosure]) -> Vec<serde_json::Value> {
+    closures
+        .iter()
+        .map(|closure| install_package_json(&closure.registry_name, &closure.root, true))
+        .collect()
+}
+
+/// JSON entries for every closure member, deduplicated by store hash, with
+/// each entry flagged `explicit` when its name was requested directly.
+fn install_closure_json(
+    packages: &[String],
+    closures: &[ResolvedClosure],
+) -> Vec<serde_json::Value> {
+    let explicit_names: HashSet<&str> = packages.iter().map(String::as_str).collect();
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+
+    for closure in closures {
+        for meta in &closure.closure {
+            let hash = store_path_hash(&meta.store_path).to_string();
+            if !seen.insert(hash) {
+                continue;
+            }
+            entries.push(install_package_json(
+                &closure.registry_name,
+                meta,
+                explicit_names.contains(meta.name.as_str()),
+            ));
+        }
+    }
+
+    entries
+}
+
+/// JSON object for a single package (name, version, registry, store path,
+/// hashes, sizes, explicit/sysroot flags).
+fn install_package_json(registry: &str, meta: &PackageMeta, explicit: bool) -> serde_json::Value {
+    serde_json::json!({
+        "name": meta.name.as_str(),
+        "version": meta.version.as_str(),
+        "registry": registry,
+        "platform": meta.platform.as_str(),
+        "store_path": meta.store_path.as_str(),
+        "nar_hash": meta.nar_hash.as_str(),
+        "nar_size": meta.nar_size,
+        "closure_size": meta.closure_size,
+        "explicit": explicit,
+        "sysroot": meta.sysroot,
+    })
+}
+
 /// Load registries from the config's cache directory.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
     RegistrySet::load(&config.cache_path(), &reg_configs, &platform())
 }
 
-/// Copy GC root symlinks from a previous generation to a new one.
+/// Resolve a closure per requested package.
 ///
-/// Copies both `usr/` and `src/` symlinks so that the new generation
-/// inherits all packages from the previous one.
-fn copy_roots(from: &super::profile::Generation, to: &super::profile::Generation) -> Result<()> {
+/// With `preserve_installed_sources` (a reinstall without an explicit
+/// `--registry`), each package is re-resolved from the registry it was
+/// originally installed from instead of the highest-priority provider, so a
+/// reinstall cannot silently switch a package's source.
+fn resolve_install_closures(
+    registries: &RegistrySet,
+    packages: &[String],
+    registry_filter: Option<&str>,
+    preserve_installed_sources: bool,
+    installed: &[InstalledMeta],
+) -> Result<Vec<ResolvedClosure>> {
+    if !preserve_installed_sources {
+        return resolve_multiple(registries, packages, registry_filter);
+    }
+
+    let mut closures = Vec::with_capacity(packages.len());
+    for package in packages {
+        let registry_name = installed_source_registry(package, installed)
+            .ok_or_else(|| anyhow::anyhow!("package not installed: {package}"))?;
+        let closure = resolve_closure(registries, package, Some(registry_name))
+            .with_context(|| format!("resolving package '{package}'"))?;
+        closures.push(closure);
+    }
+    Ok(closures)
+}
+
+/// The registry an installed package was originally installed from, if any.
+fn installed_source_registry<'a>(package: &str, installed: &'a [InstalledMeta]) -> Option<&'a str> {
+    let mut fallback = None;
+
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+        if apm.name != package {
+            continue;
+        }
+
+        if apm.explicit {
+            return Some(apm.registry.as_str());
+        }
+        if fallback.is_none() {
+            fallback = Some(apm.registry.as_str());
+        }
+    }
+
+    fallback
+}
+
+/// Whether the install would be a no-op: every requested root is already
+/// installed explicitly *at the same store hash*, and every closure member
+/// has an installed-metadata record.
+fn requested_closures_already_installed(
+    closures: &[ResolvedClosure],
+    installed: &[InstalledMeta],
+) -> bool {
+    if closures.is_empty() {
+        return false;
+    }
+
+    closures.iter().all(|closure| {
+        let root_hash = store_path_hash(&closure.root.store_path);
+        let root_explicit = installed_apm_for_hash(installed, root_hash)
+            .map(|apm| apm.explicit)
+            .unwrap_or(false);
+
+        root_explicit
+            && closure.closure.iter().all(|meta| {
+                installed_apm_for_hash(installed, store_path_hash(&meta.store_path)).is_some()
+            })
+    })
+}
+
+/// Fail with a "package(s) not installed" error when any requested name has
+/// no installed-metadata record (reinstall precondition).
+fn ensure_reinstall_targets_installed(
+    packages: &[String],
+    installed: &[InstalledMeta],
+) -> Result<()> {
+    let installed_names: HashSet<&str> = installed
+        .iter()
+        .filter_map(|meta| meta.apm.as_ref().map(|apm| apm.name.as_str()))
+        .collect();
+    let missing: Vec<&str> = packages
+        .iter()
+        .map(String::as_str)
+        .filter(|package| !installed_names.contains(package))
+        .collect();
+
+    match missing.as_slice() {
+        [] => Ok(()),
+        [package] => anyhow::bail!("package not installed: {package}"),
+        packages => anyhow::bail!("packages not installed: {}", packages.join(", ")),
+    }
+}
+
+/// Look up the apm metadata record for a store-path hash, if installed.
+fn installed_apm_for_hash<'a>(installed: &'a [InstalledMeta], hash: &str) -> Option<&'a ApmMeta> {
+    installed.iter().find_map(|meta| {
+        if store_path_hash(&meta.store_path) == hash {
+            meta.apm.as_ref()
+        } else {
+            None
+        }
+    })
+}
+
+/// The user-controlled flags carried across reinstalls: whether the package
+/// was explicitly installed and whether it is held from upgrades.
+#[derive(Clone, Copy, Default)]
+struct InstalledFlags {
+    explicit: bool,
+    held: bool,
+}
+
+/// Index existing explicit/held flags by store-path hash, so an unchanged
+/// path keeps its flags when its metadata is rewritten.
+fn installed_flags_by_hash(installed: &[InstalledMeta]) -> HashMap<&str, InstalledFlags> {
+    installed
+        .iter()
+        .filter_map(|meta| {
+            let apm = meta.apm.as_ref()?;
+            Some((
+                store_path_hash(&meta.store_path),
+                InstalledFlags {
+                    explicit: apm.explicit,
+                    held: apm.held,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Index existing explicit/held flags by package name, so a package whose
+/// store path changed (reinstall from another registry) still keeps them.
+fn installed_flags_by_name(installed: &[InstalledMeta]) -> HashMap<&str, InstalledFlags> {
+    let mut flags: HashMap<&str, InstalledFlags> = HashMap::new();
+
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+        let incoming = InstalledFlags {
+            explicit: apm.explicit,
+            held: apm.held,
+        };
+        match flags.get(apm.name.as_str()) {
+            Some(current) if current.explicit => {}
+            Some(_) if !incoming.explicit => {}
+            _ => {
+                flags.insert(apm.name.as_str(), incoming);
+            }
+        }
+    }
+
+    flags
+}
+
+/// `--no-deps`: shrink each closure to just its root package and fix up the
+/// total NAR size accordingly.
+fn prune_dependency_members(closures: &mut [ResolvedClosure]) {
+    for closure in closures {
+        let root_hash = store_path_hash(&closure.root.store_path).to_string();
+        closure
+            .closure
+            .retain(|meta| store_path_hash(&meta.store_path) == root_hash);
+
+        if closure.closure.is_empty() {
+            closure.closure.push(closure.root.clone());
+        }
+
+        closure.total_nar_size = closure.closure.iter().map(|m| m.nar_size).sum();
+    }
+}
+
+/// `--no-deps` safety check against registry metadata: every dependency
+/// that would normally be installed must already exist in the local store,
+/// otherwise installing only the roots would leave dangling references.
+async fn ensure_skipped_dependencies_present(closures: &[ResolvedClosure]) -> Result<()> {
+    let requested_hashes: HashSet<String> = closures
+        .iter()
+        .map(|closure| store_path_hash(&closure.root.store_path).to_string())
+        .collect();
+    let mut seen = HashSet::new();
+    let mut skipped = Vec::new();
+
+    for closure in closures {
+        for meta in &closure.closure {
+            let hash = store_path_hash(&meta.store_path).to_string();
+            if requested_hashes.contains(&hash) || !seen.insert(hash) {
+                continue;
+            }
+            skipped.push(meta);
+        }
+    }
+
+    if skipped.is_empty() {
+        return Ok(());
+    }
+
+    let store_paths: Vec<String> = skipped.iter().map(|meta| meta.store_path.clone()).collect();
+    let missing = filter_missing(&store_paths).await?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let missing_set: HashSet<&str> = missing.iter().map(|path| path.as_str()).collect();
+    let labels: Vec<String> = skipped
+        .iter()
+        .filter(|meta| missing_set.contains(meta.store_path.as_str()))
+        .map(|meta| format!("{} ({})", meta.name, meta.store_path))
+        .collect();
+
+    anyhow::bail!(
+        "--no-deps requested but dependency store path(s) are missing: {}",
+        labels.join(", ")
+    );
+}
+
+/// `--no-deps` safety check against fetched narinfos: the references the
+/// binary cache reports for each root (which can be more current than the
+/// registry metadata) must also be present locally before import.
+async fn ensure_narinfo_references_present(resolved: &[ResolvedDownload]) -> Result<()> {
+    let requested_hashes: HashSet<String> = resolved
+        .iter()
+        .map(|item| narinfo::store_hash(&item.narinfo.store_path).to_string())
+        .collect();
+    let mut seen = HashSet::new();
+    let mut references = Vec::new();
+
+    for item in resolved {
+        let parent_hash = narinfo::store_hash(&item.narinfo.store_path);
+
+        for reference in &item.narinfo.references {
+            let reference_hash = narinfo::store_hash(reference);
+            if reference_hash == parent_hash
+                || requested_hashes.contains(reference_hash)
+                || !seen.insert(reference_hash.to_string())
+            {
+                continue;
+            }
+
+            references.push(reference_store_path(reference, &item.narinfo.store_path));
+        }
+    }
+
+    if references.is_empty() {
+        return Ok(());
+    }
+
+    let missing = filter_missing(&references).await?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "--no-deps requested but dependency store path(s) are missing: {}",
+        missing.join(", ")
+    );
+}
+
+/// Store-path hashes no longer needed after an install or reinstall.
+///
+/// The new closure is always needed. Live closures of unrelated explicit
+/// packages are also needed so their shared implicit dependencies remain
+/// rooted. Other APM-installed entries can be dropped from the next
+/// generation.
+async fn obsolete_installed_hashes_after_install(
+    installed: &[InstalledMeta],
+    explicit_names: &HashSet<&str>,
+    closures: &[ResolvedClosure],
+) -> Result<HashSet<String>> {
+    let mut needed = HashSet::new();
+    for closure in closures {
+        for meta in &closure.closure {
+            needed.insert(store_path_hash(&meta.store_path).to_string());
+            if !meta.source_drv.is_empty() {
+                needed.insert(store_path_hash(&meta.source_drv).to_string());
+            }
+        }
+    }
+
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+        if !apm.explicit || explicit_names.contains(apm.name.as_str()) {
+            continue;
+        }
+
+        for path in closure_paths(&meta.store_path)
+            .await
+            .with_context(|| format!("querying closure for installed package {}", apm.name))?
+        {
+            needed.insert(store_path_hash(&path).to_string());
+        }
+        if !apm.source_drv.is_empty() {
+            needed.insert(store_path_hash(&apm.source_drv).to_string());
+        }
+    }
+
+    Ok(obsolete_installed_hashes(installed, &needed))
+}
+
+fn obsolete_installed_hashes(
+    installed: &[InstalledMeta],
+    needed_hashes: &HashSet<String>,
+) -> HashSet<String> {
+    let mut hashes = HashSet::new();
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+
+        let hash = store_path_hash(&meta.store_path).to_string();
+        if needed_hashes.contains(&hash) {
+            continue;
+        }
+
+        hashes.insert(hash);
+        if !apm.source_drv.is_empty() {
+            hashes.insert(store_path_hash(&apm.source_drv).to_string());
+        }
+    }
+    hashes
+}
+
+/// Copy the `usr/` and `src/` GC-root symlinks from one generation to
+/// another, skipping the hashes in `skip_hashes` (replaced packages) and
+/// never overwriting links already present in the destination.
+pub(crate) fn copy_roots_except_hashes(
+    from: &super::profile::Generation,
+    to: &super::profile::Generation,
+    skip_hashes: &HashSet<String>,
+) -> Result<()> {
     use std::os::unix::fs::symlink;
 
     // Copy usr/ roots.
@@ -280,8 +966,13 @@ fn copy_roots(from: &super::profile::Generation, to: &super::profile::Generation
     if from_usr.is_dir() {
         for entry in std::fs::read_dir(&from_usr)? {
             let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if skip_hashes.contains(name_str.as_ref()) {
+                continue;
+            }
             let target = std::fs::read_link(entry.path())?;
-            let dest = to_usr.join(entry.file_name());
+            let dest = to_usr.join(&name);
             if !dest.symlink_metadata().is_ok() {
                 symlink(&target, &dest).with_context(|| {
                     format!("copying root {} -> {}", dest.display(), target.display())
@@ -298,8 +989,13 @@ fn copy_roots(from: &super::profile::Generation, to: &super::profile::Generation
     if from_src.is_dir() {
         for entry in std::fs::read_dir(&from_src)? {
             let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if skip_hashes.contains(name_str.as_ref()) {
+                continue;
+            }
             let target = std::fs::read_link(entry.path())?;
-            let dest = to_src.join(entry.file_name());
+            let dest = to_src.join(&name);
             if !dest.symlink_metadata().is_ok() {
                 symlink(&target, &dest).with_context(|| {
                     format!("copying root {} -> {}", dest.display(), target.display())
@@ -315,7 +1011,14 @@ fn copy_roots(from: &super::profile::Generation, to: &super::profile::Generation
 /// skipping roots for packages being upgraded.
 ///
 /// Used by the upgrade module to carry forward non-upgraded packages while
-/// replacing the old store paths of upgraded ones with new ones.
+/// replacing the old store paths of upgraded ones with new ones. Existing
+/// links in the destination generation are never overwritten.
+///
+/// # Errors
+///
+/// Returns an error when the destination `usr/`/`src/` directories cannot be
+/// created, a source entry cannot be read as a symlink, or creating a
+/// destination symlink fails.
 pub fn copy_roots_for_upgrade(
     from: &super::profile::Generation,
     to: &super::profile::Generation,
@@ -423,6 +1126,8 @@ fn print_summary(
     explicit_names: &[String],
     resolved: &[ResolvedDownload],
     all_metas: &[&PackageMeta],
+    reinstall: bool,
+    download_only: bool,
     printer: &Printer,
 ) {
     let explicit_set: HashSet<&str> = explicit_names.iter().map(|s| s.as_str()).collect();
@@ -447,7 +1152,13 @@ fn print_summary(
         }
     }
 
-    printer.header("The following NEW packages will be installed:");
+    if download_only {
+        printer.header("The following packages will be downloaded:");
+    } else if reinstall {
+        printer.header("The following packages will be reinstalled:");
+    } else {
+        printer.header("The following NEW packages will be installed:");
+    }
     for pkg in &new_packages {
         printer.plain(&format!("  {pkg}"));
     }
@@ -482,6 +1193,7 @@ fn build_download_requests(
     config: &ApmConfig,
 ) -> Result<Vec<DownloadRequest>> {
     // Build a map of registry_name -> mirror_url for quick lookup.
+    let registries_base = config.scope.registries_path();
     let mirror_map: std::collections::HashMap<String, String> = closures
         .iter()
         .map(|c| {
@@ -491,7 +1203,7 @@ fn build_download_requests(
                 .find(|(cfg, _)| cfg.name == c.registry_name)
                 .map(|(cfg, _)| cfg);
             let mirror_url = if let Some(cfg) = reg_config {
-                resolve_mirror(cfg)
+                resolve_mirror(&registries_base, cfg)
             } else {
                 // Fallback: construct from the default pattern.
                 format!("https://registry.aos.dev/{}", c.registry_name)
@@ -617,6 +1329,378 @@ mod tests {
         assert_eq!(p, "x86_64-linux");
     }
 
+    fn sample_package(name: &str, version: &str, store_path: &str) -> PackageMeta {
+        PackageMeta {
+            name: name.to_string(),
+            version: version.to_string(),
+            description: String::new(),
+            homepage: None,
+            license: "MIT".to_string(),
+            maintainer: "test".to_string(),
+            platform: "x86_64-linux".to_string(),
+            store_path: store_path.to_string(),
+            nar_hash: "sha256:test".to_string(),
+            nar_size: 1,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+        }
+    }
+
+    fn sample_installed(name: &str, version: &str, store_path: &str) -> InstalledMeta {
+        sample_installed_with_explicit(name, version, store_path, true)
+    }
+
+    fn sample_installed_with_explicit(
+        name: &str,
+        version: &str,
+        store_path: &str,
+        explicit: bool,
+    ) -> InstalledMeta {
+        InstalledMeta {
+            store_path: store_path.to_string(),
+            pushed_at: 1,
+            pushed_by: "apm".to_string(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: name.to_string(),
+                version: version.to_string(),
+                explicit,
+                registry: "test-reg".to_string(),
+                installed_at: "2026-06-09T00:00:00Z".to_string(),
+                held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
+            }),
+        }
+    }
+
+    fn sample_installed_with_flags(
+        name: &str,
+        version: &str,
+        store_path: &str,
+        explicit: bool,
+        held: bool,
+    ) -> InstalledMeta {
+        let mut meta = sample_installed_with_explicit(name, version, store_path, explicit);
+        meta.apm.as_mut().unwrap().held = held;
+        meta
+    }
+
+    fn sample_installed_from_registry(
+        name: &str,
+        version: &str,
+        registry: &str,
+        store_path: &str,
+    ) -> InstalledMeta {
+        sample_installed_from_registry_with_flags(name, version, registry, store_path, true, false)
+    }
+
+    fn sample_installed_from_registry_with_flags(
+        name: &str,
+        version: &str,
+        registry: &str,
+        store_path: &str,
+        explicit: bool,
+        held: bool,
+    ) -> InstalledMeta {
+        let mut meta = sample_installed_with_flags(name, version, store_path, explicit, held);
+        meta.apm.as_mut().unwrap().registry = registry.to_string();
+        meta
+    }
+
+    fn sample_closure(root: PackageMeta, closure: Vec<PackageMeta>) -> ResolvedClosure {
+        ResolvedClosure {
+            registry_name: "test-reg".to_string(),
+            root,
+            closure,
+            total_nar_size: 1,
+        }
+    }
+
+    fn package_toml(name: &str, version: &str, store_path: &str) -> String {
+        format!(
+            r#"[package]
+name = "{name}"
+description = "test package"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "{version}"
+
+[versions.platforms.x86_64-linux]
+store_path = "{store_path}"
+nar_hash = "sha256-test"
+nar_size = 1
+closure_size = 1
+references = []
+source_drv = ""
+source_nar_hash = ""
+"#
+        )
+    }
+
+    #[test]
+    fn reinstall_resolution_preserves_installed_source_registry() {
+        let tmp = TempDir::new().unwrap();
+        let high_path = "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-switch-tool-1.0.0";
+        let low_path = "/nix/store/llllllllllllllllllllllllllllllll-switch-tool-1.0.0";
+        let high_toml = package_toml("switch-tool", "1.0.0", high_path);
+        let low_toml = package_toml("switch-tool", "1.0.0", low_path);
+        let high = crate::registry::tests::make_registry(
+            &tmp,
+            "high-priority",
+            900,
+            &[("switch-tool", high_toml.as_str())],
+        );
+        let low = crate::registry::tests::make_registry(
+            &tmp,
+            "low-priority",
+            100,
+            &[("switch-tool", low_toml.as_str())],
+        );
+        let registries = RegistrySet::new(vec![high, low]);
+        let installed = vec![sample_installed_from_registry(
+            "switch-tool",
+            "1.0.0",
+            "low-priority",
+            low_path,
+        )];
+        let packages = vec!["switch-tool".to_string()];
+
+        let closures =
+            resolve_install_closures(&registries, &packages, None, true, &installed).unwrap();
+
+        assert_eq!(closures.len(), 1);
+        assert_eq!(closures[0].registry_name, "low-priority");
+        assert_eq!(closures[0].root.store_path, low_path);
+    }
+
+    #[test]
+    fn reinstall_resolution_prefers_explicit_duplicate_source_registry() {
+        let tmp = TempDir::new().unwrap();
+        let high_path = "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-priority-tool-2.0.0";
+        let low_path = "/nix/store/llllllllllllllllllllllllllllllll-priority-tool-9.0.0";
+        let high_toml = package_toml("priority-tool", "2.0.0", high_path);
+        let low_toml = package_toml("priority-tool", "9.0.0", low_path);
+        let high = crate::registry::tests::make_registry(
+            &tmp,
+            "high-priority",
+            900,
+            &[("priority-tool", high_toml.as_str())],
+        );
+        let low = crate::registry::tests::make_registry(
+            &tmp,
+            "low-priority",
+            100,
+            &[("priority-tool", low_toml.as_str())],
+        );
+        let registries = RegistrySet::new(vec![high, low]);
+        let installed = vec![
+            sample_installed_from_registry_with_flags(
+                "priority-tool",
+                "9.0.0",
+                "low-priority",
+                low_path,
+                false,
+                false,
+            ),
+            sample_installed_from_registry_with_flags(
+                "priority-tool",
+                "2.0.0",
+                "high-priority",
+                high_path,
+                true,
+                true,
+            ),
+        ];
+        let packages = vec!["priority-tool".to_string()];
+
+        let closures =
+            resolve_install_closures(&registries, &packages, None, true, &installed).unwrap();
+
+        assert_eq!(closures.len(), 1);
+        assert_eq!(closures[0].registry_name, "high-priority");
+        assert_eq!(closures[0].root.store_path, high_path);
+    }
+
+    #[test]
+    fn requested_closures_already_installed_matches_exact_closure() {
+        let root_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-idempkg-1.0.0";
+        let dep_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-libdep-1.0.0";
+        let root = sample_package("idempkg", "1.0.0", root_path);
+        let dep = sample_package("libdep", "1.0.0", dep_path);
+        let closure = sample_closure(root.clone(), vec![dep.clone(), root]);
+        let installed = vec![
+            sample_installed("idempkg", "1.0.0", root_path),
+            sample_installed("libdep", "1.0.0", dep_path),
+        ];
+
+        assert!(requested_closures_already_installed(&[closure], &installed));
+    }
+
+    #[test]
+    fn requested_closures_already_installed_requires_dependencies() {
+        let root_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-idempkg-1.0.0";
+        let dep_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-libdep-1.0.0";
+        let root = sample_package("idempkg", "1.0.0", root_path);
+        let dep = sample_package("libdep", "1.0.0", dep_path);
+        let closure = sample_closure(root.clone(), vec![dep, root]);
+        let installed = vec![sample_installed("idempkg", "1.0.0", root_path)];
+
+        assert!(!requested_closures_already_installed(
+            &[closure],
+            &installed
+        ));
+    }
+
+    #[test]
+    fn requested_closures_already_installed_requires_explicit_root() {
+        let root_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-idempkg-1.0.0";
+        let root = sample_package("idempkg", "1.0.0", root_path);
+        let closure = sample_closure(root.clone(), vec![root]);
+        let installed = vec![sample_installed_with_explicit(
+            "idempkg", "1.0.0", root_path, false,
+        )];
+
+        assert!(!requested_closures_already_installed(
+            &[closure],
+            &installed
+        ));
+    }
+
+    #[test]
+    fn requested_closures_already_installed_detects_changed_store_hash() {
+        let old_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-idempkg-1.0.0";
+        let new_path = "/nix/store/cccccccccccccccccccccccccccccccc-idempkg-1.0.0";
+        let root = sample_package("idempkg", "1.0.0", new_path);
+        let closure = sample_closure(root.clone(), vec![root]);
+        let installed = vec![sample_installed("idempkg", "1.0.0", old_path)];
+
+        assert!(!requested_closures_already_installed(
+            &[closure],
+            &installed
+        ));
+    }
+
+    #[test]
+    fn installed_flags_by_hash_preserves_explicit_and_held_state() {
+        let installed = vec![sample_installed_with_flags(
+            "idempkg",
+            "1.0.0",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-idempkg-1.0.0",
+            true,
+            true,
+        )];
+
+        let flags = installed_flags_by_hash(&installed);
+        let entry = flags.get("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        assert!(entry.explicit);
+        assert!(entry.held);
+    }
+
+    #[test]
+    fn installed_flags_by_name_preserves_explicit_and_held_state() {
+        let installed = vec![sample_installed_with_flags(
+            "switch-tool",
+            "1.0.0",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-switch-tool-1.0.0",
+            true,
+            true,
+        )];
+
+        let flags = installed_flags_by_name(&installed);
+        let entry = flags.get("switch-tool").unwrap();
+        assert!(entry.explicit);
+        assert!(entry.held);
+    }
+
+    #[test]
+    fn installed_flags_by_name_prefers_explicit_duplicate_name() {
+        let installed = vec![
+            sample_installed_from_registry_with_flags(
+                "priority-tool",
+                "9.0.0",
+                "low-priority",
+                "/nix/store/llllllllllllllllllllllllllllllll-priority-tool-9.0.0",
+                false,
+                false,
+            ),
+            sample_installed_from_registry_with_flags(
+                "priority-tool",
+                "2.0.0",
+                "high-priority",
+                "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-priority-tool-2.0.0",
+                true,
+                true,
+            ),
+        ];
+
+        let flags = installed_flags_by_name(&installed);
+        let entry = flags.get("priority-tool").unwrap();
+        assert!(entry.explicit);
+        assert!(entry.held);
+    }
+
+    #[test]
+    fn prune_dependency_members_keeps_only_requested_roots() {
+        let root_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-wrapper-1.0.0";
+        let dep_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-libdep-1.0.0";
+        let root = sample_package("wrapper", "1.0.0", root_path);
+        let dep = sample_package("libdep", "1.0.0", dep_path);
+        let mut closures = vec![sample_closure(root.clone(), vec![dep, root])];
+
+        prune_dependency_members(&mut closures);
+
+        assert_eq!(closures[0].closure.len(), 1);
+        assert_eq!(closures[0].closure[0].name, "wrapper");
+        assert_eq!(closures[0].total_nar_size, 1);
+    }
+
+    #[test]
+    fn obsolete_installed_hashes_drops_entries_outside_needed_set() {
+        let mut old_switch_tool = sample_installed(
+            "switch-tool",
+            "1.0.0",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-switch-tool-1.0.0",
+        );
+        old_switch_tool.apm.as_mut().unwrap().source_drv =
+            "/nix/store/cccccccccccccccccccccccccccccccc-switch-tool-src.drv".to_string();
+
+        let installed = vec![
+            sample_installed(
+                "switch-lib",
+                "1.0.0",
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-switch-lib-1.0.0",
+            ),
+            old_switch_tool,
+            sample_installed(
+                "kept-tool",
+                "1.0.0",
+                "/nix/store/dddddddddddddddddddddddddddddddd-kept-tool-1.0.0",
+            ),
+        ];
+        let needed = HashSet::from([
+            "dddddddddddddddddddddddddddddddd".to_string(),
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+        ]);
+        let hashes = obsolete_installed_hashes(&installed, &needed);
+
+        assert!(hashes.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        assert!(hashes.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        assert!(hashes.contains("cccccccccccccccccccccccccccccccc"));
+        assert!(!hashes.contains("dddddddddddddddddddddddddddddddd"));
+        assert!(!hashes.contains("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
+    }
+
     #[test]
     fn chrono_iso8601_epoch() {
         let result = chrono_iso8601(0);
@@ -663,7 +1747,7 @@ mod tests {
             path: to_path.clone(),
         };
 
-        copy_roots(&from_gen, &to_gen).unwrap();
+        copy_roots_except_hashes(&from_gen, &to_gen, &HashSet::new()).unwrap();
 
         // Verify usr/ root was copied.
         let usr_link = to_path.join("usr/abc123");
@@ -713,7 +1797,7 @@ mod tests {
         };
 
         // Should succeed even when from has no usr/ or src/ dirs.
-        copy_roots(&from_gen, &to_gen).unwrap();
+        copy_roots_except_hashes(&from_gen, &to_gen, &HashSet::new()).unwrap();
 
         // to should have empty usr/ and src/ dirs.
         assert!(to_path.join("usr").is_dir());
@@ -746,11 +1830,70 @@ mod tests {
             path: to_path.clone(),
         };
 
-        copy_roots(&from_gen, &to_gen).unwrap();
+        copy_roots_except_hashes(&from_gen, &to_gen, &HashSet::new()).unwrap();
 
         // Existing symlink in "to" should NOT be overwritten.
         let target = std::fs::read_link(to_path.join("usr/abc123")).unwrap();
         assert_eq!(target.to_string_lossy(), "/var/lib/store/new-target");
+    }
+
+    #[test]
+    fn copy_roots_except_hashes_skips_replaced_roots() {
+        let tmp = TempDir::new().unwrap();
+
+        let from_path = tmp.path().join("gen-1");
+        let from_usr = from_path.join("usr");
+        let from_src = from_path.join("src");
+        std::fs::create_dir_all(&from_usr).unwrap();
+        std::fs::create_dir_all(&from_src).unwrap();
+        symlink(
+            "/var/lib/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-switch-tool-1.0.0",
+            from_usr.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        )
+        .unwrap();
+        symlink(
+            "/var/lib/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-kept-tool-1.0.0",
+            from_usr.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        )
+        .unwrap();
+        symlink(
+            "/var/lib/store/cccccccccccccccccccccccccccccccc-switch-tool.drv",
+            from_src.join("cccccccccccccccccccccccccccccccc"),
+        )
+        .unwrap();
+
+        let from_gen = Generation {
+            number: 1,
+            path: from_path,
+        };
+        let to_path = tmp.path().join("gen-2");
+        std::fs::create_dir_all(&to_path).unwrap();
+        let to_gen = Generation {
+            number: 2,
+            path: to_path.clone(),
+        };
+        let skip_hashes = HashSet::from(["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()]);
+
+        copy_roots_except_hashes(&from_gen, &to_gen, &skip_hashes).unwrap();
+
+        assert!(
+            to_path
+                .join("usr/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .symlink_metadata()
+                .is_err()
+        );
+        assert!(
+            to_path
+                .join("usr/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                .symlink_metadata()
+                .is_ok()
+        );
+        assert!(
+            to_path
+                .join("src/cccccccccccccccccccccccccccccccc")
+                .symlink_metadata()
+                .is_ok()
+        );
     }
 
     #[test]

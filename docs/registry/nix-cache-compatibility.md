@@ -159,8 +159,8 @@ nix-build -A checks.vm.apm.registry-validation-stock-nix-backend-array
 That VM creates a tiny fixed-output store path, generates signed static cache
 files with `apr cache generate`, serves them to stock Nix with
 `require-sigs = true`, and uploads the same cache to a mixed `file://`, `s3://`,
-and `sftp://` destination array. It passed on
-`dylan@builder-hil1-c13958ef` on 2026-06-08 with output
+and `sftp://` destination array. It passed on a remote KVM builder on
+2026-06-08 with output
 `/nix/store/bwp2ayp8r199n32s2csndcv43qmi38xr-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0`;
 the output `serial.log` records the expected one-destination failure for the
 invalid `not-a-url` probe and
@@ -365,7 +365,7 @@ into `NarInfo` and reads exactly these fields (`crates/aos-package/src/download.
 | `StorePath` | `<store_dir>/<basename(store_path)>` | Full store path; `basename` comes from `aos-core::nar::info`. |
 | `URL` | `nar_url(store_path, nar_hash, compression)` | Relative to the cache URL; `nar/{store_hash}-{nar_hash with ':' -> '-'}.{ext}`. The consumer joins it via `join_cache_url`. |
 | `Compression` | `NarCompression::{None,Zstd,Xz}.name()` | `zstd`, `xz`, or `none`. |
-| `FileHash` | compressed-bytes SHA-256 computed by `registry::nixcache` | Always emitted. Consumer treats it as authoritative for the download. |
+| `FileHash` | compressed-bytes SHA-256 computed by `registry::nixcache` | Always emitted. Consumer verifies the wire bytes against it (integrity precheck). |
 | `FileSize` | compressed-byte length computed by `registry::nixcache` | Always emitted. |
 | `NarHash` | `nix path-info --json` `narHash` | Hash of the **uncompressed** NAR, straight from the local Nix store. |
 | `NarSize` | `nix path-info --json` `narSize` | Size in bytes of the uncompressed NAR. |
@@ -381,6 +381,17 @@ Stock-Nix fields AOS does **not** emit:
 The `NarInfo` struct itself carries no `System` / `CA` fields
 (`info.rs:5-16`), and `parse()` ignores any unknown keys (`info.rs:61`), so the
 round trip is lossless for the fields AOS uses.
+
+> **Trust note (RFC-0005):** for the AOS consumer, narinfos are **advisory
+> transport metadata** - they supply the NAR URL, compression, and sizes for
+> planning, plus the `FileHash` integrity precheck. The *trust decision* for
+> the decompressed bytes is the registry's signed `store/` realisation graph
+> ([`repo-layout.md`](repo-layout.md) §5): every downloaded NAR's
+> uncompressed SHA-256 and size must match a blessed entry, and a narinfo
+> `NarHash` disagreeing with `store/` always resolves in favor of `store/`. Only
+> registries that publish no graph at all fall back to trusting `NarHash`
+> (with a warning). Stock-Nix consumers, which cannot read `ca/`, keep the
+> narinfo `Sig:` Ed25519 signature (§8) as their substitution defence.
 
 ### 6.1 Example static narinfo
 
@@ -432,11 +443,10 @@ narinfo References:    r4q1m2kp8v3x…-glibc-2.39  xr5is7by89v3q…-zlib-1.3.1
 ```
 
 > **Note for the git-metadata layer:** the *git registry* stores
-> `references` as **bare store-path hashes** — "Store path hashes of direct
-> runtime references" (`crates/aos-package/src/types.rs:57-58`), with the closure
-> files (`closures/<hash>`) using the same bare-hash adjacency-list format
-> (`ClosureMeta`, `types.rs:80-102`). That bare-hash form lives in the git tree
-> and is consumed by `apm`'s closure walk; it is **independent** of the
+> dependency edges as **bare store-path hashes** in the `store/` realisation
+> graph (`ia:sha256:<store-hash>` lines, RFC-0005;
+> `crates/aos-package/src/registry/store.rs`). That bare-hash form lives in the
+> git tree and is consumed by `apm`'s closure walk; it is **independent** of the
 > narinfo-layer `References`, which the producer writes as basenames from the
 > store DB into the static narinfo. The two layers are decoupled (§1) — no
 > expansion step crosses between them.
@@ -464,9 +474,10 @@ keypair that signs the git tags (design brief §11):
   implemented** by `NarInfoSigner`. The *signed messages
   differ*, so the *signatures differ*, but there is **one secret to manage**.
 - **Two published public-key encodings** from that one key:
-  - `aos-core:Ed25519:<base64>` — the apm form for TOFU / `trusted-keys.d` (the
-    `SigningConfig.public_key` format, `crates/aos-package/src/types.rs:243-248`,
-    parsed as `<name>:Ed25519:<base64>` by `parse_signing_key` in `security.rs:306`;
+  - `aos-core:Ed25519:<base64>` — the apm form for `trusted-keys.d` anchoring and
+    the `keys.toml` roster (the `SigningConfig.public_key` format,
+    `crates/aos-package/src/types.rs:346`,
+    parsed as `<name>:Ed25519:<base64>` by `parse_signing_key` in `security.rs:575`;
     the base64 payload is the SSH `ssh-ed25519` public-key blob used by git
     `allowed_signers`).
   - `<name>:<base64>` — the nix form for Nix `trusted-public-keys`.
@@ -643,9 +654,9 @@ the registry, fails if any path is absent from the local Nix store, emits signed
 narinfos and `nar/*.nar.zst`, writes `nix-cache-info`, optionally uploads the
 files to repeatable `--upload-url` destinations without rewriting the generated
 cache-info body, and optionally commits the root `registry.toml` cache pointer.
-Upload auth can come from `[registry.upload_auth]` in the selected
-`registries.d/<name>.toml` and is then overridden by env/CLI values on
-`apr cache generate`.
+Upload destinations and auth can come from `[registry.upload_auth]` in the
+selected `registries.d/<name>.toml` (persisted by `apr origin config`) and are
+then overridden by env/CLI values on `apr cache generate`.
 Stock-Nix host wiring remains ordinary
 `nix.conf` / flake `nixConfig` setup (§10).
 The production validation VM check for this surface is

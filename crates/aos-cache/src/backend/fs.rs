@@ -1,3 +1,5 @@
+//! Filesystem (`file://`) cache backend.
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -19,10 +21,13 @@ pub struct FsBackend {
 }
 
 impl FsBackend {
+    /// Creates a backend rooted at `root`. The directory is created
+    /// lazily on first write.
     pub fn new(root: PathBuf, engine: Arc<TransferEngine>) -> Self {
         Self { engine, root }
     }
 
+    /// Builds a `file://` URL for a path relative to the cache root.
     fn file_url(&self, relative: &str) -> String {
         let path = self.root.join(relative);
         format!("file://{}", path.display())

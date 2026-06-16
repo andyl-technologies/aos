@@ -2,8 +2,8 @@
 
 > **Status:** VM validation PR runbook. These checks run inside the Nix-based
 > headless Firecracker VM test harness and require a KVM-capable builder. Do not
-> run them on developer laptops without KVM access. The current builder target is
-> `dylan@builder-hil1-c13958ef`.
+> run them on developer laptops without KVM access. Use a KVM-capable remote
+> validation host.
 
 The VM checks live in
 [`../../../tests/vm/apm/registry_validation.nix`](../../../tests/vm/apm/registry_validation.nix)
@@ -20,15 +20,14 @@ nix-build -A checks.vm.apm.registry-validation-pack-delta-perf
 
 ## Builder Evidence: 2026-06-08
 
-The focused registry validation checks passed on
-`dylan@builder-hil1-c13958ef` from the synced checkout
-`/tmp/aos-vm-fleet-validation-20260606` with:
+The focused registry validation checks passed on a remote KVM builder from a
+synced checkout with:
 
 ```sh
-nix-build /tmp/aos-vm-fleet-validation-20260606 --argstr system x86_64-linux -A checks.vm.apm.registry-validation-stock-nix-backend-array --no-out-link
-nix-build /tmp/aos-vm-fleet-validation-20260606 --argstr system x86_64-linux -A checks.vm.apm.registry-validation-origin-cdn-layout --no-out-link
-nix-build /tmp/aos-vm-fleet-validation-20260606 --argstr system x86_64-linux -A checks.vm.apm.registry-validation-stock-git-matrix --no-out-link
-nix-build /tmp/aos-vm-fleet-validation-20260606 --argstr system x86_64-linux -A checks.vm.apm.registry-validation-pack-delta-perf --no-out-link
+nix-build . --argstr system x86_64-linux -A checks.vm.apm.registry-validation-stock-nix-backend-array --no-out-link
+nix-build . --argstr system x86_64-linux -A checks.vm.apm.registry-validation-origin-cdn-layout --no-out-link
+nix-build . --argstr system x86_64-linux -A checks.vm.apm.registry-validation-stock-git-matrix --no-out-link
+nix-build . --argstr system x86_64-linux -A checks.vm.apm.registry-validation-pack-delta-perf --no-out-link
 ```
 
 Passing outputs:
