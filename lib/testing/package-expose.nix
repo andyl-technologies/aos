@@ -37,6 +37,95 @@
     if reservedCollision.success
     then throw "expose renderer must reject package-authored synthesized side-effect unit names"
     else "ok";
+  privilegedExecPrefix = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-privileged-prefix.service" = {
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "+${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        permissions.network = "private";
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  privilegedExecPrefixRejected =
+    if privilegedExecPrefix.success
+    then throw "expose renderer must reject systemd privileged Exec* prefixes on workload services"
+    else "ok";
+  privateOutbound = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-private-outbound.service" = {
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        permissions.network = "private-outbound";
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  privateOutboundRejected =
+    if privateOutbound.success
+    then throw "expose renderer must reject private-outbound until the netns/veth unit is implemented"
+    else "ok";
+  withHoles = pkg.overrideAttrs (_: {
+    expose = {
+      units."expose-smoke-holes.service" = {
+        description = "RFC-0001 expose sandboxed-with-holes label service";
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+      };
+      permissions = {
+        network = "private";
+        capabilities = ["CAP_NET_BIND_SERVICE"];
+      };
+      requires = [];
+    };
+  });
+  unconfined = pkg.overrideAttrs (_: {
+    expose = {
+      units."expose-smoke-unconfined.service" = {
+        description = "RFC-0001 expose unconfined label service";
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+      };
+      permissions = {
+        network = "host";
+        capabilities = ["CAP_NET_ADMIN"];
+        privileged-users = true;
+      };
+      requires = [];
+    };
+  });
+  privilegedSyscalls = pkg.overrideAttrs (_: {
+    expose = {
+      units."expose-smoke-privileged-syscalls.service" = {
+        description = "RFC-0001 expose privileged syscalls label service";
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+      };
+      permissions = {
+        network = "private";
+        syscalls = "privileged";
+      };
+      requires = [];
+    };
+  });
 in
   pkgs.mkDerivation {
     pname = "package-expose-check";
@@ -47,11 +136,19 @@ in
     exposePath = pkg.expose;
     overriddenPayload = overridden;
     overriddenExposePath = overridden.expose;
-    inherit reservedCollisionRejected;
+    withHolesExposePath = withHoles.expose;
+    unconfinedExposePath = unconfined.expose;
+    privilegedSyscallsExposePath = privilegedSyscalls.expose;
+    inherit reservedCollisionRejected privilegedExecPrefixRejected privateOutboundRejected;
 
     buildDeps =
       (builtins.map (pkg: pkg.exposeCheck) (builtins.attrValues packagesWithExpose))
-      ++ [overridden.exposeCheck];
+      ++ [
+        overridden.exposeCheck
+        withHoles.exposeCheck
+        unconfined.exposeCheck
+        privilegedSyscalls.exposeCheck
+      ];
 
     phases = [
       {
@@ -80,6 +177,31 @@ in
           grep -q 'After=network.target aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service' "$unit"
           grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service' "$unit"
           grep -q 'ExecStart=${pkgs.bash}/bin/bash -c true' "$unit"
+          grep -q "RootDirectory=$payload" "$unit"
+          grep -q 'MountAPIVFS=true' "$unit"
+          grep -q 'ProtectSystem=strict' "$unit"
+          grep -q 'ProtectHome=true' "$unit"
+          grep -q 'PrivateTmp=disconnected' "$unit"
+          grep -q 'TemporaryFileSystem=/tmp' "$unit"
+          grep -q 'TemporaryFileSystem=/var/tmp' "$unit"
+          grep -q 'StateDirectory=aos-pkg-expose-smoke' "$unit"
+          grep -q 'NoNewPrivileges=true' "$unit"
+          grep -q 'DynamicUser=true' "$unit"
+          grep -q 'PrivateUsers=identity' "$unit"
+          grep -q 'PrivateNetwork=true' "$unit"
+          grep -q 'DevicePolicy=closed' "$unit"
+          grep -q '^CapabilityBoundingSet=$' "$unit"
+          grep -q '^AmbientCapabilities=$' "$unit"
+          grep -q 'BindReadOnlyPaths=/nix/store' "$unit"
+          grep -q 'SystemCallFilter=@system-service' "$unit"
+          grep -q 'SystemCallErrorNumber=EPERM' "$unit"
+          grep -q 'SystemCallArchitectures=native' "$unit"
+          grep -q 'RestrictAddressFamilies=AF_UNIX' "$unit"
+          grep -q 'RestrictAddressFamilies=AF_INET' "$unit"
+          grep -q 'RestrictAddressFamilies=AF_INET6' "$unit"
+          grep -q 'RestrictNamespaces=true' "$unit"
+          grep -q 'LockPersonality=true' "$unit"
+          grep -q 'MemoryDenyWriteExecute=true' "$unit"
           grep -q 'Where=/var/lib/exposesmoke' "$exposePath/units/var-lib-exposesmoke.mount"
 
           grep -q 'Description=Activation target for expose-smoke' "$target"
@@ -102,17 +224,29 @@ in
           fi
 
           grep -q 'Description=Apply kernel modules for expose-smoke' "$modules"
+          if grep -q 'RootDirectory=' "$modules"; then
+            echo "host-side modules service must not be RootDirectory-sandboxed" >&2
+            exit 1
+          fi
           grep -q 'PartOf=aos-pkg-expose-smoke.target' "$modules"
           grep -q 'WantedBy=aos-pkg-expose-smoke.target' "$modules"
           grep -q 'ExecStart=${pkgs.kmod}/sbin/modprobe -a br_netfilter' "$modules"
 
           grep -q 'Description=Apply sysctl settings for expose-smoke' "$sysctl"
+          if grep -q 'RootDirectory=' "$sysctl"; then
+            echo "host-side sysctl service must not be RootDirectory-sandboxed" >&2
+            exit 1
+          fi
           grep -q 'PartOf=aos-pkg-expose-smoke.target' "$sysctl"
           grep -q 'After=aos-pkg-expose-smoke-modules.service' "$sysctl"
           grep -q 'Requires=aos-pkg-expose-smoke-modules.service' "$sysctl"
           grep -q 'ExecStart=${pkgs.procps-ng}/sbin/sysctl -w net.ipv4.ip_forward=1' "$sysctl"
 
           grep -q 'Description=Apply firewall rules for expose-smoke' "$firewall"
+          if grep -q 'RootDirectory=' "$firewall"; then
+            echo "host-side firewall service must not be RootDirectory-sandboxed" >&2
+            exit 1
+          fi
           grep -q 'PartOf=aos-pkg-expose-smoke.target' "$firewall"
           grep -q 'After=nftables.service' "$firewall"
           grep -q 'Requires=nftables.service' "$firewall"
@@ -136,7 +270,9 @@ in
           grep -q '"allowedTCP":\[8000,8443\]' "$manifest"
           grep -q '"allowedUDP":\[5353\]' "$manifest"
           grep -q '"forwardPolicy":"accept"' "$manifest"
+          grep -q '"confinement":{"class":"sandboxed","holes":\[\],"label":"sandboxed"}' "$manifest"
           grep -q '"network":"private"' "$manifest"
+          grep -q '"security-label":"aos.expose-smoke"' "$manifest"
           grep -q '"syscalls":"restricted"' "$manifest"
 
           test "$payload" = "$overriddenPayload"
@@ -145,6 +281,35 @@ in
           grep -q 'Description=RFC-0001 expose override service' \
             "$overriddenExposePath/units/expose-smoke-override.service"
           test "$reservedCollisionRejected" = ok
+          test "$privilegedExecPrefixRejected" = ok
+          test "$privateOutboundRejected" = ok
+          grep -q '"confinement":{"class":"sandboxed-with-holes","holes":\["capability:CAP_NET_BIND_SERVICE"\],"label":"sandboxed-with-holes (capability:CAP_NET_BIND_SERVICE)"}' \
+            "$withHolesExposePath/manifest.json"
+          grep -q '"security-label":"aos-pkg-expose-smoke"' \
+            "$withHolesExposePath/manifest.json"
+          grep -q 'CapabilityBoundingSet=CAP_NET_BIND_SERVICE' \
+            "$withHolesExposePath/units/expose-smoke-holes.service"
+          grep -q 'AmbientCapabilities=CAP_NET_BIND_SERVICE' \
+            "$withHolesExposePath/units/expose-smoke-holes.service"
+          grep -q '"confinement":{"class":"unconfined","holes":\["network:host","capability:CAP_NET_ADMIN","privileged-users"\],"label":"unconfined"}' \
+            "$unconfinedExposePath/manifest.json"
+          grep -q 'RestrictAddressFamilies=AF_NETLINK' \
+            "$unconfinedExposePath/units/expose-smoke-unconfined.service"
+          grep -q 'CapabilityBoundingSet=CAP_NET_ADMIN' \
+            "$unconfinedExposePath/units/expose-smoke-unconfined.service"
+          grep -q 'PrivateUsers=false' \
+            "$unconfinedExposePath/units/expose-smoke-unconfined.service"
+          grep -q 'DynamicUser=false' \
+            "$unconfinedExposePath/units/expose-smoke-unconfined.service"
+          grep -q '"confinement":{"class":"sandboxed-with-holes","holes":\["syscalls:privileged"\],"label":"sandboxed-with-holes (syscalls:privileged)"}' \
+            "$privilegedSyscallsExposePath/manifest.json"
+          if grep -q 'SystemCallFilter=' \
+            "$privilegedSyscallsExposePath/units/expose-smoke-privileged-syscalls.service"; then
+            echo "privileged syscall profile must not render a restrictive SystemCallFilter" >&2
+            exit 1
+          fi
+          grep -q 'SystemCallArchitectures=native' \
+            "$privilegedSyscallsExposePath/units/expose-smoke-privileged-syscalls.service"
 
           if grep -R "$exposePath" "$payload"; then
             echo "payload output must not contain a reference to its expose path" >&2
