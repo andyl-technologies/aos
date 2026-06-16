@@ -3,10 +3,10 @@
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
 //! first slices evaluate scalar literals, boolean control flow, assertions,
 //! boolean operators, string literals and concatenation, numeric arithmetic,
-//! numeric and string comparisons, and scalar equality to weak head normal form,
-//! establishing the arena access and diagnostic surface used by later slices
-//! for environments, thunks, functions, attribute sets, primitive operations,
-//! and derivation boundaries.
+//! numeric and string comparisons, and scalar/string equality to weak head
+//! normal form, establishing the arena access and diagnostic surface used by
+//! later slices for environments, thunks, functions, attribute sets, primitive
+//! operations, and derivation boundaries.
 
 use thiserror::Error;
 
@@ -118,7 +118,7 @@ impl<'ir> TreeWalk<'ir> {
     /// This initial public node entry point is intentionally limited to
     /// environment-free scalar literal, string literal, control-flow, boolean
     /// operator, string concatenation, numeric arithmetic, numeric and string
-    /// comparison, and scalar equality nodes.
+    /// comparison, and scalar/string equality nodes.
     /// Environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add an explicit
     /// runtime and environment context.
@@ -372,6 +372,7 @@ impl<'ir> TreeWalk<'ir> {
             }
             (ValueTag::Bool, ValueTag::Bool) => Ok(left.payload_bits() == right.payload_bits()),
             (ValueTag::Null, ValueTag::Null) => Ok(true),
+            (ValueTag::String, ValueTag::String) => self.strings_equal(id, node, left, right),
             (left_tag, right_tag) if left_tag == right_tag => Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedEqualityType {
                     id,
@@ -382,6 +383,22 @@ impl<'ir> TreeWalk<'ir> {
             )),
             _ => Ok(false),
         }
+    }
+
+    fn strings_equal(
+        &self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+    ) -> Result<bool, TreeWalkError> {
+        let left = self.heap.get_string(left).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+        })?;
+        let right = self.heap.get_string(right).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+        })?;
+        Ok(left.bytes() == right.bytes())
     }
 
     fn eval_numeric_negation(
@@ -1512,6 +1529,49 @@ mod tests {
     }
 
     #[test]
+    fn string_equality_compares_bytes() {
+        assert_eq!(eval("\"a\" == \"a\"").as_bool(), Ok(true));
+        assert_eq!(eval("\"a\" == \"b\"").as_bool(), Ok(false));
+        assert_eq!(eval("\"a\" != \"b\"").as_bool(), Ok(true));
+        assert_eq!(eval("\"line\\n\" == \"line\\n\"").as_bool(), Ok(true));
+        assert_eq!(eval("\"a\" == 1").as_bool(), Ok(false));
+        assert_eq!(eval("1 != \"a\"").as_bool(), Ok(true));
+    }
+
+    #[test]
+    fn string_equality_ignores_contexts() {
+        let ir = lower("1");
+        let mut evaluator = TreeWalk::new(&ir);
+        let node = *ir.arena.node(ir.root).expect("root exists");
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let output =
+            ContextElement::single_output(b"/nix/store/derivation.drv".to_vec(), b"out".to_vec())
+                .expect("output context is valid");
+        let left = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"same".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("left string allocates");
+        let right = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"same".to_vec(),
+                StringContext::singleton(output).expect("output context allocates"),
+            ))
+            .expect("right string allocates");
+
+        assert_eq!(
+            evaluator
+                .scalar_equal(ir.root, &node, left, right)
+                .expect("strings compare"),
+            true
+        );
+    }
+
+    #[test]
     fn scalar_equality_evaluates_operands_left_to_right() {
         let rhs_ir = lower("false == (1 / 0)");
         let root = rhs_ir.arena.node(rhs_ir.root).expect("root exists");
@@ -1545,24 +1605,24 @@ mod tests {
     }
 
     #[test]
-    fn same_tag_heap_equality_is_unsupported_until_structural_equality_lands() {
+    fn non_string_heap_equality_is_unsupported_until_structural_equality_lands() {
         let ir = lower("1");
         let evaluator = TreeWalk::new(&ir);
         let node = ir.arena.node(ir.root).expect("root exists");
         let ptr = NonNull::<HeapObject>::dangling();
-        let left = Value::string(ptr).expect("aligned string pointer");
-        let right = Value::string(ptr).expect("aligned string pointer");
+        let left = Value::list(ptr).expect("aligned list pointer");
+        let right = Value::list(ptr).expect("aligned list pointer");
 
         let error = evaluator
             .scalar_equal(ir.root, node, left, right)
-            .expect_err("same-tag heap equality is not implemented yet");
+            .expect_err("list equality is not implemented yet");
 
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::UnsupportedEqualityType {
                 id: ir.root,
-                left: ValueTag::String,
-                right: ValueTag::String,
+                left: ValueTag::List,
+                right: ValueTag::List,
             }
         );
         assert_eq!(error.span(), node.span);
