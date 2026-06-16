@@ -2,9 +2,14 @@
 # cf-seed.sh — seed a Cloudflare deployment of the AOS registry Worker.
 #
 # The Worker is read-only (no write/admin API), so a new deployment is bootstrapped
-# entirely through `wrangler`: apply the D1 schema, insert the registry row (its
-# `trust_keys` are the cryptographic root of trust), and upload the signed surface
-# to R2. The Cron indexer then derives packages/channels/releases from R2.
+# through `wrangler`: insert the registry row (its `trust_keys` are the
+# cryptographic root of trust) and upload the signed surface to R2. The Cron
+# indexer then derives packages/channels/releases from R2.
+#
+# The D1 schema is NOT applied here: it is created by requesting `GET /_init` on
+# the deployed Worker, which runs the shared `aos_registry_core` MIGRATIONS over
+# D1. So the deploy order is: `wrangler deploy` -> `curl .../\_init` -> this
+# script (which seeds the registry row the schema must already hold).
 #
 # This is OPERATOR tooling run on a developer machine against your Cloudflare
 # account (not a hermetic build) — it shells out to `wrangler`. See DEPLOY.md for
@@ -19,11 +24,12 @@
 #     [--db aos-registry-hub] [--bucket aos-registry-surfaces] \
 #     [--source-url 'r2://aos-registry-surfaces/demo'] \
 #     [--visibility public] [--require-signatures 1] \
-#     [--apply-schema] [--local] [--wrangler 'nix run .#miniflare -- wrangler']
+#     [--local] [--wrangler 'nix run .#miniflare -- wrangler']
 #
-# Run with no surface upload by passing an empty/absent --surface (schema +
-# registry row only). Idempotent for the surface upload; the registry-row INSERT
-# uses INSERT OR REPLACE keyed on the unique slug.
+# Run with no surface upload by passing an empty/absent --surface (registry row
+# only). Idempotent for the surface upload; the registry-row INSERT uses INSERT
+# OR REPLACE keyed on the unique slug. The schema must already exist (via
+# `GET /_init` on the deployed Worker).
 set -euo pipefail
 
 DB="aos-registry-hub"
@@ -35,7 +41,6 @@ SOURCE_URL=""
 VISIBILITY="public"
 REQUIRE_SIGS="1"
 REMOTE="--remote"
-APPLY_SCHEMA="0"
 WRANGLER="wrangler"
 TRUST_KEYS=()
 
@@ -52,7 +57,6 @@ while [ $# -gt 0 ]; do
     --source-url) SOURCE_URL="$2"; shift 2 ;;
     --visibility) VISIBILITY="$2"; shift 2 ;;
     --require-signatures) REQUIRE_SIGS="$2"; shift 2 ;;
-    --apply-schema) APPLY_SCHEMA="1"; shift ;;
     --local) REMOTE="--local"; shift ;;
     --wrangler) WRANGLER="$2"; shift 2 ;;
     -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
@@ -68,7 +72,6 @@ done
 # `wrangler` may be a multi-word launcher (e.g. "nix run .#miniflare -- wrangler").
 # shellcheck disable=SC2206
 WRANGLER_CMD=($WRANGLER)
-SCHEMA_FILE="$(cd "$(dirname "$0")/.." && pwd)/migrations/0001_schema.sql"
 
 run_wrangler() { "${WRANGLER_CMD[@]}" "$@"; }
 
@@ -85,12 +88,7 @@ json_trust_keys() {
 }
 
 echo "==> Target D1=$DB  R2=$BUCKET  registry=$SLUG (prefix '$PREFIX', $VISIBILITY)  $REMOTE"
-
-if [ "$APPLY_SCHEMA" = "1" ]; then
-  [ -f "$SCHEMA_FILE" ] || die "schema not found at $SCHEMA_FILE"
-  echo "==> Applying D1 schema"
-  run_wrangler d1 execute "$DB" $REMOTE --file "$SCHEMA_FILE"
-fi
+echo "    (schema must already be applied via 'curl .../\_init' on the deployed Worker)"
 
 echo "==> Seeding registry row + trust anchor"
 TRUST_JSON="$(json_trust_keys)"

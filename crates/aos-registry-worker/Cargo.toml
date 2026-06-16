@@ -50,9 +50,6 @@ semver = { workspace = true }
 worker = { version = "0.4", features = ["d1"] }
 
 [dev-dependencies]
-# The native unit tests run the worker's schema migrations through a real
-# sqlite engine to prove D1 (sqlite-dialect) compatibility.
-rusqlite = { workspace = true }
 # The `gen_surface` example (the worker integration test's fixture generator)
 # signs the surface with a deterministic maintainer key. Already in the
 # workspace lockfile via aos-registry-surface, so this adds no new dependency.

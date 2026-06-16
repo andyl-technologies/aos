@@ -2076,8 +2076,8 @@ impl Database {
     ///
     /// For read paths that open a fresh handle per request against a database
     /// some other path already migrated — notably the Cloudflare Worker, whose
-    /// schema is applied once via `/_init` (or `wrangler d1 migrations apply`)
-    /// and which must not pay a migration round-trip on every read. Use
+    /// schema is applied once via `/_init` and which must not pay a migration
+    /// round-trip on every read. Use
     /// [`with_backend`](Self::with_backend) when the caller owns the schema and
     /// should migrate it.
     #[must_use]

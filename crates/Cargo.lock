@@ -454,7 +454,6 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "js-sys",
- "rusqlite",
  "semver",
  "serde",
  "serde_json",
