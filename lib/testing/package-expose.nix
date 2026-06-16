@@ -34,6 +34,32 @@
       };
     };
   };
+  manualStart = pkgs.mkDerivation {
+    pname = "expose-manual-start";
+    version = "0";
+    src = null;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/expose-manual-start"
+          printf expose-manual-start > "$out/share/expose-manual-start/payload.txt"
+        '';
+      }
+    ];
+
+    expose = {
+      units."expose-manual-start.service" = {
+        description = "RFC-0001 expose manual-start service";
+        onlyManualStart = true;
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+      };
+    };
+  };
   configPackage = pkgs.mkDerivation {
     pname = "expose-config";
     version = "0";
@@ -440,6 +466,7 @@ in
     exposeConfinement = builtins.toJSON pkg.expose.passthru.confinement;
     minimalPayload = minimal;
     minimalExposePath = minimal.expose;
+    manualStartExposePath = manualStart.expose;
     configExposePath = configPackage.expose;
     splitConfigExposePath = splitConfigPackage.expose;
     overriddenPayload = overridden;
@@ -458,6 +485,7 @@ in
       (builtins.map (pkg: pkg.exposeCheck) (builtins.attrValues packagesWithExpose))
       ++ [
         minimal.exposeCheck
+        manualStart.exposeCheck
         configPackage.exposeCheck
         splitConfigPackage.exposeCheck
         overridden.exposeCheck
@@ -637,6 +665,22 @@ in
             echo "minimal expose package must not render package-authored mount units" >&2
             exit 1
           fi
+
+          manual_start_unit="$manualStartExposePath/units/expose-manual-start.service"
+          manual_start_target="$manualStartExposePath/units/aos-pkg-expose-manual-start.target"
+          test -f "$manual_start_unit"
+          test -f "$manual_start_target"
+          grep -q 'X-OnlyManualStart=true' "$manual_start_unit"
+          grep -q 'PartOf=aos-pkg-expose-manual-start.target' "$manual_start_unit"
+          if grep -q 'WantedBy=aos-pkg-expose-manual-start.target' "$manual_start_unit"; then
+            echo "manual-start services must not be enabled by the package target preset" >&2
+            exit 1
+          fi
+          if grep -q 'Wants=.*expose-manual-start.service' "$manual_start_target"; then
+            echo "manual-start services must not be target members" >&2
+            exit 1
+          fi
+          test ! -e "$manualStartExposePath/units/aos-pkg-expose-manual-start.target.wants/expose-manual-start.service"
 
           config_unit="$configExposePath/units/expose-config.service"
           config_manifest="$configExposePath/manifest.json"

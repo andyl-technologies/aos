@@ -938,13 +938,16 @@ in rec {
       )
       ++ builtins.map (route: route.unit) (builtins.filter (route: route.kind == "socket") uses)
     );
-    socketActivatedTargetMemberUnitNames =
+    targetMemberUnitNames =
       builtins.filter (
-        unit:
-          !(
+        unit: let
+          authored = units.${unit} or {};
+        in
+          !(authored.onlyManualStart or false)
+          && !(
             builtins.elem unit socketActivatedServiceUnitNames
             && builtins.hasAttr unit units
-            && !((builtins.getAttr unit units).notSocketActivated or false)
+            && !(authored.notSocketActivated or false)
           )
       )
       memberUnitNames;
@@ -970,7 +973,8 @@ in rec {
         !(
           builtins.elem name socketActivatedServiceUnitNames
           && !((unit.notSocketActivated or false))
-        );
+        )
+        && !((unit.onlyManualStart or false));
     in
       unit
       // {
@@ -1268,7 +1272,7 @@ in rec {
       // {
         "${target}" = {
           description = "Activation target for ${packageName}";
-          wants = uniqueUnits socketActivatedTargetMemberUnitNames;
+          wants = uniqueUnits targetMemberUnitNames;
         };
       }
     );

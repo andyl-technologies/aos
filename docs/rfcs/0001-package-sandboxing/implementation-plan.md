@@ -486,10 +486,11 @@ rendered unit artifact, and is enabled through image/APM preset policy in the
 false` packages stay baked but inert: they are present in the image without
 being seeded into the package profile, attached, or enabled. Fleet tests now
 have an additive `packages = [...]` selector that seeds selected bundled package
-profiles per machine, and `test-http-server-pair` uses that selector. The role
-tree and `roles = [...]` fleet surface still exist, so the broader
-role-to-package dissolution, security policy split, and full fleet-spec rename
-remain open.
+profiles per machine. `test-http-server-pair` uses that selector for a
+socket-activated package, and `apm-systemd-client` uses it for a manual-start
+test-unit package. The role tree and `roles = [...]` fleet surface still exist,
+so the broader role-to-package dissolution, security policy split, and full
+fleet-spec rename remain open.
 
 **Closes.** D14; the [`migration.md`](migration.md) increments.
 

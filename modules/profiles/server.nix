@@ -69,5 +69,11 @@ in {
       bundle = true;
       preset = false;
     };
+
+    aos.packages.apm-systemd-client-test = {
+      package = pkgs.apm-systemd-client-test;
+      bundle = true;
+      preset = false;
+    };
   };
 }
