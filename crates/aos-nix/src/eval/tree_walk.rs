@@ -1,8 +1,8 @@
 //! Safe tree-walk evaluator over lowered IR.
 //!
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
-//! first slices evaluate scalar literals, boolean control flow, and boolean
-//! operators to weak head normal form, establishing the arena access and
+//! first slices evaluate scalar literals, boolean control flow, assertions, and
+//! boolean operators to weak head normal form, establishing the arena access and
 //! diagnostic surface used by later slices for environments, thunks, functions,
 //! attribute sets, primitive operations, and derivation boundaries.
 
@@ -85,6 +85,7 @@ impl<'ir> TreeWalk<'ir> {
                 Ok(Value::null())
             }
             IrKind::If => self.eval_if(id, &node),
+            IrKind::Assert => self.eval_assert(id, &node),
             IrKind::UnaryOp => self.eval_unary(id, &node),
             IrKind::BinOp => self.eval_binary(id, &node),
             kind => Err(TreeWalkError::new(
@@ -126,6 +127,20 @@ impl<'ir> TreeWalk<'ir> {
             third
         };
         self.eval_node(selected)
+    }
+
+    fn eval_assert(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Pair { first, second } = node.data else {
+            return Err(self.invalid_payload(id, node, "assert payload"));
+        };
+        if self.eval_bool_node(first)? {
+            self.eval_node(second)
+        } else {
+            Err(TreeWalkError::new(
+                TreeWalkErrorKind::AssertionFailed { id },
+                node.span,
+            ))
+        }
     }
 
     fn eval_unary(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -298,6 +313,12 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The unsupported binary operator.
         op: BinOpKind,
+    },
+    /// An `assert` condition evaluated to `false`.
+    #[error("assertion failed at node {id:?}")]
+    AssertionFailed {
+        /// The failed assertion node id.
+        id: IrId,
     },
     /// The node kind is outside this evaluator slice.
     #[error("unsupported tree-walk node {kind:?} at {id:?}")]
@@ -596,5 +617,81 @@ mod tests {
             );
             assert_eq!(error.span(), span);
         }
+    }
+
+    #[test]
+    fn assert_evaluates_body_only_when_condition_is_true() {
+        assert_eq!(eval("assert true; 5").as_int(), Ok(5));
+
+        let ir = lower("assert false; (1 + 2)");
+        let lazy_body = eval_whnf(&ir).expect_err("false assertion stops before body");
+        assert_eq!(
+            lazy_body.kind(),
+            TreeWalkErrorKind::AssertionFailed { id: ir.root }
+        );
+    }
+
+    #[test]
+    fn assert_false_reports_assertion_span() {
+        let ir = lower("assert false; 1");
+        let error = eval_whnf(&ir).expect_err("assertion fails");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::AssertionFailed { id: ir.root }
+        );
+        assert_eq!(
+            error.span(),
+            ir.arena.node(ir.root).expect("root exists").span
+        );
+    }
+
+    #[test]
+    fn assert_condition_must_be_bool() {
+        let ir = lower("assert 1; 2");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("assert root has pair payload");
+        };
+        let condition_span = ir.arena.node(first).expect("condition exists").span;
+
+        let error = eval_whnf(&ir).expect_err("integer condition is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: first,
+                expected: "bool",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), condition_span);
+    }
+
+    #[test]
+    fn malformed_assert_payloads_are_reported() {
+        let root = IrId::new(0);
+        let span = Span::new(30, 35);
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Assert,
+                span,
+                EffectClass::Pure,
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+        let ir = empty_ir(root, arena);
+        let error = eval_whnf(&ir).expect_err("malformed assert is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidPayload {
+                id: root,
+                kind: IrKind::Assert,
+                expected: "assert payload",
+            }
+        );
+        assert_eq!(error.span(), span);
     }
 }
