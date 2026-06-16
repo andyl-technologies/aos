@@ -334,6 +334,14 @@ pub enum NodeData {
         /// The slot inside the target frame.
         slot: u32,
     },
+    /// The node represents a dynamic variable access through active `with`
+    /// scopes.
+    WithVar {
+        /// The unresolved symbol to probe in each active `with` attrset.
+        symbol: Symbol,
+        /// The resolver side-table id of the innermost-first `with` chain.
+        chain: u32,
+    },
 }
 
 impl Default for NodeData {

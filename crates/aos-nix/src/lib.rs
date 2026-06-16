@@ -16,12 +16,15 @@
 //! - [`native`] exposes [`NixNative`], the `aos-core`-facing evaluator handle.
 //! - [`syntax`] owns the byte-oriented frontend: lexer first, then arena AST and
 //!   parser as Phase 1 grows.
+//! - [`compile`] owns the frontend passes that turn parsed syntax into the
+//!   scope-resolved IR consumed by later evaluator tiers.
 //!
 //! Future Phase-1 modules land below this boundary in the order specified by
-//! the RFC: `compile`, `value`, `heap`, `attrs`, `eval`, `runtime`, and `store`.
+//! the RFC: `value`, `heap`, `attrs`, `eval`, `runtime`, and `store`.
 
 #![forbid(unsafe_code)]
 
+pub mod compile;
 pub mod error;
 pub mod native;
 pub mod syntax;

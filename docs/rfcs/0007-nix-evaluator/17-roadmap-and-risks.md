@@ -473,7 +473,7 @@ AOS package set. Build it in this order.
 - [x] `syntax/ast.rs` — compact arena AST, `u32` NodeIds, fixed-stride nodes.
 - [x] `syntax/parser.rs` — recursive-descent + Pratt for operators; **no rnix in
       the production path** (rnix is a test-only oracle).
-- [ ] `compile/scope.rs` — name resolution to de Bruijn `(depth, slot)` indices.
+- [x] `compile/scope.rs` — name resolution to de Bruijn `(depth, slot)` indices.
 - [ ] `cache/parse.rs` — content-addressed (blake3) parse-artifact cache so the
       package set parses once.
 
