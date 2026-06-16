@@ -70,8 +70,8 @@ in
 
         # CC wrapper: add -std=gnu99 + static linking
         mkdir -p "$TMPDIR/ccwrap"
-        printf '#!/bin/sh\nexec ${prev.gcc}/bin/gcc -std=gnu99 -L${prev.glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/gcc"
-        printf '#!/bin/sh\nexec ${prev.gcc}/bin/g++ -L${prev.glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/g++"
+        printf '#!${prev.bash}/bin/bash\nexec ${prev.gcc}/bin/gcc -std=gnu99 -L${prev.glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/gcc"
+        printf '#!${prev.bash}/bin/bash\nexec ${prev.gcc}/bin/g++ -L${prev.glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/g++"
         chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
         ln -sf gcc "$TMPDIR/ccwrap/cc"
         ln -sf g++ "$TMPDIR/ccwrap/c++"
@@ -104,6 +104,7 @@ in
           --disable-multilib --disable-bootstrap \
           --disable-libssp --disable-libgomp \
           --disable-libsanitizer --disable-libmpx --disable-libvtv \
+          --disable-lto --disable-plugin \
           --program-transform-name=
 
         # Patch SYSTEM_HEADER_DIR to avoid /usr/include
@@ -124,7 +125,11 @@ in
         make -j"$NIX_BUILD_CORES" all-gcc \
           BOOT_CFLAGS="-O2"
 
+        make -j"$NIX_BUILD_CORES" all-target-libgcc \
+          CFLAGS_FOR_TARGET="-O2"
+
         make install-gcc
+        make install-target-libgcc
 
         # GCC's install for cross builds doesn't always create $target-gcc
         test -f "$out/bin/gcc" && test ! -f "$out/bin/${hostPlatform.config}-gcc" && \
@@ -132,10 +137,13 @@ in
         test -f "$out/bin/g++" && test ! -f "$out/bin/${hostPlatform.config}-g++" && \
           ln -sf g++ "$out/bin/${hostPlatform.config}-g++"
 
-        # Create empty libgcc_eh.a and re-index libgcc.a
+        # Create libgcc_eh.a and re-index libgcc.a
         GCCLIB="$out/lib/gcc/${hostPlatform.config}/8.5.0"
         mkdir -p "$GCCLIB"
-        "${prev.binutils}/bin/ar" crs "$GCCLIB/libgcc_eh.a"
+        test -f "$GCCLIB/libgcc.a" || { echo "FATAL: libgcc.a not installed"; exit 1; }
+        if [ ! -f "$GCCLIB/libgcc_eh.a" ]; then
+          "${crossBinutils}/bin/${hostPlatform.config}-ar" crs "$GCCLIB/libgcc_eh.a"
+        fi
         "${crossBinutils}/bin/${hostPlatform.config}-ranlib" \
           "$GCCLIB/libgcc.a" 2>/dev/null || true
 
