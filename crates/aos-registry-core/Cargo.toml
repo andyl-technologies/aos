@@ -72,6 +72,9 @@ tempfile = { workspace = true }
 # deps are compiled only for wasm32; on native getrandom uses the OS directly.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+# Reads the host JS `Date.now()` wall clock on the Worker (SystemTime::now()
+# panics on wasm32). Native targets use std::time instead. RFC-0004 Phase 5.
+js-sys = "0.3"
 # rand 0.9 pulls getrandom 0.3; its wasm backend also needs the
 # `--cfg getrandom_backend="wasm_js"` rustflag set in .cargo/config.toml.
 getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }

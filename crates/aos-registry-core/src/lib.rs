@@ -39,6 +39,7 @@
 
 pub mod auth;
 pub mod backend;
+pub mod clock;
 pub mod config;
 pub mod db;
 pub mod dialect;
