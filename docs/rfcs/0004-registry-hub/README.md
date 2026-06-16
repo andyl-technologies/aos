@@ -23,8 +23,9 @@
   `D1Backend` (sqlx for native pg/mysql/sqlite, D1 for Workers). The
   **remaining work** is the handler unification: the read/write/console/auth
   path becomes one shared `axum` router served natively via `axum::serve` and
-  on Workers via `axum-cloudflare-adapter`, deleting the worker's hand-written
-  read-only fetch router. A wasm-feasibility spike (2026-06-16) confirmed the
+  on Workers via a hand-rolled `worker`⇄`axum` bridge (no adapter dep; the
+  published adapters don't support the worker 0.4.x pin), deleting the worker's
+  hand-written read-only fetch router. A wasm-feasibility spike (2026-06-16) confirmed the
   shared router compiles to wasm but the `connectrpc` *server* runtime does
   not, so the registry hub serves a single **Connect-JSON** transport (plain
   JSON over HTTP — `POST /aos.registry.v1.{Service}/{Method}`) as shared `axum`
