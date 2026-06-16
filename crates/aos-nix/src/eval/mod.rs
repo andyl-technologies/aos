@@ -11,4 +11,6 @@ pub mod tree_walk;
 
 pub use heap::{EvalHeap, EvalHeapError};
 pub use thunk::{ForceClaim, ForceError, ForceGuard, ThunkCell, ThunkState};
-pub use tree_walk::{TreeWalk, TreeWalkError, TreeWalkErrorKind, eval_whnf};
+pub use tree_walk::{
+    EvalOutcome, TreeWalk, TreeWalkError, TreeWalkErrorKind, eval_whnf, eval_whnf_owned,
+};

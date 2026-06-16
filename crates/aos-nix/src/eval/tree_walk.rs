@@ -9,8 +9,10 @@
 
 use thiserror::Error;
 
+use super::heap::{EvalHeap, EvalHeapError};
 use crate::compile::{Ir, IrData, IrId, IrKind, IrNode};
-use crate::syntax::{BinOpKind, Span, UnaryOpKind};
+use crate::string::NixString;
+use crate::syntax::{BinOpKind, Span, Symbol, UnaryOpKind};
 use crate::value::{Value, ValueTag};
 
 /// Evaluates an IR root to weak head normal form with the tree-walk oracle.
@@ -19,21 +21,86 @@ use crate::value::{Value, ValueTag};
 ///
 /// Returns [`TreeWalkError`] if the root node is missing, malformed for its IR
 /// kind, fails a scalar type check, or belongs to a part of the interpreter that
-/// this Phase-1 slice has not implemented yet.
+/// this Phase-1 slice has not implemented yet. Returns
+/// [`TreeWalkErrorKind::HeapValueRequiresOwner`] if the root evaluates to a
+/// heap-backed value; use [`eval_whnf_owned`] for those values so their
+/// evaluator heap stays alive.
 pub fn eval_whnf(ir: &Ir) -> Result<Value, TreeWalkError> {
-    TreeWalk::new(ir).eval_root()
+    let outcome = eval_whnf_owned(ir)?;
+    if outcome.value.tag().is_heap() {
+        let span = ir
+            .arena
+            .node(ir.root)
+            .map(|node| node.span)
+            .unwrap_or_default();
+        return Err(TreeWalkError::new(
+            TreeWalkErrorKind::HeapValueRequiresOwner {
+                id: ir.root,
+                tag: outcome.value.tag(),
+            },
+            span,
+        ));
+    }
+    Ok(outcome.value)
+}
+
+/// Evaluates an IR root while returning the heap that owns heap-backed values.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] if root evaluation fails.
+pub fn eval_whnf_owned(ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
+    let mut evaluator = TreeWalk::new(ir);
+    let value = evaluator.eval_root()?;
+    Ok(EvalOutcome {
+        value,
+        heap: evaluator.heap,
+    })
+}
+
+/// A tree-walk evaluation result with its owning evaluator heap.
+#[derive(Debug)]
+pub struct EvalOutcome {
+    value: Value,
+    heap: EvalHeap,
+}
+
+impl EvalOutcome {
+    /// Returns the evaluated root value.
+    pub const fn value(&self) -> Value {
+        self.value
+    }
+
+    /// Returns the heap that owns heap-backed values in this result.
+    pub const fn heap(&self) -> &EvalHeap {
+        &self.heap
+    }
+
+    /// Consumes the outcome into its value and heap.
+    pub fn into_parts(self) -> (Value, EvalHeap) {
+        (self.value, self.heap)
+    }
 }
 
 /// A safe recursive evaluator for lowered IR.
 #[derive(Debug)]
 pub struct TreeWalk<'ir> {
     ir: &'ir Ir,
+    heap: EvalHeap,
 }
 
 impl<'ir> TreeWalk<'ir> {
     /// Creates a tree-walk evaluator over `ir`.
     pub const fn new(ir: &'ir Ir) -> Self {
-        Self { ir }
+        Self {
+            ir,
+            heap: EvalHeap::new(),
+        }
+    }
+
+    /// Returns the evaluator heap that owns heap-backed values.
+    pub const fn heap(&self) -> &EvalHeap {
+        &self.heap
     }
 
     /// Evaluates the IR root to weak head normal form.
@@ -86,6 +153,7 @@ impl<'ir> TreeWalk<'ir> {
                 }
                 Ok(Value::null())
             }
+            IrKind::Str => self.eval_string(id, &node),
             IrKind::If => self.eval_if(id, &node),
             IrKind::Assert => self.eval_assert(id, &node),
             IrKind::UnaryOp => self.eval_unary(id, &node),
@@ -198,6 +266,29 @@ impl<'ir> TreeWalk<'ir> {
                 ))
             }
         }
+    }
+
+    fn eval_string(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Symbol(symbol) = node.data else {
+            return Err(self.invalid_payload(id, node, "string symbol payload"));
+        };
+        let bytes = self.ir.symbols.resolve(symbol).ok_or_else(|| {
+            TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+        })?;
+        let mut owned = Vec::new();
+        owned.try_reserve_exact(bytes.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: bytes.len(),
+                },
+                node.span,
+            )
+        })?;
+        owned.extend_from_slice(bytes);
+        self.heap
+            .alloc_string(NixString::from_bytes(owned))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
     fn eval_equality(
@@ -486,7 +577,7 @@ pub enum ArithmeticOp {
 }
 
 /// A tree-walk evaluation failure with source location.
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[error("{kind} at byte span {span:?}")]
 pub struct TreeWalkError {
     kind: TreeWalkErrorKind,
@@ -500,8 +591,8 @@ impl TreeWalkError {
     }
 
     /// Returns the error category.
-    pub const fn kind(&self) -> TreeWalkErrorKind {
-        self.kind
+    pub fn kind(&self) -> TreeWalkErrorKind {
+        self.kind.clone()
     }
 
     /// Returns the source span associated with this error.
@@ -511,7 +602,7 @@ impl TreeWalkError {
 }
 
 /// The category of a tree-walk evaluation failure.
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum TreeWalkErrorKind {
     /// The evaluator was asked to read a missing IR node.
     #[error("invalid IR node id {id:?}")]
@@ -528,6 +619,38 @@ pub enum TreeWalkErrorKind {
         kind: IrKind,
         /// The expected payload contract.
         expected: &'static str,
+    },
+    /// A symbol payload did not resolve through the IR symbol table.
+    #[error("invalid symbol {symbol:?} at node {id:?}")]
+    InvalidSymbol {
+        /// The node id associated with the missing symbol.
+        id: IrId,
+        /// The unresolved symbol payload.
+        symbol: Symbol,
+    },
+    /// A byte buffer for a string literal could not be reserved.
+    #[error("failed to reserve {len} string bytes at node {id:?}")]
+    ByteAllocationFailed {
+        /// The string node id.
+        id: IrId,
+        /// The requested byte length.
+        len: usize,
+    },
+    /// A heap-backed value was produced by the non-owning convenience API.
+    #[error("heap-backed {tag:?} value at node {id:?} requires an owning evaluation result")]
+    HeapValueRequiresOwner {
+        /// The root node id that produced the heap value.
+        id: IrId,
+        /// The heap-backed value tag.
+        tag: ValueTag,
+    },
+    /// The evaluator heap failed while allocating or retrieving a value.
+    #[error("heap operation failed at node {id:?}: {source}")]
+    Heap {
+        /// The node id associated with the heap operation.
+        id: IrId,
+        /// The underlying heap failure.
+        source: EvalHeapError,
     },
     /// A scalar operation received a value of the wrong Nix type.
     #[error("type error at node {id:?}: expected {expected}, got {actual:?}")]
@@ -606,7 +729,7 @@ mod tests {
     use crate::compile::{
         EffectClass, IrArena, IrData, IrNode, lower as lower_ir, resolve as resolve_ast,
     };
-    use crate::syntax::{SymbolTable, parse_str};
+    use crate::syntax::{Symbol, SymbolTable, parse_str};
     use crate::value::HeapObject;
 
     fn lower(source: &str) -> Ir {
@@ -669,6 +792,62 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_string_literals_with_owned_heap() {
+        let ir = lower("\"hello\"");
+        let outcome = eval_whnf_owned(&ir).expect("string evaluates");
+        let value = outcome.value();
+
+        assert_eq!(value.tag(), ValueTag::String);
+        assert_eq!(
+            outcome
+                .heap()
+                .get_string(value)
+                .expect("string is heap-owned")
+                .bytes(),
+            b"hello"
+        );
+
+        let empty = eval_whnf_owned(&lower("\"\"")).expect("empty string evaluates");
+        assert_eq!(
+            empty
+                .heap()
+                .get_string(empty.value())
+                .expect("empty string is heap-owned")
+                .bytes(),
+            b""
+        );
+
+        let escaped =
+            eval_whnf_owned(&lower("\"line\\n\\\"quoted\\\"\"")).expect("escaped string evaluates");
+        assert_eq!(
+            escaped
+                .heap()
+                .get_string(escaped.value())
+                .expect("escaped string is heap-owned")
+                .bytes(),
+            b"line\n\"quoted\""
+        );
+    }
+
+    #[test]
+    fn non_owning_eval_rejects_heap_values() {
+        let ir = lower("\"hello\"");
+        let error = eval_whnf(&ir).expect_err("string value needs owning heap");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::HeapValueRequiresOwner {
+                id: ir.root,
+                tag: ValueTag::String,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            ir.arena.node(ir.root).expect("root exists").span
+        );
+    }
+
+    #[test]
     fn unsupported_nodes_report_kind_and_span() {
         let ir = lower("[]");
         let error = eval_whnf(&ir).expect_err("list construction is not implemented yet");
@@ -723,6 +902,7 @@ mod tests {
             (IrKind::Float, IrData::None, "float payload"),
             (IrKind::Bool, IrData::None, "boolean payload"),
             (IrKind::Null, IrData::Bool(false), "empty payload"),
+            (IrKind::Str, IrData::None, "string symbol payload"),
         ];
 
         for (index, (kind, data, expected)) in cases.into_iter().enumerate() {
@@ -745,6 +925,24 @@ mod tests {
             );
             assert_eq!(error.span(), span);
         }
+    }
+
+    #[test]
+    fn invalid_string_symbols_are_reported() {
+        let root = IrId::new(0);
+        let symbol = Symbol::new(99);
+        let span = Span::new(3, 8);
+        let ir = manual_ir(
+            root,
+            vec![pure_node(IrKind::Str, span, IrData::Symbol(symbol))],
+        );
+        let error = eval_whnf_owned(&ir).expect_err("string symbol must exist");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidSymbol { id: root, symbol }
+        );
+        assert_eq!(error.span(), span);
     }
 
     #[test]
