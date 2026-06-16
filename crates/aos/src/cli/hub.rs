@@ -45,6 +45,11 @@ pub enum HubCmd {
         #[command(subcommand)]
         command: HubBindingCmd,
     },
+    /// Manage outbound webhooks within an org
+    Webhook {
+        #[command(subcommand)]
+        command: HubWebhookCmd,
+    },
     /// List audit-log entries at a scope (newest first; needs --token)
     Audit {
         /// Hub base URL (http:// or https://)
@@ -167,6 +172,55 @@ pub enum HubBindingCmd {
         /// Backend root (an absolute filesystem path for local_fs)
         #[arg(long)]
         root: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubWebhookCmd {
+    /// List an org's webhook subscriptions (secrets are never shown)
+    List {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Org slug
+        #[arg(long)]
+        org: String,
+    },
+    /// Create a webhook under an org (needs members.manage)
+    Create {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Org slug
+        #[arg(long)]
+        org: String,
+        /// Destination URL each subscribed event is POSTed to
+        #[arg(long)]
+        url: String,
+        /// Event type to subscribe to (repeatable; omit to subscribe to all)
+        #[arg(long = "event")]
+        event: Vec<String>,
+        /// Shared HMAC secret (omit to have the hub generate one)
+        #[arg(long, default_value = "")]
+        secret: String,
+    },
+    /// Delete a webhook by id (needs members.manage)
+    Delete {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Webhook id
+        #[arg(long)]
+        id: i64,
     },
 }
 

@@ -14,7 +14,9 @@ use anyhow::Result;
 use aos_core::output::Printer;
 use aos_remote::RegistryHubClient;
 
-use crate::cli::{HubBindingCmd, HubCmd, HubOrgCmd, HubProjectCmd, HubRegistryCmd};
+use crate::cli::{
+    HubBindingCmd, HubCmd, HubOrgCmd, HubProjectCmd, HubRegistryCmd, HubWebhookCmd,
+};
 
 /// Handles `aos hub login`: exchanges a provisioning secret for an access JWT.
 async fn login(printer: &Printer, hub: &str, provisioning_token: &str) -> Result<()> {
@@ -52,6 +54,7 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
         HubCmd::Org { command } => org(printer, command).await,
         HubCmd::Project { command } => project(printer, command).await,
         HubCmd::Binding { command } => binding(printer, command).await,
+        HubCmd::Webhook { command } => webhook(printer, command).await,
         HubCmd::Audit { hub, token, scope } => {
             audit(printer, hub, token.as_deref(), scope).await
         }
@@ -238,6 +241,92 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
                 "created binding '{}' [{}] -> {} in org '{org}'",
                 binding.name, binding.kind, binding.root
             ));
+            Ok(())
+        }
+    }
+}
+
+/// Handles `aos hub webhook …`.
+async fn webhook(printer: &Printer, command: &HubWebhookCmd) -> Result<()> {
+    match command {
+        HubWebhookCmd::List { hub, token, org } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let webhooks = client.list_webhooks(org).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "webhooks": webhooks
+                    .iter()
+                    .map(|w| serde_json::json!({
+                        "id": w.id,
+                        "url": w.url,
+                        "events": w.events,
+                        "active": w.active,
+                        "created_at": w.created_at,
+                    }))
+                    .collect::<Vec<_>>(),
+            })) {
+                return Ok(());
+            }
+            if webhooks.is_empty() {
+                printer.info(&format!("no webhooks in org '{org}'"));
+                return Ok(());
+            }
+            printer.header(&format!("{} webhook(s) in {org}", webhooks.len()));
+            for webhook in &webhooks {
+                let events = if webhook.events.is_empty() {
+                    "all events".to_string()
+                } else {
+                    webhook.events.join(",")
+                };
+                let state = if webhook.active { "active" } else { "inactive" };
+                printer.plain(&format!(
+                    "  #{}  {}  [{events}]  ({state})",
+                    webhook.id, webhook.url
+                ));
+            }
+            Ok(())
+        }
+        HubWebhookCmd::Create {
+            hub,
+            token,
+            org,
+            url,
+            event,
+            secret,
+        } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let (webhook, signing_secret) =
+                client.create_webhook(org, url, event.clone(), secret).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "webhook": {
+                    "id": webhook.id,
+                    "url": webhook.url,
+                    "events": webhook.events,
+                    "active": webhook.active,
+                },
+                "secret": signing_secret,
+            })) {
+                return Ok(());
+            }
+            printer.success(&format!(
+                "created webhook #{} -> {} in org '{org}'",
+                webhook.id, webhook.url
+            ));
+            // The HMAC signing secret is shown exactly once.
+            printer.info("HMAC signing secret (shown once — store it now):");
+            printer.plain(&signing_secret);
+            Ok(())
+        }
+        HubWebhookCmd::Delete { hub, token, id } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let deleted = client.delete_webhook(*id).await?;
+            if printer.json_if_active(&serde_json::json!({ "deleted": deleted })) {
+                return Ok(());
+            }
+            if deleted {
+                printer.success(&format!("deleted webhook #{id}"));
+            } else {
+                printer.info(&format!("no webhook #{id} to delete"));
+            }
             Ok(())
         }
     }
