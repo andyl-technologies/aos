@@ -135,17 +135,6 @@ macro_rules! builtin_definitions {
 
 pub(crate) use builtin_definitions;
 
-macro_rules! builtin_names {
-    ($($kind:ident $ty:ident, $name:expr $(, $primop:expr)?;)*) => {
-        &[
-            $($name,)*
-        ]
-    };
-}
-
-/// Builtin names recognized by the resolver and evaluator.
-pub(crate) const BUILTIN_NAMES: &[&[u8]] = builtin_definitions!(builtin_names);
-
 /// The observable effect class for a direct builtin boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinEffect {
@@ -170,123 +159,264 @@ pub(crate) enum BuiltinDirect {
     StrictTernary { effect: BuiltinEffect },
 }
 
-macro_rules! builtin_direct_metadata {
+/// Short user-facing documentation for a builtin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BuiltinDocs {
+    summary: &'static str,
+}
+
+impl BuiltinDocs {
+    /// Returns the one-line summary for the builtin.
+    #[allow(dead_code)]
+    pub(crate) const fn summary(&self) -> &'static str {
+        self.summary
+    }
+}
+
+static TODO_BUILTIN_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Builtin documentation has not been imported yet.",
+};
+
+static PATH_EXISTS_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns whether a path exists at evaluation time.",
+};
+
+static READ_DIR_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns an attribute set describing a directory's entries.",
+};
+
+static READ_FILE_TYPE_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns the filesystem type of a path.",
+};
+
+/// Static metadata shared by builtin resolution, lowering, and execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BuiltinMetadata {
+    name: &'static [u8],
+    direct: Option<BuiltinDirect>,
+    first_class_arity: Option<usize>,
+    docs: &'static BuiltinDocs,
+}
+
+impl BuiltinMetadata {
+    /// Creates builtin metadata.
+    const fn new(
+        name: &'static [u8],
+        direct: Option<BuiltinDirect>,
+        first_class_arity: Option<usize>,
+        docs: &'static BuiltinDocs,
+    ) -> Self {
+        Self {
+            name,
+            direct,
+            first_class_arity,
+            docs,
+        }
+    }
+
+    /// Returns the byte-oriented builtin attribute name.
+    pub(crate) const fn name(&self) -> &'static [u8] {
+        self.name
+    }
+
+    /// Returns direct-lowering metadata for the builtin, if any.
+    pub(crate) const fn direct(&self) -> Option<BuiltinDirect> {
+        self.direct
+    }
+
+    /// Returns the arity exposed when the builtin is selected as a first-class value.
+    pub(crate) const fn first_class_arity(&self) -> Option<usize> {
+        self.first_class_arity
+    }
+
+    /// Returns the static documentation attached to the builtin.
+    pub(crate) const fn docs(&self) -> &'static BuiltinDocs {
+        self.docs
+    }
+}
+
+/// Provides static metadata for a concrete builtin marker type.
+pub(crate) trait BuiltinInfo {
+    /// Metadata shared by all evaluator tiers for this builtin.
+    const METADATA: BuiltinMetadata;
+}
+
+macro_rules! builtin_metadata {
     ($($kind:ident $ty:ident, $name:expr $(, $primop:expr)?;)*) => {
         &[
             $(
-                builtin_direct_metadata!(@record $kind, $name $(, $primop)?),
+                <$ty as BuiltinInfo>::METADATA,
             )*
         ]
     };
 
-    (@record strict_unary, $name:expr, $primop:expr) => {
-        Some((
+    (@record strict_unary, $ty:ident, $name:expr, $primop:expr) => {
+        BuiltinMetadata::new(
             $name,
-            BuiltinDirect::StrictUnary {
+            Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Pure,
-            },
-        ))
+            }),
+            Some(1),
+            builtin_metadata!(@docs $ty),
+        )
     };
 
-    (@record effectful_unary_unsupported, $name:expr) => {
-        Some((
+    (@record effectful_unary_unsupported, $ty:ident, $name:expr) => {
+        BuiltinMetadata::new(
             $name,
-            BuiltinDirect::StrictUnary {
+            Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful,
-            },
-        ))
+            }),
+            None,
+            builtin_metadata!(@docs $ty),
+        )
     };
 
-    (@record effectful_strict_unary, $name:expr, $primop:expr) => {
-        Some((
+    (@record effectful_strict_unary, $ty:ident, $name:expr, $primop:expr) => {
+        BuiltinMetadata::new(
             $name,
-            BuiltinDirect::StrictUnary {
+            Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful,
-            },
-        ))
+            }),
+            Some(1),
+            builtin_metadata!(@docs $ty),
+        )
     };
 
-    (@record custom_effectful_strict_unary, $name:expr) => {
-        Some((
+    (@record custom_effectful_strict_unary, $ty:ident, $name:expr) => {
+        BuiltinMetadata::new(
             $name,
-            BuiltinDirect::StrictUnary {
+            Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful,
-            },
-        ))
+            }),
+            Some(1),
+            builtin_metadata!(@docs $ty),
+        )
     };
 
-    (@record strict_binary, $name:expr, $primop:expr) => {
-        Some((
+    (@record strict_binary, $ty:ident, $name:expr, $primop:expr) => {
+        BuiltinMetadata::new(
             $name,
-            BuiltinDirect::StrictBinary {
+            Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Pure,
-            },
-        ))
+            }),
+            Some(2),
+            builtin_metadata!(@docs $ty),
+        )
     };
 
-    (@record effectful_strict_binary, $name:expr, $primop:expr) => {
-        Some((
+    (@record effectful_strict_binary, $ty:ident, $name:expr, $primop:expr) => {
+        BuiltinMetadata::new(
             $name,
-            BuiltinDirect::StrictBinary {
+            Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Effectful,
-            },
-        ))
+            }),
+            Some(2),
+            builtin_metadata!(@docs $ty),
+        )
     };
 
-    (@record direct_binary, $name:expr, $primop:expr) => {
-        Some((
+    (@record direct_binary, $ty:ident, $name:expr, $primop:expr) => {
+        BuiltinMetadata::new(
             $name,
-            BuiltinDirect::StrictBinary {
+            Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Pure,
-            },
-        ))
+            }),
+            None,
+            builtin_metadata!(@docs $ty),
+        )
     };
 
-    (@record strict_lazy_binary, $name:expr) => {
-        Some((
+    (@record strict_lazy_binary, $ty:ident, $name:expr) => {
+        BuiltinMetadata::new(
             $name,
-            BuiltinDirect::StrictLazyBinary {
+            Some(BuiltinDirect::StrictLazyBinary {
                 effect: BuiltinEffect::Pure,
-            },
-        ))
+            }),
+            Some(2),
+            builtin_metadata!(@docs $ty),
+        )
     };
 
-    (@record direct_ternary, $name:expr, $primop:expr) => {
-        Some((
+    (@record direct_ternary, $ty:ident, $name:expr, $primop:expr) => {
+        BuiltinMetadata::new(
             $name,
-            BuiltinDirect::StrictTernary {
+            Some(BuiltinDirect::StrictTernary {
                 effect: BuiltinEffect::Pure,
-            },
-        ))
+            }),
+            None,
+            builtin_metadata!(@docs $ty),
+        )
     };
 
-    (@record derivation_strict, $name:expr) => {
-        Some(($name, BuiltinDirect::DerivationStrict))
+    (@record derivation_strict, $ty:ident, $name:expr) => {
+        BuiltinMetadata::new(
+            $name,
+            Some(BuiltinDirect::DerivationStrict),
+            None,
+            builtin_metadata!(@docs $ty),
+        )
     };
 
-    (@record unsupported, $name:expr) => {
-        None
+    (@record unsupported, $ty:ident, $name:expr) => {
+        BuiltinMetadata::new($name, None, None, builtin_metadata!(@docs $ty))
     };
 
-    (@record custom_value, $name:expr) => {
-        None
+    (@record custom_value, $ty:ident, $name:expr) => {
+        BuiltinMetadata::new($name, None, None, builtin_metadata!(@docs $ty))
+    };
+
+    (@docs PathExistsBuiltin) => {
+        &PATH_EXISTS_DOCS
+    };
+
+    (@docs ReadDirBuiltin) => {
+        &READ_DIR_DOCS
+    };
+
+    (@docs ReadFileTypeBuiltin) => {
+        &READ_FILE_TYPE_DOCS
+    };
+
+    (@docs $ty:ident) => {
+        &TODO_BUILTIN_DOCS
     };
 }
 
-const BUILTIN_DIRECT_METADATA: &[Option<(&[u8], BuiltinDirect)>] =
-    builtin_definitions!(builtin_direct_metadata);
+macro_rules! builtin_marker_types {
+    ($($kind:ident $ty:ident, $name:expr $(, $primop:expr)?;)*) => {
+        $(
+            pub(crate) struct $ty;
+
+            impl BuiltinInfo for $ty {
+                const METADATA: BuiltinMetadata =
+                    builtin_metadata!(@record $kind, $ty, $name $(, $primop)?);
+            }
+        )*
+    };
+}
+
+builtin_definitions!(builtin_marker_types);
+
+/// Builtin metadata recognized by the resolver and evaluator.
+pub(crate) const BUILTIN_METADATA: &[BuiltinMetadata] = builtin_definitions!(builtin_metadata);
+
+/// Returns shared metadata for a builtin name.
+pub(crate) fn builtin_metadata(name: &[u8]) -> Option<BuiltinMetadata> {
+    BUILTIN_METADATA
+        .iter()
+        .copied()
+        .find(|metadata| metadata.name() == name)
+}
 
 /// Returns direct lowering metadata for a builtin name.
 pub(crate) fn direct_builtin(name: &[u8]) -> Option<BuiltinDirect> {
-    BUILTIN_DIRECT_METADATA
-        .iter()
-        .flatten()
-        .find_map(|(builtin_name, direct)| (*builtin_name == name).then_some(*direct))
+    builtin_metadata(name).and_then(|metadata| metadata.direct())
 }
 
 /// Returns whether `name` is a builtin attribute known to this evaluator.
 pub(crate) fn is_known_builtin_attr(name: &[u8]) -> bool {
-    BUILTIN_NAMES.contains(&name)
+    builtin_metadata(name).is_some()
 }
 
 #[cfg(test)]
@@ -296,9 +426,12 @@ mod tests {
 
     #[test]
     fn builtin_names_are_unique() {
-        let names = BUILTIN_NAMES.iter().copied().collect::<BTreeSet<_>>();
+        let names = BUILTIN_METADATA
+            .iter()
+            .map(BuiltinMetadata::name)
+            .collect::<BTreeSet<_>>();
 
-        assert_eq!(names.len(), BUILTIN_NAMES.len());
+        assert_eq!(names.len(), BUILTIN_METADATA.len());
     }
 
     #[test]
@@ -350,5 +483,69 @@ mod tests {
             })
         );
         assert_eq!(direct_builtin(b"fromTOML"), None);
+    }
+
+    #[test]
+    fn builtin_metadata_records_first_class_arity_by_category() {
+        assert_eq!(
+            builtin_metadata(b"attrNames").unwrap().first_class_arity(),
+            Some(1)
+        );
+        assert_eq!(
+            builtin_metadata(b"getEnv").unwrap().first_class_arity(),
+            Some(1)
+        );
+        assert_eq!(
+            builtin_metadata(b"pathExists").unwrap().first_class_arity(),
+            Some(1)
+        );
+        assert_eq!(
+            builtin_metadata(b"import").unwrap().first_class_arity(),
+            None
+        );
+        assert_eq!(
+            builtin_metadata(b"add").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"hashFile").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(builtin_metadata(b"all").unwrap().first_class_arity(), None);
+        assert_eq!(
+            builtin_metadata(b"seq").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"foldl'").unwrap().first_class_arity(),
+            None
+        );
+        assert_eq!(
+            builtin_metadata(b"derivationStrict")
+                .unwrap()
+                .first_class_arity(),
+            None
+        );
+        assert_eq!(builtin_metadata(b"true").unwrap().first_class_arity(), None);
+        assert_eq!(
+            builtin_metadata(b"fromTOML").unwrap().first_class_arity(),
+            None
+        );
+    }
+
+    #[test]
+    fn custom_builtin_docs_stay_attached_to_metadata() {
+        assert_eq!(
+            builtin_metadata(b"pathExists").unwrap().docs().summary(),
+            "Returns whether a path exists at evaluation time."
+        );
+        assert_eq!(
+            builtin_metadata(b"readDir").unwrap().docs().summary(),
+            "Returns an attribute set describing a directory's entries."
+        );
+        assert_eq!(
+            builtin_metadata(b"readFileType").unwrap().docs().summary(),
+            "Returns the filesystem type of a path."
+        );
     }
 }

@@ -38,7 +38,7 @@ use crate::compile::{
     IrKind, IrNode, IrShapeId,
 };
 use crate::list::{NixList, NixListError};
-use crate::runtime::builtins::builtin_definitions;
+use crate::runtime::builtins::*;
 use crate::string::{ContextElement, ContextKind, NixString, NixStringError, StringContext};
 use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind};
 use crate::value::{Value, ValueTag};
@@ -8324,24 +8324,6 @@ enum ConvertHashInputFormat {
     Typed,
 }
 
-#[allow(dead_code)]
-#[derive(Debug)]
-struct BuiltinDocs {
-    summary: &'static str,
-}
-
-#[allow(dead_code)]
-impl BuiltinDocs {
-    const fn summary(&self) -> &'static str {
-        self.summary
-    }
-}
-
-#[allow(dead_code)]
-static TODO_BUILTIN_DOCS: BuiltinDocs = BuiltinDocs {
-    summary: "Builtin documentation has not been imported yet.",
-};
-
 #[derive(Clone, Copy, Debug)]
 struct BuiltinCall {
     id: IrId,
@@ -8356,19 +8338,23 @@ impl BuiltinCall {
 }
 
 trait Builtin: Sync {
-    fn name(&self) -> &'static [u8];
+    fn metadata(&self) -> BuiltinMetadata;
+
+    fn name(&self) -> &'static [u8] {
+        self.metadata().name()
+    }
 
     fn is_available(&self, _eval: &TreeWalk<'_>) -> bool {
         true
     }
 
     fn first_class_arity(&self) -> Option<usize> {
-        None
+        self.metadata().first_class_arity()
     }
 
     #[allow(dead_code)]
     fn docs(&self) -> &'static BuiltinDocs {
-        &TODO_BUILTIN_DOCS
+        self.metadata().docs()
     }
 
     fn select(
@@ -8426,11 +8412,9 @@ trait Builtin: Sync {
 
 macro_rules! unsupported_builtin {
     ($ty:ident, $name:expr) => {
-        struct $ty;
-
         impl Builtin for $ty {
-            fn name(&self) -> &'static [u8] {
-                $name
+            fn metadata(&self) -> BuiltinMetadata {
+                <Self as BuiltinInfo>::METADATA
             }
         }
     };
@@ -8438,11 +8422,9 @@ macro_rules! unsupported_builtin {
 
 macro_rules! effectful_unary_unsupported_builtin {
     ($ty:ident, $name:expr) => {
-        struct $ty;
-
         impl Builtin for $ty {
-            fn name(&self) -> &'static [u8] {
-                $name
+            fn metadata(&self) -> BuiltinMetadata {
+                <Self as BuiltinInfo>::METADATA
             }
 
             fn apply_direct(
@@ -8488,15 +8470,9 @@ fn check_builtin_arity(
 
 macro_rules! strict_unary_builtin {
     ($ty:ident, $name:expr, $primop:expr) => {
-        struct $ty;
-
         impl Builtin for $ty {
-            fn name(&self) -> &'static [u8] {
-                $name
-            }
-
-            fn first_class_arity(&self) -> Option<usize> {
-                Some(1)
+            fn metadata(&self) -> BuiltinMetadata {
+                <Self as BuiltinInfo>::METADATA
             }
 
             fn apply_direct(
@@ -8544,15 +8520,9 @@ macro_rules! strict_unary_builtin {
 
 macro_rules! strict_binary_builtin {
     ($ty:ident, $name:expr, $primop:expr) => {
-        struct $ty;
-
         impl Builtin for $ty {
-            fn name(&self) -> &'static [u8] {
-                $name
-            }
-
-            fn first_class_arity(&self) -> Option<usize> {
-                Some(2)
+            fn metadata(&self) -> BuiltinMetadata {
+                <Self as BuiltinInfo>::METADATA
             }
 
             fn apply_direct(
@@ -8588,11 +8558,9 @@ macro_rules! strict_binary_builtin {
 
 macro_rules! direct_binary_builtin {
     ($ty:ident, $name:expr, $primop:expr) => {
-        struct $ty;
-
         impl Builtin for $ty {
-            fn name(&self) -> &'static [u8] {
-                $name
+            fn metadata(&self) -> BuiltinMetadata {
+                <Self as BuiltinInfo>::METADATA
             }
 
             fn apply_direct(
@@ -8611,11 +8579,9 @@ macro_rules! direct_binary_builtin {
 
 macro_rules! direct_ternary_builtin {
     ($ty:ident, $name:expr, $primop:expr) => {
-        struct $ty;
-
         impl Builtin for $ty {
-            fn name(&self) -> &'static [u8] {
-                $name
+            fn metadata(&self) -> BuiltinMetadata {
+                <Self as BuiltinInfo>::METADATA
             }
 
             fn apply_direct(
@@ -8684,11 +8650,9 @@ macro_rules! builtin_registry {
     };
 }
 
-struct TrueBuiltin;
-
 impl Builtin for TrueBuiltin {
-    fn name(&self) -> &'static [u8] {
-        b"true"
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
     }
 
     fn select(
@@ -8702,11 +8666,9 @@ impl Builtin for TrueBuiltin {
     }
 }
 
-struct FalseBuiltin;
-
 impl Builtin for FalseBuiltin {
-    fn name(&self) -> &'static [u8] {
-        b"false"
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
     }
 
     fn select(
@@ -8720,11 +8682,9 @@ impl Builtin for FalseBuiltin {
     }
 }
 
-struct NullBuiltin;
-
 impl Builtin for NullBuiltin {
-    fn name(&self) -> &'static [u8] {
-        b"null"
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
     }
 
     fn select(
@@ -8738,11 +8698,9 @@ impl Builtin for NullBuiltin {
     }
 }
 
-struct CurrentSystemBuiltin;
-
 impl Builtin for CurrentSystemBuiltin {
-    fn name(&self) -> &'static [u8] {
-        b"currentSystem"
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
     }
 
     fn is_available(&self, eval: &TreeWalk<'_>) -> bool {
@@ -8767,11 +8725,9 @@ impl Builtin for CurrentSystemBuiltin {
     }
 }
 
-struct StoreDirBuiltin;
-
 impl Builtin for StoreDirBuiltin {
-    fn name(&self) -> &'static [u8] {
-        b"storeDir"
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
     }
 
     fn select(
@@ -8786,24 +8742,9 @@ impl Builtin for StoreDirBuiltin {
     }
 }
 
-struct PathExistsBuiltin;
-
-#[allow(dead_code)]
-static PATH_EXISTS_DOCS: BuiltinDocs = BuiltinDocs {
-    summary: "Returns whether a path exists at evaluation time.",
-};
-
 impl Builtin for PathExistsBuiltin {
-    fn name(&self) -> &'static [u8] {
-        b"pathExists"
-    }
-
-    fn first_class_arity(&self) -> Option<usize> {
-        Some(1)
-    }
-
-    fn docs(&self) -> &'static BuiltinDocs {
-        &PATH_EXISTS_DOCS
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
     }
 
     fn apply_direct(
@@ -8833,24 +8774,9 @@ impl Builtin for PathExistsBuiltin {
     }
 }
 
-struct ReadDirBuiltin;
-
-#[allow(dead_code)]
-static READ_DIR_DOCS: BuiltinDocs = BuiltinDocs {
-    summary: "Returns an attribute set describing a directory's entries.",
-};
-
 impl Builtin for ReadDirBuiltin {
-    fn name(&self) -> &'static [u8] {
-        b"readDir"
-    }
-
-    fn first_class_arity(&self) -> Option<usize> {
-        Some(1)
-    }
-
-    fn docs(&self) -> &'static BuiltinDocs {
-        &READ_DIR_DOCS
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
     }
 
     fn apply_direct(
@@ -8880,24 +8806,9 @@ impl Builtin for ReadDirBuiltin {
     }
 }
 
-struct ReadFileTypeBuiltin;
-
-#[allow(dead_code)]
-static READ_FILE_TYPE_DOCS: BuiltinDocs = BuiltinDocs {
-    summary: "Returns the filesystem type of a path.",
-};
-
 impl Builtin for ReadFileTypeBuiltin {
-    fn name(&self) -> &'static [u8] {
-        b"readFileType"
-    }
-
-    fn first_class_arity(&self) -> Option<usize> {
-        Some(1)
-    }
-
-    fn docs(&self) -> &'static BuiltinDocs {
-        &READ_FILE_TYPE_DOCS
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
     }
 
     fn apply_direct(
@@ -8927,15 +8838,9 @@ impl Builtin for ReadFileTypeBuiltin {
     }
 }
 
-struct SeqBuiltin;
-
 impl Builtin for SeqBuiltin {
-    fn name(&self) -> &'static [u8] {
-        b"seq"
-    }
-
-    fn first_class_arity(&self) -> Option<usize> {
-        Some(2)
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
     }
 
     fn apply_direct(
@@ -8962,15 +8867,9 @@ impl Builtin for SeqBuiltin {
     }
 }
 
-struct DeepSeqBuiltin;
-
 impl Builtin for DeepSeqBuiltin {
-    fn name(&self) -> &'static [u8] {
-        b"deepSeq"
-    }
-
-    fn first_class_arity(&self) -> Option<usize> {
-        Some(2)
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
     }
 
     fn apply_direct(
@@ -9929,7 +9828,10 @@ mod tests {
         EffectClass, FrameInfo, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode, IrShape,
         IrWithChain, lower as lower_ir, resolve as resolve_ast,
     };
-    use crate::runtime::builtins::{BUILTIN_NAMES, BuiltinDirect, BuiltinEffect, direct_builtin};
+    use crate::runtime::builtins::{
+        BUILTIN_METADATA, BuiltinDirect, BuiltinEffect, BuiltinMetadata, builtin_metadata,
+        direct_builtin,
+    };
     use crate::string::{ContextElement, StringContext};
     use crate::syntax::{Symbol, SymbolTable, parse_str};
     use crate::value::HeapObject;
@@ -10240,11 +10142,26 @@ mod tests {
             .iter()
             .map(|builtin| builtin.name())
             .collect::<BTreeSet<_>>();
-        let scope_names = BUILTIN_NAMES.iter().copied().collect::<BTreeSet<_>>();
+        let scope_names = BUILTIN_METADATA
+            .iter()
+            .map(BuiltinMetadata::name)
+            .collect::<BTreeSet<_>>();
 
         assert_eq!(registry_names.len(), BUILTIN_REGISTRY.len());
-        assert_eq!(scope_names.len(), BUILTIN_NAMES.len());
+        assert_eq!(scope_names.len(), BUILTIN_METADATA.len());
         assert_eq!(registry_names, scope_names);
+    }
+
+    #[test]
+    fn builtin_trait_metadata_comes_from_shared_records() {
+        for builtin in BUILTIN_REGISTRY {
+            let metadata =
+                builtin_metadata(builtin.name()).expect("executor builtin has shared metadata");
+
+            assert_eq!(builtin.metadata(), metadata);
+            assert_eq!(builtin.first_class_arity(), metadata.first_class_arity());
+            assert_eq!(builtin.docs(), metadata.docs());
+        }
     }
 
     #[test]
