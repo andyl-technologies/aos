@@ -7,11 +7,10 @@
 # the client needs. Nothing in `lib/testing/fleet.nix` forbids N=1 —
 # `apm-e2e.nix` is N=2 only because it needs two distinct hosts.
 #
-# The machine activates the `apm-systemd-client-test` role
-# (`modules/roles/apm-systemd-client-test.nix`), which ships seven
-# synthetic units. The test drives each `SystemdClient` code path
-# through the hidden `apm _test-systemd-client` subcommand and parses
-# its JSON on stdout.
+# The machine activates the `apm-systemd-client-test` package, which ships
+# seven manual-start synthetic units. The test drives each `SystemdClient`
+# code path through the hidden `apm _test-systemd-client` subcommand and
+# parses its JSON on stdout.
 #
 # apm is invoked by **store path** (`${pkgs.aos}/bin/apm`), not via the
 # PATH-installed wrapper: the rootfs symlink farm omits the dotfile
@@ -36,7 +35,7 @@
     # Python global `vm`.
     vm = {
       system = systems.server;
-      roles = ["apm-systemd-client-test"];
+      packages = ["apm-systemd-client-test"];
     };
   };
 
@@ -47,6 +46,13 @@
       import time
 
       apm = "${pkgs.aos}/bin/apm _test-systemd-client"
+
+      vm.wait_for_unit("aos-seed-baked-packages.service", timeout=120)
+      vm.wait_until_succeeds(
+          "systemctl is-active aos-pkg-apm-systemd-client-test.target", timeout=60
+      )
+      vm.succeed("test -L /etc/systemd/system.attached/apm-test-ok.service")
+      vm.succeed("test \"$(systemctl is-active apm-test-ok.service || true)\" = inactive")
 
       # ── 0. Wait for the system bus ────────────────────────────────
       # SystemdClient connects to /run/dbus/system_bus_socket; on a
