@@ -468,7 +468,7 @@ AOS package set. Build it in this order.
 
 **Frontend ([04](04-frontend-parser-and-ir.md)).**
 
-- [ ] `syntax/lexer.rs` — hand-written lexer; tokens are `Copy` (span + 1-byte
+- [x] `syntax/lexer.rs` — hand-written lexer; tokens are `Copy` (span + 1-byte
       kind). Trivia retained.
 - [ ] `syntax/ast.rs` — compact arena AST, `u32` NodeIds, fixed-stride nodes.
 - [ ] `syntax/parser.rs` — recursive-descent + Pratt for operators; **no rnix in

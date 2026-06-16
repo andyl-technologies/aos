@@ -952,11 +952,11 @@ Frontend is the **P1** foundation (decision `S-11`): every item below lands unde
 
 ### Lexer (§3)
 
-- [ ] Byte-oriented zero-copy scanner emitting `Token { kind, span }` with one-token lookahead, no per-token allocation (§3.1) — **P1**, `S-11`; token-level differential conformance ([15](15-differential-testing-and-benchmarking.md)).
-- [ ] `TokenKind` taxonomy incl. path / search-path (`<nixpkgs>`) / URI-as-literal classes and the maximal-munch boundary rules (`a/b` vs `a /b` vs `./a`, float boundaries) (§3.2) — **P1**; parity-hazard conformance (§8, doc 20).
-- [ ] String-fragment state machine: `StrStart`/`StrPart`/`DollarBrace`/… mode stack for double-quoted and indented strings (§3.3) — **P1**; corner-case suite.
+- [x] Byte-oriented zero-copy scanner emitting `Token { kind, span }` with one-token lookahead, no per-token allocation (§3.1) — **P1**, `S-11`; token-level differential conformance ([15](15-differential-testing-and-benchmarking.md)).
+- [x] `TokenKind` taxonomy incl. path / search-path (`<nixpkgs>`) / URI-as-literal classes and the maximal-munch boundary rules (`a/b` vs `a /b` vs `./a`, float boundaries) (§3.2) — **P1**; parity-hazard conformance (§8, doc 20).
+- [x] String-fragment state machine: `StrStart`/`StrPart`/`DollarBrace`/… mode stack for double-quoted and indented strings (§3.3) — **P1**; corner-case suite.
 - [ ] Indented-string de-indentation algorithm (common-indentation, blank-line, line-start `${}` rules) reproduced bit-for-bit, plus all escape forms (§3.3) — **P1**; dedicated corner-case conformance suite.
-- [ ] Trivia emission (whitespace/comments) for tooling, skipped by the parser's `bump()`; trivia-suppressing pure-eval mode left as a single retained-trivia lexer for now (§3.2, §12 Q3) — **P1** baseline, `M-16` (measure-gated; single lexer is the default).
+- [x] Trivia emission (whitespace/comments) for tooling, skipped by the parser's `bump()`; trivia-suppressing pure-eval mode left as a single retained-trivia lexer for now (§3.2, §12 Q3) — **P1** baseline, `M-16` (measure-gated; single lexer is the default).
 - [ ] Symbol interner at the lexer/parser seam: dense `u32` `Symbol`, shared append-only table, deterministic renumbering for cache serialization (§3.4) — **P1**, `S-11`.
 
 ### Parser (§4)

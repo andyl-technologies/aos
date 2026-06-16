@@ -14,15 +14,17 @@
 //! - [`error`] defines the typed native-evaluation failure taxonomy used by the
 //!   fallback layer.
 //! - [`native`] exposes [`NixNative`], the `aos-core`-facing evaluator handle.
+//! - [`syntax`] owns the byte-oriented frontend: lexer first, then arena AST and
+//!   parser as Phase 1 grows.
 //!
 //! Future Phase-1 modules land below this boundary in the order specified by
-//! the RFC: `syntax`, `compile`, `value`, `heap`, `attrs`, `eval`, `runtime`,
-//! and `store`.
+//! the RFC: `compile`, `value`, `heap`, `attrs`, `eval`, `runtime`, and `store`.
 
 #![forbid(unsafe_code)]
 
 pub mod error;
 pub mod native;
+pub mod syntax;
 
 pub use error::{NativeEvalError, SrcSpan};
 pub use native::NixNative;
