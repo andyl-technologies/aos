@@ -252,13 +252,28 @@ keeps its method bodies as transport-free functions in `core` (a shared
   request (proto or JSON per `Content-Type`), calls the same `RpcService`, and
   encodes the Connect response — all over the wasm-clean `prost` messages.
 
-This requires splitting `aos-proto` so the worker can depend on the **message
-types without the `connectrpc` runtime**: a `aos-proto-types` crate (prost
-messages + serde, wasm-clean) re-exported by `aos-proto` (which adds the
-`connectrpc` client/server, native-only). Every *other* route — facade, browse,
-JSON read API, auth, console — is the byte-identical shared `axum` handler on
-both targets; only RPC carries a second (thin) transport adapter, and **no
-service logic is written twice**.
+This requires a wasm-clean home for the **message types without the
+`connectrpc` runtime**. `connectrpc-build` 0.3 can't provide it: it generates
+`buffa`-based types through its own `buffa_codegen` (not `prost-build`) and
+exposes no `extern_path`/message-reuse knob, so its output can't be imported
+piecemeal. The split is therefore:
+
+- **`aos-proto-types`** (new, wasm-clean) — the request/response structs
+  generated **independently with `prost-build`** (`prost` + `serde`, no
+  `buffa`, no `connectrpc`). This is the lingua franca of the shared
+  `RpcService`.
+- **`aos-proto`** (native, unchanged generator) — keeps its `connectrpc`/`buffa`
+  client+server codegen for the native transport.
+
+The native RPC adapter converts the `buffa` view it receives into the
+`aos-proto-types` struct (it already reads buffa views field-by-field in
+`rpc.rs` — this just lands the fields in a struct), calls `RpcService`, and
+converts the struct back to a `buffa` response. The worker adapter does the
+same struct ↔ bytes mapping with `prost` (binary) / `serde_json` (JSON) per
+`Content-Type`. Every *other* route — facade, browse, JSON read API, auth,
+console — is the byte-identical shared `axum` handler on both targets; only RPC
+carries a second (thin) transport adapter, and **no service logic is written
+twice** (only mechanical, per-message field mapping at each transport edge).
 
 `RpcService` carries the same **target-conditional `Send` bound** the shipped
 `Backend` trait already uses — `#[cfg_attr(not(target_arch = "wasm32"),
@@ -428,9 +443,10 @@ unification) are the remaining work that wins parity.
    `core::Database` (reads and writes) + the worker `D1Backend`. *Done.*
 4. **Handler unification** (in progress — the parity work):
    - a. ✅ Worker read path + Cron indexer fold onto `core::Database`. *Done.*
-   - b. **Split `aos-proto`** into `aos-proto-types` (prost messages, serde,
-     wasm-clean) and `aos-proto` (adds the `connectrpc` client/server,
-     native-only).
+   - b. **Add `aos-proto-types`** — message structs generated independently
+     with `prost-build` (`prost` + `serde`, wasm-clean), the lingua franca of
+     `RpcService`. `aos-proto` keeps its `connectrpc`/`buffa` generator for the
+     native transport (it has no `extern_path` to share types).
    - c. **Lift the handlers into `core`** as one shared `axum` router: facade,
      browse UI, JSON API, auth, producer console — plain `axum` handlers
      written once. Add the `Blobs` port and the `Lease`/`RateLimiter` ports;
