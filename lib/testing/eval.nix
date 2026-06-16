@@ -11,6 +11,7 @@
   lib,
   system,
   mkSystem,
+  packagesWithExpose,
 }: let
   # The kernel-lockdown option was removed: SECURITY_LOCKDOWN_LSM selects
   # MODULE_SIG, whose default key generation breaks third-party
@@ -97,6 +98,15 @@
     if forced.success
     then throw "aos.apm.registries must reject an empty trustKeys list"
     else "ok";
+
+  exposedPackageNames = builtins.attrNames packagesWithExpose;
+  exposedPackagePathsJson = builtins.toJSON (
+    builtins.map (name: packagesWithExpose.${name}.expose.outPath) exposedPackageNames
+  );
+  exposeEnumeration =
+    if !(builtins.elem "expose-smoke" exposedPackageNames)
+    then throw "packagesWithExpose must include pkgs.expose-smoke"
+    else exposedPackagePathsJson;
 in
   # Use a raw derivation with AOS bash so we don't pull in host tools.
   # The real verification happens at Nix eval time: the builtins.toJSON calls
@@ -115,6 +125,7 @@ in
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
+        echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"
 
         # Force the build attributes to ensure they evaluate
         echo "toplevel:       ${system.config.system.build.toplevel.name}"
