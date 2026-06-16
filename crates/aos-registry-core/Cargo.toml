@@ -6,9 +6,24 @@ description = "Runtime-agnostic core of the AOS registry hub (RFC-0004 Phase 5):
 
 [dependencies]
 anyhow = { workspace = true }
+argon2 = { workspace = true }
+# argon2 re-exports `password_hash::rand_core::OsRng` only when password-hash's
+# `getrandom` feature is on (the native build picks it up via workspace feature
+# unification; the standalone wasm build of this crate does not, so enable it
+# explicitly here). RFC-0004 Phase 5.
+password-hash = { version = "0.5", features = ["getrandom"] }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 url = { workspace = true }
+
+# The OS CSPRNG (argon2 salt, and the secret/token generators to come) reaches
+# the browser/Workers `crypto.getRandomValues` through getrandom's JS backend on
+# wasm32. getrandom 0.2 (via password-hash/rand_core 0.6) uses the `js` feature;
+# getrandom 0.3 (via rand 0.9) additionally needs the
+# `--cfg getrandom_backend="wasm_js"` rustflag set in .cargo/config.toml. These
+# deps are compiled only for wasm32; on native getrandom uses the OS directly.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
