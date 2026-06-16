@@ -7,7 +7,7 @@
 //! string-valued attribute names, static and dynamic string-valued
 //! attribute selection, lexical `let` environments, simple and formal-set lambda
 //! application, lazy `with` scope lookup, attrset update, thunk forcing, numeric
-//! arithmetic, numeric and string/list comparisons, direct strict unary primops,
+//! arithmetic, numeric and string/list comparisons, direct strict primops,
 //! and scalar/string/function plus structural
 //! list/attrset equality to weak head normal form, establishing the arena access
 //! and diagnostic surface used by later slices for full string coercion,
@@ -1161,13 +1161,33 @@ impl<'ir> TreeWalk<'ir> {
         let name = self.symbols.resolve(symbol).ok_or_else(|| {
             TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
         })?;
-        let primop = StrictUnaryPrimOp::from_bytes(name);
+        let strict_binary = StrictBinaryPrimOp::from_bytes(name);
+        let strict_unary = StrictUnaryPrimOp::from_bytes(name);
         let args = self.ir.arena.child_slice(args).ok_or_else(|| {
             TreeWalkError::new(
                 TreeWalkErrorKind::InvalidChildSlice { id, slice: args },
                 node.span,
             )
         })?;
+        if let Some(primop) = strict_binary {
+            if args.len() != 2 {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidPrimOpArity {
+                        id,
+                        symbol,
+                        expected: 2,
+                        actual: args.len(),
+                    },
+                    node.span,
+                ));
+            }
+
+            let first = args[0];
+            let second = args[1];
+            return match primop {
+                StrictBinaryPrimOp::ElemAt => self.eval_elem_at_primop(first, second),
+            };
+        }
         if args.len() != 1 {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::InvalidPrimOpArity {
@@ -1182,7 +1202,7 @@ impl<'ir> TreeWalk<'ir> {
 
         let argument = args[0];
         let value = self.eval_node(argument)?;
-        let Some(primop) = primop else {
+        let Some(primop) = strict_unary else {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
                 node.span,
@@ -1516,6 +1536,61 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         Ok(Value::bool(string.has_context()))
+    }
+
+    fn eval_elem_at_primop(
+        &mut self,
+        list_id: IrId,
+        index_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let index_span = self.node(index_id)?.span;
+        let index_value = self.eval_node(index_id)?;
+        if index_value.tag() != ValueTag::Int {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: index_id,
+                    expected: "int",
+                    actual: index_value.tag(),
+                },
+                index_span,
+            ));
+        }
+        let index = index_value.payload_bits() as i64;
+        let list_span = self.node(list_id)?.span;
+        let list_value = self.eval_node(list_id)?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list_id,
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list_span,
+            ));
+        }
+        let list = self.heap.get_list(list_value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: list_id,
+                    source,
+                },
+                list_span,
+            )
+        })?;
+        let Some(value) = usize::try_from(index)
+            .ok()
+            .and_then(|index| list.get(index))
+        else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::ListIndexOutOfBounds {
+                    id: index_id,
+                    index,
+                    len: list.len(),
+                },
+                index_span,
+            ));
+        };
+        Ok(value)
     }
 
     fn eval_function_args_primop(
@@ -3150,6 +3225,20 @@ impl StrictUnaryPrimOp {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StrictBinaryPrimOp {
+    ElemAt,
+}
+
+impl StrictBinaryPrimOp {
+    fn from_bytes(name: &[u8]) -> Option<Self> {
+        match name {
+            b"elemAt" => Some(Self::ElemAt),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct EqualityPairGuard {
     active: Vec<(Value, Value)>,
@@ -3531,6 +3620,16 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The primop that rejected the empty list.
         op: &'static str,
+    },
+    /// A list primop index was outside the list spine.
+    #[error("list index {index} out of bounds for length {len} at node {id:?}")]
+    ListIndexOutOfBounds {
+        /// The index-valued node that was outside the list.
+        id: IrId,
+        /// The requested signed index.
+        index: i64,
+        /// The list spine length.
+        len: usize,
     },
     /// The active with-scope stack could not reserve another entry.
     #[error("failed to reserve {scopes} active with scopes at node {id:?}")]
@@ -4338,6 +4437,147 @@ mod tests {
             }
         );
         assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn elem_at_primop_returns_indexed_element_without_forcing_other_elements() {
+        assert_eq!(
+            eval("builtins.elemAt [ true (1 / 0) false ] 0").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let builtins = { elemAt = xs: n: 42; }; in builtins.elemAt [ true ] 0").as_int(),
+            Ok(42)
+        );
+
+        let ir = lower("builtins.elemAt [ true (1 / 0) false ] 1");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let mut evaluator = TreeWalk::new(&ir);
+        let value = evaluator
+            .eval_primop(ir.root, &root)
+            .expect("elemAt primop evaluates");
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        let thunk = evaluator
+            .heap
+            .get_thunk(value)
+            .expect("selected element remains a heap-owned thunk");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(
+            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            IrKind::BinOp
+        );
+    }
+
+    #[test]
+    fn elem_at_primop_type_checks_arguments_in_order() {
+        let ir = lower("builtins.elemAt 1 true");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let index = args[1];
+        let index_span = ir.arena.node(index).expect("index argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("elemAt checks the index before the list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: index,
+                expected: "int",
+                actual: ValueTag::Bool
+            }
+        );
+        assert_eq!(error.span(), index_span);
+
+        let ir = lower("builtins.elemAt (1 / 0) true");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let index = args[1];
+        let index_span = ir.arena.node(index).expect("index argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("elemAt checks index type before forcing list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: index,
+                expected: "int",
+                actual: ValueTag::Bool
+            }
+        );
+        assert_eq!(error.span(), index_span);
+
+        let ir = lower("builtins.elemAt 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let index = args[1];
+        let index_span = ir.arena.node(index).expect("index argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("elemAt forces the index before checking the list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: index }
+        );
+        assert_eq!(error.span(), index_span);
+
+        let ir = lower("builtins.elemAt [] true");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let index = args[1];
+        let index_span = ir.arena.node(index).expect("index argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("elemAt requires an integer index");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: index,
+                expected: "int",
+                actual: ValueTag::Bool
+            }
+        );
+        assert_eq!(error.span(), index_span);
+    }
+
+    #[test]
+    fn elem_at_primop_rejects_out_of_range_indexes() {
+        for (source, expected_index) in [
+            ("builtins.elemAt [ true ] 1", 1),
+            ("builtins.elemAt [ true ] (-1)", -1),
+        ] {
+            let ir = lower(source);
+            let root = ir.arena.node(ir.root).expect("root exists");
+            let IrData::PrimOp { args, .. } = root.data else {
+                panic!("root is a primop");
+            };
+            let args = ir.arena.child_slice(args).expect("primop args exist");
+            let index = args[1];
+            let index_span = ir.arena.node(index).expect("index argument exists").span;
+
+            let error = eval_whnf(&ir).expect_err("elemAt requires an in-range index");
+
+            assert_eq!(
+                error.kind(),
+                TreeWalkErrorKind::ListIndexOutOfBounds {
+                    id: index,
+                    index: expected_index,
+                    len: 1
+                }
+            );
+            assert_eq!(error.span(), index_span);
+        }
     }
 
     #[test]
