@@ -901,7 +901,7 @@ impl IrLowerer {
                 b"isAttrs" | b"isList" | b"isFunction" | b"isString" | b"isInt" | b"isFloat"
                 | b"isBool" | b"isNull" | b"isPath" | b"typeOf" | b"length" | b"attrNames"
                 | b"attrValues" | b"tail" | b"functionArgs" | b"head" | b"ceil" | b"floor"
-                | b"hasContext",
+                | b"hasContext" | b"listToAttrs",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1753,6 +1753,10 @@ mod tests {
             ("builtins.ceil 1.2", b"ceil".as_slice()),
             ("builtins.floor 1.8", b"floor".as_slice()),
             ("builtins.hasContext \"x\"", b"hasContext".as_slice()),
+            (
+                "builtins.listToAttrs [ { name = \"a\"; value = 1; } ]",
+                b"listToAttrs".as_slice(),
+            ),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -1986,6 +1990,26 @@ mod tests {
         assert_eq!(node(&ir, first).kind, IrKind::Select);
 
         let ir = lowered("let builtins = { hasContext = x: true; }; in builtins.hasContext \"x\"");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered("listToAttrs []");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir = lowered(
+            "let builtins = { listToAttrs = list: { local = true; }; }; in builtins.listToAttrs []",
+        );
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
         };

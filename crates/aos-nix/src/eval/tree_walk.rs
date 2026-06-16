@@ -32,6 +32,8 @@ use crate::value::{Value, ValueTag};
 
 const TO_STRING_ATTR: &[u8] = b"__toString";
 const OUT_PATH_ATTR: &[u8] = b"outPath";
+const NAME_ATTR: &[u8] = b"name";
+const VALUE_ATTR: &[u8] = b"value";
 const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
 
 /// Evaluates an IR root to weak head normal form with the tree-walk oracle.
@@ -1482,6 +1484,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_function_args_primop(id, node.span, argument, argument_span, value)
             }
+            StrictUnaryPrimOp::ListToAttrs => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_list_to_attrs_primop(id, node.span, argument, argument_span, value)
+            }
         }
     }
 
@@ -1546,6 +1552,158 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         Ok(Value::bool(string.has_context()))
+    }
+
+    fn eval_list_to_attrs_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "list",
+                    actual: value.tag(),
+                },
+                argument_span,
+            ));
+        }
+        let elements = {
+            let list = self.heap.get_list(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            let mut elements = Vec::new();
+            elements.try_reserve_exact(list.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: argument,
+                        len: list.len(),
+                    },
+                    argument_span,
+                )
+            })?;
+            elements.extend_from_slice(list.as_slice());
+            elements
+        };
+
+        let name_attr = self.intern_builtin_attr_symbol(id, NAME_ATTR, span)?;
+        let value_attr = self.intern_builtin_attr_symbol(id, VALUE_ATTR, span)?;
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: elements.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+
+        for element in elements {
+            let element = self.force_value(argument, argument_span, element)?;
+            if element.tag() != ValueTag::Attrs {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: argument,
+                        expected: "attrs",
+                        actual: element.tag(),
+                    },
+                    argument_span,
+                ));
+            }
+            let name_value = {
+                let attrs = self.heap.get_attrs(element).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: argument,
+                            source,
+                        },
+                        argument_span,
+                    )
+                })?;
+                attrs.get(name_attr).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::MissingAttribute {
+                            id: argument,
+                            symbol: name_attr,
+                        },
+                        argument_span,
+                    )
+                })?
+            };
+            let name_value = self.force_value(argument, argument_span, name_value)?;
+            if name_value.tag() != ValueTag::String {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: argument,
+                        expected: "string",
+                        actual: name_value.tag(),
+                    },
+                    argument_span,
+                ));
+            }
+            let key = self.intern_string_value(argument, name_value, argument_span)?;
+            if entries.iter().any(|entry: &AttrEntry| entry.key == key) {
+                continue;
+            }
+
+            let attr_value = {
+                let attrs = self.heap.get_attrs(element).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: argument,
+                            source,
+                        },
+                        argument_span,
+                    )
+                })?;
+                attrs.get(value_attr).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::MissingAttribute {
+                            id: argument,
+                            symbol: value_attr,
+                        },
+                        argument_span,
+                    )
+                })?
+            };
+            entries.push(AttrEntry::new(key, attr_value));
+        }
+
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn intern_builtin_attr_symbol(
+        &mut self,
+        id: IrId,
+        name: &[u8],
+        span: Span,
+    ) -> Result<Symbol, TreeWalkError> {
+        self.symbols.intern(name).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::SymbolIntern {
+                    id,
+                    source: source.kind().clone(),
+                },
+                span,
+            )
+        })
     }
 
     fn eval_elem_at_primop(
@@ -3502,6 +3660,7 @@ enum StrictUnaryPrimOp {
     Ceil,
     Floor,
     HasContext,
+    ListToAttrs,
 }
 
 impl StrictUnaryPrimOp {
@@ -3526,6 +3685,7 @@ impl StrictUnaryPrimOp {
             b"ceil" => Some(Self::Ceil),
             b"floor" => Some(Self::Floor),
             b"hasContext" => Some(Self::HasContext),
+            b"listToAttrs" => Some(Self::ListToAttrs),
             _ => None,
         }
     }
@@ -4678,6 +4838,165 @@ mod tests {
             }
         );
         assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn list_to_attrs_primop_builds_attrs_with_first_wins_duplicates() {
+        assert_eq!(
+            eval_list_string_bytes(
+                "builtins.attrNames (builtins.listToAttrs [ { name = \"b\"; value = 1; } { name = \"a\"; value = 2; } ])"
+            ),
+            vec![b"a".to_vec(), b"b".to_vec()]
+        );
+        assert_eq!(
+            eval("(builtins.listToAttrs [ { name = \"a\"; value = 1; } { name = \"a\"; value = 1 / 0; } ]).a")
+                .as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("(builtins.listToAttrs [ { name = \"a\"; value = 1; } { name = \"a\"; } ]).a")
+                .as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let builtins = { listToAttrs = list: { local = true; }; }; in (builtins.listToAttrs []).local")
+                .as_bool(),
+            Ok(true)
+        );
+
+        let ir = lower("builtins.listToAttrs [ { name = \"a\"; value = 1 / 0; } ]");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let mut evaluator = TreeWalk::new(&ir);
+        let value = evaluator
+            .eval_primop(ir.root, &root)
+            .expect("listToAttrs primop evaluates");
+        let attrs = evaluator
+            .heap
+            .get_attrs(value)
+            .expect("listToAttrs result is attrs");
+        let entry = attrs
+            .iter_lexicographic()
+            .next()
+            .expect("listToAttrs result has one attr");
+        assert_eq!(ir.symbols.resolve(entry.key), Some(b"a".as_slice()));
+        let value = entry.value;
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        let thunk = evaluator
+            .heap
+            .get_thunk(value)
+            .expect("attribute value remains a heap-owned thunk");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(
+            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            IrKind::BinOp
+        );
+    }
+
+    #[test]
+    fn list_to_attrs_primop_type_checks_list_elements_and_names() {
+        let ir = lower("builtins.listToAttrs 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("listToAttrs requires a list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "list",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower("builtins.listToAttrs [ 1 ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("listToAttrs requires element attrsets");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "attrs",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower("builtins.listToAttrs [ { name = 1; value = 2; } ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("listToAttrs requires string names");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn list_to_attrs_primop_reports_missing_name_value_pairs() {
+        let ir = lower("builtins.listToAttrs [ {} ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let mut evaluator = TreeWalk::new(&ir);
+
+        let error = evaluator
+            .eval_root()
+            .expect_err("listToAttrs requires a name attribute");
+
+        let TreeWalkErrorKind::MissingAttribute { id, symbol } = error.kind() else {
+            panic!("expected missing name attribute");
+        };
+        assert_eq!(id, argument);
+        assert_eq!(evaluator.symbols.resolve(symbol), Some(b"name".as_slice()));
+
+        let ir = lower("builtins.listToAttrs [ { name = \"a\"; } ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let mut evaluator = TreeWalk::new(&ir);
+
+        let error = evaluator
+            .eval_root()
+            .expect_err("listToAttrs requires a value attribute");
+
+        let TreeWalkErrorKind::MissingAttribute { id, symbol } = error.kind() else {
+            panic!("expected missing value attribute");
+        };
+        assert_eq!(id, argument);
+        assert_eq!(evaluator.symbols.resolve(symbol), Some(b"value".as_slice()));
     }
 
     #[test]
