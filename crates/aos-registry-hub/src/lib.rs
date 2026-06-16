@@ -97,7 +97,6 @@ pub mod indexer;
 pub mod mirror;
 pub mod probe;
 pub mod ratelimit;
-pub mod rpc;
 pub mod seed;
 pub mod server;
 pub mod signing;
