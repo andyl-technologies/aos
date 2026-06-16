@@ -342,9 +342,8 @@ pub mod value;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use rusqlite::Connection;
 
-use self::backend::{Backend, SqliteBackend, Statement};
+use self::backend::{Backend, SqlxBackend, Statement};
 use self::dialect::Dialect;
 use self::value::{Row, ToValue};
 
@@ -1979,9 +1978,13 @@ impl Database {
     ///
     /// Returns an error if the file cannot be opened or a migration fails.
     pub async fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path)
+        let path_str = path
+            .to_str()
+            .with_context(|| format!("hub database path is not valid UTF-8: {}", path.display()))?;
+        let backend = SqlxBackend::connect_sqlite(path_str)
+            .await
             .with_context(|| format!("opening hub database {}", path.display()))?;
-        Self::from_sqlite(conn).await
+        Self::with_backend(Box::new(backend)).await
     }
 
     /// Open an in-memory sqlite database (tests only).
@@ -1993,7 +1996,8 @@ impl Database {
     ///
     /// Returns an error if a migration fails.
     pub async fn open_in_memory() -> Result<Self> {
-        Self::from_sqlite(Connection::open_in_memory()?).await
+        let backend = SqlxBackend::connect_sqlite(":memory:").await?;
+        Self::with_backend(Box::new(backend)).await
     }
 
     /// Connect to a hub database by URL, dispatching on the scheme.
@@ -2001,10 +2005,10 @@ impl Database {
     /// The native self-hosting entry point (RFC-0004 "Database abstraction"):
     ///
     /// - `sqlite://<path>`, `file://<path>`, or a bare filesystem path → the
-    ///   always-available [`SqliteBackend`].
-    /// - `postgres://…` / `postgresql://…` → the [`PostgresBackend`], when the
-    ///   crate is built with the `postgres` feature (else an error).
-    /// - `mysql://…` → the [`MysqlBackend`], when built with the `mysql`
+    ///   always-available sqlite [`SqlxBackend`].
+    /// - `postgres://…` / `postgresql://…` → the postgres [`SqlxBackend`], when
+    ///   the crate is built with the `postgres` feature (else an error).
+    /// - `mysql://…` → the mysql [`SqlxBackend`], when built with the `mysql`
     ///   feature (else an error).
     ///
     /// In every case the schema is created and migrated to the current
@@ -2022,7 +2026,7 @@ impl Database {
             let _ = rest;
             #[cfg(feature = "postgres")]
             {
-                let backend = backend::PostgresBackend::connect(url)?;
+                let backend = SqlxBackend::connect_postgres(url).await?;
                 return Self::with_backend(Box::new(backend)).await;
             }
             #[cfg(not(feature = "postgres"))]
@@ -2034,7 +2038,7 @@ impl Database {
             let _ = rest;
             #[cfg(feature = "mysql")]
             {
-                let backend = backend::MysqlBackend::connect(url)?;
+                let backend = SqlxBackend::connect_mysql(url).await?;
                 return Self::with_backend(Box::new(backend)).await;
             }
             #[cfg(not(feature = "mysql"))]
@@ -2051,11 +2055,6 @@ impl Database {
             return Self::open_in_memory().await;
         }
         Self::open(Path::new(path)).await
-    }
-
-    async fn from_sqlite(conn: Connection) -> Result<Self> {
-        let backend = SqliteBackend::new(conn)?;
-        Self::with_backend(Box::new(backend)).await
     }
 
     async fn with_backend(backend: Box<dyn Backend>) -> Result<Self> {
@@ -2103,21 +2102,6 @@ impl Database {
             )
             .await?;
         Ok(())
-    }
-
-    /// Locks the underlying sqlite connection for tests that need raw
-    /// rusqlite access.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the backend is not a [`SqliteBackend`]. Only the in-module
-    /// migration tests use this, and they always open sqlite.
-    #[cfg(test)]
-    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.backend
-            .as_sqlite()
-            .expect("lock() is sqlite-only (test helper)")
-            .lock()
     }
 
     // -- system of record ---------------------------------------------------
@@ -6674,24 +6658,31 @@ impl Database {
         // MySQL has no `UPDATE … RETURNING`, so a transactional
         // select-claim-then-read preserves the same single-use guarantee.
         if self.dialect() == Dialect::Mysql {
-            let mut email: Option<String> = None;
-            self.backend
-                .with_tx(&mut |tx| {
-                    let n = tx.execute(
-                        "UPDATE magic_links SET consumed_at = ?2
+            // MySQL lacks `UPDATE … RETURNING`; the conditional UPDATE is still
+            // the single-use claim gate (a replay stamps zero rows), so the
+            // follow-up read only fires — and only returns an email — when this
+            // call won the claim.
+            let claimed = self
+                .backend
+                .execute(
+                    "UPDATE magic_links SET consumed_at = ?2
                      WHERE token_hash = ?1 AND consumed_at IS NULL AND expires_at > ?2",
-                        &vals![hash, now],
-                    )?;
-                    if n > 0 {
-                        let row = tx.query_opt(
-                            "SELECT email FROM magic_links WHERE token_hash = ?1",
-                            &vals![hash],
-                        )?;
-                        email = row.map(|r| r.get(0)).transpose()?;
-                    }
-                    Ok(())
-                })
-                .await?;
+                    &vals![hash, now],
+                )
+                .await
+                .context("consuming magic link by hash")?;
+            if claimed == 0 {
+                return Ok(None);
+            }
+            let email = self
+                .backend
+                .query_opt(
+                    "SELECT email FROM magic_links WHERE token_hash = ?1",
+                    &vals![hash],
+                )
+                .await?
+                .map(|r| r.get(0))
+                .transpose()?;
             return Ok(email);
         }
         let email: Option<String> = self
@@ -6832,36 +6823,41 @@ impl Database {
         // split lets two org admins racing the same domain both read "no
         // conflict" and both upsert, the last writer re-pointing `org_id` and
         // wiping the victim's `verified_at` (a cross-tenant domain login-DoS).
-        // sqlite/postgres/D1 do it in one guarded upsert (the `DO UPDATE …
-        // WHERE` only fires when the row is already ours); mysql lacks a WHERE
-        // on `ON DUPLICATE KEY UPDATE`, so it keeps the interactive transaction
-        // (mysql is never the D1 target).
+        // sqlite/postgres do it in one guarded upsert (the `DO UPDATE … WHERE`
+        // only fires when the row is already ours). MySQL has no WHERE on `ON
+        // DUPLICATE KEY UPDATE`, so it reads the current owner first and bails
+        // on a foreign claim, then upserts. NOTE: unlike the single-statement
+        // guarded upsert, this read-then-write carries a small residual race —
+        // two admins racing the *same* unclaimed domain could both read "no
+        // owner" and both upsert, the last writer winning. The guarded upsert on
+        // sqlite/postgres closes that window; mysql cannot express it, so this
+        // path accepts the narrow race (a freshly-claimed domain is still
+        // unverified until a DNS-TXT proof, which the loser would have to win
+        // independently).
         if self.dialect() == Dialect::Mysql {
+            let existing = self
+                .backend
+                .query_opt(
+                    "SELECT org_id FROM org_domains WHERE domain = ?1",
+                    &vals![domain],
+                )
+                .await?;
+            if let Some(row) = existing {
+                let owner_org: i64 = row.get(0)?;
+                if owner_org != org_id {
+                    anyhow::bail!("domain '{domain}' is already claimed by another organization");
+                }
+            }
             self.backend
-                .with_tx(&mut |tx| {
-                    let existing = tx.query_opt(
-                        "SELECT org_id FROM org_domains WHERE domain = ?1",
-                        &vals![domain],
-                    )?;
-                    if let Some(row) = existing {
-                        let owner_org: i64 = row.get(0)?;
-                        if owner_org != org_id {
-                            anyhow::bail!(
-                                "domain '{domain}' is already claimed by another organization"
-                            );
-                        }
-                    }
-                    tx.execute(
-                        "INSERT INTO org_domains (domain, org_id, txt_challenge, verified_at)
+                .execute(
+                    "INSERT INTO org_domains (domain, org_id, txt_challenge, verified_at)
                      VALUES (?1, ?2, ?3, NULL)
                      ON CONFLICT(domain) DO UPDATE SET
                          org_id = excluded.org_id,
                          txt_challenge = excluded.txt_challenge,
                          verified_at = NULL",
-                        &vals![domain, org_id, challenge],
-                    )?;
-                    Ok(())
-                })
+                    &vals![domain, org_id, challenge],
+                )
                 .await?;
         } else {
             // The `WHERE org_domains.org_id = excluded.org_id` guard makes the
@@ -7055,25 +7051,31 @@ impl Database {
         // MySQL lacks it, so select-then-delete inside a transaction keeps the
         // single-use, CSRF-defeating gate (the delete claims the state).
         let row: Option<OidcFlowRecord> = if self.dialect() == Dialect::Mysql {
-            let mut found = None;
-            self.backend
-                .with_tx(&mut |tx| {
-                    let selected = tx.query_opt(
-                        "SELECT state, org_id, nonce, code_verifier, redirect_after, expires_at
+            // MySQL lacks `DELETE … RETURNING`; read the row, then DELETE — the
+            // DELETE is the single-use claim gate. Only return the row if the
+            // DELETE affected a row, so a concurrent consumer that already
+            // claimed the state gets `None` here.
+            let selected = self
+                .backend
+                .query_opt(
+                    "SELECT state, org_id, nonce, code_verifier, redirect_after, expires_at
                      FROM oidc_flows WHERE state = ?1",
-                        &vals![state],
-                    )?;
-                    if let Some(r) = selected {
-                        let n =
-                            tx.execute("DELETE FROM oidc_flows WHERE state = ?1", &vals![state])?;
-                        if n > 0 {
-                            found = Some(row_to_oidc_flow(&r)?);
-                        }
-                    }
-                    Ok(())
-                })
+                    &vals![state],
+                )
                 .await?;
-            found
+            if let Some(r) = selected {
+                let claimed = self
+                    .backend
+                    .execute("DELETE FROM oidc_flows WHERE state = ?1", &vals![state])
+                    .await?;
+                if claimed > 0 {
+                    Some(row_to_oidc_flow(&r)?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         } else {
             self.backend
                 .query_opt(
@@ -7149,27 +7151,33 @@ impl Database {
     ) -> Result<Option<WebauthnChallengeRecord>> {
         let now = unix_now();
         let row: Option<WebauthnChallengeRecord> = if self.dialect() == Dialect::Mysql {
-            let mut found = None;
-            self.backend
-                .with_tx(&mut |tx| {
-                    let selected = tx.query_opt(
-                        "SELECT challenge, user_id, kind, expires_at
+            // mysql lacks DELETE ... RETURNING: read the row, then claim it via
+            // the delete's rows-affected (sequential statements — mysql is never
+            // the D1 target, which uses the single-statement RETURNING path).
+            let selected = self
+                .backend
+                .query_opt(
+                    "SELECT challenge, user_id, kind, expires_at
                      FROM webauthn_challenges WHERE challenge = ?1 AND kind = ?2",
-                        &vals![challenge, kind],
-                    )?;
-                    if let Some(r) = selected {
-                        let n = tx.execute(
-                            "DELETE FROM webauthn_challenges WHERE challenge = ?1 AND kind = ?2",
-                            &vals![challenge, kind],
-                        )?;
-                        if n > 0 {
-                            found = Some(row_to_webauthn_challenge(&r)?);
-                        }
-                    }
-                    Ok(())
-                })
+                    &vals![challenge, kind],
+                )
                 .await?;
-            found
+            if let Some(r) = selected {
+                let n = self
+                    .backend
+                    .execute(
+                        "DELETE FROM webauthn_challenges WHERE challenge = ?1 AND kind = ?2",
+                        &vals![challenge, kind],
+                    )
+                    .await?;
+                if n > 0 {
+                    Some(row_to_webauthn_challenge(&r)?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         } else {
             self.backend
                 .query_opt(
@@ -8415,10 +8423,11 @@ fn sanitize_log_text(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The in-module migration tests exercise raw `rusqlite` access through the
-    // sqlite-only `lock()` helper, so they bind parameters with rusqlite's own
-    // `params!` macro.
-    use rusqlite::params;
+    // The in-module migration tests stage an old-schema sqlite file with raw
+    // rusqlite, then reopen it through the sqlx [`Database`] to assert the
+    // upgrade path; post-migration assertions use the async [`Backend`] API on
+    // `db.backend`.
+    use rusqlite::Connection;
 
     #[tokio::test]
     async fn migrate_register_and_reopen() {
@@ -8753,7 +8762,6 @@ mod tests {
 
         // Reopening migrates to v3.
         let db = Database::open(&path).await.unwrap();
-        let conn = db.lock();
         // New tenancy tables exist (querying a missing table would error).
         for table in [
             "orgs",
@@ -8764,19 +8772,29 @@ mod tests {
             "memberships",
             "invitations",
         ] {
-            let count: i64 = conn
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            let count: i64 = db
+                .backend
+                .query_opt(&format!("SELECT COUNT(*) FROM {table}"), &[])
+                .await
+                .unwrap()
+                .unwrap()
+                .get(0)
                 .unwrap();
             assert_eq!(count, 0, "{table} should start empty");
         }
         // The phase-1 registry became an unowned public registry.
-        let (org_id, project_path, visibility): (Option<i64>, String, String) = conn
-            .query_row(
+        let row = db
+            .backend
+            .query_opt(
                 "SELECT org_id, project_path, visibility FROM registries WHERE slug = 'legacy'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                &[],
             )
+            .await
+            .unwrap()
             .unwrap();
+        let org_id: Option<i64> = row.get(0).unwrap();
+        let project_path: String = row.get(1).unwrap();
+        let visibility: String = row.get(2).unwrap();
         assert_eq!(org_id, None);
         assert_eq!(project_path, "");
         assert_eq!(visibility, "public");
@@ -8802,14 +8820,16 @@ mod tests {
         // Reopening migrates to v7; the configuration-history tables exist
         // and start empty.
         let db = Database::open(&path).await.unwrap();
-        {
-            let conn = db.lock();
-            for table in ["audit_log", "config_changesets", "config_revisions"] {
-                let count: i64 = conn
-                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
-                    .unwrap();
-                assert_eq!(count, 0, "{table} should start empty");
-            }
+        for table in ["audit_log", "config_changesets", "config_revisions"] {
+            let count: i64 = db
+                .backend
+                .query_opt(&format!("SELECT COUNT(*) FROM {table}"), &[])
+                .await
+                .unwrap()
+                .unwrap()
+                .get(0)
+                .unwrap();
+            assert_eq!(count, 0, "{table} should start empty");
         }
         // The new surface works end to end through the public methods.
         db.create_changeset("cs1", "system", None, "system", "acme", Some("test"))
@@ -9169,14 +9189,18 @@ mod tests {
         db.set_registry_ownership(reg, Some(org), "infra/prod", "private")
             .await
             .unwrap();
-        let conn = db.lock();
-        let (got_org, path, vis): (Option<i64>, String, String) = conn
-            .query_row(
+        let row = db
+            .backend
+            .query_opt(
                 "SELECT org_id, project_path, visibility FROM registries WHERE id = ?1",
-                [reg],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                &vals![reg],
             )
+            .await
+            .unwrap()
             .unwrap();
+        let got_org: Option<i64> = row.get(0).unwrap();
+        let path: String = row.get(1).unwrap();
+        let vis: String = row.get(2).unwrap();
         assert_eq!(got_org, Some(org));
         assert_eq!(path, "infra/prod");
         assert_eq!(vis, "private");
@@ -9242,10 +9266,14 @@ mod tests {
         }
         // Reopening migrates to v4: the auth tables exist and are empty.
         let db = Database::open(&path).await.unwrap();
-        let conn = db.lock();
         for table in ["tokens", "sessions", "device_codes", "magic_links"] {
-            let count: i64 = conn
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            let count: i64 = db
+                .backend
+                .query_opt(&format!("SELECT COUNT(*) FROM {table}"), &[])
+                .await
+                .unwrap()
+                .unwrap()
+                .get(0)
                 .unwrap();
             assert_eq!(count, 0, "{table} should start empty");
         }
@@ -9279,12 +9307,12 @@ mod tests {
 
         // last_used_at is bumped on validation.
         let used: Option<i64> = db
-            .lock()
-            .query_row(
-                "SELECT last_used_at FROM tokens WHERE id = ?1",
-                [&id],
-                |r| r.get(0),
-            )
+            .backend
+            .query_opt("SELECT last_used_at FROM tokens WHERE id = ?1", &vals![id])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
             .unwrap();
         assert!(used.is_some());
 
@@ -9344,11 +9372,12 @@ mod tests {
 
         // Force the old token's rotated_at to be older than the grace
         // window: now it is invalid.
-        db.lock()
+        db.backend
             .execute(
                 "UPDATE tokens SET rotated_at = ?2 WHERE id = ?1",
-                params![old_id, unix_now() - ROTATION_GRACE_SECS - 1],
+                &vals![old_id, unix_now() - ROTATION_GRACE_SECS - 1],
             )
+            .await
             .unwrap();
         assert!(db.validate_token(&old_secret).await.unwrap().is_none());
 
@@ -9593,11 +9622,12 @@ mod tests {
             .await
             .unwrap();
         // Force the grant to be expired.
-        db.lock()
+        db.backend
             .execute(
                 "UPDATE device_codes SET expires_at = ?1 WHERE user_code = ?2",
-                params![unix_now() - 1, user_code],
+                &vals![unix_now() - 1, user_code],
             )
+            .await
             .unwrap();
         assert!(!db
             .approve_device(&user_code, crate::domain::Principal::user(1), &[])
@@ -9807,11 +9837,12 @@ mod tests {
 
         // An expired link cannot be consumed.
         let expired = db.create_magic_link("late@acme.com").await.unwrap();
-        db.lock()
+        db.backend
             .execute(
                 "UPDATE magic_links SET expires_at = ?1 WHERE email = 'late@acme.com'",
-                params![unix_now() - 1],
+                &vals![unix_now() - 1],
             )
+            .await
             .unwrap();
         assert!(db.consume_magic_link(&expired).await.unwrap().is_none());
     }
@@ -10024,21 +10055,28 @@ mod tests {
         // Reopening migrates to v5: the storage table exists and the
         // phase-1 registry's new columns default to unbound.
         let db = Database::open(&path).await.unwrap();
-        let conn = db.lock();
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM storage_bindings", [], |r| r.get(0))
+        let count: i64 = db
+            .backend
+            .query_opt("SELECT COUNT(*) FROM storage_bindings", &[])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
             .unwrap();
         assert_eq!(count, 0, "storage_bindings should start empty");
-        let (binding, prefix): (Option<i64>, String) = conn
-            .query_row(
+        let row = db
+            .backend
+            .query_opt(
                 "SELECT storage_binding_id, prefix FROM registries WHERE slug = 'legacy'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                &[],
             )
+            .await
+            .unwrap()
             .unwrap();
+        let binding: Option<i64> = row.get(0).unwrap();
+        let prefix: String = row.get(1).unwrap();
         assert_eq!(binding, None);
         assert_eq!(prefix, "");
-        drop(conn);
 
         // The legacy registry's surface is still its source_url path.
         let legacy = db.registry_by_slug("legacy").await.unwrap().unwrap();
