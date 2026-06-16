@@ -12,17 +12,65 @@
   # nuke-references itself (to break the self-referential cycle).
   rawMkDerivation = stdenv.mkDerivation;
 
+  exposeRenderer = import ./build-support/_expose-renderer.nix {
+    inherit lib;
+    pkgs = self;
+  };
+
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
   # the scrubPhase from lib/derivations.nix can rewrite build-toolchain
   # store paths out of the output (matches nixpkgs nuke-refs idiom).
-  mkDerivation = args:
-    rawMkDerivation (
+  mkDerivation = args: let
+    packageName =
+      args.pname
+      or args.name
+      or (throw "mkDerivation: package must set pname or name");
+    renderedExpose =
+      if args ? expose
+      then exposeRenderer.render {
+        inherit packageName;
+        expose = args.expose;
+      }
+      else null;
+    exposeAttrs =
+      if args ? expose
+      then {expose = renderedExpose;}
+      else {};
+    lowerArgs =
       args
       // {
         buildDeps = (args.buildDeps or []) ++ [self.nuke-references];
+        passthru = (args.passthru or {}) // exposeAttrs;
       }
-    );
+      // exposeAttrs;
+    drv = rawMkDerivation lowerArgs;
+    exposeCheck =
+      if args ? expose
+      then
+        self.runCommand "expose-payload-closure-check-${packageName}" {
+          payload = drv;
+          exposePath = renderedExpose;
+          disallowedRequisites = [renderedExpose];
+          preferLocalBuild = true;
+          allowSubstitutes = false;
+        } ''
+          set -eu
+          ln -s "$payload" "$out"
+        ''
+      else null;
+    result =
+      drv
+      // (
+        if args ? expose
+        then {
+          inherit exposeCheck;
+          passthru = drv.passthru // {inherit exposeCheck;};
+        }
+        else {}
+      );
+  in
+    addBuilderOverrides mkDerivation args result;
 
   # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.
   bootstrapTools = stdenv.cc;

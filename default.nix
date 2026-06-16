@@ -150,6 +150,9 @@
       else acc
   ) {} (builtins.attrNames pkgs);
 
+  packagesWithExpose =
+    lib.filterAttrs (_: p: builtins.isAttrs p && p ? expose) pkgs;
+
   # Stdenv cross-cutting integration check
   stdenvChecks = {
     cross-cutting-c-pipeline = testing.mkVMTest {
@@ -225,7 +228,7 @@
       fleetFiles
     );
 in {
-  inherit lib pkgs stdenv modules mkSystem;
+  inherit lib pkgs stdenv modules mkSystem packagesWithExpose;
 
   # Auto-discovered golden image systems.
   # Each system has .config, .options, .build, and .checks.
@@ -235,7 +238,7 @@ in {
   # stays at the top level.
   checks = {
     eval = import ./lib/testing/eval.nix {
-      inherit pkgs lib mkSystem;
+      inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;
     };
     build = let
@@ -271,6 +274,9 @@ in {
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
+    package-expose = import ./lib/testing/package-expose.nix {
+      inherit pkgs lib packagesWithExpose;
+    };
     # Module-level VM checks (from server system, for backwards compat)
     vm =
       serverSystem.config.system.build.checks

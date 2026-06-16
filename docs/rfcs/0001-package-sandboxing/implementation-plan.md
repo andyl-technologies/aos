@@ -88,7 +88,7 @@ reframes how the phases below are read:
 | Phase | Goal | Gate (begins when) | Closes | Status |
 |-------|------|--------------------|--------|--------|
 | **P0** | Schema & policy foundation: registry metadata, policy file, `requires`, the fail-closed capability gate, the permission surface | — (do first) | D2, D12, D18, D19; D1(a) | ☑ |
-| **P1** | `expose` authoring + build-time renderer (eval-free artifacts via `passthru`) | P0 schema pinned | authoring.md mechanics | ☐ |
+| **P1** | `expose` authoring + build-time renderer (eval-free artifacts via `passthru`) | P0 schema pinned | authoring.md mechanics | ☑ |
 | **P2** | Target sandbox + gated side-effect services + nftables reload coherence + eval assertion | P1 | D15; activation.md | ☐ |
 | **P3** | Per-unit sandboxing materialization + confinement label + **the Decision 17 validation spike** (the gate) | P1, P2 | D2, D4, D10, D17; D1(b) | ☐ |
 | **P4** | Preset enablement (image `disable *`; Ignition per-host preset; every-boot `aos-preset.service`) | P2 | D8 (enable half) | ☐ |
@@ -181,23 +181,23 @@ no central module tree. (migration.md increment 1.)
 
 **Deliverables.**
 
-- [ ] **Route `expose` through `mkDerivation`.** Add `expose` to the
+- [x] **Route `expose` through `mkDerivation`.** Add `expose` to the
       `removeAttrs` filter list in `lib/derivations.nix` (~`:478–656`) — unknown
       attrs flow into `builtins.derivation` where a nested attrset fails — and
       hand it to the renderer instead. One filter-list entry, not N top-level args.
-- [ ] **Build-time renderer as a cheap sibling derivation.** Render
+- [x] **Build-time renderer as a cheap sibling derivation.** Render
       `expose.units` to unit text + a manifest copy via a trivial builder
       (`pkgs/build-support/trivial-builders.nix`), surfaced as `pkg.expose` via
       `passthru`. Editing a unit re-renders text and never rebuilds the payload;
       the payload closure never references its own integration.
-- [ ] **Reuse the pure renderers.** Call `serviceToUnit`/`targetToUnit`/… from
+- [x] **Reuse the pure renderers.** Call `serviceToUnit`/`targetToUnit`/… from
       `lib/modules/systemd/lib.nix` + `render-role.nix` (verified pure, callable
       outside `evalModules`); typed validation by evaluating `unit-options.nix`
       types over the attrset at render time.
-- [ ] **Enumeration helpers.** `lib.filterAttrs (_: p: p ? expose) pkgs` for
+- [x] **Enumeration helpers.** `lib.filterAttrs (_: p: p ? expose) pkgs` for
       fleet-spec and eval checks — the second instance of the existing optional-
       attr pattern (`checks`, `default.nix:137–151`).
-- [ ] **Validation placement.** Validate `expose.permissions` at **package build**
+- [x] **Validation placement.** Validate `expose.permissions` at **package build**
       (authoring feedback) **and** at `apr publish` (the gate). (See
       [Needs-verification register](#needs-verification-register).)
 
