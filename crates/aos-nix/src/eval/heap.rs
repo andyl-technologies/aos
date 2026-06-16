@@ -7,6 +7,7 @@
 //! and [`EvalThunk`] values.
 
 use std::ptr::NonNull;
+use std::rc::Rc;
 
 use thiserror::Error;
 
@@ -191,7 +192,7 @@ impl EvalHeap {
         let value = Value::thunk(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
-            object: HeapObjectValue::Thunk(thunk),
+            object: HeapObjectValue::Thunk(Rc::new(thunk)),
         });
         Ok(value)
     }
@@ -315,7 +316,22 @@ impl EvalHeap {
     pub fn get_thunk_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&EvalThunk, EvalHeapError> {
         let record = self.record_or_unknown(ValueTag::Thunk, ptr)?;
         match &record.object {
-            HeapObjectValue::Thunk(thunk) => Ok(thunk),
+            HeapObjectValue::Thunk(thunk) => Ok(thunk.as_ref()),
+            object => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Thunk,
+                object.tag(),
+                ptr,
+            )),
+        }
+    }
+
+    /// Clones the thunk handle so forcing can release the heap borrow before
+    /// re-entering evaluation.
+    pub(crate) fn clone_thunk(&self, value: Value) -> Result<Rc<EvalThunk>, EvalHeapError> {
+        let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
+        let record = self.record_or_unknown(ValueTag::Thunk, ptr)?;
+        match &record.object {
+            HeapObjectValue::Thunk(thunk) => Ok(Rc::clone(thunk)),
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::Thunk,
                 object.tag(),
@@ -363,7 +379,7 @@ enum HeapObjectValue {
     String(NixString),
     List(NixList),
     Attrs(FlatAttrs),
-    Thunk(EvalThunk),
+    Thunk(Rc<EvalThunk>),
 }
 
 impl HeapObjectValue {

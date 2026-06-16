@@ -3,7 +3,7 @@
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
 //! first slices evaluate scalar and list literals, boolean control flow,
 //! assertions, boolean operators, string literals and concatenation, list-spine
-//! concatenation, non-recursive static attribute-set literals, numeric
+//! concatenation, non-recursive static attribute-set literals, thunk forcing, numeric
 //! arithmetic, numeric and string comparisons, and scalar/string equality to
 //! weak head normal form, establishing the arena access and diagnostic surface
 //! used by later slices for environments, thunks, functions, dynamic/recursive
@@ -12,6 +12,7 @@
 use thiserror::Error;
 
 use super::heap::{EvalHeap, EvalHeapError, EvalThunk};
+use super::thunk::{ForceClaim, ForceError};
 use crate::attrs::{AttrEntry, AttrError, FlatAttrs};
 use crate::compile::{
     Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId, IrKind,
@@ -124,8 +125,8 @@ impl<'ir> TreeWalk<'ir> {
     /// This initial public node entry point is intentionally limited to
     /// environment-free scalar literal, list literal, static attrset literal,
     /// string literal, control-flow, boolean operator, string/list concatenation,
-    /// numeric arithmetic, numeric and string comparison, and scalar/string equality nodes.
-    /// Environment-dependent nodes return
+    /// numeric arithmetic, numeric and string comparison, scalar/string equality,
+    /// and conservative thunk allocation nodes. Environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add an explicit
     /// runtime and environment context.
     ///
@@ -133,10 +134,11 @@ impl<'ir> TreeWalk<'ir> {
     ///
     /// Returns [`TreeWalkError`] if `id` does not address a node in this IR, if
     /// the node payload does not match its kind, if a scalar type check fails,
-    /// or if the node kind is not yet implemented by this evaluator slice.
+    /// if thunk forcing fails, or if the node kind is not yet implemented by
+    /// this evaluator slice.
     pub fn eval_node(&mut self, id: IrId) -> Result<Value, TreeWalkError> {
         let node = *self.node(id)?;
-        match node.kind {
+        let value = match node.kind {
             IrKind::Int => {
                 let IrData::Int(value) = node.data else {
                     return Err(self.invalid_payload(id, &node, "integer payload"));
@@ -169,11 +171,13 @@ impl<'ir> TreeWalk<'ir> {
             IrKind::UnaryOp => self.eval_unary(id, &node),
             IrKind::BinOp => self.eval_binary(id, &node),
             IrKind::HasAttr => self.eval_has_attr(id, &node),
+            IrKind::ThunkAlloc => self.eval_thunk_alloc(id, &node),
             kind => Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedNode { id, kind },
                 node.span,
             )),
-        }
+        }?;
+        self.force_value(id, node.span, value)
     }
 
     fn node(&self, id: IrId) -> Result<&IrNode, TreeWalkError> {
@@ -447,6 +451,30 @@ impl<'ir> TreeWalk<'ir> {
         self.heap
             .alloc_thunk(EvalThunk::new(body))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    fn force_value(&mut self, id: IrId, span: Span, value: Value) -> Result<Value, TreeWalkError> {
+        if !value.is_thunk() {
+            return Ok(value);
+        }
+        let thunk = self
+            .heap
+            .clone_thunk(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let body = thunk.body();
+        match thunk
+            .cell()
+            .begin_force()
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?
+        {
+            ForceClaim::AlreadyForced(value) => Ok(value),
+            ForceClaim::Claimed(guard) => {
+                let value = self.eval_node(body)?;
+                guard.finish(value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
+                })
+            }
+        }
     }
 
     fn eval_attrset(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -1228,6 +1256,14 @@ pub enum TreeWalkErrorKind {
         /// The underlying heap failure.
         source: EvalHeapError,
     },
+    /// Thunk forcing failed.
+    #[error("thunk force failed at node {id:?}: {source}")]
+    Force {
+        /// The node id associated with the force operation.
+        id: IrId,
+        /// The underlying force failure.
+        source: ForceError,
+    },
     /// A Nix string operation failed.
     #[error("string operation failed at node {id:?}: {source}")]
     String {
@@ -1664,6 +1700,120 @@ mod tests {
         assert_eq!(
             ir.arena.node(thunk.body()).expect("thunk body exists").kind,
             IrKind::BinOp
+        );
+    }
+
+    #[test]
+    fn forcing_attr_value_thunks_memoizes_whnf_results() {
+        let ir = lower("{ a = 1 + 2; }");
+        let a = symbol_for(&ir, b"a");
+        let mut evaluator = TreeWalk::new(&ir);
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+
+        assert_eq!(thunk_value.tag(), ValueTag::Thunk);
+        assert_eq!(
+            evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("thunk exists")
+                .cell()
+                .state(),
+            Ok(ThunkState::Suspended)
+        );
+
+        let forced = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("thunk force succeeds");
+        assert_eq!(forced.as_int(), Ok(3));
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("thunk remains heap-owned");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Forced));
+        let cached = thunk
+            .cell()
+            .cached_value()
+            .expect("forced thunk has cached value")
+            .expect("cached value exists");
+        assert!(cached.raw_eq(Value::int(3)));
+
+        let forced_again = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("forced thunk reuses cache");
+        assert_eq!(forced_again.as_int(), Ok(3));
+    }
+
+    #[test]
+    fn strict_operand_evaluation_forces_direct_thunk_alloc_results() {
+        let body = IrId::new(0);
+        let lhs = IrId::new(1);
+        let rhs = IrId::new(2);
+        let root = IrId::new(3);
+        let ir = manual_ir(
+            root,
+            vec![
+                pure_node(IrKind::Int, Span::new(0, 1), IrData::Int(1)),
+                pure_node(IrKind::ThunkAlloc, Span::new(0, 1), IrData::Node(body)),
+                pure_node(IrKind::Int, Span::new(4, 5), IrData::Int(2)),
+                pure_node(
+                    IrKind::BinOp,
+                    Span::new(0, 5),
+                    IrData::Binary {
+                        op: BinOpKind::Add,
+                        lhs,
+                        rhs,
+                    },
+                ),
+            ],
+        );
+
+        assert_eq!(
+            eval_whnf(&ir)
+                .expect("strict operand thunk is forced")
+                .as_int(),
+            Ok(3)
+        );
+    }
+
+    #[test]
+    fn forcing_errors_reset_thunks_to_suspended() {
+        let ir = lower("{ a = 1 / 0; }");
+        let a = symbol_for(&ir, b"a");
+        let mut evaluator = TreeWalk::new(&ir);
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let error = evaluator
+            .force_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect_err("division by zero remains a force error");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("thunk remains heap-owned");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert!(
+            thunk
+                .cell()
+                .cached_value()
+                .expect("suspended thunk has no invalid state")
+                .is_none()
         );
     }
 
