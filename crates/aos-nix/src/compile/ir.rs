@@ -901,7 +901,7 @@ impl IrLowerer {
                 b"isAttrs" | b"isList" | b"isFunction" | b"isString" | b"isInt" | b"isFloat"
                 | b"isBool" | b"isNull" | b"isPath" | b"typeOf" | b"length" | b"attrNames"
                 | b"attrValues" | b"tail" | b"functionArgs" | b"head" | b"ceil" | b"floor"
-                | b"hasContext" | b"listToAttrs",
+                | b"hasContext" | b"listToAttrs" | b"concatLists",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1758,6 +1758,7 @@ mod tests {
                 "builtins.listToAttrs [ { name = \"a\"; value = 1; } ]",
                 b"listToAttrs".as_slice(),
             ),
+            ("builtins.concatLists [ [ 1 ] ]", b"concatLists".as_slice()),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -2024,6 +2025,26 @@ mod tests {
             panic!("apply payload expected");
         };
         assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered(
+            "let builtins = { concatLists = lists: [ false ]; }; in builtins.concatLists [[true]]",
+        );
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered("concatLists []");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
 
         let ir = lowered("let builtins = { length = x: 42; }; in builtins.length [ 1 ]");
         let IrData::Let { body, .. } = root_node(&ir).data else {

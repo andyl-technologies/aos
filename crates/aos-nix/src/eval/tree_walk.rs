@@ -1502,6 +1502,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_list_to_attrs_primop(id, node.span, argument, argument_span, value)
             }
+            StrictUnaryPrimOp::ConcatLists => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_concat_lists_primop(id, node.span, argument, argument_span, value)
+            }
         }
     }
 
@@ -1700,6 +1704,90 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
         self.heap
             .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_concat_lists_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "list",
+                    actual: value.tag(),
+                },
+                argument_span,
+            ));
+        }
+        let lists = {
+            let list = self.heap.get_list(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            Self::clone_list_elements(argument, argument_span, list)?
+        };
+
+        let mut elements = Vec::new();
+        for list_value in lists {
+            let list_value = self.force_value(argument, argument_span, list_value)?;
+            if list_value.tag() != ValueTag::List {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: argument,
+                        expected: "list",
+                        actual: list_value.tag(),
+                    },
+                    argument_span,
+                ));
+            }
+            let inner = {
+                let list = self.heap.get_list(list_value).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: argument,
+                            source,
+                        },
+                        argument_span,
+                    )
+                })?;
+                Self::clone_list_elements(argument, argument_span, list)?
+            };
+            let len = elements.len().checked_add(inner.len()).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::List {
+                        id,
+                        source: NixListError::LengthOverflow {
+                            left: elements.len(),
+                            right: inner.len(),
+                        },
+                    },
+                    span,
+                )
+            })?;
+            elements.try_reserve_exact(inner.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::List {
+                        id,
+                        source: NixListError::AllocationFailed { len },
+                    },
+                    span,
+                )
+            })?;
+            elements.extend(inner);
+        }
+        self.heap
+            .alloc_list(NixList::new(elements))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
@@ -3886,6 +3974,7 @@ enum StrictUnaryPrimOp {
     Floor,
     HasContext,
     ListToAttrs,
+    ConcatLists,
 }
 
 impl StrictUnaryPrimOp {
@@ -3911,6 +4000,7 @@ impl StrictUnaryPrimOp {
             b"floor" => Some(Self::Floor),
             b"hasContext" => Some(Self::HasContext),
             b"listToAttrs" => Some(Self::ListToAttrs),
+            b"concatLists" => Some(Self::ConcatLists),
             _ => None,
         }
     }
@@ -4583,6 +4673,17 @@ mod tests {
             .collect()
     }
 
+    fn eval_list_ints(source: &str) -> Vec<i64> {
+        let outcome = eval_whnf_owned(&lower(source)).expect("source evaluates");
+        let list = outcome
+            .heap()
+            .get_list(outcome.value())
+            .expect("result is a heap-owned list");
+        list.iter()
+            .map(|value| value.as_int().expect("element is an int"))
+            .collect()
+    }
+
     fn symbol_for(ir: &Ir, name: &[u8]) -> Symbol {
         let index = ir
             .symbols
@@ -5226,6 +5327,103 @@ mod tests {
         };
         assert_eq!(id, argument);
         assert_eq!(evaluator.symbols.resolve(symbol), Some(b"value".as_slice()));
+    }
+
+    #[test]
+    fn concat_lists_primop_flattens_spines_without_forcing_elements() {
+        assert_eq!(
+            eval_list_ints("builtins.concatLists [ [ 1 ] [] [ 2 3 ] ]"),
+            vec![1, 2, 3]
+        );
+        assert_eq!(eval_list_ints("builtins.concatLists []"), Vec::<i64>::new());
+
+        let ir = lower("builtins.concatLists [ [ true (1 / 0) ] [] ]");
+        let outcome = eval_whnf_owned(&ir).expect("concatLists evaluates");
+        let heap = outcome.heap();
+        let list = heap
+            .get_list(outcome.value())
+            .expect("concatLists result is a list");
+
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.get(0).expect("first").as_bool(), Ok(true));
+        let lazy_division = list.get(1).expect("second");
+        assert_eq!(lazy_division.tag(), ValueTag::Thunk);
+        let thunk = heap
+            .get_thunk(lazy_division)
+            .expect("inner list element remains lazy");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(
+            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            IrKind::BinOp
+        );
+    }
+
+    #[test]
+    fn concat_lists_primop_type_checks_outer_and_inner_lists() {
+        let ir = lower("builtins.concatLists 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("concatLists requires an outer list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "list",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower("builtins.concatLists [ [ 1 ] 2 [ 3 ] ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("concatLists requires inner lists");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "list",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower("builtins.concatLists (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+
+        let error = eval_whnf_owned(&ir).expect_err("outer list is forced first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: argument }
+        );
+
+        let ir = lower("builtins.concatLists [ [ 1 ] (1 / 0) ]");
+        let error = eval_whnf_owned(&ir).expect_err("inner lists are forced in order");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
     }
 
     #[test]
