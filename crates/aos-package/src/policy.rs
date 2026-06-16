@@ -1,0 +1,382 @@
+//! Host policy parsing for RFC-0001 package permission admission.
+//!
+//! The policy file lives at `/etc/aos/policy.toml` on AOS hosts. It names a
+//! coarse policy tier, then optionally adds explicit allowlists for individual
+//! permissions. A minimal file is:
+//!
+//! ```toml
+//! tier = "baseline"
+//!
+//! [allow]
+//! networks = ["private"]
+//! syscall-profiles = ["system-service"]
+//!
+//! kernel-modules = ["br_netfilter"]
+//! ```
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+
+use crate::types::{
+    HostPathPermission, NetworkPermission, PackageMeta, PermissionsMeta, PolicyTier,
+    SyscallProfile, validate_absolute_path, validate_capability_name, validate_kernel_module_name,
+    validate_permissions_meta, validate_security_label,
+};
+
+/// Default host policy path on an AOS system.
+pub const DEFAULT_POLICY_PATH: &str = "/etc/aos/policy.toml";
+
+/// Admit all permission-bearing package metadata entries against host policy.
+///
+/// Empty manifests need no policy grants and do not require the policy file to
+/// exist, preserving ordinary package installs on non-AOS development hosts.
+///
+/// # Errors
+///
+/// Returns an error when any permission-bearing package exceeds the host
+/// policy or when the policy file cannot be read.
+pub fn admit_package_roots<'a>(metas: impl IntoIterator<Item = &'a PackageMeta>) -> Result<()> {
+    let permission_roots: Vec<&PackageMeta> = metas
+        .into_iter()
+        .filter(|meta| !meta.permissions.is_empty())
+        .collect();
+    if permission_roots.is_empty() {
+        return Ok(());
+    }
+
+    let policy = HostPolicy::load_from_root(&policy_root())
+        .context("loading /etc/aos/policy.toml for permission-bearing package admission")?;
+    for meta in permission_roots {
+        policy
+            .admit(&meta.permissions)
+            .with_context(|| format!("admitting permissions for package '{}'", meta.name))?;
+    }
+    Ok(())
+}
+
+fn policy_root() -> PathBuf {
+    std::env::var("AOS_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/"))
+}
+
+/// Parsed host policy used to admit package permission manifests.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostPolicy {
+    /// Named coarse policy tier.
+    #[serde(default)]
+    pub tier: PolicyTier,
+    /// Optional per-permission allowlist extensions.
+    #[serde(default)]
+    pub allow: PolicyAllow,
+    /// Host-fulfilled kernel modules allowed on this host.
+    #[serde(default, rename = "kernel-modules")]
+    pub kernel_modules: Vec<String>,
+    /// Maximum allowed `systemd-analyze security` exposure score for this tier.
+    #[serde(default, rename = "systemd-security-threshold")]
+    pub systemd_security_threshold: Option<f64>,
+}
+
+impl HostPolicy {
+    /// Parse a host policy from TOML text.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the TOML is invalid or the policy references
+    /// malformed path/module/capability entries.
+    pub fn parse_str(content: &str) -> Result<Self> {
+        let policy: Self = toml::from_str(content).context("invalid AOS policy TOML")?;
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    /// Load the host policy from `root` plus [`DEFAULT_POLICY_PATH`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the policy file cannot be read or parsed.
+    pub fn load_from_root(root: &Path) -> Result<Self> {
+        let relative = DEFAULT_POLICY_PATH.trim_start_matches('/');
+        let path = root.join(relative);
+        Self::load_from_path(&path)
+    }
+
+    /// Load the host policy from an explicit path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the policy file cannot be read or parsed.
+    pub fn load_from_path(path: &Path) -> Result<Self> {
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Self::parse_str(&content).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    /// Return `Ok(())` when this policy admits the requested permissions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first requested permission that exceeds
+    /// this host policy.
+    pub fn admit(&self, permissions: &PermissionsMeta) -> Result<()> {
+        validate_permissions_meta("package", permissions)?;
+
+        let network = permissions.network.unwrap_or(NetworkPermission::Private);
+        if !self.allows_network(network) {
+            bail!("network mode '{network:?}' is not allowed by host policy");
+        }
+
+        for capability in &permissions.capabilities {
+            if !self.allows_capability(capability) {
+                bail!("capability '{capability}' is not allowed by host policy");
+            }
+        }
+
+        for device in &permissions.devices {
+            if !self.allows_device(device) {
+                bail!("device '{device}' is not allowed by host policy");
+            }
+        }
+
+        for host_path in &permissions.host_paths {
+            if !self.allows_host_path(host_path) {
+                bail!(
+                    "host path '{} ({:?})' is not allowed by host policy",
+                    host_path.path,
+                    host_path.mode
+                );
+            }
+        }
+
+        if permissions.cgroup_delegate && !self.allows_cgroup_delegate() {
+            bail!("cgroup delegation is not allowed by host policy");
+        }
+
+        if permissions.privileged_users && !self.allows_privileged_users() {
+            bail!("privileged users are not allowed by host policy");
+        }
+
+        for module in &permissions.kernel_modules {
+            if !self.kernel_modules.iter().any(|allowed| allowed == module) {
+                bail!("kernel module '{module}' is not allowed by host policy");
+            }
+        }
+
+        if let Some(profile) = permissions.syscalls {
+            if !self.allows_syscall_profile(profile) {
+                bail!("syscall profile '{profile:?}' is not allowed by host policy");
+            }
+        }
+
+        if let Some(label) = &permissions.security_label {
+            if !self.allows_security_label(label) {
+                bail!("security label '{label}' is not allowed by host policy");
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<()> {
+        for module in &self.kernel_modules {
+            validate_kernel_module_name(module)?;
+        }
+        for capability in &self.allow.capabilities {
+            validate_capability_name(capability)?;
+        }
+        for device in &self.allow.devices {
+            validate_absolute_path(device, "device")?;
+        }
+        for host_path in &self.allow.host_paths {
+            validate_absolute_path(&host_path.path, "host path")?;
+        }
+        for label in &self.allow.security_labels {
+            validate_security_label(label)?;
+        }
+        Ok(())
+    }
+
+    fn allows_network(&self, network: NetworkPermission) -> bool {
+        self.allow.networks.contains(&network)
+            || match self.tier {
+                PolicyTier::Restricted | PolicyTier::Baseline => {
+                    network == NetworkPermission::Private
+                }
+                PolicyTier::Privileged => true,
+            }
+    }
+
+    fn allows_capability(&self, capability: &str) -> bool {
+        self.tier == PolicyTier::Privileged
+            || self
+                .allow
+                .capabilities
+                .iter()
+                .any(|allowed| allowed == capability)
+    }
+
+    fn allows_device(&self, device: &str) -> bool {
+        self.tier == PolicyTier::Privileged
+            || self.allow.devices.iter().any(|allowed| allowed == device)
+    }
+
+    fn allows_host_path(&self, host_path: &HostPathPermission) -> bool {
+        if self.tier == PolicyTier::Privileged {
+            return true;
+        }
+
+        self.allow
+            .host_paths
+            .iter()
+            .any(|allowed| allowed.path == host_path.path && allowed.mode == host_path.mode)
+    }
+
+    fn allows_cgroup_delegate(&self) -> bool {
+        self.tier == PolicyTier::Privileged || self.allow.cgroup_delegate
+    }
+
+    fn allows_privileged_users(&self) -> bool {
+        self.tier == PolicyTier::Privileged || self.allow.privileged_users
+    }
+
+    fn allows_syscall_profile(&self, profile: SyscallProfile) -> bool {
+        self.allow.syscall_profiles.contains(&profile)
+            || match self.tier {
+                PolicyTier::Restricted => profile == SyscallProfile::Restricted,
+                PolicyTier::Baseline => {
+                    matches!(
+                        profile,
+                        SyscallProfile::Restricted | SyscallProfile::SystemService
+                    )
+                }
+                PolicyTier::Privileged => true,
+            }
+    }
+
+    fn allows_security_label(&self, label: &str) -> bool {
+        self.tier == PolicyTier::Privileged
+            || self
+                .allow
+                .security_labels
+                .iter()
+                .any(|allowed| allowed == label)
+    }
+}
+
+/// Per-permission host policy overrides.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyAllow {
+    /// Additional capabilities allowed by this host.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// Additional network modes allowed by this host.
+    #[serde(default)]
+    pub networks: Vec<NetworkPermission>,
+    /// Additional device nodes allowed by this host.
+    #[serde(default)]
+    pub devices: Vec<String>,
+    /// Additional host paths allowed by this host.
+    #[serde(default, rename = "host-paths")]
+    pub host_paths: Vec<HostPathPermission>,
+    /// Whether this host allows cgroup controller delegation.
+    #[serde(default, rename = "cgroup-delegate")]
+    pub cgroup_delegate: bool,
+    /// Whether this host allows disabling user namespace isolation.
+    #[serde(default, rename = "privileged-users")]
+    pub privileged_users: bool,
+    /// Additional syscall profiles allowed by this host.
+    #[serde(default, rename = "syscall-profiles")]
+    pub syscall_profiles: Vec<SyscallProfile>,
+    /// Additional generated security labels allowed by this host.
+    #[serde(default, rename = "security-labels")]
+    pub security_labels: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::HostPathMode;
+
+    #[test]
+    fn parses_policy_file_format() {
+        let policy = HostPolicy::parse_str(
+            r#"
+tier = "baseline"
+kernel-modules = ["br_netfilter"]
+systemd-security-threshold = 5.5
+
+[allow]
+networks = ["private-outbound"]
+capabilities = ["CAP_NET_BIND_SERVICE"]
+devices = ["/dev/net/tun"]
+host-paths = [{ path = "/var/lib/rancher", mode = "rw" }]
+syscall-profiles = ["system-service"]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(policy.tier, PolicyTier::Baseline);
+        assert_eq!(policy.kernel_modules, vec!["br_netfilter"]);
+        assert_eq!(policy.systemd_security_threshold, Some(5.5));
+        assert!(
+            policy
+                .allow
+                .networks
+                .contains(&NetworkPermission::PrivateOutbound)
+        );
+    }
+
+    #[test]
+    fn admits_only_requested_permissions_within_policy() {
+        let policy = HostPolicy::parse_str(
+            r#"
+tier = "restricted"
+kernel-modules = ["br_netfilter"]
+
+[allow]
+networks = ["private-outbound"]
+capabilities = ["CAP_NET_BIND_SERVICE"]
+host-paths = [{ path = "/srv/data", mode = "read-only" }]
+syscall-profiles = ["system-service"]
+"#,
+        )
+        .unwrap();
+
+        let permissions = PermissionsMeta {
+            capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
+            network: Some(NetworkPermission::PrivateOutbound),
+            host_paths: vec![HostPathPermission {
+                path: "/srv/data".into(),
+                mode: HostPathMode::ReadOnly,
+            }],
+            kernel_modules: vec!["br_netfilter".into()],
+            syscalls: Some(SyscallProfile::SystemService),
+            ..PermissionsMeta::default()
+        };
+
+        policy.admit(&permissions).unwrap();
+    }
+
+    #[test]
+    fn rejects_non_allowlisted_kernel_module() {
+        let policy = HostPolicy::parse_str(
+            r#"
+tier = "privileged"
+kernel-modules = ["br_netfilter"]
+"#,
+        )
+        .unwrap();
+
+        let permissions = PermissionsMeta {
+            kernel_modules: vec!["zfs".into()],
+            ..PermissionsMeta::default()
+        };
+
+        let err = policy.admit(&permissions).unwrap_err();
+        assert!(err.to_string().contains("kernel module 'zfs'"));
+    }
+}

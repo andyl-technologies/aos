@@ -29,6 +29,24 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+/// Current registry package metadata format understood by this crate.
+pub const PACKAGE_META_FORMAT: u32 = 1;
+
+/// Registry feature flag for the RFC-0001 `expose` metadata schema.
+pub const FEATURE_EXPOSE_V1: &str = "expose-v1";
+
+/// Registry feature flag for the RFC-0001 permission manifest schema.
+pub const FEATURE_PERMISSIONS_V1: &str = "permissions-v1";
+
+/// Registry feature flag for RFC-0001 name-based package requirements.
+pub const FEATURE_REQUIRES_V1: &str = "requires-v1";
+
+const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
+    FEATURE_EXPOSE_V1,
+    FEATURE_PERMISSIONS_V1,
+    FEATURE_REQUIRES_V1,
+];
+
 // ---------------------------------------------------------------------------
 // Well-known paths
 // ---------------------------------------------------------------------------
@@ -483,6 +501,382 @@ pub struct PackageMeta {
     /// Pre-compiled images (only for sysroot packages).
     #[serde(default)]
     pub images: Vec<SysrootImageEntry>,
+    /// Minimum package metadata format required to safely consume this entry.
+    #[serde(
+        default,
+        rename = "min-format",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub min_format: Option<u32>,
+    /// Feature flags a consumer must understand before installing this entry.
+    #[serde(
+        default,
+        rename = "requires-features",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub requires_features: Vec<String>,
+    /// Optional RFC-0001 service exposure metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose: Option<ExposeMeta>,
+    /// Signed RFC-0001 permission manifest.
+    #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
+    pub permissions: PermissionsMeta,
+}
+
+/// RFC-0001 service exposure metadata carried by registry package metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExposeMeta {
+    /// Systemd target that is the package activation handle.
+    pub target: String,
+    /// Unit files rendered for this package and pulled in by the target.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub units: Vec<String>,
+    /// Container/root artifacts attached to the package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<SysrootImageEntry>,
+    /// Package names that must be installed atomically with this package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+}
+
+/// Signed RFC-0001 package permission manifest.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PermissionsMeta {
+    /// Linux capabilities requested by the package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    /// Package network mode; absent means the default private mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkPermission>,
+    /// Device nodes requested by the package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<String>,
+    /// Host paths requested by the package.
+    #[serde(default, rename = "host-paths", skip_serializing_if = "Vec::is_empty")]
+    pub host_paths: Vec<HostPathPermission>,
+    /// Whether the package requests cgroup controller delegation.
+    #[serde(default, rename = "cgroup-delegate", skip_serializing_if = "is_false")]
+    pub cgroup_delegate: bool,
+    /// Whether the package requests host-root-equivalent users.
+    #[serde(default, rename = "privileged-users", skip_serializing_if = "is_false")]
+    pub privileged_users: bool,
+    /// Host-fulfilled kernel modules requested by the package.
+    #[serde(
+        default,
+        rename = "kernel-modules",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub kernel_modules: Vec<String>,
+    /// Named syscall profile requested by the package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub syscalls: Option<SyscallProfile>,
+    /// Generated SELinux/AppArmor label requested by the package.
+    #[serde(
+        default,
+        rename = "security-label",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub security_label: Option<String>,
+}
+
+impl PermissionsMeta {
+    /// Returns whether the manifest carries no explicit permission requests.
+    pub fn is_empty(&self) -> bool {
+        self.capabilities.is_empty()
+            && self.network.is_none()
+            && self.devices.is_empty()
+            && self.host_paths.is_empty()
+            && !self.cgroup_delegate
+            && !self.privileged_users
+            && self.kernel_modules.is_empty()
+            && self.syscalls.is_none()
+            && self.security_label.is_none()
+    }
+}
+
+/// RFC-0001 package network mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NetworkPermission {
+    /// Inbound-only private namespace with host-owned socket activation.
+    Private,
+    /// Private namespace with an outbound veth path.
+    PrivateOutbound,
+    /// Host network namespace.
+    Host,
+}
+
+/// Host path permission requested by a package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostPathPermission {
+    /// Absolute host path to bind into the package.
+    pub path: String,
+    /// Whether the bind is read-only or read-write.
+    pub mode: HostPathMode,
+}
+
+/// Host path access mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HostPathMode {
+    /// Read-only host path bind.
+    ReadOnly,
+    /// Read-write host path bind.
+    Rw,
+}
+
+/// Named syscall profile pinned to systemd syscall groups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SyscallProfile {
+    /// Minimal syscall profile for tightly sandboxed services.
+    Restricted,
+    /// Systemd's `@system-service` syscall group profile.
+    SystemService,
+    /// Privileged syscall profile for infrastructure packages.
+    Privileged,
+}
+
+/// Named host policy tier for RFC-0001 permission admission.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PolicyTier {
+    /// Tightest policy tier.
+    Restricted,
+    /// Default policy tier.
+    #[default]
+    Baseline,
+    /// Privileged policy tier.
+    Privileged,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Validate that a package metadata entry can be safely consumed.
+///
+/// # Errors
+///
+/// Returns an error when the entry requires a newer format, names an
+/// unsupported feature, uses RFC-0001 metadata without declaring its feature
+/// gate, names invalid package requirements, or requests `CAP_SYS_MODULE`
+/// inside the workload instead of using the host-fulfilled `kernel-modules`
+/// permission.
+pub fn validate_supported_package_meta(meta: &PackageMeta) -> Result<()> {
+    validate_supported_package_meta_with(meta, PACKAGE_META_FORMAT, SUPPORTED_PACKAGE_FEATURES)
+}
+
+/// Validate a package metadata entry against an explicit format/feature set.
+///
+/// This helper models older clients in tests: a client that supports the
+/// common gate fields but lacks the named feature must refuse the entry before
+/// it can silently ignore privilege metadata.
+///
+/// # Errors
+///
+/// Returns an error when [`validate_supported_package_meta`] would reject the
+/// entry for the supplied capabilities.
+pub fn validate_supported_package_meta_with(
+    meta: &PackageMeta,
+    supported_format: u32,
+    supported_features: &[&str],
+) -> Result<()> {
+    if let Some(min_format) = meta.min_format {
+        if min_format > supported_format {
+            bail!(
+                "package '{}' requires package metadata format {min_format}, but this apm supports {supported_format}",
+                meta.name
+            );
+        }
+    }
+
+    for feature in &meta.requires_features {
+        if !supported_features.contains(&feature.as_str()) {
+            bail!(
+                "package '{}' requires unsupported registry feature '{feature}'",
+                meta.name
+            );
+        }
+    }
+
+    if meta.expose.is_some() {
+        require_feature(meta, FEATURE_EXPOSE_V1)?;
+    }
+    if !meta.permissions.is_empty() {
+        require_feature(meta, FEATURE_PERMISSIONS_V1)?;
+    }
+
+    if let Some(expose) = &meta.expose {
+        validate_expose_meta(expose)?;
+        if !expose.requires.is_empty() {
+            require_feature(meta, FEATURE_REQUIRES_V1)?;
+        }
+        for required in &expose.requires {
+            validate_package_name(required)
+                .with_context(|| format!("invalid requires entry in package '{}'", meta.name))?;
+        }
+    }
+
+    validate_permissions_meta(&meta.name, &meta.permissions)?;
+
+    Ok(())
+}
+
+fn require_feature(meta: &PackageMeta, feature: &str) -> Result<()> {
+    if meta
+        .requires_features
+        .iter()
+        .any(|declared| declared == feature)
+    {
+        return Ok(());
+    }
+
+    bail!(
+        "package '{}' uses registry feature '{feature}' without declaring it in requires-features",
+        meta.name
+    )
+}
+
+/// Validate an RFC-0001 exposure metadata block.
+///
+/// # Errors
+///
+/// Returns an error when the target/unit names, image metadata, or required
+/// package names are malformed.
+pub fn validate_expose_meta(expose: &ExposeMeta) -> Result<()> {
+    validate_target_name(&expose.target)?;
+    for unit in &expose.units {
+        validate_unit_name(unit)?;
+    }
+    for image in &expose.images {
+        validate_image_entry(image)?;
+    }
+    for required in &expose.requires {
+        validate_package_name(required)?;
+    }
+    Ok(())
+}
+
+/// Validate an RFC-0001 permission manifest.
+///
+/// # Errors
+///
+/// Returns an error when a manifest entry is malformed or asks for
+/// `CAP_SYS_MODULE` inside the workload.
+pub fn validate_permissions_meta(package_name: &str, permissions: &PermissionsMeta) -> Result<()> {
+    for capability in &permissions.capabilities {
+        validate_capability_name(capability)?;
+        if capability == "CAP_SYS_MODULE" {
+            bail!(
+                "package '{package_name}' requests CAP_SYS_MODULE; load modules through kernel-modules instead"
+            );
+        }
+    }
+    for device in &permissions.devices {
+        validate_absolute_path(device, "device")?;
+    }
+    for host_path in &permissions.host_paths {
+        validate_absolute_path(&host_path.path, "host path")?;
+    }
+    for module in &permissions.kernel_modules {
+        validate_kernel_module_name(module)?;
+    }
+    if let Some(label) = &permissions.security_label {
+        validate_security_label(label)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_capability_name(capability: &str) -> Result<()> {
+    if capability.starts_with("CAP_")
+        && capability
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit())
+    {
+        return Ok(());
+    }
+    bail!("invalid capability name '{capability}'")
+}
+
+pub(crate) fn validate_kernel_module_name(module: &str) -> Result<()> {
+    if module.is_empty()
+        || !module
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        bail!("invalid kernel module name '{module}'");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_absolute_path(path: &str, kind: &str) -> Result<()> {
+    if Path::new(path).is_absolute() {
+        return Ok(());
+    }
+    bail!("{kind} must be an absolute path: {path}")
+}
+
+fn validate_target_name(target: &str) -> Result<()> {
+    validate_unit_name(target)?;
+    if !target.starts_with("aos-pkg-") || !target.ends_with(".target") {
+        bail!("expose target must be named aos-pkg-<name>.target: {target}");
+    }
+    Ok(())
+}
+
+fn validate_unit_name(unit: &str) -> Result<()> {
+    let has_known_suffix = [
+        ".automount",
+        ".mount",
+        ".path",
+        ".service",
+        ".slice",
+        ".socket",
+        ".target",
+        ".timer",
+    ]
+    .iter()
+    .any(|suffix| unit.ends_with(suffix));
+
+    if unit.is_empty()
+        || unit.contains('/')
+        || unit.chars().any(char::is_whitespace)
+        || !has_known_suffix
+    {
+        bail!("invalid systemd unit name '{unit}'");
+    }
+    Ok(())
+}
+
+fn validate_image_entry(image: &SysrootImageEntry) -> Result<()> {
+    if image.format.is_empty()
+        || !image
+            .format
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        bail!("invalid image format '{}'", image.format);
+    }
+    validate_absolute_path(&image.store_path, "image store path")?;
+    if !(image.nar_hash.starts_with("sha256:") || image.nar_hash.starts_with("sha256-")) {
+        bail!("image '{}' has invalid NAR hash", image.store_path);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_security_label(label: &str) -> Result<()> {
+    if label.is_empty()
+        || !label
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        bail!("invalid security label '{label}'");
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +933,12 @@ pub struct ApmMeta {
     /// NAR hash for the source derivation.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_nar_hash: String,
+    /// RFC-0001 service exposure metadata captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose: Option<ExposeMeta>,
+    /// RFC-0001 permission manifest captured at install time.
+    #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
+    pub permissions: PermissionsMeta,
 }
 
 // ---------------------------------------------------------------------------
@@ -1234,7 +1634,8 @@ pub struct SbatEntry {
 /// (see RFC-0006 phase 4). They are optional so that legacy and unsigned
 /// publishes continue to parse: an entry with none of them set is treated as
 /// "no Secure Boot claims recorded" and skips download-time SB validation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SysrootImageEntry {
     /// Image format identifier (e.g. `qcow2`, `raw`), matched against
     /// `apm install --image <FMT>`.
@@ -1920,6 +2321,8 @@ last_update = "2026-02-13T10:30:00Z"
                 held: false,
                 source_drv: "/var/lib/store/src123-curl-8.5.0.drv".into(),
                 source_nar_hash: "sha256:source".into(),
+                expose: None,
+                permissions: Default::default(),
             }),
         };
         let json = serde_json::to_string_pretty(&meta).unwrap();
@@ -1952,6 +2355,101 @@ last_update = "2026-02-13T10:30:00Z"
         let meta: InstalledMeta = serde_json::from_str(json).unwrap();
         assert!(meta.apm.is_none());
         assert_eq!(meta.access_count, 42);
+    }
+
+    #[test]
+    fn package_meta_round_trips_sandbox_schema() {
+        let meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_PERMISSIONS_V1.into(),
+                FEATURE_REQUIRES_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: vec![SysrootImageEntry {
+                    format: "dir".into(),
+                    store_path: "/var/lib/store/webapproot-webapp-root".into(),
+                    nar_hash: "sha256:root".into(),
+                    nar_size: 2048,
+                    sb_signer_cert_sha256: None,
+                    sbat: Vec::new(),
+                    expected_pcr11: None,
+                }],
+                requires: vec!["provider".into()],
+            }),
+            permissions: PermissionsMeta {
+                capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
+                network: Some(NetworkPermission::PrivateOutbound),
+                host_paths: vec![HostPathPermission {
+                    path: "/srv/webapp".into(),
+                    mode: HostPathMode::ReadOnly,
+                }],
+                syscalls: Some(SyscallProfile::SystemService),
+                ..PermissionsMeta::default()
+            },
+        };
+
+        validate_supported_package_meta(&meta).unwrap();
+        let json = serde_json::to_string_pretty(&meta).unwrap();
+        let parsed: PackageMeta = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.requires_features, meta.requires_features);
+        assert_eq!(parsed.expose, meta.expose);
+        assert_eq!(parsed.permissions, meta.permissions);
+    }
+
+    #[test]
+    fn package_meta_requires_supported_feature_gate() {
+        let meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_PERMISSIONS_V1.into()],
+            expose: None,
+            permissions: PermissionsMeta {
+                network: Some(NetworkPermission::Host),
+                ..PermissionsMeta::default()
+            },
+        };
+
+        let err =
+            validate_supported_package_meta_with(&meta, PACKAGE_META_FORMAT, &[]).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_PERMISSIONS_V1));
     }
 
     // -----------------------------------------------------------------------

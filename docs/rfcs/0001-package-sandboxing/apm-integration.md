@@ -148,36 +148,40 @@ wiring, not greenfield.
 | **B. Manifest file in the closure** | `<store_path>/.aos-manifest.toml` | Travels with the artifact; no registry schema change; built hermetically with the package | Not visible until the NAR is downloaded; trust rides on the closure hash, not the tag signature directly |
 | **C. Separate registry section** | `[[manifests]]` block keyed by version+platform | Keeps `PackageMeta` lean | A second parallel schema to keep in sync with `[[versions]]` |
 
-**Recommendation (planning, not decided):** **Option A** for the *handles* the
+**Decision (Phase 0):** **Option A** for the *handles* the
 installer must know before/at install (does this package expose a container?
 what target name? what image artifact?), because those need to be
 tag-signed and resolvable *before* the closure is fetched — and **Option B** for
 the *fine-grained nspawn shape* (bind mounts, env, capabilities) that the
 container-launch unit needs at runtime. This mirrors how `images:` already lives
 in `PackageMeta` (signed, pre-download) while the actual rootfs bytes live in a
-separate store path. Settle this in [`open-questions.md`](open-questions.md).
+separate store path.
 
-### 2.2 Proposed `PackageMeta` additions (Option A sketch)
+### 2.2 `PackageMeta` additions
 
-These fields are **proposed**, not implemented. All would be `#[serde(default)]`
-so existing registries parse unchanged.
+These fields are implemented in `crates/aos-package/src/types.rs` and
+`crates/aos-package/src/registry/parse.rs`. All are `#[serde(default)]` so
+existing registries parse unchanged.
 
-> **Fail-open hazard (must fix before any permission-bearing package ships).**
-> The TOML parser is serde-tolerant — no `deny_unknown_fields`
-> (`registry/parse.rs`) — which makes the additions backward-compatible for
-> *old registries*, but it cuts the other way for **old clients**: an apm
-> predating the `[permissions]` schema will parse the entry, silently drop the
-> permissions block, and install/expose the package **without knowing or
-> enforcing its privilege**. The schema needs a capability gate that old
-> clients *do* parse and refuse on — e.g. a `min-format`/`requires-features`
-> field introduced *before* the first permission-bearing package is published.
-> Tracked as Decision 19 in [`open-questions.md`](open-questions.md).
+> **Fail-closed capability gate.**
+> Existing registries still parse because the new fields default empty, but
+> permission-bearing entries are strict: the platform parser rejects unknown
+> fields, `min-format`/`requires-features` must be supported, and RFC-0001
+> metadata must carry the required feature gate. Permission-bearing entries
+> place the gate inside a structured `references` table, which pre-Phase-0
+> clients reject because they only understood `references = [...]`. This lands
+> before any permission-bearing package is published.
 
 ```toml
 [versions.platforms.x86_64-linux]
 store_path  = "/nix/store/...-myapp-1.0"
 nar_hash    = "sha256:..."
 # ... existing fields ...
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["expose-v1", "permissions-v1", "requires-v1"]
 
 # NEW: this package exposes a systemd handle + a container (every package does).
 [versions.platforms.x86_64-linux.expose]
@@ -202,7 +206,7 @@ nar_size     = 0
 # capabilities = [...]; host-paths = [...]; kernel-modules = [...]; ...
 ```
 
-Mapping to Rust (proposed):
+Mapping to Rust:
 
 ```rust
 pub struct ExposeMeta {
@@ -700,3 +704,7 @@ The two genuinely new pieces are (a) the **expose phase** post-install hook and
 (b) where its **unit files physically land** under the immutable-root /etc
 overlay (§4.1). Both, plus config delivery and the baked-vs-fetched trust split,
 are the open items carried into [`open-questions.md`](open-questions.md).
+
+Phase 0 implements the consumer/schema side for registry metadata that is
+authored by a generator or by hand. `apr publish` emission and build-time
+`expose` rendering are intentionally part of Phase 1.

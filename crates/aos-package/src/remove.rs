@@ -12,7 +12,7 @@
 //! package. `apm remove --autoremove` removes orphans created by the
 //! removal; `apm autoremove` removes all current orphans.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 
 use anyhow::{Context, Result};
@@ -432,19 +432,9 @@ async fn needed_hashes_for_remaining_explicit(
 ) -> Result<HashSet<String>> {
     let mut needed = HashSet::new();
 
-    for meta in installed {
-        let hash = store_path_hash(&meta.store_path);
-        if pending_remove_hashes.contains(hash) {
-            continue;
-        }
-
-        let Some(apm) = &meta.apm else {
-            continue;
-        };
-        if !apm.explicit {
-            continue;
-        }
-
+    for index in retained_installed_indexes(installed, pending_remove_hashes) {
+        let meta = &installed[index];
+        let Some(apm) = &meta.apm else { continue };
         for path in closure_paths(&meta.store_path)
             .await
             .with_context(|| format!("querying closure for installed package {}", apm.name))?
@@ -454,6 +444,69 @@ async fn needed_hashes_for_remaining_explicit(
     }
 
     Ok(needed)
+}
+
+/// Return non-removed installed entries retained by explicit packages.
+///
+/// RFC-0001 `expose.requires` names package-level co-install requirements,
+/// which are not necessarily visible in a Nix store closure. Autoremove must
+/// therefore keep any installed package named by a remaining explicit package,
+/// and repeat that walk transitively.
+pub(crate) fn retained_installed_indexes(
+    installed: &[InstalledMeta],
+    pending_remove_hashes: &HashSet<String>,
+) -> Vec<usize> {
+    let by_name = installed_indexes_by_package_name(installed, pending_remove_hashes);
+    let mut retained = Vec::new();
+    let mut seen_hashes = HashSet::new();
+    let mut queue = VecDeque::new();
+
+    for (index, meta) in installed.iter().enumerate() {
+        let hash = store_path_hash(&meta.store_path);
+        if pending_remove_hashes.contains(hash) {
+            continue;
+        }
+        if meta.apm.as_ref().is_some_and(|apm| apm.explicit) {
+            queue.push_back(index);
+        }
+    }
+
+    while let Some(index) = queue.pop_front() {
+        let meta = &installed[index];
+        let hash = store_path_hash(&meta.store_path);
+        if !seen_hashes.insert(hash.to_string()) {
+            continue;
+        }
+
+        retained.push(index);
+
+        let Some(apm) = &meta.apm else { continue };
+        let Some(expose) = &apm.expose else { continue };
+        for required in &expose.requires {
+            if let Some(indexes) = by_name.get(required.as_str()) {
+                queue.extend(indexes.iter().copied());
+            }
+        }
+    }
+
+    retained
+}
+
+fn installed_indexes_by_package_name<'a>(
+    installed: &'a [InstalledMeta],
+    pending_remove_hashes: &HashSet<String>,
+) -> HashMap<&'a str, Vec<usize>> {
+    let mut by_name: HashMap<&'a str, Vec<usize>> = HashMap::new();
+    for (index, meta) in installed.iter().enumerate() {
+        let hash = store_path_hash(&meta.store_path);
+        if pending_remove_hashes.contains(hash) {
+            continue;
+        }
+        if let Some(apm) = &meta.apm {
+            by_name.entry(apm.name.as_str()).or_default().push(index);
+        }
+    }
+    by_name
 }
 
 /// Select non-explicit entries that are neither already being removed nor
@@ -611,7 +664,7 @@ mod tests {
 
     use crate::profile::Generation;
     use crate::profile::meta::write_meta;
-    use crate::types::{ApmMeta, ProfileScope};
+    use crate::types::{ApmMeta, ExposeMeta, ProfileScope};
 
     fn test_profile(tmp: &TempDir) -> Profile {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
@@ -635,8 +688,26 @@ mod tests {
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                permissions: Default::default(),
             }),
         }
+    }
+
+    fn sample_installed_requiring(
+        name: &str,
+        hash: &str,
+        explicit: bool,
+        requires: &[&str],
+    ) -> InstalledMeta {
+        let mut installed = sample_installed(name, hash, explicit);
+        installed.apm.as_mut().unwrap().expose = Some(ExposeMeta {
+            target: format!("aos-pkg-{name}.target"),
+            units: Vec::new(),
+            images: Vec::new(),
+            requires: requires.iter().map(|name| (*name).to_string()).collect(),
+        });
+        installed
     }
 
     fn sample_installed_from_registry(
@@ -948,6 +1019,47 @@ mod tests {
 
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].apm.as_ref().unwrap().name, "shared");
+    }
+
+    #[test]
+    fn retained_installed_indexes_keep_name_level_requirements() {
+        let installed = vec![
+            sample_installed_requiring("client", "aaa111", true, &["provider"]),
+            sample_installed("provider", "bbb222", false),
+            sample_installed("unused", "ccc333", false),
+        ];
+        let pending = HashSet::new();
+
+        let retained = retained_installed_indexes(&installed, &pending);
+
+        let names: HashSet<_> = retained
+            .iter()
+            .filter_map(|index| installed[*index].apm.as_ref().map(|apm| apm.name.as_str()))
+            .collect();
+        assert!(names.contains("client"));
+        assert!(names.contains("provider"));
+        assert!(!names.contains("unused"));
+    }
+
+    #[test]
+    fn retained_installed_indexes_follow_transitive_name_requirements() {
+        let installed = vec![
+            sample_installed_requiring("client", "aaa111", true, &["proxy"]),
+            sample_installed_requiring("proxy", "bbb222", false, &["provider"]),
+            sample_installed("provider", "ccc333", false),
+        ];
+        let pending = HashSet::new();
+
+        let retained = retained_installed_indexes(&installed, &pending);
+
+        let names: HashSet<_> = retained
+            .iter()
+            .filter_map(|index| installed[*index].apm.as_ref().map(|apm| apm.name.as_str()))
+            .collect();
+        assert_eq!(names.len(), 3);
+        assert!(names.contains("client"));
+        assert!(names.contains("proxy"));
+        assert!(names.contains("provider"));
     }
 
     #[test]

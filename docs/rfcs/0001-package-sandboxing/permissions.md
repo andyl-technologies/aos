@@ -54,21 +54,21 @@ whose grant happens to be fulfilled host-side. The package *declares* a request;
 the host *grants* it only if policy allows; the difference is just the mechanism
 that materializes the grant.
 
-These map directly onto knobs systemd-nspawn / the generated scope already
-expose. The manifest field is the package-facing name; the mechanism is what
-the package module emits.
+These map directly onto generated systemd unit directives. nspawn remains
+documented as a future/alternate materialization, but the Phase 0 schema is
+pinned against the per-unit substrate:
 
-| Manifest field | systemd-nspawn / unit mechanism | Default | App-store analog |
+| Manifest field | Per-unit materialization | Default | App-store analog |
 |---|---|---|---|
-| `capabilities` | `--capability=CAP_…` (`=all` for full) | none added | dangerous permissions |
-| `network` | `private` = `--network-veth`/`--network-zone`; `host` = no `--private-network` | `private` | INTERNET / local network |
-| `devices` | `--bind=/dev/…` + `--property=DeviceAllow=…` | none | camera / USB / sensors |
-| `host-paths` | `--bind=` (rw) / `--bind-ro=` | none | scoped storage |
-| `cgroup-delegate` | `--property=Delegate=yes` (+ controllers) | off | — (no analog) |
-| `privileged-users` | `--private-users=no` (UID 0 == host UID 0) | userns on | "runs unsandboxed" |
-| `kernel-modules` | host-fulfilled: `aos-pkg-<name>-modules.service` `modprobe`s allowlisted modules (see Limits) | none | system/OEM-level |
-| `syscalls` | `--system-call-filter=` (or `SystemCallFilter=`) with **named profiles defined as pinned sets of systemd syscall groups** (`@system-service`, `@privileged`, …) — never free-form adjectives; cf. the versioned OCI/Docker default seccomp profile | default seccomp | — |
-| `security-label` | SELinux/AppArmor context (`--selinux-context=`) — now **backed by a generated, enforced `aos-pkg-<name>` MAC profile**, see below | generated default-deny | — |
+| `capabilities` | `CapabilityBoundingSet=` and `AmbientCapabilities=` | none added | dangerous permissions |
+| `network` | `PrivateNetwork=` for `private`; `NetworkNamespacePath=` for `private-outbound`; neither for `host` | `private` | INTERNET / local network |
+| `devices` | `DevicePolicy=closed` plus `DeviceAllow=` entries | none | camera / USB / sensors |
+| `host-paths` | `BindReadOnlyPaths=` for `mode = "read-only"`; `BindPaths=` for `mode = "rw"` | none | scoped storage |
+| `cgroup-delegate` | `Delegate=` | off | — (no analog) |
+| `privileged-users` | `PrivateUsers=` disabled when true; enabled otherwise | userns on | "runs unsandboxed" |
+| `kernel-modules` | host-fulfilled: `aos-pkg-<name>-modules.service` `modprobe`s allowlisted modules (see Limits); never `CAP_SYS_MODULE` in the workload | none | system/OEM-level |
+| `syscalls` | `SystemCallFilter=` using the named profiles `restricted`, `system-service`, or `privileged`, pinned to systemd syscall groups (`@system-service`, `@privileged`, …); never free-form filters | default seccomp | — |
+| `security-label` | Generated SELinux/AppArmor profile name, `aos-pkg-<name>` by default, applied through the selected MAC backend | generated default-deny | — |
 
 `needs verification`: which of these the AOS systemd build's `systemd-nspawn`
 actually supports end-to-end (the investigation found nspawn is shipped but
@@ -292,14 +292,29 @@ interface is the precedent). Full composition rules:
 - **Policy gate:** a host/fleet policy can allow-list or cap permissions
   ("this fleet refuses `CAP_SYS_ADMIN`/`privileged-users` packages"). The
   enforcement model — who decides, when, and how it is mechanically guaranteed —
-  is the next section. The primary policy surface should be a small set of
+  is the next section. The primary policy surface is a small set of
   **named tiers** (`restricted`/`baseline`/`privileged`), with per-permission
   allowlists as the escape hatch: Kubernetes removed knob-level
   PodSecurityPolicy in favor of exactly three named Pod Security Standards
   because per-knob policy proved unwritable and unauditable, and systemd
-  portable services ship four named profiles for the same reason. (The exact
-  policy *file format* and where the allowlist is declared is still open; see
-  [open-questions.md](open-questions.md).)
+  portable services ship four named profiles for the same reason. The host file
+  is `/etc/aos/policy.toml`, parsed by `crates/aos-package/src/policy.rs`:
+
+  ```toml
+  tier = "baseline"
+  kernel-modules = ["br_netfilter"]
+  systemd-security-threshold = 5.5
+
+  [allow]
+  networks = ["private-outbound"]
+  capabilities = ["CAP_NET_BIND_SERVICE"]
+  devices = ["/dev/net/tun"]
+  host-paths = [{ path = "/var/lib/rancher", mode = "rw" }]
+  cgroup-delegate = false
+  privileged-users = false
+  syscall-profiles = ["system-service"]
+  security-labels = ["aos-pkg-k3s"]
+  ```
 - **Signed & immutable:** the permission manifest is part of the package's
   signed registry metadata (see [apm-integration.md](apm-integration.md) and
   the registry signing docs), so a package cannot widen its own privileges
@@ -352,9 +367,8 @@ modules** (see [open-questions.md](open-questions.md) Decision 1).
   infrastructure class) is resolved by this manifest; the *policy enforcement
   point* is now answered by the Enforcement section above (three-layer,
   system/host authoritative, mechanical materialization, registry-signed trust
-  anchor, checked at install/enable). The remaining open items are the policy
-  *file format* / where the host allowlist is declared, and the validated k3s
-  permission set.
+  anchor, checked at install/enable). The remaining proving-case item is the
+  validated k3s permission set.
 
 ## Open questions
 
@@ -369,10 +383,8 @@ modules** (see [open-questions.md](open-questions.md) Decision 1).
 - nspawn feature coverage in the AOS systemd build (cgroup-v2 delegation,
   `--private-users` mapping, custom seccomp) — Decision 7 in
   [open-questions.md](open-questions.md).
-- The policy **file format** and **where the host allowlist** (including the
-  `kernel-modules` allowlist) is declared — still TBD. (The enforcement *model*
-  is settled: see the Enforcement section above.)
-- Whether `CAP_SYS_MODULE` is ever granted to a container or module loading is
-  *always* host-side via `kernel-modules` (lean: always host-side).
+- The k3s `kernel-modules` allowlist is still a concrete host-policy value to
+  validate in Phase 3, but the file format and allowlist location are resolved:
+  `/etc/aos/policy.toml`.
 - Config delivery into the container is a separate, still-open question — see
   [config.md](config.md) (do not assume credstore).

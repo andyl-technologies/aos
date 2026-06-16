@@ -35,13 +35,15 @@ use super::download::{
     fetch_narinfos, order_resolved_downloads, reference_store_path, resolve_mirror,
     resolved_downloads_json,
 };
+use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{
     delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
 };
 use super::registry::{RegistrySet, store_path_hash};
-use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_closure, resolve_multiple};
+use super::remove::retained_installed_indexes;
+use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
@@ -126,6 +128,7 @@ pub async fn run(
         ensure_skipped_dependencies_present(&closures).await?;
         prune_dependency_members(&mut closures);
     }
+    admit_package_roots(closures.iter().flat_map(|closure| closure.closure.iter()))?;
     let all_metas = collect_unique_metas(&closures);
     let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
     let missing = if reinstall {
@@ -465,6 +468,8 @@ pub async fn run(
                     held: existing_flags.held,
                     source_drv: meta.source_drv.clone(),
                     source_nar_hash: meta.source_nar_hash.clone(),
+                    expose: meta.expose.clone(),
+                    permissions: meta.permissions.clone(),
                 }),
             };
 
@@ -640,9 +645,13 @@ fn resolve_install_closures(
     for package in packages {
         let registry_name = installed_source_registry(package, installed)
             .ok_or_else(|| anyhow::anyhow!("package not installed: {package}"))?;
-        let closure = resolve_closure(registries, package, Some(registry_name))
-            .with_context(|| format!("resolving package '{package}'"))?;
-        closures.push(closure);
+        let resolved = resolve_multiple(
+            registries,
+            std::slice::from_ref(package),
+            Some(registry_name),
+        )
+        .with_context(|| format!("resolving package '{package}'"))?;
+        closures.extend(resolved);
     }
     Ok(closures)
 }
@@ -903,13 +912,12 @@ async fn obsolete_installed_hashes_after_install(
         }
     }
 
-    for meta in installed {
+    let pending_remove_hashes = hashes_for_installed_names(installed, explicit_names);
+    for index in retained_installed_indexes(installed, &pending_remove_hashes) {
+        let meta = &installed[index];
         let Some(apm) = meta.apm.as_ref() else {
             continue;
         };
-        if !apm.explicit || explicit_names.contains(apm.name.as_str()) {
-            continue;
-        }
 
         for path in closure_paths(&meta.store_path)
             .await
@@ -923,6 +931,21 @@ async fn obsolete_installed_hashes_after_install(
     }
 
     Ok(obsolete_installed_hashes(installed, &needed))
+}
+
+fn hashes_for_installed_names(
+    installed: &[InstalledMeta],
+    names: &HashSet<&str>,
+) -> HashSet<String> {
+    installed
+        .iter()
+        .filter_map(|meta| {
+            let apm = meta.apm.as_ref()?;
+            names
+                .contains(apm.name.as_str())
+                .then(|| store_path_hash(&meta.store_path).to_string())
+        })
+        .collect()
 }
 
 fn obsolete_installed_hashes(
@@ -1348,6 +1371,10 @@ mod tests {
             sysroot: false,
             previous: None,
             images: Vec::new(),
+            min_format: None,
+            requires_features: Vec::new(),
+            expose: None,
+            permissions: Default::default(),
         }
     }
 
@@ -1378,6 +1405,8 @@ mod tests {
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                permissions: Default::default(),
             }),
         }
     }

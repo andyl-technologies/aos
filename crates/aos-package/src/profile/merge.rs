@@ -363,6 +363,8 @@ mod tests {
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                permissions: Default::default(),
             }),
         };
         fs::write(

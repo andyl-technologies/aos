@@ -46,6 +46,7 @@ pub mod download;
 pub(crate) mod gitcmd;
 pub mod hold;
 pub mod install;
+pub mod policy;
 pub mod profile;
 pub mod query;
 pub mod registry;

@@ -456,6 +456,10 @@ mod tests {
             sysroot: false,
             previous: None,
             images: vec![],
+            min_format: None,
+            requires_features: Vec::new(),
+            expose: None,
+            permissions: Default::default(),
         }
     }
 

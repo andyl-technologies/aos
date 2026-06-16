@@ -87,7 +87,7 @@ reframes how the phases below are read:
 
 | Phase | Goal | Gate (begins when) | Closes | Status |
 |-------|------|--------------------|--------|--------|
-| **P0** | Schema & policy foundation: registry metadata, policy file, `requires`, the fail-closed capability gate, the permission surface | — (do first) | D2, D12, D18, D19; D1(a) | ☐ |
+| **P0** | Schema & policy foundation: registry metadata, policy file, `requires`, the fail-closed capability gate, the permission surface | — (do first) | D2, D12, D18, D19; D1(a) | ☑ |
 | **P1** | `expose` authoring + build-time renderer (eval-free artifacts via `passthru`) | P0 schema pinned | authoring.md mechanics | ☐ |
 | **P2** | Target sandbox + gated side-effect services + nftables reload coherence + eval assertion | P1 | D15; activation.md | ☐ |
 | **P3** | Per-unit sandboxing materialization + confinement label + **the Decision 17 validation spike** (the gate) | P1, P2 | D2, D4, D10, D17; D1(b) | ☐ |
@@ -115,14 +115,15 @@ invent a field.
 
 **Deliverables.**
 
-- [ ] **Capability gate (D19) — first.** Add a `min-format` / `requires-features`
+- [x] **Capability gate (D19) — first.** Add a `min-format` / `requires-features`
       field to `PackageMeta` (`crates/aos-package/src/types.rs`) and the registry
-      parser (`crates/aos-package/src/registry/parse.rs`); an apm predating the
-      schema **parses and refuses** a package carrying it. Land this *before* any
-      `[permissions]`/`expose` package is published. (The parser is serde-tolerant
-      today — no `deny_unknown_fields` — so without this, old clients install
-      permission-bearing packages with privilege silently dropped.)
-- [ ] **Hybrid package metadata (D12).** Add `expose: Option<ExposeMeta>` and the
+      parser (`crates/aos-package/src/registry/parse.rs`); permission-bearing
+      entries carry the gate inside a structured `references` table so an apm
+      predating the schema **fails closed** instead of silently dropping the
+      privilege metadata. Land this *before* any `[permissions]`/`expose` package
+      is published. The platform parser rejects unknown fields; the structural
+      gate covers older clients that only understood `references = [...]`.
+- [x] **Hybrid package metadata (D12).** Add `expose: Option<ExposeMeta>` and the
       signed `permissions` manifest to `PackageMeta`; registry TOML gains
       `[…expose]` + `[…permissions]` sections, all `#[serde(default)]`. Shape:
       `ExposeMeta { target: String, units: Vec<String>, images: Vec<…>, requires: Vec<String> }`.
@@ -130,13 +131,13 @@ invent a field.
       `[permissions]` manifest so `apm info --permissions` and the host policy
       check work **without** fetching the closure; the rendered unit files ride
       the closure as `pkg.expose` (P1).
-- [ ] **`requires` field + resolver semantics (D18).** `requires: Vec<String>`
+- [x] **`requires` field + resolver semantics (D18).** `requires: Vec<String>`
       (package names, not store-path hashes). Semantics: **install-time pull-in**
       (deb-style `Depends:`) materialized atomically in the shared profile
       generation; **no version-constraint solver** (the registry channel model
       already pins versions). Resolve names in `crates/aos-package/src/resolve.rs`
       (today hash-only); emit target ordering edges in the expose phase (P5).
-- [ ] **The permission surface (`permissions.md`).** Document the manifest
+- [x] **The permission surface (`permissions.md`).** Document the manifest
       fields and their per-unit-directive mapping as the canonical table:
       `capabilities`→`CapabilityBoundingSet=`/`AmbientCapabilities=`,
       `network`→`PrivateNetwork=`, `devices`→`DeviceAllow=`,
@@ -145,16 +146,21 @@ invent a field.
       `kernel-modules`→host-fulfilled service (not a unit directive),
       `syscalls`→`SystemCallFilter=` (named profiles only),
       `security-label`→SELinux/AppArmor context.
-- [ ] **Named policy tiers + syscall profiles.** Tiers `restricted` / `baseline`
+- [x] **Named policy tiers + syscall profiles.** Tiers `restricted` / `baseline`
       / `privileged` (K8s Pod Security Standards lesson); syscall values are
       **named profiles** pinned to systemd syscall groups (`@system-service`,
       `@privileged`), never free-form.
-- [ ] **Policy file format (D1(a), D2) — confirm the proposal.** `/etc/aos/policy.toml`:
+- [x] **Policy file format (D1(a), D2) — confirm the proposal.** `/etc/aos/policy.toml`:
       a named `tier` + optional per-permission overrides + the `kernel-modules`
       allowlist; image-baked EROFS default, overridable per host by an
       Ignition-written copy in a higher overlay layer (same precedence as
       presets); evaluated by `apm` at install/enable. Nix-evaluated policy is
       rejected (no evaluator at runtime install). Parser in `crates/aos-package/`.
+
+**Phase 0 implementation scope.** `apm` can parse, validate, display, resolve,
+persist, and policy-admit generator-authored registry metadata carrying these
+fields. Teaching `apr publish` and the package build renderer to emit that
+metadata is Phase 1, where the `expose` authoring artifact is introduced.
 
 **Closes.** D19, D12, D18, D2; D1(a) (pending confirmation of the proposed file
 format). Produces the schema every later phase keys off.
@@ -664,7 +670,7 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
 - [ ] **nspawn feature checks (P8, only if nspawn lands).** cgroup-v2 delegation
       depth, `--private-users` mapping, custom seccomp support on the built
       `systemd-nspawn`.
-- [ ] **`CAP_SYS_MODULE` policy (P0/P3).** Confirm module loading is *always*
+- [x] **`CAP_SYS_MODULE` policy (P0/P3).** Confirm module loading is *always*
       host-side via `kernel-modules` and `CAP_SYS_MODULE` is never granted into a
       container (lean: always host-side).
 - [ ] **k3s strawman completeness (P3).** Desk-check against kind / k3d / Incus
