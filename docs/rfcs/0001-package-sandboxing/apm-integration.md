@@ -24,7 +24,7 @@ Sibling docs cover the rest:
 (the permission manifest), [`container-model.md`](container-model.md)
 (nspawn shape, k3s as a high-privilege container), [`boot-activation.md`](boot-activation.md)
 (Ignition + first-boot install), [`config.md`](config.md) (config delivery,
-explicitly open), [`migration.md`](migration.md) (roles→packages rename), and
+explicitly open), [`migration.md`](migration.md), and
 [`open-questions.md`](open-questions.md).
 
 ---
@@ -343,8 +343,8 @@ expose phase runs:
    `systemd-nspawn@.service` multiplexing that normally depends on `machined`
    may not be usable as-is; an explicit per-package unit is the safer default.
 3. **Drop the target handle.** Generate `aos-pkg-<name>.target` with `Wants=` the
-   launch unit and member units, matching the roles-as-targets design in
-   [`../0001-roles-as-targets.md`](../0001-roles-as-targets.md).
+   launch unit and member units, matching the target/activation design in
+   [`activation.md`](activation.md).
 4. **Enable.** Enabling is the separate step (Decision 8, resolved):
    `systemctl preset aos-pkg-<name>.target` against the merged preset policy —
    at boot the every-boot `aos-preset.service` pass covers every unit (see
@@ -352,11 +352,11 @@ expose phase runs:
 
 ### 4.1 Where the unit files physically land
 
-There is a real tension here with AOS's immutable root. Today, role units are
+There is a real tension here with AOS's immutable root. Package units are
 baked into the EROFS `/etc` lower as *inert regular files* and activated only by
-an Ignition-written `multi-user.target.wants/...` symlink at first boot (see
-[`../0001-roles-as-targets.md`](../0001-roles-as-targets.md) §"In image
-(inert)"). But an `apm install` that happens *after* first boot cannot rewrite
+an Ignition-written `multi-user.target.wants/...` symlink at first boot (see the
+in-image inert activation described in [`activation.md`](activation.md)). But an
+`apm install` that happens *after* first boot cannot rewrite
 the EROFS lower. So a runtime-installed package's units must land in the
 writable `/etc` overlay layer (the `/var/etc` upper of the 3-layer overlay)
 rather than EROFS.

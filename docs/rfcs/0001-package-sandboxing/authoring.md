@@ -4,11 +4,10 @@ Status: planning (direction resolved by investigation; exact schema open)
 Siblings: [README.md](README.md) · [permissions.md](permissions.md) ·
 [container-model.md](container-model.md) · [apm-integration.md](apm-integration.md) ·
 [boot-activation.md](boot-activation.md) · [config.md](config.md) ·
-[migration.md](migration.md) · [open-questions.md](open-questions.md)
+[activation.md](activation.md) · [open-questions.md](open-questions.md)
 
 Where do package definitions live? **Not** in a central `modules/packages/`
-tree (the rename destination [migration.md](migration.md) originally planned).
-Service integration is an **optional `expose` attribute on any package
+tree. Service integration is an **optional `expose` attribute on any package
 derivation in `pkgs/`**, rendered at build time into eval-free artifacts, and
 `modules/` shrinks to host policy. This doc records the decision, the verified
 mechanics, and the precedent.

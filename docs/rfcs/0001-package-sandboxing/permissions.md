@@ -15,12 +15,11 @@ declares. k3s is not a special case — it is a container that requests a long
 permission list. This doc defines the permission surface, how it maps onto
 systemd-nspawn, how it is generated/enforced, and the honest limits.
 
-This supersedes the earlier two-shape model (see
-[migration.md](migration.md)) and resolves Decision 1 in
-[open-questions.md](open-questions.md) (the `workload` vs `infrastructure`
-*class* split) and the `expose.kind = "container" | "host"` strawman in
-[apm-integration.md](apm-integration.md): there is one shape (container) with a
-permission gradient.
+There is one shape (container) with a permission gradient — not a
+`workload` vs `infrastructure` *class* split, and not an
+`expose.kind = "container" | "host"` distinction (see
+[apm-integration.md](apm-integration.md) and Decision 1 in
+[open-questions.md](open-questions.md)).
 
 ## Why a manifest
 
