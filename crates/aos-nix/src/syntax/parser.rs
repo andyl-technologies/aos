@@ -1951,6 +1951,21 @@ mod tests {
     }
 
     #[test]
+    fn reports_first_significant_error_after_skipped_trivia() {
+        let source = "let x = 1;\n  @@@\nin x";
+        let error = parse_str(source).expect_err("invalid binding errors");
+        let start = source.find('@').expect("source contains bad token") as u32;
+        assert_eq!(error.span(), Span::new(start, start + 1));
+        assert!(matches!(
+            error.kind(),
+            ParseErrorKind::UnexpectedToken {
+                found: TokenKind::At,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn parses_select_defaults_and_has_attr_paths() {
         let ast = parse("pkg.meta.name or fallback");
         let root = node(&ast, ast.root);

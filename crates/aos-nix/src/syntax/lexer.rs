@@ -1101,6 +1101,23 @@ mod tests {
     }
 
     #[test]
+    fn retains_comment_trivia_spans_for_diagnostics() {
+        let mut lexer = Lexer::from_source_str("x # keep me\n y");
+        let ident = lexer.next_token().expect("identifier token");
+        let space = lexer.next_token().expect("space token");
+        let comment = lexer.next_token().expect("comment token");
+        let trailing = lexer.next_token().expect("trailing whitespace token");
+
+        assert_eq!(lexer.slice(ident).expect("valid ident span"), b"x");
+        assert_eq!(lexer.slice(space).expect("valid space span"), b" ");
+        assert_eq!(
+            lexer.slice(comment).expect("valid comment span"),
+            b"# keep me"
+        );
+        assert_eq!(lexer.slice(trailing).expect("valid trailing span"), b"\n ");
+    }
+
+    #[test]
     fn supports_one_token_lookahead() {
         let mut lexer = Lexer::from_source_str("let");
         let peeked = lexer.peek().expect("peek token");

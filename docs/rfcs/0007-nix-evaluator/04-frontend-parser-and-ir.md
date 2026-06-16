@@ -967,7 +967,7 @@ Frontend is the **P1** foundation (decision `S-11`): every item below lands unde
 - [x] Pratt operator sub-parser with the exact Nix binding-power table, incl. non-associative chaining rejection and `+` overload deferral (§4.3) — **P1**; full precedence/associativity conformance (§8, doc 20).
 - [x] `Select`/`HasAttr` attribute-path parsing with `or` defaults and dynamic `${}` components (§4.3) — **P1**.
 - [x] Parse-time desugarings — interpolation → `Interp`, attr-path merge, `inherit` / `inherit (e)`, indented-string resolution — each proven order-/error-preserving, with no constant folding or binding reorder (§4.4) — **P1**; attr-path merge + `inherit`-scope conformance (§8).
-- [ ] First-error stop on the hot path plus span/trivia retention for a C++ Nix-compatible diagnostics mode (§4.5) — **P1**; error-class parity (soft gate, `C-26`/process decision).
+- [x] First-error stop on the hot path plus span/trivia retention for a C++ Nix-compatible diagnostics mode (§4.5) — **P1**; error-class parity (soft gate, `C-26`/process decision).
 
 ### Scope resolution → IR (§5–§6)
 
