@@ -16,6 +16,8 @@ const WORD_BYTES: usize = mem::size_of::<u64>();
 const MAX_ALIGN: usize = mem::align_of::<u64>();
 const OBJECT_HEADER_BYTES: usize = 2 * WORD_BYTES;
 const THUNK_BYTES: usize = 3 * WORD_BYTES;
+// Header plus u32 length, padded so the inline Value tail starts 8-byte aligned.
+const LIST_ELEMENTS_OFFSET_BYTES: usize = OBJECT_HEADER_BYTES + WORD_BYTES;
 const CONS_BYTES: usize = OBJECT_HEADER_BYTES + mem::size_of::<Value>() + WORD_BYTES;
 
 /// The logical heap object kind requested through an allocation entry point.
@@ -32,6 +34,11 @@ pub enum HeapObjectKind {
     },
     /// A list cons cell.
     Cons,
+    /// A contiguous list spine with `len` elements.
+    List {
+        /// The number of value cells requested.
+        len: u32,
+    },
     /// A byte string payload with `len` bytes.
     String {
         /// The byte length requested for the string payload.
@@ -173,6 +180,24 @@ impl BumpArena {
     /// storage cannot be reserved.
     pub fn aos_alloc_cons(&mut self) -> Result<ArenaAllocation, ArenaError> {
         self.allocate(CONS_BYTES, MAX_ALIGN, HeapObjectKind::Cons)
+    }
+
+    /// Allocates a contiguous list object through the Phase-1 `aos_alloc_list`
+    /// entry-point shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if `len` does not fit the runtime list header, if
+    /// the object size overflows, or if the chunk storage cannot be reserved.
+    pub fn aos_alloc_list(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
+        let header_len = u32::try_from(len).map_err(|_| ArenaError::SizeOverflow)?;
+        let elements = len
+            .checked_mul(mem::size_of::<Value>())
+            .ok_or(ArenaError::SizeOverflow)?;
+        let size = LIST_ELEMENTS_OFFSET_BYTES
+            .checked_add(elements)
+            .ok_or(ArenaError::SizeOverflow)?;
+        self.allocate(size, MAX_ALIGN, HeapObjectKind::List { len: header_len })
     }
 
     /// Allocates a string object through the Phase-1 `aos_alloc_string`
@@ -461,6 +486,13 @@ mod tests {
         assert_eq!(cons.kind, HeapObjectKind::Cons);
         assert_eq!(cons.requested_size, CONS_BYTES);
 
+        let list = arena.aos_alloc_list(4).expect("list allocates");
+        assert_eq!(list.kind, HeapObjectKind::List { len: 4 });
+        assert_eq!(
+            list.requested_size,
+            LIST_ELEMENTS_OFFSET_BYTES + 4 * mem::size_of::<Value>()
+        );
+
         let string = arena.aos_alloc_string(11).expect("string allocates");
         assert_eq!(string.kind, HeapObjectKind::String { len: 11 });
         assert_eq!(string.requested_size, OBJECT_HEADER_BYTES + 11);
@@ -481,6 +513,20 @@ mod tests {
             arena.aos_alloc_raw(8, 16, 1),
             Err(ArenaError::InvalidAlignment { align: 16 })
         );
+    }
+
+    #[test]
+    fn oversized_list_length_is_rejected_without_side_effects() {
+        let mut arena = BumpArena::with_initial_chunk_bytes(64).expect("arena creates");
+        let too_long = (u32::MAX as usize)
+            .checked_add(1)
+            .expect("test platform can represent u32::MAX + 1");
+
+        assert_eq!(
+            arena.aos_alloc_list(too_long),
+            Err(ArenaError::SizeOverflow)
+        );
+        assert!(arena.is_empty());
     }
 
     #[test]

@@ -3,13 +3,14 @@
 //! Runtime [`Value`] words carry opaque [`HeapObject`] pointers. This registry
 //! owns the typed Rust-side objects behind those pointers for the safe tree-walk
 //! oracle: the bump arena provides stable opaque handles, while a side table
-//! maps those handles back to checked [`NixString`] values.
+//! maps those handles back to checked [`NixString`] and [`NixList`] values.
 
 use std::ptr::NonNull;
 
 use thiserror::Error;
 
 use crate::heap::arena::{ArenaError, ArenaStats, BumpArena};
+use crate::list::NixList;
 use crate::string::NixString;
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
 
@@ -88,13 +89,38 @@ impl EvalHeap {
         Ok(value)
     }
 
+    /// Allocates a Nix list object and returns its opaque runtime value.
+    ///
+    /// The returned value is only meaningful while this [`EvalHeap`] remains
+    /// alive. Use [`EvalHeap::get_list`] to recover the typed list.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
+    /// bump arena cannot reserve a list handle, or if the resulting handle
+    /// violates the runtime value alignment contract.
+    pub fn alloc_list(&mut self, list: NixList) -> Result<Value, EvalHeapError> {
+        self.reserve_record_slot()?;
+        let allocation = self
+            .arena
+            .aos_alloc_list(list.len())
+            .map_err(EvalHeapError::Arena)?;
+        let value = Value::list(allocation.ptr).map_err(EvalHeapError::Value)?;
+        self.records.push(HeapRecord {
+            ptr: allocation.ptr,
+            object: HeapObjectValue::List(list),
+        });
+        Ok(value)
+    }
+
     /// Returns the string object referenced by `value`.
     ///
     /// # Errors
     ///
     /// Returns [`EvalHeapError::Value`] if `value` is not a string value.
     /// Returns [`EvalHeapError::UnknownPointer`] if the string handle does not
-    /// belong to this heap.
+    /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
+    /// the handle belongs to this heap but references a non-string record.
     pub fn get_string(&self, value: Value) -> Result<&NixString, EvalHeapError> {
         let ptr = value.as_string_ptr().map_err(EvalHeapError::Value)?;
         self.get_string_ptr(ptr)
@@ -105,13 +131,49 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError::UnknownPointer`] if `ptr` does not belong to
-    /// this heap.
+    /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
+    /// belongs to this heap but references a non-string record.
     pub fn get_string_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&NixString, EvalHeapError> {
-        let record = self
-            .record(ptr)
-            .ok_or_else(|| EvalHeapError::unknown(ValueTag::String, ptr))?;
+        let record = self.record_or_unknown(ValueTag::String, ptr)?;
         match &record.object {
             HeapObjectValue::String(string) => Ok(string),
+            object => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::String,
+                object.tag(),
+                ptr,
+            )),
+        }
+    }
+
+    /// Returns the list object referenced by `value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not a list value.
+    /// Returns [`EvalHeapError::UnknownPointer`] if the list handle does not
+    /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
+    /// the handle belongs to this heap but references a non-list record.
+    pub fn get_list(&self, value: Value) -> Result<&NixList, EvalHeapError> {
+        let ptr = value.as_list_ptr().map_err(EvalHeapError::Value)?;
+        self.get_list_ptr(ptr)
+    }
+
+    /// Returns the list object referenced by an opaque heap pointer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::UnknownPointer`] if `ptr` does not belong to
+    /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
+    /// belongs to this heap but references a non-list record.
+    pub fn get_list_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&NixList, EvalHeapError> {
+        let record = self.record_or_unknown(ValueTag::List, ptr)?;
+        match &record.object {
+            HeapObjectValue::List(list) => Ok(list),
+            object => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::List,
+                object.tag(),
+                ptr,
+            )),
         }
     }
 
@@ -132,6 +194,15 @@ impl EvalHeap {
             .iter()
             .find(|record| record.ptr.as_ptr() as usize == address)
     }
+
+    fn record_or_unknown(
+        &self,
+        tag: ValueTag,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<&HeapRecord, EvalHeapError> {
+        self.record(ptr)
+            .ok_or_else(|| EvalHeapError::unknown(tag, ptr))
+    }
 }
 
 #[derive(Debug)]
@@ -143,6 +214,16 @@ struct HeapRecord {
 #[derive(Debug)]
 enum HeapObjectValue {
     String(NixString),
+    List(NixList),
+}
+
+impl HeapObjectValue {
+    const fn tag(&self) -> ValueTag {
+        match self {
+            Self::String(_) => ValueTag::String,
+            Self::List(_) => ValueTag::List,
+        }
+    }
 }
 
 /// A typed evaluator-heap operation failed.
@@ -171,12 +252,34 @@ pub enum EvalHeapError {
         /// The unrecognized pointer address.
         address: usize,
     },
+    /// A heap pointer belonged to this heap but referenced another typed object.
+    #[error("heap record type mismatch at 0x{address:x}: expected {expected:?}, got {actual:?}")]
+    RecordTypeMismatch {
+        /// The expected runtime value tag.
+        expected: ValueTag,
+        /// The actual typed record tag.
+        actual: ValueTag,
+        /// The pointer address shared by the runtime value and heap record.
+        address: usize,
+    },
 }
 
 impl EvalHeapError {
     fn unknown(tag: ValueTag, ptr: NonNull<HeapObject>) -> Self {
         Self::UnknownPointer {
             tag,
+            address: ptr.as_ptr() as usize,
+        }
+    }
+
+    fn record_type_mismatch(
+        expected: ValueTag,
+        actual: ValueTag,
+        ptr: NonNull<HeapObject>,
+    ) -> Self {
+        Self::RecordTypeMismatch {
+            expected,
+            actual,
             address: ptr.as_ptr() as usize,
         }
     }
@@ -226,6 +329,48 @@ mod tests {
     }
 
     #[test]
+    fn allocates_list_values_and_recovers_spine() {
+        let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+        let value = heap
+            .alloc_list(NixList::new(vec![Value::int(1), Value::bool(true)]))
+            .expect("list allocates");
+
+        assert_eq!(value.tag(), ValueTag::List);
+        assert_eq!(heap.len(), 1);
+        let list = heap.get_list(value).expect("list exists");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.get(0).expect("first element").as_int(), Ok(1));
+        assert_eq!(list.get(1).expect("second element").as_bool(), Ok(true));
+        assert_eq!(heap.arena_stats().chunks, 1);
+    }
+
+    #[test]
+    fn mixed_heap_object_types_keep_distinct_records() {
+        let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+        let string = heap
+            .alloc_string(NixString::from_bytes(b"name".to_vec()))
+            .expect("string allocates");
+        let list = heap
+            .alloc_list(NixList::new(vec![Value::int(7)]))
+            .expect("list allocates");
+
+        assert_ne!(string.payload_bits(), list.payload_bits());
+        assert_eq!(heap.len(), 2);
+        assert_eq!(
+            heap.get_string(string).expect("string exists").bytes(),
+            b"name"
+        );
+        assert_eq!(
+            heap.get_list(list)
+                .expect("list exists")
+                .get(0)
+                .expect("first element")
+                .as_int(),
+            Ok(7)
+        );
+    }
+
+    #[test]
     fn preserves_context_bearing_strings() {
         let context = StringContext::singleton(
             ContextElement::opaque_path(b"/nix/store/source".to_vec()).expect("context builds"),
@@ -258,6 +403,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_list_values_from_another_live_heap() {
+        let heap = EvalHeap::new();
+        let mut other = EvalHeap::new();
+        let foreign = other
+            .alloc_list(NixList::new(vec![Value::int(1)]))
+            .expect("foreign list allocates");
+        let ptr = foreign.as_list_ptr().expect("foreign is a list");
+        let error = heap
+            .get_list(foreign)
+            .expect_err("foreign pointer is not in this heap");
+
+        assert_eq!(error, EvalHeapError::unknown(ValueTag::List, ptr));
+    }
+
+    #[test]
     fn rejects_wrong_value_tags_for_string_lookup() {
         let heap = EvalHeap::new();
         let error = heap
@@ -274,6 +434,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_wrong_value_tags_for_list_lookup() {
+        let heap = EvalHeap::new();
+        let error = heap
+            .get_list(Value::int(1))
+            .expect_err("integer is not a list");
+
+        assert_eq!(
+            error,
+            EvalHeapError::Value(ValueError::Type {
+                expected: "list",
+                actual: ValueTag::Int,
+            })
+        );
+    }
+
+    #[test]
     fn reports_unknown_string_pointers() {
         let heap = EvalHeap::new();
         let ptr = NonNull::<HeapObject>::dangling();
@@ -283,6 +459,50 @@ mod tests {
             .expect_err("pointer does not belong to heap");
 
         assert_eq!(error, EvalHeapError::unknown(ValueTag::String, ptr));
+    }
+
+    #[test]
+    fn reports_unknown_list_pointers() {
+        let heap = EvalHeap::new();
+        let ptr = NonNull::<HeapObject>::dangling();
+        let value = Value::list(ptr).expect("dangling pointer is aligned");
+        let error = heap
+            .get_list(value)
+            .expect_err("pointer does not belong to heap");
+
+        assert_eq!(error, EvalHeapError::unknown(ValueTag::List, ptr));
+    }
+
+    #[test]
+    fn reports_heap_record_type_mismatches() {
+        let mut heap = EvalHeap::new();
+        let list = heap.alloc_list(NixList::empty()).expect("list allocates");
+        let list_ptr = list.as_list_ptr().expect("list pointer");
+        let mislabeled_string = Value::string(list_ptr).expect("same pointer can carry string tag");
+
+        let error = heap
+            .get_string(mislabeled_string)
+            .expect_err("record is not a string");
+
+        assert_eq!(
+            error,
+            EvalHeapError::record_type_mismatch(ValueTag::String, ValueTag::List, list_ptr)
+        );
+
+        let string = heap
+            .alloc_string(NixString::from_bytes(b"payload".to_vec()))
+            .expect("string allocates");
+        let string_ptr = string.as_string_ptr().expect("string pointer");
+        let mislabeled_list = Value::list(string_ptr).expect("same pointer can carry list tag");
+
+        let error = heap
+            .get_list(mislabeled_list)
+            .expect_err("record is not a list");
+
+        assert_eq!(
+            error,
+            EvalHeapError::record_type_mismatch(ValueTag::List, ValueTag::String, string_ptr)
+        );
     }
 
     #[test]
