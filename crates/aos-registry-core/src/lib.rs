@@ -13,6 +13,9 @@
 //!   principals, and the pure role/permission/scope authorization kernel).
 //! - [`stack`] — the cache-stack node model ([`StackNode`](stack::StackNode))
 //!   that round-trips losslessly through JSON.
+//! - [`url_guard`] — the pure SSRF guards (global-IP predicate, network-origin
+//!   URL check, HTTP surface-path validator, traversal-safe path join) shared
+//!   by the native hub's `fetch` hardening and the Worker's egress policy.
 //! - [`backend`] — the async [`Backend`](backend::Backend) trait, the
 //!   [`Statement`](backend::Statement) unit of atomic work, and the
 //!   `split_statements`/`with_returning_id`/`prepare` helpers every driver
@@ -30,4 +33,5 @@ pub mod backend;
 pub mod dialect;
 pub mod domain;
 pub mod stack;
+pub mod url_guard;
 pub mod value;

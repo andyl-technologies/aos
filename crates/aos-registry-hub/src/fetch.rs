@@ -16,13 +16,22 @@
 //! registry *stale* (surface unreachable) rather than *failed* (surface
 //! invalid) when the underlying error is a fetch error.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
+
+// The pure SSRF/path guards moved to the runtime-agnostic core crate (RFC-0004
+// Phase 5) so the Worker shares them; the native DNS pre-check, validating
+// resolver, and symlink-escape canonicalization stay here. Re-export the pure
+// items so existing `crate::fetch::…` paths (used across the hub) are unchanged.
+use aos_registry_core::url_guard::{self, fetch_err, is_global_ip};
+pub use aos_registry_core::url_guard::{
+    is_fetch_error, safe_join, validate_http_surface_path, FetchError,
+};
 
 /// Maximum response body size accepted from a surface fetch (64 MiB).
 ///
@@ -96,30 +105,6 @@ pub async fn read_body_capped(
 pub async fn read_text_capped(response: reqwest::Response, cap: u64, what: &str) -> Result<String> {
     let bytes = read_body_capped(response, cap, what).await?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-/// Marker error for transport-level surface fetch failures.
-///
-/// All transport failures — reqwest errors, non-404 HTTP statuses, local
-/// IO errors other than `NotFound`, symlink escapes — are wrapped in this
-/// type (with the detail preserved in the message) so callers can
-/// classify them through `anyhow` context chains via [`is_fetch_error`].
-#[derive(Debug, thiserror::Error)]
-#[error("surface fetch failed: {0}")]
-pub struct FetchError(pub String);
-
-/// Whether any error in `err`'s chain is a transport-level [`FetchError`].
-///
-/// Walks the full `anyhow` context chain, so classification survives any
-/// number of `.context(…)` layers added by callers.
-pub fn is_fetch_error(err: &anyhow::Error) -> bool {
-    err.chain()
-        .any(|cause| cause.downcast_ref::<FetchError>().is_some())
-}
-
-/// Wrap a message as a transport-level fetch failure.
-fn fetch_err(message: impl Into<String>) -> anyhow::Error {
-    anyhow::Error::new(FetchError(message.into()))
 }
 
 /// Build the hardened HTTP client used for all hub-originated requests.
@@ -463,42 +448,30 @@ fn allow_local_remotes() -> bool {
 /// Returns an error when the scheme is not `http(s)`, the URL has no host, DNS
 /// resolution fails, or any resolved address is local/internal.
 pub fn is_safe_remote_url(raw: &str) -> Result<()> {
-    let url = url::Url::parse(raw).map_err(|err| {
-        fetch_err(format!(
-            "mirror/frontend URL '{raw}' is not a valid URL: {err}"
-        ))
-    })?;
-    match url.scheme() {
-        "http" | "https" => {}
-        other => {
-            return Err(fetch_err(format!(
-                "mirror/frontend URL '{raw}' uses unsupported scheme '{other}' \
-                 (a network origin must be http(s)://)"
-            )));
-        }
-    }
-    // The non-HTTP scheme rejection above always applies; the local/internal
-    // address rejection below is the part the test/dev hatch relaxes.
+    // The test/dev hatch relaxes the local/internal address rejection but never
+    // the non-HTTP scheme rejection: enforce the scheme even when it is on.
     if allow_local_remotes() {
+        url_guard::require_http_scheme(raw)?;
         return Ok(());
     }
-    let host = url
-        .host_str()
-        .ok_or_else(|| fetch_err(format!("mirror/frontend URL '{raw}' has no host")))?;
-
-    // A bracketed/literal IP host is checked directly; a name is resolved and
-    // every returned address checked, so a name pointing at an internal IP is
-    // rejected too.
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if !is_global_ip(ip) {
-            return Err(fetch_err(format!(
-                "mirror/frontend URL '{raw}' resolves to a local/internal address {ip}"
-            )));
-        }
-        return Ok(());
-    }
+    // The pure core guard enforces the http(s) scheme and, for a literal-IP
+    // host (v4 or v6), the global-address check. Hostnames are accepted there
+    // (it does no DNS); the native pre-check below resolves them and rejects any
+    // answer that maps to a local/internal address.
+    url_guard::is_safe_remote_url(raw)?;
+    // Re-parse for the hostname-resolution pre-check (the URL is already known
+    // valid and http(s)). Only a *domain* host needs DNS here — a literal IP
+    // host was fully validated against `is_global_ip` by the core guard above
+    // (using `url::Host`, which classifies bracketed IPv6 literals correctly).
+    let url = url::Url::parse(raw)
+        .map_err(|err| fetch_err(format!("mirror/frontend URL '{raw}' is not a valid URL: {err}")))?;
+    let host = match url.host() {
+        Some(url::Host::Domain(host)) => host.to_string(),
+        // A literal IP (already validated) or a hostless URL: nothing to resolve.
+        _ => return Ok(()),
+    };
     let port = url.port_or_known_default().unwrap_or(80);
-    let resolved: Vec<IpAddr> = (host, port)
+    let resolved: Vec<IpAddr> = (host.as_str(), port)
         .to_socket_addrs()
         .map_err(|err| fetch_err(format!("resolving mirror/frontend host '{host}': {err}")))?
         .map(|addr| addr.ip())
@@ -516,145 +489,6 @@ pub fn is_safe_remote_url(raw: &str) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Whether `ip` is a globally routable address (not local/internal).
-///
-/// Rejects loopback, link-local, private/unique-local, unspecified, and broadcast
-/// ranges for both IPv4 and IPv6 (including IPv4-mapped IPv6). The std-stable
-/// predicates are combined manually because `Ipv6Addr::is_unique_local` and
-/// related helpers are not yet stable.
-fn is_global_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => is_global_ipv4(v4),
-        IpAddr::V6(v6) => {
-            // Unwrap IPv4-mapped/compatible IPv6 to apply the IPv4 rules.
-            if let Some(mapped) = v6.to_ipv4_mapped() {
-                return is_global_ipv4(mapped);
-            }
-            if let Some(compat) = v6.to_ipv4() {
-                return is_global_ipv4(compat);
-            }
-            is_global_ipv6(v6)
-        }
-    }
-}
-
-/// Whether an IPv4 address is globally routable (not local/internal).
-///
-/// Rejects every IANA special-purpose range that is not globally reachable.
-/// The `is_shared`/`is_benchmarking`/`is_documentation` std helpers are still
-/// unstable (feature `ip`), so the shared-address, benchmarking, protocol-
-/// assignment, and documentation ranges are matched explicitly.
-fn is_global_ipv4(v4: Ipv4Addr) -> bool {
-    let o = v4.octets();
-    // 100.64.0.0/10 — RFC 6598 carrier-grade NAT shared address space.
-    let is_cgnat = o[0] == 100 && (o[1] & 0xc0) == 64;
-    // 192.0.0.0/24 — RFC 6890 IETF protocol assignments.
-    let is_protocol = o[0] == 192 && o[1] == 0 && o[2] == 0;
-    // 198.18.0.0/15 — RFC 2544 benchmarking.
-    let is_benchmarking = o[0] == 198 && (o[1] & 0xfe) == 18;
-    // Documentation ranges (RFC 5737): 192.0.2.0/24 (TEST-NET-1),
-    // 198.51.100.0/24 (TEST-NET-2), 203.0.113.0/24 (TEST-NET-3).
-    let is_documentation = (o[0] == 192 && o[1] == 0 && o[2] == 2)
-        || (o[0] == 198 && o[1] == 51 && o[2] == 100)
-        || (o[0] == 203 && o[1] == 0 && o[2] == 113);
-    !(v4.is_loopback()           // 127.0.0.0/8
-        || v4.is_private()        // 10/8, 172.16/12, 192.168/16
-        || v4.is_link_local()     // 169.254.0.0/16 (cloud metadata)
-        || v4.is_unspecified()    // 0.0.0.0
-        || v4.is_broadcast()      // 255.255.255.255
-        || o[0] == 0              // 0.0.0.0/8
-        || is_cgnat               // 100.64.0.0/10
-        || is_protocol            // 192.0.0.0/24
-        || is_benchmarking        // 198.18.0.0/15
-        || is_documentation) // 192.0.2/24, 198.51.100/24, 203.0.113/24
-}
-
-/// Whether an IPv6 address is globally routable (not local/internal).
-fn is_global_ipv6(v6: Ipv6Addr) -> bool {
-    let segs = v6.segments();
-    let is_unique_local = (segs[0] & 0xfe00) == 0xfc00; // fc00::/7
-    let is_link_local = (segs[0] & 0xffc0) == 0xfe80; // fe80::/10
-    let is_documentation = segs[0] == 0x2001 && segs[1] == 0x0db8; // 2001:db8::/32
-    !(v6.is_loopback()
-        || v6.is_unspecified()
-        || is_unique_local
-        || is_link_local
-        || is_documentation)
-}
-
-/// Validate a relative surface path before interpolating it into an HTTP URL.
-///
-/// [`HttpFetch::fetch`] builds `"{base}/{path}"`, so a `path` that is absolute,
-/// contains a `..` segment, embeds a scheme (`://`), starts a network-path
-/// reference (`//host`), or carries control characters could escape the base or
-/// repoint the request at a different host. Because several surface segments
-/// derive from a remote's own `info/refs`/channel data during a mirror sync,
-/// this guard gives the HTTP transport protection equivalent to the local
-/// fetcher's [`safe_join`] (which it cannot reuse — there is no filesystem to
-/// canonicalize against).
-///
-/// Legitimate surface paths (`nar/<hash>.nar.zst`, `objects/ab/cdef…`,
-/// `channels/stable/00`, `info/refs`, `<hash>.narinfo`) pass unchanged.
-///
-/// # Errors
-///
-/// Returns a [`FetchError`] when `path` is empty, absolute (leading `/`),
-/// contains a `\` or a control character, embeds `://`, or has any `.`/`..`
-/// or empty path segment (which includes a leading `//`).
-pub fn validate_http_surface_path(path: &str) -> Result<()> {
-    let reject = |reason: &str| {
-        Err(fetch_err(format!(
-            "refusing HTTP surface path '{path}': {reason}"
-        )))
-    };
-    if path.is_empty() {
-        return reject("path is empty");
-    }
-    if path.starts_with('/') {
-        return reject("path is absolute");
-    }
-    if path.contains('\\') {
-        return reject("path contains a backslash");
-    }
-    if path.contains("://") {
-        return reject("path embeds a URL scheme");
-    }
-    if path.chars().any(|c| c.is_control()) {
-        return reject("path contains a control character");
-    }
-    // Reject `..`/`.`/empty segments. An empty segment covers a leading `//`
-    // (network-path reference) and any doubled slash that could collapse the
-    // base, and `..` covers traversal toward the host root.
-    for segment in path.split('/') {
-        if segment.is_empty() {
-            return reject("path contains an empty segment (e.g. a leading or doubled '/')");
-        }
-        if segment == ".." || segment == "." {
-            return reject("path contains a '.' or '..' segment");
-        }
-    }
-    Ok(())
-}
-
-/// Join a relative surface path onto a root, rejecting traversal.
-///
-/// # Errors
-///
-/// Returns an error for absolute paths or any `..` component.
-pub fn safe_join(root: &std::path::Path, relative: &str) -> Result<PathBuf> {
-    let rel = std::path::Path::new(relative);
-    if rel.is_absolute() {
-        bail!("surface path must be relative: '{relative}'");
-    }
-    for component in rel.components() {
-        match component {
-            std::path::Component::Normal(_) => {}
-            _ => bail!("surface path contains illegal component: '{relative}'"),
-        }
-    }
-    Ok(root.join(rel))
 }
 
 /// Verify that a write target stays within `root` even through symlinks.
@@ -792,48 +626,6 @@ mod tests {
         assert!(err.to_string().contains("escapes"), "got: {err:#}");
     }
 
-    #[test]
-    fn safe_join_rejects_traversal() {
-        let root = std::path::Path::new("/srv/reg");
-        assert!(safe_join(root, "objects/ab/cd").is_ok());
-        assert!(safe_join(root, "../etc/passwd").is_err());
-        assert!(safe_join(root, "/etc/passwd").is_err());
-        assert!(safe_join(root, "a/../../b").is_err());
-    }
-
-    #[test]
-    fn validate_http_surface_path_allows_legit_and_rejects_escapes() {
-        // Legitimate surface paths pass unchanged.
-        for ok in [
-            "nar/0a1b2c.nar.zst",
-            "objects/ab/cdef0123",
-            "channels/stable/00",
-            "info/refs",
-            "abc123.narinfo",
-            "HEAD",
-        ] {
-            assert!(validate_http_surface_path(ok).is_ok(), "should allow {ok}");
-        }
-        // Escapes and repointing attempts are rejected.
-        for bad in [
-            "",
-            "/etc/passwd",
-            "../secret",
-            "objects/../../etc/passwd",
-            "//evil.example.com/x",
-            "objects//ab",
-            "https://evil.example.com/x",
-            "objects/ab\\cd",
-            "objects/ab/cd\r\nHost: evil",
-            "objects/./ab",
-        ] {
-            assert!(
-                validate_http_surface_path(bad).is_err(),
-                "should reject {bad:?}"
-            );
-        }
-    }
-
     #[tokio::test]
     async fn fetch_for_url_dispatches_schemes() {
         assert!(fetch_for_url("file:///srv/reg").await.is_ok());
@@ -875,85 +667,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body.len(), 4096);
-    }
-
-    #[test]
-    fn is_safe_remote_url_rejects_local_and_non_http() {
-        // The escape hatch must be unset for this test (the lib test binary
-        // never sets it).
-        assert!(std::env::var_os("AOS_HUB_ALLOW_LOCAL_REMOTES").is_none());
-
-        // Non-HTTP schemes and bare paths are rejected outright.
-        assert!(is_safe_remote_url("file:///etc/passwd").is_err());
-        assert!(is_safe_remote_url("/srv/secret").is_err());
-        assert!(is_safe_remote_url("ftp://example.com/x").is_err());
-
-        // Loopback, link-local (cloud metadata), and RFC-1918 literals.
-        assert!(is_safe_remote_url("http://127.0.0.1/").is_err());
-        assert!(is_safe_remote_url("http://127.0.0.1:8500/v1/").is_err());
-        assert!(is_safe_remote_url("http://169.254.169.254/latest/meta-data/").is_err());
-        assert!(is_safe_remote_url("http://10.0.0.5/").is_err());
-        assert!(is_safe_remote_url("http://172.16.3.4/").is_err());
-        assert!(is_safe_remote_url("http://192.168.1.1/").is_err());
-        assert!(is_safe_remote_url("http://[::1]/").is_err());
-        assert!(is_safe_remote_url("http://[fe80::1]/").is_err());
-        assert!(is_safe_remote_url("http://[fc00::1]/").is_err());
-        // IPv4-mapped IPv6 form of loopback must not slip through.
-        assert!(is_safe_remote_url("http://[::ffff:127.0.0.1]/").is_err());
-
-        // A public literal IP passes (no DNS needed).
-        assert!(is_safe_remote_url("https://93.184.216.34/").is_ok());
-    }
-
-    #[test]
-    fn is_global_ip_classifies_ranges() {
-        use std::net::Ipv4Addr;
-        assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
-        assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
-        assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))));
-        assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1))));
-        assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
-        assert!(is_global_ip(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))));
-        assert!(is_global_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
-    }
-
-    #[test]
-    fn is_global_ipv4_rejects_special_purpose_ranges() {
-        use std::net::Ipv4Addr;
-        // 100.64.0.0/10 carrier-grade NAT (RFC 6598).
-        assert!(!is_global_ipv4(Ipv4Addr::new(100, 64, 0, 1)));
-        assert!(!is_global_ipv4(Ipv4Addr::new(100, 127, 255, 255)));
-        // Boundaries of the /10 are global on either side.
-        assert!(is_global_ipv4(Ipv4Addr::new(100, 63, 255, 255)));
-        assert!(is_global_ipv4(Ipv4Addr::new(100, 128, 0, 1)));
-        // 192.0.0.0/24 IETF protocol assignments (RFC 6890).
-        assert!(!is_global_ipv4(Ipv4Addr::new(192, 0, 0, 1)));
-        // 198.18.0.0/15 benchmarking (RFC 2544).
-        assert!(!is_global_ipv4(Ipv4Addr::new(198, 18, 0, 1)));
-        assert!(!is_global_ipv4(Ipv4Addr::new(198, 19, 255, 255)));
-        assert!(is_global_ipv4(Ipv4Addr::new(198, 17, 255, 255)));
-        assert!(is_global_ipv4(Ipv4Addr::new(198, 20, 0, 1)));
-        // Documentation ranges (RFC 5737).
-        assert!(!is_global_ipv4(Ipv4Addr::new(192, 0, 2, 1)));
-        assert!(!is_global_ipv4(Ipv4Addr::new(198, 51, 100, 1)));
-        assert!(!is_global_ipv4(Ipv4Addr::new(203, 0, 113, 1)));
-        // A neighbour outside the documentation /24 is global.
-        assert!(is_global_ipv4(Ipv4Addr::new(203, 0, 114, 1)));
-    }
-
-    #[test]
-    fn is_safe_remote_url_rejects_new_special_ranges() {
-        // The hatch must be unset for the literal-IP path to apply its check
-        // (the lib test binary never sets it).
-        assert!(std::env::var_os("AOS_HUB_ALLOW_LOCAL_REMOTES").is_none());
-        assert!(is_safe_remote_url("http://100.64.0.1/").is_err());
-        assert!(is_safe_remote_url("http://192.0.0.1/").is_err());
-        assert!(is_safe_remote_url("http://198.18.0.1/").is_err());
-        assert!(is_safe_remote_url("http://192.0.2.1/").is_err());
-        assert!(is_safe_remote_url("http://198.51.100.1/").is_err());
-        assert!(is_safe_remote_url("http://203.0.113.1/").is_err());
-        // IPv6 documentation range.
-        assert!(is_safe_remote_url("http://[2001:db8::1]/").is_err());
     }
 
     #[tokio::test]
@@ -1047,17 +760,5 @@ mod tests {
         }
         // A public literal still passes, so legitimate IP-addressed caches work.
         assert!(is_safe_remote_url("http://93.184.216.34/x.narinfo").is_ok());
-    }
-
-    #[test]
-    fn fetch_error_classification_survives_context() {
-        use anyhow::Context as _;
-        let err: anyhow::Error = fetch_err("connection refused");
-        let wrapped = Err::<(), _>(err)
-            .context("indexing demo")
-            .context("outer")
-            .unwrap_err();
-        assert!(is_fetch_error(&wrapped));
-        assert!(!is_fetch_error(&anyhow::anyhow!("parse error")));
     }
 }
