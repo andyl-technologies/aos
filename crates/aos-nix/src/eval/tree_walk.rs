@@ -7,8 +7,8 @@
 //! string-valued attribute names, static and dynamic string-valued
 //! attribute selection, lexical `let` environments, simple and formal-set lambda
 //! application, lazy `with` scope lookup, attrset update, thunk forcing, numeric
-//! arithmetic, numeric and string/list comparisons, direct unary type
-//! introspection primops, and scalar/string/function plus structural
+//! arithmetic, numeric and string/list comparisons, direct strict unary primops,
+//! and scalar/string/function plus structural
 //! list/attrset equality to weak head normal form, establishing the arena access
 //! and diagnostic surface used by later slices for full string coercion,
 //! first-class primitive operations, and derivation boundaries.
@@ -1297,6 +1297,49 @@ impl<'ir> TreeWalk<'ir> {
                 }
                 self.heap
                     .alloc_list(NixList::new(elements))
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                    })
+            }
+            StrictUnaryPrimOp::AttrValues => {
+                let argument_span = self.node(argument)?.span;
+                if value.tag() != ValueTag::Attrs {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id: argument,
+                            expected: "attrs",
+                            actual: value.tag(),
+                        },
+                        argument_span,
+                    ));
+                }
+                let values = {
+                    let attrs = self.heap.get_attrs(value).map_err(|source| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::Heap {
+                                id: argument,
+                                source,
+                            },
+                            argument_span,
+                        )
+                    })?;
+                    let mut values = Vec::new();
+                    values.try_reserve_exact(attrs.len()).map_err(|_| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::ListAllocationFailed {
+                                id,
+                                len: attrs.len(),
+                            },
+                            node.span,
+                        )
+                    })?;
+                    for entry in attrs.iter_lexicographic() {
+                        values.push(entry.value);
+                    }
+                    values
+                };
+                self.heap
+                    .alloc_list(NixList::new(values))
                     .map_err(|source| {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
                     })
@@ -2803,6 +2846,7 @@ enum StrictUnaryPrimOp {
     TypeOf,
     Length,
     AttrNames,
+    AttrValues,
 }
 
 impl StrictUnaryPrimOp {
@@ -2820,6 +2864,7 @@ impl StrictUnaryPrimOp {
             b"typeOf" => Some(Self::TypeOf),
             b"length" => Some(Self::Length),
             b"attrNames" => Some(Self::AttrNames),
+            b"attrValues" => Some(Self::AttrValues),
             _ => None,
         }
     }
@@ -3709,6 +3754,69 @@ mod tests {
         let argument_span = ir.arena.node(argument).expect("argument exists").span;
 
         let error = eval_whnf(&ir).expect_err("attrNames requires an attrset");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "attrs",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn attr_values_primop_returns_sorted_values_without_forcing_them() {
+        let ir = lower("builtins.attrValues { z = 1 / 0; a = 2; }");
+        let span = ir.arena.node(ir.root).expect("root exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let value = evaluator.eval_root().expect("attrValues evaluates");
+        let values = {
+            let list = evaluator
+                .heap
+                .get_list(value)
+                .expect("result is a heap-owned list");
+            list.as_slice().to_vec()
+        };
+
+        assert_eq!(values.len(), 2);
+        let first = evaluator
+            .force_value(ir.root, span, values[0])
+            .expect("first value forces");
+        assert_eq!(first.as_int(), Ok(2));
+        let lazy_division = values[1];
+        assert_eq!(lazy_division.tag(), ValueTag::Thunk);
+        let thunk = evaluator
+            .heap
+            .get_thunk(lazy_division)
+            .expect("second value remains a heap-owned thunk");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(
+            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            IrKind::BinOp
+        );
+
+        assert_eq!(
+            eval_list_string_bytes(
+                "let builtins = { attrValues = x: [ \"local\" ]; }; in builtins.attrValues { a = 1; }"
+            ),
+            vec![b"local".to_vec()]
+        );
+    }
+
+    #[test]
+    fn attr_values_primop_type_checks_argument() {
+        let ir = lower("builtins.attrValues 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("attrValues requires an attrset");
 
         assert_eq!(
             error.kind(),
