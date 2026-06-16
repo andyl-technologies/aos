@@ -640,5 +640,86 @@ async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Result<()> {
             ));
             Ok(())
         }
+        HubRegistryCmd::Log { hub, token, slug } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let commits = client.git_log(slug).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "commits": commits
+                    .iter()
+                    .map(|c| serde_json::json!({
+                        "oid": c.oid,
+                        "message": c.message,
+                        "author": c.author,
+                        "when": c.when,
+                        "change_id": c.change_id,
+                    }))
+                    .collect::<Vec<_>>(),
+            })) {
+                return Ok(());
+            }
+            if commits.is_empty() {
+                printer.info(&format!("no commits for '{slug}'"));
+                return Ok(());
+            }
+            printer.header(&format!("{} commit(s) for {slug}", commits.len()));
+            for commit in &commits {
+                // First line of the message, short oid.
+                let summary = commit.message.lines().next().unwrap_or("");
+                let short = commit.oid.get(..12).unwrap_or(commit.oid.as_str());
+                printer.plain(&format!("  {short}  {summary}"));
+            }
+            Ok(())
+        }
+        HubRegistryCmd::Diff {
+            hub,
+            token,
+            slug,
+            from,
+            to,
+        } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let diff = client.git_diff(slug, from, to).await?;
+            if printer.json_if_active(&serde_json::json!({ "diff": diff })) {
+                return Ok(());
+            }
+            if diff.trim().is_empty() {
+                printer.info(&format!("no differences for '{slug}'"));
+                return Ok(());
+            }
+            // The diff is the primary payload; print it verbatim.
+            printer.plain(&diff);
+            Ok(())
+        }
+        HubRegistryCmd::ChangeRequests { hub, token, slug } => {
+            let client = hub_client(hub, token.as_deref())?;
+            let requests = client.list_change_requests(slug).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "change_requests": requests
+                    .iter()
+                    .map(|r| serde_json::json!({
+                        "change_id": r.change_id,
+                        "status": r.status,
+                        "summary": r.summary,
+                        "actor_label": r.actor_label,
+                        "git_ref": r.git_ref,
+                        "merge_command": r.merge_command,
+                    }))
+                    .collect::<Vec<_>>(),
+            })) {
+                return Ok(());
+            }
+            if requests.is_empty() {
+                printer.info(&format!("no open change requests for '{slug}'"));
+                return Ok(());
+            }
+            printer.header(&format!("{} change request(s) for {slug}", requests.len()));
+            for request in &requests {
+                printer.plain(&format!(
+                    "  {}  [{}]  {}",
+                    request.change_id, request.status, request.summary
+                ));
+            }
+            Ok(())
+        }
     }
 }

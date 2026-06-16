@@ -22,10 +22,11 @@ use aos_proto::aos::registry::v1::{
     CreateRegistryRequest, GetRegistryRequest, ListAuditRequest, ListBindingsRequest,
     ListChangesetsRequest,
     ListChannelsRequest, ListOrgsRequest, ListPackagesRequest, ListProjectsRequest,
-    CreateWebhookRequest, DeleteWebhookRequest, ListRegistriesRequest, ListReleasesRequest,
-    ListWebhooksRequest, MintUploadCredentialsRequest, Org, OrgServiceClient, PackageServiceClient,
-    PackageSummary, Project, ProjectServiceClient, PublishServiceClient, Registry,
-    RegistryServiceClient, Release, StorageServiceClient, Webhook, WebhookServiceClient,
+    ChangeRequest, CreateWebhookRequest, DeleteWebhookRequest, GitCommit, GitDiffRequest,
+    GitLogRequest, GitServiceClient, ListChangeRequestsRequest, ListRegistriesRequest,
+    ListReleasesRequest, ListWebhooksRequest, MintUploadCredentialsRequest, Org, OrgServiceClient,
+    PackageServiceClient, PackageSummary, Project, ProjectServiceClient, PublishServiceClient,
+    Registry, RegistryServiceClient, Release, StorageServiceClient, Webhook, WebhookServiceClient,
 };
 
 use crate::client::{make_http_client, validate_base_url};
@@ -51,6 +52,7 @@ pub struct RegistryHubClient {
     config: ConfigServiceClient<HttpClient>,
     webhooks: WebhookServiceClient<HttpClient>,
     publish: PublishServiceClient<HttpClient>,
+    git: GitServiceClient<HttpClient>,
 }
 
 /// A short-lived, registry-scoped upload credential minted by the hub.
@@ -113,7 +115,8 @@ impl RegistryHubClient {
             audit: AuditServiceClient::new(http.clone(), config.clone()),
             config: ConfigServiceClient::new(http.clone(), config.clone()),
             webhooks: WebhookServiceClient::new(http.clone(), config.clone()),
-            publish: PublishServiceClient::new(http, config),
+            publish: PublishServiceClient::new(http.clone(), config.clone()),
+            git: GitServiceClient::new(http, config),
         })
     }
 
@@ -533,5 +536,66 @@ impl RegistryHubClient {
             upload_url: response.upload_url,
             expires_at: response.expires_at,
         })
+    }
+
+    /// Lists a registry's committed commit log (newest first), the first page.
+    ///
+    /// Requires `read` on the registry scope (follows registry visibility).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn git_log(&self, slug: &str) -> Result<Vec<GitCommit>> {
+        let response = self
+            .git
+            .git_log(GitLogRequest {
+                slug: slug.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("reading git log for '{slug}': {e}"))?;
+        Ok(response.into_owned().commits)
+    }
+
+    /// Returns a textual diff of a registry's committed config files between two
+    /// commits.
+    ///
+    /// An empty `from_oid` diffs the whole tree as additions; an empty `to_oid`
+    /// defaults to the current HEAD. Requires `read` on the registry scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn git_diff(&self, slug: &str, from_oid: &str, to_oid: &str) -> Result<String> {
+        let response = self
+            .git
+            .git_diff(GitDiffRequest {
+                slug: slug.into(),
+                from_oid: from_oid.into(),
+                to_oid: to_oid.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("diffing '{slug}': {e}"))?;
+        Ok(response.into_owned().diff)
+    }
+
+    /// Lists a registry's draft git-backed change requests.
+    ///
+    /// Requires `audit.read` on the registry scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn list_change_requests(&self, slug: &str) -> Result<Vec<ChangeRequest>> {
+        let response = self
+            .git
+            .list_change_requests(ListChangeRequestsRequest {
+                slug: slug.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("listing change requests for '{slug}': {e}"))?;
+        Ok(response.into_owned().change_requests)
     }
 }

@@ -321,4 +321,43 @@ pub enum HubRegistryCmd {
         #[arg(long = "trust-key")]
         trust_key: Vec<String>,
     },
+    /// Show a registry's committed config commit log (newest first)
+    Log {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access (omit for public reads)
+        #[arg(long)]
+        token: Option<String>,
+        /// Registry slug (e.g. `acme/infra/prod/cdn`)
+        slug: String,
+    },
+    /// Show a textual diff of a registry's committed config between two commits
+    Diff {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access (omit for public reads)
+        #[arg(long)]
+        token: Option<String>,
+        /// Registry slug (e.g. `acme/infra/prod/cdn`)
+        slug: String,
+        /// Base commit oid (omit to diff the whole tree as additions)
+        #[arg(long, default_value = "")]
+        from: String,
+        /// Target commit oid (omit to default to the current HEAD)
+        #[arg(long, default_value = "")]
+        to: String,
+    },
+    /// List a registry's draft git-backed change requests
+    ChangeRequests {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access
+        #[arg(long)]
+        token: Option<String>,
+        /// Registry slug (e.g. `acme/infra/prod/cdn`)
+        slug: String,
+    },
 }
