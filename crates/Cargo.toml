@@ -10,6 +10,7 @@ members = [
     "aos-remote",
     "aos-doc",
     "aos-package",
+    "aos-registry-core",
     "aos-registry-hub",
     "aos-registry-surface",
     "aos-registry-spa",
@@ -138,6 +139,7 @@ aos-cache = { path = "aos-cache" }
 aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
 aos-package = { path = "aos-package" }
+aos-registry-core = { path = "aos-registry-core" }
 aos-registry-hub = { path = "aos-registry-hub" }
 aos-registry-surface = { path = "aos-registry-surface" }
 aos-systemd = { path = "aos-systemd" }
