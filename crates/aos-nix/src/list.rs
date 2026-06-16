@@ -7,6 +7,8 @@
 //! the backing storage with an inline flexible-array object without changing the
 //! safe access surface here.
 
+use thiserror::Error;
+
 use crate::value::Value;
 
 /// A safe immutable Nix list spine backed by contiguous values.
@@ -56,6 +58,33 @@ impl NixList {
         &self.elements
     }
 
+    /// Concatenates two list spines without forcing their elements.
+    ///
+    /// The returned list contains copied [`Value`] handles in source order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixListError::LengthOverflow`] if the combined length overflows
+    /// `usize`, or [`NixListError::AllocationFailed`] if the resulting spine
+    /// cannot reserve enough storage.
+    pub fn concat(&self, other: &Self) -> Result<Self, NixListError> {
+        let len = self
+            .elements
+            .len()
+            .checked_add(other.elements.len())
+            .ok_or(NixListError::LengthOverflow {
+                left: self.elements.len(),
+                right: other.elements.len(),
+            })?;
+        let mut elements = Vec::new();
+        elements
+            .try_reserve_exact(len)
+            .map_err(|_| NixListError::AllocationFailed { len })?;
+        elements.extend_from_slice(&self.elements);
+        elements.extend_from_slice(&other.elements);
+        Ok(Self { elements })
+    }
+
     /// Iterates over list elements in source order.
     pub fn iter(&self) -> std::slice::Iter<'_, Value> {
         self.elements.iter()
@@ -82,9 +111,29 @@ impl<'a> IntoIterator for &'a NixList {
     }
 }
 
+/// A Nix list operation failed.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum NixListError {
+    /// Concatenating two list spines overflowed `usize`.
+    #[error("list length overflow while combining lengths {left} and {right}")]
+    LengthOverflow {
+        /// The left list length.
+        left: usize,
+        /// The right list length.
+        right: usize,
+    },
+    /// The list spine could not reserve storage.
+    #[error("failed to reserve {len} list elements")]
+    AllocationFailed {
+        /// The requested element capacity.
+        len: usize,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value::HeapObject;
 
     fn int_values(values: &[Value]) -> Vec<i64> {
         values
@@ -132,5 +181,40 @@ mod tests {
         let elements = list.into_vec();
 
         assert_eq!(int_values(&elements), vec![8, 13]);
+    }
+
+    #[test]
+    fn concat_preserves_order_without_forcing_elements() {
+        let left_ptr = std::ptr::NonNull::new(8usize as *mut HeapObject).expect("non-null pointer");
+        let right_ptr =
+            std::ptr::NonNull::new(16usize as *mut HeapObject).expect("non-null pointer");
+        let left_thunk = Value::thunk(left_ptr).expect("thunk pointer");
+        let right_thunk = Value::thunk(right_ptr).expect("thunk pointer");
+        let left = NixList::new(vec![Value::int(1), left_thunk]);
+        let right = NixList::new(vec![right_thunk, Value::int(4)]);
+
+        let concat = left.concat(&right).expect("concat succeeds");
+
+        assert_eq!(concat.len(), 4);
+        assert_eq!(concat.get(0).expect("first").as_int(), Ok(1));
+        assert!(concat.get(1).expect("second").raw_eq(left_thunk));
+        assert!(concat.get(2).expect("third").raw_eq(right_thunk));
+        assert_eq!(concat.get(3).expect("fourth").as_int(), Ok(4));
+    }
+
+    #[test]
+    fn concat_handles_empty_lists() {
+        let empty = NixList::empty();
+        let values = NixList::new(vec![Value::bool(true)]);
+
+        let left_empty = empty.concat(&values).expect("concat succeeds");
+        assert_eq!(left_empty.len(), 1);
+        assert_eq!(left_empty.get(0).expect("element").as_bool(), Ok(true));
+
+        let right_empty = values.concat(&empty).expect("concat succeeds");
+        assert_eq!(right_empty.len(), 1);
+        assert_eq!(right_empty.get(0).expect("element").as_bool(), Ok(true));
+
+        assert!(empty.concat(&empty).expect("concat succeeds").is_empty());
     }
 }

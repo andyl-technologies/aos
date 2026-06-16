@@ -2,17 +2,17 @@
 //!
 //! The tree-walk evaluator is the permanent Phase-1 correctness oracle. These
 //! first slices evaluate scalar and empty list literals, boolean control flow,
-//! assertions, boolean operators, string literals and concatenation, numeric
-//! arithmetic, numeric and string comparisons, and scalar/string equality to
-//! weak head normal form, establishing the arena access and diagnostic surface
-//! used by later slices for environments, thunks, functions, attribute sets,
-//! primitive operations, and derivation boundaries.
+//! assertions, boolean operators, string literals and concatenation, list-spine
+//! concatenation, numeric arithmetic, numeric and string comparisons, and
+//! scalar/string equality to weak head normal form, establishing the arena
+//! access and diagnostic surface used by later slices for environments, thunks,
+//! functions, attribute sets, primitive operations, and derivation boundaries.
 
 use thiserror::Error;
 
 use super::heap::{EvalHeap, EvalHeapError};
 use crate::compile::{Ir, IrChildSlice, IrData, IrId, IrKind, IrNode};
-use crate::list::NixList;
+use crate::list::{NixList, NixListError};
 use crate::string::{NixString, NixStringError};
 use crate::syntax::{BinOpKind, Span, Symbol, UnaryOpKind};
 use crate::value::{Value, ValueTag};
@@ -118,8 +118,8 @@ impl<'ir> TreeWalk<'ir> {
     ///
     /// This initial public node entry point is intentionally limited to
     /// environment-free scalar literal, empty list literal, string literal,
-    /// control-flow, boolean operator, string concatenation, numeric arithmetic,
-    /// numeric and string comparison, and scalar/string equality nodes.
+    /// control-flow, boolean operator, string/list concatenation, numeric
+    /// arithmetic, numeric and string comparison, and scalar/string equality nodes.
     /// Environment-dependent nodes return
     /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add an explicit
     /// runtime and environment context.
@@ -263,12 +263,10 @@ impl<'ir> TreeWalk<'ir> {
             BinOpKind::Ge => self.eval_comparison(id, node, ComparisonOp::Ge, lhs, rhs),
             BinOpKind::Eq => self.eval_equality(id, node, lhs, rhs, false),
             BinOpKind::Ne => self.eval_equality(id, node, lhs, rhs, true),
-            BinOpKind::Concat | BinOpKind::Update | BinOpKind::PipeRight | BinOpKind::PipeLeft => {
-                Err(TreeWalkError::new(
-                    TreeWalkErrorKind::UnsupportedBinaryOp { id, op },
-                    node.span,
-                ))
-            }
+            BinOpKind::Concat => self.eval_list_concat(id, node, lhs, rhs),
+            BinOpKind::Update | BinOpKind::PipeRight | BinOpKind::PipeLeft => Err(
+                TreeWalkError::new(TreeWalkErrorKind::UnsupportedBinaryOp { id, op }, node.span),
+            ),
         }
     }
 
@@ -501,6 +499,65 @@ impl<'ir> TreeWalk<'ir> {
         };
         self.heap
             .alloc_string(concatenated)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    fn eval_list_concat(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        lhs: IrId,
+        rhs: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let lhs_span = self.node(lhs)?.span;
+        let left = self.eval_node(lhs)?;
+        if left.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: lhs,
+                    expected: "list",
+                    actual: left.tag(),
+                },
+                lhs_span,
+            ));
+        }
+
+        let rhs_span = self.node(rhs)?.span;
+        let right = self.eval_node(rhs)?;
+        if right.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: rhs,
+                    expected: "list",
+                    actual: right.tag(),
+                },
+                rhs_span,
+            ));
+        }
+
+        self.concat_lists(id, node, left, right)
+    }
+
+    fn concat_lists(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let concatenated = {
+            let left = self.heap.get_list(left).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            let right = self.heap.get_list(right).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+            })?;
+            left.concat(right).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::List { id, source }, node.span)
+            })?
+        };
+        self.heap
+            .alloc_list(concatenated)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
@@ -855,6 +912,14 @@ pub enum TreeWalkErrorKind {
         /// The underlying string failure.
         source: NixStringError,
     },
+    /// A Nix list operation failed.
+    #[error("list operation failed at node {id:?}: {source}")]
+    List {
+        /// The node id associated with the list operation.
+        id: IrId,
+        /// The underlying list failure.
+        source: NixListError,
+    },
     /// A scalar operation received a value of the wrong Nix type.
     #[error("type error at node {id:?}: expected {expected}, got {actual:?}")]
     Type {
@@ -1076,6 +1141,129 @@ mod tests {
     }
 
     #[test]
+    fn list_concat_concatenates_empty_lists() {
+        let ir = lower("[] ++ []");
+        let outcome = eval_whnf_owned(&ir).expect("list concat evaluates");
+        let value = outcome.value();
+
+        assert_eq!(value.tag(), ValueTag::List);
+        assert!(
+            outcome
+                .heap()
+                .get_list(value)
+                .expect("concat result is heap-owned")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn list_concat_preserves_spine_values_without_forcing_elements() {
+        let ir = lower("1");
+        let mut evaluator = TreeWalk::new(&ir);
+        let node = *ir.arena.node(ir.root).expect("root exists");
+        let left_ptr = NonNull::new(8usize as *mut HeapObject).expect("non-null pointer");
+        let right_ptr = NonNull::new(16usize as *mut HeapObject).expect("non-null pointer");
+        let left_thunk = Value::thunk(left_ptr).expect("left thunk pointer is aligned");
+        let right_thunk = Value::thunk(right_ptr).expect("right thunk pointer is aligned");
+        let left = evaluator
+            .heap
+            .alloc_list(NixList::new(vec![Value::int(1), left_thunk]))
+            .expect("left list allocates");
+        let right = evaluator
+            .heap
+            .alloc_list(NixList::new(vec![right_thunk, Value::bool(true)]))
+            .expect("right list allocates");
+
+        let result = evaluator
+            .concat_lists(ir.root, &node, left, right)
+            .expect("lists concatenate");
+        let list = evaluator
+            .heap
+            .get_list(result)
+            .expect("result list is heap-owned");
+
+        assert_eq!(list.len(), 4);
+        assert_eq!(list.get(0).expect("first").as_int(), Ok(1));
+        assert!(list.get(1).expect("second").raw_eq(left_thunk));
+        assert!(list.get(2).expect("third").raw_eq(right_thunk));
+        assert_eq!(list.get(3).expect("fourth").as_bool(), Ok(true));
+    }
+
+    #[test]
+    fn list_concat_type_checks_operands_left_to_right() {
+        let lhs_ir = lower("1 ++ (1 / 0)");
+        let root = lhs_ir.arena.node(lhs_ir.root).expect("root exists");
+        let IrData::Binary { lhs, .. } = root.data else {
+            panic!("concat root has binary payload");
+        };
+        let lhs_span = lhs_ir.arena.node(lhs).expect("lhs exists").span;
+
+        let error = eval_whnf_owned(&lhs_ir).expect_err("integer lhs is invalid before rhs");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: lhs,
+                expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), lhs_span);
+
+        let rhs_ir = lower("[] ++ 1");
+        let root = rhs_ir.arena.node(rhs_ir.root).expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("concat root has binary payload");
+        };
+        let rhs_span = rhs_ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf_owned(&rhs_ir).expect_err("integer rhs is invalid");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: rhs,
+                expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), rhs_span);
+
+        let rhs_error_ir = lower("[] ++ (1 / 0)");
+        let root = rhs_error_ir
+            .arena
+            .node(rhs_error_ir.root)
+            .expect("root exists");
+        let IrData::Binary { rhs, .. } = root.data else {
+            panic!("concat root has binary payload");
+        };
+        let rhs_span = rhs_error_ir.arena.node(rhs).expect("rhs exists").span;
+
+        let error = eval_whnf_owned(&rhs_error_ir).expect_err("rhs evaluation error wins");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: rhs });
+        assert_eq!(error.span(), rhs_span);
+    }
+
+    #[test]
+    fn non_owning_eval_rejects_list_concat_heap_values() {
+        let ir = lower("[] ++ []");
+        let error = eval_whnf(&ir).expect_err("list concat value needs owning heap");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::HeapValueRequiresOwner {
+                id: ir.root,
+                tag: ValueTag::List,
+            }
+        );
+        assert_eq!(
+            error.span(),
+            ir.arena.node(ir.root).expect("root exists").span
+        );
+    }
+
+    #[test]
     fn string_add_concatenates_heap_strings() {
         let outcome = eval_whnf_owned(&lower("\"a\" + \"b\"")).expect("string add evaluates");
         let value = outcome.value();
@@ -1268,13 +1456,14 @@ mod tests {
 
     #[test]
     fn unsupported_operators_report_operator_and_span() {
-        let binary = lower("1 ++ 2");
-        let binary_error = eval_whnf(&binary).expect_err("list concat is not implemented yet");
+        let binary = lower("1 // 2");
+        let binary_error =
+            eval_whnf(&binary).expect_err("attribute-set update is not implemented yet");
         assert_eq!(
             binary_error.kind(),
             TreeWalkErrorKind::UnsupportedBinaryOp {
                 id: binary.root,
-                op: BinOpKind::Concat,
+                op: BinOpKind::Update,
             }
         );
         assert_eq!(
