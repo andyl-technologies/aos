@@ -1516,6 +1516,10 @@ impl<'ir> TreeWalk<'ir> {
                 let argument_span = self.node(argument)?.span;
                 self.eval_has_context_primop(argument, argument_span, value)
             }
+            StrictUnaryPrimOp::StringLength => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_string_length_primop(argument, argument_span, value)
+            }
             StrictUnaryPrimOp::FunctionArgs => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_function_args_primop(id, node.span, argument, argument_span, value)
@@ -1592,6 +1596,25 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         Ok(Value::bool(string.has_context()))
+    }
+
+    fn eval_string_length_primop(
+        &mut self,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let string = self.coerce_to_string(argument, value, argument_span)?;
+        let string = self.heap.get_string(string).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: argument,
+                    source,
+                },
+                argument_span,
+            )
+        })?;
+        Ok(Value::int(string.len() as i64))
     }
 
     fn eval_list_to_attrs_primop(
@@ -4041,6 +4064,7 @@ enum StrictUnaryPrimOp {
     Ceil,
     Floor,
     HasContext,
+    StringLength,
     ListToAttrs,
     ConcatLists,
 }
@@ -4067,6 +4091,7 @@ impl StrictUnaryPrimOp {
             b"ceil" => Some(Self::Ceil),
             b"floor" => Some(Self::Floor),
             b"hasContext" => Some(Self::HasContext),
+            b"stringLength" => Some(Self::StringLength),
             b"listToAttrs" => Some(Self::ListToAttrs),
             b"concatLists" => Some(Self::ConcatLists),
             _ => None,
@@ -6653,6 +6678,67 @@ mod tests {
                 id: argument,
                 expected: "string",
                 actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn string_length_primop_counts_coerced_string_bytes() {
+        assert_eq!(eval("builtins.stringLength \"abc\"").as_int(), Ok(3));
+        assert_eq!(eval("builtins.stringLength \"a\\n\"").as_int(), Ok(2));
+        assert_eq!(
+            eval("builtins.stringLength { outPath = \"abc\"; }").as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval("builtins.stringLength { __toString = self: self.name; name = \"custom\"; }")
+                .as_int(),
+            Ok(6)
+        );
+        assert_eq!(
+            eval("let builtins = { stringLength = value: 42; }; in builtins.stringLength \"abc\"")
+                .as_int(),
+            Ok(42)
+        );
+    }
+
+    #[test]
+    fn string_length_primop_forces_and_coerces_argument() {
+        let ir = lower("builtins.stringLength (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("stringLength forces its argument");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: argument }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower("builtins.stringLength 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("integer is not string-coercible here");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
             }
         );
         assert_eq!(error.span(), argument_span);

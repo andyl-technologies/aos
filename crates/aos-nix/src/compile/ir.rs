@@ -901,7 +901,7 @@ impl IrLowerer {
                 b"isAttrs" | b"isList" | b"isFunction" | b"isString" | b"isInt" | b"isFloat"
                 | b"isBool" | b"isNull" | b"isPath" | b"typeOf" | b"length" | b"attrNames"
                 | b"attrValues" | b"tail" | b"functionArgs" | b"head" | b"ceil" | b"floor"
-                | b"hasContext" | b"listToAttrs" | b"concatLists",
+                | b"hasContext" | b"listToAttrs" | b"concatLists" | b"stringLength",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1760,6 +1760,7 @@ mod tests {
                 b"listToAttrs".as_slice(),
             ),
             ("builtins.concatLists [ [ 1 ] ]", b"concatLists".as_slice()),
+            ("builtins.stringLength \"abc\"", b"stringLength".as_slice()),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -2363,7 +2364,7 @@ mod tests {
 
     #[test]
     fn unmodeled_pure_builtins_remain_applications() {
-        let ir = lowered("builtins.stringLength \"x\"");
+        let ir = lowered("builtins.toString 1");
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::Apply);
         let IrData::Pair { first, .. } = root.data else {
