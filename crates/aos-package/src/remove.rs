@@ -19,7 +19,8 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::exposed_units::{
-    rebuild_generation_expose_roots, reconcile_system_profile, validate_generation_exposed_units,
+    rebuild_generation_expose_image_roots, rebuild_generation_expose_roots,
+    reconcile_system_profile, validate_generation_exposed_units,
 };
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
@@ -133,6 +134,7 @@ pub async fn run(
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
     let future_installed = list_meta(&profile)?;
     rebuild_generation_expose_roots(&new_gen, &future_installed)?;
+    rebuild_generation_expose_image_roots(&new_gen, &future_installed)?;
     validate_generation_exposed_units(&new_gen, &future_installed)?;
 
     // Step 9: Rebuild FHS tree on the new generation.
@@ -256,6 +258,7 @@ pub async fn run_autoremove(
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
     let future_installed = list_meta(&profile)?;
     rebuild_generation_expose_roots(&new_gen, &future_installed)?;
+    rebuild_generation_expose_image_roots(&new_gen, &future_installed)?;
     validate_generation_exposed_units(&new_gen, &future_installed)?;
 
     // Step 7: Rebuild FHS tree.
