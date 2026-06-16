@@ -42,8 +42,8 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::types::{
-    ExposeMeta, PackageMeta, PermissionsMeta, SbatEntry, SysrootImageEntry, package_name_bucket,
-    validate_package_name, validate_supported_package_meta,
+    ExposeArtifactMeta, ExposeMeta, PackageMeta, PermissionsMeta, SbatEntry, SysrootImageEntry,
+    package_name_bucket, validate_package_name, validate_supported_package_meta,
 };
 
 // ---------------------------------------------------------------------------
@@ -136,6 +136,9 @@ struct PlatformEntry {
     /// Optional RFC-0001 service exposure metadata.
     #[serde(default)]
     expose: Option<ExposeMeta>,
+    /// Store artifact carrying rendered RFC-0001 unit files and manifest.
+    #[serde(default)]
+    expose_artifact: Option<ExposeArtifactMeta>,
     /// Signed RFC-0001 permission manifest.
     #[serde(default)]
     permissions: PermissionsMeta,
@@ -419,9 +422,13 @@ fn package_metas_for_platform(
                 min_format,
                 requires_features,
                 expose: plat.expose.clone(),
+                expose_artifact: plat.expose_artifact.clone(),
                 permissions: plat.permissions.clone(),
             };
-            if (meta.expose.is_some() || !meta.permissions.is_empty()) && !plat.references.is_gate()
+            if (meta.expose.is_some()
+                || meta.expose_artifact.is_some()
+                || !meta.permissions.is_empty())
+                && !plat.references.is_gate()
             {
                 bail!(
                     "package '{}' uses RFC-0001 metadata without the structural references gate",

@@ -921,7 +921,16 @@ in rec {
   # `text` is the rendered unit file; everything else drives how
   # `generateUnits` assembles symlinks and drop-ins.
 
-  targetToUnit = def: {
+  targetToUnit = def: let
+    # RFC-0001 package targets are enabled by preset policy at runtime, so
+    # their unit text needs an [Install] section even though the expose
+    # artifact must not carry direct multi-user.target.wants symlinks.
+    presetOnlyWantedBy =
+      if lib.hasPrefix "aos-pkg-" def.name && lib.hasSuffix ".target" def.name && def.wantedBy == []
+      then ["multi-user.target"]
+      else def.wantedBy;
+    textDef = def // {wantedBy = presetOnlyWantedBy;};
+  in {
     inherit
       (def)
       name
@@ -932,7 +941,7 @@ in rec {
       enable
       overrideStrategy
       ;
-    text = settingsToSections {Unit = def.unitConfig;};
+    text = commonUnitText textDef "";
   };
 
   # serviceToUnit — pure function of `def`. Upstream's

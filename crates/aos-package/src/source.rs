@@ -691,6 +691,7 @@ priority = 500
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
                 expose: None,
+                expose_artifact: None,
                 permissions: Default::default(),
             }),
         };
@@ -849,6 +850,7 @@ references = []
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
                 expose: None,
+                expose_artifact: None,
                 permissions: Default::default(),
             }),
         };
@@ -879,6 +881,7 @@ references = []
                 source_drv: "/nix/store/srcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrc-src.drv".into(),
                 source_nar_hash: "sha256:source".into(),
                 expose: None,
+                expose_artifact: None,
                 permissions: Default::default(),
             }),
         };
@@ -914,6 +917,7 @@ references = []
                 source_drv: "/nix/store/srcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrc-sourceful-src".into(),
                 source_nar_hash: "sha256:source".into(),
                 expose: None,
+                expose_artifact: None,
                 permissions: Default::default(),
             }),
         }];

@@ -42,7 +42,9 @@
 pub mod clean;
 pub mod config;
 pub mod deps;
+pub mod desired;
 pub mod download;
+pub(crate) mod exposed_units;
 pub(crate) mod gitcmd;
 pub mod hold;
 pub mod install;
@@ -104,6 +106,9 @@ pub enum PackageCommand {
     Install {
         /// Package names to install
         packages: Vec<String>,
+        /// Reconcile packages from a desired-package TOML file
+        #[arg(long = "from")]
+        from: Option<PathBuf>,
         /// Install from a specific registry
         #[arg(long)]
         registry: Option<String>,
@@ -1639,6 +1644,7 @@ pub async fn run(
     match command {
         PackageCommand::Install {
             packages,
+            from,
             registry,
             download_only,
             no_deps,
@@ -1654,7 +1660,26 @@ pub async fn run(
             ..
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
-            if *install_system || image_fmt.is_some() {
+            if let Some(path) = from {
+                if !*install_system {
+                    anyhow::bail!("apm install --from requires --system");
+                }
+                if !packages.is_empty() {
+                    anyhow::bail!("apm install --from cannot be combined with package names");
+                }
+                if registry.is_some()
+                    || *download_only
+                    || *reinstall
+                    || *no_deps
+                    || image_fmt.is_some()
+                    || image_output.is_some()
+                {
+                    anyhow::bail!(
+                        "apm install --from cannot be combined with registry, download, reinstall, dependency, or image options"
+                    );
+                }
+                desired::reconcile_from_file(&config, path, dry_run, yes, printer).await
+            } else if *install_system || image_fmt.is_some() {
                 let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::install_system(
                     &config,

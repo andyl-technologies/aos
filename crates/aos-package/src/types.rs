@@ -35,6 +35,9 @@ pub const PACKAGE_META_FORMAT: u32 = 1;
 /// Registry feature flag for the RFC-0001 `expose` metadata schema.
 pub const FEATURE_EXPOSE_V1: &str = "expose-v1";
 
+/// Registry feature flag for RFC-0001 rendered expose artifacts.
+pub const FEATURE_EXPOSE_ARTIFACT_V1: &str = "expose-artifact-v1";
+
 /// Registry feature flag for the RFC-0001 permission manifest schema.
 pub const FEATURE_PERMISSIONS_V1: &str = "permissions-v1";
 
@@ -43,6 +46,7 @@ pub const FEATURE_REQUIRES_V1: &str = "requires-v1";
 
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EXPOSE_V1,
+    FEATURE_EXPOSE_ARTIFACT_V1,
     FEATURE_PERMISSIONS_V1,
     FEATURE_REQUIRES_V1,
 ];
@@ -522,6 +526,9 @@ pub struct PackageMeta {
     /// Optional RFC-0001 service exposure metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose: Option<ExposeMeta>,
+    /// Store artifact carrying rendered RFC-0001 unit files and manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose_artifact: Option<ExposeArtifactMeta>,
     /// Signed RFC-0001 permission manifest.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
@@ -542,6 +549,18 @@ pub struct ExposeMeta {
     /// Package names that must be installed atomically with this package.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
+}
+
+/// Store metadata for rendered RFC-0001 exposure artifacts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExposeArtifactMeta {
+    /// Store path containing `units/` and `manifest.json`.
+    pub store_path: String,
+    /// NAR hash of the rendered expose artifact.
+    pub nar_hash: String,
+    /// Uncompressed NAR size of the rendered expose artifact in bytes.
+    pub nar_size: u64,
 }
 
 /// Signed RFC-0001 package permission manifest.
@@ -863,6 +882,9 @@ pub fn validate_supported_package_meta_with(
     if meta.expose.is_some() {
         require_feature(meta, FEATURE_EXPOSE_V1)?;
     }
+    if meta.expose_artifact.is_some() {
+        require_feature(meta, FEATURE_EXPOSE_ARTIFACT_V1)?;
+    }
     if !meta.permissions.is_empty() {
         require_feature(meta, FEATURE_PERMISSIONS_V1)?;
     }
@@ -876,6 +898,16 @@ pub fn validate_supported_package_meta_with(
             validate_package_name(required)
                 .with_context(|| format!("invalid requires entry in package '{}'", meta.name))?;
         }
+    }
+    if let Some(artifact) = &meta.expose_artifact {
+        if meta.expose.is_none() {
+            bail!(
+                "package '{}' carries expose artifact metadata without expose metadata",
+                meta.name
+            );
+        }
+        validate_expose_artifact_meta(artifact)
+            .with_context(|| format!("invalid expose artifact for package '{}'", meta.name))?;
     }
 
     validate_permissions_meta(&meta.name, &meta.permissions)?;
@@ -914,6 +946,35 @@ pub fn validate_expose_meta(expose: &ExposeMeta) -> Result<()> {
     }
     for required in &expose.requires {
         validate_package_name(required)?;
+    }
+    Ok(())
+}
+
+/// Validate rendered RFC-0001 expose artifact metadata.
+///
+/// # Errors
+///
+/// Returns an error when the store path is not absolute or the recorded NAR
+/// fields are missing or malformed.
+pub fn validate_expose_artifact_meta(artifact: &ExposeArtifactMeta) -> Result<()> {
+    validate_absolute_path(&artifact.store_path, "expose artifact store path")?;
+    if store_path_hash_component(&artifact.store_path).is_none() {
+        bail!(
+            "expose artifact store path is not a Nix-style store path: {}",
+            artifact.store_path
+        );
+    }
+    if !artifact.nar_hash.starts_with("sha256:") && !artifact.nar_hash.starts_with("sha256-") {
+        bail!(
+            "expose artifact '{}' has invalid NAR hash",
+            artifact.store_path
+        );
+    }
+    if artifact.nar_size == 0 {
+        bail!(
+            "expose artifact '{}' must record a non-zero NAR size",
+            artifact.store_path
+        );
     }
     Ok(())
 }
@@ -1040,6 +1101,16 @@ fn validate_image_entry(image: &SysrootImageEntry) -> Result<()> {
     Ok(())
 }
 
+fn store_path_hash_component(path: &str) -> Option<&str> {
+    let basename = path.rsplit('/').next()?;
+    let (hash, _) = basename.split_once('-')?;
+    if hash.len() >= 2 && hash.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        Some(hash)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn validate_security_label(label: &str) -> Result<()> {
     if label.is_empty()
         || !label
@@ -1129,6 +1200,9 @@ pub struct ApmMeta {
     /// RFC-0001 service exposure metadata captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose: Option<ExposeMeta>,
+    /// Rendered RFC-0001 expose artifact captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose_artifact: Option<ExposeArtifactMeta>,
     /// RFC-0001 permission manifest captured at install time.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
@@ -1596,7 +1670,10 @@ impl Default for ApmSettings {
 pub enum ProfileScope {
     /// Per-user profile at `/var/lib/profiles/per-user/$USER/`.
     User,
-    /// System-wide profile at `/var/lib/profiles/system/` (requires root).
+    /// System-wide scope (requires root).
+    ///
+    /// Sysroot generations live at `/var/lib/profiles/system/`; runtime APM
+    /// package generations live at `/var/lib/profiles/system-packages/`.
     System,
 }
 
@@ -1613,6 +1690,20 @@ impl ProfileScope {
                 profiles_base().join("per-user").join(user)
             }
             ProfileScope::System => profiles_base().join("system"),
+        }
+    }
+
+    /// Base path for APM package-profile generations in this scope.
+    ///
+    /// The sysroot uses [`ProfileScope::profile_path`] for
+    /// `/var/lib/profiles/system/state.json`, whose schema is
+    /// [`SystemGenerationState`]. Runtime system packages use a separate
+    /// package-generation database so `apm install --system` cannot corrupt
+    /// or replace the sysroot generation pointer.
+    pub fn package_profile_path(&self) -> PathBuf {
+        match self {
+            ProfileScope::User => self.profile_path(),
+            ProfileScope::System => profiles_base().join("system-packages"),
         }
     }
 
@@ -2349,6 +2440,10 @@ mod tests {
             scope.profile_path(),
             PathBuf::from("/var/lib/profiles/system")
         );
+        assert_eq!(
+            scope.package_profile_path(),
+            PathBuf::from("/var/lib/profiles/system-packages")
+        );
         assert_eq!(scope.cache_path(), PathBuf::from("/var/lib/apm/remote"));
         assert_eq!(scope.config_dir(), PathBuf::from("/etc/apm"));
     }
@@ -2515,6 +2610,7 @@ last_update = "2026-02-13T10:30:00Z"
                 source_drv: "/var/lib/store/src123-curl-8.5.0.drv".into(),
                 source_nar_hash: "sha256:source".into(),
                 expose: None,
+                expose_artifact: None,
                 permissions: Default::default(),
             }),
         };
@@ -2573,6 +2669,7 @@ last_update = "2026-02-13T10:30:00Z"
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec![
                 FEATURE_EXPOSE_V1.into(),
+                FEATURE_EXPOSE_ARTIFACT_V1.into(),
                 FEATURE_PERMISSIONS_V1.into(),
                 FEATURE_REQUIRES_V1.into(),
             ],
@@ -2589,6 +2686,11 @@ last_update = "2026-02-13T10:30:00Z"
                     expected_pcr11: None,
                 }],
                 requires: vec!["provider".into()],
+            }),
+            expose_artifact: Some(ExposeArtifactMeta {
+                store_path: "/var/lib/store/exposehash11-expose-webapp".into(),
+                nar_hash: "sha256:artifact".into(),
+                nar_size: 128,
             }),
             permissions: PermissionsMeta {
                 capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
@@ -2619,6 +2721,7 @@ last_update = "2026-02-13T10:30:00Z"
 
         assert_eq!(parsed.requires_features, meta.requires_features);
         assert_eq!(parsed.expose, meta.expose);
+        assert_eq!(parsed.expose_artifact, meta.expose_artifact);
         assert_eq!(parsed.permissions, meta.permissions);
     }
 
@@ -2645,6 +2748,7 @@ last_update = "2026-02-13T10:30:00Z"
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec![FEATURE_PERMISSIONS_V1.into()],
             expose: None,
+            expose_artifact: None,
             permissions: PermissionsMeta {
                 network: Some(NetworkPermission::Host),
                 ..PermissionsMeta::default()
@@ -2679,6 +2783,7 @@ last_update = "2026-02-13T10:30:00Z"
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec![FEATURE_PERMISSIONS_V1.into()],
             expose: None,
+            expose_artifact: None,
             permissions: PermissionsMeta {
                 network: Some(NetworkPermission::Host),
                 confinement: Some(ConfinementMeta {

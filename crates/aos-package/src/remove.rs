@@ -18,6 +18,7 @@ use std::io::Write;
 use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
+use super::exposed_units::{rebuild_generation_expose_roots, reconcile_system_profile};
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{delete_meta, list_meta, snapshot_profile_meta_to_generation};
@@ -128,6 +129,8 @@ pub async fn run(
         delete_meta(&profile, &hash)?;
     }
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
+    let future_installed = list_meta(&profile)?;
+    rebuild_generation_expose_roots(&new_gen, &future_installed)?;
 
     // Step 9: Rebuild FHS tree on the new generation.
     printer.step(2, 3, "Rebuilding file tree...");
@@ -135,6 +138,7 @@ pub async fn run(
 
     // Step 10: Switch to the new generation.
     profile.switch_to(&new_gen)?;
+    reconcile_system_profile(config, printer).await?;
 
     // Step 11: Report success.
     printer.step(3, 3, "Done!");
@@ -247,6 +251,8 @@ pub async fn run_autoremove(
         delete_meta(&profile, &hash)?;
     }
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
+    let future_installed = list_meta(&profile)?;
+    rebuild_generation_expose_roots(&new_gen, &future_installed)?;
 
     // Step 7: Rebuild FHS tree.
     printer.step(2, 3, "Rebuilding file tree...");
@@ -254,6 +260,7 @@ pub async fn run_autoremove(
 
     // Step 8: Switch.
     profile.switch_to(&new_gen)?;
+    reconcile_system_profile(config, printer).await?;
 
     printer.step(3, 3, "Done!");
     printer.success(&format!(
@@ -689,6 +696,7 @@ mod tests {
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
                 expose: None,
+                expose_artifact: None,
                 permissions: Default::default(),
             }),
         }
