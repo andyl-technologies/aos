@@ -128,9 +128,31 @@ pub struct ScopeTables {
 }
 
 impl ScopeTables {
+    /// Creates scope tables from already-decoded raw storage.
+    pub(crate) fn from_raw_parts(
+        frames: Vec<FrameInfo>,
+        node_frames: Vec<Option<FrameId>>,
+        with_chains: Vec<WithChain>,
+        inherit_resolutions: Vec<InheritResolution>,
+        node_inherits: Vec<Option<InheritGroupId>>,
+    ) -> Self {
+        Self {
+            frames,
+            node_frames,
+            with_chains,
+            inherit_resolutions,
+            node_inherits,
+        }
+    }
+
     /// Returns all frame records in allocation order.
     pub fn frames(&self) -> &[FrameInfo] {
         &self.frames
+    }
+
+    /// Returns frame ids attached to arena nodes.
+    pub(crate) fn node_frames(&self) -> &[Option<FrameId>] {
+        &self.node_frames
     }
 
     /// Returns the frame attached to a binder node, if one exists.
@@ -151,6 +173,11 @@ impl ScopeTables {
     /// Returns all resolved `inherit` groups in allocation order.
     pub fn inherit_resolutions(&self) -> &[InheritResolution] {
         &self.inherit_resolutions
+    }
+
+    /// Returns inherit-group ids attached to arena nodes.
+    pub(crate) fn node_inherits(&self) -> &[Option<InheritGroupId>] {
+        &self.node_inherits
     }
 
     /// Returns the resolved `inherit` group attached to an `Inherit` node, if

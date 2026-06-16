@@ -446,6 +446,11 @@ impl AstArena {
         }
     }
 
+    /// Creates an arena from already-decoded raw storage.
+    pub(crate) fn from_raw_parts(nodes: Vec<Node>, children: Vec<NodeId>) -> Self {
+        Self { nodes, children }
+    }
+
     /// Returns the number of nodes allocated in the arena.
     pub fn len(&self) -> usize {
         self.nodes.len()
