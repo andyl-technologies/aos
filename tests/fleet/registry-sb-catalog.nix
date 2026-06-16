@@ -60,15 +60,20 @@ in {
       # The producer owns the signed toplevel AND the standalone UKI it
       # publishes as an image; both must resolve in the registry's store.
       extraClosures = [sbTop sbUki pkgs.sbsigntools pkgs.binutils pkgs.systemd];
-      varSizeMiB = 1536;
+      # `apr cache generate` writes a zstd static cache of the full
+      # server-secureboot closure PLUS the standalone signed UKI image
+      # (~300 MiB nar of its own) under /var/lib — larger than the plain
+      # server-2 fixture, so size /var generously.
+      varSizeMiB = 4096;
     };
 
     target = {
       system = systems.server;
       roles = ["test-http-server"];
-      # The NAR cache (~270 MiB compressed) plus the imported store paths
-      # (the /nix overlay upper) both land on /var.
-      varSizeMiB = 1536;
+      # The download lands twice on /var: the NAR cache under
+      # /var/lib/apm/cache and the imported store paths (the /nix overlay
+      # upper lives on the var partition) — the full sysroot closure.
+      varSizeMiB = 4096;
     };
   };
 
@@ -250,6 +255,10 @@ in {
           script += "export HOME=/tmp\n"
           script += "export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test\n"
           script += "export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test\n"
+          # The origin was chown'd to aos-gitd (so gitd can serve it); root
+          # pushing to that file-path remote trips git's dubious-ownership
+          # guard, so allow it.
+          script += "git config --global --add safe.directory '*'\n"
           script += "REG_DIR=$HOME/.local/share/apm/registries/sysreg\n"
           for cmd in sb_cert_cmds:
               script += f"{cmd}\n"
@@ -309,11 +318,16 @@ in {
           "readlink /var/lib/profiles/system/current"
       ).strip() == "gen-1", "a below-floor upgrade created a generation"
 
-      # ════ 4. ACCEPT — floor lowered to the image's generation ═════════
+      # ════ 4. ACCEPT — signer active, no blocking floor ════════════════
+      # `set-floor` only ever raises (a floor can't be walked back to
+      # un-revoke a component), so reach the accepting state by rewriting
+      # the catalog from scratch: a fresh sb-certs.toml listing just the
+      # real signer, with no floor. (A legitimate operator edit of the
+      # committed roster.)
       push_catalog(
           "v0.0.3",
-          f"{APR} sb-certs set-floor --component {sbat_component} "
-          f"--generation {sbat_generation} --registry sysreg --no-commit",
+          'rm -f "$REG_DIR/sb-certs.toml"',
+          f"{APR} sb-certs add aos-db --cert-sha256 {signer} --registry sysreg --no-commit",
       )
       out = target.succeed(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
