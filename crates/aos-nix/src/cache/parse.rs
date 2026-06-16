@@ -7,6 +7,7 @@
 //! ```text
 //! $AOS_NIX_CACHE/parse/<blake3-key>/
 //!   ir.bin
+//!   resolved.bin
 //!   symbols.bin
 //!   meta.toml
 //! ```
@@ -25,8 +26,10 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::compile::{
-    FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, ResolvedAst, ScopeError,
-    ScopeTables, Upvalue, WithChain, resolve,
+    EffectClass, FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, Ir, IrArena,
+    IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrError,
+    IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, ResolvedAst, ScopeError,
+    ScopeTables, Upvalue, WithChain, lower, resolve,
 };
 use crate::syntax::{
     AstArena, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind, ParseError, Span, Symbol,
@@ -34,11 +37,12 @@ use crate::syntax::{
 };
 
 /// The schema version included in every parse-cache key and metadata file.
-pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 3;
+pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 4;
 
 const KEY_PERSONALIZATION: &[u8] = b"aos-nix-parse-cache-key-v1";
 const FLAG_ENCODING_VERSION: u8 = 1;
 const IR_MAGIC: &[u8; 8] = b"AOSNIXIR";
+const RESOLVED_MAGIC: &[u8; 8] = b"AOSNIXRS";
 const SYMBOL_MAGIC: &[u8; 8] = b"AOSNIXSY";
 const ARTIFACT_VERSION: u32 = 1;
 
@@ -327,13 +331,19 @@ impl ParseCache {
         let entry = self.entry_for_key(key);
         if entry.is_complete() {
             if let Ok(resolved) = entry.read_resolved() {
-                return Ok(CachedParse {
-                    key,
-                    entry,
-                    resolved,
-                    hit: true,
-                    stored: true,
-                });
+                if let Ok(ir) = entry.read_ir() {
+                    if let Ok(expected_ir) = lower(resolved.clone()) {
+                        if lowered_ir_matches(&ir, &expected_ir) {
+                            return Ok(CachedParse {
+                                key,
+                                entry,
+                                resolved,
+                                hit: true,
+                                stored: true,
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -388,6 +398,11 @@ impl ParseCacheEntry {
         self.dir.join("ir.bin")
     }
 
+    /// Returns the serialized resolved frontend artifact path.
+    pub fn resolved_path(&self) -> PathBuf {
+        self.dir.join("resolved.bin")
+    }
+
     /// Returns the file-local symbol table path.
     pub fn symbols_path(&self) -> PathBuf {
         self.dir.join("symbols.bin")
@@ -400,7 +415,10 @@ impl ParseCacheEntry {
 
     /// Returns whether all mandatory cache-entry files exist.
     pub fn is_complete(&self) -> bool {
-        self.ir_path().is_file() && self.symbols_path().is_file() && self.meta_path().is_file()
+        self.ir_path().is_file()
+            && self.resolved_path().is_file()
+            && self.symbols_path().is_file()
+            && self.meta_path().is_file()
     }
 
     /// Creates the entry directory when it is missing.
@@ -431,9 +449,9 @@ impl ParseCacheEntry {
     /// Writes the serialized resolved arena, file-local symbols, and metadata.
     ///
     /// Symbol ids are rewritten into a deterministic file-local table before
-    /// `ir.bin` and `symbols.bin` are written, so artifacts do not inherit
-    /// process-global interner allocation order. Diagnostic node and symbol
-    /// counts are derived from the serialized artifact.
+    /// `resolved.bin`, `ir.bin`, and `symbols.bin` are written, so artifacts do
+    /// not inherit process-global interner allocation order. Diagnostic node and
+    /// symbol counts are derived from the lowered IR artifact.
     ///
     /// # Errors
     ///
@@ -447,14 +465,23 @@ impl ParseCacheEntry {
     ) -> Result<(), ParseCacheError> {
         self.ensure_dir()?;
         let resolved = file_local_resolved(resolved)?;
+        let ir = lower(resolved.clone()).map_err(|source| ParseCacheError::LowerIr { source })?;
         let meta = ParseCacheMeta::for_serialized_resolved(
             meta.schema_version,
             meta.source_hint.clone(),
             &resolved,
+            &ir,
         )?;
         let ir_path = self.ir_path();
+        let resolved_path = self.resolved_path();
         let symbols_path = self.symbols_path();
-        fs::write(&ir_path, encode_resolved_ir(&resolved)?).map_err(|source| {
+        fs::write(&resolved_path, encode_resolved_ir(&resolved)?).map_err(|source| {
+            ParseCacheError::WriteArtifact {
+                path: resolved_path,
+                source,
+            }
+        })?;
+        fs::write(&ir_path, encode_lowered_ir(&ir)?).map_err(|source| {
             ParseCacheError::WriteArtifact {
                 path: ir_path,
                 source,
@@ -473,9 +500,38 @@ impl ParseCacheEntry {
     ///
     /// # Errors
     ///
+    /// Returns [`ParseCacheError`] if `resolved.bin` or `symbols.bin` cannot be
+    /// read or decoded.
+    pub fn read_resolved(&self) -> Result<ResolvedAst, ParseCacheError> {
+        let resolved_path = self.resolved_path();
+        let symbols_path = self.symbols_path();
+        let resolved =
+            fs::read(&resolved_path).map_err(|source| ParseCacheError::ReadArtifact {
+                path: resolved_path.clone(),
+                source,
+            })?;
+        let symbols = fs::read(&symbols_path).map_err(|source| ParseCacheError::ReadArtifact {
+            path: symbols_path.clone(),
+            source,
+        })?;
+        let symbols =
+            decode_symbols(&symbols).map_err(|message| ParseCacheError::DecodeArtifact {
+                path: symbols_path,
+                message,
+            })?;
+        decode_resolved_ir(&resolved, symbols).map_err(|message| ParseCacheError::DecodeArtifact {
+            path: resolved_path,
+            message,
+        })
+    }
+
+    /// Reads a lowered IR artifact from this cache entry.
+    ///
+    /// # Errors
+    ///
     /// Returns [`ParseCacheError`] if `ir.bin` or `symbols.bin` cannot be read
     /// or decoded.
-    pub fn read_resolved(&self) -> Result<ResolvedAst, ParseCacheError> {
+    fn read_ir(&self) -> Result<Ir, ParseCacheError> {
         let ir_path = self.ir_path();
         let symbols_path = self.symbols_path();
         let ir = fs::read(&ir_path).map_err(|source| ParseCacheError::ReadArtifact {
@@ -491,7 +547,7 @@ impl ParseCacheEntry {
                 path: symbols_path,
                 message,
             })?;
-        decode_resolved_ir(&ir, symbols).map_err(|message| ParseCacheError::DecodeArtifact {
+        decode_lowered_ir(&ir, symbols).map_err(|message| ParseCacheError::DecodeArtifact {
             path: ir_path,
             message,
         })
@@ -505,7 +561,7 @@ pub struct ParseCacheMeta {
     pub schema_version: u32,
     /// A human-facing source path hint. It is never part of cache identity.
     pub source_hint: Option<String>,
-    /// Number of arena nodes in the serialized artifact.
+    /// Number of lowered IR arena nodes in the serialized artifact.
     pub node_count: u32,
     /// Number of file-local symbols in the serialized artifact.
     pub symbol_count: u32,
@@ -539,15 +595,17 @@ impl ParseCacheMeta {
         resolved: &ResolvedAst,
     ) -> Result<Self, ParseCacheError> {
         let resolved = file_local_resolved(resolved)?;
-        Self::for_serialized_resolved(schema_version, source_hint, &resolved)
+        let ir = lower(resolved.clone()).map_err(|source| ParseCacheError::LowerIr { source })?;
+        Self::for_serialized_resolved(schema_version, source_hint, &resolved, &ir)
     }
 
     fn for_serialized_resolved(
         schema_version: u32,
         source_hint: Option<String>,
         resolved: &ResolvedAst,
+        ir: &Ir,
     ) -> Result<Self, ParseCacheError> {
-        let node_count = u32::try_from(resolved.arena.len())
+        let node_count = u32::try_from(ir.arena.nodes().len())
             .map_err(|_| ParseCacheError::EncodeArtifact("node count exceeds u32".to_owned()))?;
         let symbol_count = u32::try_from(resolved.symbols.len())
             .map_err(|_| ParseCacheError::EncodeArtifact("symbol count exceeds u32".to_owned()))?;
@@ -588,6 +646,12 @@ pub enum ParseCacheError {
     Scope {
         /// The scope-resolution failure.
         source: ScopeError,
+    },
+    /// A scope-resolved artifact could not be lowered to IR.
+    #[error("failed to lower source for parse cache")]
+    LowerIr {
+        /// The IR lowering failure.
+        source: IrError,
     },
     /// A source path could not be canonicalized for file memoization.
     #[error("failed to canonicalize source path {path:?}")]
@@ -781,7 +845,7 @@ fn push_toml_string(value: &str, out: &mut String) {
 
 fn encode_resolved_ir(resolved: &ResolvedAst) -> Result<Vec<u8>, ParseCacheError> {
     let mut out = Vec::new();
-    out.extend_from_slice(IR_MAGIC);
+    out.extend_from_slice(RESOLVED_MAGIC);
     write_u32(&mut out, ARTIFACT_VERSION);
     write_u32(&mut out, resolved.root.as_u32());
     write_len(&mut out, resolved.arena.nodes().len(), "node count")?;
@@ -842,7 +906,7 @@ fn encode_resolved_ir(resolved: &ResolvedAst) -> Result<Vec<u8>, ParseCacheError
 
 fn decode_resolved_ir(bytes: &[u8], symbols: SymbolTable) -> Result<ResolvedAst, String> {
     let mut reader = BinaryReader::new(bytes);
-    reader.expect_magic(IR_MAGIC)?;
+    reader.expect_magic(RESOLVED_MAGIC)?;
     let version = reader.read_u32()?;
     if version != ARTIFACT_VERSION {
         return Err(format!("unsupported IR artifact version {version}"));
@@ -926,6 +990,144 @@ fn decode_resolved_ir(bytes: &[u8], symbols: SymbolTable) -> Result<ResolvedAst,
     };
     validate_resolved_artifact(&resolved)?;
     Ok(resolved)
+}
+
+fn encode_lowered_ir(ir: &Ir) -> Result<Vec<u8>, ParseCacheError> {
+    let mut out = Vec::new();
+    out.extend_from_slice(IR_MAGIC);
+    write_u32(&mut out, ARTIFACT_VERSION);
+    write_u32(&mut out, ir.root.as_u32());
+    write_len(&mut out, ir.arena.nodes().len(), "IR node count")?;
+    write_len(&mut out, ir.arena.child_pool().len(), "IR child count")?;
+    write_len(&mut out, ir.frames.len(), "IR frame count")?;
+    write_len(&mut out, ir.with_chains.len(), "IR with-chain count")?;
+    write_len(&mut out, ir.attr_paths.len(), "IR attr-path count")?;
+    write_len(&mut out, ir.bindings.len(), "IR binding count")?;
+    write_len(&mut out, ir.shapes.len(), "IR shape count")?;
+
+    for node in ir.arena.nodes() {
+        encode_ir_node(&mut out, *node);
+    }
+    for child in ir.arena.child_pool() {
+        write_u32(&mut out, child.as_u32());
+    }
+    for frame in ir.frames.as_ref() {
+        encode_frame(&mut out, frame)?;
+    }
+    for chain in ir.with_chains.as_ref() {
+        write_len(&mut out, chain.scopes.len(), "IR with-chain scope count")?;
+        for scope in chain.scopes.as_ref() {
+            write_u32(&mut out, scope.as_u32());
+        }
+    }
+    for path in ir.attr_paths.as_ref() {
+        write_len(&mut out, path.len(), "IR attr-path segment count")?;
+        for segment in path.as_ref() {
+            encode_ir_attr_path_segment(&mut out, *segment);
+        }
+    }
+    for binding in ir.bindings.as_ref() {
+        encode_ir_attr_path_segment(&mut out, binding.key);
+        write_u32(&mut out, binding.value.as_u32());
+    }
+    for shape in ir.shapes.as_ref() {
+        write_len(&mut out, shape.keys.len(), "IR shape key count")?;
+        for key in shape.keys.as_ref() {
+            write_u32(&mut out, key.as_u32());
+        }
+    }
+    Ok(out)
+}
+
+fn decode_lowered_ir(bytes: &[u8], symbols: SymbolTable) -> Result<Ir, String> {
+    let mut reader = BinaryReader::new(bytes);
+    reader.expect_magic(IR_MAGIC)?;
+    let version = reader.read_u32()?;
+    if version != ARTIFACT_VERSION {
+        return Err(format!("unsupported lowered IR artifact version {version}"));
+    }
+    let root = IrId::new(reader.read_u32()?);
+    let node_count = reader.read_len("IR node count")?;
+    let child_count = reader.read_len("IR child count")?;
+    let frame_count = reader.read_len("IR frame count")?;
+    let with_chain_count = reader.read_len("IR with-chain count")?;
+    let attr_path_count = reader.read_len("IR attr-path count")?;
+    let binding_count = reader.read_len("IR binding count")?;
+    let shape_count = reader.read_len("IR shape count")?;
+
+    let mut nodes = Vec::with_capacity(node_count);
+    for _ in 0..node_count {
+        nodes.push(decode_ir_node(&mut reader)?);
+    }
+    let mut children = Vec::with_capacity(child_count);
+    for _ in 0..child_count {
+        children.push(IrId::new(reader.read_u32()?));
+    }
+    let mut frames = Vec::with_capacity(frame_count);
+    for _ in 0..frame_count {
+        frames.push(decode_frame(&mut reader)?);
+    }
+    let mut with_chains = Vec::with_capacity(with_chain_count);
+    for _ in 0..with_chain_count {
+        let scope_count = reader.read_len("IR with-chain scope count")?;
+        let mut scopes = Vec::with_capacity(scope_count);
+        for _ in 0..scope_count {
+            scopes.push(NodeId::new(reader.read_u32()?));
+        }
+        with_chains.push(WithChain {
+            scopes: scopes.into_boxed_slice(),
+        });
+    }
+    let mut attr_paths = Vec::with_capacity(attr_path_count);
+    for _ in 0..attr_path_count {
+        let segment_count = reader.read_len("IR attr-path segment count")?;
+        let mut segments = Vec::with_capacity(segment_count);
+        for _ in 0..segment_count {
+            segments.push(decode_ir_attr_path_segment(&mut reader)?);
+        }
+        attr_paths.push(segments.into_boxed_slice());
+    }
+    let mut bindings = Vec::with_capacity(binding_count);
+    for _ in 0..binding_count {
+        let key = decode_ir_attr_path_segment(&mut reader)?;
+        let value = IrId::new(reader.read_u32()?);
+        bindings.push(IrBinding { key, value });
+    }
+    let mut shapes = Vec::with_capacity(shape_count);
+    for _ in 0..shape_count {
+        let key_count = reader.read_len("IR shape key count")?;
+        let mut keys = Vec::with_capacity(key_count);
+        for _ in 0..key_count {
+            keys.push(Symbol::new(reader.read_u32()?));
+        }
+        shapes.push(IrShape::new(keys.into_boxed_slice()));
+    }
+    reader.expect_eof()?;
+
+    let ir = Ir {
+        root,
+        arena: IrArena::from_raw_parts(nodes, children),
+        symbols,
+        frames: frames.into_boxed_slice(),
+        with_chains: with_chains.into_boxed_slice(),
+        attr_paths: attr_paths.into_boxed_slice(),
+        bindings: bindings.into_boxed_slice(),
+        shapes: shapes.into_boxed_slice(),
+    };
+    validate_lowered_ir_artifact(&ir)?;
+    Ok(ir)
+}
+
+fn lowered_ir_matches(left: &Ir, right: &Ir) -> bool {
+    left.root == right.root
+        && left.arena.nodes() == right.arena.nodes()
+        && left.arena.child_pool() == right.arena.child_pool()
+        && left.symbols.symbols() == right.symbols.symbols()
+        && left.frames == right.frames
+        && left.with_chains == right.with_chains
+        && left.attr_paths == right.attr_paths
+        && left.bindings == right.bindings
+        && left.shapes == right.shapes
 }
 
 fn encode_symbols(symbols: &SymbolTable) -> Result<Vec<u8>, ParseCacheError> {
@@ -1121,6 +1323,604 @@ fn check_inherit_id(resolved: &ResolvedAst, id: InheritGroupId) -> Result<(), St
     } else {
         Err("inherit id out of range".to_owned())
     }
+}
+
+fn validate_lowered_ir_artifact(ir: &Ir) -> Result<(), String> {
+    check_ir_id(ir, ir.root, "root")?;
+    for child in ir.arena.child_pool() {
+        check_ir_id(ir, *child, "child pool")?;
+    }
+    for node in ir.arena.nodes() {
+        validate_ir_node(ir, *node)?;
+    }
+    for path in ir.attr_paths.as_ref() {
+        for segment in path.as_ref() {
+            validate_ir_attr_path_segment(ir, *segment)?;
+        }
+    }
+    for binding in ir.bindings.as_ref() {
+        validate_ir_attr_path_segment(ir, binding.key)?;
+        check_ir_id(ir, binding.value, "binding value")?;
+    }
+    for shape in ir.shapes.as_ref() {
+        for key in shape.keys.as_ref() {
+            check_ir_symbol(ir, *key)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_ir_node(ir: &Ir, node: IrNode) -> Result<(), String> {
+    validate_ir_node_shape(node)?;
+    validate_ir_node_effect(node)?;
+    validate_ir_data(ir, node.data)?;
+    if let IrData::AttrSet {
+        shape,
+        bindings,
+        has_dynamic,
+        ..
+    } = node.data
+    {
+        validate_ir_attrset_shape(ir, shape, bindings, has_dynamic)?;
+    }
+    Ok(())
+}
+
+fn validate_ir_node_shape(node: IrNode) -> Result<(), String> {
+    let valid = matches!(
+        (node.kind, node.data),
+        (IrKind::Int, IrData::Int(_))
+            | (IrKind::Float, IrData::Float(_))
+            | (IrKind::Bool, IrData::Bool(_))
+            | (IrKind::Null, IrData::None)
+            | (IrKind::Str, IrData::Symbol(_))
+            | (IrKind::Path, IrData::Symbol(_))
+            | (IrKind::SearchPath, IrData::Symbol(_))
+            | (IrKind::Uri, IrData::Symbol(_))
+            | (IrKind::LocalVar, IrData::Local { .. })
+            | (IrKind::UpvalVar, IrData::Upval { .. })
+            | (IrKind::GlobalVar, IrData::Symbol(_))
+            | (IrKind::WithVar, IrData::WithVar { .. })
+            | (IrKind::List, IrData::Children(_))
+            | (IrKind::AttrSet, IrData::AttrSet { .. })
+            | (IrKind::Lambda, IrData::Lambda { .. })
+            | (IrKind::FormalSet, IrData::FormalSet { .. })
+            | (IrKind::Formal, IrData::Formal { .. })
+            | (IrKind::Apply, IrData::Pair { .. })
+            | (IrKind::Select, IrData::Select { .. })
+            | (IrKind::HasAttr, IrData::HasAttr { .. })
+            | (IrKind::Let, IrData::Let { .. })
+            | (IrKind::With, IrData::Pair { .. })
+            | (IrKind::Assert, IrData::Pair { .. })
+            | (IrKind::If, IrData::Triple { .. })
+            | (IrKind::BinOp, IrData::Binary { .. })
+            | (IrKind::UnaryOp, IrData::Unary { .. })
+            | (IrKind::Interp, IrData::None)
+            | (IrKind::Interp, IrData::Node(_))
+            | (IrKind::Interp, IrData::Children(_))
+            | (IrKind::ThunkAlloc, IrData::Node(_))
+            | (IrKind::PrimOp, IrData::PrimOp { .. })
+            | (IrKind::DerivationStrict, IrData::Node(_))
+    );
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("invalid IR data for {:?} node", node.kind))
+    }
+}
+
+fn validate_ir_node_effect(node: IrNode) -> Result<(), String> {
+    let expected = match node.kind {
+        IrKind::DerivationStrict | IrKind::PrimOp => EffectClass::Effectful,
+        _ => EffectClass::Pure,
+    };
+    if node.effect == expected {
+        Ok(())
+    } else {
+        Err(format!("invalid IR effect for {:?} node", node.kind))
+    }
+}
+
+fn validate_ir_data(ir: &Ir, data: IrData) -> Result<(), String> {
+    match data {
+        IrData::None | IrData::Int(_) | IrData::Float(_) | IrData::Bool(_) => Ok(()),
+        IrData::Symbol(symbol) => check_ir_symbol(ir, symbol),
+        IrData::Node(node) => check_ir_id(ir, node, "node payload"),
+        IrData::Pair { first, second } => {
+            check_ir_id(ir, first, "pair first")?;
+            check_ir_id(ir, second, "pair second")
+        }
+        IrData::Triple {
+            first,
+            second,
+            third,
+        } => {
+            check_ir_id(ir, first, "triple first")?;
+            check_ir_id(ir, second, "triple second")?;
+            check_ir_id(ir, third, "triple third")
+        }
+        IrData::Children(slice) => check_ir_child_slice(ir, slice),
+        IrData::Bindings(slice) => check_ir_binding_slice(ir, slice),
+        IrData::Binary { lhs, rhs, .. } => {
+            check_ir_id(ir, lhs, "binary lhs")?;
+            check_ir_id(ir, rhs, "binary rhs")
+        }
+        IrData::Unary { operand, .. } => check_ir_id(ir, operand, "unary operand"),
+        IrData::Select {
+            receiver,
+            path,
+            default,
+            ..
+        } => {
+            check_ir_id(ir, receiver, "select receiver")?;
+            check_ir_attr_path_id(ir, path)?;
+            if let Some(default) = default {
+                check_ir_id(ir, default, "select default")?;
+            }
+            Ok(())
+        }
+        IrData::HasAttr { receiver, path, .. } => {
+            check_ir_id(ir, receiver, "has-attr receiver")?;
+            check_ir_attr_path_id(ir, path)
+        }
+        IrData::PrimOp { symbol, args } => {
+            check_ir_symbol(ir, symbol)?;
+            check_ir_child_slice(ir, args)
+        }
+        IrData::Lambda {
+            pattern,
+            body,
+            frame,
+        } => {
+            check_ir_id(ir, pattern, "lambda pattern")?;
+            check_ir_id(ir, body, "lambda body")?;
+            if let Some(frame) = frame {
+                check_ir_frame_id(ir, frame)?;
+            }
+            Ok(())
+        }
+        IrData::Let {
+            bindings,
+            body,
+            frame,
+        } => {
+            check_ir_binding_slice(ir, bindings)?;
+            check_ir_id(ir, body, "let body")?;
+            if let Some(frame) = frame {
+                check_ir_frame_id(ir, frame)?;
+            }
+            Ok(())
+        }
+        IrData::AttrSet {
+            shape,
+            bindings,
+            frame,
+            ..
+        } => {
+            check_ir_shape_id(ir, shape)?;
+            check_ir_binding_slice(ir, bindings)?;
+            if let Some(frame) = frame {
+                check_ir_frame_id(ir, frame)?;
+            }
+            Ok(())
+        }
+        IrData::FormalSet { formals, alias, .. } => {
+            check_ir_child_slice(ir, formals)?;
+            if let Some(alias) = alias {
+                check_ir_symbol(ir, alias)?;
+            }
+            Ok(())
+        }
+        IrData::Formal { name, default } => {
+            check_ir_symbol(ir, name)?;
+            if let Some(default) = default {
+                check_ir_id(ir, default, "formal default")?;
+            }
+            Ok(())
+        }
+        IrData::Local { .. } | IrData::Upval { .. } => Ok(()),
+        IrData::WithVar { symbol, chain } => {
+            check_ir_symbol(ir, symbol)?;
+            let chain = usize::try_from(chain).map_err(|_| "with-chain id overflow".to_owned())?;
+            if chain >= ir.with_chains.len() {
+                return Err("with-chain id out of range".to_owned());
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_ir_attrset_shape(
+    ir: &Ir,
+    shape: IrShapeId,
+    bindings: IrBindingSlice,
+    has_dynamic: bool,
+) -> Result<(), String> {
+    let shape = ir
+        .shapes
+        .get(shape.index())
+        .ok_or_else(|| "IR shape id out of range".to_owned())?;
+    let bindings = ir_binding_slice(ir, bindings)?;
+    let mut static_keys = Vec::new();
+    let mut saw_dynamic = false;
+    for binding in bindings {
+        match binding.key {
+            IrAttrPathSegment::Static(symbol) => static_keys.push(symbol),
+            IrAttrPathSegment::Dynamic(_) => saw_dynamic = true,
+        }
+    }
+    if shape.keys.as_ref() != static_keys.as_slice() {
+        return Err("IR attrset shape does not match static binding keys".to_owned());
+    }
+    if has_dynamic != saw_dynamic {
+        return Err("IR attrset dynamic flag does not match binding keys".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_ir_attr_path_segment(ir: &Ir, segment: IrAttrPathSegment) -> Result<(), String> {
+    match segment {
+        IrAttrPathSegment::Static(symbol) => check_ir_symbol(ir, symbol),
+        IrAttrPathSegment::Dynamic(node) => check_ir_id(ir, node, "dynamic attr-path segment"),
+    }
+}
+
+fn check_ir_id(ir: &Ir, id: IrId, what: &'static str) -> Result<(), String> {
+    if id.index() < ir.arena.nodes().len() {
+        Ok(())
+    } else {
+        Err(format!("{what} IR id out of range"))
+    }
+}
+
+fn check_ir_symbol(ir: &Ir, symbol: Symbol) -> Result<(), String> {
+    if ir.symbols.resolve(symbol).is_some() {
+        Ok(())
+    } else {
+        Err("IR symbol id out of range".to_owned())
+    }
+}
+
+fn check_ir_child_slice(ir: &Ir, slice: IrChildSlice) -> Result<(), String> {
+    let start = usize::try_from(slice.start).map_err(|_| "IR child slice overflow".to_owned())?;
+    let len = usize::try_from(slice.len).map_err(|_| "IR child slice overflow".to_owned())?;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| "IR child slice overflow".to_owned())?;
+    if end <= ir.arena.child_pool().len() {
+        Ok(())
+    } else {
+        Err("IR child slice out of range".to_owned())
+    }
+}
+
+fn check_ir_binding_slice(ir: &Ir, slice: IrBindingSlice) -> Result<(), String> {
+    ir_binding_slice(ir, slice).map(|_| ())
+}
+
+fn ir_binding_slice(ir: &Ir, slice: IrBindingSlice) -> Result<&[IrBinding], String> {
+    let start = usize::try_from(slice.start).map_err(|_| "IR binding slice overflow".to_owned())?;
+    let len = usize::try_from(slice.len).map_err(|_| "IR binding slice overflow".to_owned())?;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| "IR binding slice overflow".to_owned())?;
+    ir.bindings
+        .get(start..end)
+        .ok_or_else(|| "IR binding slice out of range".to_owned())
+}
+
+fn check_ir_attr_path_id(ir: &Ir, id: IrAttrPathId) -> Result<(), String> {
+    if id.index() < ir.attr_paths.len() {
+        Ok(())
+    } else {
+        Err("IR attr-path id out of range".to_owned())
+    }
+}
+
+fn check_ir_shape_id(ir: &Ir, id: IrShapeId) -> Result<(), String> {
+    if id.index() < ir.shapes.len() {
+        Ok(())
+    } else {
+        Err("IR shape id out of range".to_owned())
+    }
+}
+
+fn check_ir_frame_id(ir: &Ir, id: FrameId) -> Result<(), String> {
+    if id.index() < ir.frames.len() {
+        Ok(())
+    } else {
+        Err("IR frame id out of range".to_owned())
+    }
+}
+
+fn encode_ir_node(out: &mut Vec<u8>, node: IrNode) {
+    out.push(ir_kind_tag(node.kind));
+    write_u32(out, node.span.start);
+    write_u32(out, node.span.end);
+    out.push(effect_class_tag(node.effect));
+    encode_ir_data(out, node.data);
+}
+
+fn decode_ir_node(reader: &mut BinaryReader<'_>) -> Result<IrNode, String> {
+    let kind = decode_ir_kind(reader.read_u8()?)?;
+    let span = Span::new(reader.read_u32()?, reader.read_u32()?);
+    let effect = decode_effect_class(reader.read_u8()?)?;
+    let data = decode_ir_data(reader)?;
+    Ok(IrNode::new(kind, span, effect, data))
+}
+
+fn encode_ir_data(out: &mut Vec<u8>, data: IrData) {
+    match data {
+        IrData::None => out.push(0),
+        IrData::Int(value) => {
+            out.push(1);
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        IrData::Float(value) => {
+            out.push(2);
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        IrData::Bool(value) => {
+            out.push(3);
+            out.push(u8::from(value));
+        }
+        IrData::Symbol(symbol) => {
+            out.push(4);
+            write_u32(out, symbol.as_u32());
+        }
+        IrData::Node(node) => {
+            out.push(5);
+            write_u32(out, node.as_u32());
+        }
+        IrData::Pair { first, second } => {
+            out.push(6);
+            write_u32(out, first.as_u32());
+            write_u32(out, second.as_u32());
+        }
+        IrData::Triple {
+            first,
+            second,
+            third,
+        } => {
+            out.push(7);
+            write_u32(out, first.as_u32());
+            write_u32(out, second.as_u32());
+            write_u32(out, third.as_u32());
+        }
+        IrData::Children(slice) => {
+            out.push(8);
+            encode_ir_child_slice(out, slice);
+        }
+        IrData::Bindings(slice) => {
+            out.push(9);
+            encode_ir_binding_slice(out, slice);
+        }
+        IrData::Binary { op, lhs, rhs } => {
+            out.push(10);
+            out.push(bin_op_tag(op));
+            write_u32(out, lhs.as_u32());
+            write_u32(out, rhs.as_u32());
+        }
+        IrData::Unary { op, operand } => {
+            out.push(11);
+            out.push(unary_op_tag(op));
+            write_u32(out, operand.as_u32());
+        }
+        IrData::Select {
+            site,
+            receiver,
+            path,
+            default,
+        } => {
+            out.push(12);
+            write_u32(out, site.as_u32());
+            write_u32(out, receiver.as_u32());
+            write_u32(out, path.as_u32());
+            encode_option_u32(out, default.map(IrId::as_u32));
+        }
+        IrData::HasAttr {
+            site,
+            receiver,
+            path,
+        } => {
+            out.push(13);
+            write_u32(out, site.as_u32());
+            write_u32(out, receiver.as_u32());
+            write_u32(out, path.as_u32());
+        }
+        IrData::PrimOp { symbol, args } => {
+            out.push(14);
+            write_u32(out, symbol.as_u32());
+            encode_ir_child_slice(out, args);
+        }
+        IrData::Lambda {
+            pattern,
+            body,
+            frame,
+        } => {
+            out.push(15);
+            write_u32(out, pattern.as_u32());
+            write_u32(out, body.as_u32());
+            encode_option_u32(out, frame.map(FrameId::as_u32));
+        }
+        IrData::Let {
+            bindings,
+            body,
+            frame,
+        } => {
+            out.push(16);
+            encode_ir_binding_slice(out, bindings);
+            write_u32(out, body.as_u32());
+            encode_option_u32(out, frame.map(FrameId::as_u32));
+        }
+        IrData::AttrSet {
+            shape,
+            bindings,
+            recursive,
+            has_dynamic,
+            frame,
+        } => {
+            out.push(17);
+            write_u32(out, shape.as_u32());
+            encode_ir_binding_slice(out, bindings);
+            out.push(u8::from(recursive));
+            out.push(u8::from(has_dynamic));
+            encode_option_u32(out, frame.map(FrameId::as_u32));
+        }
+        IrData::FormalSet {
+            formals,
+            ellipsis,
+            alias,
+        } => {
+            out.push(18);
+            encode_ir_child_slice(out, formals);
+            out.push(u8::from(ellipsis));
+            encode_option_u32(out, alias.map(Symbol::as_u32));
+        }
+        IrData::Formal { name, default } => {
+            out.push(19);
+            write_u32(out, name.as_u32());
+            encode_option_u32(out, default.map(IrId::as_u32));
+        }
+        IrData::Local { slot } => {
+            out.push(20);
+            write_u32(out, slot);
+        }
+        IrData::Upval { depth, slot } => {
+            out.push(21);
+            write_u32(out, depth);
+            write_u32(out, slot);
+        }
+        IrData::WithVar { symbol, chain } => {
+            out.push(22);
+            write_u32(out, symbol.as_u32());
+            write_u32(out, chain);
+        }
+    }
+}
+
+fn decode_ir_data(reader: &mut BinaryReader<'_>) -> Result<IrData, String> {
+    let tag = reader.read_u8()?;
+    match tag {
+        0 => Ok(IrData::None),
+        1 => Ok(IrData::Int(reader.read_i64()?)),
+        2 => Ok(IrData::Float(reader.read_f64()?)),
+        3 => Ok(IrData::Bool(reader.read_bool()?)),
+        4 => Ok(IrData::Symbol(Symbol::new(reader.read_u32()?))),
+        5 => Ok(IrData::Node(IrId::new(reader.read_u32()?))),
+        6 => Ok(IrData::Pair {
+            first: IrId::new(reader.read_u32()?),
+            second: IrId::new(reader.read_u32()?),
+        }),
+        7 => Ok(IrData::Triple {
+            first: IrId::new(reader.read_u32()?),
+            second: IrId::new(reader.read_u32()?),
+            third: IrId::new(reader.read_u32()?),
+        }),
+        8 => Ok(IrData::Children(decode_ir_child_slice(reader)?)),
+        9 => Ok(IrData::Bindings(decode_ir_binding_slice(reader)?)),
+        10 => Ok(IrData::Binary {
+            op: decode_bin_op(reader.read_u8()?)?,
+            lhs: IrId::new(reader.read_u32()?),
+            rhs: IrId::new(reader.read_u32()?),
+        }),
+        11 => Ok(IrData::Unary {
+            op: decode_unary_op(reader.read_u8()?)?,
+            operand: IrId::new(reader.read_u32()?),
+        }),
+        12 => Ok(IrData::Select {
+            site: IrInlineCacheSiteId::new(reader.read_u32()?),
+            receiver: IrId::new(reader.read_u32()?),
+            path: IrAttrPathId::new(reader.read_u32()?),
+            default: reader.read_option_u32()?.map(IrId::new),
+        }),
+        13 => Ok(IrData::HasAttr {
+            site: IrInlineCacheSiteId::new(reader.read_u32()?),
+            receiver: IrId::new(reader.read_u32()?),
+            path: IrAttrPathId::new(reader.read_u32()?),
+        }),
+        14 => Ok(IrData::PrimOp {
+            symbol: Symbol::new(reader.read_u32()?),
+            args: decode_ir_child_slice(reader)?,
+        }),
+        15 => Ok(IrData::Lambda {
+            pattern: IrId::new(reader.read_u32()?),
+            body: IrId::new(reader.read_u32()?),
+            frame: reader.read_option_u32()?.map(FrameId::new),
+        }),
+        16 => Ok(IrData::Let {
+            bindings: decode_ir_binding_slice(reader)?,
+            body: IrId::new(reader.read_u32()?),
+            frame: reader.read_option_u32()?.map(FrameId::new),
+        }),
+        17 => Ok(IrData::AttrSet {
+            shape: IrShapeId::new(reader.read_u32()?),
+            bindings: decode_ir_binding_slice(reader)?,
+            recursive: reader.read_bool()?,
+            has_dynamic: reader.read_bool()?,
+            frame: reader.read_option_u32()?.map(FrameId::new),
+        }),
+        18 => Ok(IrData::FormalSet {
+            formals: decode_ir_child_slice(reader)?,
+            ellipsis: reader.read_bool()?,
+            alias: reader.read_option_u32()?.map(Symbol::new),
+        }),
+        19 => Ok(IrData::Formal {
+            name: Symbol::new(reader.read_u32()?),
+            default: reader.read_option_u32()?.map(IrId::new),
+        }),
+        20 => Ok(IrData::Local {
+            slot: reader.read_u32()?,
+        }),
+        21 => Ok(IrData::Upval {
+            depth: reader.read_u32()?,
+            slot: reader.read_u32()?,
+        }),
+        22 => Ok(IrData::WithVar {
+            symbol: Symbol::new(reader.read_u32()?),
+            chain: reader.read_u32()?,
+        }),
+        tag => Err(format!("invalid IR data tag {tag}")),
+    }
+}
+
+fn encode_ir_attr_path_segment(out: &mut Vec<u8>, segment: IrAttrPathSegment) {
+    match segment {
+        IrAttrPathSegment::Static(symbol) => {
+            out.push(0);
+            write_u32(out, symbol.as_u32());
+        }
+        IrAttrPathSegment::Dynamic(node) => {
+            out.push(1);
+            write_u32(out, node.as_u32());
+        }
+    }
+}
+
+fn decode_ir_attr_path_segment(reader: &mut BinaryReader<'_>) -> Result<IrAttrPathSegment, String> {
+    match reader.read_u8()? {
+        0 => Ok(IrAttrPathSegment::Static(Symbol::new(reader.read_u32()?))),
+        1 => Ok(IrAttrPathSegment::Dynamic(IrId::new(reader.read_u32()?))),
+        tag => Err(format!("invalid IR attr-path segment tag {tag}")),
+    }
+}
+
+fn encode_ir_child_slice(out: &mut Vec<u8>, slice: IrChildSlice) {
+    write_u32(out, slice.start);
+    write_u32(out, slice.len);
+}
+
+fn decode_ir_child_slice(reader: &mut BinaryReader<'_>) -> Result<IrChildSlice, String> {
+    Ok(IrChildSlice::new(reader.read_u32()?, reader.read_u32()?))
+}
+
+fn encode_ir_binding_slice(out: &mut Vec<u8>, slice: IrBindingSlice) {
+    write_u32(out, slice.start);
+    write_u32(out, slice.len);
+}
+
+fn decode_ir_binding_slice(reader: &mut BinaryReader<'_>) -> Result<IrBindingSlice, String> {
+    Ok(IrBindingSlice::new(reader.read_u32()?, reader.read_u32()?))
 }
 
 fn encode_node(out: &mut Vec<u8>, node: Node) {
@@ -1380,6 +2180,92 @@ fn write_len(out: &mut Vec<u8>, len: usize, what: &'static str) -> Result<(), Pa
 
 fn write_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn ir_kind_tag(kind: IrKind) -> u8 {
+    match kind {
+        IrKind::Int => 0,
+        IrKind::Float => 1,
+        IrKind::Bool => 2,
+        IrKind::Null => 3,
+        IrKind::Str => 4,
+        IrKind::Path => 5,
+        IrKind::SearchPath => 6,
+        IrKind::Uri => 7,
+        IrKind::LocalVar => 8,
+        IrKind::UpvalVar => 9,
+        IrKind::GlobalVar => 10,
+        IrKind::WithVar => 11,
+        IrKind::List => 12,
+        IrKind::AttrSet => 13,
+        IrKind::Lambda => 14,
+        IrKind::FormalSet => 15,
+        IrKind::Formal => 16,
+        IrKind::Apply => 17,
+        IrKind::Select => 18,
+        IrKind::HasAttr => 19,
+        IrKind::Let => 20,
+        IrKind::With => 21,
+        IrKind::Assert => 22,
+        IrKind::If => 23,
+        IrKind::BinOp => 24,
+        IrKind::UnaryOp => 25,
+        IrKind::Interp => 26,
+        IrKind::ThunkAlloc => 27,
+        IrKind::PrimOp => 28,
+        IrKind::DerivationStrict => 29,
+    }
+}
+
+fn decode_ir_kind(tag: u8) -> Result<IrKind, String> {
+    match tag {
+        0 => Ok(IrKind::Int),
+        1 => Ok(IrKind::Float),
+        2 => Ok(IrKind::Bool),
+        3 => Ok(IrKind::Null),
+        4 => Ok(IrKind::Str),
+        5 => Ok(IrKind::Path),
+        6 => Ok(IrKind::SearchPath),
+        7 => Ok(IrKind::Uri),
+        8 => Ok(IrKind::LocalVar),
+        9 => Ok(IrKind::UpvalVar),
+        10 => Ok(IrKind::GlobalVar),
+        11 => Ok(IrKind::WithVar),
+        12 => Ok(IrKind::List),
+        13 => Ok(IrKind::AttrSet),
+        14 => Ok(IrKind::Lambda),
+        15 => Ok(IrKind::FormalSet),
+        16 => Ok(IrKind::Formal),
+        17 => Ok(IrKind::Apply),
+        18 => Ok(IrKind::Select),
+        19 => Ok(IrKind::HasAttr),
+        20 => Ok(IrKind::Let),
+        21 => Ok(IrKind::With),
+        22 => Ok(IrKind::Assert),
+        23 => Ok(IrKind::If),
+        24 => Ok(IrKind::BinOp),
+        25 => Ok(IrKind::UnaryOp),
+        26 => Ok(IrKind::Interp),
+        27 => Ok(IrKind::ThunkAlloc),
+        28 => Ok(IrKind::PrimOp),
+        29 => Ok(IrKind::DerivationStrict),
+        tag => Err(format!("invalid IR kind tag {tag}")),
+    }
+}
+
+fn effect_class_tag(effect: EffectClass) -> u8 {
+    match effect {
+        EffectClass::Pure => 0,
+        EffectClass::Effectful => 1,
+    }
+}
+
+fn decode_effect_class(tag: u8) -> Result<EffectClass, String> {
+    match tag {
+        0 => Ok(EffectClass::Pure),
+        1 => Ok(EffectClass::Effectful),
+        tag => Err(format!("invalid IR effect tag {tag}")),
+    }
 }
 
 fn node_kind_tag(kind: NodeKind) -> u8 {
@@ -1671,6 +2557,10 @@ mod tests {
         let entry = cache.entry_for_source(b"true");
         assert_eq!(entry.ir_path().file_name().expect("file name"), "ir.bin");
         assert_eq!(
+            entry.resolved_path().file_name().expect("file name"),
+            "resolved.bin"
+        );
+        assert_eq!(
             entry.symbols_path().file_name().expect("file name"),
             "symbols.bin"
         );
@@ -1702,7 +2592,7 @@ mod tests {
 
         entry.write_meta(&meta).expect("metadata writes");
         let text = fs::read_to_string(entry.meta_path()).expect("metadata is readable");
-        assert!(text.contains("schema_version = 3"));
+        assert!(text.contains("schema_version = 4"));
         assert!(!entry.is_complete());
 
         let _ = fs::remove_dir_all(root);
@@ -1745,6 +2635,38 @@ mod tests {
         let recovered = cache
             .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
             .expect("source reparses after corrupt cache");
+        assert!(!recovered.hit);
+        assert!(recovered.stored);
+        assert!(recovered.entry.is_complete());
+        assert_eq!(
+            recovered.resolved.arena.nodes(),
+            first.resolved.arena.nodes()
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_or_parse_recovers_from_mismatched_valid_artifacts() {
+        let root = temp_root();
+        let cache = ParseCache::new(root.join("parse"));
+        let source = b"1";
+        let first = cache
+            .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+            .expect("source parses on miss");
+        let other_resolved =
+            resolve(parse_str("2").expect("other source parses")).expect("other source resolves");
+        let other_ir = lower(file_local_resolved(&other_resolved).expect("other symbols remap"))
+            .expect("other source lowers");
+        fs::write(
+            first.entry.ir_path(),
+            encode_lowered_ir(&other_ir).expect("other IR encodes"),
+        )
+        .expect("mismatched IR writes");
+
+        let recovered = cache
+            .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+            .expect("source reparses after mismatched cache");
         assert!(!recovered.hit);
         assert!(recovered.stored);
         assert!(recovered.entry.is_complete());
@@ -1901,6 +2823,123 @@ mod tests {
     }
 
     #[test]
+    fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
+        let invalid_payload = Ir {
+            root: IrId::new(0),
+            arena: IrArena::from_raw_parts(
+                vec![IrNode::new(
+                    IrKind::Null,
+                    Span::new(0, 4),
+                    EffectClass::Pure,
+                    IrData::Bool(true),
+                )],
+                Vec::new(),
+            ),
+            symbols: SymbolTable::new(),
+            frames: Vec::new().into_boxed_slice(),
+            with_chains: Vec::new().into_boxed_slice(),
+            attr_paths: Vec::new().into_boxed_slice(),
+            bindings: Vec::new().into_boxed_slice(),
+            shapes: Vec::new().into_boxed_slice(),
+        };
+        let bytes = encode_lowered_ir(&invalid_payload).expect("invalid payload encodes");
+        let error = decode_lowered_ir(&bytes, SymbolTable::new())
+            .expect_err("invalid kind/data pair is rejected");
+        assert!(error.contains("invalid IR data"));
+
+        let invalid_effect = Ir {
+            root: IrId::new(0),
+            arena: IrArena::from_raw_parts(
+                vec![IrNode::new(
+                    IrKind::DerivationStrict,
+                    Span::new(0, 16),
+                    EffectClass::Pure,
+                    IrData::Node(IrId::new(0)),
+                )],
+                Vec::new(),
+            ),
+            symbols: SymbolTable::new(),
+            frames: Vec::new().into_boxed_slice(),
+            with_chains: Vec::new().into_boxed_slice(),
+            attr_paths: Vec::new().into_boxed_slice(),
+            bindings: Vec::new().into_boxed_slice(),
+            shapes: Vec::new().into_boxed_slice(),
+        };
+        let bytes = encode_lowered_ir(&invalid_effect).expect("invalid effect encodes");
+        let error = decode_lowered_ir(&bytes, SymbolTable::new())
+            .expect_err("invalid node effect is rejected");
+        assert!(error.contains("invalid IR effect"));
+    }
+
+    #[test]
+    fn lowered_ir_rejects_inconsistent_attrset_shapes() {
+        let mut symbols = SymbolTable::new();
+        let a = symbols.intern(b"a").expect("a interns");
+        let b = symbols.intern(b"b").expect("b interns");
+        let static_binding = IrBinding {
+            key: IrAttrPathSegment::Static(a),
+            value: IrId::new(0),
+        };
+        let invalid_shape = Ir {
+            root: IrId::new(0),
+            arena: IrArena::from_raw_parts(
+                vec![IrNode::new(
+                    IrKind::AttrSet,
+                    Span::new(0, 9),
+                    EffectClass::Pure,
+                    IrData::AttrSet {
+                        shape: IrShapeId::new(0),
+                        bindings: IrBindingSlice::new(0, 1),
+                        recursive: false,
+                        has_dynamic: false,
+                        frame: None,
+                    },
+                )],
+                Vec::new(),
+            ),
+            symbols: symbols.clone(),
+            frames: Vec::new().into_boxed_slice(),
+            with_chains: Vec::new().into_boxed_slice(),
+            attr_paths: Vec::new().into_boxed_slice(),
+            bindings: vec![static_binding].into_boxed_slice(),
+            shapes: vec![IrShape::new(vec![b].into_boxed_slice())].into_boxed_slice(),
+        };
+        let bytes = encode_lowered_ir(&invalid_shape).expect("invalid shape encodes");
+        let error = decode_lowered_ir(&bytes, symbols.clone())
+            .expect_err("invalid attrset shape is rejected");
+        assert!(error.contains("shape does not match"));
+
+        let invalid_dynamic_flag = Ir {
+            root: IrId::new(0),
+            arena: IrArena::from_raw_parts(
+                vec![IrNode::new(
+                    IrKind::AttrSet,
+                    Span::new(0, 9),
+                    EffectClass::Pure,
+                    IrData::AttrSet {
+                        shape: IrShapeId::new(0),
+                        bindings: IrBindingSlice::new(0, 1),
+                        recursive: false,
+                        has_dynamic: true,
+                        frame: None,
+                    },
+                )],
+                Vec::new(),
+            ),
+            symbols: symbols.clone(),
+            frames: Vec::new().into_boxed_slice(),
+            with_chains: Vec::new().into_boxed_slice(),
+            attr_paths: Vec::new().into_boxed_slice(),
+            bindings: vec![static_binding].into_boxed_slice(),
+            shapes: vec![IrShape::new(vec![a].into_boxed_slice())].into_boxed_slice(),
+        };
+        let bytes = encode_lowered_ir(&invalid_dynamic_flag).expect("invalid flag encodes");
+        let error = decode_lowered_ir(&bytes, symbols)
+            .expect_err("invalid attrset dynamic flag is rejected");
+        assert!(error.contains("dynamic flag"));
+    }
+
+    #[test]
     fn resolved_artifacts_roundtrip_through_entry_files() {
         let root = temp_root();
         let cache = ParseCache::new(root.join("parse"));
@@ -1935,6 +2974,42 @@ mod tests {
             loaded.scopes.node_inherits(),
             resolved.scopes.node_inherits()
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lowered_ir_artifacts_roundtrip_through_entry_files() {
+        let root = temp_root();
+        let cache = ParseCache::new(root.join("parse"));
+        let source = r#"
+            let
+              name = "dyn";
+            in rec {
+              ${name} = builtins.getEnv "HOME";
+              drv = derivationStrict { name = "x"; };
+              flag = true;
+              none = null;
+            }
+        "#;
+        let resolved = resolve(parse_str(source).expect("source parses")).expect("scope resolves");
+        let expected = lower(file_local_resolved(&resolved).expect("symbols remap"))
+            .expect("resolved AST lowers");
+        let entry = cache.entry_for_source(source.as_bytes());
+        let meta = ParseCacheMeta::new(
+            cache.schema_version(),
+            Some("expr.nix".to_owned()),
+            resolved.arena.len() as u32,
+            resolved.symbols.len() as u32,
+        );
+
+        entry
+            .write_resolved(&resolved, &meta)
+            .expect("resolved artifact writes");
+        assert!(entry.is_complete());
+
+        let loaded = entry.read_ir().expect("lowered IR artifact reads");
+        assert!(lowered_ir_matches(&loaded, &expected));
 
         let _ = fs::remove_dir_all(root);
     }

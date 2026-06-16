@@ -471,9 +471,19 @@ impl IrArena {
         }
     }
 
+    /// Creates an arena from already-decoded raw storage.
+    pub(crate) fn from_raw_parts(nodes: Vec<IrNode>, children: Vec<IrId>) -> Self {
+        Self { nodes, children }
+    }
+
     /// Returns all nodes in allocation order.
     pub fn nodes(&self) -> &[IrNode] {
         &self.nodes
+    }
+
+    /// Returns all child-pool entries in allocation order.
+    pub fn child_pool(&self) -> &[IrId] {
+        &self.children
     }
 
     /// Returns one node by id.
