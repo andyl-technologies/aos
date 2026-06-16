@@ -156,6 +156,7 @@ impl EvalOutcome {
 pub struct TreeWalkOptions {
     store_dir: Vec<u8>,
     current_system: Option<Vec<u8>>,
+    current_time: Option<i64>,
     env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
@@ -164,6 +165,7 @@ impl Default for TreeWalkOptions {
         Self {
             store_dir: DEFAULT_STORE_DIR.to_vec(),
             current_system: None,
+            current_time: None,
             env_vars: BTreeMap::new(),
         }
     }
@@ -220,6 +222,21 @@ impl TreeWalkOptions {
         Ok(options)
     }
 
+    /// Creates evaluator options with a configured evaluation start time.
+    ///
+    /// The timestamp is exposed through `builtins.currentTime`. Leaving it unset
+    /// keeps that builtin unavailable, which lets callers model pure-eval mode
+    /// and avoids accidental host clock reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `current_time` is negative.
+    pub fn with_current_time(current_time: i64) -> Result<Self, TreeWalkOptionsError> {
+        let mut options = Self::default();
+        options.set_current_time(current_time)?;
+        Ok(options)
+    }
+
     /// Replaces the configured Nix store directory.
     ///
     /// Empty store directories fall back to `/nix/store`. Absolute store
@@ -260,6 +277,24 @@ impl TreeWalkOptions {
         self.current_system = None;
     }
 
+    /// Replaces the configured evaluation start time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `current_time` is negative.
+    pub fn set_current_time(&mut self, current_time: i64) -> Result<(), TreeWalkOptionsError> {
+        if current_time < 0 {
+            return Err(TreeWalkOptionsError::NegativeCurrentTime);
+        }
+        self.current_time = Some(current_time);
+        Ok(())
+    }
+
+    /// Clears the configured evaluation start time.
+    pub fn clear_current_time(&mut self) {
+        self.current_time = None;
+    }
+
     /// Replaces a configured environment variable.
     ///
     /// Only variables inserted into these options are visible to
@@ -283,6 +318,11 @@ impl TreeWalkOptions {
         self.current_system.as_deref()
     }
 
+    /// Returns the configured evaluation start time, if one is available.
+    pub const fn current_time(&self) -> Option<i64> {
+        self.current_time
+    }
+
     /// Returns the configured value for an environment variable.
     pub fn env_var(&self, name: &[u8]) -> Option<&[u8]> {
         self.env_vars.get(name).map(Vec::as_slice)
@@ -299,6 +339,10 @@ pub enum TreeWalkOptionsError {
     /// The configured target system is empty.
     #[error("Nix currentSystem value must not be empty")]
     EmptyCurrentSystem,
+
+    /// The configured evaluation start time is negative.
+    #[error("Nix currentTime value must not be negative")]
+    NegativeCurrentTime,
 }
 
 fn normalize_store_dir(store_dir: Vec<u8>) -> Result<Vec<u8>, TreeWalkOptionsError> {
@@ -8753,6 +8797,32 @@ impl Builtin for CurrentSystemBuiltin {
     }
 }
 
+impl Builtin for CurrentTimeBuiltin {
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
+    }
+
+    fn is_available(&self, eval: &TreeWalk<'_>) -> bool {
+        eval.options.current_time().is_some()
+    }
+
+    fn select(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        id: IrId,
+        span: Span,
+        symbol: Symbol,
+    ) -> Result<Value, TreeWalkError> {
+        let Some(current_time) = eval.options.current_time() else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedBuiltinAttr { id, symbol },
+                span,
+            ));
+        };
+        Ok(Value::int(current_time))
+    }
+}
+
 impl Builtin for StoreDirBuiltin {
     fn metadata(&self) -> BuiltinMetadata {
         <Self as BuiltinInfo>::METADATA
@@ -10313,6 +10383,29 @@ mod tests {
     }
 
     #[test]
+    fn tree_walk_options_configure_current_time() {
+        let defaulted = TreeWalkOptions::new();
+        assert_eq!(defaulted.current_time(), None);
+
+        let configured =
+            TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime configures");
+        assert_eq!(configured.current_time(), Some(1_700_000_000));
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_current_time(1_700_000_001)
+            .expect("currentTime sets");
+        assert_eq!(options.current_time(), Some(1_700_000_001));
+        options.clear_current_time();
+        assert_eq!(options.current_time(), None);
+
+        assert_eq!(
+            TreeWalkOptions::with_current_time(-1).expect_err("negative currentTime is rejected"),
+            TreeWalkOptionsError::NegativeCurrentTime
+        );
+    }
+
+    #[test]
     fn tree_walk_options_configure_environment_variables() {
         let defaulted = TreeWalkOptions::new();
         assert_eq!(defaulted.env_var(b"HOME"), None);
@@ -10364,6 +10457,29 @@ mod tests {
             ),
             b"string"
         );
+        assert_eq!(
+            eval_with_options(
+                "builtins.currentTime",
+                TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid")
+            )
+            .as_int(),
+            Ok(1_700_000_000)
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                "builtins.typeOf builtins.currentTime",
+                TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid")
+            ),
+            b"int"
+        );
+        assert_eq!(
+            eval_with_options(
+                "builtins.currentTime == builtins.currentTime",
+                TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid")
+            )
+            .as_bool(),
+            Ok(true)
+        );
         assert_eq!(eval("builtins ? length").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? getEnv").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? currentSystem").as_bool(), Ok(false));
@@ -10372,6 +10488,15 @@ mod tests {
                 "builtins ? currentSystem",
                 TreeWalkOptions::with_current_system(b"aarch64-linux".to_vec())
                     .expect("currentSystem is valid")
+            )
+            .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(eval("builtins ? currentTime").as_bool(), Ok(false));
+        assert_eq!(
+            eval_with_options(
+                "builtins ? currentTime",
+                TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid")
             )
             .as_bool(),
             Ok(true)
@@ -10418,12 +10543,20 @@ mod tests {
             ),
             b"aarch64-linux"
         );
+        assert_eq!(eval("builtins.currentTime or 42").as_int(), Ok(42));
+        assert_eq!(
+            eval_with_options(
+                "builtins.currentTime or 42",
+                TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid")
+            )
+            .as_int(),
+            Ok(1_700_000_000)
+        );
     }
 
     #[test]
     fn known_but_unimplemented_builtin_selects_do_not_use_defaults() {
         for (source, name) in [
-            ("builtins.currentTime or 42", b"currentTime".as_slice()),
             ("builtins.elemAt or 42", b"elemAt".as_slice()),
             ("builtins.exec or 42", b"exec".as_slice()),
             ("builtins.fetchClosure or 42", b"fetchClosure".as_slice()),
@@ -10455,6 +10588,38 @@ mod tests {
             TreeWalkErrorKind::MissingAttribute {
                 id: ir.root,
                 symbol: symbol_for(&ir, b"currentSystem")
+            }
+        );
+    }
+
+    #[test]
+    fn unavailable_current_time_behaves_like_missing_attr() {
+        let ir = lower("builtins.currentTime");
+        let error = eval_whnf_owned(&ir).expect_err("currentTime is unavailable");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::MissingAttribute {
+                id: ir.root,
+                symbol: symbol_for(&ir, b"currentTime")
+            }
+        );
+    }
+
+    #[test]
+    fn bare_current_time_remains_unresolved_global() {
+        let ir = lower("currentTime");
+        let error = eval_whnf_owned_with_options(
+            &ir,
+            TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid"),
+        )
+        .expect_err("currentTime is not a bare global");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedNode {
+                id: ir.root,
+                kind: IrKind::GlobalVar,
             }
         );
     }
