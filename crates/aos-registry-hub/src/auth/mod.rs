@@ -47,14 +47,14 @@
 //! leak never yields a usable credential.
 
 pub mod extract;
-pub mod jwt;
 pub mod oidc;
 pub mod seal;
 
 // The runtime-agnostic auth primitives moved to aos-registry-core (RFC-0004
 // Phase 5) so the Worker shares them; re-exported here so every
 // `crate::auth::{token,session,magic,device,password,permission_from_str,
-// webauthn}::…` path is unchanged.
+// webauthn,jwt}::…` path is unchanged. (jwt's HS256 is now hmac/sha2-based —
+// no jsonwebtoken/ring — so it builds for wasm32.)
 pub use aos_registry_core::auth::{
-    device, magic, password, permission_from_str, session, token, webauthn,
+    device, jwt, magic, password, permission_from_str, session, token, webauthn,
 };

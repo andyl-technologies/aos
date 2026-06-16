@@ -26,7 +26,9 @@
 //! for every credential is the hub's `db` layer; only secret *hashes* are
 //! stored, so a database leak never yields a usable credential.
 
+// jwt: HS256 access-token mint/verify (hmac/sha2-based; no jsonwebtoken/ring).
 pub mod device;
+pub mod jwt;
 pub mod magic;
 pub mod password;
 pub mod seal;

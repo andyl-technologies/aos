@@ -4,8 +4,14 @@
 //! `POST /oauth2/token` for one of these access tokens; the JWT then rides
 //! every machine-path request in `Authorization: Bearer`. The token is
 //! self-describing — it carries the owner, the scope path, and the explicit
-//! permission verbs — so the gate ([`crate::auth::extract`]) can decide
-//! without a database round-trip on the hot path.
+//! permission verbs — so the gate can decide without a database round-trip on
+//! the hot path.
+//!
+//! The HS256 signing and verification are implemented directly over `hmac` +
+//! `sha2` (no `jsonwebtoken`/`ring`), so this compiles to
+//! `wasm32-unknown-unknown` for the Cloudflare Worker (RFC-0004 Phase 5). These
+//! access tokens are short-lived and never persisted, so the only contract is
+//! mint↔verify self-consistency.
 //!
 //! # Claim shape
 //!
@@ -23,16 +29,32 @@
 //! }
 //! ```
 //!
+//! The token wire form is the standard compact JWT
+//! `base64url(header).base64url(claims).base64url(HMAC-SHA256(header.claims))`,
+//! with a fixed `{"alg":"HS256","typ":"JWT"}` header.
+//!
 //! The secret is an HS256 symmetric key ([`JwtKeys`]); supply a stable key
 //! in production so tokens survive a restart, or let [`JwtKeys::random`]
 //! generate an ephemeral 32-byte key for tests and dev mode.
 
-use anyhow::{Context, Result};
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use anyhow::{bail, Context, Result};
+use base64::Engine as _;
+use hmac::{Hmac, Mac};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
 use crate::db::TokenAuth;
+
+/// HMAC-SHA256 keyed by the JWT signing secret.
+type HmacSha256 = Hmac<Sha256>;
+
+/// base64url, no padding — the JWT segment encoding (RFC 7515).
+const B64: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+/// The fixed compact-JWS header for an HS256 token.
+const HEADER_JSON: &[u8] = br#"{"alg":"HS256","typ":"JWT"}"#;
 
 /// The HS256-signed claims carried by a hub access token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,14 +77,12 @@ pub struct Claims {
 
 /// An HS256 signing key for minting and verifying access tokens.
 ///
-/// Clone-cheap: it holds the raw key bytes plus the derived
-/// encode/decode keys. Construct from a configured secret with
-/// [`JwtKeys::from_secret`] or generate an ephemeral one with
-/// [`JwtKeys::random`].
+/// Clone-cheap: it holds the raw HS256 secret bytes. Construct from a
+/// configured secret with [`JwtKeys::from_secret`] or generate an ephemeral
+/// one with [`JwtKeys::random`].
 #[derive(Clone)]
 pub struct JwtKeys {
-    encoding: EncodingKey,
-    decoding: DecodingKey,
+    secret: Vec<u8>,
 }
 
 impl JwtKeys {
@@ -70,8 +90,7 @@ impl JwtKeys {
     #[must_use]
     pub fn from_secret(secret: &[u8]) -> JwtKeys {
         JwtKeys {
-            encoding: EncodingKey::from_secret(secret),
-            decoding: DecodingKey::from_secret(secret),
+            secret: secret.to_vec(),
         }
     }
 
@@ -86,6 +105,15 @@ impl JwtKeys {
         JwtKeys::from_secret(&bytes)
     }
 
+    /// HMAC-SHA256 of `msg` under the secret. Infallible (HMAC accepts any key
+    /// length).
+    fn sign(&self, msg: &[u8]) -> Vec<u8> {
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&self.secret)
+            .unwrap_or_else(|_| unreachable!("HMAC-SHA256 accepts any key length"));
+        mac.update(msg);
+        mac.finalize().into_bytes().to_vec()
+    }
+
     /// Mints a signed access token for a validated provisioning token.
     ///
     /// The claims copy the owner, scope, and permission verbs from `auth`;
@@ -94,7 +122,7 @@ impl JwtKeys {
     /// # Errors
     ///
     /// Returns an error if the system clock is before the Unix epoch or
-    /// JWT encoding fails.
+    /// claim serialization fails.
     pub fn mint(&self, auth: &TokenAuth, ttl_secs: i64) -> Result<String> {
         let now = unix_now()?;
         let claims = Claims {
@@ -110,25 +138,59 @@ impl JwtKeys {
             iat: now,
             exp: now + ttl_secs,
         };
-        encode(&Header::new(Algorithm::HS256), &claims, &self.encoding).context("encoding JWT")
+        let claims_json = serde_json::to_vec(&claims).context("serializing JWT claims")?;
+        let signing_input = format!("{}.{}", B64.encode(HEADER_JSON), B64.encode(claims_json));
+        let signature = self.sign(signing_input.as_bytes());
+        Ok(format!("{signing_input}.{}", B64.encode(signature)))
     }
 
     /// Verifies a JWT and returns its claims.
     ///
-    /// The signature is checked with HS256 and the `exp` claim is enforced.
+    /// The signature is checked with HS256 (constant-time) and the `exp` claim
+    /// is enforced strictly — no clock-skew leeway, so a token whose expiry has
+    /// passed is rejected the instant it lapses.
     ///
     /// # Errors
     ///
-    /// Returns an error if the signature is invalid, the token is expired,
-    /// or the claims cannot be deserialized.
+    /// Returns an error if the token is malformed, the signature is invalid,
+    /// the token is expired, or the claims cannot be deserialized.
     pub fn verify(&self, token: &str) -> Result<Claims> {
-        let mut validation = Validation::new(Algorithm::HS256);
-        validation.validate_exp = true;
-        // Enforce `exp` strictly: no clock-skew leeway, so a token whose
-        // expiry has passed is rejected the instant it lapses.
-        validation.leeway = 0;
-        let data = decode::<Claims>(token, &self.decoding, &validation).context("invalid JWT")?;
-        Ok(data.claims)
+        let mut parts = token.split('.');
+        let (Some(header_b64), Some(claims_b64), Some(sig_b64), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            bail!("invalid JWT: expected three dot-separated segments");
+        };
+        // The header is fixed for the tokens this hub mints; reject anything
+        // whose alg/typ we did not produce (an `alg:none` downgrade or an
+        // unexpected algorithm never reaches the signature check).
+        let header = B64
+            .decode(header_b64)
+            .context("invalid JWT header base64")?;
+        if header != HEADER_JSON {
+            bail!("invalid JWT: unexpected header (only HS256 is accepted)");
+        }
+        // Verify the signature over `header.claims` in constant time.
+        let signing_input = format!("{header_b64}.{claims_b64}");
+        let signature = B64
+            .decode(sig_b64)
+            .context("invalid JWT signature base64")?;
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&self.secret)
+            .unwrap_or_else(|_| unreachable!("HMAC-SHA256 accepts any key length"));
+        mac.update(signing_input.as_bytes());
+        mac.verify_slice(&signature)
+            .map_err(|_| anyhow::anyhow!("invalid JWT signature"))?;
+        // Signature verified: decode the claims and enforce expiry.
+        let claims_bytes = B64
+            .decode(claims_b64)
+            .context("invalid JWT claims base64")?;
+        let claims: Claims =
+            serde_json::from_slice(&claims_bytes).context("invalid JWT claims")?;
+        let now = unix_now()?;
+        if claims.exp < now {
+            bail!("JWT has expired");
+        }
+        Ok(claims)
     }
 }
 
@@ -168,6 +230,16 @@ mod tests {
     }
 
     #[test]
+    fn token_is_three_b64url_segments() {
+        let keys = JwtKeys::random();
+        let token = keys.mint(&sample_auth(), 900).unwrap();
+        let segments: Vec<&str> = token.split('.').collect();
+        assert_eq!(segments.len(), 3, "compact JWS has three segments");
+        // The header decodes to the fixed HS256 header.
+        assert_eq!(B64.decode(segments[0]).unwrap(), HEADER_JSON);
+    }
+
+    #[test]
     fn tampered_token_is_rejected() {
         let keys = JwtKeys::random();
         let token = keys.mint(&sample_auth(), 900).unwrap();
@@ -194,5 +266,13 @@ mod tests {
         // residual leeway).
         let token = keys.mint(&sample_auth(), -120).unwrap();
         assert!(keys.verify(&token).is_err());
+    }
+
+    #[test]
+    fn malformed_token_is_rejected() {
+        let keys = JwtKeys::random();
+        assert!(keys.verify("not-a-jwt").is_err());
+        assert!(keys.verify("only.two").is_err());
+        assert!(keys.verify("a.b.c.d").is_err());
     }
 }
