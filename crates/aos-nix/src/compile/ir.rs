@@ -998,8 +998,8 @@ impl IrLowerer {
             Some(
                 b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs" | b"intersectAttrs"
                 | b"catAttrs" | b"elem" | b"lessThan" | b"add" | b"sub" | b"mul" | b"div"
-                | b"bitAnd" | b"bitOr" | b"bitXor" | b"all" | b"any" | b"filter" | b"partition"
-                | b"concatMap" | b"groupBy",
+                | b"bitAnd" | b"bitOr" | b"bitXor" | b"compareVersions" | b"all" | b"any"
+                | b"filter" | b"partition" | b"concatMap" | b"groupBy",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1950,6 +1950,10 @@ mod tests {
             ("builtins.bitAnd 6 3", b"bitAnd".as_slice()),
             ("builtins.bitOr 4 1", b"bitOr".as_slice()),
             ("builtins.bitXor 6 3", b"bitXor".as_slice()),
+            (
+                "builtins.compareVersions \"1.0\" \"1.1\"",
+                b"compareVersions".as_slice(),
+            ),
             ("builtins.all (x: true) [ 1 ]", b"all".as_slice()),
             ("builtins.any (x: false) [ 1 ]", b"any".as_slice()),
             ("builtins.filter (x: true) [ 1 ]", b"filter".as_slice()),
@@ -2627,6 +2631,7 @@ mod tests {
             ("partition", "(x: true)", "[ 1 ]"),
             ("concatMap", "(x: [ x ])", "[ 1 ]"),
             ("groupBy", "(x: \"k\")", "[ 1 ]"),
+            ("compareVersions", "\"1.0\"", "\"1.1\""),
         ] {
             let ir = lowered(&format!("{name} {left} {right}"));
             let root = root_node(&ir);

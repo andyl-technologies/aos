@@ -773,6 +773,47 @@ impl<'ir> TreeWalk<'ir> {
         Ok(attrs.get(symbol))
     }
 
+    fn context_free_string_bytes(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        op: &'static str,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        if value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        let string = self
+            .heap
+            .get_string(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        if string.has_context() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::StringContextNotAllowed { id, op },
+                span,
+            ));
+        }
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(string.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: string.len(),
+                },
+                span,
+            )
+        })?;
+        bytes.extend_from_slice(string.bytes());
+        Ok(bytes)
+    }
+
     fn eval_attr_name(
         &mut self,
         id: IrId,
@@ -1277,6 +1318,9 @@ impl<'ir> TreeWalk<'ir> {
                 StrictBinaryPrimOp::BitOr => self.eval_bitwise_primop(BitwiseOp::Or, first, second),
                 StrictBinaryPrimOp::BitXor => {
                     self.eval_bitwise_primop(BitwiseOp::Xor, first, second)
+                }
+                StrictBinaryPrimOp::CompareVersions => {
+                    self.eval_compare_versions_primop(first, second)
                 }
                 StrictBinaryPrimOp::All => self.eval_all_any_primop(AllAnyOp::All, first, second),
                 StrictBinaryPrimOp::Any => self.eval_all_any_primop(AllAnyOp::Any, first, second),
@@ -1949,48 +1993,8 @@ impl<'ir> TreeWalk<'ir> {
         argument_span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        if value.tag() != ValueTag::String {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: argument,
-                    expected: "string",
-                    actual: value.tag(),
-                },
-                argument_span,
-            ));
-        }
-        let bytes = {
-            let string = self.heap.get_string(value).map_err(|source| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::Heap {
-                        id: argument,
-                        source,
-                    },
-                    argument_span,
-                )
-            })?;
-            if string.has_context() {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::StringContextNotAllowed {
-                        id: argument,
-                        op: "splitVersion",
-                    },
-                    argument_span,
-                ));
-            }
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(string.len()).map_err(|_| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::ByteAllocationFailed {
-                        id: argument,
-                        len: string.len(),
-                    },
-                    argument_span,
-                )
-            })?;
-            bytes.extend_from_slice(string.bytes());
-            bytes
-        };
+        let bytes =
+            self.context_free_string_bytes(argument, argument_span, value, "splitVersion")?;
         let len = SplitVersionRanges::new(&bytes).count();
         let mut elements = Vec::new();
         elements.try_reserve_exact(len).map_err(|_| {
@@ -2002,6 +2006,37 @@ impl<'ir> TreeWalk<'ir> {
         self.heap
             .alloc_list(NixList::new(elements))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_compare_versions_primop(
+        &mut self,
+        left_id: IrId,
+        right_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let left_span = self.node(left_id)?.span;
+        let left = self.eval_node(left_id)?;
+        let left = self.context_free_string_bytes(left_id, left_span, left, "compareVersions")?;
+        let right_span = self.node(right_id)?.span;
+        let right = self.eval_node(right_id)?;
+        let right =
+            self.context_free_string_bytes(right_id, right_span, right, "compareVersions")?;
+        Ok(Value::int(compare_version_bytes(&left, &right)))
+    }
+
+    #[cfg(test)]
+    fn eval_compare_versions_values(
+        &self,
+        left_id: IrId,
+        left_span: Span,
+        left: Value,
+        right_id: IrId,
+        right_span: Span,
+        right: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let left = self.context_free_string_bytes(left_id, left_span, left, "compareVersions")?;
+        let right =
+            self.context_free_string_bytes(right_id, right_span, right, "compareVersions")?;
+        Ok(Value::int(compare_version_bytes(&left, &right)))
     }
 
     fn eval_list_to_attrs_primop(
@@ -5088,6 +5123,80 @@ impl Iterator for SplitVersionRanges<'_> {
     }
 }
 
+fn compare_version_bytes(left: &[u8], right: &[u8]) -> i64 {
+    let mut left_ranges = SplitVersionRanges::new(left);
+    let mut right_ranges = SplitVersionRanges::new(right);
+    loop {
+        let left_range = left_ranges.next();
+        let right_range = right_ranges.next();
+        let (Some((left_start, left_end)), Some((right_start, right_end))) =
+            (left_range, right_range)
+        else {
+            return match (left_range, right_range) {
+                (None, None) => 0,
+                (Some((left_start, left_end)), None) => {
+                    compare_version_components(&left[left_start..left_end], b"")
+                }
+                (None, Some((right_start, right_end))) => {
+                    compare_version_components(b"", &right[right_start..right_end])
+                }
+                (Some(_), Some(_)) => unreachable!("both ranges were matched above"),
+            };
+        };
+        let ordering =
+            compare_version_components(&left[left_start..left_end], &right[right_start..right_end]);
+        if ordering != 0 {
+            return ordering;
+        }
+    }
+}
+
+fn compare_version_components(left: &[u8], right: &[u8]) -> i64 {
+    if left == right {
+        return 0;
+    }
+    if left == b"pre" {
+        return -1;
+    }
+    if right == b"pre" {
+        return 1;
+    }
+    let left_digit = left.first().is_some_and(u8::is_ascii_digit);
+    let right_digit = right.first().is_some_and(u8::is_ascii_digit);
+    match (left_digit, right_digit) {
+        (true, true) => compare_version_numbers(left, right),
+        (true, false) => 1,
+        (false, true) => -1,
+        (false, false) => match left.cmp(right) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        },
+    }
+}
+
+fn compare_version_numbers(left: &[u8], right: &[u8]) -> i64 {
+    let left = trim_version_leading_zeroes(left);
+    let right = trim_version_leading_zeroes(right);
+    match left.len().cmp(&right.len()) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Equal => match left.cmp(right) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        },
+    }
+}
+
+fn trim_version_leading_zeroes(bytes: &[u8]) -> &[u8] {
+    let first_non_zero = bytes
+        .iter()
+        .position(|byte| *byte != b'0')
+        .unwrap_or(bytes.len());
+    &bytes[first_non_zero..]
+}
+
 fn dir_name_range(bytes: &[u8]) -> Option<(usize, usize)> {
     if bytes.is_empty() {
         return None;
@@ -5246,6 +5355,7 @@ enum StrictBinaryPrimOp {
     BitAnd,
     BitOr,
     BitXor,
+    CompareVersions,
     ElemAt,
     GetAttr,
     HasAttr,
@@ -5272,6 +5382,7 @@ impl StrictBinaryPrimOp {
             b"bitAnd" => Some(Self::BitAnd),
             b"bitOr" => Some(Self::BitOr),
             b"bitXor" => Some(Self::BitXor),
+            b"compareVersions" => Some(Self::CompareVersions),
             b"elemAt" => Some(Self::ElemAt),
             b"getAttr" => Some(Self::GetAttr),
             b"hasAttr" => Some(Self::HasAttr),
@@ -9334,6 +9445,122 @@ mod tests {
             }
         );
         assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn compare_versions_primop_orders_components() {
+        for (source, expected) in [
+            ("builtins.compareVersions \"1.0\" \"1.0\"", 0),
+            ("builtins.compareVersions \"1.0\" \"1.1\"", -1),
+            ("builtins.compareVersions \"1.10\" \"1.2\"", 1),
+            ("builtins.compareVersions \"1.0pre\" \"1.0\"", -1),
+            ("builtins.compareVersions \"1.0\" \"1.0pre\"", 1),
+            ("builtins.compareVersions \"1.0pre2\" \"1.0pre10\"", -1),
+            ("builtins.compareVersions \"1.0\" \"1.0.0\"", -1),
+            ("builtins.compareVersions \"01\" \"1\"", 0),
+            ("builtins.compareVersions \"1a\" \"1.0\"", -1),
+            ("builtins.compareVersions \"1.0+git\" \"1.0\"", 1),
+        ] {
+            assert_eq!(eval(source).as_int(), Ok(expected), "{source}");
+        }
+        assert_eq!(
+            eval("let builtins = { compareVersions = left: right: 42; }; in builtins.compareVersions \"1.0\" \"1.1\"")
+                .as_int(),
+            Ok(42)
+        );
+    }
+
+    #[test]
+    fn compare_versions_primop_checks_arguments_left_to_right() {
+        let ir = lower("builtins.compareVersions 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let left = args[0];
+        let left_span = ir.arena.node(left).expect("left argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("compareVersions type-checks left first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: left,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), left_span);
+
+        let ir = lower("builtins.compareVersions \"1\" 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let right = args[1];
+        let right_span = ir.arena.node(right).expect("right argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("compareVersions type-checks right second");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: right,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), right_span);
+    }
+
+    #[test]
+    fn compare_versions_primop_rejects_string_context() {
+        let ir = lower("builtins.compareVersions \"1\" \"2\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let left = args[0];
+        let right = args[1];
+        let left_span = ir.arena.node(left).expect("left argument exists").span;
+        let right_span = ir.arena.node(right).expect("right argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let left_value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"1".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing string allocates");
+        let right_value = evaluator
+            .heap
+            .alloc_string(NixString::from_bytes(b"2".to_vec()))
+            .expect("context-free string allocates");
+
+        let error = evaluator
+            .eval_compare_versions_values(
+                left,
+                left_span,
+                left_value,
+                right,
+                right_span,
+                right_value,
+            )
+            .expect_err("compareVersions rejects string context");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                id: left,
+                op: "compareVersions",
+            }
+        );
+        assert_eq!(error.span(), left_span);
     }
 
     #[test]

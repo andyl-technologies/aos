@@ -1471,6 +1471,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"bitAnd"
             | b"bitOr"
             | b"bitXor"
+            | b"compareVersions"
             | b"stringLength"
             | b"baseNameOf"
             | b"dirOf"
