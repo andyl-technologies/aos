@@ -60,9 +60,10 @@
       names = builtins.filter isDrv (builtins.attrNames p);
     in
       builtins.listToAttrs (map (name: {
-        name = "pkg-${name}";
-        value = p.${name};
-      }) names);
+          name = "pkg-${name}";
+          value = p.${name};
+        })
+        names);
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
 
