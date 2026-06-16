@@ -426,11 +426,32 @@ when the registry is unreachable (air-gapped / on-prem must not hard-fail boot).
 
 ---
 
-## 9. Config & credential delivery (EXPLICITLY OPEN — do NOT settle on credstore)
+## 9. Config & credential delivery — RESOLVED (direction): layered, not one mechanism
 
-**Statement.** How per-instance config and secrets reach a package (and cross the
-nspawn boundary) is **undecided**. The working baseline is k3s today: Ignition
-writes `/etc/rancher/k3s/k3s.env`, consumed via systemd `EnvironmentFile=`.
+> **Resolved (direction).** The "pick one option" framing was the mistake —
+> config has three distinct needs, and the budget mandate says build all three
+> rather than force them through one channel:
+> - **Secrets → TPM2-sealed systemd credentials** (signed-PCR-11/UKI policy,
+>   [config.md](config.md)). This is the SOTA *and* satisfies the original "do
+>   not settle on credstore" caution: it is **TPM-sealed**, not the bare host-key
+>   credstore that caution was about, and it rides RFC-0006's measured-boot
+>   substrate. `SetCredentialEncrypted=` in signed units; surfaces under
+>   `$CREDENTIALS_DIRECTORY` (per-service, non-swappable, not inherited).
+> - **Structured config → an apm config artifact with a manifest-declared
+>   schema** (the package's `expose` declares its config schema; apm validates
+>   before start) — closes the "no schema enforcement" gap.
+> - **Simple/non-secret → `EnvironmentFile=` + Ignition `storage.files`** (k3s's
+>   pattern) stays as the zero-ceremony tier.
+>
+> **Hot reload is built (D25), not skipped:** the manifest declares whether the
+> service supports reload; a config change triggers `systemctl reload-or-restart`
+> (`Type=notify-reload`/`RELOADING=1` where supported). Only the secrets path
+> awaits maintainer sign-off; the layering is decided. *packages-core* / *apm*.
+
+**Statement.** How per-instance config and secrets reach a package is answered by
+the layered model above. The working baseline is k3s today: Ignition writes
+`/etc/rancher/k3s/k3s.env`, consumed via systemd `EnvironmentFile=` — which
+survives as the simple tier.
 
 **Why it matters.** It touches secret safety, reloadability, offline operation,
 per-instance override, schema validation, and the host↔container boundary all at
@@ -790,6 +811,31 @@ harness cost. Record the outcome in
 
 ---
 
+## 18. Cross-package dependencies — RESOLVED (direction): typed capability routing, flat ordering first
+
+> **Resolved (direction).** Two increments, both built (budget mandate):
+> 1. **Flat ordering (MVP).** `requires: Vec<String>` by package name →
+>    install-time pull-in (deb-style `Depends:`, materialized atomically in the
+>    shared generation) + `After=`/`Wants=` target edges. No version solver (the
+>    channel model pins versions). This is the immediate, low-risk subset.
+> 2. **Typed capability routing (target).** Generalize `requires` from "needs B
+>    *running*" to "needs *capability X* from B": a package's `expose` declares
+>    **provided capabilities** (a named socket, directory, or service), and a
+>    consumer requires them by typed name. The renderer wires each edge as the
+>    *least-privilege* primitive — a passed **fd** (socket activation +
+>    `JoinsNamespaceOf=`), a `BindReadOnlyPaths=` of just that directory — so the
+>    consumer gets exactly that capability and **no ambient access**. This
+>    unifies cross-package composition with the brokered-capability model
+>    ([permissions.md](permissions.md), [state-of-the-art.md](state-of-the-art.md)):
+>    it is Fuchsia's `offer`/`use` in AOS's *flat* idiom (siblings under
+>    `aos.slice`, no realm tree — simpler than Fuchsia, same least-privilege
+>    guarantee), and it is the answer to the "ambient path authority" gap the SOTA
+>    review flagged. Why this is right, not gold-plating: AOS already passes named
+>    fds (inbound-private net, the pod primitive), so typed routing *completes* an
+>    existing half-built capability story rather than adding a new paradigm.
+> **DECIDE-EARLY → done (direction).** Flat first, typed routing as the committed
+> target. *apm* / *packages-core*.
+
 ## 18. Package-name service dependencies (`requires`)
 
 **Statement.** Cross-package service dependencies ("A needs B *running*") are
@@ -846,7 +892,7 @@ the next schema change, before any `expose` work ships.
 
 | # | Decision | Disposition | Owner |
 |---|---|---|---|
-| 1 | Privilege model **RESOLVED**; (a) enforcement model **ANSWERED**, policy file format **PROPOSED** (`/etc/aos/policy.toml` tiers); (b) k3s set — shrunk under D17 to "generated unit matches today's unit" | (a) confirm proposal · (b) BEFORE-MVP validation | packages-core / apm / boot / pkgs |
+| 1 | Privilege model **RESOLVED**; (a) enforcement model + policy file format **RESOLVED** (`/etc/aos/policy.toml`: named tier + per-permission overrides + module allowlist + per-tier `systemd-analyze` threshold; image default, Ignition per-host override); (b) k3s set — validated in the D17 spike against kind/k3d/Incus (likely adds `/lib/modules` ro + `/dev/fuse`) | (a) RESOLVED · (b) BEFORE-MVP validation | packages-core / apm / boot / pkgs |
 | 2 | Kernel modules as the allowlisted, signature-backed host-fulfilled permission (allowlist location rides 1(a)) | DECIDE-EARLY | packages-core |
 | 3 | Networking — **RESOLVED (direction)**: socket-activation default, netns+veth oneshot for outbound, host for k3s | validate in D17 spike | packages-core / pkgs |
 | 4 | nspawn-in-VM feasibility — **mooted for MVP** by D17; per-unit lifecycle test remains | test plan | test-infra |
@@ -854,7 +900,7 @@ the next schema change, before any `expose` work ships.
 | 6 | Bake vs. fetch — **RESOLVED by 5**: ordinary closure delivery; bake k3s, fetch workloads | RESOLVED | pkgs / boot |
 | 7 | machined/portabled/importd — **RESOLVED: stay disabled** | RESOLVED | pkgs |
 | 8 | Install-at-boot — enable **RESOLVED: presets via every-boot `aos-preset.service`** (machine-id + tmpfs-upper + apm idempotency all verified) | install unit remains BEFORE-MVP | boot / apm |
-| 9 | Config & credential delivery — **recommendation on the table**: TPM2-sealed systemd credentials (signed-PCR policy), enabled by RFC-0006's TPM substrate ([config.md](config.md)); awaiting maintainer sign-off | DECIDE (recommendation) | packages-core / apm |
+| 9 | Config & credential delivery — **RESOLVED (direction): layered** — secrets via TPM2-sealed systemd-creds (RFC-0006 substrate; satisfies the credstore caution), structured config via apm artifact + manifest schema, simple via `EnvironmentFile=`; hot reload built (D25). Only the secrets path awaits sign-off | RESOLVED (direction) | packages-core / apm |
 | 10 | Boundary labeling — **RESOLVED**: computed confinement label | RESOLVED | packages-core |
 | 11 | Upgrade/rollback — **RESOLVED (direction)** under D17: unit-semantics restarts, `KillMode=process` preserved for k3s | RESOLVED (direction) | apm / packages-core |
 | 12 | Package metadata — **RESOLVED (hybrid)**: TOML carries target/requires/permissions; units ride the closure | RESOLVED | apm / packages-core |
@@ -863,16 +909,47 @@ the next schema change, before any `expose` work ships.
 | 15 | Unit naming — **RESOLVED: `aos-pkg-<name>`** | RESOLVED | packages-core |
 | 16 | Runtime unit placement — **RESOLVED**: `/var/etc` attach dir + preset lines (tmpfs upper forced it) | RESOLVED | boot / apm |
 | 17 | Execution substrate — **RESOLVED (direction)**: per-unit default, nspawn deferred; spike = validation | validate | packages-core / pkgs |
-| 18 | Package-name service dependencies (`requires`) — new resolver surface; **typed capability-routing option open** (Fuchsia-style; merit not cost, [authoring.md](authoring.md)) | DECIDE-EARLY | apm |
+| 18 | Cross-package dependencies — **RESOLVED (direction)**: flat `requires` ordering first, then **typed capability routing** (provided/required typed caps → fd-pass/`BindReadOnlyPaths=`/`JoinsNamespaceOf=`, least-privilege; Fuchsia `offer`/`use` in AOS's flat idiom) | RESOLVED (direction) | apm / packages-core |
 | 19 | Registry schema capability gate (fail-open on old clients) | DECIDE-BEFORE-MVP | apm |
 | 20 | **Layered enforcement** — Landlock + generated MAC + eBPF-LSM + full systemd hardening baseline + per-package `systemd-analyze` CI gate ([enforcement.md](enforcement.md)) | COMMITTED (budget mandate) | packages-core / pkgs |
 | 21 | **dm-verity package roots** — signed `RootImage=` vs the `.platform` keyring ([attestation.md](attestation.md)); un-deferred | COMMITTED (budget mandate) | pkgs |
 | 22 | **Runtime attestation** — measure package + manifest into PCR 15, TPM quote, **registry golden-measurements catalog** (catalog/oracle, never a runtime signer); extends RFC-0006 ([attestation.md](attestation.md)) | COMMITTED (budget mandate) | apm / boot |
 | 23 | **Supply-chain provenance & transparency** — in-toto/SLSA, transparency log, TUF roles/thresholds ([apm-integration.md](apm-integration.md) §7) | COMMITTED (budget mandate) | apm |
+| 24 | **Declarative reconciliation** — desired-package set converges by install *and prune*; removing a package from `desired.toml` uninstalls it (the Nix/Talos/K8s declarative idiom; additive-only was a wart) | COMMITTED (budget mandate) | apm / boot |
+| 25 | **Hot-reload plumbing** — manifest declares reload support; config change → `systemctl reload-or-restart` (`Type=notify-reload` where the service supports it) | COMMITTED (budget mandate) | apm / packages-core |
 
-## State-of-the-art additions (Decisions 20–23)
+## Why anything is still out of scope (merit, not cost)
 
-Decisions 1–19 were the original design questions. Decisions 20–23 are the
+Under the unlimited-budget mandate the **only** reason to not build something is
+that building it would make the OS *worse* — never that it costs effort. Three
+classes remain genuinely out, each justified on merit:
+
+- **Dominated mechanisms.** **nspawn** (D17) is squeezed from both sides: the
+  per-unit substrate is lighter for every package we have, and a **microVM tier**
+  (below) is strictly stronger for untrusted code. Building nspawn would add a
+  second service manager (machined coupling, nesting/test flakiness) with **zero
+  consumer** — speculative complexity the budget should not fund.
+- **Pure attack surface.** **machined / portabled / importd** (D7) stay disabled:
+  enabling daemons we don't use enlarges the TCB for no capability — anti-SOTA
+  for a minimal immutable OS.
+- **No consumer yet.** **L2 multi-container zones** (the netns/veth *capability*
+  is built in P6; a zone is a topology to add when a concrete multi-package-L2
+  need appears) and **performance/init measurement** (D13, mooted by the per-unit
+  substrate — no per-package PID 1).
+
+**The one genuine capability gap — stronger-than-namespace isolation — is a
+threat-model question, not a cost one.** If AOS must host *untrusted / multi-
+tenant* code, the SOTA answer is a **microVM tier (Firecracker/Kata)**, which AOS
+is positioned to build from its existing from-source QEMU + `lib/testing/firecracker.nix`
+infrastructure — **not nspawn**. If AOS only confines *first-party* packages
+(the current threat model), the per-unit + Landlock + MAC + attestation stack is
+sufficient and a microVM tier would be gold-plating. This is the substrate
+*gradient*: per-unit (default) → microVM (untrusted), nspawn skipped entirely.
+**Decision for the maintainer: does the threat model include untrusted tenants?**
+
+## State-of-the-art additions (Decisions 20–25)
+
+Decisions 1–19 were the original design questions. Decisions 20–25 are the
 state-of-the-art improvements added under the unlimited-engineering-budget
 mandate ([state-of-the-art.md](state-of-the-art.md)) — they are **committed
 deliverables, not open questions**, with full implementer detail in

@@ -11,8 +11,8 @@ Per RFC discipline the maturity claim lives only in the set's
 two documents and must not contradict them:
 
 - [`open-questions.md`](open-questions.md) — the **decision register**
-  (Decisions 1–23, each with disposition and owner). Every box below cites the
-  decisions it closes by number (`D1`–`D23`).
+  (Decisions 1–25, each with disposition and owner). Every box below cites the
+  decisions it closes by number (`D1`–`D25`).
 - [`migration.md`](migration.md) — the cutover plan (the module tree is
   dissolved into `pkgs/` `expose` blocks).
 
@@ -92,13 +92,13 @@ reframes how the phases below are read:
 | **P2** | Target sandbox + gated side-effect services + nftables reload coherence + eval assertion | P1 | D15; activation.md | ☐ |
 | **P3** | Per-unit sandboxing materialization + confinement label + **the Decision 17 validation spike** (the gate) | P1, P2 | D2, D4, D10, D17; D1(b) | ☐ |
 | **P4** | Preset enablement (image `disable *`; Ignition per-host preset; every-boot `aos-preset.service`) | P2 | D8 (enable half) | ☐ |
-| **P5** | `apm install` + install-at-boot + upgrade/rollback (attach dir, idempotency) | P3, P4 | D8 (install half), D11, D16 | ☐ |
+| **P5** | `apm install` + install-at-boot + **declarative reconciliation (install + prune)** + upgrade/rollback + **layered config** (TPM2 creds / schema'd artifact / EnvironmentFile) + **hot-reload plumbing** | P3, P4 | D8 (install half), D9, D11, D16, D24, D25 | ☐ |
 | **P6** | Container roots (`RootDirectory=` store path) + the three network modes | P3 | D3, D5, D6 | ☐ |
 | **P7** | Dissolve `modules/roles/` into `pkgs/` `expose`; `modules/` shrinks to policy | P1–P6 green per package | D14; migration.md | ☐ |
 | **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☐ |
 | **P9** | Runtime integrity & attestation: dm-verity package roots (`RootImage=`+`RootHashSignature=` vs the `.platform` keyring), measure package+manifest into PCR 15, TPM quote + registry golden-measurements catalog | P6, P8 (+ RFC-0006) | D5, D6, D21, D22 | ☐ |
 | **P10** | Supply-chain provenance: in-toto/SLSA attestation (NAR + manifest), transparency log, TUF roles/thresholds | P0 | D23 | ☐ |
-| **P11** | Deferred / out of scope: config delivery (recommendation on the table), nspawn substrate, L2 zones, hot-reload | — (tracked, not built for MVP) | D9 (recommend), D7 (stays disabled), D13 | ☐ |
+| **P11** | Out of scope **on merit** (not cost): nspawn (dominated), microVM tier (threat-model gated), machined/portabled/importd (attack surface), L2 zones, perf measurement | — (merit / maintainer decision) | D7, D13, D17 | ☐ |
 
 Legend: ☐ not started · ◐ in progress · ☑ exit criterion met. Phases 8–10 are
 the state-of-the-art additions under the [budget mandate](#budget-mandate);
@@ -346,12 +346,28 @@ apm at first boot; define upgrade/rollback.
       **not** hard-fail boot (air-gapped); pull `network-online.target` on demand.
 - [ ] **Ignition writes** `/etc/aos/packages.d/desired.toml` (registries +
       desired packages) + registry config under `registries.d/` via `storage.files`.
+- [ ] **Declarative reconciliation (D24).** The install-at-boot step converges to
+      the desired set: install additions **and uninstall packages removed from
+      `desired.toml`** (disable target, remove attach units + preset lines, gc the
+      generation). Replaces additive-only — the Nix/Talos/K8s declarative idiom.
+- [ ] **Layered config (D9).** Secrets via TPM2-sealed systemd-creds
+      (`SetCredentialEncrypted=`, signed-PCR-11 policy — awaiting sign-off);
+      structured config via an apm config artifact validated against the
+      manifest-declared schema before start; simple via `EnvironmentFile=`
+      ([`config.md`](config.md)).
+- [ ] **Hot-reload plumbing (D25).** The manifest declares whether the service
+      supports reload; a config change runs `systemctl reload-or-restart`
+      (`Type=notify-reload`/`RELOADING=1` where supported, restart otherwise).
+- [ ] **Typed capability routing (D18).** `requires` resolves typed capabilities a
+      provider's `expose` declares; the renderer wires each as a least-privilege
+      fd-pass / `BindReadOnlyPaths=` / `JoinsNamespaceOf=` (flat name ordering is
+      the first increment).
 - [ ] **Upgrade / rollback (D11).** Upgrade = generation switch + `daemon-reload`
       + restart with the unit's own semantics (k3s keeps `KillMode=process`, no pod
       kill). Rollback = switch back (both store paths gc-rooted) → rewrite the
       attach symlinks + preset lines → `daemon-reload` + restart.
 
-**Closes.** D8 (install half), D16, D11.
+**Closes.** D8 (install half), D9, D11, D16, D18, D24, D25.
 
 **EXIT CRITERIA.** End-to-end on a booted host: a package's manifest is verified
 against policy, units land under `/var/etc`, the preset is applied, the target
@@ -534,29 +550,51 @@ the transparency log; a rollback/mix-and-match attempt is refused.
 
 ---
 
-## Phase 11 — Deferred / out of scope (tracked, not built)
+## Phase 11 — Out of scope, on merit (not cost)
 
-Only **correctness-driven** deferrals and genuinely-open decisions remain here;
-the budget mandate moved every cost-based deferral into Phases 8–10.
+Under the budget mandate the **only** reason to not build something is that
+building it would make the OS *worse*. Everything cost-deferred moved into Phases
+8–10; what remains is justified on merit, and the genuinely-open items below are
+**maintainer decisions**, not engineering deferrals.
 
-- [ ] **Config & secret delivery (D9) — recommendation on the table.** The
-      SOTA-aligned answer (TPM2-sealed systemd credentials, signed-PCR policy) is
-      documented in [`config.md`](config.md) as the recommended resolution,
-      **pending the maintainer's explicit sign-off** (the earlier "don't settle on
-      credstore" caution is satisfied now that RFC-0006 supplies the TPM backend).
-      Not built until that decision is confirmed.
-- [ ] **nspawn substrate (D17 deferral — *merit*, not cost).** Built only if a
-      package needs its own multi-unit init tree (currently none); the budget
-      mandate does **not** lift this. Deferred template in
-      [`container-model.md`](container-model.md).
-- [ ] **machined / portabled / importd stay disabled (D7).** Introspection via
-      `systemctl`, not `machinectl`.
-- [ ] **Typed capability routing for `requires` (D18).** Evaluate Fuchsia-style
-      typed routing vs. the flat `After=`/`Wants=` model ([`authoring.md`](authoring.md));
-      flat may still be the right server/fleet call, but the decision is now on
-      merit, not cost.
-- [ ] **Zone-style multi-container L2 (D3 defer); hot config reload;
-      prune-on-removal reconciliation; performance/init measurement (D13).**
+- [ ] **nspawn substrate (D17) — *dominated*, skipped.** Lighter than per-unit
+      for every package we have, weaker than a microVM tier for untrusted code; a
+      second service manager with zero consumer. Not built. The deferred template
+      in [`container-model.md`](container-model.md) is the spec *if* a multi-unit-
+      init package ever appears.
+- [ ] **microVM isolation tier (Firecracker/Kata) — *threat-model gated*.** The
+      genuinely-stronger-than-namespace boundary. **If** the threat model includes
+      untrusted / multi-tenant code, build it from AOS's existing from-source QEMU
+      + `lib/testing/firecracker.nix` infra (a manifest-selectable substrate,
+      `substrate = "microvm"`), **not** nspawn. If AOS only confines first-party
+      packages, the per-unit + Landlock + MAC + attestation stack is sufficient and
+      this is gold-plating. **Maintainer decision** ([`open-questions.md`](open-questions.md)
+      §"Why anything is still out of scope").
+- [ ] **machined / portabled / importd stay disabled (D7) — *attack surface*.**
+      Enabling unused daemons enlarges the TCB for no capability; introspection via
+      `systemctl`.
+- [ ] **Zone-style multi-container L2 (D3); performance/init measurement (D13) —
+      *no consumer / mooted*.** The netns/veth capability exists (P6); a zone is a
+      topology to add on a concrete need. Per-unit removes per-package PID-1
+      overhead, so there is nothing to measure.
+
+The following moved **out of "deferred" into committed phases** under this pass:
+
+- **Declarative reconciliation / prune-on-removal (D24)** → **Phase 5**: the
+  install-at-boot step now converges to the desired set (install additions **and
+  uninstall removals**) — the Nix/Talos/K8s declarative idiom; additive-only was
+  a wart.
+- **Hot-reload plumbing (D25)** → **Phase 5**: the manifest declares reload
+  support; a config change runs `systemctl reload-or-restart` (`Type=notify-reload`
+  where the service supports it).
+- **Typed capability routing (D18)** → **Phases 0 + 5 + 8**: `expose` declares
+  **provided capabilities** and `requires` references them by typed name; the
+  renderer wires each as a least-privilege fd-pass / `BindReadOnlyPaths=` /
+  `JoinsNamespaceOf=` (flat ordering ships first as the subset). See
+  [`open-questions.md`](open-questions.md) §18.
+- **Config layering (D9)** → **Phase 5 / [`config.md`](config.md)**: secrets via
+  TPM2-sealed systemd-creds (awaiting sign-off), structured config via apm
+  artifact + manifest schema, simple via `EnvironmentFile=`.
 
 ---
 
@@ -567,7 +605,7 @@ Every tracked decision and where it is discharged. Statuses are from
 
 | Decision | Disposition | Phase |
 |---|---|---|
-| D1(a) policy enforcement model / file format | answered; format proposed | P0 (confirm) |
+| D1(a) policy enforcement model / file format | RESOLVED (`/etc/aos/policy.toml`) | P0 |
 | D1(b) validated k3s permission set | BEFORE-MVP | P3 (in the spike) |
 | D2 kernel-modules as allowlisted permission | DECIDE-EARLY | P0 (schema) + P3 (load) |
 | D3 networking modes | resolved (direction) | P0 (schema) + P3 (validate) + P6 (build) |
@@ -576,7 +614,7 @@ Every tracked decision and where it is discharged. Statuses are from
 | D6 bake vs fetch | RESOLVED by D5 | P6 |
 | D7 machined/portabled/importd disabled | RESOLVED (stay) | P11 |
 | D8 install-at-boot + enable | enable resolved (presets) | P4 (enable) + P5 (install) |
-| D9 config & credential delivery | recommendation on the table (TPM2 creds); awaiting sign-off | P11 |
+| D9 config & credential delivery | RESOLVED (direction): layered — TPM2 creds (sign-off) / schema'd artifact / EnvironmentFile | P5 |
 | D10 boundary labeling | RESOLVED (computed label); now also attestable | P3 + P8 + P9 |
 | D11 upgrade/rollback | RESOLVED (direction) | P5 |
 | D12 package metadata (hybrid) | RESOLVED | P0 |
@@ -584,13 +622,16 @@ Every tracked decision and where it is discharged. Statuses are from
 | D14 module-tree dissolve | RESOLVED | P7 |
 | D15 unit naming `aos-pkg-<name>` | RESOLVED | P2 |
 | D16 runtime unit placement (`/var/etc` attach) | RESOLVED | P5 |
-| D17 execution substrate (per-unit default) | RESOLVED (direction); spike = validation | P3 (gate) |
-| D18 `requires` resolver semantics | DECIDE-EARLY; typed-routing option open (merit, not cost) | P0 + P11 |
+| D17 execution substrate (per-unit default); nspawn skipped (dominated); microVM tier threat-model-gated | RESOLVED (direction); spike = validation | P3 (gate); P11 (microVM/nspawn) |
+| D18 cross-package deps | RESOLVED (direction): flat ordering → typed capability routing | P0 + P5 + P8 |
 | D19 registry capability gate (fail-closed) | DECIDE-BEFORE-MVP | P0 (first) |
 | D20 layered enforcement (Landlock + MAC + eBPF-LSM) | committed (budget mandate) | P8 |
 | D21 dm-verity package roots | committed (budget mandate; un-deferred) | P9 |
 | D22 runtime attestation (PCR measure + quote + registry golden catalog) | committed (budget mandate); extends RFC-0006 | P9 |
 | D23 supply-chain provenance + transparency (in-toto/SLSA, TUF) | committed (budget mandate) | P10 |
+| D24 declarative reconciliation (install + prune) | committed (budget mandate) | P5 |
+| D25 hot-reload plumbing | committed (budget mandate) | P5 |
+| — microVM isolation tier (stronger-than-namespace) | maintainer decision (threat model) | P11 |
 
 ---
 
