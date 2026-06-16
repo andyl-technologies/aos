@@ -9,6 +9,12 @@ aes-gcm = { workspace = true }
 anyhow = { workspace = true }
 argon2 = { workspace = true }
 base64 = { workspace = true }
+# WebAuthn COSE signature verification (RFC-0004 passkeys): ES256 via p256,
+# RS256 via rsa, and the CBOR decoder for COSE keys / attestationObject. All
+# pure-Rust RustCrypto crates, wasm-clean for the Workers target.
+ciborium = { workspace = true }
+p256 = { workspace = true }
+rsa = { workspace = true }
 # argon2 re-exports `password_hash::rand_core::OsRng` only when password-hash's
 # `getrandom` feature is on (the native build picks it up via workspace feature
 # unification; the standalone wasm build of this crate does not, so enable it
