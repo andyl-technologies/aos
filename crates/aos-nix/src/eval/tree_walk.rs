@@ -1284,6 +1284,9 @@ impl<'ir> TreeWalk<'ir> {
                 StrictBinaryPrimOp::Partition => {
                     self.eval_partition_primop(id, node.span, first, second)
                 }
+                StrictBinaryPrimOp::ConcatMap => {
+                    self.eval_concat_map_primop(id, node.span, first, second)
+                }
             };
         }
         if args.len() != 1 {
@@ -2902,6 +2905,114 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
         self.heap
             .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_concat_map_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        list_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let function_span = self.node(function_id)?.span;
+        let function = self.eval_node(function_id)?;
+        if function.tag() != ValueTag::Lambda {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: function_id,
+                    expected: "lambda",
+                    actual: function.tag(),
+                },
+                function_span,
+            ));
+        }
+
+        let list_span = self.node(list_id)?.span;
+        let list_value = self.eval_node(list_id)?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list_id,
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list_span,
+            ));
+        }
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            Self::clone_list_elements(list_id, list_span, list)?
+        };
+
+        let mut output = Vec::new();
+        for element in elements {
+            let mapped = self.apply_lambda_value(
+                function_id,
+                function_span,
+                function_id,
+                function,
+                function_span,
+                list_id,
+                element,
+            )?;
+            let mapped = self.force_value(function_id, function_span, mapped)?;
+            if mapped.tag() != ValueTag::List {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: function_id,
+                        expected: "list",
+                        actual: mapped.tag(),
+                    },
+                    function_span,
+                ));
+            }
+            let inner = {
+                let list = self.heap.get_list(mapped).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: function_id,
+                            source,
+                        },
+                        function_span,
+                    )
+                })?;
+                Self::clone_list_elements(function_id, function_span, list)?
+            };
+            let len = output.len().checked_add(inner.len()).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::List {
+                        id,
+                        source: NixListError::LengthOverflow {
+                            left: output.len(),
+                            right: inner.len(),
+                        },
+                    },
+                    span,
+                )
+            })?;
+            output.try_reserve_exact(inner.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::List {
+                        id,
+                        source: NixListError::AllocationFailed { len },
+                    },
+                    span,
+                )
+            })?;
+            output.extend(inner);
+        }
+
+        self.heap
+            .alloc_list(NixList::new(output))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
@@ -4825,6 +4936,7 @@ enum StrictBinaryPrimOp {
     LessThan,
     All,
     Any,
+    ConcatMap,
     Filter,
     Partition,
 }
@@ -4849,6 +4961,7 @@ impl StrictBinaryPrimOp {
             b"lessThan" => Some(Self::LessThan),
             b"all" => Some(Self::All),
             b"any" => Some(Self::Any),
+            b"concatMap" => Some(Self::ConcatMap),
             b"filter" => Some(Self::Filter),
             b"partition" => Some(Self::Partition),
             _ => None,
@@ -6754,6 +6867,130 @@ mod tests {
             );
             assert_eq!(error.span(), predicate_span);
         }
+    }
+
+    #[test]
+    fn concat_map_primop_concatenates_mapped_lists_without_forcing_elements() {
+        assert_eq!(
+            eval("builtins.length (builtins.concatMap (x: [ x x ]) [ 1 2 ])").as_int(),
+            Ok(4)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.concatMap (x: [ x x ]) [ 1 2 ]) 0").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.concatMap (x: [ x x ]) [ 1 2 ]) 3").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.concatMap (x: []) [ (1 / 0) ])").as_int(),
+            Ok(0)
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.concatMap (x: [ (1 / 0) ]) [ 1 ])").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let builtins = { concatMap = f: list: [ 42 ]; }; in builtins.concatMap (x: []) [] == [ 42 ]")
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn concat_map_primop_checks_function_then_list_then_results() {
+        let ir = lower("builtins.concatMap (1 / 0) []");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let function = args[0];
+        let function_span = ir
+            .arena
+            .node(function)
+            .expect("function argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("concatMap forces function before list");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { id: function }
+        );
+        assert_eq!(error.span(), function_span);
+
+        let ir = lower("builtins.concatMap 1 []");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let function = args[0];
+        let function_span = ir
+            .arena
+            .node(function)
+            .expect("function argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("concatMap requires a function");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: function,
+                expected: "lambda",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), function_span);
+
+        let ir = lower("builtins.concatMap (x: [ x ]) 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("concatMap checks list after function");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: list,
+                expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), list_span);
+
+        let ir = lower("builtins.concatMap (x: 1) [ \"a\" ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let function = args[0];
+        let function_span = ir
+            .arena
+            .node(function)
+            .expect("function argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("concatMap requires list results");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: function,
+                expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), function_span);
     }
 
     #[test]

@@ -996,7 +996,8 @@ impl IrLowerer {
             Some(
                 b"elemAt" | b"getAttr" | b"hasAttr" | b"removeAttrs" | b"intersectAttrs"
                 | b"catAttrs" | b"elem" | b"lessThan" | b"add" | b"sub" | b"mul" | b"div"
-                | b"bitAnd" | b"bitOr" | b"bitXor" | b"all" | b"any" | b"filter" | b"partition",
+                | b"bitAnd" | b"bitOr" | b"bitXor" | b"all" | b"any" | b"filter" | b"partition"
+                | b"concatMap",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1946,6 +1947,10 @@ mod tests {
                 "builtins.partition (x: true) [ 1 ]",
                 b"partition".as_slice(),
             ),
+            (
+                "builtins.concatMap (x: [ x ]) [ 1 ]",
+                b"concatMap".as_slice(),
+            ),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -2569,6 +2574,7 @@ mod tests {
             ("any", "(x: false)", "[ 1 ]"),
             ("filter", "(x: true)", "[ 1 ]"),
             ("partition", "(x: true)", "[ 1 ]"),
+            ("concatMap", "(x: [ x ])", "[ 1 ]"),
         ] {
             let ir = lowered(&format!("{name} {left} {right}"));
             let root = root_node(&ir);
