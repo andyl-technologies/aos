@@ -345,6 +345,7 @@ dependencies = [
  "aos-registry-surface",
  "argon2",
  "async-trait",
+ "axum",
  "base64",
  "ciborium",
  "ed25519-dalek",
