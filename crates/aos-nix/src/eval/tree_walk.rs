@@ -1277,6 +1277,7 @@ impl<'ir> TreeWalk<'ir> {
                 }
                 StrictBinaryPrimOp::All => self.eval_all_any_primop(AllAnyOp::All, first, second),
                 StrictBinaryPrimOp::Any => self.eval_all_any_primop(AllAnyOp::Any, first, second),
+                StrictBinaryPrimOp::Filter => self.eval_filter_primop(id, node.span, first, second),
             };
         }
         if args.len() != 1 {
@@ -2672,6 +2673,112 @@ impl<'ir> TreeWalk<'ir> {
         }
 
         Ok(Value::bool(op.empty_or_exhausted_value()))
+    }
+
+    fn eval_filter_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        predicate_id: IrId,
+        list_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let list_span = self.node(list_id)?.span;
+        let list_value = self.eval_node(list_id)?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list_id,
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list_span,
+            ));
+        }
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            let mut elements = Vec::new();
+            elements.try_reserve_exact(list.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: list_id,
+                        len: list.len(),
+                    },
+                    list_span,
+                )
+            })?;
+            elements.extend_from_slice(list.as_slice());
+            elements
+        };
+        if elements.is_empty() {
+            return self
+                .heap
+                .alloc_list(NixList::new(Vec::new()))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                });
+        }
+
+        let predicate_span = self.node(predicate_id)?.span;
+        let predicate = self.eval_node(predicate_id)?;
+        if predicate.tag() != ValueTag::Lambda {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: predicate_id,
+                    expected: "lambda",
+                    actual: predicate.tag(),
+                },
+                predicate_span,
+            ));
+        }
+
+        let mut selected = Vec::new();
+        selected.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: elements.len(),
+                },
+                span,
+            )
+        })?;
+        for element in elements {
+            let result = self.apply_lambda_value(
+                predicate_id,
+                predicate_span,
+                predicate_id,
+                predicate,
+                predicate_span,
+                list_id,
+                element,
+            )?;
+            let result = self.force_value(predicate_id, predicate_span, result)?;
+            let actual = result.tag();
+            let ValueTag::Bool = actual else {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: predicate_id,
+                        expected: "bool",
+                        actual,
+                    },
+                    predicate_span,
+                ));
+            };
+            if self.expect_bool(predicate_id, result, predicate_span)? {
+                selected.push(element);
+            }
+        }
+
+        self.heap
+            .alloc_list(NixList::new(selected))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
     fn eval_function_args_primop(
@@ -4532,6 +4639,7 @@ enum StrictBinaryPrimOp {
     LessThan,
     All,
     Any,
+    Filter,
 }
 
 impl StrictBinaryPrimOp {
@@ -4554,6 +4662,7 @@ impl StrictBinaryPrimOp {
             b"lessThan" => Some(Self::LessThan),
             b"all" => Some(Self::All),
             b"any" => Some(Self::Any),
+            b"filter" => Some(Self::Filter),
             _ => None,
         }
     }
@@ -6457,6 +6566,135 @@ mod tests {
             );
             assert_eq!(error.span(), predicate_span);
         }
+    }
+
+    #[test]
+    fn filter_primop_selects_without_forcing_returned_elements() {
+        assert_eq!(
+            eval("builtins.length (builtins.filter (x: x < 3) [ 1 2 3 ])").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.filter (x: x < 3) [ 1 2 3 ]) 0").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.filter (x: x < 3) [ 1 2 3 ]) 1").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.filter (x: false) [ (1 / 0) ])").as_int(),
+            Ok(0)
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.filter (x: true) [ (1 / 0) ])").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let builtins = { filter = pred: list: [ 42 ]; }; in builtins.filter (x: false) [] == [ 42 ]")
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn filter_primop_checks_list_before_predicate() {
+        assert_eq!(
+            eval("builtins.length (builtins.filter (1 / 0) [])").as_int(),
+            Ok(0)
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.filter 1 [])").as_int(),
+            Ok(0)
+        );
+
+        let ir = lower("builtins.filter (1 / 0) 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("filter checks list before predicate");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: list,
+                expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), list_span);
+
+        let ir = lower("builtins.filter (x: true) (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("filter forces list argument");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: list });
+        assert_eq!(error.span(), list_span);
+    }
+
+    #[test]
+    fn filter_primop_checks_predicate_and_result_for_nonempty_lists() {
+        let ir = lower("builtins.filter 1 [ 1 ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let predicate = args[0];
+        let predicate_span = ir
+            .arena
+            .node(predicate)
+            .expect("predicate argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("filter requires predicate on nonempty lists");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: predicate,
+                expected: "lambda",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), predicate_span);
+
+        let ir = lower("builtins.filter (x: 1) [ \"a\" ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let predicate = args[0];
+        let predicate_span = ir
+            .arena
+            .node(predicate)
+            .expect("predicate argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("filter requires bool predicate result");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: predicate,
+                expected: "bool",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), predicate_span);
     }
 
     #[test]

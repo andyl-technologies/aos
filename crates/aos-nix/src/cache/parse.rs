@@ -1478,7 +1478,8 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
             | b"unsafeDiscardStringContext"
             | b"seq"
             | b"all"
-            | b"any",
+            | b"any"
+            | b"filter",
         ) => Some(EffectClass::Pure),
         _ => None,
     }
