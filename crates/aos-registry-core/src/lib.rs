@@ -45,6 +45,7 @@ pub mod connect;
 pub mod db;
 pub mod dialect;
 pub mod domain;
+pub mod fetch;
 pub mod filter;
 pub mod ratelimit;
 pub mod service;
