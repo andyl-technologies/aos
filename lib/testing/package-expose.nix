@@ -57,26 +57,18 @@
     if privilegedExecPrefix.success
     then throw "expose renderer must reject systemd privileged Exec* prefixes on workload services"
     else "ok";
-  privateOutbound = builtins.tryEval (
-    (pkg.overrideAttrs (_: {
-      expose = {
-        units."expose-smoke-private-outbound.service" = {
-          serviceConfig = {
-            Type = "oneshot";
-            ExecStart = "${pkgs.bash}/bin/bash -c true";
-          };
+  privateOutbound = pkg.overrideAttrs (_: {
+    expose = {
+      units."expose-smoke-private-outbound.service" = {
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
         };
-        permissions.network = "private-outbound";
-        requires = [];
       };
-    }))
-    .expose
-    .outPath
-  );
-  privateOutboundRejected =
-    if privateOutbound.success
-    then throw "expose renderer must reject private-outbound until the netns/veth unit is implemented"
-    else "ok";
+      permissions.network = "private-outbound";
+      requires = [];
+    };
+  });
   withHoles = pkg.overrideAttrs (_: {
     expose = {
       units."expose-smoke-holes.service" = {
@@ -126,6 +118,19 @@
       requires = [];
     };
   });
+  regexNamePrivateOutbound = pkg.overrideAttrs (_: {
+    pname = "expose.smoke.regex";
+    expose = {
+      units."expose-smoke-regex-private-outbound.service" = {
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+      };
+      permissions.network = "private-outbound";
+      requires = [];
+    };
+  });
 in
   pkgs.mkDerivation {
     pname = "package-expose-check";
@@ -139,7 +144,9 @@ in
     withHolesExposePath = withHoles.expose;
     unconfinedExposePath = unconfined.expose;
     privilegedSyscallsExposePath = privilegedSyscalls.expose;
-    inherit reservedCollisionRejected privilegedExecPrefixRejected privateOutboundRejected;
+    privateOutboundExposePath = privateOutbound.expose;
+    regexNamePrivateOutboundExposePath = regexNamePrivateOutbound.expose;
+    inherit reservedCollisionRejected privilegedExecPrefixRejected;
 
     buildDeps =
       (builtins.map (pkg: pkg.exposeCheck) (builtins.attrValues packagesWithExpose))
@@ -148,6 +155,8 @@ in
         withHoles.exposeCheck
         unconfined.exposeCheck
         privilegedSyscalls.exposeCheck
+        privateOutbound.exposeCheck
+        regexNamePrivateOutbound.exposeCheck
       ];
 
     phases = [
@@ -161,6 +170,7 @@ in
           modules="$exposePath/units/aos-pkg-expose-smoke-modules.service"
           sysctl="$exposePath/units/aos-pkg-expose-smoke-sysctl.service"
           firewall="$exposePath/units/aos-pkg-expose-smoke-firewall.service"
+          netns="$exposePath/units/aos-pkg-expose-smoke-netns.service"
           manifest="$exposePath/manifest.json"
 
           test -d "$exposePath/units"
@@ -169,6 +179,7 @@ in
           test -f "$modules"
           test -f "$sysctl"
           test -f "$firewall"
+          test ! -f "$netns"
           test -f "$manifest"
 
           grep -q 'Description=RFC-0001 expose smoke service' "$unit"
@@ -212,6 +223,7 @@ in
           test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/aos-pkg-expose-smoke-modules.service"
           test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/aos-pkg-expose-smoke-sysctl.service"
           test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/aos-pkg-expose-smoke-firewall.service"
+          test ! -e "$exposePath/units/aos-pkg-expose-smoke.target.wants/aos-pkg-expose-smoke-netns.service"
           test ! -e "$exposePath/units/multi-user.target.wants/expose-smoke.service"
           test ! -e "$exposePath/units/multi-user.target.requires/expose-smoke.service"
           test ! -e "$exposePath/units/multi-user.target.upholds/expose-smoke.service"
@@ -282,7 +294,6 @@ in
             "$overriddenExposePath/units/expose-smoke-override.service"
           test "$reservedCollisionRejected" = ok
           test "$privilegedExecPrefixRejected" = ok
-          test "$privateOutboundRejected" = ok
           grep -q '"confinement":{"class":"sandboxed-with-holes","holes":\["capability:CAP_NET_BIND_SERVICE"\],"label":"sandboxed-with-holes (capability:CAP_NET_BIND_SERVICE)"}' \
             "$withHolesExposePath/manifest.json"
           grep -q '"security-label":"aos-pkg-expose-smoke"' \
@@ -310,6 +321,82 @@ in
           fi
           grep -q 'SystemCallArchitectures=native' \
             "$privilegedSyscallsExposePath/units/expose-smoke-privileged-syscalls.service"
+          private_outbound_unit="$privateOutboundExposePath/units/expose-smoke-private-outbound.service"
+          private_outbound_netns="$privateOutboundExposePath/units/aos-pkg-expose-smoke-netns.service"
+          private_outbound_target="$privateOutboundExposePath/units/aos-pkg-expose-smoke.target"
+          private_outbound_manifest="$privateOutboundExposePath/manifest.json"
+          test -f "$private_outbound_unit"
+          test -f "$private_outbound_netns"
+          grep -q 'After=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service' \
+            "$private_outbound_unit"
+          grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service' \
+            "$private_outbound_unit"
+          grep -q 'PrivateNetwork=false' "$private_outbound_unit"
+          grep -q 'NetworkNamespacePath=/run/netns/aos-pkg-expose-smoke' "$private_outbound_unit"
+          grep -q 'Wants=expose-smoke-private-outbound.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service' \
+            "$private_outbound_target"
+          grep -q 'Description=Create outbound network namespace for expose-smoke' \
+            "$private_outbound_netns"
+          if grep -q 'RootDirectory=' "$private_outbound_netns"; then
+            echo "host-side netns service must not be RootDirectory-sandboxed" >&2
+            exit 1
+          fi
+          grep -q 'PartOf=aos-pkg-expose-smoke.target' "$private_outbound_netns"
+          grep -q 'WantedBy=aos-pkg-expose-smoke.target' "$private_outbound_netns"
+          grep -q 'Before=expose-smoke-private-outbound.service' "$private_outbound_netns"
+          grep -q 'After=nftables.service' "$private_outbound_netns"
+          grep -q 'Requires=nftables.service' "$private_outbound_netns"
+          grep -q 'ReloadPropagatedFrom=nftables.service' "$private_outbound_netns"
+          grep -q 'aos-pkg-expose-smoke-netns-start' "$private_outbound_netns"
+          grep -q 'aos-pkg-expose-smoke-netns-reload' "$private_outbound_netns"
+          grep -q 'aos-pkg-expose-smoke-netns-stop' "$private_outbound_netns"
+          grep -q 'ExecStopPost=.*aos-pkg-expose-smoke-netns-stop' "$private_outbound_netns"
+          private_outbound_start=$(
+            sed -n 's|^ExecStart=||p' "$private_outbound_netns"
+          )
+          private_outbound_reload=$(
+            sed -n 's|^ExecReload=||p' "$private_outbound_netns"
+          )
+          private_outbound_stop=$(
+            sed -n 's|^ExecStop=||p' "$private_outbound_netns"
+          )
+          test -x "$private_outbound_start"
+          test -x "$private_outbound_reload"
+          test -x "$private_outbound_stop"
+          grep -q 'index($0, needle)' "$private_outbound_start"
+          grep -q 'gawk -v netns="$netns"' "$private_outbound_start"
+          grep -q 'refusing to steal a private-outbound namespace' "$private_outbound_start"
+          grep -q 'refusing private-outbound veth collision' "$private_outbound_start"
+          grep -q 'route show exact "$cidr"' "$private_outbound_start"
+          grep -q 'refusing private-outbound subnet collision' "$private_outbound_start"
+          grep -q '/proc/sys/net/ipv4/ip_forward' "$private_outbound_start"
+          grep -q 'ip_forward.prev' "$private_outbound_start"
+          grep -q 'flock 9' "$private_outbound_start"
+          grep -q 'trap.*cleanup_package_state' "$private_outbound_start"
+          grep -q 'restore_ip_forward_if_last' "$private_outbound_stop"
+          if grep -q 'link delete "$host_if"' "$private_outbound_reload"; then
+            echo "netns reload must not recreate the veth pair" >&2
+            exit 1
+          fi
+          if grep -q 'netns add "$netns"' "$private_outbound_reload"; then
+            echo "netns reload must not recreate the namespace" >&2
+            exit 1
+          fi
+          grep -q '"aos-pkg-expose-smoke-netns.service"' "$private_outbound_manifest"
+          grep -q '"network":"private-outbound"' "$private_outbound_manifest"
+          grep -q '"confinement":{"class":"sandboxed-with-holes","holes":\["network:private-outbound"\],"label":"sandboxed-with-holes (network:private-outbound)"}' \
+            "$private_outbound_manifest"
+          regex_name_start=$(
+            sed -n 's|^ExecStart=||p' \
+              "$regexNamePrivateOutboundExposePath/units/aos-pkg-expose.smoke.regex-netns.service"
+          )
+          test -x "$regex_name_start"
+          grep -q 'index($0, needle)' "$regex_name_start"
+          grep -q 'gawk -v netns="$netns"' "$regex_name_start"
+          if grep -q 'grep -qx "$netns"' "$regex_name_start"; then
+            echo "netns detection must not use regex grep for package names" >&2
+            exit 1
+          fi
 
           if grep -R "$exposePath" "$payload"; then
             echo "payload output must not contain a reference to its expose path" >&2

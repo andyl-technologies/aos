@@ -452,6 +452,31 @@
     then value
     else [value];
 
+  hexDigits = {
+    "0" = 0;
+    "1" = 1;
+    "2" = 2;
+    "3" = 3;
+    "4" = 4;
+    "5" = 5;
+    "6" = 6;
+    "7" = 7;
+    "8" = 8;
+    "9" = 9;
+    a = 10;
+    b = 11;
+    c = 12;
+    d = 13;
+    e = 14;
+    f = 15;
+  };
+
+  hexNibbleToInt = nibble: hexDigits.${nibble};
+
+  hexPairToInt = pair:
+    (hexNibbleToInt (builtins.substring 0 1 pair) * 16)
+    + hexNibbleToInt (builtins.substring 1 1 pair);
+
   hasPrivilegedExecPrefix = command:
     builtins.match "[-@:]*[!+].*" (builtins.toString command) != null;
 
@@ -518,8 +543,7 @@ in rec {
     modulesUnit = "aos-pkg-${packageName}-modules.service";
     sysctlUnit = "aos-pkg-${packageName}-sysctl.service";
     firewallUnit = "aos-pkg-${packageName}-firewall.service";
-    sideEffectUnitNames = [modulesUnit sysctlUnit firewallUnit];
-    reservedUnitNames = [target] ++ sideEffectUnitNames;
+    netnsUnit = "aos-pkg-${packageName}-netns.service";
     reservedCollisions = builtins.filter (
       unit: builtins.elem unit authoredUnitNames
     )
@@ -541,11 +565,10 @@ in rec {
     kernel = validateKernel (checkedExpose.kernel or {});
     firewall = validateFirewall (checkedExpose.firewall or {});
     network = permissions.network or "private";
-    privateOutboundImplemented =
-      throwIfNot
-      (network != "private-outbound")
-      "mkDerivation expose for package '${packageName}' requests network = private-outbound, but the gated netns/veth unit is not implemented yet"
-      true;
+    sideEffectUnitNames =
+      [modulesUnit sysctlUnit firewallUnit]
+      ++ lib.optional (network == "private-outbound") netnsUnit;
+    reservedUnitNames = [target modulesUnit sysctlUnit firewallUnit netnsUnit];
     capabilities = permissions.capabilities or [];
     devices = permissions.devices or [];
     hostPaths = permissions.host-paths or [];
@@ -603,6 +626,22 @@ in rec {
         ["AF_UNIX" "AF_INET" "AF_INET6"]
         ++ lib.optional (network == "host" || builtins.elem "CAP_NET_ADMIN" capabilities) "AF_NETLINK"
       );
+    netnsHash = builtins.substring 0 8 (builtins.hashString "sha256" packageName);
+    netnsName = "aos-pkg-${packageName}";
+    netnsHostIf = "aos${netnsHash}h";
+    netnsPeerIf = "aos${netnsHash}p";
+    netnsSubnetIndex =
+      (hexPairToInt (builtins.substring 0 2 netnsHash) * 4096)
+      + (hexPairToInt (builtins.substring 2 2 netnsHash) * 16)
+      + hexNibbleToInt (builtins.substring 4 1 netnsHash);
+    netnsSecondOctet = 64 + (netnsSubnetIndex / 16384);
+    netnsSubnetRemainder = netnsSubnetIndex - ((netnsSubnetIndex / 16384) * 16384);
+    netnsThirdOctet = netnsSubnetRemainder / 64;
+    netnsFourthOctet = (netnsSubnetRemainder - ((netnsSubnetRemainder / 64) * 64)) * 4;
+    netnsPrefix = "100.${builtins.toString netnsSecondOctet}.${builtins.toString netnsThirdOctet}";
+    netnsCidr = "${netnsPrefix}.${builtins.toString netnsFourthOctet}/30";
+    netnsHostAddress = "${netnsPrefix}.${builtins.toString (netnsFourthOctet + 1)}";
+    netnsPeerAddress = "${netnsPrefix}.${builtins.toString (netnsFourthOctet + 2)}";
 
     sandboxServiceConfig = unitName: authoredServiceConfig: let
       checkedAuthoredServiceConfig =
@@ -680,6 +719,18 @@ in rec {
     formatPorts = ports:
       builtins.concatStringsSep ", " (builtins.map builtins.toString ports);
     nft = "${pkgs.nftables}/sbin/nft";
+    ip = "${pkgs.iproute2}/sbin/ip";
+    sysctl = "${pkgs.procps-ng}/sbin/sysctl";
+    deleteInetForwardRulesByComment = comment: ''
+      ${nft} -a list chain inet filter forward 2>/dev/null \
+        | ${pkgs.gawk}/bin/gawk -v needle=${lib.escapeShellArg "comment \"${comment}\""} \
+          'index($0, needle) { for (i = 1; i <= NF; i++) if ($i == "handle") print $(i + 1) }' \
+        | while read -r handle; do
+            if [ -n "$handle" ]; then
+              ${nft} delete rule inet filter forward handle "$handle"
+            fi
+          done
+    '';
     addElements = set: ports:
       lib.optional (ports != [])
       "${nft} add element inet filter ${set} { ${formatPorts ports} }";
@@ -689,14 +740,7 @@ in rec {
     forwardComment = "aos-pkg-${packageName}-forward";
     forwardDeleteScript = ''
       set -eu
-      ${nft} -a list chain inet filter forward \
-        | ${pkgs.gawk}/bin/gawk -v comment=${lib.escapeShellArg forwardComment} \
-          '$0 ~ "comment \"" comment "\"" { for (i = 1; i <= NF; i++) if ($i == "handle") print $(i + 1) }' \
-        | while read -r handle; do
-            if [ -n "$handle" ]; then
-              ${nft} delete rule inet filter forward handle "$handle"
-            fi
-          done
+      ${deleteInetForwardRulesByComment forwardComment}
     '';
     forwardDeleteTool =
       pkgs.writeShellScriptBin
@@ -728,51 +772,208 @@ in rec {
       then trueCommand
       else firewallStopCommands;
     firewallActive = firewallStartCommands != [];
+    netnsForwardComment = "aos-pkg-${packageName}-netns-forward";
+    netnsNatTable = "aos_pkg_${netnsHash}";
+    netnsCommonScript = ''
+      netns=${lib.escapeShellArg netnsName}
+      host_if=${lib.escapeShellArg netnsHostIf}
+      peer_if=${lib.escapeShellArg netnsPeerIf}
+      host_addr=${lib.escapeShellArg netnsHostAddress}
+      peer_addr=${lib.escapeShellArg netnsPeerAddress}
+      cidr=${lib.escapeShellArg netnsCidr}
+      nat_table=${lib.escapeShellArg netnsNatTable}
+      forward_comment=${lib.escapeShellArg netnsForwardComment}
+      run_dir=/run/aos-pkg-netns
+      marker="$run_dir/$netns.ip_forward"
+      prev_file="$run_dir/ip_forward.prev"
+      lock_file="$run_dir/lock"
 
-    sideEffectUnits = {
-      "${modulesUnit}" = {
-        description = "Apply kernel modules for ${packageName}";
-        wantedBy = [target];
-        partOf = [target];
-        before = authoredUnitNames;
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = moduleCommand;
+      lock_state() {
+        ${pkgs.coreutils}/bin/mkdir -p "$run_dir"
+        exec 9>"$lock_file"
+        ${pkgs.util-linux}/bin/flock 9
+      }
+
+      delete_forward_rules() {
+        ${deleteInetForwardRulesByComment netnsForwardComment}
+      }
+
+      apply_forwarding_rules() {
+        delete_forward_rules
+        ${nft} delete table ip "$nat_table" 2>/dev/null || true
+        ${nft} add table ip "$nat_table"
+        ${nft} add chain ip "$nat_table" postrouting '{ type nat hook postrouting priority srcnat; policy accept; }'
+        ${nft} add rule ip "$nat_table" postrouting ip saddr "$cidr" oifname != "$host_if" masquerade comment "$forward_comment"
+        ${nft} add rule inet filter forward iifname "$host_if" accept comment "$forward_comment"
+        ${nft} add rule inet filter forward oifname "$host_if" ct state established,related accept comment "$forward_comment"
+      }
+    '';
+    netnsCleanupScript = ''
+      any_forward_markers() {
+        for marker_path in "$run_dir"/*.ip_forward; do
+          [ -e "$marker_path" ] || continue
+          return 0
+        done
+        return 1
+      }
+
+      restore_ip_forward_if_last() {
+        ${pkgs.coreutils}/bin/rm -f "$marker"
+        if ! any_forward_markers && [ -f "$prev_file" ]; then
+          previous_ip_forward=$(${pkgs.coreutils}/bin/cat "$prev_file")
+          ${sysctl} -w "net.ipv4.ip_forward=$previous_ip_forward"
+          ${pkgs.coreutils}/bin/rm -f "$prev_file"
+        fi
+      }
+
+      cleanup_package_state() {
+        delete_forward_rules
+        ${nft} delete table ip "$nat_table" 2>/dev/null || true
+        ${ip} link delete "$host_if" 2>/dev/null || true
+        ${ip} netns delete "$netns" 2>/dev/null || true
+        restore_ip_forward_if_last
+      }
+    '';
+    netnsStartScript = ''
+      set -eu
+      ${netnsCommonScript}
+      ${netnsCleanupScript}
+
+      lock_state
+      trap 'status=$?; if [ "$status" -ne 0 ]; then cleanup_package_state; fi; exit "$status"' EXIT
+
+      if ! any_forward_markers; then
+        ${pkgs.coreutils}/bin/cat /proc/sys/net/ipv4/ip_forward > "$prev_file"
+      fi
+
+      ${pkgs.coreutils}/bin/mkdir -p /run/netns
+      if ${ip} netns list | ${pkgs.gawk}/bin/gawk -v netns="$netns" '$1 == netns { found = 1 } END { exit !found }'; then
+        echo "netns $netns already exists; refusing to steal a private-outbound namespace" >&2
+        exit 1
+      fi
+
+      if ${ip} link show "$host_if" >/dev/null 2>&1; then
+        echo "interface $host_if already exists; refusing private-outbound veth collision" >&2
+        exit 1
+      fi
+
+      if ${ip} -4 route show exact "$cidr" | ${pkgs.gawk}/bin/gawk 'NF > 0 { found = 1 } END { exit !found }'; then
+        echo "route $cidr already exists; refusing private-outbound subnet collision" >&2
+        exit 1
+      fi
+
+      ${pkgs.coreutils}/bin/printf '%s\n' "$netns" > "$marker"
+      ${sysctl} -w net.ipv4.ip_forward=1
+
+      ${ip} netns add "$netns"
+      ${ip} link add "$host_if" type veth peer name "$peer_if"
+      ${ip} link set "$peer_if" netns "$netns"
+      ${ip} addr replace "$host_addr/30" dev "$host_if"
+      ${ip} link set "$host_if" up
+      ${ip} netns exec "$netns" ${ip} link set lo up
+      ${ip} netns exec "$netns" ${ip} addr replace "$peer_addr/30" dev "$peer_if"
+      ${ip} netns exec "$netns" ${ip} link set "$peer_if" up
+      ${ip} netns exec "$netns" ${ip} route replace default via "$host_addr" dev "$peer_if"
+
+      apply_forwarding_rules
+      trap - EXIT
+    '';
+    netnsStartTool =
+      pkgs.writeShellScriptBin
+      "aos-pkg-${packageName}-netns-start"
+      netnsStartScript;
+    netnsStartCommand = "${netnsStartTool}/bin/aos-pkg-${packageName}-netns-start";
+    netnsReloadScript = ''
+      set -eu
+      ${netnsCommonScript}
+
+      lock_state
+      ${sysctl} -w net.ipv4.ip_forward=1
+      apply_forwarding_rules
+    '';
+    netnsReloadTool =
+      pkgs.writeShellScriptBin
+      "aos-pkg-${packageName}-netns-reload"
+      netnsReloadScript;
+    netnsReloadCommand = "${netnsReloadTool}/bin/aos-pkg-${packageName}-netns-reload";
+    netnsStopScript = ''
+      set -eu
+      ${netnsCommonScript}
+      ${netnsCleanupScript}
+
+      lock_state
+      cleanup_package_state
+    '';
+    netnsStopTool =
+      pkgs.writeShellScriptBin
+      "aos-pkg-${packageName}-netns-stop"
+      netnsStopScript;
+    netnsStopCommand = "${netnsStopTool}/bin/aos-pkg-${packageName}-netns-stop";
+
+    sideEffectUnits =
+      {
+        "${modulesUnit}" = {
+          description = "Apply kernel modules for ${packageName}";
+          wantedBy = [target];
+          partOf = [target];
+          before = authoredUnitNames;
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = moduleCommand;
+          };
+        };
+        "${sysctlUnit}" = {
+          description = "Apply sysctl settings for ${packageName}";
+          wantedBy = [target];
+          partOf = [target];
+          before = authoredUnitNames;
+          after = [modulesUnit];
+          requires = [modulesUnit];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = sysctlCommand;
+          };
+        };
+        "${firewallUnit}" = {
+          description = "Apply firewall rules for ${packageName}";
+          wantedBy = [target];
+          partOf = [target];
+          before = authoredUnitNames;
+          after = lib.optional firewallActive "nftables.service";
+          requires = lib.optional firewallActive "nftables.service";
+          unitConfig.ReloadPropagatedFrom = "nftables.service";
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = firewallStart;
+            ExecReload = firewallStart;
+            ExecStop = firewallStop;
+          };
+        };
+      }
+      // lib.optionalAttrs (network == "private-outbound") {
+        "${netnsUnit}" = {
+          description = "Create outbound network namespace for ${packageName}";
+          wantedBy = [target];
+          partOf = [target];
+          before = authoredUnitNames;
+          after = ["nftables.service"];
+          requires = ["nftables.service"];
+          unitConfig.ReloadPropagatedFrom = "nftables.service";
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = netnsStartCommand;
+            ExecReload = netnsReloadCommand;
+            ExecStop = netnsStopCommand;
+            ExecStopPost = netnsStopCommand;
+          };
         };
       };
-      "${sysctlUnit}" = {
-        description = "Apply sysctl settings for ${packageName}";
-        wantedBy = [target];
-        partOf = [target];
-        before = authoredUnitNames;
-        after = [modulesUnit];
-        requires = [modulesUnit];
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = sysctlCommand;
-        };
-      };
-      "${firewallUnit}" = {
-        description = "Apply firewall rules for ${packageName}";
-        wantedBy = [target];
-        partOf = [target];
-        before = authoredUnitNames;
-        after = lib.optional firewallActive "nftables.service";
-        requires = lib.optional firewallActive "nftables.service";
-        unitConfig.ReloadPropagatedFrom = "nftables.service";
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = firewallStart;
-          ExecReload = firewallStart;
-          ExecStop = firewallStop;
-        };
-      };
-    };
     synthesizedUnits =
-      builtins.seq reservedUnitsAvailable (builtins.seq privateOutboundImplemented (
+      builtins.seq reservedUnitsAvailable (
         builtins.mapAttrs addTargetMembership units
         // sideEffectUnits
         // {
@@ -781,7 +982,7 @@ in rec {
             wants = uniqueUnits memberUnitNames;
           };
         }
-      ));
+      );
     typedSystemd = validateTypedUnits synthesizedUnits;
     renderedUnitNames = unitNamesFromTypedSystemd typedSystemd;
     manifestUnitNames =
