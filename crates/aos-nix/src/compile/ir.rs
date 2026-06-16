@@ -874,7 +874,7 @@ impl IrLowerer {
             Some(
                 b"isAttrs" | b"isList" | b"isFunction" | b"isString" | b"isInt" | b"isFloat"
                 | b"isBool" | b"isNull" | b"isPath" | b"typeOf" | b"length" | b"attrNames"
-                | b"attrValues" | b"tail",
+                | b"attrValues" | b"tail" | b"functionArgs",
             ) => Some(EffectClass::Pure),
             _ => None,
         }
@@ -1699,6 +1699,7 @@ mod tests {
             ("builtins.attrNames { a = 1; }", b"attrNames".as_slice()),
             ("builtins.attrValues { a = 1; }", b"attrValues".as_slice()),
             ("builtins.tail [ 1 2 ]", b"tail".as_slice()),
+            ("builtins.functionArgs (x: x)", b"functionArgs".as_slice()),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -1749,6 +1750,14 @@ mod tests {
         assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
 
         let ir = lowered("tail [ 1 ]");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
+
+        let ir = lowered("functionArgs (x: x)");
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::Apply);
         let IrData::Pair { first, .. } = root.data else {
@@ -1809,6 +1818,18 @@ mod tests {
         assert_eq!(node(&ir, first).kind, IrKind::Select);
 
         let ir = lowered("let builtins = { tail = x: [ \"local\" ]; }; in builtins.tail [ 1 ]");
+        let IrData::Let { body, .. } = root_node(&ir).data else {
+            panic!("let payload expected");
+        };
+        assert_eq!(node(&ir, body).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, body).data else {
+            panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Select);
+
+        let ir = lowered(
+            "let builtins = { functionArgs = f: { local = true; }; }; in builtins.functionArgs (x: x)",
+        );
         let IrData::Let { body, .. } = root_node(&ir).data else {
             panic!("let payload expected");
         };

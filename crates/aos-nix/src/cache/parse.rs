@@ -1437,7 +1437,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
         Some(
             b"isAttrs" | b"isList" | b"isFunction" | b"isString" | b"isInt" | b"isFloat"
             | b"isBool" | b"isNull" | b"isPath" | b"typeOf" | b"length" | b"attrNames"
-            | b"attrValues" | b"tail",
+            | b"attrValues" | b"tail" | b"functionArgs",
         ) => Some(EffectClass::Pure),
         _ => None,
     }

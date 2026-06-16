@@ -1395,6 +1395,107 @@ impl<'ir> TreeWalk<'ir> {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
                     })
             }
+            StrictUnaryPrimOp::FunctionArgs => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_function_args_primop(id, node.span, argument, argument_span, value)
+            }
+        }
+    }
+
+    fn eval_function_args_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let entries = match value.tag() {
+            ValueTag::Lambda => {
+                let lambda = self.heap.clone_lambda(value).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: argument,
+                            source,
+                        },
+                        argument_span,
+                    )
+                })?;
+                self.function_args_entries(id, span, lambda.pattern())?
+            }
+            ValueTag::Primop => Vec::new(),
+            actual => {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: argument,
+                        expected: "function",
+                        actual,
+                    },
+                    argument_span,
+                ));
+            }
+        };
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn function_args_entries(
+        &self,
+        id: IrId,
+        span: Span,
+        pattern: IrId,
+    ) -> Result<Vec<AttrEntry>, TreeWalkError> {
+        let pattern_node = *self.node(pattern)?;
+        match pattern_node.kind {
+            IrKind::Formal => Ok(Vec::new()),
+            IrKind::FormalSet => {
+                let IrData::FormalSet { formals, .. } = pattern_node.data else {
+                    return Err(self.invalid_payload(pattern, &pattern_node, "formal-set payload"));
+                };
+                let formal_slice = self.ir.arena.child_slice(formals).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidChildSlice {
+                            id: pattern,
+                            slice: formals,
+                        },
+                        pattern_node.span,
+                    )
+                })?;
+                let mut entries = Vec::new();
+                entries.try_reserve_exact(formal_slice.len()).map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::ListAllocationFailed {
+                            id,
+                            len: formal_slice.len(),
+                        },
+                        span,
+                    )
+                })?;
+                for formal in formal_slice {
+                    let formal_node = *self.node(*formal)?;
+                    let IrData::Formal { name, default } = formal_node.data else {
+                        return Err(self.invalid_payload(*formal, &formal_node, "formal payload"));
+                    };
+                    if self.symbols.resolve(name).is_none() {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::InvalidSymbol {
+                                id: *formal,
+                                symbol: name,
+                            },
+                            formal_node.span,
+                        ));
+                    }
+                    entries.push(AttrEntry::new(name, Value::bool(default.is_some())));
+                }
+                Ok(entries)
+            }
+            kind => Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedLambdaPattern { id, pattern, kind },
+                pattern_node.span,
+            )),
         }
     }
 
@@ -2899,6 +3000,7 @@ enum StrictUnaryPrimOp {
     AttrNames,
     AttrValues,
     Tail,
+    FunctionArgs,
 }
 
 impl StrictUnaryPrimOp {
@@ -2918,6 +3020,7 @@ impl StrictUnaryPrimOp {
             b"attrNames" => Some(Self::AttrNames),
             b"attrValues" => Some(Self::AttrValues),
             b"tail" => Some(Self::Tail),
+            b"functionArgs" => Some(Self::FunctionArgs),
             _ => None,
         }
     }
@@ -3964,6 +4067,72 @@ mod tests {
             TreeWalkErrorKind::Type {
                 id: argument,
                 expected: "list",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn function_args_primop_describes_lambda_formals_without_forcing_defaults() {
+        let simple = eval_whnf_owned(&lower("builtins.functionArgs (x: x)"))
+            .expect("functionArgs evaluates");
+        let attrs = simple
+            .heap()
+            .get_attrs(simple.value())
+            .expect("simple lambda result is attrs");
+        assert!(attrs.is_empty());
+
+        let ir = lower("builtins.functionArgs ({ b ? (1 / 0), a, ... }@args: a)");
+        let outcome = eval_whnf_owned(&ir).expect("functionArgs evaluates");
+        let attrs = outcome
+            .heap()
+            .get_attrs(outcome.value())
+            .expect("formal-set lambda result is attrs");
+        let entries = attrs
+            .iter_lexicographic()
+            .map(|entry| {
+                (
+                    ir.symbols
+                        .resolve(entry.key)
+                        .expect("entry key resolves")
+                        .to_vec(),
+                    entry.value.as_bool().expect("entry value is bool"),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec![(b"a".to_vec(), false), (b"b".to_vec(), true)]);
+        assert_eq!(
+            eval("let r = builtins.functionArgs ({ b ? (1 / 0), a }: a); in r.a == false && r.b")
+                .as_bool(),
+            Ok(true)
+        );
+
+        assert_eq!(
+            eval("let builtins = { functionArgs = f: { local = true; }; }; in (builtins.functionArgs (x: x)).local")
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn function_args_primop_type_checks_argument() {
+        let ir = lower("builtins.functionArgs 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("functionArgs requires a lambda");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "function",
                 actual: ValueTag::Int
             }
         );
