@@ -399,6 +399,17 @@
     # the upstream build sees.
     sed -i '/-D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES/d' .bazelrc
 
+    # Drop the `-stdlib=libc++` *linkopt* (workerd's .bazelrc adds it to both
+    # cxxopt and linkopt). The link is routed to the AOS cc-wrapper gcc (see
+    # toolchainSetup), which rejects the clang-only `-stdlib=` driver flag — and
+    # it is unnecessary at link time anyway, since libc++ is pulled in
+    # explicitly via `-l:libc++.a`. The *compile* `-stdlib=libc++` (cxxopt /
+    # host_cxxopt) stays, so clang still builds against libc++. Likewise drop
+    # `-static-libgcc`: the AOS gcc ships no static libgcc_eh.a, and the
+    # cc-wrapper gcc's default (dynamic libgcc_s) links the host tools fine.
+    sed -i "/linkopt='-stdlib=libc++'/d" .bazelrc
+    sed -i "s/ --linkopt='-static-libgcc'//g; s/ --host_linkopt='-static-libgcc'//g" .bazelrc
+
     # Replace shebangs throughout the source tree.
     find . -type f \( -name '*.sh' -o -name '*.bzl' -o -name 'BUILD' \
          -o -name 'BUILD.*' -o -name 'WORKSPACE' -o -name '*.py' \
@@ -478,7 +489,12 @@ in
       # action a private symlink-tree execroot WITHOUT Linux user namespaces
       # (which `linux-sandbox` needs and the Nix build sandbox forbids), so the
       # races are eliminated at the source rather than worked around.
-      "--spawn_strategy=processwrapper-sandbox"
+      # processwrapper-sandbox where possible, falling back to standalone for the
+      # few genrules tagged local/no-sandbox (e.g. v8 generated_inspector_files),
+      # which cannot run sandboxed. The earlier genrule "races" were really the
+      # toolchain segfault (now fixed by routing links through the cc-wrapper
+      # gcc), so standalone is safe for those.
+      "--spawn_strategy=processwrapper-sandbox,standalone"
       # Still keep going past any straggler so one build caches everything that
       # passes and resumes converge.
       "--keep_going"
