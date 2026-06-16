@@ -1444,6 +1444,10 @@ impl<'ir> TreeWalk<'ir> {
                 f64::floor,
                 ArithmeticOp::Floor,
             ),
+            StrictUnaryPrimOp::HasContext => {
+                let argument_span = self.node(argument)?.span;
+                self.eval_has_context_primop(argument, argument_span, value)
+            }
             StrictUnaryPrimOp::FunctionArgs => {
                 let argument_span = self.node(argument)?.span;
                 self.eval_function_args_primop(id, node.span, argument, argument_span, value)
@@ -1484,6 +1488,34 @@ impl<'ir> TreeWalk<'ir> {
             }
         };
         Ok(Value::int(value))
+    }
+
+    fn eval_has_context_primop(
+        &self,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                argument_span,
+            ));
+        }
+        let string = self.heap.get_string(value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: argument,
+                    source,
+                },
+                argument_span,
+            )
+        })?;
+        Ok(Value::bool(string.has_context()))
     }
 
     fn eval_function_args_primop(
@@ -3088,6 +3120,7 @@ enum StrictUnaryPrimOp {
     Head,
     Ceil,
     Floor,
+    HasContext,
 }
 
 impl StrictUnaryPrimOp {
@@ -3111,6 +3144,7 @@ impl StrictUnaryPrimOp {
             b"head" => Some(Self::Head),
             b"ceil" => Some(Self::Ceil),
             b"floor" => Some(Self::Floor),
+            b"hasContext" => Some(Self::HasContext),
             _ => None,
         }
     }
@@ -4360,6 +4394,72 @@ mod tests {
         ] {
             assert_eq!(eval(source).as_int(), Ok(i64::MAX));
         }
+    }
+
+    #[test]
+    fn has_context_primop_reports_string_context_presence() {
+        assert_eq!(eval("builtins.hasContext \"x\"").as_bool(), Ok(false));
+        assert_eq!(
+            eval("let builtins = { hasContext = x: true; }; in builtins.hasContext \"x\"")
+                .as_bool(),
+            Ok(true)
+        );
+
+        let ir = lower("builtins.hasContext \"x\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("hasContext argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"x".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing string allocates");
+
+        assert_eq!(
+            evaluator
+                .eval_has_context_primop(argument, argument_span, value)
+                .expect("hasContext evaluates")
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn has_context_primop_type_checks_argument() {
+        let ir = lower("builtins.hasContext 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("hasContext requires a string");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
     }
 
     #[test]
