@@ -4,7 +4,8 @@
 //! owns the typed Rust-side objects behind those pointers for the safe tree-walk
 //! oracle: the bump arena provides stable opaque handles, while a side table
 //! maps those handles back to checked [`NixString`], path [`NixString`],
-//! [`NixList`], [`FlatAttrs`], [`EvalLambda`], and [`EvalThunk`] values.
+//! [`NixList`], [`FlatAttrs`], [`EvalLambda`], [`EvalPrimOp`], and
+//! [`EvalThunk`] values.
 
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -18,7 +19,12 @@ use crate::compile::{FrameId, IrId};
 use crate::heap::arena::{ArenaError, ArenaStats, BumpArena};
 use crate::list::NixList;
 use crate::string::NixString;
+use crate::syntax::{Span, Symbol};
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
+
+const PRIMOP_TYPE_TAG: u32 = 0x7072_696d;
+const PRIMOP_HANDLE_BYTES: usize = std::mem::size_of::<u64>() * 4;
+const PRIMOP_HANDLE_ALIGN: usize = std::mem::align_of::<u64>();
 
 /// A suspended tree-walk thunk heap record.
 ///
@@ -134,6 +140,68 @@ impl EvalLambda {
     /// Returns the dynamic `with` environment captured when this lambda was allocated.
     pub const fn with_scope_env(&self) -> &EvalWithEnv {
         &self.with_env
+    }
+}
+
+/// One lazy argument captured by a partially applied builtin.
+#[derive(Clone, Copy, Debug)]
+pub struct EvalPrimOpArg {
+    id: IrId,
+    span: Span,
+    value: Value,
+}
+
+impl EvalPrimOpArg {
+    /// Creates a captured builtin argument record.
+    pub const fn new(id: IrId, span: Span, value: Value) -> Self {
+        Self { id, span, value }
+    }
+
+    /// Returns the IR node that produced the argument.
+    pub const fn id(&self) -> IrId {
+        self.id
+    }
+
+    /// Returns the source span associated with the argument.
+    pub const fn span(&self) -> Span {
+        self.span
+    }
+
+    /// Returns the lazy argument value.
+    pub const fn value(&self) -> Value {
+        self.value
+    }
+}
+
+/// A builtin function or partially-applied builtin heap record.
+#[derive(Debug)]
+pub struct EvalPrimOp {
+    symbol: Symbol,
+    args: Vec<EvalPrimOpArg>,
+}
+
+impl EvalPrimOp {
+    /// Creates an unapplied builtin record for `symbol`.
+    pub const fn new(symbol: Symbol) -> Self {
+        Self {
+            symbol,
+            args: Vec::new(),
+        }
+    }
+
+    /// Creates a builtin record with previously captured arguments.
+    pub fn with_args(symbol: Symbol, args: Vec<EvalPrimOpArg>) -> Self {
+        Self { symbol, args }
+    }
+
+    /// Returns the builtin symbol.
+    pub const fn symbol(&self) -> Symbol {
+        self.symbol
+    }
+
+    /// Returns captured lazy arguments in application order.
+    pub fn args(&self) -> &[EvalPrimOpArg] {
+        &self.args
     }
 }
 
@@ -307,6 +375,30 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             object: HeapObjectValue::Lambda(Rc::new(lambda)),
+        });
+        Ok(value)
+    }
+
+    /// Allocates a builtin function object and returns its opaque runtime value.
+    ///
+    /// The returned value is only meaningful while this [`EvalHeap`] remains
+    /// alive. Use [`EvalHeap::get_primop`] to recover the typed builtin record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
+    /// bump arena cannot reserve a builtin handle, or if the resulting handle
+    /// violates the runtime value alignment contract.
+    pub fn alloc_primop(&mut self, primop: EvalPrimOp) -> Result<Value, EvalHeapError> {
+        self.reserve_record_slot()?;
+        let allocation = self
+            .arena
+            .aos_alloc_raw(PRIMOP_HANDLE_BYTES, PRIMOP_HANDLE_ALIGN, PRIMOP_TYPE_TAG)
+            .map_err(EvalHeapError::Arena)?;
+        let value = Value::primop(allocation.ptr).map_err(EvalHeapError::Value)?;
+        self.records.push(HeapRecord {
+            ptr: allocation.ptr,
+            object: HeapObjectValue::Primop(Rc::new(primop)),
         });
         Ok(value)
     }
@@ -492,6 +584,38 @@ impl EvalHeap {
         }
     }
 
+    /// Returns the builtin record referenced by `value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not a builtin value.
+    /// Returns [`EvalHeapError::UnknownPointer`] if the builtin handle does not
+    /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
+    /// the handle belongs to this heap but references a non-builtin record.
+    pub fn get_primop(&self, value: Value) -> Result<&EvalPrimOp, EvalHeapError> {
+        let ptr = value.as_primop_ptr().map_err(EvalHeapError::Value)?;
+        self.get_primop_ptr(ptr)
+    }
+
+    /// Returns the builtin record referenced by an opaque heap pointer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::UnknownPointer`] if `ptr` does not belong to
+    /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
+    /// belongs to this heap but references a non-builtin record.
+    pub fn get_primop_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&EvalPrimOp, EvalHeapError> {
+        let record = self.record_or_unknown(ValueTag::Primop, ptr)?;
+        match &record.object {
+            HeapObjectValue::Primop(primop) => Ok(primop.as_ref()),
+            object => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Primop,
+                object.tag(),
+                ptr,
+            )),
+        }
+    }
+
     /// Returns the suspended thunk object referenced by `value`.
     ///
     /// # Errors
@@ -554,6 +678,21 @@ impl EvalHeap {
         }
     }
 
+    /// Clones the builtin handle so application can release the heap borrow
+    /// before forcing captured arguments.
+    pub(crate) fn clone_primop(&self, value: Value) -> Result<Rc<EvalPrimOp>, EvalHeapError> {
+        let ptr = value.as_primop_ptr().map_err(EvalHeapError::Value)?;
+        let record = self.record_or_unknown(ValueTag::Primop, ptr)?;
+        match &record.object {
+            HeapObjectValue::Primop(primop) => Ok(Rc::clone(primop)),
+            object => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Primop,
+                object.tag(),
+                ptr,
+            )),
+        }
+    }
+
     fn reserve_record_slot(&mut self) -> Result<(), EvalHeapError> {
         let records = self
             .records
@@ -595,6 +734,7 @@ enum HeapObjectValue {
     List(NixList),
     Attrs(FlatAttrs),
     Lambda(Rc<EvalLambda>),
+    Primop(Rc<EvalPrimOp>),
     Thunk(Rc<EvalThunk>),
 }
 
@@ -606,6 +746,7 @@ impl HeapObjectValue {
             Self::List(_) => ValueTag::List,
             Self::Attrs(_) => ValueTag::Attrs,
             Self::Lambda(_) => ValueTag::Lambda,
+            Self::Primop(_) => ValueTag::Primop,
             Self::Thunk(_) => ValueTag::Thunk,
         }
     }
@@ -791,6 +932,27 @@ mod tests {
     }
 
     #[test]
+    fn allocates_primop_values_and_recovers_record() {
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols.intern(b"length").expect("symbol interns");
+        let argument = EvalPrimOpArg::new(IrId::new(2), Span::new(4, 8), Value::int(3));
+        let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+        let value = heap
+            .alloc_primop(EvalPrimOp::with_args(symbol, vec![argument]))
+            .expect("primop allocates");
+
+        assert_eq!(value.tag(), ValueTag::Primop);
+        assert_eq!(heap.len(), 1);
+        let primop = heap.get_primop(value).expect("primop exists");
+        assert_eq!(primop.symbol(), symbol);
+        assert_eq!(primop.args().len(), 1);
+        assert_eq!(primop.args()[0].id(), IrId::new(2));
+        assert_eq!(primop.args()[0].span(), Span::new(4, 8));
+        assert!(primop.args()[0].value().raw_eq(Value::int(3)));
+        assert_eq!(heap.arena_stats().chunks, 1);
+    }
+
+    #[test]
     fn allocates_attr_values_and_recovers_entries() {
         let mut symbols = SymbolTable::new();
         let key = symbols.intern(b"name").expect("symbol interns");
@@ -822,6 +984,11 @@ mod tests {
         let attrs = heap
             .alloc_attrs(9, attrs_with_one_entry())
             .expect("attrs allocate");
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols.intern(b"length").expect("symbol interns");
+        let primop = heap
+            .alloc_primop(EvalPrimOp::new(symbol))
+            .expect("primop allocates");
         let thunk = heap
             .alloc_thunk(EvalThunk::new(IrId::new(3)))
             .expect("thunk allocates");
@@ -829,14 +996,19 @@ mod tests {
         assert_ne!(string.payload_bits(), path.payload_bits());
         assert_ne!(string.payload_bits(), list.payload_bits());
         assert_ne!(string.payload_bits(), attrs.payload_bits());
+        assert_ne!(string.payload_bits(), primop.payload_bits());
         assert_ne!(string.payload_bits(), thunk.payload_bits());
         assert_ne!(path.payload_bits(), list.payload_bits());
         assert_ne!(path.payload_bits(), attrs.payload_bits());
+        assert_ne!(path.payload_bits(), primop.payload_bits());
         assert_ne!(path.payload_bits(), thunk.payload_bits());
         assert_ne!(list.payload_bits(), attrs.payload_bits());
+        assert_ne!(list.payload_bits(), primop.payload_bits());
         assert_ne!(list.payload_bits(), thunk.payload_bits());
+        assert_ne!(attrs.payload_bits(), primop.payload_bits());
         assert_ne!(attrs.payload_bits(), thunk.payload_bits());
-        assert_eq!(heap.len(), 5);
+        assert_ne!(primop.payload_bits(), thunk.payload_bits());
+        assert_eq!(heap.len(), 6);
         assert_eq!(
             heap.get_string(string).expect("string exists").bytes(),
             b"name"
@@ -854,6 +1026,10 @@ mod tests {
             Ok(7)
         );
         assert_eq!(heap.get_attrs(attrs).expect("attrs exist").len(), 1);
+        assert_eq!(
+            heap.get_primop(primop).expect("primop exists").symbol(),
+            symbol
+        );
         assert_eq!(
             heap.get_thunk(thunk).expect("thunk exists").body(),
             IrId::new(3)
@@ -953,6 +1129,23 @@ mod tests {
     }
 
     #[test]
+    fn rejects_primop_values_from_another_live_heap() {
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols.intern(b"length").expect("symbol interns");
+        let heap = EvalHeap::new();
+        let mut other = EvalHeap::new();
+        let foreign = other
+            .alloc_primop(EvalPrimOp::new(symbol))
+            .expect("foreign primop allocates");
+        let ptr = foreign.as_primop_ptr().expect("foreign is a primop");
+        let error = heap
+            .get_primop(foreign)
+            .expect_err("foreign pointer is not in this heap");
+
+        assert_eq!(error, EvalHeapError::unknown(ValueTag::Primop, ptr));
+    }
+
+    #[test]
     fn rejects_wrong_value_tags_for_string_lookup() {
         let heap = EvalHeap::new();
         let error = heap
@@ -1011,6 +1204,22 @@ mod tests {
             error,
             EvalHeapError::Value(ValueError::Type {
                 expected: "thunk",
+                actual: ValueTag::Int,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_value_tags_for_primop_lookup() {
+        let heap = EvalHeap::new();
+        let error = heap
+            .get_primop(Value::int(1))
+            .expect_err("integer is not a primop");
+
+        assert_eq!(
+            error,
+            EvalHeapError::Value(ValueError::Type {
+                expected: "primop",
                 actual: ValueTag::Int,
             })
         );
@@ -1093,6 +1302,18 @@ mod tests {
     }
 
     #[test]
+    fn reports_unknown_primop_pointers() {
+        let heap = EvalHeap::new();
+        let ptr = NonNull::<HeapObject>::dangling();
+        let value = Value::primop(ptr).expect("dangling pointer is aligned");
+        let error = heap
+            .get_primop(value)
+            .expect_err("pointer does not belong to heap");
+
+        assert_eq!(error, EvalHeapError::unknown(ValueTag::Primop, ptr));
+    }
+
+    #[test]
     fn reports_unknown_attrs_pointers() {
         let heap = EvalHeap::new();
         let ptr = NonNull::<HeapObject>::dangling();
@@ -1164,6 +1385,17 @@ mod tests {
         assert_eq!(
             error,
             EvalHeapError::record_type_mismatch(ValueTag::Lambda, ValueTag::String, string_ptr)
+        );
+        let mislabeled_primop =
+            Value::primop(string_ptr).expect("same pointer can carry primop tag");
+
+        let error = heap
+            .get_primop(mislabeled_primop)
+            .expect_err("record is not a primop");
+
+        assert_eq!(
+            error,
+            EvalHeapError::record_type_mismatch(ValueTag::Primop, ValueTag::String, string_ptr)
         );
         let mislabeled_attrs = Value::attrs(string_ptr).expect("same pointer can carry attrs tag");
 

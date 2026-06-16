@@ -29,7 +29,7 @@ use sha2::{Sha256, Sha512};
 use thiserror::Error;
 
 use super::env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
-use super::heap::{EvalHeap, EvalHeapError, EvalLambda, EvalThunk};
+use super::heap::{EvalHeap, EvalHeapError, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalThunk};
 use super::thunk::{ForceClaim, ForceError};
 use crate::attrs::{AttrEntry, AttrError, FlatAttrs};
 use crate::compile::{
@@ -1237,7 +1237,7 @@ impl<'ir> TreeWalk<'ir> {
         };
         let function_span = self.node(first)?.span;
         let function = self.eval_node(first)?;
-        if function.tag() != ValueTag::Lambda {
+        if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id: first,
@@ -1421,6 +1421,19 @@ impl<'ir> TreeWalk<'ir> {
                 node.span,
             ));
         };
+        let argument_span = self.node(argument)?.span;
+        self.eval_strict_unary_primop_value(id, node.span, primop, argument, argument_span, value)
+    }
+
+    fn eval_strict_unary_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        primop: StrictUnaryPrimOp,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
         match primop {
             StrictUnaryPrimOp::IsAttrs => Ok(Value::bool(value.tag() == ValueTag::Attrs)),
             StrictUnaryPrimOp::IsList => Ok(Value::bool(value.tag() == ValueTag::List)),
@@ -1442,13 +1455,12 @@ impl<'ir> TreeWalk<'ir> {
                             expected: "weak head normal form",
                             actual: value.tag(),
                         },
-                        self.node(argument)?.span,
+                        argument_span,
                     ));
                 };
-                self.alloc_static_string(id, node.span, name.as_bytes())
+                self.alloc_static_string(id, span, name.as_bytes())
             }
             StrictUnaryPrimOp::Length => {
-                let argument_span = self.node(argument)?.span;
                 if value.tag() != ValueTag::List {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::Type {
@@ -1480,7 +1492,6 @@ impl<'ir> TreeWalk<'ir> {
                 Ok(Value::int(len))
             }
             StrictUnaryPrimOp::AttrNames => {
-                let argument_span = self.node(argument)?.span;
                 if value.tag() != ValueTag::Attrs {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::Type {
@@ -1508,7 +1519,7 @@ impl<'ir> TreeWalk<'ir> {
                                 id,
                                 len: attrs.len(),
                             },
-                            node.span,
+                            span,
                         )
                     })?;
                     for entry in attrs.iter_lexicographic() {
@@ -1523,20 +1534,19 @@ impl<'ir> TreeWalk<'ir> {
                             id,
                             len: names.len(),
                         },
-                        node.span,
+                        span,
                     )
                 })?;
                 for symbol in names {
-                    elements.push(self.alloc_symbol_string(id, node.span, symbol)?);
+                    elements.push(self.alloc_symbol_string(id, span, symbol)?);
                 }
                 self.heap
                     .alloc_list(NixList::new(elements))
                     .map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                     })
             }
             StrictUnaryPrimOp::AttrValues => {
-                let argument_span = self.node(argument)?.span;
                 if value.tag() != ValueTag::Attrs {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::Type {
@@ -1564,7 +1574,7 @@ impl<'ir> TreeWalk<'ir> {
                                 id,
                                 len: attrs.len(),
                             },
-                            node.span,
+                            span,
                         )
                     })?;
                     for entry in attrs.iter_lexicographic() {
@@ -1575,11 +1585,10 @@ impl<'ir> TreeWalk<'ir> {
                 self.heap
                     .alloc_list(NixList::new(values))
                     .map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                     })
             }
             StrictUnaryPrimOp::Tail => {
-                let argument_span = self.node(argument)?.span;
                 if value.tag() != ValueTag::List {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::Type {
@@ -1617,7 +1626,7 @@ impl<'ir> TreeWalk<'ir> {
                                 id,
                                 len: tail.len(),
                             },
-                            node.span,
+                            span,
                         )
                     })?;
                     values.extend_from_slice(tail);
@@ -1626,11 +1635,10 @@ impl<'ir> TreeWalk<'ir> {
                 self.heap
                     .alloc_list(NixList::new(values))
                     .map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                     })
             }
             StrictUnaryPrimOp::Head => {
-                let argument_span = self.node(argument)?.span;
                 if value.tag() != ValueTag::List {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::Type {
@@ -1663,7 +1671,7 @@ impl<'ir> TreeWalk<'ir> {
             }
             StrictUnaryPrimOp::Ceil => self.eval_float_to_int_primop(
                 id,
-                node.span,
+                span,
                 argument,
                 value,
                 f64::ceil,
@@ -1671,79 +1679,60 @@ impl<'ir> TreeWalk<'ir> {
             ),
             StrictUnaryPrimOp::Floor => self.eval_float_to_int_primop(
                 id,
-                node.span,
+                span,
                 argument,
                 value,
                 f64::floor,
                 ArithmeticOp::Floor,
             ),
             StrictUnaryPrimOp::HasContext => {
-                let argument_span = self.node(argument)?.span;
                 self.eval_has_context_primop(argument, argument_span, value)
             }
             StrictUnaryPrimOp::GetContext => {
-                let argument_span = self.node(argument)?.span;
-                self.eval_get_context_primop(id, node.span, argument, argument_span, value)
+                self.eval_get_context_primop(id, span, argument, argument_span, value)
             }
             StrictUnaryPrimOp::AddDrvOutputDependencies => {
-                let argument_span = self.node(argument)?.span;
                 self.eval_add_drv_output_dependencies_primop(argument, argument_span, value)
             }
             StrictUnaryPrimOp::UnsafeDiscardOutputDependency => {
-                let argument_span = self.node(argument)?.span;
                 self.eval_unsafe_discard_output_dependency_primop(argument, argument_span, value)
             }
             StrictUnaryPrimOp::UnsafeDiscardStringContext => {
-                let argument_span = self.node(argument)?.span;
                 self.eval_unsafe_discard_string_context_primop(argument, argument_span, value)
             }
             StrictUnaryPrimOp::StringLength => {
-                let argument_span = self.node(argument)?.span;
                 self.eval_string_length_primop(argument, argument_span, value)
             }
             StrictUnaryPrimOp::BaseNameOf => {
-                let argument_span = self.node(argument)?.span;
                 self.eval_base_name_of_primop(argument, argument_span, value)
             }
-            StrictUnaryPrimOp::DirOf => {
-                let argument_span = self.node(argument)?.span;
-                self.eval_dir_of_primop(argument, argument_span, value)
-            }
+            StrictUnaryPrimOp::DirOf => self.eval_dir_of_primop(argument, argument_span, value),
             StrictUnaryPrimOp::ParseDrvName => {
-                let argument_span = self.node(argument)?.span;
-                self.eval_parse_drv_name_primop(id, node.span, argument, argument_span, value)
+                self.eval_parse_drv_name_primop(id, span, argument, argument_span, value)
             }
             StrictUnaryPrimOp::SplitVersion => {
-                let argument_span = self.node(argument)?.span;
-                self.eval_split_version_primop(id, node.span, argument, argument_span, value)
+                self.eval_split_version_primop(id, span, argument, argument_span, value)
             }
             StrictUnaryPrimOp::FromJson => {
-                let argument_span = self.node(argument)?.span;
                 self.eval_from_json_primop(argument, argument_span, value)
             }
             StrictUnaryPrimOp::ToString => {
-                let argument_span = self.node(argument)?.span;
-                self.eval_to_string_primop(id, node.span, argument, argument_span, value)
+                self.eval_to_string_primop(id, span, argument, argument_span, value)
             }
             StrictUnaryPrimOp::ToJson => {
-                let argument_span = self.node(argument)?.span;
-                self.eval_to_json_primop(id, node.span, argument, argument_span, value)
+                self.eval_to_json_primop(id, span, argument, argument_span, value)
             }
             StrictUnaryPrimOp::ConvertHash => {
-                let argument_span = self.node(argument)?.span;
-                self.eval_convert_hash_primop(id, node.span, argument, argument_span, value)
+                self.eval_convert_hash_primop(id, span, argument, argument_span, value)
             }
             StrictUnaryPrimOp::FunctionArgs => {
-                let argument_span = self.node(argument)?.span;
-                self.eval_function_args_primop(id, node.span, argument, argument_span, value)
+                self.eval_function_args_primop(id, span, argument, argument_span, value)
             }
             StrictUnaryPrimOp::ListToAttrs => {
-                let argument_span = self.node(argument)?.span;
-                self.eval_list_to_attrs_primop(id, node.span, argument, argument_span, value)
+                self.eval_list_to_attrs_primop(id, span, argument, argument_span, value)
             }
             StrictUnaryPrimOp::ConcatLists => {
-                let argument_span = self.node(argument)?.span;
-                self.eval_concat_lists_primop(id, node.span, argument, argument_span, value)
+                self.eval_concat_lists_primop(id, span, argument, argument_span, value)
             }
         }
     }
@@ -5798,15 +5787,29 @@ impl<'ir> TreeWalk<'ir> {
         argument_id: IrId,
         argument: Value,
     ) -> Result<Value, TreeWalkError> {
-        if function.tag() != ValueTag::Lambda {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: function_id,
-                    expected: "lambda",
-                    actual: function.tag(),
-                },
-                function_span,
-            ));
+        match function.tag() {
+            ValueTag::Lambda => {}
+            ValueTag::Primop => {
+                let argument_span = self.node(argument_id)?.span;
+                return self.apply_primop_value(
+                    id,
+                    span,
+                    function_id,
+                    function,
+                    function_span,
+                    EvalPrimOpArg::new(argument_id, argument_span, argument),
+                );
+            }
+            actual => {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: function_id,
+                        expected: "lambda",
+                        actual,
+                    },
+                    function_span,
+                ));
+            }
         }
         let lambda = self.heap.clone_lambda(function).map_err(|source| {
             TreeWalkError::new(
@@ -5854,6 +5857,221 @@ impl<'ir> TreeWalk<'ir> {
         self.env = saved_env;
         self.with_scopes = saved_with_scopes;
         result
+    }
+
+    fn apply_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function: Value,
+        function_span: Span,
+        argument: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let primop = self.heap.clone_primop(function).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: function_id,
+                    source,
+                },
+                function_span,
+            )
+        })?;
+        let Some(builtin) = lookup_builtin_by_symbol(&self.symbols, primop.symbol()) else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedPrimOp {
+                    id: function_id,
+                    symbol: primop.symbol(),
+                },
+                function_span,
+            ));
+        };
+        let Some(arity) = builtin.arity() else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedBuiltinAttr {
+                    id: function_id,
+                    symbol: primop.symbol(),
+                },
+                function_span,
+            ));
+        };
+        let len = primop.args().len().checked_add(1).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListLengthOverflow {
+                    id,
+                    len: usize::MAX,
+                },
+                span,
+            )
+        })?;
+        let mut args = Vec::new();
+        args.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
+        })?;
+        args.extend_from_slice(primop.args());
+        args.push(argument);
+
+        if len < arity {
+            return self
+                .heap
+                .alloc_primop(EvalPrimOp::with_args(primop.symbol(), args))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                });
+        }
+        if len > arity {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidPrimOpArity {
+                    id,
+                    symbol: primop.symbol(),
+                    expected: arity,
+                    actual: len,
+                },
+                span,
+            ));
+        }
+        builtin.apply(self, BuiltinCall::new(id, span, primop.symbol()), &args)
+    }
+
+    fn eval_strict_binary_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        symbol: Symbol,
+        primop: StrictBinaryPrimOp,
+        first: EvalPrimOpArg,
+        second: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        match primop {
+            StrictBinaryPrimOp::HashString => {
+                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let algorithm =
+                    self.eval_hash_algorithm(first.id(), first.span(), left, "hashString")?;
+                let string = self.force_value(second.id(), second.span(), second.value())?;
+                if string.tag() != ValueTag::String {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id: second.id(),
+                            expected: "string",
+                            actual: string.tag(),
+                        },
+                        second.span(),
+                    ));
+                }
+                self.eval_hash_string_value(id, span, second.id(), second.span(), string, algorithm)
+            }
+            StrictBinaryPrimOp::HashFile => {
+                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let algorithm =
+                    self.eval_hash_algorithm(first.id(), first.span(), left, "hashFile")?;
+                let path_value = self.force_value(second.id(), second.span(), second.value())?;
+                let path =
+                    self.coerce_to_path_bytes(second.id(), second.span(), path_value, "hashFile")?;
+                let contents = fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::FileRead {
+                            id: second.id(),
+                            path: path.clone(),
+                            message: source.to_string(),
+                        },
+                        second.span(),
+                    )
+                })?;
+                let digest = Self::hash_bytes(&contents, algorithm);
+                self.alloc_hash_digest(id, span, &digest)
+            }
+            StrictBinaryPrimOp::CompareVersions => {
+                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let left = self.context_free_string_bytes(
+                    first.id(),
+                    first.span(),
+                    left,
+                    "compareVersions",
+                )?;
+                let right = self.force_value(second.id(), second.span(), second.value())?;
+                let right = self.context_free_string_bytes(
+                    second.id(),
+                    second.span(),
+                    right,
+                    "compareVersions",
+                )?;
+                Ok(Value::int(compare_version_bytes(&left, &right)))
+            }
+            StrictBinaryPrimOp::Add
+            | StrictBinaryPrimOp::Sub
+            | StrictBinaryPrimOp::Mul
+            | StrictBinaryPrimOp::Div => {
+                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let right = self.force_value(second.id(), second.span(), second.value())?;
+                let left = self.expect_number(first.id(), left, first.span())?;
+                let right = self.expect_number(second.id(), right, second.span())?;
+                let node = self.node(id)?;
+                let op = match primop {
+                    StrictBinaryPrimOp::Add => BinaryArithmeticOp::Add,
+                    StrictBinaryPrimOp::Sub => BinaryArithmeticOp::Sub,
+                    StrictBinaryPrimOp::Mul => BinaryArithmeticOp::Mul,
+                    StrictBinaryPrimOp::Div => BinaryArithmeticOp::Div,
+                    _ => {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
+                            span,
+                        ));
+                    }
+                };
+                self.eval_numeric_values(id, node, op, left, right)
+            }
+            StrictBinaryPrimOp::BitAnd | StrictBinaryPrimOp::BitOr | StrictBinaryPrimOp::BitXor => {
+                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let left = self.expect_int(first.id(), left, first.span())?;
+                let right = self.force_value(second.id(), second.span(), second.value())?;
+                let right = self.expect_int(second.id(), right, second.span())?;
+                let op = match primop {
+                    StrictBinaryPrimOp::BitAnd => BitwiseOp::And,
+                    StrictBinaryPrimOp::BitOr => BitwiseOp::Or,
+                    StrictBinaryPrimOp::BitXor => BitwiseOp::Xor,
+                    _ => {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
+                            span,
+                        ));
+                    }
+                };
+                Ok(Value::int(op.apply(left, right)))
+            }
+            StrictBinaryPrimOp::LessThan => {
+                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let right = self.force_value(second.id(), second.span(), second.value())?;
+                let node = *self.node(id)?;
+                self.eval_comparison_values(
+                    id,
+                    &node,
+                    ComparisonOp::Lt,
+                    first.id(),
+                    first.span(),
+                    left,
+                    second.id(),
+                    second.span(),
+                    right,
+                )
+            }
+            StrictBinaryPrimOp::ElemAt
+            | StrictBinaryPrimOp::GetAttr
+            | StrictBinaryPrimOp::HasAttr
+            | StrictBinaryPrimOp::RemoveAttrs
+            | StrictBinaryPrimOp::IntersectAttrs
+            | StrictBinaryPrimOp::CatAttrs
+            | StrictBinaryPrimOp::Elem
+            | StrictBinaryPrimOp::ConcatStringsSep
+            | StrictBinaryPrimOp::All
+            | StrictBinaryPrimOp::Any
+            | StrictBinaryPrimOp::ConcatMap
+            | StrictBinaryPrimOp::Filter
+            | StrictBinaryPrimOp::GroupBy
+            | StrictBinaryPrimOp::Partition => Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
+                span,
+            )),
+        }
     }
 
     fn bind_lambda_argument(
@@ -6242,6 +6460,11 @@ impl<'ir> TreeWalk<'ir> {
         else {
             return Err(self.invalid_payload(id, node, "select payload"));
         };
+        if let Some(value) =
+            self.eval_builtin_static_select(id, node, receiver, path_id, default)?
+        {
+            return Ok(value);
+        }
         let segments = self.attr_path_len(id, path_id, node.span)?;
         let mut current = self.eval_node(receiver)?;
         if segments == 0 {
@@ -6315,6 +6538,69 @@ impl<'ir> TreeWalk<'ir> {
         ))
     }
 
+    fn eval_builtin_static_select(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        receiver: IrId,
+        path_id: IrAttrPathId,
+        default: Option<IrId>,
+    ) -> Result<Option<Value>, TreeWalkError> {
+        let receiver_node = self.node(receiver)?;
+        let IrData::Symbol(receiver_symbol) = receiver_node.data else {
+            return Ok(None);
+        };
+        if receiver_node.kind != IrKind::GlobalVar
+            || self.symbols.resolve(receiver_symbol) != Some(b"builtins")
+        {
+            return Ok(None);
+        }
+
+        let path = self.attr_path(id, path_id, node.span)?;
+        let Some(IrAttrPathSegment::Static(symbol)) = path.first() else {
+            return Ok(None);
+        };
+        let name = self.symbols.resolve(*symbol).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidSymbol {
+                    id,
+                    symbol: *symbol,
+                },
+                node.span,
+            )
+        })?;
+        let Some(builtin) = lookup_builtin_by_name(name) else {
+            return match default {
+                Some(default) => self.eval_node(default).map(Some),
+                None => Err(TreeWalkError::new(
+                    TreeWalkErrorKind::MissingAttribute {
+                        id,
+                        symbol: *symbol,
+                    },
+                    node.span,
+                )),
+            };
+        };
+        if path.len() == 1 {
+            return builtin.select(self, id, node.span, *symbol).map(Some);
+        }
+
+        match default {
+            Some(default) => self.eval_node(default).map(Some),
+            None => {
+                let value = builtin.select(self, id, node.span, *symbol)?;
+                Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id,
+                        expected: "attrs",
+                        actual: value.tag(),
+                    },
+                    node.span,
+                ))
+            }
+        }
+    }
+
     fn eval_has_attr(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
         let IrData::HasAttr {
             receiver,
@@ -6324,6 +6610,9 @@ impl<'ir> TreeWalk<'ir> {
         else {
             return Err(self.invalid_payload(id, node, "has-attr payload"));
         };
+        if let Some(value) = self.eval_builtin_static_has_attr(id, node, receiver, path_id)? {
+            return Ok(value);
+        }
         let segments = self.attr_path_len(id, path_id, node.span)?;
         let mut current = self.eval_node(receiver)?;
         if segments == 0 {
@@ -6371,6 +6660,41 @@ impl<'ir> TreeWalk<'ir> {
         }
 
         Ok(Value::bool(false))
+    }
+
+    fn eval_builtin_static_has_attr(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        receiver: IrId,
+        path_id: IrAttrPathId,
+    ) -> Result<Option<Value>, TreeWalkError> {
+        let receiver_node = self.node(receiver)?;
+        let IrData::Symbol(receiver_symbol) = receiver_node.data else {
+            return Ok(None);
+        };
+        if receiver_node.kind != IrKind::GlobalVar
+            || self.symbols.resolve(receiver_symbol) != Some(b"builtins")
+        {
+            return Ok(None);
+        }
+
+        let path = self.attr_path(id, path_id, node.span)?;
+        let Some(IrAttrPathSegment::Static(symbol)) = path.first() else {
+            return Ok(None);
+        };
+        let name = self.symbols.resolve(*symbol).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidSymbol {
+                    id,
+                    symbol: *symbol,
+                },
+                node.span,
+            )
+        })?;
+        Ok(Some(Value::bool(
+            path.len() == 1 && lookup_builtin_by_name(name).is_some(),
+        )))
     }
 
     fn eval_add(
@@ -7628,6 +7952,429 @@ enum ConvertHashInputFormat {
     Typed,
 }
 
+#[allow(dead_code)]
+#[derive(Debug)]
+struct BuiltinDocs {
+    summary: &'static str,
+}
+
+#[allow(dead_code)]
+impl BuiltinDocs {
+    const fn summary(&self) -> &'static str {
+        self.summary
+    }
+}
+
+#[allow(dead_code)]
+static TODO_BUILTIN_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Builtin documentation has not been imported yet.",
+};
+
+#[derive(Clone, Copy, Debug)]
+struct BuiltinCall {
+    id: IrId,
+    span: Span,
+    symbol: Symbol,
+}
+
+impl BuiltinCall {
+    const fn new(id: IrId, span: Span, symbol: Symbol) -> Self {
+        Self { id, span, symbol }
+    }
+}
+
+trait Builtin: Sync {
+    fn name(&self) -> &'static [u8];
+
+    fn arity(&self) -> Option<usize> {
+        None
+    }
+
+    #[allow(dead_code)]
+    fn docs(&self) -> &'static BuiltinDocs {
+        &TODO_BUILTIN_DOCS
+    }
+
+    fn select(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        id: IrId,
+        span: Span,
+        symbol: Symbol,
+    ) -> Result<Value, TreeWalkError> {
+        if self.arity().is_some() {
+            return eval
+                .heap
+                .alloc_primop(EvalPrimOp::new(symbol))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                });
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::UnsupportedBuiltinAttr { id, symbol },
+            span,
+        ))
+    }
+
+    fn apply(
+        &self,
+        _eval: &mut TreeWalk<'_>,
+        call: BuiltinCall,
+        _args: &[EvalPrimOpArg],
+    ) -> Result<Value, TreeWalkError> {
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::UnsupportedPrimOp {
+                id: call.id,
+                symbol: call.symbol,
+            },
+            call.span,
+        ))
+    }
+}
+
+macro_rules! unsupported_builtin {
+    ($ty:ident, $name:expr) => {
+        struct $ty;
+
+        impl Builtin for $ty {
+            fn name(&self) -> &'static [u8] {
+                $name
+            }
+        }
+    };
+}
+
+macro_rules! strict_unary_builtin {
+    ($ty:ident, $name:expr, $primop:expr) => {
+        struct $ty;
+
+        impl Builtin for $ty {
+            fn name(&self) -> &'static [u8] {
+                $name
+            }
+
+            fn arity(&self) -> Option<usize> {
+                Some(1)
+            }
+
+            fn apply(
+                &self,
+                eval: &mut TreeWalk<'_>,
+                call: BuiltinCall,
+                args: &[EvalPrimOpArg],
+            ) -> Result<Value, TreeWalkError> {
+                let argument = args[0];
+                let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+                eval.eval_strict_unary_primop_value(
+                    call.id,
+                    call.span,
+                    $primop,
+                    argument.id(),
+                    argument.span(),
+                    value,
+                )
+            }
+        }
+    };
+}
+
+macro_rules! strict_binary_builtin {
+    ($ty:ident, $name:expr, $primop:expr) => {
+        struct $ty;
+
+        impl Builtin for $ty {
+            fn name(&self) -> &'static [u8] {
+                $name
+            }
+
+            fn arity(&self) -> Option<usize> {
+                Some(2)
+            }
+
+            fn apply(
+                &self,
+                eval: &mut TreeWalk<'_>,
+                call: BuiltinCall,
+                args: &[EvalPrimOpArg],
+            ) -> Result<Value, TreeWalkError> {
+                eval.eval_strict_binary_primop_value(
+                    call.id,
+                    call.span,
+                    call.symbol,
+                    $primop,
+                    args[0],
+                    args[1],
+                )
+            }
+        }
+    };
+}
+
+macro_rules! builtin_registry {
+    ($($kind:ident $ty:ident $(, $name:expr $(, $primop:expr)? )?;)*) => {
+        $(builtin_registry!(@declare $kind $ty $(, $name $(, $primop)? )?);)*
+
+        static BUILTIN_REGISTRY: &[&dyn Builtin] = &[
+            $(&$ty,)*
+        ];
+    };
+
+    (@declare custom $ty:ident) => {};
+
+    (@declare strict_unary $ty:ident, $name:expr, $primop:expr) => {
+        strict_unary_builtin!($ty, $name, $primop);
+    };
+
+    (@declare strict_binary $ty:ident, $name:expr, $primop:expr) => {
+        strict_binary_builtin!($ty, $name, $primop);
+    };
+
+    (@declare unsupported $ty:ident, $name:expr) => {
+        unsupported_builtin!($ty, $name);
+    };
+}
+
+struct TrueBuiltin;
+
+impl Builtin for TrueBuiltin {
+    fn name(&self) -> &'static [u8] {
+        b"true"
+    }
+
+    fn select(
+        &self,
+        _eval: &mut TreeWalk<'_>,
+        _id: IrId,
+        _span: Span,
+        _symbol: Symbol,
+    ) -> Result<Value, TreeWalkError> {
+        Ok(Value::bool(true))
+    }
+}
+
+struct FalseBuiltin;
+
+impl Builtin for FalseBuiltin {
+    fn name(&self) -> &'static [u8] {
+        b"false"
+    }
+
+    fn select(
+        &self,
+        _eval: &mut TreeWalk<'_>,
+        _id: IrId,
+        _span: Span,
+        _symbol: Symbol,
+    ) -> Result<Value, TreeWalkError> {
+        Ok(Value::bool(false))
+    }
+}
+
+struct NullBuiltin;
+
+impl Builtin for NullBuiltin {
+    fn name(&self) -> &'static [u8] {
+        b"null"
+    }
+
+    fn select(
+        &self,
+        _eval: &mut TreeWalk<'_>,
+        _id: IrId,
+        _span: Span,
+        _symbol: Symbol,
+    ) -> Result<Value, TreeWalkError> {
+        Ok(Value::null())
+    }
+}
+
+struct SeqBuiltin;
+
+impl Builtin for SeqBuiltin {
+    fn name(&self) -> &'static [u8] {
+        b"seq"
+    }
+
+    fn arity(&self) -> Option<usize> {
+        Some(2)
+    }
+
+    fn apply(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        _call: BuiltinCall,
+        args: &[EvalPrimOpArg],
+    ) -> Result<Value, TreeWalkError> {
+        let first = args[0];
+        eval.force_value(first.id(), first.span(), first.value())?;
+        Ok(args[1].value())
+    }
+}
+
+struct DeepSeqBuiltin;
+
+impl Builtin for DeepSeqBuiltin {
+    fn name(&self) -> &'static [u8] {
+        b"deepSeq"
+    }
+
+    fn arity(&self) -> Option<usize> {
+        Some(2)
+    }
+
+    fn apply(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        _call: BuiltinCall,
+        args: &[EvalPrimOpArg],
+    ) -> Result<Value, TreeWalkError> {
+        let first = args[0];
+        let value = eval.force_value(first.id(), first.span(), first.value())?;
+        let mut visited = Vec::new();
+        eval.deep_force_value(first.id(), first.span(), value, &mut visited)?;
+        Ok(args[1].value())
+    }
+}
+
+// This list is the declaration site for simple builtin records. `custom`
+// entries use the hand-written trait impls above; the other entries expand to
+// unit structs with `Builtin` impls and are registered from the same list.
+builtin_registry! {
+    unsupported AbortBuiltin, b"abort";
+    strict_binary AddBuiltin, b"add", StrictBinaryPrimOp::Add;
+    strict_unary AddDrvOutputDependenciesBuiltin, b"addDrvOutputDependencies", StrictUnaryPrimOp::AddDrvOutputDependencies;
+    unsupported AddErrorContextBuiltin, b"addErrorContext";
+    unsupported AllBuiltin, b"all";
+    unsupported AnyBuiltin, b"any";
+    unsupported AppendContextBuiltin, b"appendContext";
+    strict_unary AttrNamesBuiltin, b"attrNames", StrictUnaryPrimOp::AttrNames;
+    strict_unary AttrValuesBuiltin, b"attrValues", StrictUnaryPrimOp::AttrValues;
+    strict_unary BaseNameOfBuiltin, b"baseNameOf", StrictUnaryPrimOp::BaseNameOf;
+    strict_binary BitAndBuiltin, b"bitAnd", StrictBinaryPrimOp::BitAnd;
+    strict_binary BitOrBuiltin, b"bitOr", StrictBinaryPrimOp::BitOr;
+    strict_binary BitXorBuiltin, b"bitXor", StrictBinaryPrimOp::BitXor;
+    unsupported BreakBuiltin, b"break";
+    unsupported BuiltinsBuiltin, b"builtins";
+    unsupported CatAttrsBuiltin, b"catAttrs";
+    strict_unary CeilBuiltin, b"ceil", StrictUnaryPrimOp::Ceil;
+    strict_binary CompareVersionsBuiltin, b"compareVersions", StrictBinaryPrimOp::CompareVersions;
+    strict_unary ConcatListsBuiltin, b"concatLists", StrictUnaryPrimOp::ConcatLists;
+    unsupported ConcatMapBuiltin, b"concatMap";
+    unsupported ConcatStringsSepBuiltin, b"concatStringsSep";
+    strict_unary ConvertHashBuiltin, b"convertHash", StrictUnaryPrimOp::ConvertHash;
+    unsupported CurrentSystemBuiltin, b"currentSystem";
+    unsupported CurrentTimeBuiltin, b"currentTime";
+    custom DeepSeqBuiltin;
+    unsupported DerivationBuiltin, b"derivation";
+    unsupported DerivationStrictBuiltin, b"derivationStrict";
+    strict_unary DirOfBuiltin, b"dirOf", StrictUnaryPrimOp::DirOf;
+    strict_binary DivBuiltin, b"div", StrictBinaryPrimOp::Div;
+    unsupported ElemBuiltin, b"elem";
+    unsupported ElemAtBuiltin, b"elemAt";
+    unsupported ExecBuiltin, b"exec";
+    custom FalseBuiltin;
+    unsupported FetchClosureBuiltin, b"fetchClosure";
+    unsupported FetchGitBuiltin, b"fetchGit";
+    unsupported FetchMercurialBuiltin, b"fetchMercurial";
+    unsupported FetchTarballBuiltin, b"fetchTarball";
+    unsupported FetchTreeBuiltin, b"fetchTree";
+    unsupported FetchurlBuiltin, b"fetchurl";
+    unsupported FilterBuiltin, b"filter";
+    unsupported FilterSourceBuiltin, b"filterSource";
+    unsupported FindFileBuiltin, b"findFile";
+    unsupported FlakeRefToStringBuiltin, b"flakeRefToString";
+    strict_unary FloorBuiltin, b"floor", StrictUnaryPrimOp::Floor;
+    unsupported FoldlStrictBuiltin, b"foldl'";
+    strict_unary FromJsonBuiltin, b"fromJSON", StrictUnaryPrimOp::FromJson;
+    unsupported FromTomlBuiltin, b"fromTOML";
+    strict_unary FunctionArgsBuiltin, b"functionArgs", StrictUnaryPrimOp::FunctionArgs;
+    unsupported GenListBuiltin, b"genList";
+    unsupported GenericClosureBuiltin, b"genericClosure";
+    unsupported GetAttrBuiltin, b"getAttr";
+    strict_unary GetContextBuiltin, b"getContext", StrictUnaryPrimOp::GetContext;
+    unsupported GetEnvBuiltin, b"getEnv";
+    unsupported GetFlakeBuiltin, b"getFlake";
+    unsupported GroupByBuiltin, b"groupBy";
+    unsupported HasAttrBuiltin, b"hasAttr";
+    strict_unary HasContextBuiltin, b"hasContext", StrictUnaryPrimOp::HasContext;
+    strict_binary HashFileBuiltin, b"hashFile", StrictBinaryPrimOp::HashFile;
+    strict_binary HashStringBuiltin, b"hashString", StrictBinaryPrimOp::HashString;
+    strict_unary HeadBuiltin, b"head", StrictUnaryPrimOp::Head;
+    unsupported ImportBuiltin, b"import";
+    unsupported IntersectAttrsBuiltin, b"intersectAttrs";
+    strict_unary IsAttrsBuiltin, b"isAttrs", StrictUnaryPrimOp::IsAttrs;
+    strict_unary IsBoolBuiltin, b"isBool", StrictUnaryPrimOp::IsBool;
+    strict_unary IsFloatBuiltin, b"isFloat", StrictUnaryPrimOp::IsFloat;
+    strict_unary IsFunctionBuiltin, b"isFunction", StrictUnaryPrimOp::IsFunction;
+    strict_unary IsIntBuiltin, b"isInt", StrictUnaryPrimOp::IsInt;
+    strict_unary IsListBuiltin, b"isList", StrictUnaryPrimOp::IsList;
+    strict_unary IsNullBuiltin, b"isNull", StrictUnaryPrimOp::IsNull;
+    strict_unary IsPathBuiltin, b"isPath", StrictUnaryPrimOp::IsPath;
+    strict_unary IsStringBuiltin, b"isString", StrictUnaryPrimOp::IsString;
+    unsupported LangVersionBuiltin, b"langVersion";
+    strict_unary LengthBuiltin, b"length", StrictUnaryPrimOp::Length;
+    strict_binary LessThanBuiltin, b"lessThan", StrictBinaryPrimOp::LessThan;
+    strict_unary ListToAttrsBuiltin, b"listToAttrs", StrictUnaryPrimOp::ListToAttrs;
+    unsupported MapBuiltin, b"map";
+    unsupported MapAttrsBuiltin, b"mapAttrs";
+    unsupported MatchBuiltin, b"match";
+    strict_binary MulBuiltin, b"mul", StrictBinaryPrimOp::Mul;
+    unsupported NixPathBuiltin, b"nixPath";
+    unsupported NixVersionBuiltin, b"nixVersion";
+    custom NullBuiltin;
+    unsupported OutputOfBuiltin, b"outputOf";
+    strict_unary ParseDrvNameBuiltin, b"parseDrvName", StrictUnaryPrimOp::ParseDrvName;
+    unsupported ParseFlakeRefBuiltin, b"parseFlakeRef";
+    unsupported PartitionBuiltin, b"partition";
+    unsupported PathBuiltin, b"path";
+    unsupported PathExistsBuiltin, b"pathExists";
+    unsupported PlaceholderBuiltin, b"placeholder";
+    unsupported ReadDirBuiltin, b"readDir";
+    unsupported ReadFileBuiltin, b"readFile";
+    unsupported ReadFileTypeBuiltin, b"readFileType";
+    unsupported RemoveAttrsBuiltin, b"removeAttrs";
+    unsupported ReplaceStringsBuiltin, b"replaceStrings";
+    unsupported ScopedImportBuiltin, b"scopedImport";
+    custom SeqBuiltin;
+    unsupported SortBuiltin, b"sort";
+    unsupported SplitBuiltin, b"split";
+    strict_unary SplitVersionBuiltin, b"splitVersion", StrictUnaryPrimOp::SplitVersion;
+    unsupported StoreDirBuiltin, b"storeDir";
+    unsupported StorePathBuiltin, b"storePath";
+    strict_unary StringLengthBuiltin, b"stringLength", StrictUnaryPrimOp::StringLength;
+    strict_binary SubBuiltin, b"sub", StrictBinaryPrimOp::Sub;
+    unsupported SubstringBuiltin, b"substring";
+    strict_unary TailBuiltin, b"tail", StrictUnaryPrimOp::Tail;
+    unsupported ThrowBuiltin, b"throw";
+    unsupported ToFileBuiltin, b"toFile";
+    unsupported ToHashFormatBuiltin, b"toHashFormat";
+    strict_unary ToJsonBuiltin, b"toJSON", StrictUnaryPrimOp::ToJson;
+    unsupported ToPathBuiltin, b"toPath";
+    strict_unary ToStringBuiltin, b"toString", StrictUnaryPrimOp::ToString;
+    unsupported ToXmlBuiltin, b"toXML";
+    unsupported TraceBuiltin, b"trace";
+    unsupported TraceVerboseBuiltin, b"traceVerbose";
+    custom TrueBuiltin;
+    unsupported TryEvalBuiltin, b"tryEval";
+    strict_unary TypeOfBuiltin, b"typeOf", StrictUnaryPrimOp::TypeOf;
+    strict_unary UnsafeDiscardOutputDependencyBuiltin, b"unsafeDiscardOutputDependency", StrictUnaryPrimOp::UnsafeDiscardOutputDependency;
+    strict_unary UnsafeDiscardStringContextBuiltin, b"unsafeDiscardStringContext", StrictUnaryPrimOp::UnsafeDiscardStringContext;
+    unsupported UnsafeGetAttrPosBuiltin, b"unsafeGetAttrPos";
+    unsupported WarnBuiltin, b"warn";
+    unsupported ZipAttrsWithBuiltin, b"zipAttrsWith";
+}
+
+fn lookup_builtin_by_name(name: &[u8]) -> Option<&'static dyn Builtin> {
+    BUILTIN_REGISTRY
+        .iter()
+        .copied()
+        .find(|builtin| builtin.name() == name)
+}
+
+fn lookup_builtin_by_symbol(symbols: &SymbolTable, symbol: Symbol) -> Option<&'static dyn Builtin> {
+    symbols.resolve(symbol).and_then(lookup_builtin_by_name)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StrictUnaryPrimOp {
     IsAttrs,
@@ -8536,6 +9283,14 @@ pub enum TreeWalkErrorKind {
         /// The unsupported primop symbol.
         symbol: Symbol,
     },
+    /// A `builtins` attribute exists but is outside this evaluator slice.
+    #[error("unsupported builtins attribute {symbol:?} at node {id:?}")]
+    UnsupportedBuiltinAttr {
+        /// The select node id.
+        id: IrId,
+        /// The unsupported builtin attribute symbol.
+        symbol: Symbol,
+    },
     /// A primitive operation carries the wrong number of lowered arguments.
     #[error("invalid primop arity at {id:?}: expected {expected}, got {actual}")]
     InvalidPrimOpArity {
@@ -8607,12 +9362,14 @@ mod tests {
     use super::super::ThunkState;
     use super::*;
     use std::{
+        collections::BTreeSet,
         fs,
         path::{Path, PathBuf},
         ptr::NonNull,
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use crate::compile::scope::GLOBAL_BUILTIN_NAMES;
     use crate::compile::{
         EffectClass, FrameInfo, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode, IrShape,
         IrWithChain, lower as lower_ir, resolve as resolve_ast,
@@ -8905,6 +9662,94 @@ mod tests {
         assert_eq!(eval_string_bytes("builtins.typeOf [ 1 ]"), b"list");
         assert_eq!(eval_string_bytes("builtins.typeOf { a = 1; }"), b"set");
         assert_eq!(eval_string_bytes("builtins.typeOf (x: x)"), b"lambda");
+    }
+
+    #[test]
+    fn builtin_registry_matches_scope_global_names() {
+        let registry_names = BUILTIN_REGISTRY
+            .iter()
+            .map(|builtin| builtin.name())
+            .collect::<BTreeSet<_>>();
+        let scope_names = GLOBAL_BUILTIN_NAMES
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(registry_names.len(), BUILTIN_REGISTRY.len());
+        assert_eq!(scope_names.len(), GLOBAL_BUILTIN_NAMES.len());
+        assert_eq!(registry_names, scope_names);
+    }
+
+    #[test]
+    fn static_builtin_selects_are_first_class_functions() {
+        assert_eq!(eval("builtins.true").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.false").as_bool(), Ok(false));
+        assert_eq!(eval("builtins.null").as_null(), Ok(()));
+        assert_eq!(eval("builtins ? length").as_bool(), Ok(true));
+        assert_eq!(eval("builtins ? currentSystem").as_bool(), Ok(true));
+        assert_eq!(eval("builtins ? __missing").as_bool(), Ok(false));
+        assert_eq!(eval("builtins ? length.foo").as_bool(), Ok(false));
+        assert_eq!(
+            eval("builtins.isFunction builtins.length").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.typeOf builtins.length"),
+            b"lambda"
+        );
+        assert_eq!(
+            eval("builtins.functionArgs builtins.length == {}").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let f = builtins.length; in f [ 1 2 3 ]").as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval("let f = builtins.isFunction; in f builtins.convertHash").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(eval("builtins.__missing or 42").as_int(), Ok(42));
+        assert_eq!(eval("builtins.__missing.foo or 42").as_int(), Ok(42));
+        assert_eq!(eval("builtins.length.foo or 42").as_int(), Ok(42));
+    }
+
+    #[test]
+    fn known_but_unimplemented_builtin_selects_do_not_use_defaults() {
+        for (source, name) in [
+            ("builtins.currentSystem or 42", b"currentSystem".as_slice()),
+            ("builtins.currentTime or 42", b"currentTime".as_slice()),
+            ("builtins.elemAt or 42", b"elemAt".as_slice()),
+            ("builtins.exec or 42", b"exec".as_slice()),
+            ("builtins.fetchClosure or 42", b"fetchClosure".as_slice()),
+            ("builtins.langVersion or 42", b"langVersion".as_slice()),
+            ("builtins.outputOf or 42", b"outputOf".as_slice()),
+            ("builtins.scopedImport or 42", b"scopedImport".as_slice()),
+            ("builtins.toHashFormat or 42", b"toHashFormat".as_slice()),
+        ] {
+            let ir = lower(source);
+            let error = eval_whnf_owned(&ir).expect_err("known builtin does not use default");
+
+            assert_eq!(
+                error.kind(),
+                TreeWalkErrorKind::UnsupportedBuiltinAttr {
+                    id: ir.root,
+                    symbol: symbol_for(&ir, name),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn first_class_builtin_selects_respect_shadowing() {
+        assert_eq!(
+            eval("let builtins = { length = x: 42; }; in builtins.length [ 1 ]").as_int(),
+            Ok(42)
+        );
+        assert_eq!(
+            eval("let builtins = {}; in builtins.length or 42").as_int(),
+            Ok(42)
+        );
     }
 
     #[test]
@@ -13021,6 +13866,60 @@ mod tests {
     }
 
     #[test]
+    fn first_class_binary_builtin_selects_are_curried() {
+        assert_eq!(
+            eval_string_bytes("let h = builtins.hashString \"sha256\"; in h \"abc\""),
+            b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(eval("let add = builtins.add 1; in add 2").as_int(), Ok(3));
+        assert_eq!(
+            eval("let less = builtins.lessThan 1; in less 2").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let cmp = builtins.compareVersions \"1.2\"; in cmp \"1.10\"").as_int(),
+            Ok(-1)
+        );
+        assert_eq!(
+            eval("let s = builtins.seq (1 / 0); in builtins.isFunction s").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let s = builtins.seq 1; in builtins.length (s [ 1 (1 / 0) ])").as_int(),
+            Ok(2)
+        );
+    }
+
+    #[test]
+    fn first_class_binary_builtin_type_checks_left_before_right() {
+        for (source, expected, actual) in [
+            (
+                "let cmp = builtins.compareVersions 1; in cmp (1 / 0)",
+                "string",
+                ValueTag::Int,
+            ),
+            (
+                "let and = builtins.bitAnd true; in and (1 / 0)",
+                "int",
+                ValueTag::Bool,
+            ),
+        ] {
+            let error = eval_whnf_owned(&lower(source)).expect_err("left argument is rejected");
+
+            let TreeWalkErrorKind::Type {
+                expected: found_expected,
+                actual: found_actual,
+                ..
+            } = error.kind()
+            else {
+                panic!("expected a type error for {source}, got {error:?}");
+            };
+            assert_eq!(found_expected, expected, "{source}");
+            assert_eq!(found_actual, actual, "{source}");
+        }
+    }
+
+    #[test]
     fn hash_string_primop_hashes_context_bearing_string_bytes() {
         let ir = lower("builtins.hashString \"sha256\" \"abc\"");
         let root = *ir.arena.node(ir.root).expect("root exists");
@@ -13271,6 +14170,16 @@ mod tests {
                 "let builtins = { convertHash = args: \"local\"; }; in builtins.convertHash { hash = 1 / 0; }"
             ),
             b"local"
+        );
+    }
+
+    #[test]
+    fn convert_hash_primop_can_be_selected_as_a_function() {
+        assert_eq!(
+            eval_string_bytes(
+                "let convert = builtins.convertHash; in convert { hash = \"ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=\"; hashAlgo = \"sha256\"; toHashFormat = \"base16\"; }"
+            ),
+            b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
 
