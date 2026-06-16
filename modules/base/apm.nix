@@ -5,8 +5,189 @@
 ##! commands like `apm registry add` don't have to mkdir their parent
 ##! under a read-only /. Loaded unconditionally by
 ##! `modules/default.nix`.
-{pkgs, ...}: {
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.aos.apm.installAtBoot;
+  registryRenderer = import ./_apm-registry-renderer.nix {inherit lib;};
+  inherit (registryRenderer) registryToml trustedKeys trustedSbCerts;
+
+  ignitionFormat = lib.formats.ignition {
+    inherit lib pkgs;
+    allowStorageHardware = false;
+  };
+  toml = lib.formats.toml {inherit lib pkgs;};
+
+  packageNameRegex = "[A-Za-z0-9][A-Za-z0-9+._=-]*";
+  packageNameType = lib.types.strMatching packageNameRegex;
+  desiredConfigType = lib.types.attrsOf (lib.types.attrsOf (lib.types.attrsOf toml.type));
+
+  uriEncode =
+    builtins.replaceStrings
+    ["%" "\n" "\r" "\t" " " "!" "\"" "#" "$" "&" "'" "(" ")" "*" "+" "," "/" ":" ";" "<" "=" ">" "?" "@" "[" "\\" "]" "^" "`" "{" "|" "}"]
+    ["%25" "%0A" "%0D" "%09" "%20" "%21" "%22" "%23" "%24" "%26" "%27" "%28" "%29" "%2A" "%2B" "%2C" "%2F" "%3A" "%3B" "%3C" "%3D" "%3E" "%3F" "%40" "%5B" "%5C" "%5D" "%5E" "%60" "%7B" "%7C" "%7D"];
+  dataUrl = content: let
+    encoded = uriEncode content;
+  in
+    if builtins.match "[A-Za-z0-9._~%+-]*" encoded == null
+    then
+      throw ''
+        aos.apm.installAtBoot cannot encode non-ASCII or control
+        characters in generated Ignition data URLs.
+      ''
+    else "data:,${encoded}";
+
+  desiredToml = toml.toTOML ({
+      packages = cfg.packages;
+    }
+    // lib.optionalAttrs (cfg.config != {}) {
+      config = cfg.config;
+    });
+
+  desiredFile = {
+    path = "/etc/aos/packages.d/desired.toml";
+    mode = 420; # 0644
+    overwrite = true;
+    contents.source = dataUrl desiredToml;
+  };
+
+  registries = config.aos.apm.registries;
+  hasSbCerts = builtins.any (registry: registry.sbDbCerts != []) (builtins.attrValues registries);
+  registryDirs =
+    [
+      {
+        path = "/etc/apm";
+        mode = 493; # 0755
+        overwrite = true;
+      }
+      {
+        path = "/etc/apm/registries.d";
+        mode = 493; # 0755
+        overwrite = true;
+      }
+      {
+        path = "/etc/apm/trusted-keys.d";
+        mode = 493; # 0755
+        overwrite = true;
+      }
+    ]
+    ++ lib.optionals hasSbCerts [
+      {
+        path = "/etc/apm/trusted-sb-certs.d";
+        mode = 493; # 0755
+        overwrite = true;
+      }
+    ];
+  registryFiles =
+    lib.concatLists
+    (lib.mapAttrsToList (
+        name: registry:
+          [
+            {
+              path = "/etc/apm/registries.d/${name}.toml";
+              mode = 420; # 0644
+              overwrite = true;
+              contents.source = dataUrl (registryToml name registry);
+            }
+            {
+              path = "/etc/apm/trusted-keys.d/${name}.pub";
+              mode = 420; # 0644
+              overwrite = true;
+              contents.source = dataUrl (trustedKeys registry);
+            }
+          ]
+          ++ lib.optionals (registry.sbDbCerts != []) [
+            {
+              path = "/etc/apm/trusted-sb-certs.d/${name}.pem";
+              mode = 420; # 0644
+              overwrite = true;
+              contents.source = dataUrl (trustedSbCerts registry);
+            }
+          ]
+      )
+      registries);
+
+  installAtBootIgnitionConfig =
+    if cfg.enable
+    then {
+      storage = {
+        directories =
+          [
+            {
+              path = "/etc/aos";
+              mode = 493; # 0755
+              overwrite = true;
+            }
+            {
+              path = "/etc/aos/packages.d";
+              mode = 493; # 0755
+              overwrite = true;
+            }
+          ]
+          ++ lib.optionals cfg.includeRegistries registryDirs;
+        files =
+          [desiredFile]
+          ++ lib.optionals cfg.includeRegistries registryFiles;
+      };
+    }
+    else {};
+in {
+  options.aos.apm.installAtBoot = {
+    enable = lib.mkEnableOption "Ignition-authored apm desired-package reconciliation";
+
+    packages = lib.mkOption {
+      type = lib.types.listOf packageNameType;
+      default = [];
+      description = ''
+        Explicit APM package roots to place in
+        `/etc/aos/packages.d/desired.toml`.
+      '';
+    };
+
+    config = lib.mkOption {
+      type = desiredConfigType;
+      default = {};
+      description = ''
+        Package-scoped non-secret config to render under
+        `config.<package>.<artifact>` in `desired.toml`.
+      '';
+    };
+
+    includeRegistries = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Include `aos.apm.registries` as Ignition-written
+        `/etc/apm/registries.d` and trust-anchor files.
+      '';
+    };
+
+    ignitionConfig = lib.mkOption {
+      type = ignitionFormat.type;
+      readOnly = true;
+      description = ''
+        Ignition fragment that writes `desired.toml` and, when enabled,
+        matching registry configuration via `storage.files`.
+      '';
+    };
+  };
+
   config = {
+    assertions =
+      builtins.map (name: {
+        assertion = builtins.match packageNameRegex name != null;
+        message = ''
+          aos.apm.installAtBoot.config.${name}: package config keys must
+          be valid APM package names (${packageNameRegex}).
+        '';
+      })
+      (builtins.attrNames cfg.config);
+
+    aos.apm.installAtBoot.ignitionConfig = installAtBootIgnitionConfig;
+
     # `apm`'s registry/update and runtime attach paths rely on the hermetic
     # wrapper in `pkgs/tools/aos/aos.nix` for shell-out tools such as git, tar,
     # nix, and systemctl. Keeping `pkgs.aos` in the base image makes those

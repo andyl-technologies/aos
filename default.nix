@@ -159,6 +159,9 @@
   packagePresetCheck = import ./lib/testing/package-preset.nix {
     inherit pkgs mkSystem testing;
   };
+  apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
+    inherit pkgs mkSystem testing;
+  };
 
   # Stdenv cross-cutting integration check
   stdenvChecks = {
@@ -286,11 +289,13 @@ in {
     };
     package-expose-lifecycle = packageExposeLifecycleCheck;
     package-preset = packagePresetCheck;
+    apm-install-at-boot = apmInstallAtBootCheck;
     # Module-level VM checks (from server system, for backwards compat)
     vm =
       serverSystem.config.system.build.checks
       // {
         apm = apmTests;
+        apm-install-at-boot = apmInstallAtBootCheck;
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;
       };
