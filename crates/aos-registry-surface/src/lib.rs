@@ -28,6 +28,7 @@
 //! those live in the consumer (`aos-registry-hub`'s `surface::load`, or the
 //! SPA's own fetch glue) so this core stays pure.
 
+pub mod manifest;
 pub mod object;
 pub mod refs;
 pub mod sshsig;
