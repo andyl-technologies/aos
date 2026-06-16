@@ -895,10 +895,10 @@ in rec {
   # .requires / .upholds via `generateUnits`'s symlink farm; the
   # `[Install]` section is redundant-but-safe in that case (systemd's
   # preset/enable mechanism is idempotent if the symlinks already
-  # exist). Ignition relies on this section as the only path: its
-  # `enabled = true` writes the unit name to /etc/systemd/system-preset/,
-  # and `systemctl preset-all` (run by `aos-ignition-preset.service`
-  # in the initrd) walks `[Install]` to create the runtime symlinks.
+  # exist). RFC-0001 package targets rely on this section as the
+  # preset path: an Ignition-written preset file names the target, and
+  # the every-boot `aos-preset.service` walks `[Install]` to create the
+  # runtime symlink in the tmpfs /etc upper.
   commonUnitText = def: bodyLines: let
     install =
       optionalString (def.aliases != []) "Alias=${concatStringsSep " " def.aliases}\n"

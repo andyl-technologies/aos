@@ -92,7 +92,7 @@ reframes how the phases below are read:
 | **P1** | `expose` authoring + build-time renderer (eval-free artifacts via `passthru`) | P0 schema pinned | authoring.md mechanics | ☑ |
 | **P2** | Target sandbox + gated side-effect services + nftables reload coherence + eval assertion | P1 | D15; activation.md | ☑ |
 | **P3** | Per-unit sandboxing materialization + confinement label + **the Decision 17 validation spike** (the gate) | P1, P2 | D2, D4, D10, D17; D1(b) | ☑ |
-| **P4** | Preset enablement (image `disable *`; Ignition per-host preset; every-boot `aos-preset.service`) | P2 | D8 (enable half) | ☐ |
+| **P4** | Preset enablement (image `disable *`; Ignition per-host preset; every-boot `aos-preset.service`) | P2 | D8 (enable half) | ☑ |
 | **P5** | `apm install` + install-at-boot + **declarative reconciliation (install + prune)** + upgrade/rollback + **layered config** (TPM2 creds / schema'd artifact / EnvironmentFile) + **hot-reload plumbing** | P3, P4 | D8 (install half), D9, D11, D16, D24, D25 | ☐ |
 | **P6** | Container roots (`RootDirectory=` store path) + the three network modes | P3 | D3, D5, D6 | ☐ |
 | **P7** | Dissolve `modules/roles/` into `pkgs/` `expose`; `modules/` shrinks to policy | P1–P6 green per package | D14; migration.md | ☐ |
@@ -306,19 +306,28 @@ commit and the tmpfs `/etc` upper. ([`boot-activation.md`](boot-activation.md) �
 
 **Deliverables.**
 
-- [ ] **Image-baked default-deny.** Ship
+- [x] **Image-baked default-deny.** Ship
       `/usr/lib/systemd/system-preset/99-aos-default.preset` containing `disable *`.
-- [ ] **Ignition per-host preset.** Write `/etc/systemd/system-preset/20-aos-host.preset`
+- [x] **Ignition per-host preset.** Write `/etc/systemd/system-preset/20-aos-host.preset`
       (one `enable aos-pkg-<name>.target` line per desired package) via plain
       `storage.files` (`20-` beats `99-` first-match-wins).
-- [ ] **Every-boot `aos-preset.service`.** `ExecStart=systemctl preset-all
+- [x] **Every-boot `aos-preset.service`.** `ExecStart=systemctl preset-all
       --preset-mode=enable-only` (enable-only is **mandatory** — full mode would
       whiteout EROFS-baked `.wants` of base services), `Before=multi-user.target`,
       then `systemctl start --no-block` for newly-enabled targets (the boot
       transaction is computed before the symlinks exist, so an explicit start is
       required).
-- [ ] **Runtime install enable.** `systemctl preset aos-pkg-<name>.target` +
+- [x] **Runtime install enable.** `systemctl preset aos-pkg-<name>.target` +
       record the enable line in `/var/etc/systemd/system-preset/30-aos-apm.preset`.
+
+**Phase 4 implementation scope.** The image now stages the default-deny preset,
+the VM harness verifies an Ignition-written host preset, and the every-boot
+`aos-preset.service` applies enable-only policy and starts enabled package
+targets. Runtime `apm` records enablement durably in `/var/etc` and mirrors it
+into live `/etc` for immediate preset evaluation; it applies `systemctl preset`
+only once the target unit is visible to systemd. The Phase 5 attach phase remains
+responsible for materializing runtime-installed unit files and starting the
+target after install.
 
 **Closes.** D8 (the enable half). Verified facts that force this shape (do not
 re-derive): systemd's native first-boot preset pass can never fire (machine-id

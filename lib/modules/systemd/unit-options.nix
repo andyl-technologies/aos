@@ -144,14 +144,14 @@ in rec {
         - **Stage 2** writes a `.wants` symlink in the named target's
           `.wants/` dir at image-build time via `generateUnits` —
           stateless, no `systemctl enable` needed.
-        - **Ignition** has no symlink-farm phase, so the renderer also
-          emits an `[Install] WantedBy=` line (alongside `Alias=`,
-          `RequiredBy=`, `UpheldBy=` when those fields are set). At
-          first boot the initrd's `aos-ignition-preset.service` runs
-          `systemctl preset-all`, which walks `[Install]` to create the
-          runtime symlinks. The `[Install]` lines are idempotent for
+        - **Preset policy** has no symlink-farm phase, so renderers also
+          emit an `[Install] WantedBy=` line (alongside `Alias=`,
+          `RequiredBy=`, `UpheldBy=` when those fields are set). The
+          every-boot `aos-preset.service` runs `systemctl preset-all`,
+          which walks `[Install]` to create runtime symlinks in the
+          tmpfs `/etc` upper. The `[Install]` lines are idempotent for
           stage 2 (whose symlinks already exist) but load-bearing for
-          ignition.
+          Ignition-provisioned RFC-0001 package targets.
       '';
     };
 

@@ -156,6 +156,9 @@
   packageExposeLifecycleCheck = import ./lib/testing/package-expose-lifecycle.nix {
     inherit pkgs mkSystem testing;
   };
+  packagePresetCheck = import ./lib/testing/package-preset.nix {
+    inherit pkgs mkSystem testing;
+  };
 
   # Stdenv cross-cutting integration check
   stdenvChecks = {
@@ -282,12 +285,14 @@ in {
       inherit pkgs lib mkSystem packagesWithExpose;
     };
     package-expose-lifecycle = packageExposeLifecycleCheck;
+    package-preset = packagePresetCheck;
     # Module-level VM checks (from server system, for backwards compat)
     vm =
       serverSystem.config.system.build.checks
       // {
         apm = apmTests;
         package-expose-lifecycle = packageExposeLifecycleCheck;
+        package-preset = packagePresetCheck;
       };
     integration = packageChecks // stdenvChecks;
     fleet = discoverFleetTests;
