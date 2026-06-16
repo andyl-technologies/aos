@@ -2818,7 +2818,7 @@ async fn registry_set_enabled(
             message: format!("registry '{name}' not found"),
         })?;
 
-    let toml_path = config.registry_config_path_for_update(name);
+    let toml_path = config.registry_overlay_path(name);
     let previous_enabled = reg_config.enabled;
     write_registry_enabled(&toml_path, enabled)?;
 
