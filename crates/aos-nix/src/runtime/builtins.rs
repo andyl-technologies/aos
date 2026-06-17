@@ -1081,6 +1081,7 @@ impl BuiltinExecution {
             Self::StrictBinary { .. } | Self::DirectBinary(_) | Self::Seq | Self::DeepSeq => {
                 Some(2)
             }
+            Self::DirectTernary(_) => Some(3),
             Self::Unsupported
             | Self::EffectfulUnaryUnsupported
             | Self::DerivationStrict
@@ -1091,8 +1092,7 @@ impl BuiltinExecution {
             | Self::CurrentTimeValue
             | Self::StoreDirValue
             | Self::NixVersionValue
-            | Self::LangVersionValue
-            | Self::DirectTernary(_) => None,
+            | Self::LangVersionValue => None,
         }
     }
 }
@@ -1522,7 +1522,17 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"foldl'").unwrap().first_class_arity(),
-            None
+            Some(3)
+        );
+        assert_eq!(
+            builtin_metadata(b"substring").unwrap().first_class_arity(),
+            Some(3)
+        );
+        assert_eq!(
+            builtin_metadata(b"replaceStrings")
+                .unwrap()
+                .first_class_arity(),
+            Some(3)
         );
         assert_eq!(
             builtin_metadata(b"derivationStrict")

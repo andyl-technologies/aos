@@ -369,7 +369,7 @@ Forcing order is observable and must match (see
       preserved. `f` forced per element.
 - [x] `map` (f list) — list of `f elem` thunks; lazy in elements, strict in the
       argument list's spine.
-- [ ] `foldl'` (op nul list) — **strict** left fold: forces the accumulator at
+- [x] `foldl'` (op nul list) — **strict** left fold: forces the accumulator at
       every step (its whole reason to exist over the non-strict `foldl`, which
       is *not* a builtin — `lib.foldr`/`foldl` are Nix-level). The worker/wrapper
       optimization keys off this strictness (see

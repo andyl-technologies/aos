@@ -6981,11 +6981,12 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let op_span = self.node(op_id)?.span;
         let op = self.eval_node(op_id)?;
-        if op.tag() != ValueTag::Lambda {
+        let op = self.force_value(op_id, op_span, op)?;
+        if !matches!(op.tag(), ValueTag::Lambda | ValueTag::Primop) {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id: op_id,
-                    expected: "lambda",
+                    expected: "function",
                     actual: op.tag(),
                 },
                 op_span,
@@ -7871,6 +7872,272 @@ impl<'ir> TreeWalk<'ir> {
             ));
         }
         Ok(value)
+    }
+
+    fn force_int_primop_value(&mut self, argument: EvalPrimOpArg) -> Result<i64, TreeWalkError> {
+        let value = self.force_value(argument.id(), argument.span(), argument.value())?;
+        self.expect_int(argument.id(), value, argument.span())
+    }
+
+    fn eval_strict_ternary_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        primop: StrictTernaryPrimOp,
+        first: EvalPrimOpArg,
+        second: EvalPrimOpArg,
+        third: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        match primop {
+            StrictTernaryPrimOp::FoldlStrict => {
+                self.eval_foldl_strict_primop_value(id, span, first, second, third)
+            }
+            StrictTernaryPrimOp::ReplaceStrings => {
+                self.eval_replace_strings_primop_value(id, span, first, second, third)
+            }
+            StrictTernaryPrimOp::Substring => {
+                self.eval_substring_primop_value(first, second, third)
+            }
+        }
+    }
+
+    fn eval_foldl_strict_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        op_arg: EvalPrimOpArg,
+        initial_arg: EvalPrimOpArg,
+        list_arg: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let op = self.force_value(op_arg.id(), op_arg.span(), op_arg.value())?;
+        if !matches!(op.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: op_arg.id(),
+                    expected: "function",
+                    actual: op.tag(),
+                },
+                op_arg.span(),
+            ));
+        }
+        let list_value = self.force_primop_value(list_arg, "list", ValueTag::List)?;
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_arg.id(),
+                        source,
+                    },
+                    list_arg.span(),
+                )
+            })?;
+            Self::clone_list_elements(list_arg.id(), list_arg.span(), list)?
+        };
+
+        let mut accumulator =
+            self.force_value(initial_arg.id(), initial_arg.span(), initial_arg.value())?;
+        for element in elements {
+            let step = self.apply_lambda_value(
+                id,
+                span,
+                op_arg.id(),
+                op,
+                op_arg.span(),
+                initial_arg.id(),
+                accumulator,
+            )?;
+            let result = self.apply_lambda_value(
+                id,
+                span,
+                op_arg.id(),
+                step,
+                op_arg.span(),
+                list_arg.id(),
+                element,
+            )?;
+            accumulator = self.force_value(op_arg.id(), op_arg.span(), result)?;
+        }
+
+        Ok(accumulator)
+    }
+
+    fn eval_replace_strings_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        from_arg: EvalPrimOpArg,
+        to_arg: EvalPrimOpArg,
+        string_arg: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let from_value = self.force_primop_value(from_arg, "list", ValueTag::List)?;
+        let from_values = {
+            let from = self.heap.get_list(from_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: from_arg.id(),
+                        source,
+                    },
+                    from_arg.span(),
+                )
+            })?;
+            Self::clone_list_elements(from_arg.id(), from_arg.span(), from)?
+        };
+
+        let to_value = self.force_primop_value(to_arg, "list", ValueTag::List)?;
+        let to_values = {
+            let to = self.heap.get_list(to_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: to_arg.id(),
+                        source,
+                    },
+                    to_arg.span(),
+                )
+            })?;
+            Self::clone_list_elements(to_arg.id(), to_arg.span(), to)?
+        };
+
+        if from_values.len() != to_values.len() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::ReplaceStringsLengthMismatch {
+                    id,
+                    from_len: from_values.len(),
+                    to_len: to_values.len(),
+                },
+                span,
+            ));
+        }
+
+        let mut patterns = Vec::new();
+        patterns.try_reserve_exact(from_values.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: from_values.len(),
+                },
+                span,
+            )
+        })?;
+        for (from, replacement) in from_values.into_iter().zip(to_values) {
+            let from = self.force_value(from_arg.id(), from_arg.span(), from)?;
+            if from.tag() != ValueTag::String {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: from_arg.id(),
+                        expected: "string",
+                        actual: from.tag(),
+                    },
+                    from_arg.span(),
+                ));
+            }
+            let from = {
+                let string = self.heap.get_string(from).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: from_arg.id(),
+                            source,
+                        },
+                        from_arg.span(),
+                    )
+                })?;
+                Self::copy_bytes_for_node(from_arg.id(), from_arg.span(), string.bytes())?
+            };
+            patterns.push(ReplaceStringPattern { from, replacement });
+        }
+
+        let string_value = self.force_primop_value(string_arg, "string", ValueTag::String)?;
+        let (source, context) = {
+            let string = self.heap.get_string(string_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: string_arg.id(),
+                        source,
+                    },
+                    string_arg.span(),
+                )
+            })?;
+            let source =
+                Self::copy_bytes_for_node(string_arg.id(), string_arg.span(), string.bytes())?;
+            let context = string
+                .context()
+                .union(&StringContext::empty())
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: string_arg.id(),
+                            source,
+                        },
+                        string_arg.span(),
+                    )
+                })?;
+            (source, context)
+        };
+
+        let result = self.replace_strings_bytes(
+            id,
+            span,
+            to_arg.id(),
+            to_arg.span(),
+            &source,
+            context,
+            &patterns,
+        )?;
+        self.heap
+            .alloc_string(result)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_substring_primop_value(
+        &mut self,
+        start_arg: EvalPrimOpArg,
+        len_arg: EvalPrimOpArg,
+        string_arg: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let start_offset = self.force_int_primop_value(start_arg)? as u32 as i32;
+        if start_offset < 0 {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::NegativeSubstringStart {
+                    id: start_arg.id(),
+                    start: start_offset.into(),
+                },
+                start_arg.span(),
+            ));
+        }
+
+        let len = self.force_int_primop_value(len_arg)? as u32 as usize;
+        let value = self.force_value(string_arg.id(), string_arg.span(), string_arg.value())?;
+        let string = self.coerce_to_string(string_arg.id(), value, string_arg.span())?;
+        let result = {
+            let string = self.heap.get_string(string).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: string_arg.id(),
+                        source,
+                    },
+                    string_arg.span(),
+                )
+            })?;
+            string
+                .substring_preserve_context(start_offset as usize, len)
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: string_arg.id(),
+                            source,
+                        },
+                        string_arg.span(),
+                    )
+                })?
+        };
+        self.heap.alloc_string(result).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: string_arg.id(),
+                    source,
+                },
+                string_arg.span(),
+            )
+        })
     }
 
     fn eval_strict_binary_primop_value(
@@ -10120,6 +10387,12 @@ fn apply_builtin(
             check_builtin_arity(call, 2, args.len())?;
             eval.eval_direct_binary_primop_value(call, primop, args[0], args[1])
         }
+        BuiltinExecution::DirectTernary(primop) => {
+            check_builtin_arity(call, 3, args.len())?;
+            eval.eval_strict_ternary_primop_value(
+                call.id, call.span, primop, args[0], args[1], args[2],
+            )
+        }
         BuiltinExecution::TryEval => {
             check_builtin_arity(call, 1, args.len())?;
             eval.eval_try_eval_value(call.id, call.span, args[0])
@@ -11736,6 +12009,18 @@ mod tests {
         );
         assert_eq!(
             eval("builtins.isFunction builtins.partition").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.isFunction builtins.foldl'").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.isFunction builtins.substring").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.isFunction builtins.replaceStrings").as_bool(),
             Ok(true)
         );
         assert_eq!(
@@ -14243,6 +14528,18 @@ mod tests {
             Ok(6)
         );
         assert_eq!(
+            eval("builtins.foldl' builtins.add 0 [ 1 2 3 ]").as_int(),
+            Ok(6)
+        );
+        assert_eq!(
+            eval("let f = builtins.foldl'; in f (acc: x: acc + x) 0 [ 1 2 3 ]").as_int(),
+            Ok(6)
+        );
+        assert_eq!(
+            eval("let f = builtins.foldl'; in f builtins.add 0 [ 1 2 3 ]").as_int(),
+            Ok(6)
+        );
+        assert_eq!(
             eval("builtins.elemAt (builtins.foldl' (acc: x: acc ++ [ x ]) [] [ 1 2 3 ]) 0")
                 .as_int(),
             Ok(1)
@@ -14301,7 +14598,7 @@ mod tests {
             error.kind(),
             TreeWalkErrorKind::Type {
                 id: op,
-                expected: "lambda",
+                expected: "function",
                 actual: ValueTag::Int,
             }
         );
@@ -14348,6 +14645,50 @@ mod tests {
             TreeWalkErrorKind::DivisionByZero { id: initial }
         );
         assert_eq!(error.span(), initial_span);
+
+        let error = eval_whnf_owned(&lower("let f = builtins.foldl'; in f (1 / 0) 0 []"))
+            .expect_err("first-class foldl' forces operator first");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let error = eval_whnf_owned(&lower("let f = builtins.foldl'; in f 1 0 []"))
+            .expect_err("first-class foldl' requires an operator function");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "function",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "let f = builtins.foldl'; in f (acc: x: acc) (1 / 0) 1",
+        ))
+        .expect_err("first-class foldl' checks list before initial value");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "let f = builtins.foldl'; in f (acc: x: acc) (1 / 0) []",
+        ))
+        .expect_err("first-class foldl' forces initial after list");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
     }
 
     #[test]
@@ -16902,6 +17243,27 @@ mod tests {
             assert_eq!(found_expected, expected, "{source}");
             assert_eq!(found_actual, actual, "{source}");
         }
+    }
+
+    #[test]
+    fn first_class_ternary_builtin_selects_are_curried() {
+        assert_eq!(
+            eval("let fold = builtins.foldl' builtins.add; sum = fold 0; in sum [ 1 2 3 ]")
+                .as_int(),
+            Ok(6)
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let slice = builtins.substring 1; take2 = slice 2; in take2 \"abcd\""
+            ),
+            b"bc"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let replace = builtins.replaceStrings [ \"a\" ]; swap = replace [ \"b\" ]; in swap \"a\""
+            ),
+            b"b"
+        );
     }
 
     #[test]
