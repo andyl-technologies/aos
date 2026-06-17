@@ -54,6 +54,21 @@ const OUT_PATH_ATTR: &[u8] = b"outPath";
 const DRV_PATH_ATTR: &[u8] = b"drvPath";
 const TYPE_ATTR: &[u8] = b"type";
 const NAME_ATTR: &[u8] = b"name";
+const BUILDER_ATTR: &[u8] = b"builder";
+const SYSTEM_ATTR: &[u8] = b"system";
+const ARGS_ATTR: &[u8] = b"args";
+const OUTPUTS_ATTR: &[u8] = b"outputs";
+const STRUCTURED_ATTRS_ATTR: &[u8] = b"__structuredAttrs";
+const IGNORE_NULLS_ATTR: &[u8] = b"__ignoreNulls";
+const OUTPUT_HASH_ATTR: &[u8] = b"outputHash";
+const OUTPUT_HASH_ALGO_ATTR: &[u8] = b"outputHashAlgo";
+const OUTPUT_HASH_MODE_ATTR: &[u8] = b"outputHashMode";
+const CONTENT_ADDRESSED_ATTR: &[u8] = b"__contentAddressed";
+const ALLOWED_REFERENCES_ATTR: &[u8] = b"allowedReferences";
+const DISALLOWED_REFERENCES_ATTR: &[u8] = b"disallowedReferences";
+const ALLOWED_REQUISITES_ATTR: &[u8] = b"allowedRequisites";
+const DISALLOWED_REQUISITES_ATTR: &[u8] = b"disallowedRequisites";
+const EXPORT_REFERENCES_GRAPH_ATTR: &[u8] = b"exportReferencesGraph";
 const PATH_ATTR: &[u8] = b"path";
 const PREFIX_ATTR: &[u8] = b"prefix";
 const VALUE_ATTR: &[u8] = b"value";
@@ -1237,6 +1252,7 @@ impl<'ir> TreeWalk<'ir> {
             IrKind::Select => self.eval_select(id, &node),
             IrKind::HasAttr => self.eval_has_attr(id, &node),
             IrKind::ThunkAlloc => self.eval_thunk_alloc(id, &node),
+            IrKind::DerivationStrict => self.eval_derivation_strict(id, &node),
             kind => Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedNode { id, kind },
                 node.span,
@@ -1741,6 +1757,27 @@ impl<'ir> TreeWalk<'ir> {
         Ok(cloned)
     }
 
+    fn clone_attr_entries_lexicographic(
+        id: IrId,
+        span: Span,
+        attrs: &FlatAttrs,
+    ) -> Result<Vec<AttrEntry>, TreeWalkError> {
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(attrs.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: attrs.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        cloned.extend(attrs.iter_lexicographic().copied());
+        Ok(cloned)
+    }
+
     fn clone_list_elements(
         id: IrId,
         span: Span,
@@ -1759,6 +1796,345 @@ impl<'ir> TreeWalk<'ir> {
         })?;
         cloned.extend_from_slice(elements);
         Ok(cloned)
+    }
+
+    fn eval_derivation_strict(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Node(argument) = node.data else {
+            return Err(self.invalid_payload(id, node, "derivationStrict argument payload"));
+        };
+        if self.options.store_dir() != DEFAULT_STORE_DIR {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                    id,
+                    feature: "custom store directory",
+                },
+                node.span,
+            ));
+        }
+
+        let argument_span = self.node(argument)?.span;
+        let value = self.eval_node(argument)?;
+        let value = self.force_demanded_value(argument, argument_span, value)?;
+        if value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "attrs",
+                    actual: value.tag(),
+                },
+                argument_span,
+            ));
+        }
+        let entries = {
+            let attrs = self.heap.get_attrs(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            Self::clone_attr_entries_lexicographic(argument, argument_span, attrs)?
+        };
+
+        let mut derivation = nix_compat::derivation::Derivation::default();
+        derivation
+            .outputs
+            .insert("out".to_owned(), nix_compat::derivation::Output::default());
+        let mut context = StringContext::empty();
+        let mut name = None;
+        let mut builder = None;
+        let mut system = None;
+
+        for entry in entries {
+            let key = {
+                let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidSymbol {
+                            id: argument,
+                            symbol: entry.key,
+                        },
+                        argument_span,
+                    )
+                })?;
+                Self::copy_bytes_for_node(argument, argument_span, key)?
+            };
+            self.reject_unsupported_derivation_strict_attr(id, node.span, &key)?;
+
+            let value = self.force_value(argument, argument_span, entry.value)?;
+            let rendered =
+                self.derivation_to_string_value(id, node.span, argument, argument_span, value)?;
+            let (bytes, value_context) = rendered.into_parts();
+            context = context.union(&value_context).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, node.span)
+            })?;
+
+            let env_key = Self::derivation_utf8_string(id, node.span, "environment name", &key)?;
+            let env_value =
+                Self::derivation_utf8_string(id, node.span, "environment value", &bytes)?;
+            derivation
+                .environment
+                .insert(env_key.clone(), env_value.clone().into());
+
+            match key.as_slice() {
+                NAME_ATTR => name = Some(env_value),
+                BUILDER_ATTR => builder = Some(env_value),
+                SYSTEM_ATTR => system = Some(env_value),
+                _ => {}
+            }
+        }
+
+        let name =
+            name.ok_or_else(|| self.missing_derivation_strict_attr(id, node.span, NAME_ATTR))?;
+        if name.is_empty() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: "derivation name must not be empty".to_owned(),
+                },
+                node.span,
+            ));
+        }
+        derivation.builder = builder
+            .ok_or_else(|| self.missing_derivation_strict_attr(id, node.span, BUILDER_ATTR))?;
+        derivation.system = system
+            .ok_or_else(|| self.missing_derivation_strict_attr(id, node.span, SYSTEM_ATTR))?;
+        derivation.environment.insert("out".to_owned(), "".into());
+        self.add_derivation_context_inputs(id, node.span, &mut derivation, &context)?;
+
+        derivation.validate(false).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: source.to_string(),
+                },
+                node.span,
+            )
+        })?;
+        let hash = derivation.hash_derivation_modulo(|_| {
+            unreachable!("input derivation contexts are rejected before hashing")
+        });
+        derivation
+            .calculate_output_paths(&name, &hash)
+            .map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: source.to_string(),
+                    },
+                    node.span,
+                )
+            })?;
+        let drv_path = derivation
+            .calculate_derivation_path(&name)
+            .map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: source.to_string(),
+                    },
+                    node.span,
+                )
+            })?;
+        self.alloc_derivation_strict_result(id, node.span, &derivation, &drv_path)
+    }
+
+    fn reject_unsupported_derivation_strict_attr(
+        &self,
+        id: IrId,
+        span: Span,
+        key: &[u8],
+    ) -> Result<(), TreeWalkError> {
+        let feature = match key {
+            ARGS_ATTR => Some("arguments"),
+            OUTPUTS_ATTR => Some("custom outputs"),
+            STRUCTURED_ATTRS_ATTR => Some("structured attrs"),
+            IGNORE_NULLS_ATTR => Some("ignore-nulls mode"),
+            OUTPUT_HASH_ATTR | OUTPUT_HASH_ALGO_ATTR | OUTPUT_HASH_MODE_ATTR => {
+                Some("fixed-output derivations")
+            }
+            CONTENT_ADDRESSED_ATTR => Some("content-addressed derivations"),
+            ALLOWED_REFERENCES_ATTR
+            | DISALLOWED_REFERENCES_ATTR
+            | ALLOWED_REQUISITES_ATTR
+            | DISALLOWED_REQUISITES_ATTR
+            | EXPORT_REFERENCES_GRAPH_ATTR => Some("reference constraints"),
+            _ => None,
+        };
+        if let Some(feature) = feature {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedDerivationStrictFeature { id, feature },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn missing_derivation_strict_attr(
+        &mut self,
+        id: IrId,
+        span: Span,
+        name: &[u8],
+    ) -> TreeWalkError {
+        match self.intern_builtin_attr_symbol(id, name, span) {
+            Ok(symbol) => {
+                TreeWalkError::new(TreeWalkErrorKind::MissingAttribute { id, symbol }, span)
+            }
+            Err(error) => error,
+        }
+    }
+
+    fn derivation_utf8_string(
+        id: IrId,
+        span: Span,
+        field: &'static str,
+        bytes: &[u8],
+    ) -> Result<String, TreeWalkError> {
+        std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStringUtf8 {
+                        id,
+                        field,
+                        bytes: bytes.to_vec(),
+                        message: source.to_string(),
+                    },
+                    span,
+                )
+            })
+    }
+
+    fn add_derivation_context_inputs(
+        &self,
+        id: IrId,
+        span: Span,
+        derivation: &mut nix_compat::derivation::Derivation,
+        context: &StringContext,
+    ) -> Result<(), TreeWalkError> {
+        for element in context {
+            match element.kind() {
+                ContextKind::OpaquePath => {
+                    let path = Self::copy_bytes_for_node(id, span, element.path())?;
+                    let store_path =
+                        nix_compat::store_path::StorePath::<String>::from_absolute_path(&path)
+                            .map_err(|source| {
+                                TreeWalkError::new(
+                                    TreeWalkErrorKind::DerivationPath {
+                                        id,
+                                        path: path.clone(),
+                                        message: source.to_string(),
+                                    },
+                                    span,
+                                )
+                            })?;
+                    derivation.input_sources.insert(store_path);
+                }
+                ContextKind::SingleOutput => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                            id,
+                            feature: "input derivation output contexts",
+                        },
+                        span,
+                    ));
+                }
+                ContextKind::DeepDerivation => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                            id,
+                            feature: "deep derivation input contexts",
+                        },
+                        span,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn alloc_derivation_strict_result(
+        &mut self,
+        id: IrId,
+        span: Span,
+        derivation: &nix_compat::derivation::Derivation,
+        drv_path: &nix_compat::store_path::StorePath<String>,
+    ) -> Result<Value, TreeWalkError> {
+        let drv_path_bytes = drv_path.to_absolute_path().into_bytes();
+        let mut entries = Vec::new();
+        let len = derivation.outputs.len().checked_add(1).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: usize::MAX,
+                    },
+                },
+                span,
+            )
+        })?;
+        entries.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed { entries: len },
+                },
+                span,
+            )
+        })?;
+
+        for (output_name, output) in &derivation.outputs {
+            let output_path = output.path.as_ref().ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: format!("output {output_name:?} has no calculated path"),
+                    },
+                    span,
+                )
+            })?;
+            let context = StringContext::singleton(
+                ContextElement::single_output(
+                    drv_path_bytes.clone(),
+                    output_name.as_bytes().to_vec(),
+                )
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+                })?,
+            )
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+            let value = self
+                .heap
+                .alloc_string(NixString::new(
+                    output_path.to_absolute_path().into_bytes(),
+                    context,
+                ))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+            let key = self.intern_builtin_attr_symbol(id, output_name.as_bytes(), span)?;
+            entries.push(AttrEntry::new(key, value));
+        }
+
+        let context = StringContext::singleton(
+            ContextElement::deep_derivation(drv_path_bytes.clone()).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+            })?,
+        )
+        .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        let drv_path_value = self
+            .heap
+            .alloc_string(NixString::new(drv_path_bytes, context))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let drv_path_key = self.intern_builtin_attr_symbol(id, DRV_PATH_ATTR, span)?;
+        entries.push(AttrEntry::new(drv_path_key, drv_path_value));
+
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
     fn eval_if(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -7470,6 +7846,20 @@ impl<'ir> TreeWalk<'ir> {
         self.scalar_to_string_value(id, span, value_id, value_span, value)
     }
 
+    fn derivation_to_string_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+    ) -> Result<NixString, TreeWalkError> {
+        if value.tag() == ValueTag::List {
+            return self.derivation_list_to_string_value(id, span, value_id, value_span, value);
+        }
+        self.derivation_scalar_to_string_value(id, span, value_id, value_span, value)
+    }
+
     fn list_to_string_value(
         &mut self,
         id: IrId,
@@ -7482,6 +7872,30 @@ impl<'ir> TreeWalk<'ir> {
         let mut context = StringContext::empty();
         let mut fields = 0usize;
         self.append_list_to_string_fields(
+            id,
+            span,
+            list_id,
+            list_span,
+            value,
+            &mut bytes,
+            &mut context,
+            &mut fields,
+        )?;
+        Ok(NixString::new(bytes, context))
+    }
+
+    fn derivation_list_to_string_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        list_id: IrId,
+        list_span: Span,
+        value: Value,
+    ) -> Result<NixString, TreeWalkError> {
+        let mut bytes = Vec::new();
+        let mut context = StringContext::empty();
+        let mut fields = 0usize;
+        self.append_derivation_list_to_string_fields(
             id,
             span,
             list_id,
@@ -7537,6 +7951,38 @@ impl<'ir> TreeWalk<'ir> {
         Ok(())
     }
 
+    fn append_derivation_list_to_string_fields(
+        &mut self,
+        id: IrId,
+        span: Span,
+        list_id: IrId,
+        list_span: Span,
+        value: Value,
+        bytes: &mut Vec<u8>,
+        context: &mut StringContext,
+        fields: &mut usize,
+    ) -> Result<(), TreeWalkError> {
+        let elements = {
+            let list = self.heap.get_list(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            Self::clone_list_elements(list_id, list_span, list)?
+        };
+
+        for element in elements {
+            self.append_derivation_to_string_list(
+                id, span, list_id, list_span, element, bytes, context, fields,
+            )?;
+        }
+        Ok(())
+    }
+
     fn append_to_string_list(
         &mut self,
         id: IrId,
@@ -7556,6 +8002,29 @@ impl<'ir> TreeWalk<'ir> {
         }
 
         let rendered = self.scalar_to_string_value(id, span, list_id, list_span, value)?;
+        Self::append_to_string_field(id, span, bytes, context, fields, rendered)
+    }
+
+    fn append_derivation_to_string_list(
+        &mut self,
+        id: IrId,
+        span: Span,
+        list_id: IrId,
+        list_span: Span,
+        value: Value,
+        bytes: &mut Vec<u8>,
+        context: &mut StringContext,
+        fields: &mut usize,
+    ) -> Result<(), TreeWalkError> {
+        let value = self.force_value(list_id, list_span, value)?;
+        if value.tag() == ValueTag::List {
+            return self.append_derivation_list_to_string_fields(
+                id, span, list_id, list_span, value, bytes, context, fields,
+            );
+        }
+
+        let rendered =
+            self.derivation_scalar_to_string_value(id, span, list_id, list_span, value)?;
         Self::append_to_string_field(id, span, bytes, context, fields, rendered)
     }
 
@@ -7623,6 +8092,45 @@ impl<'ir> TreeWalk<'ir> {
         }
     }
 
+    fn derivation_scalar_to_string_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+    ) -> Result<NixString, TreeWalkError> {
+        match value.tag() {
+            ValueTag::String => self.clone_string_value(value_id, value_span, value),
+            ValueTag::Path => self.source_path_store_string(value_id, value_span, value),
+            ValueTag::Int => Ok(NixString::from_bytes(
+                (value.payload_bits() as i64).to_string().into_bytes(),
+            )),
+            ValueTag::Float => Ok(NixString::from_bytes(Self::to_string_float_bytes(
+                f64::from_bits(value.payload_bits()),
+            ))),
+            ValueTag::Bool => {
+                if self.expect_bool(value_id, value, value_span)? {
+                    Ok(NixString::from_bytes(b"1".to_vec()))
+                } else {
+                    Ok(NixString::default())
+                }
+            }
+            ValueTag::Null => Ok(NixString::default()),
+            ValueTag::Attrs => {
+                self.derivation_attrs_to_string_value(id, span, value_id, value_span, value)
+            }
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: value_id,
+                    expected: "string",
+                    actual,
+                },
+                value_span,
+            )),
+        }
+    }
+
     fn attrs_to_string_value(
         &mut self,
         id: IrId,
@@ -7652,6 +8160,47 @@ impl<'ir> TreeWalk<'ir> {
         {
             let value = self.force_value(attrs_id, attrs_span, out_path)?;
             return self.to_string_value(id, span, attrs_id, attrs_span, value);
+        }
+
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::Type {
+                id: attrs_id,
+                expected: "string",
+                actual: ValueTag::Attrs,
+            },
+            attrs_span,
+        ))
+    }
+
+    fn derivation_attrs_to_string_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_id: IrId,
+        attrs_span: Span,
+        attrs_value: Value,
+    ) -> Result<NixString, TreeWalkError> {
+        if let Some(hook) =
+            self.attr_value_by_name(attrs_id, attrs_value, TO_STRING_ATTR, attrs_span)?
+        {
+            let hook = self.force_value(attrs_id, attrs_span, hook)?;
+            let value = self.apply_lambda_value(
+                attrs_id,
+                attrs_span,
+                attrs_id,
+                hook,
+                attrs_span,
+                attrs_id,
+                attrs_value,
+            )?;
+            return self.derivation_to_string_value(id, span, attrs_id, attrs_span, value);
+        }
+
+        if let Some(out_path) =
+            self.attr_value_by_name(attrs_id, attrs_value, OUT_PATH_ATTR, attrs_span)?
+        {
+            let value = self.force_value(attrs_id, attrs_span, out_path)?;
+            return self.derivation_to_string_value(id, span, attrs_id, attrs_span, value);
         }
 
         Err(TreeWalkError::new(
@@ -17086,6 +17635,44 @@ pub enum TreeWalkErrorKind {
         /// The rejected normalized path bytes.
         path: Vec<u8>,
     },
+    /// `derivationStrict` reached a Nix feature outside this implementation slice.
+    #[error("derivationStrict at node {id:?} does not support {feature}")]
+    UnsupportedDerivationStrictFeature {
+        /// The derivation boundary node id.
+        id: IrId,
+        /// The unsupported derivation feature.
+        feature: &'static str,
+    },
+    /// `derivationStrict` needed UTF-8 for a field stored in nix-compat.
+    #[error("derivationStrict {field} at node {id:?} is not UTF-8: {bytes:?}: {message}")]
+    DerivationStringUtf8 {
+        /// The derivation boundary node id.
+        id: IrId,
+        /// The derivation field being converted.
+        field: &'static str,
+        /// The rejected bytes.
+        bytes: Vec<u8>,
+        /// The UTF-8 diagnostic.
+        message: String,
+    },
+    /// `derivationStrict` could not parse or construct a store path.
+    #[error("derivationStrict path at node {id:?} is invalid: {path:?}: {message}")]
+    DerivationPath {
+        /// The derivation boundary node id.
+        id: IrId,
+        /// The rejected or malformed path.
+        path: Vec<u8>,
+        /// The path diagnostic.
+        message: String,
+    },
+    /// `derivationStrict` failed while constructing the derivation model.
+    #[error("derivationStrict failed at node {id:?}: {message}")]
+    DerivationStrict {
+        /// The derivation boundary node id.
+        id: IrId,
+        /// The derivation diagnostic.
+        message: String,
+    },
     /// A context-transforming primop required a derivation path context.
     #[error("string context path at node {id:?} is not a derivation: {path:?}")]
     StringContextPathNotDerivation {
@@ -19949,6 +20536,19 @@ mod tests {
                  interpolationOut = builtins.getContext
                    "${{ outPath = out; }}";
                }"#,
+            r#"let
+                 strict = derivationStrict {
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 };
+                 drv = {
+                   type = "derivation";
+                   name = "x";
+                   drvPath = strict.drvPath;
+                   outPath = strict.out;
+                 };
+               in builtins.getContext (builtins.toString drv)"#,
         ] {
             assert_cpp_nix_json_matches_tree_walk(oracle, source);
         }
@@ -32722,6 +33322,53 @@ mod tests {
     }
 
     #[test]
+    fn derivation_strict_returns_context_bearing_outputs() {
+        let source = r#"let
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             };
+           in {
+             drvContext = builtins.getContext d.drvPath;
+             drvPath = d.drvPath;
+             names = builtins.attrNames d;
+             out = d.out;
+             outContext = builtins.getContext d.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"drvContext":{"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv":{"allOutputs":true}},"drvPath":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","names":["drvPath","out"],"out":"/nix/store/ss8z7hsjimnxam6mx6z8znm64qrk08cn-x","outContext":{"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv":{"outputs":["out"]}}}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_coercion_preserves_out_path_context() {
+        assert_eq!(
+            eval(
+                r#"let
+                     strict = derivationStrict {
+                       name = "x";
+                       system = "x86_64-linux";
+                       builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                     };
+                     drv = {
+                       type = "derivation";
+                       name = "x";
+                       drvPath = strict.drvPath;
+                       outPath = strict.out;
+                     };
+                     rendered = "${drv}";
+                     ctx = builtins.getContext rendered;
+                   in rendered == strict.out && builtins.hasAttr strict.drvPath ctx"#
+            )
+            .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
     fn string_add_rejects_non_string_rhs() {
         let ir = lower("\"a\" + 1");
         let root = ir.arena.node(ir.root).expect("root exists");
@@ -32890,20 +33537,29 @@ mod tests {
 
     #[test]
     fn unsupported_nodes_report_kind_and_span() {
-        let ir = lower(r#"derivationStrict { name = "x"; }"#);
-        let error = eval_whnf(&ir).expect_err("derivationStrict is not implemented yet");
+        let root = IrId::new(0);
+        let span = Span::new(0, 1);
+        let ir = manual_ir(
+            root,
+            vec![pure_node(
+                IrKind::Formal,
+                span,
+                IrData::Formal {
+                    name: Symbol::new(0),
+                    default: None,
+                },
+            )],
+        );
+        let error = eval_whnf(&ir).expect_err("formal nodes are not directly evaluable");
 
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::UnsupportedNode {
-                id: ir.root,
-                kind: IrKind::DerivationStrict,
+                id: root,
+                kind: IrKind::Formal,
             }
         );
-        assert_eq!(
-            error.span(),
-            ir.arena.node(ir.root).expect("root exists").span
-        );
+        assert_eq!(error.span(), span);
     }
 
     #[test]
