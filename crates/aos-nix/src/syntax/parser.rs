@@ -624,6 +624,8 @@ impl<'a> Parser<'a> {
 
     fn parse_path(&mut self) -> Result<NodeId, ParseError> {
         let first = self.expect(TokenKind::Path)?;
+        let mut trailing_slash = self.path_token_has_trailing_slash(first)?;
+        let mut trailing_slash_span = first.span;
         let first_symbol = self.intern_token(first)?;
         let first_node = self.push(NodeKind::Path, first.span, NodeData::Symbol(first_symbol))?;
         let mut fragments = vec![first_node];
@@ -641,6 +643,7 @@ impl<'a> Parser<'a> {
                     let expr = self.parse_expr()?;
                     let close = self.expect(TokenKind::RBrace)?.span;
                     end = close;
+                    trailing_slash = false;
                     fragments.push(self.push(
                         NodeKind::Interp,
                         self.join_span(start, close),
@@ -649,6 +652,8 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::Path => {
                     let token = self.bump()?;
+                    trailing_slash = self.path_token_has_trailing_slash(token)?;
+                    trailing_slash_span = token.span;
                     let symbol = self.intern_token(token)?;
                     end = token.span;
                     fragments.push(self.push(
@@ -661,6 +666,10 @@ impl<'a> Parser<'a> {
             }
         }
 
+        if trailing_slash {
+            return Err(self.error_at(trailing_slash_span, ParseErrorKind::PathTrailingSlash));
+        }
+
         if fragments.len() == 1 {
             Ok(first_node)
         } else {
@@ -671,6 +680,10 @@ impl<'a> Parser<'a> {
                 NodeData::Children(children),
             )
         }
+    }
+
+    fn path_token_has_trailing_slash(&self, token: Token) -> Result<bool, ParseError> {
+        Ok(self.token_bytes(token)?.ends_with(b"/"))
     }
 
     fn parse_paren(&mut self) -> Result<NodeId, ParseError> {
@@ -1879,6 +1892,9 @@ pub enum ParseErrorKind {
     /// A binding path could not be normalized into parser-side bindings.
     #[error("invalid binding path")]
     InvalidBindingPath,
+    /// A path literal ended with a bare slash.
+    #[error("path has a trailing slash")]
+    PathTrailingSlash,
     /// Two bindings define the same non-mergeable attribute.
     #[error("attribute already defined")]
     DuplicateAttribute,
@@ -2490,6 +2506,25 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn path_literals_reject_trailing_slash() {
+        for source in ["./foo/", "foo/bar/", "/tmp/", "./a/${x}/"] {
+            let error = parse_str(source).expect_err("bare trailing slash is rejected");
+            assert!(matches!(error.kind(), ParseErrorKind::PathTrailingSlash));
+        }
+
+        let ast = parse("./foo/.");
+        assert_eq!(node(&ast, ast.root).kind, NodeKind::Path);
+        assert_eq!(string_bytes(&ast, ast.root), b"./foo/.");
+
+        let ast = parse("./foo/..");
+        assert_eq!(node(&ast, ast.root).kind, NodeKind::Path);
+        assert_eq!(string_bytes(&ast, ast.root), b"./foo/..");
+
+        let ast = parse("./a/${x}/.");
+        assert_eq!(node(&ast, ast.root).kind, NodeKind::Interp);
     }
 
     #[test]

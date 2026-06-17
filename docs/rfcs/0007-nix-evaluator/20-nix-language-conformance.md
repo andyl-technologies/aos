@@ -283,8 +283,11 @@ search paths, and store coercion.
       ambient `NIX_PATH`; callers provide entries that are reflected by
       `builtins.nixPath`, consumed by `<...>`, and shared with
       `builtins.findFile` in configured order.
-- [ ] **Trailing-slash normalization** — verify how Nix normalizes `foo/`,
-      `foo/./bar`, `foo/../bar` in path values against pinned Nix.
+- [x] **Trailing-slash normalization** — path literals ending in a bare slash
+      after a valid segment (`foo/bar/`, `./foo/`, `/tmp/`, or interpolated
+      `./a/${x}/`) are parser errors matching pinned Nix. `.` and `..`
+      components inside path literals normalize against the configured path
+      base (`foo/./bar` => `foo/bar`, `foo/../bar` => `bar`).
 
 ---
 

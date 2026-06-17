@@ -29713,6 +29713,37 @@ mod tests {
     }
 
     #[test]
+    fn path_literals_normalize_dot_and_parent_components() {
+        let dir = unique_temp_dir("path-literal-normalization");
+        let base = dir.join("base");
+        fs::create_dir(&base).expect("source base directory creates");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(base.as_os_str().as_bytes().to_vec())
+            .expect("path-literal base configures");
+
+        assert_eq!(
+            eval_path_bytes_with_options("foo/./bar", options.clone()),
+            base.join("foo/bar").as_os_str().as_bytes()
+        );
+        assert_eq!(
+            eval_path_bytes_with_options("foo/../bar", options.clone()),
+            base.join("bar").as_os_str().as_bytes()
+        );
+        assert_eq!(
+            eval_path_bytes_with_options("./foo/.", options.clone()),
+            base.join("foo").as_os_str().as_bytes()
+        );
+        assert_eq!(
+            eval_path_bytes_with_options("./foo/..", options),
+            base.as_os_str().as_bytes()
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
     fn absolute_path_literals_are_absolute_path_values() {
         assert_eq!(
             eval_path_bytes_with_options("/etc/foo", TreeWalkOptions::new()),
