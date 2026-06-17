@@ -32,10 +32,10 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -151,6 +151,42 @@ where
     }
 }
 
+/// Serve one registry machine path from the shared surface facade.
+///
+/// The catch-all `GET`/`HEAD` handler for the registry machine surface
+/// (`/{slug}/{*path}`): it delegates to
+/// [`RpcService::facade_fetch`](crate::service::RpcService::facade_fetch), which
+/// classifies the path, enforces registry visibility against the
+/// `Authorization` header, and reads the bytes through the
+/// [`SurfaceProvider`](crate::fetch::SurfaceProvider). A hit renders as `200`
+/// with the path's `Content-Type` and `Cache-Control`; a `None` (non-machine
+/// path or absent object) renders as `404`; an [`RpcError`] renders as the
+/// Connect error envelope (so a private registry read without authority is the
+/// usual `401`/`403`/`404`).
+///
+/// The body is dropped for the response either way, so a `HEAD` and a `GET`
+/// share this one handler and differ only in whether axum elides the body.
+async fn facade(
+    svc: Arc<RpcService>,
+    headers: HeaderMap,
+    slug: String,
+    path: String,
+) -> Response {
+    let auth = auth_header(&headers);
+    match svc.facade_fetch(auth.as_deref(), &slug, &path).await {
+        Ok(Some(object)) => (
+            [
+                (header::CONTENT_TYPE, object.content_type),
+                (header::CACHE_CONTROL, object.cache_control),
+            ],
+            object.bytes,
+        )
+            .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => error_response(&err),
+    }
+}
+
 /// Mount one `aos.registry.v1` method as a `POST` route delegating to the
 /// same-named [`RpcService`] method.
 macro_rules! rpc_route {
@@ -169,16 +205,51 @@ macro_rules! rpc_route {
     };
 }
 
-/// Build the shared Connect-JSON router over the given [`RpcService`].
+/// Build the shared Connect-JSON router over the given [`RpcService`],
+/// including the machine-surface facade.
 ///
 /// Wires every ported `aos.registry.v1` method to `POST
 /// /aos.registry.v1.{Service}/{Method}`, including the three `GitService`
 /// methods served over the surface-read port
-/// ([`SurfaceProvider`](crate::fetch::SurfaceProvider)). The returned router
-/// carries the service as axum state and is mounted unchanged by both the
-/// native hub and the Cloudflare Worker.
+/// ([`SurfaceProvider`](crate::fetch::SurfaceProvider)). It additionally mounts
+/// the machine-surface facade as a catch-all `GET`/`HEAD` `/{slug}/{*path}`
+/// route (delegating to
+/// [`RpcService::facade_fetch`](crate::service::RpcService::facade_fetch) over
+/// the same surface port), registered last so the static RPC method paths win
+/// over the wildcard by axum's static-over-dynamic precedence.
+///
+/// This is the variant the Cloudflare Worker mounts whole: it has no facade of
+/// its own, so the shared route is its only machine-surface serving path. The
+/// native hub instead mounts the facade-less [`rpc_router`] and keeps its own
+/// richer `/{slug}/{*path}` handler (filesystem autoindex, `http(s)` redirect,
+/// pull-through mirroring, producer-document inert serving, and session-cookie
+/// authorization), delegating only the plain fetch+serve to the same
+/// [`RpcService::facade_fetch`](crate::service::RpcService::facade_fetch). The
+/// returned router carries the service as axum state.
 #[must_use]
 pub fn router(service: Arc<RpcService>) -> Router {
+    build(service, true)
+}
+
+/// Build the shared Connect-JSON router *without* the machine-surface facade.
+///
+/// Identical to [`router`] but omits the catch-all `/{slug}/{*path}` facade
+/// route, so it can be merged into a host that already owns that path with a
+/// richer handler — the native hub, whose facade serves filesystem autoindexes,
+/// `http(s)` redirects, pull-through mirroring, and inert producer documents,
+/// and authorizes private reads from a session cookie as well as a bearer JWT
+/// (merging two routers that both define `/{slug}/{*path}` would otherwise
+/// panic). The returned router carries the service as axum state.
+#[must_use]
+pub fn rpc_router(service: Arc<RpcService>) -> Router {
+    build(service, false)
+}
+
+/// Build the shared router, optionally mounting the machine-surface facade.
+///
+/// `mount_facade` adds the catch-all `GET`/`HEAD` `/{slug}/{*path}` facade route
+/// last; see [`router`] (mounts it) and [`rpc_router`] (omits it).
+fn build(service: Arc<RpcService>, mount_facade: bool) -> Router {
     let mut r = Router::new();
     // RegistryService
     r = rpc_route!(r, "/aos.registry.v1.RegistryService/ListRegistries", list_registries);
@@ -217,5 +288,23 @@ pub fn router(service: Arc<RpcService>) -> Router {
     r = rpc_route!(r, "/aos.registry.v1.GitService/GitLog", git_log);
     r = rpc_route!(r, "/aos.registry.v1.GitService/GitDiff", git_diff);
     r = rpc_route!(r, "/aos.registry.v1.GitService/ListChangeRequests", list_change_requests);
+    // The machine-surface facade: a catch-all `GET` (axum routes `HEAD` to it,
+    // eliding the body) for the registry machine path, registered LAST. The
+    // static `/aos.registry.v1.{Service}/{Method}` RPC routes above win over
+    // this `/{slug}/{*path}` wildcard by axum's static-over-dynamic precedence,
+    // so the facade only matches a registry URL. Omitted by [`rpc_router`] so a
+    // host with its own `/{slug}/{*path}` (the native hub) does not double-mount
+    // it.
+    if mount_facade {
+        r = r.route(
+            "/{slug}/{*path}",
+            get(
+                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>| {
+                    let svc = from_state(state);
+                    send_bridge(facade(svc, headers, slug, path))
+                },
+            ),
+        );
+    }
     r.with_state(into_state(service))
 }

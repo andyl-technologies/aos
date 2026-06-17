@@ -35,11 +35,17 @@
 //! JSON over HTTP — `POST /aos.registry.v1.{Service}/{Method}`) over ordinary
 //! `axum` handlers, with no `connectrpc` runtime on the registry path.
 //!
-//! Still worker-local (not yet lifted into `core`): the R2 machine facade
-//! ([`facade`]), the D1-backed browse UI ([`render`]) and simple-JSON read API
-//! ([`handlers`]), and the Cron-trigger indexer ([`indexer`]). The `fetch`
-//! handler routes `/aos.registry.v1.*` to the shared router and everything else
-//! to this read path; moving the facade + browse into the shared router (so this
+//! The machine-path facade is now served by the shared router too: its
+//! catch-all `GET`/`HEAD` `/{slug}/{*path}` route delegates to
+//! [`aos_registry_core::service::RpcService::facade_fetch`] over the Worker's R2
+//! [`surface`] provider, so the Worker no longer hand-writes an R2 facade and
+//! the facade + `GitService` reads share one code path with the native hub.
+//!
+//! Still worker-local (not yet lifted into `core`): the D1-backed browse UI
+//! ([`render`]) and simple-JSON read API ([`handlers`]), and the Cron-trigger
+//! indexer ([`indexer`]). The `fetch` handler routes the `aos.registry.v1` RPC
+//! surface and the machine facade to the shared router and only the human browse
+//! paths to this read path; moving browse into the shared router (so this
 //! crate's read handlers also delete) is the remaining Phase 5 step. The
 //! producer console likewise awaits its move into `core`. See `README.md` and
 //! the RFC.
@@ -62,8 +68,7 @@
 //! - `d1backend` — the [`aos_registry_core::backend::Backend`] over D1.
 //! - `reads` — the read access layer driving `core::Database` over `d1backend`,
 //!   projecting onto the [`model`] types the renderer and JSON API consume.
-//! - `facade` — the R2 machine-path facade handler.
-//! - `handlers` — the read-path `fetch` request dispatch.
+//! - `handlers` — the browse read-path `fetch` request dispatch.
 //! - `indexer` — the Cron-trigger indexer over R2 + D1.
 //! - `bridge` — the hand-rolled `worker`⇄`axum` bridge that runs the shared
 //!   Connect-JSON router for the RPC surface (no `axum-cloudflare-adapter`).
@@ -91,8 +96,6 @@ pub mod render;
 pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 pub mod d1backend;
-#[cfg(target_arch = "wasm32")]
-pub mod facade;
 #[cfg(target_arch = "wasm32")]
 pub mod handlers;
 #[cfg(target_arch = "wasm32")]
@@ -125,12 +128,31 @@ mod entry {
     use aos_registry_core::db::Database;
     use aos_registry_core::service::RpcService;
 
-    /// The route prefix that selects the shared RPC router.
+    /// Whether a request path is served by the browse read path rather than the
+    /// shared router.
     ///
-    /// Every Connect-JSON method is `POST /aos.registry.v1.{Service}/{Method}`,
-    /// so a path with this prefix is dispatched to the shared router; anything
-    /// else falls through to the read path.
-    const RPC_PREFIX: &str = "/aos.registry.v1.";
+    /// The shared router ([`aos_registry_core::connect::router`]) now owns the
+    /// `aos.registry.v1` RPC surface *and* the machine-path facade
+    /// (`GET`/`HEAD` `/{slug}/{*path}`), so only the human browse surface stays
+    /// worker-local ([`crate::handlers::handle`]): the hub home (`/`), the
+    /// one-shot schema init (`/_init`), a bare `/{slug}` registry root (no
+    /// second path segment — handled as a redirect to the registry home), and
+    /// every `/{slug}/-/...` page or JSON-API path under the reserved `/-/`
+    /// namespace. Every other path is a machine surface or RPC call and routes
+    /// to the shared router.
+    fn is_browse_path(path: &str) -> bool {
+        let path = path.trim_start_matches('/');
+        if path.is_empty() || path == "_init" {
+            return true;
+        }
+        match path.split_once('/') {
+            // A bare `/{slug}` registry root: the read path redirects it to the
+            // registry home.
+            None => true,
+            // The reserved `/-/` human namespace (pages + JSON API).
+            Some((_slug, rest)) => rest == "-" || rest.starts_with("-/"),
+        }
+    }
 
     /// The Wrangler secret holding the HS256 JWT signing secret.
     const HUB_JWT_SECRET: &str = "HUB_JWT_SECRET";
@@ -185,28 +207,34 @@ mod entry {
         )))
     }
 
-    /// The HTTP entry point: the shared RPC router or the read path.
+    /// The HTTP entry point: the shared router or the browse read path.
     ///
-    /// A request whose path begins with [`RPC_PREFIX`] is dispatched through the
-    /// shared Connect-JSON router (full write/auth/RPC parity with the native
-    /// hub); everything else delegates to [`crate::handlers::handle`] (facade,
-    /// browse UI, JSON read API). A handler error is logged and returned as a
+    /// The shared Connect-JSON router ([`aos_registry_core::connect::router`])
+    /// now owns both the `aos.registry.v1` RPC surface (every `POST
+    /// /aos.registry.v1.{Service}/{Method}`) and the
+    /// machine-path facade (`GET`/`HEAD` `/{slug}/{*path}`), single-sourced with
+    /// the native hub — so the Worker's own R2 facade is gone and the
+    /// [`crate::surface`] `SurfaceProvider` backs both the facade and the
+    /// `GitService` reads. Only the human browse surface ([`is_browse_path`])
+    /// stays worker-local in [`crate::handlers::handle`]: the hub home, the
+    /// `/_init` schema setup, a bare `/{slug}` redirect, and the `/{slug}/-/...`
+    /// pages and JSON read API. A handler error is logged and returned as a
     /// `500` so a binding/back-end failure never panics the isolate.
     #[worker::event(fetch, respond_with_errors)]
     async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         // Peek the path without consuming the body (`url()` borrows `&self`).
-        let is_rpc = req
+        let to_browse = req
             .url()
-            .map(|url| url.path().starts_with(RPC_PREFIX))
+            .map(|url| is_browse_path(url.path()))
             .unwrap_or(false);
 
-        if is_rpc {
-            let service = service_from(&env).await?;
-            let router = aos_registry_core::connect::router(service);
-            return crate::bridge::dispatch(router, req).await;
+        if to_browse {
+            return crate::handlers::handle(req, env).await;
         }
 
-        crate::handlers::handle(req, env).await
+        let service = service_from(&env).await?;
+        let router = aos_registry_core::connect::router(service);
+        crate::bridge::dispatch(router, req).await
     }
 
     /// The Cron-triggered indexer: re-walk every public registry's R2 surface

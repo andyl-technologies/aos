@@ -37,6 +37,7 @@ use crate::auth::jwt::{Claims, JwtKeys};
 use crate::clock;
 use crate::db::{Database, IndexStatus, RegistryRecord};
 use crate::fetch::SurfaceProvider;
+use crate::keymap;
 use crate::domain::iam::{self, claims_principal, token_allows};
 use crate::domain::{Permission, PrincipalKind, Role, Scope};
 use crate::ratelimit::{RateClass, RateDecision, RateLimiter, MAX_ORGS_PER_OWNER};
@@ -278,6 +279,26 @@ fn changeset_message(row: crate::db::ChangesetRow) -> pb::Changeset {
         applied_at: row.applied_at.unwrap_or_default(),
         reverted_by_change_id: row.reverted_by_change_id.unwrap_or_default(),
     }
+}
+
+/// One byte payload served from a registry's machine surface, with its headers.
+///
+/// The shared machine-path facade ([`RpcService::facade_fetch`]) returns this so
+/// both shells render an identical response: the surface `bytes`, plus the
+/// `Content-Type` and `Cache-Control` the runtime-neutral [`keymap`]
+/// classification assigns the requested path. The two header fields are
+/// `'static` because [`keymap::content_type`] and [`keymap::cache_control`]
+/// return the fixed serving contract `apr origin upload` writes (the
+/// immutable/60-second cache split), so the surface stays byte-and-header
+/// faithful to what `apm`, stock git, and Nix expect.
+#[derive(Debug)]
+pub struct FacadeObject {
+    /// The object's bytes, read from the registry's surface store.
+    pub bytes: Vec<u8>,
+    /// The `Content-Type` header value for the requested machine path.
+    pub content_type: &'static str,
+    /// The `Cache-Control` header value for the requested machine path.
+    pub cache_control: &'static str,
 }
 
 /// The shared, transport-free implementation of the `aos.registry.v1` services.
@@ -1826,6 +1847,60 @@ impl RpcService {
             });
         }
         Ok(pb::ListChangeRequestsResponse { change_requests })
+    }
+
+    /// Serve one machine path for a registry from the surface store.
+    ///
+    /// The shared machine-surface facade, single-sourced across both deployment
+    /// targets (the native hub's `compat` serve path and the Cloudflare Worker's
+    /// R2 facade): every registry URL is simultaneously a dumb-HTTP git origin
+    /// and a Nix binary cache (RFC-0004 "URL design"), and this reads that
+    /// surface through the [`SurfaceProvider`] port so the byte-and-header
+    /// contract is written once.
+    ///
+    /// Returns `Ok(None)` — which the transport renders as a `404` — when
+    /// `machine_path` is not part of the machine surface ([`keymap::is_machine_path`])
+    /// or the surface store has no such object. On a hit it returns the
+    /// [`FacadeObject`] carrying the bytes plus the path's
+    /// [`keymap::content_type`]/[`keymap::cache_control`].
+    ///
+    /// Reads follow registry visibility exactly as the other read RPCs do (see
+    /// [`Self::require_read`]): a `public` registry serves anonymously, while an
+    /// `internal`/`private` registry requires a bearer JWT granting
+    /// [`Permission::Read`] on the registry scope — so the facade never
+    /// discloses a hidden registry's bytes to an unauthorized caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::NotFound`] for an unknown slug or a registry under a
+    /// soft-deleted org, [`RpcError::Unauthenticated`]/[`RpcError::PermissionDenied`]
+    /// when a non-public registry is read without authority, and
+    /// [`RpcError::Internal`] when resolving the surface fetcher or reading the
+    /// object fails.
+    pub async fn facade_fetch(
+        &self,
+        auth: Option<&str>,
+        slug: &str,
+        machine_path: &str,
+    ) -> Result<Option<FacadeObject>, RpcError> {
+        if !keymap::is_machine_path(machine_path) {
+            return Ok(None);
+        }
+        let registry = self.registry_or_not_found(slug).await?;
+        self.require_read(auth, &registry).await?;
+        let fetch = self
+            .surface
+            .fetcher(&registry)
+            .await
+            .map_err(RpcError::internal)?;
+        let Some(bytes) = fetch.fetch(machine_path).await.map_err(RpcError::internal)? else {
+            return Ok(None);
+        };
+        Ok(Some(FacadeObject {
+            bytes,
+            content_type: keymap::content_type(machine_path),
+            cache_control: keymap::cache_control(machine_path),
+        }))
     }
 }
 

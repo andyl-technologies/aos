@@ -15,9 +15,14 @@
 //! /{slug}/-/api/packages/{name}    package detail (JSON)
 //! /{slug}/-/api/channels           channel list (JSON)
 //! /{slug}/-/api/releases           releases (JSON)
-//! /{slug}/{machine-path}           the R2 facade (HEAD, info/refs, …)
 //! /_init                           apply the D1 schema (one-shot, optional)
 //! ```
+//!
+//! The machine surface (`/{slug}/{machine-path}` — `HEAD`, `info/refs`, …) is
+//! no longer served here: it is owned by the shared router's facade
+//! ([`aos_registry_core::connect::router`]) over the R2 [`crate::surface`]
+//! provider, so this browse path only handles the human `/-/` namespace, the
+//! registry-root redirect, the hub home, and `/_init`.
 //!
 //! Human pages live under the reserved `/-/` segment so they cannot shadow the
 //! machine surface that owns the registry root (the GitLab convention; RFC-0004
@@ -32,7 +37,7 @@ use worker::{Env, Request, Response, Result};
 
 use crate::model::Registry;
 use crate::reads::Reads;
-use crate::{facade, render};
+use crate::render;
 
 /// Binding names the Worker expects in `wrangler.toml`.
 const D1_BINDING: &str = "REGISTRY_DB";
@@ -68,17 +73,18 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
         return Response::error("Not Found", 404);
     };
 
-    // Human pages and the JSON API live under "/-/"; everything else is a
-    // machine path served from R2.
+    // Human pages and the JSON API live under "/-/"; the registry root
+    // redirects to the home. Machine paths are served by the shared router's
+    // facade (see [`crate::entry`]) and never reach this browse path.
     if let Some(human) = rest.strip_prefix("-/") {
         human_or_api(&db, &env, &registry, human).await
     } else if rest.is_empty() {
         // "/{slug}" (no trailing slash) — redirect to the registry home.
         Response::redirect(url.join(&format!("/{slug}/-/"))?)
     } else {
-        // A machine path under the registry root: serve from R2.
-        let bucket = env.bucket(R2_BINDING)?;
-        facade::serve(&bucket, &registry, rest).await
+        // A machine path: dispatched to the shared facade upstream, so this
+        // branch is unreachable; answer defensively rather than 500.
+        Response::error("Not Found", 404)
     }
 }
 

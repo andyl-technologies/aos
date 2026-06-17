@@ -284,14 +284,20 @@ impl SearchParams {
 /// `aos.registry.v1` Connect-JSON method paths are static two-segment routes
 /// (`/aos.registry.v1.RegistryService/ListRegistries`), so axum's
 /// static-over-dynamic precedence keeps them from being shadowed by the
-/// `/{slug}/{*path}` facade wildcard.
+/// hub's own `/{slug}/{*path}` facade wildcard.
 ///
 /// The RPC surface is the shared, transport-free
 /// [`RpcService`](aos_registry_core::service::RpcService) served as Connect-JSON
-/// by [`aos_registry_core::connect::router`] — the *same* router the Cloudflare
-/// Worker mounts — so the native hub and the Worker speak one wire protocol. The
-/// hub's in-process limiter and surface transports satisfy the service's ports
-/// via [`crate::coreports`].
+/// by [`aos_registry_core::connect::rpc_router`] — the *same* method bodies the
+/// Cloudflare Worker mounts (via [`aos_registry_core::connect::router`]) — so the
+/// native hub and the Worker speak one wire protocol. The hub mounts the
+/// *facade-less* [`rpc_router`](aos_registry_core::connect::rpc_router) and keeps
+/// its own richer `/{slug}/{*path}` handler ([`machine_path`] etc.), which the
+/// shared facade does not cover: filesystem autoindex and `http(s)` redirect
+/// ([`compat::serve_machine_path`]), pull-through mirroring, inert
+/// producer-document serving, the upload `PUT`/`HEAD`, and session-cookie
+/// authorization. The hub's in-process limiter and surface transports satisfy
+/// the service's ports via [`crate::coreports`].
 pub async fn router(state: Arc<AppState>) -> Router {
     // The shared Connect-JSON RPC service, built over the hub's database, signing
     // keys, and base URL (the same fields the old per-hub service held), with the
@@ -309,13 +315,16 @@ pub async fn router(state: Arc<AppState>) -> Router {
     ));
     // The shared router owns `/aos.registry.v1.*` and carries its own axum state
     // (the `Arc<RpcService>`), so it is already fully stated; it is merged into
-    // the finished AppState-stated router below. A small inbound body cap is
-    // scoped to *just* the RPC surface (the large surface-upload PUT path keeps
-    // its own, far larger limit). `RequestBodyLimitLayer` enforces the cap at the
-    // body-stream level (`413 Payload Too Large`) regardless of how the handler
-    // consumes the body.
+    // the finished AppState-stated router below. The *facade-less* variant is
+    // used: the hub keeps its own `/{slug}/{*path}` machine-surface handler
+    // (autoindex/http-redirect/pull-through/producer-document/session auth), so
+    // merging the shared facade's identical wildcard would panic on the overlap.
+    // A small inbound body cap is scoped to *just* the RPC surface (the large
+    // surface-upload PUT path keeps its own, far larger limit).
+    // `RequestBodyLimitLayer` enforces the cap at the body-stream level (`413
+    // Payload Too Large`) regardless of how the handler consumes the body.
     let rpc_router =
-        aos_registry_core::connect::router(rpc_service).layer(
+        aos_registry_core::connect::rpc_router(rpc_service).layer(
             tower_http::limit::RequestBodyLimitLayer::new(RPC_MAX_BODY_BYTES),
         );
 
@@ -383,8 +392,10 @@ pub async fn router(state: Arc<AppState>) -> Router {
         // The shared Connect-JSON RPC router carries its own `Arc<RpcService>`
         // state, so it is merged after `with_state` (when the surrounding router
         // is `Router<()>` too). Its static `/aos.registry.v1.*` paths win over
-        // the `/{slug}/{*path}` facade wildcard by static-over-dynamic
-        // precedence, and the outer layers below (body cap, panic catcher,
+        // the hub's own `/{slug}/{*path}` facade wildcard by static-over-dynamic
+        // precedence. It is the facade-less variant (`rpc_router`), so it does
+        // not redefine `/{slug}/{*path}` and cannot collide with the hub's
+        // handler on merge. The outer layers below (body cap, panic catcher,
         // security headers) still wrap its responses.
         .merge(rpc_router)
         // Router-wide inbound body cap. The RPC surface is already bounded to

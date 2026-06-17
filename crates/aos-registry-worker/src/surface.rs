@@ -7,10 +7,11 @@
 //! in the hub-owned R2 bucket, with each registry occupying a *prefix*
 //! (RFC-0004 "Storage": registries as prefixes in a shared bucket). This module
 //! supplies the Worker's concrete fetcher: it resolves the per-registry prefix
-//! from the [`RegistryRecord`] and reads R2 keys `{prefix}{path}` via the same
-//! [`crate::keymap::r2_key`] mapping and `bucket.get(...).execute()` access the
-//! read-path [`facade`](crate::facade) uses, so the RPC `GitService` reads and
-//! the facade cannot drift.
+//! from the [`RegistryRecord`] and reads R2 keys `{prefix}{path}` via the
+//! [`crate::keymap::r2_key`] mapping and `bucket.get(...).execute()`. The shared
+//! machine-surface facade
+//! ([`aos_registry_core::service::RpcService::facade_fetch`]) and the RPC
+//! `GitService` reads both read through this one provider, so they cannot drift.
 //!
 //! The R2 bucket handle is not `Send`/`Sync`, but on the single-threaded Worker
 //! the core ports drop those bounds (the wasm32 `BackendBounds` is unbounded),
