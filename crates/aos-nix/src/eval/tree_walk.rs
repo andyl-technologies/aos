@@ -15016,18 +15016,11 @@ mod tests {
         assert_cpp_nix_identity_constants_match_tree_walk(&oracle);
     }
 
-    #[test]
-    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
-    fn cpp_nix_attrset_builtin_semantics_match_tree_walk() {
-        let oracle = cpp_nix_oracle();
-        let version = cpp_nix_version(&oracle);
-        assert!(
-            version.contains("(Nix) 2.24."),
-            "expected a C++ Nix 2.24.x oracle, got {version}"
-        );
-        eprintln!("C++ Nix oracle: {version}");
-
+    fn assert_cpp_nix_attrset_builtin_semantics_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
         for source in [
+            r#"builtins.attrNames { z = 1; a = 2; A = 3; _ = 4; aa = 5; }"#,
+            r#"builtins.attrValues { z = "z"; a = "a"; A = "A"; _ = "_"; aa = "aa"; }"#,
             r#"builtins.getAttr "a" { a = "x"; b = 1; }"#,
             r#"let get = builtins.getAttr "a"; in get { a = "x"; }"#,
             r#"builtins.hasAttr "a" { a = 1; }"#,
@@ -15042,8 +15035,12 @@ mod tests {
             r#"builtins.functionArgs builtins.length"#,
             r#"builtins.mapAttrs (name: value: name) { b = 2; a = 1; }"#,
             r#"builtins.mapAttrs (name: value: value + 1) { b = 2; a = 1; }"#,
+            r#"builtins.attrNames (builtins.mapAttrs (name: value: value) { z = 1; a = 2; A = 3; _ = 4; aa = 5; })"#,
+            r#"builtins.attrValues (builtins.mapAttrs (name: value: name) { z = 1; a = 2; A = 3; _ = 4; aa = 5; })"#,
             r#"builtins.attrNames (builtins.mapAttrs (1 / 0) { b = 2; a = 1; })"#,
             r#"let mapAttrs = builtins.mapAttrs; mapped = mapAttrs (name: value: value) { a = 1; }; in mapped"#,
+            r#"builtins.attrNames (builtins.groupBy (x: x) [ "b" "a" "b" "A" "_" "aa" ])"#,
+            r#"builtins.attrValues (builtins.groupBy (x: x) [ "b" "a" "b" "A" "_" "aa" ])"#,
             r#"builtins.zipAttrsWith (name: values: values) [ { a = 1; b = 2; } { a = 3; c = 4; } { b = 5; } ]"#,
             r#"builtins.attrNames (builtins.zipAttrsWith (name: values: 1 / 0) [ { b = 2; a = 1; } { c = 3; } ])"#,
             r#"builtins.length (builtins.zipAttrsWith (name: values: values) [ { a = 1 / 0; } ]).a"#,
@@ -15051,6 +15048,22 @@ mod tests {
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
         }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_attrset_builtin_semantics_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_attrset_builtin_semantics_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_attrset_builtin_semantics_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix attrset check");
+            return;
+        };
+        assert_cpp_nix_attrset_builtin_semantics_match_tree_walk(&oracle);
     }
 
     #[test]

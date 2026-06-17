@@ -922,7 +922,7 @@ and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
 - [x] String-context primops (§5) — every union/discard/upgrade bit.
 - [ ] String coercion (`toString`, interpolation, `concatStringsSep`,
       `replaceStrings`) context union.
-- [ ] `attrNames` / `attrValues` / `mapAttrs` / `groupBy` sorted-by-name order.
+- [x] `attrNames` / `attrValues` / `mapAttrs` / `groupBy` sorted-by-name order.
 - [ ] `sort` stability and tie-breaking; `lessThan` cross-type/list ordering.
 - [x] `compareVersions` / `splitVersion` / `parseDrvName` exact algorithms.
 - [x] `match` / `split` regex dialect (named risk vs. Rust `regex`).
