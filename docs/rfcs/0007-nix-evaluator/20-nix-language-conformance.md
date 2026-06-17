@@ -739,7 +739,7 @@ These magic attributes are interpreted by the *evaluator core* (not just the
 derivation layer). Distinguish language-level (coercion/application) from
 derivation-level (consumed by `derivationStrict`).
 
-- [ ] **`__functor` (language-level)** — *a set with a `__functor` attribute whose
+- [x] **`__functor` (language-level)** — *a set with a `__functor` attribute whose
       value is callable can be applied as if it were a function, with the set
       itself passed in first*: `(s) arg` ≡ `s.__functor s arg`. Reproduce exactly,
       including the recursive case (`__functor` whose value is itself a

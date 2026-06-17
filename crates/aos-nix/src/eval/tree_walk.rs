@@ -2935,16 +2935,7 @@ impl<'ir> TreeWalk<'ir> {
         {
             function = self.force_demanded_value(first, function_span, function)?;
         }
-        if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: first,
-                    expected: "lambda",
-                    actual: function.tag(),
-                },
-                function_span,
-            ));
-        }
+        function = self.ensure_applicable_value(first, function_span, function)?;
         let argument = self.eval_lazy_node(second)?;
         self.apply_lambda_value(
             id,
@@ -9885,18 +9876,7 @@ impl<'ir> TreeWalk<'ir> {
         span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        let value = self.force_value(id, span, value)?;
-        if !matches!(value.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id,
-                    expected: "function",
-                    actual: value.tag(),
-                },
-                span,
-            ));
-        }
-        Ok(value)
+        self.force_callable_value(id, span, value)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -10125,17 +10105,7 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let predicate_span = self.node(predicate_id)?.span;
         let predicate = self.eval_node(predicate_id)?;
-        let predicate = self.force_value(predicate_id, predicate_span, predicate)?;
-        if !matches!(predicate.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: predicate_id,
-                    expected: "function",
-                    actual: predicate.tag(),
-                },
-                predicate_span,
-            ));
-        }
+        let predicate = self.force_callable_value(predicate_id, predicate_span, predicate)?;
 
         let list_span = self.node(list_id)?.span;
         let list_value = self.eval_node(list_id)?;
@@ -10196,17 +10166,7 @@ impl<'ir> TreeWalk<'ir> {
         list: EvalPrimOpArg,
     ) -> Result<Value, TreeWalkError> {
         let predicate_value =
-            self.force_value(predicate.id(), predicate.span(), predicate.value())?;
-        if !matches!(predicate_value.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: predicate.id(),
-                    expected: "function",
-                    actual: predicate_value.tag(),
-                },
-                predicate.span(),
-            ));
-        }
+            self.force_callable_value(predicate.id(), predicate.span(), predicate.value())?;
 
         let list_value = self.force_value(list.id(), list.span(), list.value())?;
         if list_value.tag() != ValueTag::List {
@@ -10330,17 +10290,7 @@ impl<'ir> TreeWalk<'ir> {
 
         let predicate_span = self.node(predicate_id)?.span;
         let predicate = self.eval_node(predicate_id)?;
-        let predicate = self.force_value(predicate_id, predicate_span, predicate)?;
-        if !matches!(predicate.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: predicate_id,
-                    expected: "function",
-                    actual: predicate.tag(),
-                },
-                predicate_span,
-            ));
-        }
+        let predicate = self.force_callable_value(predicate_id, predicate_span, predicate)?;
 
         self.eval_filter_elements(
             id,
@@ -10394,17 +10344,7 @@ impl<'ir> TreeWalk<'ir> {
         }
 
         let predicate_value =
-            self.force_value(predicate.id(), predicate.span(), predicate.value())?;
-        if !matches!(predicate_value.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: predicate.id(),
-                    expected: "function",
-                    actual: predicate_value.tag(),
-                },
-                predicate.span(),
-            ));
-        }
+            self.force_callable_value(predicate.id(), predicate.span(), predicate.value())?;
 
         self.eval_filter_elements(
             id,
@@ -10513,17 +10453,7 @@ impl<'ir> TreeWalk<'ir> {
 
         let function_span = self.node(function_id)?.span;
         let function = self.eval_node(function_id)?;
-        let function = self.force_value(function_id, function_span, function)?;
-        if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: function_id,
-                    expected: "function",
-                    actual: function.tag(),
-                },
-                function_span,
-            ));
-        }
+        let function = self.force_callable_value(function_id, function_span, function)?;
 
         self.alloc_mapped_list(
             id,
@@ -10576,17 +10506,8 @@ impl<'ir> TreeWalk<'ir> {
                 });
         }
 
-        let function_value = self.force_value(function.id(), function.span(), function.value())?;
-        if !matches!(function_value.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: function.id(),
-                    expected: "function",
-                    actual: function_value.tag(),
-                },
-                function.span(),
-            ));
-        }
+        let function_value =
+            self.force_callable_value(function.id(), function.span(), function.value())?;
 
         self.alloc_mapped_list(
             id,
@@ -10652,17 +10573,7 @@ impl<'ir> TreeWalk<'ir> {
 
         let generator_span = self.node(generator_id)?.span;
         let generator = self.eval_node(generator_id)?;
-        let generator = self.force_value(generator_id, generator_span, generator)?;
-        if !matches!(generator.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: generator_id,
-                    expected: "function",
-                    actual: generator.tag(),
-                },
-                generator_span,
-            ));
-        }
+        let generator = self.force_callable_value(generator_id, generator_span, generator)?;
 
         self.alloc_generated_list(
             id,
@@ -10688,17 +10599,7 @@ impl<'ir> TreeWalk<'ir> {
             self.expect_non_negative_list_length(length.id(), length_value, length.span())?;
 
         let generator_value =
-            self.force_value(generator.id(), generator.span(), generator.value())?;
-        if !matches!(generator_value.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: generator.id(),
-                    expected: "function",
-                    actual: generator_value.tag(),
-                },
-                generator.span(),
-            ));
-        }
+            self.force_callable_value(generator.id(), generator.span(), generator.value())?;
 
         self.alloc_generated_list(
             id,
@@ -10787,17 +10688,7 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let predicate_span = self.node(predicate_id)?.span;
         let predicate = self.eval_node(predicate_id)?;
-        let predicate = self.force_value(predicate_id, predicate_span, predicate)?;
-        if !matches!(predicate.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: predicate_id,
-                    expected: "function",
-                    actual: predicate.tag(),
-                },
-                predicate_span,
-            ));
-        }
+        let predicate = self.force_callable_value(predicate_id, predicate_span, predicate)?;
 
         let list_span = self.node(list_id)?.span;
         let list_value = self.eval_node(list_id)?;
@@ -10846,17 +10737,7 @@ impl<'ir> TreeWalk<'ir> {
         list: EvalPrimOpArg,
     ) -> Result<Value, TreeWalkError> {
         let predicate_value =
-            self.force_value(predicate.id(), predicate.span(), predicate.value())?;
-        if !matches!(predicate_value.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: predicate.id(),
-                    expected: "function",
-                    actual: predicate_value.tag(),
-                },
-                predicate.span(),
-            ));
-        }
+            self.force_callable_value(predicate.id(), predicate.span(), predicate.value())?;
 
         let list_value = self.force_value(list.id(), list.span(), list.value())?;
         if list_value.tag() != ValueTag::List {
@@ -10988,17 +10869,7 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let function_span = self.node(function_id)?.span;
         let function = self.eval_node(function_id)?;
-        let function = self.force_value(function_id, function_span, function)?;
-        if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: function_id,
-                    expected: "function",
-                    actual: function.tag(),
-                },
-                function_span,
-            ));
-        }
+        let function = self.force_callable_value(function_id, function_span, function)?;
 
         let list_span = self.node(list_id)?.span;
         let list_value = self.eval_node(list_id)?;
@@ -11045,17 +10916,8 @@ impl<'ir> TreeWalk<'ir> {
         function: EvalPrimOpArg,
         list: EvalPrimOpArg,
     ) -> Result<Value, TreeWalkError> {
-        let function_value = self.force_value(function.id(), function.span(), function.value())?;
-        if !matches!(function_value.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: function.id(),
-                    expected: "function",
-                    actual: function_value.tag(),
-                },
-                function.span(),
-            ));
-        }
+        let function_value =
+            self.force_callable_value(function.id(), function.span(), function.value())?;
 
         let list_value = self.force_value(list.id(), list.span(), list.value())?;
         if list_value.tag() != ValueTag::List {
@@ -11175,17 +11037,7 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let function_span = self.node(function_id)?.span;
         let function = self.eval_node(function_id)?;
-        let function = self.force_value(function_id, function_span, function)?;
-        if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: function_id,
-                    expected: "function",
-                    actual: function.tag(),
-                },
-                function_span,
-            ));
-        }
+        let function = self.force_callable_value(function_id, function_span, function)?;
 
         let list_span = self.node(list_id)?.span;
         let list_value = self.eval_node(list_id)?;
@@ -11232,17 +11084,8 @@ impl<'ir> TreeWalk<'ir> {
         function: EvalPrimOpArg,
         list: EvalPrimOpArg,
     ) -> Result<Value, TreeWalkError> {
-        let function_value = self.force_value(function.id(), function.span(), function.value())?;
-        if !matches!(function_value.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: function.id(),
-                    expected: "function",
-                    actual: function_value.tag(),
-                },
-                function.span(),
-            ));
-        }
+        let function_value =
+            self.force_callable_value(function.id(), function.span(), function.value())?;
 
         let list_value = self.force_value(list.id(), list.span(), list.value())?;
         if list_value.tag() != ValueTag::List {
@@ -11490,16 +11333,7 @@ impl<'ir> TreeWalk<'ir> {
         list_span: Span,
         elements: Vec<Value>,
     ) -> Result<Value, TreeWalkError> {
-        if !matches!(comparator.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: comparator_id,
-                    expected: "function",
-                    actual: comparator.tag(),
-                },
-                comparator_span,
-            ));
-        }
+        let comparator = self.ensure_callable_value(comparator_id, comparator_span, comparator)?;
 
         let mut elements = self.force_sort_elements(list_id, list_span, elements)?;
         self.eval_sort_libcxx_stable(
@@ -11920,17 +11754,7 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let op_span = self.node(op_id)?.span;
         let op = self.eval_node(op_id)?;
-        let op = self.force_value(op_id, op_span, op)?;
-        if !matches!(op.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: op_id,
-                    expected: "function",
-                    actual: op.tag(),
-                },
-                op_span,
-            ));
-        }
+        let op = self.force_callable_value(op_id, op_span, op)?;
 
         let list_span = self.node(list_id)?.span;
         let list_value = self.eval_node(list_id)?;
@@ -12028,17 +11852,7 @@ impl<'ir> TreeWalk<'ir> {
 
         let operator =
             self.required_attr_value_by_name(argument, value, OPERATOR_ATTR, argument_span)?;
-        let operator = self.force_value(argument, argument_span, operator)?;
-        if !matches!(operator.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: argument,
-                    expected: "function",
-                    actual: operator.tag(),
-                },
-                argument_span,
-            ));
-        }
+        let operator = self.force_callable_value(argument, argument_span, operator)?;
 
         let mut work_items = start_items;
         let mut items = Vec::new();
@@ -12362,6 +12176,104 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
+    fn force_callable_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_value(id, span, value)?;
+        self.ensure_callable_value(id, span, value)
+    }
+
+    fn ensure_applicable_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        self.ensure_callable_value_with_expected(id, span, value, "lambda")
+    }
+
+    fn ensure_callable_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        self.ensure_callable_value_with_expected(id, span, value, "function")
+    }
+
+    fn ensure_callable_value_with_expected(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        expected: &'static str,
+    ) -> Result<Value, TreeWalkError> {
+        match value.tag() {
+            ValueTag::Lambda | ValueTag::Primop => Ok(value),
+            ValueTag::Attrs if self.functor_attr_value(id, span, value)?.is_some() => Ok(value),
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected,
+                    actual,
+                },
+                span,
+            )),
+        }
+    }
+
+    fn functor_attr_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Option<Value>, TreeWalkError> {
+        let key = self.intern_builtin_attr_symbol(id, b"__functor", span)?;
+        let attrs = self
+            .heap
+            .get_attrs(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        Ok(attrs.get(key))
+    }
+
+    fn apply_functor_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function: Value,
+        function_span: Span,
+        argument_id: IrId,
+        argument: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let Some(functor) = self.functor_attr_value(function_id, function_span, function)? else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: function_id,
+                    expected: "lambda",
+                    actual: ValueTag::Attrs,
+                },
+                function_span,
+            ));
+        };
+
+        self.apply_lambda_value_2(
+            id,
+            span,
+            function_id,
+            functor,
+            function_span,
+            function_id,
+            function_span,
+            function,
+            argument_id,
+            argument,
+        )
+    }
+
     fn apply_lambda_value(
         &mut self,
         id: IrId,
@@ -12383,6 +12295,17 @@ impl<'ir> TreeWalk<'ir> {
                     function,
                     function_span,
                     EvalPrimOpArg::new(argument_id, argument_span, argument),
+                );
+            }
+            ValueTag::Attrs => {
+                return self.apply_functor_value(
+                    id,
+                    span,
+                    function_id,
+                    function,
+                    function_span,
+                    argument_id,
+                    argument,
                 );
             }
             actual => {
@@ -13148,17 +13071,7 @@ impl<'ir> TreeWalk<'ir> {
         initial_arg: EvalPrimOpArg,
         list_arg: EvalPrimOpArg,
     ) -> Result<Value, TreeWalkError> {
-        let op = self.force_value(op_arg.id(), op_arg.span(), op_arg.value())?;
-        if !matches!(op.tag(), ValueTag::Lambda | ValueTag::Primop) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: op_arg.id(),
-                    expected: "function",
-                    actual: op.tag(),
-                },
-                op_arg.span(),
-            ));
-        }
+        let op = self.force_callable_value(op_arg.id(), op_arg.span(), op_arg.value())?;
         let list_value = self.force_primop_value(list_arg, "list", ValueTag::List)?;
         let elements = {
             let list = self.heap.get_list(list_value).map_err(|source| {
@@ -21711,6 +21624,79 @@ mod tests {
     }
 
     #[test]
+    fn higher_order_primops_accept_functor_sets() {
+        assert_eq!(
+            eval_json_bytes("builtins.map { __functor = self: x: x + 1; } [ 1 2 ]"),
+            b"[2,3]".to_vec()
+        );
+        assert_eq!(
+            eval("builtins.all { __functor = self: x: x; } [ true true ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval_json_bytes("builtins.genList { __functor = self: x: x + 1; } 3"),
+            b"[1,2,3]".to_vec()
+        );
+        assert_eq!(
+            eval("builtins.foldl' { __functor = self: acc: x: acc + x; } 0 [ 1 2 3 ]").as_int(),
+            Ok(6)
+        );
+        assert_eq!(
+            eval_json_bytes("builtins.sort { __functor = self: a: b: a < b; } [ 3 1 2 ]"),
+            b"[1,2,3]".to_vec()
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "(builtins.mapAttrs { __functor = self: name: value: name + \":\" + builtins.toString value; } { a = 1; }).a"
+            ),
+            b"a:1"
+        );
+        assert_eq!(
+            eval_json_bytes(
+                "(builtins.zipAttrsWith { __functor = self: name: values: values; } [ { a = 1; } { a = 2; } ]).a"
+            ),
+            b"[1,2]".to_vec()
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.genericClosure { startSet = [ { key = 1; } ]; operator = { __functor = self: item: if item.key == 1 then [ { key = 2; } ] else []; }; })")
+                .as_int(),
+            Ok(2)
+        );
+    }
+
+    #[test]
+    fn higher_order_primops_force_functor_values_on_demand() {
+        assert_eq!(
+            eval("builtins.length (builtins.map { __functor = 1; } [])").as_int(),
+            Ok(0)
+        );
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.elemAt (builtins.map { __functor = 1; } [ 1 ]) 0",
+        ))
+        .expect_err("bad map functor is forced when the mapped element is forced");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "lambda",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower("builtins.map {} [ 1 ]"))
+            .expect_err("non-functor attrsets are not accepted as functions");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "function",
+                actual: ValueTag::Attrs,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn tail_primop_returns_tail_without_forcing_elements() {
         let ir = lower("builtins.tail [ 1 (1 / 0) true ]");
         let outcome = eval_whnf_owned(&ir).expect("tail evaluates");
@@ -21874,6 +21860,35 @@ mod tests {
                 id: argument,
                 expected: "function",
                 actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn functor_sets_are_not_function_predicates_or_function_args() {
+        assert_eq!(
+            eval("builtins.isFunction { __functor = self: x: x; }").as_bool(),
+            Ok(false)
+        );
+
+        let ir = lower("builtins.functionArgs { __functor = self: { a }: a; }");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("functionArgs rejects functor attrsets");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "function",
+                actual: ValueTag::Attrs
             }
         );
         assert_eq!(error.span(), argument_span);
@@ -31716,6 +31731,30 @@ mod tests {
     }
 
     #[test]
+    fn attrset_functors_apply_like_functions() {
+        assert_eq!(
+            eval("({ __functor = self: x: x + self.offset; offset = 1; } 2)").as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval("let f = { __functor = self: x: x + 1; }; in f 1").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("let f = { __functor = self: { __functor = self2: x: x + self.offset; }; offset = 1; }; in f 1")
+                .as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval(
+                "let f = { __functor = self: x: if x == 0 then 0 else self (x - 1) + 1; }; in f 3"
+            )
+            .as_int(),
+            Ok(3)
+        );
+    }
+
+    #[test]
     fn with_scopes_probe_dynamic_attrs_lazily() {
         assert_eq!(eval("with { a = 1; }; a").as_int(), Ok(1));
         assert_eq!(eval("with { f = x: x + 1; }; f 2").as_int(), Ok(3));
@@ -31863,7 +31902,7 @@ mod tests {
     }
 
     #[test]
-    fn function_application_requires_lambda_functions() {
+    fn function_application_rejects_non_callable_values() {
         let ir = lower("1 2");
         let root = ir.arena.node(ir.root).expect("root exists");
         let IrData::Pair { first, .. } = root.data else {

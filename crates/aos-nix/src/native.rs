@@ -354,11 +354,21 @@ mod tests {
     }
 
     #[test]
-    fn native_expression_eval_keeps_functor_application_fallback_eligible() -> Result<()> {
+    fn native_expression_eval_handles_functor_application() -> Result<()> {
+        let native = NixNative::new(0)?;
+        let json = native.eval_expr("({ __functor = self: x: x + 1; } 1)")?;
+
+        assert_eq!(json, "2");
+        Ok(())
+    }
+
+    #[test]
+    fn native_expression_eval_keeps_non_functor_attrset_application_fallback_eligible() -> Result<()>
+    {
         let native = NixNative::new(0)?;
         let err = native
-            .eval_expr("({ __functor = self: x: x + 1; } 1)")
-            .expect_err("attrset functor application should fall back to the CLI");
+            .eval_expr("({} 1)")
+            .expect_err("non-functor attrset application should fall back to the CLI");
 
         assert!(matches!(
             err.downcast_ref::<NativeEvalError>(),
