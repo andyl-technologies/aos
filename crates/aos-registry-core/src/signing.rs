@@ -248,6 +248,23 @@ pub async fn advance_channel(
         .count();
 
     let payload = sign_partition(&signing_key, channel_name, &release_tag_oid, when)?;
+
+    // Raise the anti-rollback floor to the target SYNCHRONOUSLY, before writing
+    // any partition and independent of the re-index. The next advance's
+    // anti-rollback check (above) reads the floor back from `channel_floors`; on
+    // the Worker the re-index is deferred to Cron, so relying on the indexer to
+    // raise the floor (as the pre-port code did) would let a second advance in
+    // the same Cron window read a *stale* floor and roll the channel back below a
+    // version already served. Raising it here makes the floor current on both
+    // shells the instant an advance commits to writing. The check above
+    // guarantees `target_semver >= floor`, so this is a monotonic raise; doing it
+    // before the writes means even a mid-write failure leaves the floor high
+    // (conservative — never a rollback). The native hub's inline re-index also
+    // raises the floor to the same frontier, so this is idempotent there.
+    db.set_channel_floor(registry.id, channel_name, target_semver)
+        .await
+        .with_context(|| format!("raising anti-rollback floor for channel '{channel_name}'"))?;
+
     let mut moved = 0usize;
     for bucket in 0u16..=255 {
         if moved >= count {

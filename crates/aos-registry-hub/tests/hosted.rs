@@ -413,6 +413,78 @@ async fn advance_below_the_floor_is_refused() {
     );
 }
 
+/// A [`Reindexer`](aos_registry_core::reindex::Reindexer) that does nothing,
+/// modelling the Cloudflare Worker's deferred (Cron-driven) re-index.
+struct NoopReindexer;
+
+#[async_trait::async_trait]
+impl aos_registry_core::reindex::Reindexer for NoopReindexer {
+    async fn reindex(&self, _registry: &RegistryRecord) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+/// Anti-rollback holds even when the re-index is deferred (the Worker case).
+///
+/// Regression for the H4 review's CRITICAL: the anti-rollback floor must be
+/// raised *synchronously* by `advance_channel`, not by the (on the Worker,
+/// deferred) re-index. With a no-op reindexer, advancing `stable` to `1.1.0`
+/// then attempting `1.0.0` must still be refused — otherwise a second advance in
+/// one Cron window would read a stale floor and roll the channel back below a
+/// version already served live from the surface.
+#[tokio::test]
+async fn deferred_reindex_still_refuses_rollback() {
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("surface");
+    std::fs::create_dir_all(&surface).unwrap();
+    let fixture = two_release_surface(&surface);
+    let (db, registry) = serve_hosted(&surface, &fixture).await;
+
+    let surface_write = HubSurfaceWriteProvider::new(Arc::clone(&db));
+    let reindexer = NoopReindexer;
+
+    // Advance the whole channel to 1.1.0. The re-index is a no-op, so only
+    // advance_channel's synchronous floor raise records 1.1.0.
+    signing::advance_channel(
+        &db,
+        dev_sealer().as_ref(),
+        &surface_write,
+        &reindexer,
+        &registry,
+        "stable",
+        "1.1.0",
+        256,
+        1_770_100_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        db.channel_floor(registry.id, "stable").await.unwrap().as_deref(),
+        Some("1.1.0"),
+        "the advance must raise the floor synchronously, without a re-index"
+    );
+
+    // A lower advance is now a rollback and must be refused — even though the
+    // index was never updated.
+    let err = signing::advance_channel(
+        &db,
+        dev_sealer().as_ref(),
+        &surface_write,
+        &reindexer,
+        &registry,
+        "stable",
+        "1.0.0",
+        256,
+        1_770_100_001,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("floor"),
+        "deferred-reindex rollback must be refused: {err:#}"
+    );
+}
+
 #[tokio::test]
 async fn advance_to_unknown_release_errors_clearly() {
     let dir = tempfile::tempdir().unwrap();
