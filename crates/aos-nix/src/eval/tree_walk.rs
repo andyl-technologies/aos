@@ -14091,6 +14091,32 @@ mod tests {
         assert_eq!(candidate, reference, "expression diverged: {source}");
     }
 
+    fn assert_cpp_nix_json_matches_tree_walk_with_options(
+        oracle: &str,
+        source: &str,
+        options: TreeWalkOptions,
+    ) {
+        let reference = cpp_nix_eval_json(oracle, source);
+        let candidate = eval_json_bytes_with_options(source, options);
+        assert_eq!(candidate, reference, "expression diverged: {source}");
+    }
+
+    fn assert_pinned_cpp_nix_builtin_surface_matches_registry(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        let mut options =
+            TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec()).expect("system valid");
+        options.set_current_time(1_700_000_000).expect("time valid");
+
+        for source in [
+            "builtins.attrNames builtins",
+            "builtins.attrNames builtins.builtins",
+            "builtins.typeOf builtins.builtins",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk_with_options(oracle, source, options.clone());
+        }
+    }
+
     fn assert_cpp_nix_identity_constants_match_tree_walk(oracle: &str) {
         assert_pinned_cpp_nix_oracle(oracle);
 
@@ -14964,6 +14990,10 @@ mod tests {
             eval_list_string_bytes("builtins.attrNames builtins"),
             expected_builtin_names(false, false)
         );
+        assert_eq!(
+            eval_list_string_bytes("builtins.attrNames builtins.builtins"),
+            expected_builtin_names(false, false)
+        );
 
         let mut options =
             TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec()).expect("system valid");
@@ -14978,22 +15008,16 @@ mod tests {
     #[ignore = "requires AOS_NIX_ORACLE to point at pinned nix-instantiate 2.24.12"]
     fn pinned_cpp_nix_builtin_surface_matches_registry() {
         let oracle = cpp_nix_oracle();
-        let version = cpp_nix_version(&oracle);
-        assert!(
-            version.ends_with(" 2.24.12") || version.ends_with("(Nix) 2.24.12"),
-            "expected pinned C++ Nix 2.24.12 oracle, got {version}"
-        );
+        assert_pinned_cpp_nix_builtin_surface_matches_registry(&oracle);
+    }
 
-        let mut options =
-            TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec()).expect("system valid");
-        options.set_current_time(1_700_000_000).expect("time valid");
-        assert_eq!(
-            String::from_utf8_lossy(&eval_json_bytes_with_options(
-                "builtins.attrNames builtins",
-                options
-            )),
-            String::from_utf8_lossy(&cpp_nix_eval_json(&oracle, "builtins.attrNames builtins"))
-        );
+    #[test]
+    fn configured_pinned_cpp_nix_builtin_surface_matches_registry() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix surface check");
+            return;
+        };
+        assert_pinned_cpp_nix_builtin_surface_matches_registry(&oracle);
     }
 
     #[test]
@@ -15592,11 +15616,13 @@ mod tests {
     #[test]
     fn known_but_unimplemented_builtin_selects_do_not_use_defaults() {
         for (source, name) in [
-            ("builtins.exec or 42", b"exec".as_slice()),
-            ("builtins.fetchClosure or 42", b"fetchClosure".as_slice()),
-            ("builtins.outputOf or 42", b"outputOf".as_slice()),
+            ("builtins.fetchGit or 42", b"fetchGit".as_slice()),
+            (
+                "builtins.genericClosure or 42",
+                b"genericClosure".as_slice(),
+            ),
+            ("builtins.getFlake or 42", b"getFlake".as_slice()),
             ("builtins.scopedImport or 42", b"scopedImport".as_slice()),
-            ("builtins.toHashFormat or 42", b"toHashFormat".as_slice()),
         ] {
             let ir = lower(source);
             let error = eval_whnf_owned(&ir).expect_err("known builtin does not use default");
@@ -15608,6 +15634,18 @@ mod tests {
                     symbol: symbol_for(&ir, name),
                 }
             );
+        }
+    }
+
+    #[test]
+    fn absent_pinned_builtin_attrs_use_defaults() {
+        for source in [
+            "builtins.exec or 42",
+            "builtins.fetchClosure or 42",
+            "builtins.outputOf or 42",
+            "builtins.toHashFormat or 42",
+        ] {
+            assert_eq!(eval(source).as_int(), Ok(42));
         }
     }
 

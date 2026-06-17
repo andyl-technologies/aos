@@ -234,22 +234,10 @@ builtin_registry! {
         const EXECUTION: BuiltinExecution = BuiltinExecution::strict_binary(StrictBinaryPrimOp::ElemAt);
     }
 
-    pub(crate) struct ExecBuiltin;
-    impl BuiltinInfo for ExecBuiltin {
-        const NAME: &'static [u8] = b"exec";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
-    }
-
     pub(crate) struct FalseBuiltin;
     impl BuiltinInfo for FalseBuiltin {
         const NAME: &'static [u8] = b"false";
         const EXECUTION: BuiltinExecution = BuiltinExecution::FalseValue;
-    }
-
-    pub(crate) struct FetchClosureBuiltin;
-    impl BuiltinInfo for FetchClosureBuiltin {
-        const NAME: &'static [u8] = b"fetchClosure";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
     }
 
     pub(crate) struct FetchGitBuiltin;
@@ -556,12 +544,6 @@ builtin_registry! {
         const EXECUTION: BuiltinExecution = BuiltinExecution::NullValue;
     }
 
-    pub(crate) struct OutputOfBuiltin;
-    impl BuiltinInfo for OutputOfBuiltin {
-        const NAME: &'static [u8] = b"outputOf";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
-    }
-
     pub(crate) struct ParseDrvNameBuiltin;
     impl BuiltinInfo for ParseDrvNameBuiltin {
         const NAME: &'static [u8] = b"parseDrvName";
@@ -717,12 +699,6 @@ builtin_registry! {
     pub(crate) struct ToFileBuiltin;
     impl BuiltinInfo for ToFileBuiltin {
         const NAME: &'static [u8] = b"toFile";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
-    }
-
-    pub(crate) struct ToHashFormatBuiltin;
-    impl BuiltinInfo for ToHashFormatBuiltin {
-        const NAME: &'static [u8] = b"toHashFormat";
         const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
     }
 

@@ -748,7 +748,7 @@ These are *values* in the `builtins` set (not functions). They are version- and
 config-sensitive, and several are **parity decisions** because nixpkgs branches
 on them.
 
-- [ ] `builtins` (set) — the builtins set reflects itself: `builtins.builtins`
+- [x] `builtins` (set) — the builtins set reflects itself: `builtins.builtins`
       is `builtins`. Its membership and **attr order** must equal the pinned
       `nix`'s (the differential gate; see
       [primops and the runtime ABI](10-primops-and-runtime-abi.md) §4.4).
@@ -932,7 +932,7 @@ and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
 - [ ] `findFile` / `<nixpkgs>` resolution to the identical store path.
 - [x] `placeholder` byte-identical placeholder scheme.
 - [x] `nixVersion`/`langVersion` spoofing for feature-gate parity.
-- [ ] `builtins` set membership and order.
+- [x] `builtins` set membership and order.
 
 ---
 
