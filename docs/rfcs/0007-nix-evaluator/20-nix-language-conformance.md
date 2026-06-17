@@ -217,7 +217,7 @@ are language-level and live here.
 - [x] **Context attaches via `builtins.storePath`** — adds the path as a context
       element (builtin in doc 21; the propagation rule is here).
 - [x] **Concatenation unions context** — `a + b` carries `context(a) ∪ context(b)`.
-- [ ] **Interpolation unions context** — `"${a}${b}"` carries the union of every
+- [x] **Interpolation unions context** — `"${a}${b}"` carries the union of every
       interpolated part's context.
 - [ ] **`//`, comparisons, and other ops do not fabricate context** — only
       string-producing operations propagate; comparisons return bools with no

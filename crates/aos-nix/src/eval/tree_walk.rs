@@ -31934,7 +31934,7 @@ mod tests {
             b"axb"
         );
         assert_eq!(
-            eval(
+            eval_json_bytes(
                 r#"let
                      withCtx = text: path: builtins.appendContext text {
                        ${path} = { path = true; };
@@ -31943,11 +31943,12 @@ mod tests {
                      bPath = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b";
                      a = withCtx "a" aPath;
                      b = withCtx "b" bPath;
-                     ctx = builtins.getContext "${a}${b}";
-                   in builtins.hasAttr aPath ctx && builtins.hasAttr bPath ctx"#
-            )
-            .as_bool(),
-            Ok(true)
+                   in {
+                     double = builtins.getContext "${a}${b}";
+                     indented = builtins.getContext ''${a}${b}'';
+                   }"#
+            ),
+            br#"{"double":{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a":{"path":true},"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b":{"path":true}},"indented":{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a":{"path":true},"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b":{"path":true}}}"#.to_vec()
         );
     }
 
