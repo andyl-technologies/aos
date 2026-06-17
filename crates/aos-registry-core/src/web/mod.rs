@@ -36,6 +36,7 @@
 //! machine-surface facade wildcard, so the two never collide.
 
 pub mod browse;
+pub mod console;
 pub mod console_render;
 pub mod csrf;
 pub mod render;
