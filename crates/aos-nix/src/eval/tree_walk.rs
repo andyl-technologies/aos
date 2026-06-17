@@ -31360,6 +31360,7 @@ mod tests {
     fn interpolation_rejects_non_coercible_values() {
         let cases = [
             ("\"${1}\"", ValueTag::Int),
+            ("\"${1.25}\"", ValueTag::Float),
             ("\"${true}\"", ValueTag::Bool),
             ("\"${null}\"", ValueTag::Null),
             ("\"${[]}\"", ValueTag::List),

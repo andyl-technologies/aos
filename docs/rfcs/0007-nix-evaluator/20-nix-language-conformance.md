@@ -173,21 +173,21 @@ exactly.
 The set of coercible values is exact; getting it wrong changes both visible
 strings and string contexts.
 
-- [ ] **String → itself** — identity, context preserved.
-- [ ] **Path → store path** — a path in an interpolated expression is **copied
+- [x] **String → itself** — identity, context preserved.
+- [x] **Path → store path** — a path in an interpolated expression is **copied
       into the Nix store**, and the result is the store path string, *with the
       source path added to the string's context* (§3, §4). This is eval-forces-a
       copy and is observable in `inputSrcs`.
-- [ ] **Attribute set with `__toString`** — call `__toString self` (a function
+- [x] **Attribute set with `__toString`** — call `__toString self` (a function
       taking the set), use its string result. (Verified: manual string-interpolation.)
-- [ ] **Attribute set with `outPath`** — coerce via the `outPath` string value
+- [x] **Attribute set with `outPath`** — coerce via the `outPath` string value
       (this is how derivations interpolate to their out path).
-- [ ] **`__toString` takes precedence over `outPath`** — "if both `__toString`
+- [x] **`__toString` takes precedence over `outPath`** — "if both `__toString`
       and `outPath` are present, `__toString` takes precedence." Reproduce this
       precedence exactly.
-- [ ] **Set with neither** — error: "cannot coerce a set to a string"
+- [x] **Set with neither** — error: "cannot coerce a set to a string"
       (**must-error**).
-- [ ] **Booleans, null, integers, floats, lists are NOT coercible in interpolation**
+- [x] **Booleans, null, integers, floats, lists are NOT coercible in interpolation**
       — interpolating them throws. (Note: `builtins.toString` is *more* permissive
       than interpolation for some types — that asymmetry is a doc 21 concern;
       here, pin the *interpolation* coercion set.) Verify the exact coercible set
