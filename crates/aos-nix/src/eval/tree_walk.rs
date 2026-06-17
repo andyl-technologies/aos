@@ -12118,14 +12118,38 @@ mod tests {
         trim_command_stdout(output.stdout)
     }
 
+    fn cpp_nix_eval_string(oracle: &str, source: &str) -> Vec<u8> {
+        let json = cpp_nix_eval_json(oracle, source);
+        serde_json::from_slice::<String>(&json)
+            .expect("C++ Nix oracle returned a JSON string")
+            .into_bytes()
+    }
+
     fn assert_cpp_nix_json_matches_tree_walk(oracle: &str, source: &str) {
         let reference = cpp_nix_eval_json(oracle, source);
         let candidate = eval_json_bytes(source);
-        assert_eq!(
-            String::from_utf8_lossy(&candidate),
-            String::from_utf8_lossy(&reference),
-            "expression diverged: {source}"
+        assert_eq!(candidate, reference, "expression diverged: {source}");
+    }
+
+    fn assert_cpp_nix_to_json_matches_tree_walk(oracle: &str, source: &str) {
+        let wrapped = format!("builtins.toJSON ({source})");
+        let reference = cpp_nix_eval_string(oracle, &wrapped);
+        let candidate = eval_string_bytes(&wrapped);
+        assert_eq!(candidate, reference, "toJSON expression diverged: {source}");
+    }
+
+    fn assert_cpp_nix_and_tree_walk_reject_expression(oracle: &str, source: &str) {
+        let output = Command::new(oracle)
+            .args(["--eval", "--strict", "--json", "--expr", source])
+            .output()
+            .expect("C++ Nix oracle evaluates expression");
+        assert!(
+            !output.status.success(),
+            "C++ Nix oracle unexpectedly accepted {source:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
         );
+        let ir = lower(source);
+        eval_whnf_owned(&ir).expect_err("tree-walk rejects expression");
     }
 
     fn assert_cpp_nix_and_tree_walk_reject_json(oracle: &str, source: &str) {
@@ -13170,6 +13194,68 @@ mod tests {
             r#"builtins.dirOf { __toString = self: "/a/b"; }"#,
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_json_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        let version = cpp_nix_version(&oracle);
+        assert!(
+            version.contains("(Nix) 2.24."),
+            "expected a C++ Nix 2.24.x oracle, got {version}"
+        );
+        eprintln!("C++ Nix oracle: {version}");
+
+        for source in [
+            r#"builtins.fromJSON ''{"b":1,"a":[true,false,null,"x"],"c":{"n":2.5}}''"#,
+            r#"builtins.attrNames (builtins.fromJSON ''{"b":1,"a":2}'')"#,
+            r#"(builtins.fromJSON ''{"a":1,"a":2}'').a"#,
+            r#"builtins.fromJSON ''"é"''"#,
+            r#"builtins.fromJSON "9223372036854775808""#,
+            r#"builtins.fromJSON "18446744073709551615""#,
+            r#"builtins.typeOf (builtins.fromJSON "-9223372036854775809")"#,
+            r#"builtins.hasContext (builtins.fromJSON ''"x"'')"#,
+            r#"let f = builtins.fromJSON; in f "{}""#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+
+        for source in [
+            "null",
+            "true",
+            "false",
+            "42",
+            r#""é""#,
+            r#""\t\r\n\\\"""#,
+            r#"builtins.fromJSON "\"\\b\"""#,
+            r#"builtins.fromJSON "\"\\f\"""#,
+            r#"{ b = 1; a = [ true false null "x" ]; }"#,
+            r#"{ "10" = 10; "2" = 2; A = 1; a = 2; }"#,
+            "1.0",
+            "1.50",
+            "(-0.0)",
+            "0.000001",
+            "100000000000000000000.0",
+            "((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308))",
+            "(1.0e308 * 1.0e308)",
+            r#"{ __toString = self: "hook"; outPath = "out"; }"#,
+            r#"{ __toString = self: { outPath = "nested"; }; }"#,
+            r#"{ outPath = [ "a" "b" ]; }"#,
+            r#"{ outPath = "out"; a = 1; }"#,
+            "{}",
+        ] {
+            assert_cpp_nix_to_json_matches_tree_walk(&oracle, source);
+        }
+
+        for source in [
+            r#"builtins.fromJSON "01""#,
+            "builtins.fromJSON 1",
+            "builtins.toJSON [ (x: x) ]",
+            "builtins.toJSON [ 1 (1 / 0) ]",
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
         }
     }
 

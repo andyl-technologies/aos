@@ -427,7 +427,9 @@ blobs and derivation attributes — see
       - Forces `e` deeply (it must, to serialize).
       - An attrset with `__toString` or `outPath` follows the coercion rules,
         not a literal object dump — verify which wins.
-- [ ] `fromJSON` (e) — parse a JSON string to a Nix value. Numbers become int or
+      - Current tree-walk gap: path values still need C++ Nix's store-coercion
+        bytes before this item can be checked.
+- [x] `fromJSON` (e) — parse a JSON string to a Nix value. Numbers become int or
       float per JSON syntax; objects become attrsets (duplicate-key behavior must
       match); result strings carry **no** context.
 - [ ] `toXML` (e) — serialize `e` to Nix's XML plist-like format (the
