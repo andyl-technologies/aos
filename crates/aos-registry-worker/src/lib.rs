@@ -44,11 +44,20 @@
 //! why the RPC transport is **Connect-JSON** (plain JSON over HTTP) over
 //! ordinary `axum` handlers, with no `connectrpc` runtime on the registry path.
 //!
+//! The producer console (RFC-0004 Phase 5, console-dedup stage C) is served by
+//! the same shared router too: the Worker builds a
+//! [`ConsoleDeps`](aos_registry_core::web::console::ConsoleDeps) over its console
+//! ports ([`consoleports`]) and merges
+//! [`console_router`](aos_registry_core::web::console::console_router) onto the
+//! RPC/facade/browse router, so the 39 shared console routes run identical code
+//! on both shells. Nine console routes stay native-only on the hub (the pre-auth
+//! rate-limited login/activation paths, the OIDC flow, and the git-backed
+//! config/change-request flows) and are not yet mounted on the Worker.
+//!
 //! Still worker-local: the one-shot D1 schema setup (`GET /_init`,
 //! [`handlers::init_schema`]) and the Cron-trigger indexer ([`indexer`]). The
 //! `fetch` handler serves `/_init` worker-locally and bridges every other path
-//! to the shared router. The producer console awaits its own move into `core`.
-//! See `README.md` and the RFC.
+//! to the shared router. See `README.md` and the RFC.
 //!
 //! # Module map
 //!
@@ -71,6 +80,10 @@
 //! - `surface` — the R2-backed [`aos_registry_core::fetch::SurfaceProvider`]
 //!   the shared git/facade read logic uses.
 //! - `workerlimit` — the D1-backed [`aos_registry_core::ratelimit::RateLimiter`].
+//! - `consoleports` — the Worker's console ports: the logging mailer, the
+//!   Fetch-API OIDC [`HttpClient`](aos_registry_core::web::console::ports::HttpClient),
+//!   and the (not-yet-implemented) hosted-key
+//!   [`ChannelAdvancer`](aos_registry_core::web::console::ports::ChannelAdvancer).
 //!
 //! # Build and deploy
 //!
@@ -89,6 +102,8 @@ pub mod model;
 
 #[cfg(target_arch = "wasm32")]
 pub mod bridge;
+#[cfg(target_arch = "wasm32")]
+pub mod consoleports;
 #[cfg(target_arch = "wasm32")]
 pub mod d1backend;
 #[cfg(target_arch = "wasm32")]
@@ -120,7 +135,14 @@ mod entry {
 
     use aos_registry_core::auth::jwt::JwtKeys;
     use aos_registry_core::db::Database;
+    use aos_registry_core::ratelimit::RateLimiter;
     use aos_registry_core::service::RpcService;
+    use aos_registry_core::web::console::{console_router, ConsoleDeps};
+    use axum::Router;
+
+    use crate::consoleports::{
+        sealer_from_secret, WorkerChannelAdvancer, WorkerHttpClient, WorkerMailer,
+    };
 
     /// Whether a request path is the worker-local one-shot schema setup.
     ///
@@ -137,23 +159,41 @@ mod entry {
 
     /// The Wrangler secret holding the HS256 JWT signing secret.
     const HUB_JWT_SECRET: &str = "HUB_JWT_SECRET";
+    /// The Wrangler secret holding the at-rest secret-sealing key.
+    ///
+    /// Hashed to a 256-bit AES-GCM instance key (see
+    /// [`sealer_from_secret`](crate::consoleports::sealer_from_secret)); the
+    /// console's OIDC token exchange unseals a tenant's client secret with it.
+    const HUB_SEAL_KEY: &str = "HUB_SEAL_KEY";
     /// The Wrangler `[vars]` entry holding the hub's externally-reachable URL.
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
 
-    /// Construct the shared [`RpcService`] over the Worker's D1/R2 bindings.
+    /// Build the shared `axum` router over the Worker's D1/R2 bindings.
     ///
-    /// Attaches a non-migrating [`Database`] over the D1 [`crate::d1backend`]
-    /// (the schema is applied once via `GET /_init`), reads the JWT secret and
-    /// external URL from the Wrangler secret/var, and wires the Worker's
-    /// D1-backed rate limiter ([`crate::workerlimit`]) and R2-backed surface
-    /// provider ([`crate::surface`]).
+    /// Constructs the runtime-neutral pieces once — a non-migrating [`Database`]
+    /// over the D1 [`crate::d1backend`] (the schema is applied via `GET /_init`),
+    /// the HS256 [`JwtKeys`], the external URL, and the D1-backed rate limiter
+    /// ([`crate::workerlimit`]) — and wires them into **both** shared routers:
+    ///
+    /// - the RPC + facade + browse router built from the [`RpcService`]
+    ///   ([`aos_registry_core::connect::router`]), over the R2 surface provider
+    ///   ([`crate::surface`]);
+    /// - the producer-console router ([`console_router`]) built from a
+    ///   [`ConsoleDeps`], over the Worker's console ports
+    ///   ([`crate::consoleports`]): the logging [`WorkerMailer`], the Fetch-API
+    ///   [`WorkerHttpClient`], the not-yet-implemented [`WorkerChannelAdvancer`],
+    ///   and the shared AES-GCM sealer from `HUB_SEAL_KEY`.
+    ///
+    /// Both routers carry their own state, so they merge into one `Router<()>`
+    /// exactly as the native hub composes them; the console's static paths win
+    /// over the facade wildcard by static-over-dynamic precedence.
     ///
     /// # Errors
     ///
-    /// Returns an error if a binding is missing, the `HUB_JWT_SECRET` secret or
-    /// `HUB_EXTERNAL_URL` var is absent, or the rate-limiter table cannot be
-    /// ensured.
-    async fn service_from(env: &Env) -> Result<Arc<RpcService>> {
+    /// Returns an error if a binding is missing, the `HUB_JWT_SECRET`,
+    /// `HUB_SEAL_KEY`, or `HUB_EXTERNAL_URL` secret/var is absent or empty, or
+    /// the rate-limiter table cannot be ensured.
+    async fn router_from(env: &Env) -> Result<Router> {
         let db = Arc::new(Database::attach(Box::new(crate::d1backend::D1Backend::new(
             env.d1(crate::handlers::bindings::D1)?,
         ))));
@@ -168,24 +208,49 @@ mod entry {
 
         let external_url = env.var(HUB_EXTERNAL_URL)?.to_string();
 
+        let seal_secret = env.secret(HUB_SEAL_KEY)?.to_string();
+        if seal_secret.is_empty() {
+            return Err(worker::Error::RustError(format!(
+                "{HUB_SEAL_KEY} secret is empty; set it with `wrangler secret put {HUB_SEAL_KEY}`"
+            )));
+        }
+        let sealer = sealer_from_secret(&seal_secret)
+            .map_err(|err| worker::Error::RustError(format!("seal key: {err:#}")))?;
+
         // The limiter drives its own D1 counter table over a second D1 backend
         // handle (the binding is cheap to re-resolve and D1 handles are owned).
-        let ratelimit = crate::workerlimit::D1RateLimiter::create(crate::d1backend::D1Backend::new(
-            env.d1(crate::handlers::bindings::D1)?,
-        ))
-        .await
-        .map_err(|err| worker::Error::RustError(format!("rate limiter init: {err:#}")))?;
+        let ratelimit: Arc<dyn RateLimiter> = Arc::new(
+            crate::workerlimit::D1RateLimiter::create(crate::d1backend::D1Backend::new(
+                env.d1(crate::handlers::bindings::D1)?,
+            ))
+            .await
+            .map_err(|err| worker::Error::RustError(format!("rate limiter init: {err:#}")))?,
+        );
 
         let surface =
             crate::surface::R2SurfaceProvider::new(env.bucket(crate::handlers::bindings::R2)?);
 
-        Ok(Arc::new(RpcService::new(
+        let service = Arc::new(RpcService::new(
+            Arc::clone(&db),
+            jwt_keys.clone(),
+            external_url.clone(),
+            Arc::clone(&ratelimit),
+            Arc::new(surface),
+        ));
+
+        let console_deps = ConsoleDeps {
             db,
             jwt_keys,
             external_url,
-            Arc::new(ratelimit),
-            Arc::new(surface),
-        )))
+            dev: false,
+            ratelimit,
+            mailer: Arc::new(WorkerMailer),
+            sealer,
+            http: Arc::new(WorkerHttpClient),
+            advancer: Arc::new(WorkerChannelAdvancer),
+        };
+
+        Ok(aos_registry_core::connect::router(service).merge(console_router(console_deps)))
     }
 
     /// The HTTP entry point: the worker-local `/_init`, else the shared router.
@@ -212,8 +277,7 @@ mod entry {
             return crate::handlers::init_schema(&env).await;
         }
 
-        let service = service_from(&env).await?;
-        let router = aos_registry_core::connect::router(service);
+        let router = router_from(&env).await?;
         crate::bridge::dispatch(router, req).await
     }
 

@@ -35,6 +35,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 hex = { workspace = true }
+# Encodes the OIDC token-exchange POST body (application/x-www-form-urlencoded)
+# in the Worker's `HttpClient` console port. Pure-Rust and wasm-clean (the same
+# url-family crate the native side pulls transitively).
+form_urlencoded = "1"
 # Trust-anchor fingerprints in the browse UI (key_fingerprint), matching the
 # native hub's ssh-keygen-style SHA256 form. Both are wasm-clean.
 base64 = { workspace = true }
