@@ -37,7 +37,7 @@ macro_rules! builtin_definitions {
             strict_unary DirOfBuiltin, b"dirOf", StrictUnaryPrimOp::DirOf;
             strict_binary DivBuiltin, b"div", StrictBinaryPrimOp::Div;
             direct_binary ElemBuiltin, b"elem", StrictBinaryPrimOp::Elem;
-            direct_binary ElemAtBuiltin, b"elemAt", StrictBinaryPrimOp::ElemAt;
+            strict_binary ElemAtBuiltin, b"elemAt", StrictBinaryPrimOp::ElemAt;
             unsupported ExecBuiltin, b"exec";
             custom_value FalseBuiltin, b"false";
             unsupported FetchClosureBuiltin, b"fetchClosure";
@@ -618,6 +618,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"hashFile").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"elemAt").unwrap().first_class_arity(),
             Some(2)
         );
         assert_eq!(

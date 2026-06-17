@@ -359,7 +359,7 @@ Forcing order is observable and must match (see
 - [ ] `head` (list) — first element; throws on empty. Forces the spine, not the
       element (returns the element thunk).
 - [ ] `tail` (list) — all but the first; throws on empty.
-- [ ] `elemAt` (xs n) — zero-based index; throws out of range. Forces the list
+- [x] `elemAt` (xs n) — zero-based index; throws out of range. Forces the list
       spine and `n`.
 - [ ] `length` (list) — element count. Forces only the spine.
 - [ ] `elem` (x xs) — membership by **structural equality**; forces elements as

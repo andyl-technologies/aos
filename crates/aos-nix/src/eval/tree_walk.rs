@@ -5162,6 +5162,7 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let index_span = self.node(index_id)?.span;
         let index_value = self.eval_node(index_id)?;
+        let index_value = self.force_value(index_id, index_span, index_value)?;
         if index_value.tag() != ValueTag::Int {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -5175,6 +5176,7 @@ impl<'ir> TreeWalk<'ir> {
         let index = index_value.payload_bits() as i64;
         let list_span = self.node(list_id)?.span;
         let list_value = self.eval_node(list_id)?;
+        let list_value = self.force_value(list_id, list_span, list_value)?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -5205,6 +5207,59 @@ impl<'ir> TreeWalk<'ir> {
                     len: list.len(),
                 },
                 index_span,
+            ));
+        };
+        Ok(value)
+    }
+
+    fn eval_elem_at_primop_value(
+        &mut self,
+        list: EvalPrimOpArg,
+        index: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let index_value = self.force_value(index.id(), index.span(), index.value())?;
+        if index_value.tag() != ValueTag::Int {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: index.id(),
+                    expected: "int",
+                    actual: index_value.tag(),
+                },
+                index.span(),
+            ));
+        }
+        let index_value = index_value.payload_bits() as i64;
+        let list_value = self.force_value(list.id(), list.span(), list.value())?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list.id(),
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list.span(),
+            ));
+        }
+        let list_value = self.heap.get_list(list_value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: list.id(),
+                    source,
+                },
+                list.span(),
+            )
+        })?;
+        let Some(value) = usize::try_from(index_value)
+            .ok()
+            .and_then(|index| list_value.get(index))
+        else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::ListIndexOutOfBounds {
+                    id: index.id(),
+                    index: index_value,
+                    len: list_value.len(),
+                },
+                index.span(),
             ));
         };
         Ok(value)
@@ -7376,6 +7431,7 @@ impl<'ir> TreeWalk<'ir> {
         second: EvalPrimOpArg,
     ) -> Result<Value, TreeWalkError> {
         match primop {
+            StrictBinaryPrimOp::ElemAt => self.eval_elem_at_primop_value(first, second),
             StrictBinaryPrimOp::HashString => {
                 let left = self.force_value(first.id(), first.span(), first.value())?;
                 let algorithm =
@@ -7504,8 +7560,7 @@ impl<'ir> TreeWalk<'ir> {
             StrictBinaryPrimOp::Partition => {
                 self.eval_partition_primop_value(id, span, first, second)
             }
-            StrictBinaryPrimOp::ElemAt
-            | StrictBinaryPrimOp::GetAttr
+            StrictBinaryPrimOp::GetAttr
             | StrictBinaryPrimOp::HasAttr
             | StrictBinaryPrimOp::RemoveAttrs
             | StrictBinaryPrimOp::IntersectAttrs
@@ -11736,6 +11791,10 @@ mod tests {
             Ok(3)
         );
         assert_eq!(
+            eval("builtins.isFunction builtins.elemAt").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
             eval("let f = builtins.isFunction; in f builtins.convertHash").as_bool(),
             Ok(true)
         );
@@ -11851,7 +11910,6 @@ mod tests {
     #[test]
     fn known_but_unimplemented_builtin_selects_do_not_use_defaults() {
         for (source, name) in [
-            ("builtins.elemAt or 42", b"elemAt".as_slice()),
             ("builtins.exec or 42", b"exec".as_slice()),
             ("builtins.fetchClosure or 42", b"fetchClosure".as_slice()),
             ("builtins.outputOf or 42", b"outputOf".as_slice()),
@@ -12800,6 +12858,14 @@ mod tests {
             Ok(true)
         );
         assert_eq!(
+            eval("let f = builtins.elemAt; in f [ 1 2 ] 1").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("let xs = [ 1 2 ]; n = 1; in builtins.elemAt xs n").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
             eval("let builtins = { elemAt = xs: n: 42; }; in builtins.elemAt [ true ] 0").as_int(),
             Ok(42)
         );
@@ -12885,6 +12951,15 @@ mod tests {
             TreeWalkErrorKind::DivisionByZero { id: index }
         );
         assert_eq!(error.span(), index_span);
+
+        let error = eval_whnf_owned(&lower(
+            "let f = builtins.elemAt; in f (builtins.throw \"list\") (builtins.throw \"index\")",
+        ))
+        .expect_err("first-class elemAt forces the index before the list");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"index");
 
         let ir = lower("builtins.elemAt [] true");
         let root = ir.arena.node(ir.root).expect("root exists");
