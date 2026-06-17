@@ -31175,6 +31175,18 @@ mod tests {
     }
 
     #[test]
+    fn indented_string_interpolation_strips_literals_before_insertion() {
+        assert_eq!(
+            eval_string_bytes("let x = \"X\"; in ''\n  ${x}\n  text\n''"),
+            b"X\ntext\n"
+        );
+        assert_eq!(
+            eval_string_bytes("let x = \"  X\"; in ''\n    ${x}\n    y\n''"),
+            b"  X\ny\n"
+        );
+    }
+
+    #[test]
     fn dynamic_attr_names_use_string_coercion() {
         assert_eq!(
             eval("{ ${ { outPath = \"name\"; } } = 7; }.name").as_int(),

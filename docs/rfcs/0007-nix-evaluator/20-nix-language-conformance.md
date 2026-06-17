@@ -114,31 +114,32 @@ rest at parse time (`parse-fail-*` conformance cases).
 The indentation algorithm is a frequent source of divergence; reproduce it
 exactly.
 
-- [ ] **Common-indentation stripping** — strip from each line *a number of spaces
+- [x] **Common-indentation stripping** — strip from each line *a number of spaces
       equal to the minimal indentation of the string as a whole, disregarding the
       indentation of empty lines*. (Verified against the Nix manual string-literals
       page.)
-- [ ] **Empty lines excluded from the minimum** — lines that are entirely
-      whitespace do not lower the computed common indentation.
-- [ ] **Tabs are NOT stripped** — "prefixed tab characters are not stripped."
-      Tabs do not count as the strip unit; mixing tabs and spaces produces the
+- [x] **Empty/space-only lines excluded from the minimum** — empty lines and
+      lines containing only spaces do not lower the computed common indentation.
+- [x] **Tabs are NOT stripped** — "prefixed tab characters are not stripped."
+      Tabs do not count as the strip unit; a tab-only line is content and can
+      lower the common indentation to zero. Mixing tabs and spaces produces the
       well-known surprising output. Reproduce the C++ Nix behavior bug-for-bug
       (see NixOS/nix #3759, #7834), do not "fix" it.
-- [ ] **Leading newline elision** — "whitespace and newline following the opening
+- [x] **Leading newline elision** — "whitespace and newline following the opening
       `''` is ignored if there is no non-whitespace text on the initial line."
       I.e. if the opening `''` is immediately followed by (optional spaces and) a
       newline, that first newline is dropped.
-- [ ] **Trailing handling** — the final line's content up to the closing `''`
-      participates in stripping per the same rule; verify the exact trailing
-      newline behavior (whether a trailing newline before `''` is preserved)
-      against pinned Nix.
-- [ ] **Indented-string escapes** — `''$` escapes a literal `$` (suppresses
+- [x] **Trailing handling** — the final line's content up to the closing `''`
+      participates in stripping per the same rule; a trailing newline before a
+      space-only closing line is preserved, while the closing indentation is
+      dropped, matching pinned Nix.
+- [x] **Indented-string escapes** — `''$` escapes a literal `$` (suppresses
       interpolation); `'''` (two single-quotes then a single-quote = `''` literal
       escape) yields a literal `''`; `''\n`, `''\r`, `''\t` yield the control
       chars; `''\` followed by any char yields that char literally. Verify each
       escape against pinned Nix.
-- [ ] **`$${` in indented strings** — renders literally, same as double-quoted.
-- [ ] **Interpolation inside `''...''`** — `${e}` works identically to
+- [x] **`$${` in indented strings** — renders literally, same as double-quoted.
+- [x] **Interpolation inside `''...''`** — `${e}` works identically to
       double-quoted; the interpolated text is inserted *after* indentation
       stripping is computed on the literal portions. Verify the interaction of
       stripping and interpolation against pinned Nix (the minimum is computed on

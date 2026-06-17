@@ -2431,12 +2431,24 @@ mod tests {
     fn indented_strings_strip_common_spaces_and_opening_newline() {
         let ast = parse("''\n  one\n    two\n  ''");
         assert_eq!(string_bytes(&ast, ast.root), b"one\n  two\n");
+
+        let ast = parse("''  \n  one\n  ''");
+        assert_eq!(string_bytes(&ast, ast.root), b"one\n");
+
+        let ast = parse("''x\n  y\n''");
+        assert_eq!(string_bytes(&ast, ast.root), b"x\n  y\n");
     }
 
     #[test]
     fn indented_strings_ignore_empty_lines_and_keep_tabs() {
         let ast = parse("''\n  one\n\n  \tmake\n  ''");
         assert_eq!(string_bytes(&ast, ast.root), b"one\n\n\tmake\n");
+
+        let ast = parse("''\n    one\n  \n    two\n    ''");
+        assert_eq!(string_bytes(&ast, ast.root), b"one\n\ntwo\n");
+
+        let ast = parse("''\n  one\n\t\n  two\n  ''");
+        assert_eq!(string_bytes(&ast, ast.root), b"  one\n\t\n  two\n");
     }
 
     #[test]
@@ -2446,7 +2458,37 @@ mod tests {
 
         let ast = parse("''$$$${''");
         assert_eq!(string_bytes(&ast, ast.root), b"$$$${");
+
+        let ast = parse("''$$${x}''");
+        let root = node(&ast, ast.root);
+        assert_eq!(root.kind, NodeKind::Interp);
+        let NodeData::Children(fragments) = root.data else {
+            panic!("interpolation fragments expected");
+        };
+        let fragments = child_ids(&ast, fragments);
+        assert_eq!(fragments.len(), 2);
+        assert_eq!(string_bytes(&ast, fragments[0]), b"$$");
+        let interpolation = node(&ast, fragments[1]);
+        assert_eq!(interpolation.kind, NodeKind::Interp);
+        let NodeData::Node(expr) = interpolation.data else {
+            panic!("interpolation expression expected");
+        };
+        assert_eq!(node(&ast, expr).kind, NodeKind::Ident);
+        assert_eq!(string_bytes(&ast, expr), b"x");
+
         parse_str("''$$${''").expect_err("odd dollar run opens interpolation");
+    }
+
+    #[test]
+    fn indented_strings_handle_trailing_lines_like_pinned_nix() {
+        let ast = parse("''\n  one\n    tail''");
+        assert_eq!(string_bytes(&ast, ast.root), b"one\n  tail");
+
+        let ast = parse("''\n    one\n  tail''");
+        assert_eq!(string_bytes(&ast, ast.root), b"  one\ntail");
+
+        let ast = parse("''\n  one\n    ''");
+        assert_eq!(string_bytes(&ast, ast.root), b"one\n");
     }
 
     #[test]
